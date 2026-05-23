@@ -1,0 +1,20 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+            "label": "rustc build",
+            "type": "shell",
+            "command": "rustc",
+            "args": [
+                "${file}",
+                "-g",
+                "-o",
+                "${fileDirname}/${fileBasenameNoExtension}.exe"
+            ],
+            "problemMatcher": "$rustc",
+            "presentation": {
+                "reveal": "always"
+            }
+        }
+	]
+}
