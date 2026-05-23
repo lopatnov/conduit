@@ -1,0 +1,41 @@
+[
+  {
+    "host": "app.example.com",
+    "port": 443,
+    "tls": {
+      "acme": { "email": "admin@example.com" },
+      "httpRedirectPort": 80
+    },
+    "compression": true,
+    "securityHeaders": true,
+    "static": "./dist",
+    "staticOptions": { "maxAge": "7d" },
+    "proxy": {
+      "/api": {
+        "targets": ["http://api1:4000", "http://api2:4000"],
+        "strategy": "least-conn",
+        "stripPrefix": true,
+        "healthCheck": { "path": "/health", "intervalSecs": 10 }
+      }
+    },
+    "healthCheck": true,
+    "fallback": { "status": 200, "file": "./dist/index.html" }
+  },
+  {
+    "host": "admin.example.com",
+    "port": 443,
+    "tls": { "cert": "$CERT_PATH", "key": "$KEY_PATH" },
+    "basicAuth": {
+      "users": { "admin": "$ADMIN_PASSWORD" },
+      "challenge": true,
+      "realm": "Admin Panel"
+    },
+    "static": "./admin-ui"
+  },
+  {
+    "host": "*",
+    "port": 443,
+    "tls": { "cert": "$CERT_PATH", "key": "$KEY_PATH" },
+    "fallback": { "status": 404, "body": { "error": "Unknown host" } }
+  }
+]

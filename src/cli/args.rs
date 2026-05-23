@@ -48,7 +48,11 @@ pub struct FmtArgs {
 }
 
 #[derive(Args)]
-pub struct InitArgs {}
+pub struct InitArgs {
+    /// Write config to this file instead of the default config path
+    #[arg(short, long, value_name = "FILE")]
+    pub output: Option<String>,
+}
 
 #[derive(Args)]
 pub struct ProbeArgs {}
