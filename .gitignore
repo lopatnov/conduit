@@ -21,3 +21,6 @@ target
 #.idea/
 /CLAUDE.md
 /.claude
+
+# npm — downloaded native binaries (vendored by CI, not committed)
+/npm/bin/native/

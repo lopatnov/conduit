@@ -1,15 +1,18 @@
 {
   "name": "@lopatnov/conduit",
-  "version": "0.0.1",
-  "description": "Reverse proxy",
+  "version": "0.1.0",
+  "description": "High-performance reverse proxy and static file server powered by Cloudflare Pingora",
   "keywords": [
-    "reverse",
-    "proxy"
+    "reverse-proxy",
+    "proxy",
+    "static-server",
+    "http",
+    "https",
+    "http2",
+    "load-balancer",
+    "rust",
+    "pingora"
   ],
-  "bin": {
-    "conduit": "./dist/conduit",
-    "conduit-compile": "./dist/conduit-compile.js"
-  },
   "homepage": "https://github.com/lopatnov/conduit#readme",
   "bugs": {
     "url": "https://github.com/lopatnov/conduit/issues"
@@ -21,8 +24,17 @@
   "license": "Apache-2.0",
   "author": "lopatnov",
   "type": "module",
-  "main": "index.js",
+  "bin": {
+    "conduit": "./bin/conduit.js"
+  },
+  "files": [
+    "bin/",
+    "Readme.md"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "postinstall": "node bin/download.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
