@@ -13,7 +13,7 @@ use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
 
 use crate::config::schema::AppConfig;
-use crate::filter::{ip_filter, limits};
+use crate::filter::{ip_filter, limits, redirects};
 use crate::handler::{fallback, health, response, static_files};
 use crate::proxy::ctx::{LocalHandler, RequestCtx, UpstreamTarget};
 use crate::proxy::{router, upstream};
@@ -53,16 +53,26 @@ impl ProxyHttp for ConduitProxy {
     {
         self.state.inflight.fetch_add(1, Ordering::Relaxed);
 
-        let (req_ctx, ip_cfg, limits_cfg) = {
+        let (req_ctx, ip_cfg, limits_cfg, redirect_result) = {
             let config = self.state.config.load();
             let host = extract_host(session);
+            // Include query string so redirect rules can preserve it.
+            let path_and_query = session
+                .req_header()
+                .uri
+                .path_and_query()
+                .map(|pq| pq.as_str().to_owned())
+                .unwrap_or_else(|| session.req_header().uri.path().to_owned());
             let path = session.req_header().uri.path().to_owned();
             let req_ctx =
                 router::route_request(&config, &host, &path, &self.state.round_robin);
             let site = config.sites.get(req_ctx.site_idx);
             let ip_cfg = site.and_then(|s| s.ip_filter.clone());
             let limits_cfg = site.and_then(|s| s.limits.clone());
-            (req_ctx, ip_cfg, limits_cfg)
+            let redirect_result = site
+                .and_then(|s| s.redirects.as_deref())
+                .and_then(|rules| redirects::apply_redirects(rules, &path_and_query));
+            (req_ctx, ip_cfg, limits_cfg, redirect_result)
         };
 
         if let Some(ref ip_cfg) = ip_cfg {
@@ -77,6 +87,15 @@ impl ProxyHttp for ConduitProxy {
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
                 return Ok(true);
             }
+        }
+
+        // Redirects are checked after IP filtering but before auth / rate limiting.
+        // Health and metrics paths are never redirected (they have no redirect rules
+        // in practice, but the health check match is already handled above in routing).
+        if let Some((location, status)) = redirect_result {
+            response::write_redirect(session, status, &location).await?;
+            self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+            return Ok(true);
         }
 
         let handler_kind = match &req_ctx.upstream {
