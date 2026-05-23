@@ -72,6 +72,7 @@ anyhow    = "1"
 thiserror = "2"
 bytes     = "1"
 httpdate  = "1"
+http      = "1"
 
 # Phase 4: Rhai scripting middleware
 # rhai = "1"

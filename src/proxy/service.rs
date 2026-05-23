@@ -1,11 +1,14 @@
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
+use dashmap::DashMap;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
+use pingora_http::RequestHeader;
 use pingora_proxy::{ProxyHttp, Session};
 
 use crate::config::schema::AppConfig;
@@ -17,6 +20,8 @@ use crate::proxy::router;
 pub struct AppState {
     pub config: Arc<ArcSwap<AppConfig>>,
     pub inflight: Arc<AtomicUsize>,
+    /// Per-route round-robin counters shared across all request threads.
+    pub round_robin: Arc<DashMap<String, AtomicUsize>>,
 }
 
 impl AppState {
@@ -24,6 +29,7 @@ impl AppState {
         Self {
             config: Arc::new(ArcSwap::new(Arc::new(config))),
             inflight: Arc::new(AtomicUsize::new(0)),
+            round_robin: Arc::new(DashMap::new()),
         }
     }
 }
@@ -46,20 +52,17 @@ impl ProxyHttp for ConduitProxy {
     {
         self.state.inflight.fetch_add(1, Ordering::Relaxed);
 
-        // Route and extract per-site filter configs in a single sync block so the
-        // ArcSwap guard is dropped before any `.await`.
         let (req_ctx, ip_cfg, limits_cfg) = {
             let config = self.state.config.load();
             let host = extract_host(session);
             let path = session.req_header().uri.path().to_owned();
-            let req_ctx = router::route_request(&config, &host, &path);
+            let req_ctx = router::route_request(&config, &host, &path, &self.state.round_robin);
             let site = config.sites.get(req_ctx.site_idx);
             let ip_cfg = site.and_then(|s| s.ip_filter.clone());
             let limits_cfg = site.and_then(|s| s.limits.clone());
             (req_ctx, ip_cfg, limits_cfg)
         };
 
-        // IP filter — applied before health check (per pipeline spec)
         if let Some(ref ip_cfg) = ip_cfg {
             if !ip_filter::is_allowed(ip_cfg, session) {
                 response::write_response(
@@ -81,7 +84,6 @@ impl ProxyHttp for ConduitProxy {
             _ => HandlerKind::Proxy,
         };
 
-        // Request limits — health endpoint is exempt
         if !matches!(handler_kind, HandlerKind::Health) {
             if let Some(ref limits_cfg) = limits_cfg {
                 match limits::check(limits_cfg, session) {
@@ -163,14 +165,70 @@ impl ProxyHttp for ConduitProxy {
     {
         let ctx = ctx.as_ref().expect("ctx set in request_filter");
         match &ctx.upstream {
-            UpstreamTarget::Proxy { addr, .. } => {
-                Ok(Box::new(HttpPeer::new(*addr, false, String::new())))
+            UpstreamTarget::Proxy { addr, tls, sni, .. } => {
+                let socket_addr: SocketAddr = addr.parse().map_err(|_| {
+                    pingora_core::Error::explain(
+                        pingora_core::ErrorType::ConnectProxyFailure,
+                        format!("invalid upstream address: {addr}"),
+                    )
+                })?;
+                Ok(Box::new(HttpPeer::new(socket_addr, *tls, sni.clone())))
             }
             _ => Err(pingora_core::Error::explain(
                 pingora_core::ErrorType::InternalError,
                 "upstream_peer called for local handler",
             )),
         }
+    }
+
+    async fn upstream_request_filter(
+        &self,
+        session: &mut Session,
+        upstream_request: &mut RequestHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        // Add X-Forwarded-For
+        let client_ip = session
+            .client_addr()
+            .and_then(|a| a.as_inet())
+            .map(|a| a.ip().to_string());
+
+        if let Some(ip) = client_ip {
+            let xff = match upstream_request
+                .headers
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+            {
+                Some(existing) => format!("{existing}, {ip}"),
+                None => ip,
+            };
+            upstream_request.insert_header("x-forwarded-for", xff)?;
+        }
+
+        // X-Forwarded-Proto (TLS support added in Phase 1.9)
+        upstream_request.insert_header("x-forwarded-proto", "http")?;
+
+        // Strip prefix from request path if configured
+        if let Some(ctx_ref) = ctx.as_ref() {
+            if let UpstreamTarget::Proxy {
+                strip_prefix: Some(pfx),
+                ..
+            } = &ctx_ref.upstream
+            {
+                let old_path = upstream_request.uri.path().to_owned();
+                let new_path = old_path.strip_prefix(pfx.as_str()).unwrap_or("/");
+                let new_path = if new_path.is_empty() { "/" } else { new_path };
+                if new_path != old_path {
+                    let new_uri = rebuild_uri(&upstream_request.uri, new_path)?;
+                    upstream_request.set_uri(new_uri);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     async fn logging(
@@ -204,4 +262,26 @@ fn extract_host(session: &Session) -> String {
         .and_then(|v| v.to_str().ok())
         .map(|h| h.split(':').next().unwrap_or(h).to_owned())
         .unwrap_or_default()
+}
+
+fn rebuild_uri(original: &http::Uri, new_path: &str) -> Result<http::Uri> {
+    let pq = match original.query() {
+        Some(q) => format!("{new_path}?{q}"),
+        None => new_path.to_string(),
+    };
+    let mut parts = http::uri::Parts::default();
+    parts.scheme = original.scheme().cloned();
+    parts.authority = original.authority().cloned();
+    parts.path_and_query = Some(pq.parse().map_err(|_| {
+        pingora_core::Error::explain(
+            pingora_core::ErrorType::InternalError,
+            "failed to build upstream URI",
+        )
+    })?);
+    http::Uri::from_parts(parts).map_err(|_| {
+        pingora_core::Error::explain(
+            pingora_core::ErrorType::InternalError,
+            "failed to build upstream URI",
+        )
+    })
 }

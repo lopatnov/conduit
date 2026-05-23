@@ -28,7 +28,10 @@ impl RequestCtx {
 pub enum UpstreamTarget {
     Local(LocalHandler),
     Proxy {
-        addr: SocketAddr,
+        /// "host:port" string passed to Pingora's HttpPeer::new.
+        addr: String,
+        tls: bool,
+        sni: String,
         strip_prefix: Option<String>,
     },
     Upload {

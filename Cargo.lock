@@ -538,6 +538,7 @@ dependencies = [
  "criterion",
  "dashmap",
  "dialoguer",
+ "http",
  "httpdate",
  "humantime",
  "indexmap 2.14.0",

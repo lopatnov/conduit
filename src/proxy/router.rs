@@ -1,17 +1,26 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use crate::config::schema::{AppConfig, SiteConfig, StaticConfig};
-use crate::proxy::ctx::{LocalHandler, RequestCtx, UpstreamTarget};
+use dashmap::DashMap;
 
-pub fn route_request(config: &AppConfig, host: &str, path: &str) -> RequestCtx {
+use crate::config::schema::{AppConfig, ProxyConfig, SiteConfig, StaticConfig};
+use crate::proxy::ctx::{LocalHandler, RequestCtx, UpstreamTarget};
+use crate::proxy::upstream;
+
+pub fn route_request(
+    config: &AppConfig,
+    host: &str,
+    path: &str,
+    counters: &DashMap<String, AtomicUsize>,
+) -> RequestCtx {
     let site_idx = find_site_idx(config, host).unwrap_or(0);
     let site = config.sites.get(site_idx);
 
     let upstream = if is_health_path(site, path) {
         UpstreamTarget::Local(LocalHandler::Health)
     } else if let Some(site) = site {
-        route_site(site, path)
+        route_site(site, path, counters)
     } else {
         UpstreamTarget::Local(LocalHandler::Fallback)
     };
@@ -19,7 +28,19 @@ pub fn route_request(config: &AppConfig, host: &str, path: &str) -> RequestCtx {
     RequestCtx::new(site_idx, upstream)
 }
 
-fn route_site(site: &SiteConfig, path: &str) -> UpstreamTarget {
+fn route_site(
+    site: &SiteConfig,
+    path: &str,
+    counters: &DashMap<String, AtomicUsize>,
+) -> UpstreamTarget {
+    // Proxy routes take priority over static files
+    if let Some(proxy_cfg) = &site.proxy {
+        if let Some(upstream_target) = resolve_proxy(proxy_cfg, path, counters) {
+            return upstream_target;
+        }
+    }
+
+    // Static files (only reached if no proxy route matched)
     if let Some(static_cfg) = &site.static_files {
         let options = Arc::new(site.static_options.clone().unwrap_or_default());
         let (roots, strip_prefix) = resolve_static_roots(static_cfg, path);
@@ -32,12 +53,69 @@ fn route_site(site: &SiteConfig, path: &str) -> UpstreamTarget {
         }
     }
 
-    if let Some(proxy) = &site.proxy {
-        // Proxy routing implemented in Phase 1.7
-        let _ = proxy;
-    }
-
     UpstreamTarget::Local(LocalHandler::Fallback)
+}
+
+fn resolve_proxy(
+    config: &ProxyConfig,
+    path: &str,
+    counters: &DashMap<String, AtomicUsize>,
+) -> Option<UpstreamTarget> {
+    match config {
+        ProxyConfig::Single(url) => {
+            let addr = upstream::url_to_host_port(url)?;
+            let tls = upstream::url_is_tls(url);
+            let sni = if tls { upstream::url_host(url) } else { String::new() };
+            Some(UpstreamTarget::Proxy {
+                addr,
+                tls,
+                sni,
+                strip_prefix: None,
+            })
+        }
+        ProxyConfig::Routes(routes) => {
+            let (route_key, route_target) = find_route(routes, path)?;
+            let urls = upstream::target_urls(route_target);
+            let url = upstream::pick_round_robin(&urls, route_key, counters)?;
+            let addr = upstream::url_to_host_port(&url)?;
+            let tls = upstream::url_is_tls(&url);
+            let sni = if tls { upstream::url_host(&url) } else { String::new() };
+            let strip = if upstream::strip_prefix_enabled(route_target) {
+                Some(route_key.trim_end_matches('/').to_string())
+            } else {
+                None
+            };
+            Some(UpstreamTarget::Proxy {
+                addr,
+                tls,
+                sni,
+                strip_prefix: strip,
+            })
+        }
+    }
+}
+
+fn find_route<'a>(
+    routes: &'a indexmap::IndexMap<String, crate::config::schema::ProxyRouteTarget>,
+    path: &str,
+) -> Option<(&'a str, &'a crate::config::schema::ProxyRouteTarget)> {
+    let mut best: Option<(&str, &crate::config::schema::ProxyRouteTarget)> = None;
+    for (prefix, target) in routes {
+        let norm = prefix.trim_end_matches('/');
+        let matches = if norm.is_empty() {
+            true
+        } else {
+            path == norm || path.starts_with(&format!("{norm}/"))
+        };
+        if matches {
+            let cur_len = norm.len();
+            let best_len = best.map_or(0, |(b, _)| b.trim_end_matches('/').len());
+            if cur_len >= best_len {
+                best = Some((prefix.as_str(), target));
+            }
+        }
+    }
+    best
 }
 
 fn resolve_static_roots(
@@ -48,12 +126,11 @@ fn resolve_static_roots(
         StaticConfig::Single(s) => (vec![PathBuf::from(s)], None),
         StaticConfig::Multi(v) => (v.iter().map(PathBuf::from).collect(), None),
         StaticConfig::Mapped(m) => {
-            // Longest matching prefix wins
             let mut best: Option<(&str, &str)> = None;
             for (prefix, root) in m {
                 let norm = prefix.trim_end_matches('/');
                 let matches = if norm.is_empty() {
-                    true // "/" matches everything
+                    true
                 } else {
                     path == norm || path.starts_with(&format!("{norm}/"))
                 };

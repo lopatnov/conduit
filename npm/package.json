@@ -1,0 +1,28 @@
+{
+  "name": "@lopatnov/conduit",
+  "version": "0.0.1",
+  "description": "Reverse proxy",
+  "keywords": [
+    "reverse",
+    "proxy"
+  ],
+  "bin": {
+    "conduit": "./dist/conduit",
+    "conduit-compile": "./dist/conduit-compile.js"
+  },
+  "homepage": "https://github.com/lopatnov/conduit#readme",
+  "bugs": {
+    "url": "https://github.com/lopatnov/conduit/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lopatnov/conduit.git"
+  },
+  "license": "Apache-2.0",
+  "author": "lopatnov",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}
