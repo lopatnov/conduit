@@ -58,10 +58,9 @@ impl TestServer {
         let mut admin_ok = false;
         loop {
             if !proxy_ok {
-                if let Ok(r) = reqwest::blocking::get(&health_url) {
-                    if r.status().is_success() {
-                        proxy_ok = true;
-                    }
+                // Any HTTP response (including 4xx) means the proxy is listening.
+                if reqwest::blocking::get(&health_url).is_ok() {
+                    proxy_ok = true;
                 }
             }
             if !admin_ok {

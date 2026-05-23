@@ -3,12 +3,14 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use bytes::Bytes;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
 use pingora_proxy::{ProxyHttp, Session};
 
 use crate::config::schema::AppConfig;
-use crate::handler::{fallback, health, static_files};
+use crate::filter::{ip_filter, limits};
+use crate::handler::{fallback, health, response, static_files};
 use crate::proxy::ctx::{LocalHandler, RequestCtx, UpstreamTarget};
 use crate::proxy::router;
 
@@ -44,12 +46,33 @@ impl ProxyHttp for ConduitProxy {
     {
         self.state.inflight.fetch_add(1, Ordering::Relaxed);
 
-        let req_ctx = {
+        // Route and extract per-site filter configs in a single sync block so the
+        // ArcSwap guard is dropped before any `.await`.
+        let (req_ctx, ip_cfg, limits_cfg) = {
             let config = self.state.config.load();
             let host = extract_host(session);
             let path = session.req_header().uri.path().to_owned();
-            router::route_request(&config, &host, &path)
+            let req_ctx = router::route_request(&config, &host, &path);
+            let site = config.sites.get(req_ctx.site_idx);
+            let ip_cfg = site.and_then(|s| s.ip_filter.clone());
+            let limits_cfg = site.and_then(|s| s.limits.clone());
+            (req_ctx, ip_cfg, limits_cfg)
         };
+
+        // IP filter — applied before health check (per pipeline spec)
+        if let Some(ref ip_cfg) = ip_cfg {
+            if !ip_filter::is_allowed(ip_cfg, session) {
+                response::write_response(
+                    session,
+                    403,
+                    "text/plain",
+                    Bytes::from_static(b"Forbidden"),
+                )
+                .await?;
+                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                return Ok(true);
+            }
+        }
 
         let handler_kind = match &req_ctx.upstream {
             UpstreamTarget::Local(LocalHandler::Health) => HandlerKind::Health,
@@ -57,6 +80,37 @@ impl ProxyHttp for ConduitProxy {
             UpstreamTarget::Local(_) => HandlerKind::Fallback,
             _ => HandlerKind::Proxy,
         };
+
+        // Request limits — health endpoint is exempt
+        if !matches!(handler_kind, HandlerKind::Health) {
+            if let Some(ref limits_cfg) = limits_cfg {
+                match limits::check(limits_cfg, session) {
+                    limits::CheckResult::BodyTooLarge => {
+                        response::write_response(
+                            session,
+                            413,
+                            "text/plain",
+                            Bytes::from_static(b"Request Entity Too Large"),
+                        )
+                        .await?;
+                        self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                        return Ok(true);
+                    }
+                    limits::CheckResult::HeaderTooLarge => {
+                        response::write_response(
+                            session,
+                            431,
+                            "text/plain",
+                            Bytes::from_static(b"Request Header Fields Too Large"),
+                        )
+                        .await?;
+                        self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                        return Ok(true);
+                    }
+                    limits::CheckResult::Ok => {}
+                }
+            }
+        }
 
         *ctx = Some(req_ctx);
 
