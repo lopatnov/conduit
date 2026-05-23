@@ -1,0 +1,47 @@
+{
+  "port": 443,
+  "tls": {
+    "acme": {
+      "email": "admin@example.com"
+    }
+  },
+  "compression": true,
+  "securityHeaders": true,
+  "logging": {
+    "format": "json",
+    "file": "/var/log/conduit/access.log"
+  },
+  "static": "./dist",
+  "staticOptions": {
+    "maxAge": "7d",
+    "preCompressed": true
+  },
+  "proxy": {
+    "/api": {
+      "targets": ["http://api1:4000", "http://api2:4000"],
+      "strategy": "least-conn",
+      "stripPrefix": true,
+      "healthCheck": {
+        "path": "/health",
+        "intervalSecs": 10
+      },
+      "cache": {
+        "store": "memory",
+        "ttlSecs": 60,
+        "skipIfCookie": true
+      }
+    }
+  },
+  "healthCheck": true,
+  "metrics": {
+    "path": "/__metrics__",
+    "token": "$METRICS_TOKEN"
+  },
+  "fallback": {
+    "byAccept": {
+      "html": { "status": 200, "file": "./dist/index.html" },
+      "json": { "status": 404, "body": { "error": "Not Found" } },
+      "*":    { "status": 200, "file": "./dist/index.html" }
+    }
+  }
+}

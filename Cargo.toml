@@ -32,9 +32,13 @@ indexmap            = { version = "2", features = ["serde"] }
 humantime           = "2"
 
 # --- CLI ---
-clap      = { version = "4", features = ["derive"] }
-dialoguer = "0.11"
-indicatif = "0.17"
+clap        = { version = "4", features = ["derive", "env"] }
+dialoguer   = "0.11"
+indicatif   = "0.17"
+async-trait = "0.1"
+
+# --- Pingora HTTP types ---
+pingora-http = "0.8"
 
 # --- Async runtime & HTTP ---
 tokio = { version = "1", features = ["full"] }
@@ -67,12 +71,13 @@ rcgen        = "0.13"
 anyhow    = "1"
 thiserror = "2"
 bytes     = "1"
+httpdate  = "1"
 
 # Phase 4: Rhai scripting middleware
 # rhai = "1"
 
 [dev-dependencies]
-reqwest     = { version = "0.12", features = ["http2", "rustls-tls"] }
+reqwest     = { version = "0.12", features = ["http2", "rustls-tls", "blocking", "json"] }
 criterion   = { version = "0.5", features = ["html_reports"] }
 tempfile    = "3"
 serial_test = "3"
