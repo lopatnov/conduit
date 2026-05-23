@@ -1,86 +1,51 @@
 # Benchmarks
 
-Benchmarks compare Conduit against `express-reverse-proxy` (the Node.js project this was
-designed to replace) running identical workloads on the same machine.
+> **These are design targets, not measured results.**
+>
+> Conduit is currently in early development (Phases 1–2). The numbers below are the
+> performance goals the project is designed to hit once fully implemented. They will be
+> replaced with real wrk/criterion output as development progresses.
+>
+> Contributions of real benchmark runs are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Environment
+## Design Targets
 
-- **CPU:** AMD EPYC 7763 (2× sockets, 64 cores each)
-- **OS:** Ubuntu 22.04 LTS
-- **Kernel:** 5.15.0
-- **Load generator:** [wrk](https://github.com/wg/wrk) — `wrk -t8 -c200 -d30s`
-- **Conduit:** release build, `lto = true`, `codegen-units = 1`, `strip = true`
-- **express-reverse-proxy:** Node.js 20, default settings
+Measured environment (planned): Linux x86-64, `wrk -t8 -c200 -d30s`,
+compared to `express-reverse-proxy` running an identical workload.
 
-Both servers ran on the same machine. The upstream for proxy tests was a minimal
-`tokio::net::TcpListener` that immediately returned `HTTP/1.1 200 OK\r\n\r\n`.
-
-## Results
-
-### Static file serving (1 KB HTML)
-
-| Metric | express-reverse-proxy | Conduit | Improvement |
-|---|---|---|---|
-| Throughput | 7,842 req/s | 156,200 req/s | +19.9× |
-| P50 latency | 4.2 ms | 0.18 ms | 23× lower |
-| P99 latency | 12.1 ms | 0.61 ms | 20× lower |
-| P999 latency | 38.4 ms | 1.9 ms | 20× lower |
-| Memory (idle) | 58 MB | 8 MB | 7.3× less |
-
-### Proxy passthrough
-
-| Metric | express-reverse-proxy | Conduit | Improvement |
-|---|---|---|---|
-| Throughput | 6,103 req/s | 84,700 req/s | +13.9× |
-| P50 latency | 6.1 ms | 0.31 ms | 20× lower |
-| P99 latency | 14.8 ms | 1.7 ms | 8.7× lower |
-| P999 latency | 52.3 ms | 4.1 ms | 13× lower |
-
-### Startup time
-
-| | express-reverse-proxy | Conduit |
+| Scenario | express-reverse-proxy | Conduit target |
 |---|---|---|
-| Cold start | 487 ms | 38 ms |
+| Static file 1 KB | ~8,000 req/s | **≥ 150,000 req/s** |
+| Proxy passthrough | ~6,000 req/s | **≥ 80,000 req/s** |
+| P99 proxy latency | ~15 ms | **≤ 2 ms** |
+| Memory (idle) | ~60 MB | **≤ 10 MB** |
+| Startup time | ~500 ms | **≤ 50 ms** |
+| Binary size (musl, stripped) | N/A | **≤ 15 MB** |
 
-### Binary size
+## Rationale
 
-| | Size |
-|---|---|
-| Conduit (musl, stripped) | 14.2 MB |
-| express-reverse-proxy (node_modules) | ~28 MB |
+These targets are achievable because:
 
-## Running Benchmarks Locally
+- Pingora (Cloudflare) processes millions of req/s in production on the same architecture
+- Static files are served directly in Pingora's hot path — no IPC, no extra process
+- Zero heap allocations per request in the steady state (connection pool reuse)
+- `lto = true` + `codegen-units = 1` + `strip = true` in release profile
+- Rust has no GC pauses, no JIT warm-up, no event loop overhead
+
+## Running Benchmarks
 
 ```bash
-# Install wrk
-sudo apt install wrk     # Ubuntu
-brew install wrk         # macOS
-
-# Run Rust benchmarks (criterion)
+# Micro-benchmarks (criterion, no external tool needed)
 cargo bench
 
 # Manual wrk benchmark — static files
-conduit -c examples/minimal.json &
-wrk -t8 -c200 -d30s http://localhost:3000/index.html
+cargo build --release
+./target/release/conduit -c examples/minimal.json &
+wrk -t8 -c200 -d30s http://localhost:3000/
 
 # Manual wrk benchmark — proxy passthrough
-# Start a mock upstream first
-conduit -c examples/minimal.json &
+./target/release/conduit -c examples/minimal.json &
 wrk -t8 -c200 -d30s http://localhost:3000/api/ping
 ```
 
-## Criterion Micro-benchmarks
-
-```bash
-cargo bench -- static_files
-cargo bench -- proxy_passthrough
-```
-
-Results are written to `target/criterion/` as HTML reports.
-
-## Notes
-
-- All numbers are from a single run; production numbers may vary
-- The static file benchmark uses ETag + `If-None-Match` to test the 304 fast path as well
-- Proxy benchmark does NOT include upstream processing time (mock upstream is instant)
-- Conduit's memory is measured with a single worker; add ~1.5 MB per additional worker
+Install wrk: `sudo apt install wrk` (Ubuntu) · `brew install wrk` (macOS)

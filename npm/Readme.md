@@ -84,7 +84,7 @@ conduit --version
 If the binary download fails or your platform is not supported, install from source:
 
 ```bash
-cargo install conduit-proxy
+cargo install lopatnov-conduit
 ```
 
 Or download a pre-built binary directly from

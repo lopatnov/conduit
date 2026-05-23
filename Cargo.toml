@@ -1,5 +1,5 @@
 [package]
-name        = "conduit"
+name        = "lopatnov-conduit"
 version     = "0.0.1"
 edition     = "2021"
 description = "High-performance reverse proxy and file server built on Cloudflare Pingora"
