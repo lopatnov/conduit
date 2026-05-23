@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -8,14 +9,14 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
-use pingora_http::RequestHeader;
+use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
 
 use crate::config::schema::AppConfig;
 use crate::filter::{ip_filter, limits};
 use crate::handler::{fallback, health, response, static_files};
 use crate::proxy::ctx::{LocalHandler, RequestCtx, UpstreamTarget};
-use crate::proxy::router;
+use crate::proxy::{router, upstream};
 
 pub struct AppState {
     pub config: Arc<ArcSwap<AppConfig>>,
@@ -56,7 +57,8 @@ impl ProxyHttp for ConduitProxy {
             let config = self.state.config.load();
             let host = extract_host(session);
             let path = session.req_header().uri.path().to_owned();
-            let req_ctx = router::route_request(&config, &host, &path, &self.state.round_robin);
+            let req_ctx =
+                router::route_request(&config, &host, &path, &self.state.round_robin);
             let site = config.sites.get(req_ctx.site_idx);
             let ip_cfg = site.and_then(|s| s.ip_filter.clone());
             let limits_cfg = site.and_then(|s| s.limits.clone());
@@ -163,22 +165,53 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
-        let ctx = ctx.as_ref().expect("ctx set in request_filter");
-        match &ctx.upstream {
-            UpstreamTarget::Proxy { addr, tls, sni, .. } => {
-                let socket_addr: SocketAddr = addr.parse().map_err(|_| {
-                    pingora_core::Error::explain(
-                        pingora_core::ErrorType::ConnectProxyFailure,
-                        format!("invalid upstream address: {addr}"),
-                    )
-                })?;
-                Ok(Box::new(HttpPeer::new(socket_addr, *tls, sni.clone())))
+        let req_ctx = ctx.as_mut().expect("ctx set in request_filter");
+
+        // Apply backoff before every retry attempt (attempt > 0).
+        if let Some(ref retry) = req_ctx.retry {
+            if retry.attempt > 0 {
+                if let Some(ms) = retry.backoff_ms {
+                    tokio::time::sleep(Duration::from_millis(ms)).await;
+                }
             }
-            _ => Err(pingora_core::Error::explain(
-                pingora_core::ErrorType::InternalError,
-                "upstream_peer called for local handler",
-            )),
         }
+
+        // When retry state is present, let it drive URL selection.
+        // This covers both the initial attempt (urls[0]) and all retries.
+        let (addr_str, tls, sni) = if let Some(ref mut retry) = req_ctx.retry {
+            let url = &retry.urls[retry.attempt % retry.urls.len()];
+            let addr_str = upstream::url_to_host_port(url).ok_or_else(|| {
+                pingora_core::Error::explain(
+                    pingora_core::ErrorType::ConnectProxyFailure,
+                    format!("invalid upstream address: {url}"),
+                )
+            })?;
+            let tls = upstream::url_is_tls(url);
+            let sni = if tls { upstream::url_host(url) } else { String::new() };
+            retry.attempt += 1;
+            (addr_str, tls, sni)
+        } else {
+            // No retry configured: use the addr already resolved by the router.
+            match &req_ctx.upstream {
+                UpstreamTarget::Proxy { addr, tls, sni, .. } => {
+                    (addr.clone(), *tls, sni.clone())
+                }
+                _ => {
+                    return Err(pingora_core::Error::explain(
+                        pingora_core::ErrorType::InternalError,
+                        "upstream_peer called for local handler",
+                    ))
+                }
+            }
+        };
+
+        let socket_addr: SocketAddr = addr_str.parse().map_err(|_| {
+            pingora_core::Error::explain(
+                pingora_core::ErrorType::ConnectProxyFailure,
+                format!("invalid upstream address: {addr_str}"),
+            )
+        })?;
+        Ok(Box::new(HttpPeer::new(socket_addr, tls, sni)))
     }
 
     async fn upstream_request_filter(
@@ -211,7 +244,7 @@ impl ProxyHttp for ConduitProxy {
         // X-Forwarded-Proto (TLS support added in Phase 1.9)
         upstream_request.insert_header("x-forwarded-proto", "http")?;
 
-        // Strip prefix from request path if configured
+        // Strip prefix from request path if configured.
         if let Some(ctx_ref) = ctx.as_ref() {
             if let UpstreamTarget::Proxy {
                 strip_prefix: Some(pfx),
@@ -229,6 +262,112 @@ impl ProxyHttp for ConduitProxy {
         }
 
         Ok(())
+    }
+
+    /// Called when the upstream response header arrives.
+    ///
+    /// If the response is a 5xx and the route is configured to retry on 5xx,
+    /// we return an error here.  Pingora will invoke `error_while_proxy`, where
+    /// we mark the error as retryable, triggering a fresh call to `upstream_peer`.
+    async fn upstream_response_filter(
+        &self,
+        _session: &mut Session,
+        upstream_response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        if let Some(req_ctx) = ctx.as_ref() {
+            if let Some(retry) = &req_ctx.retry {
+                let status = upstream_response.status.as_u16();
+                if status >= 500
+                    && retry.has_attempts_left()
+                    && retry.has_condition("5xx")
+                {
+                    // Returning an error here causes Pingora to call
+                    // `error_while_proxy`, where we mark this as retryable.
+                    return Err(pingora_core::Error::explain(
+                        pingora_core::ErrorType::Custom("5xx_retry"),
+                        format!("upstream returned HTTP {status}; will retry"),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Called when the connection to the upstream could not be established.
+    ///
+    /// We mark the error as retryable if the route is configured to retry on
+    /// `"connection_error"` or `"timeout"` and attempts remain.
+    fn fail_to_connect(
+        &self,
+        _session: &mut Session,
+        _peer: &HttpPeer,
+        ctx: &mut Self::CTX,
+        mut e: Box<pingora_core::Error>,
+    ) -> Box<pingora_core::Error> {
+        use pingora_core::ErrorType::*;
+
+        if let Some(req_ctx) = ctx.as_ref() {
+            if let Some(retry) = &req_ctx.retry {
+                if retry.has_attempts_left() {
+                    let is_conn_err = matches!(
+                        e.etype(),
+                        ConnectRefused
+                            | ConnectNoRoute
+                            | ConnectError
+                            | ConnectProxyFailure
+                            | BindError
+                            | SocketError
+                    );
+                    let is_timeout = matches!(e.etype(), ConnectTimedout);
+
+                    if (is_conn_err && retry.has_condition("connection_error"))
+                        || (is_timeout && retry.has_condition("timeout"))
+                    {
+                        e.set_retry(true);
+                    }
+                }
+            }
+        }
+        e
+    }
+
+    /// Called after a connection was established but an error occurred during
+    /// proxying (read/write errors, timeout, or our synthetic `5xx_retry`).
+    fn error_while_proxy(
+        &self,
+        peer: &HttpPeer,
+        session: &mut Session,
+        e: Box<pingora_core::Error>,
+        ctx: &mut Self::CTX,
+        client_reused: bool,
+    ) -> Box<pingora_core::Error> {
+        use pingora_core::ErrorType::*;
+
+        // Apply default Pingora logic first: decide retry based on connection reuse.
+        let mut e = e.more_context(format!("Peer: {peer}"));
+        e.retry
+            .decide_reuse(client_reused && !session.as_ref().retry_buffer_truncated());
+
+        if let Some(req_ctx) = ctx.as_ref() {
+            if let Some(retry) = &req_ctx.retry {
+                if retry.has_attempts_left() {
+                    let is_timeout =
+                        matches!(e.etype(), ReadTimedout | WriteTimedout);
+                    let is_5xx_retry = matches!(e.etype(), Custom("5xx_retry"));
+
+                    if (is_timeout && retry.has_condition("timeout"))
+                        || (is_5xx_retry && retry.has_condition("5xx"))
+                    {
+                        e.set_retry(true);
+                    }
+                }
+            }
+        }
+        e
     }
 
     async fn logging(
@@ -285,3 +424,4 @@ fn rebuild_uri(original: &http::Uri, new_path: &str) -> Result<http::Uri> {
         )
     })
 }
+

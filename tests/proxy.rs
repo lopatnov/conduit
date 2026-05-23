@@ -2,7 +2,7 @@ mod common;
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use serial_test::serial;
@@ -242,4 +242,120 @@ fn proxy_health_not_forwarded_to_upstream() {
     assert_eq!(body["status"], "ok");
     // Upstream should NOT have been hit
     assert_eq!(upstream.hit_count(), 0, "health endpoint must not reach upstream");
+}
+
+// ── Retry tests ───────────────────────────────────────────────────────────────
+
+/// Helper: start Conduit with a route that has retry config.
+fn proxy_server_with_retry(
+    targets: serde_json::Value,
+    conditions: &[&str],
+    attempts: u32,
+) -> common::TestServer {
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": {
+                    "/": {
+                        "targets": targets,
+                        "retry": {
+                            "attempts": attempts,
+                            "conditions": conditions
+                        }
+                    }
+                }
+            }]
+        }),
+    )
+}
+
+#[test]
+#[serial]
+fn proxy_retry_connection_error_falls_through_to_working_upstream() {
+    // Pick a port that is not bound — connections to it will be refused immediately.
+    let dead_port = common::free_port();
+    let working = MockUpstream::start("retry-ok");
+
+    let server = proxy_server_with_retry(
+        serde_json::json!([format!("http://127.0.0.1:{dead_port}"), working.url()]),
+        &["connection_error"],
+        2,
+    );
+
+    let resp = reqwest::blocking::get(server.url("/test")).expect("GET");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().unwrap(), "retry-ok");
+    assert_eq!(working.hit_count(), 1, "working upstream should be hit once after retry");
+}
+
+#[test]
+#[serial]
+fn proxy_retry_no_retry_without_condition() {
+    // Same setup, but no retry config → request to dead port returns 502.
+    let dead_port = common::free_port();
+    let working = MockUpstream::start("should-not-reach");
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let server = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": format!("http://127.0.0.1:{dead_port}")
+            }]
+        }),
+    );
+
+    let resp = reqwest::blocking::get(server.url("/test")).expect("GET");
+    // Without retry, Pingora returns 502 Bad Gateway for a refused connection.
+    assert_eq!(resp.status(), 502);
+    assert_eq!(working.hit_count(), 0, "working upstream must not be reached");
+}
+
+#[test]
+#[serial]
+fn proxy_retry_on_5xx_falls_through_to_working_upstream() {
+    // First upstream always returns 500.
+    let bad_listener = TcpListener::bind("127.0.0.1:0").expect("bind bad upstream");
+    let bad_port = bad_listener.local_addr().unwrap().port();
+    let bad_hit = Arc::new(AtomicBool::new(false));
+    let bad_hit_clone = bad_hit.clone();
+
+    std::thread::spawn(move || {
+        for stream in bad_listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let flag = bad_hit_clone.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                flag.store(true, Ordering::SeqCst);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            });
+        }
+    });
+
+    let good = MockUpstream::start("5xx-retry-ok");
+
+    let server = proxy_server_with_retry(
+        serde_json::json!([format!("http://127.0.0.1:{bad_port}"), good.url()]),
+        &["5xx"],
+        2,
+    );
+
+    let resp = reqwest::blocking::get(server.url("/anything")).expect("GET");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().unwrap(), "5xx-retry-ok");
+    assert!(bad_hit.load(Ordering::SeqCst), "bad upstream should have been hit");
+    assert_eq!(good.hit_count(), 1, "good upstream should be hit after 5xx retry");
 }

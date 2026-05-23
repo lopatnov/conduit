@@ -1,11 +1,11 @@
 use std::path::PathBuf;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
 
-use crate::config::schema::{AppConfig, ProxyConfig, SiteConfig, StaticConfig};
-use crate::proxy::ctx::{LocalHandler, RequestCtx, UpstreamTarget};
+use crate::config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget, SiteConfig, StaticConfig};
+use crate::proxy::ctx::{LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::upstream;
 
 pub fn route_request(
@@ -17,80 +17,113 @@ pub fn route_request(
     let site_idx = find_site_idx(config, host).unwrap_or(0);
     let site = config.sites.get(site_idx);
 
-    let upstream = if is_health_path(site, path) {
-        UpstreamTarget::Local(LocalHandler::Health)
+    let (upstream, retry) = if is_health_path(site, path) {
+        (UpstreamTarget::Local(LocalHandler::Health), None)
     } else if let Some(site) = site {
         route_site(site, path, counters)
     } else {
-        UpstreamTarget::Local(LocalHandler::Fallback)
+        (UpstreamTarget::Local(LocalHandler::Fallback), None)
     };
 
-    RequestCtx::new(site_idx, upstream)
+    RequestCtx::new(site_idx, upstream, retry)
 }
 
 fn route_site(
     site: &SiteConfig,
     path: &str,
     counters: &DashMap<String, AtomicUsize>,
-) -> UpstreamTarget {
-    // Proxy routes take priority over static files
+) -> (UpstreamTarget, Option<RetryState>) {
+    // Proxy routes take priority over static files.
     if let Some(proxy_cfg) = &site.proxy {
-        if let Some(upstream_target) = resolve_proxy(proxy_cfg, path, counters) {
-            return upstream_target;
+        if let Some(result) = resolve_proxy(proxy_cfg, path, counters) {
+            return result;
         }
     }
 
-    // Static files (only reached if no proxy route matched)
+    // Static files (only reached if no proxy route matched).
     if let Some(static_cfg) = &site.static_files {
         let options = Arc::new(site.static_options.clone().unwrap_or_default());
         let (roots, strip_prefix) = resolve_static_roots(static_cfg, path);
         if !roots.is_empty() {
-            return UpstreamTarget::Local(LocalHandler::StaticFile {
-                roots,
-                options,
-                strip_prefix,
-            });
+            return (
+                UpstreamTarget::Local(LocalHandler::StaticFile {
+                    roots,
+                    options,
+                    strip_prefix,
+                }),
+                None,
+            );
         }
     }
 
-    UpstreamTarget::Local(LocalHandler::Fallback)
+    (UpstreamTarget::Local(LocalHandler::Fallback), None)
 }
 
 fn resolve_proxy(
     config: &ProxyConfig,
     path: &str,
     counters: &DashMap<String, AtomicUsize>,
-) -> Option<UpstreamTarget> {
+) -> Option<(UpstreamTarget, Option<RetryState>)> {
     match config {
         ProxyConfig::Single(url) => {
             let addr = upstream::url_to_host_port(url)?;
             let tls = upstream::url_is_tls(url);
             let sni = if tls { upstream::url_host(url) } else { String::new() };
-            Some(UpstreamTarget::Proxy {
-                addr,
-                tls,
-                sni,
-                strip_prefix: None,
-            })
+            Some((UpstreamTarget::Proxy { addr, tls, sni, strip_prefix: None }, None))
         }
         ProxyConfig::Routes(routes) => {
             let (route_key, route_target) = find_route(routes, path)?;
             let urls = upstream::target_urls(route_target);
-            let url = upstream::pick_round_robin(&urls, route_key, counters)?;
-            let addr = upstream::url_to_host_port(&url)?;
-            let tls = upstream::url_is_tls(&url);
-            let sni = if tls { upstream::url_host(&url) } else { String::new() };
+
+            // Extract retry config (only available for `Full` targets).
+            let retry_cfg = match route_target {
+                ProxyRouteTarget::Full(cfg) => cfg.retry.as_ref(),
+                _ => None,
+            };
+
+            let (chosen_url, retry_state) = if let Some(retry) = retry_cfg {
+                // Use the round-robin counter to pick the starting position and
+                // rotate the URL list so that upstream_peer() can simply walk it.
+                let start_idx = if urls.len() > 1 {
+                    let entry = counters
+                        .entry(route_key.to_owned())
+                        .or_insert_with(|| AtomicUsize::new(0));
+                    entry.fetch_add(1, Ordering::Relaxed) % urls.len()
+                } else {
+                    0
+                };
+                let rotated: Vec<String> = urls[start_idx..]
+                    .iter()
+                    .chain(urls[..start_idx].iter())
+                    .cloned()
+                    .collect();
+                let first = rotated.first()?.clone();
+                let state = RetryState {
+                    urls: rotated,
+                    attempt: 0,
+                    max_attempts: retry.attempts as usize,
+                    conditions: retry.conditions.clone(),
+                    backoff_ms: retry.backoff_ms,
+                };
+                (first, Some(state))
+            } else {
+                let url = upstream::pick_round_robin(&urls, route_key, counters)?;
+                (url, None)
+            };
+
+            let addr = upstream::url_to_host_port(&chosen_url)?;
+            let tls = upstream::url_is_tls(&chosen_url);
+            let sni = if tls { upstream::url_host(&chosen_url) } else { String::new() };
             let strip = if upstream::strip_prefix_enabled(route_target) {
                 Some(route_key.trim_end_matches('/').to_string())
             } else {
                 None
             };
-            Some(UpstreamTarget::Proxy {
-                addr,
-                tls,
-                sni,
-                strip_prefix: strip,
-            })
+
+            Some((
+                UpstreamTarget::Proxy { addr, tls, sni, strip_prefix: strip },
+                retry_state,
+            ))
         }
     }
 }
@@ -118,10 +151,7 @@ fn find_route<'a>(
     best
 }
 
-fn resolve_static_roots(
-    cfg: &StaticConfig,
-    path: &str,
-) -> (Vec<PathBuf>, Option<String>) {
+fn resolve_static_roots(cfg: &StaticConfig, path: &str) -> (Vec<PathBuf>, Option<String>) {
     match cfg {
         StaticConfig::Single(s) => (vec![PathBuf::from(s)], None),
         StaticConfig::Multi(v) => (v.iter().map(PathBuf::from).collect(), None),
@@ -136,7 +166,7 @@ fn resolve_static_roots(
                 };
                 if matches {
                     let len = norm.len();
-                    if best.map_or(true, |(b, _)| len > b.trim_end_matches('/').len()) {
+                    if best.is_none_or(|(b, _)| len > b.trim_end_matches('/').len()) {
                         best = Some((prefix.as_str(), root.as_str()));
                     }
                 }

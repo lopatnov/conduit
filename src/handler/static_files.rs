@@ -153,6 +153,7 @@ async fn find_index(dir: &Path, options: &StaticOptions) -> Option<PathBuf> {
 
 // ── Response helpers ───────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_full(
     session: &mut Session,
     path: &Path,
@@ -186,6 +187,7 @@ async fn serve_full(
         .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_range(
     session: &mut Session,
     path: &Path,
