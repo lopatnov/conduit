@@ -50,16 +50,29 @@ impl TestServer {
     }
 
     /// Block until both the proxy and admin API respond or panic after timeout.
+    ///
+    /// Tries both `http://` and `https://` (with cert validation disabled) on
+    /// the proxy port so TLS and non-TLS sites are handled transparently.
     fn wait_ready(&self) {
-        let health_url = format!("http://127.0.0.1:{}/__health__", self.port);
+        let health_http = format!("http://127.0.0.1:{}/__health__", self.port);
+        let health_https = format!("https://127.0.0.1:{}/__health__", self.port);
         let admin_url = format!("http://127.0.0.1:{}/status", self.admin_port);
+
+        // Insecure client for self-signed certs used in TLS tests.
+        let insecure = reqwest::blocking::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .expect("insecure client");
+
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         let mut proxy_ok = false;
         let mut admin_ok = false;
         loop {
             if !proxy_ok {
-                // Any HTTP response (including 4xx) means the proxy is listening.
-                if reqwest::blocking::get(&health_url).is_ok() {
+                // Accept any HTTP response (including 4xx/5xx) — the port is listening.
+                if reqwest::blocking::get(&health_http).is_ok()
+                    || insecure.get(&health_https).send().is_ok()
+                {
                     proxy_ok = true;
                 }
             }

@@ -18,11 +18,11 @@ path = "src/lib.rs"
 
 [dependencies]
 # --- Pingora core ---
-pingora                = "0.8"
-pingora-core           = "0.8"
-pingora-proxy          = "0.8"
-pingora-load-balancing = "0.8"
-pingora-cache          = "0.8"
+pingora                = { version = "0.8", features = ["rustls"] }
+pingora-core           = { version = "0.8", features = ["rustls"] }
+pingora-proxy          = { version = "0.8", features = ["rustls"] }
+pingora-load-balancing = { version = "0.8", features = ["rustls"] }
+pingora-cache          = { version = "0.8", features = ["rustls"] }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -66,6 +66,8 @@ uuid       = { version = "1", features = ["v4"] }
 # --- TLS ---
 instant-acme = "0.7"
 rcgen        = "0.13"
+# ring is the crypto provider for rustls; needed to install before TLS starts.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 # --- Errors & utilities ---
 anyhow    = "1"
@@ -78,7 +80,7 @@ http      = "1"
 # rhai = "1"
 
 [dev-dependencies]
-reqwest     = { version = "0.12", features = ["http2", "rustls-tls", "blocking", "json"] }
+reqwest     = { version = "0.12", default-features = false, features = ["http2", "rustls-tls", "blocking", "json"] }
 criterion   = { version = "0.5", features = ["html_reports"] }
 tempfile    = "3"
 serial_test = "3"
