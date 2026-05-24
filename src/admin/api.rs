@@ -10,6 +10,7 @@ use pingora_core::services::background::BackgroundService;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
+use crate::proxy::health;
 use crate::proxy::service::AppState;
 
 pub struct AdminApiService {
@@ -30,6 +31,12 @@ impl BackgroundService for AdminApiService {
                     crate::filter::rate_limit::cleanup(&limiter);
                 }
             });
+        }
+
+        // Spawn upstream health check tasks for every route that has healthCheck configured.
+        {
+            let config = self.state.config.load();
+            health::spawn_health_checks(self.state.upstream_health.clone(), &config);
         }
 
         let app = build_router(self.state.clone());
@@ -101,8 +108,24 @@ async fn shutdown_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({ "status": "shutting_down" }))
 }
 
-async fn upstreams_handler() -> Json<Value> {
-    Json(json!({ "upstreams": [] }))
+async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let registry = &state.upstream_health;
+    let mut entries: Vec<Value> = registry
+        .statuses
+        .iter()
+        .map(|e| {
+            json!({
+                "url":                   e.key(),
+                "healthy":               e.value().healthy,
+                "latency_ms":            e.value().latency_ms,
+                "consecutive_failures":  e.value().consecutive_failures,
+                "consecutive_successes": e.value().consecutive_successes,
+            })
+        })
+        .collect();
+    // Stable sort for deterministic output.
+    entries.sort_by(|a, b| a["url"].as_str().cmp(&b["url"].as_str()));
+    Json(json!({ "upstreams": entries }))
 }
 
 async fn upstreams_add_handler() -> Json<Value> {

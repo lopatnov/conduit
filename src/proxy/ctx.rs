@@ -20,6 +20,15 @@ pub struct RequestCtx {
     pub proxy_timeout: Option<ProxyTimeout>,
     /// Per-route connection pool settings (from `proxy.*.pool`).
     pub proxy_pool: Option<ConnectionPoolConfig>,
+    /// When `true`, negotiate HTTP/2 with the upstream (ALPN H2H1).
+    /// Derived from `proxy.*.http2: true` in the route config.
+    pub proxy_http2: bool,
+    /// The upstream URL that was selected for this request.
+    ///
+    /// `Some` only for `strategy: "least-conn"` routes so that the `logging()`
+    /// hook can decrement the per-upstream connection counter after the response
+    /// is sent.
+    pub proxy_upstream_url: Option<String>,
 }
 
 impl RequestCtx {
@@ -29,6 +38,8 @@ impl RequestCtx {
         retry: Option<RetryState>,
         proxy_timeout: Option<ProxyTimeout>,
         proxy_pool: Option<ConnectionPoolConfig>,
+        proxy_http2: bool,
+        proxy_upstream_url: Option<String>,
     ) -> Self {
         Self {
             site_idx,
@@ -39,6 +50,8 @@ impl RequestCtx {
             extra_headers: Vec::new(),
             proxy_timeout,
             proxy_pool,
+            proxy_http2,
+            proxy_upstream_url,
         }
     }
 }

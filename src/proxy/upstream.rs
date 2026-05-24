@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dashmap::DashMap;
 
-use crate::config::schema::{ProxyRouteTarget, ProxyTarget};
+use crate::config::schema::{ProxyConfig, ProxyRouteTarget, ProxyTarget};
 
 /// Parse "http://host:port/path" or "https://host:port/path" → "host:port".
 ///
@@ -79,6 +79,14 @@ pub fn target_urls(route_target: &ProxyRouteTarget) -> Vec<String> {
     }
 }
 
+/// Flatten all target URLs from a `ProxyConfig` (all routes, all targets).
+pub fn target_urls_from_proxy(proxy: &ProxyConfig) -> Vec<String> {
+    match proxy {
+        ProxyConfig::Single(url) => vec![url.clone()],
+        ProxyConfig::Routes(routes) => routes.values().flat_map(target_urls).collect(),
+    }
+}
+
 /// Returns `true` if the route config has `stripPrefix: true`.
 pub fn strip_prefix_enabled(route_target: &ProxyRouteTarget) -> bool {
     match route_target {
@@ -104,5 +112,35 @@ pub fn pick_round_robin(
         .entry(route_key.to_owned())
         .or_insert_with(|| AtomicUsize::new(0));
     let idx = entry.fetch_add(1, Ordering::Relaxed) % targets.len();
+    Some(targets[idx].clone())
+}
+
+/// Pick a URL from `targets` pseudo-randomly using the current nanosecond
+/// timestamp XOR'd with a per-route counter.
+///
+/// This is intentionally lightweight (no external crate) and provides
+/// sufficient distribution for load-balancing purposes.
+pub fn pick_random(
+    targets: &[String],
+    route_key: &str,
+    counters: &DashMap<String, AtomicUsize>,
+) -> Option<String> {
+    if targets.is_empty() {
+        return None;
+    }
+    if targets.len() == 1 {
+        return Some(targets[0].clone());
+    }
+    // Mix nanosecond wall-clock time with a per-route counter to avoid
+    // sequential correlations when multiple requests arrive in the same nanosecond.
+    let ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as usize)
+        .unwrap_or(0);
+    let counter = counters
+        .entry(format!("{route_key}__rng"))
+        .or_insert_with(|| AtomicUsize::new(0))
+        .fetch_add(1, Ordering::Relaxed);
+    let idx = (ns ^ counter.wrapping_mul(2_654_435_761)) % targets.len();
     Some(targets[idx].clone())
 }

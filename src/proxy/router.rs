@@ -5,18 +5,23 @@ use std::sync::Arc;
 use dashmap::DashMap;
 
 use crate::config::schema::{
-    AppConfig, ConnectionPoolConfig, ProxyConfig, ProxyRouteTarget, ProxyTimeout, SiteConfig,
-    StaticConfig,
+    AppConfig, ConnectionPoolConfig, LoadBalanceStrategy, ProxyConfig, ProxyRouteTarget,
+    ProxyTimeout, RetryConfig, SiteConfig, StaticConfig,
 };
 use crate::proxy::ctx::{LocalHandler, RequestCtx, RetryState, UpstreamTarget};
+use crate::proxy::health::UpstreamRegistry;
 use crate::proxy::upstream;
 
-/// Resolved routing result: upstream target plus optional retry/timeout/pool config.
+/// Resolved routing result: all per-route data needed to populate `RequestCtx`.
+///
+/// Fields: (upstream, retry, timeout, pool, http2, upstream_url_for_least_conn)
 type RouteResult = (
     UpstreamTarget,
     Option<RetryState>,
     Option<ProxyTimeout>,
     Option<ConnectionPoolConfig>,
+    bool,           // proxy_http2
+    Option<String>, // upstream URL selected (for least-conn decrement)
 );
 
 pub fn route_request(
@@ -24,46 +29,63 @@ pub fn route_request(
     host: &str,
     path: &str,
     counters: &DashMap<String, AtomicUsize>,
+    upstream_health: &UpstreamRegistry,
 ) -> RequestCtx {
     let site_idx = find_site_idx(config, host).unwrap_or(0);
     let site = config.sites.get(site_idx);
 
-    let (upstream, retry, proxy_timeout, proxy_pool) = if is_health_path(site, path) {
-        (
-            UpstreamTarget::Local(LocalHandler::Health),
-            None,
-            None,
-            None,
-        )
-    } else if let Some(token) = metrics_token(site, path) {
-        (
-            UpstreamTarget::Local(LocalHandler::Metrics { token }),
-            None,
-            None,
-            None,
-        )
-    } else if let Some(site) = site {
-        route_site(site, path, counters)
-    } else {
-        (
-            UpstreamTarget::Local(LocalHandler::Fallback),
-            None,
-            None,
-            None,
-        )
-    };
+    let (upstream, retry, proxy_timeout, proxy_pool, proxy_http2, proxy_upstream_url) =
+        if is_health_path(site, path) {
+            (
+                UpstreamTarget::Local(LocalHandler::Health),
+                None,
+                None,
+                None,
+                false,
+                None,
+            )
+        } else if let Some(token) = metrics_token(site, path) {
+            (
+                UpstreamTarget::Local(LocalHandler::Metrics { token }),
+                None,
+                None,
+                None,
+                false,
+                None,
+            )
+        } else if let Some(site) = site {
+            route_site(site, path, counters, upstream_health)
+        } else {
+            (
+                UpstreamTarget::Local(LocalHandler::Fallback),
+                None,
+                None,
+                None,
+                false,
+                None,
+            )
+        };
 
-    RequestCtx::new(site_idx, upstream, retry, proxy_timeout, proxy_pool)
+    RequestCtx::new(
+        site_idx,
+        upstream,
+        retry,
+        proxy_timeout,
+        proxy_pool,
+        proxy_http2,
+        proxy_upstream_url,
+    )
 }
 
 fn route_site(
     site: &SiteConfig,
     path: &str,
     counters: &DashMap<String, AtomicUsize>,
+    upstream_health: &UpstreamRegistry,
 ) -> RouteResult {
     // Proxy routes take priority over static files.
     if let Some(proxy_cfg) = &site.proxy {
-        if let Some(result) = resolve_proxy(proxy_cfg, path, counters) {
+        if let Some(result) = resolve_proxy(proxy_cfg, path, counters, upstream_health) {
             return result;
         }
     }
@@ -82,6 +104,8 @@ fn route_site(
                 None,
                 None,
                 None,
+                false,
+                None,
             );
         }
     }
@@ -91,6 +115,8 @@ fn route_site(
         None,
         None,
         None,
+        false,
+        None,
     )
 }
 
@@ -98,24 +124,55 @@ fn resolve_proxy(
     config: &ProxyConfig,
     path: &str,
     counters: &DashMap<String, AtomicUsize>,
+    upstream_health: &UpstreamRegistry,
 ) -> Option<RouteResult> {
     match config {
-        ProxyConfig::Single(url) => Some((url_to_proxy_upstream(url, None)?, None, None, None)),
+        ProxyConfig::Single(url) => Some((
+            url_to_proxy_upstream(url, None)?,
+            None,
+            None,
+            None,
+            false,
+            None,
+        )),
         ProxyConfig::Routes(routes) => {
             let (route_key, route_target) = find_route(routes, path)?;
-            let urls = upstream::target_urls(route_target);
+            let all_urls = upstream::target_urls(route_target);
 
-            let (retry_cfg, proxy_timeout, proxy_pool) = match route_target {
-                ProxyRouteTarget::Full(cfg) => {
-                    (cfg.retry.as_ref(), cfg.timeout.clone(), cfg.pool.clone())
-                }
-                _ => (None, None, None),
+            let (retry_cfg, proxy_timeout, proxy_pool, strategy, proxy_http2) = match route_target {
+                ProxyRouteTarget::Full(cfg) => (
+                    cfg.retry.as_ref(),
+                    cfg.timeout.clone(),
+                    cfg.pool.clone(),
+                    cfg.strategy.as_ref(),
+                    cfg.http2.unwrap_or(false),
+                ),
+                _ => (None, None, None, None, false),
             };
 
-            let (chosen_url, retry_state) = pick_url(urls, route_key, counters, retry_cfg)?;
+            // Filter to healthy upstreams; if all are down keep all (fail-open).
+            let healthy = upstream_health.filter_healthy(&all_urls);
+            let urls: Vec<String> = healthy.into_iter().cloned().collect();
+
+            let (chosen_url, retry_state, is_least_conn) = pick_url_by_strategy(
+                urls,
+                route_key,
+                counters,
+                retry_cfg,
+                strategy,
+                upstream_health,
+            )?;
 
             let strip = if upstream::strip_prefix_enabled(route_target) {
                 Some(route_key.trim_end_matches('/').to_string())
+            } else {
+                None
+            };
+
+            // Only store the upstream URL when using least-conn so the logging()
+            // hook can decrement the per-upstream inflight counter.
+            let proxy_upstream_url = if is_least_conn {
+                Some(chosen_url.clone())
             } else {
                 None
             };
@@ -125,7 +182,46 @@ fn resolve_proxy(
                 retry_state,
                 proxy_timeout,
                 proxy_pool,
+                proxy_http2,
+                proxy_upstream_url,
             ))
+        }
+    }
+}
+
+/// Pick a URL and optional retry state according to the configured strategy.
+///
+/// Returns `(url, retry_state, is_least_conn)`.  `is_least_conn` is `true`
+/// when the inflight counter on `upstream_health` has already been incremented
+/// so the caller knows to store the URL for later decrement.
+fn pick_url_by_strategy(
+    urls: Vec<String>,
+    route_key: &str,
+    counters: &DashMap<String, AtomicUsize>,
+    retry_cfg: Option<&RetryConfig>,
+    strategy: Option<&LoadBalanceStrategy>,
+    upstream_health: &UpstreamRegistry,
+) -> Option<(String, Option<RetryState>, bool)> {
+    // With retry configured, always use round-robin rotation regardless of strategy.
+    if let Some(retry) = retry_cfg {
+        let (url, state) = pick_with_retry(urls, route_key, counters, retry)?;
+        return Some((url, Some(state), false));
+    }
+
+    match strategy.unwrap_or(&LoadBalanceStrategy::RoundRobin) {
+        LoadBalanceStrategy::Random => {
+            let url = upstream::pick_random(&urls, route_key, counters)?;
+            Some((url, None, false))
+        }
+        LoadBalanceStrategy::LeastConn => {
+            let url = upstream_health.pick_least_conn(&urls)?;
+            Some((url, None, true))
+        }
+        // RoundRobin is the default; WeightedRoundRobin, LeastResponseTime,
+        // IpHash, ConsistentHash fall back to RoundRobin (Phase 2.5b).
+        _ => {
+            let url = upstream::pick_round_robin(&urls, route_key, counters)?;
+            Some((url, None, false))
         }
     }
 }
@@ -147,44 +243,36 @@ fn url_to_proxy_upstream(url: &str, strip_prefix: Option<String>) -> Option<Upst
     })
 }
 
-/// Pick a URL from `urls` for the given route, with optional retry state.
-///
-/// With retry: rotates the list starting at the round-robin position so that
-/// `upstream_peer()` can simply walk it on each attempt.
-/// Without retry: standard round-robin selection.
-fn pick_url(
+/// Pick a starting URL and build retry state, rotating the URL list so that
+/// `upstream_peer()` can walk it on each attempt.
+fn pick_with_retry(
     urls: Vec<String>,
     route_key: &str,
     counters: &DashMap<String, AtomicUsize>,
-    retry_cfg: Option<&crate::config::schema::RetryConfig>,
-) -> Option<(String, Option<RetryState>)> {
-    if let Some(retry) = retry_cfg {
-        let start_idx = if urls.len() > 1 {
-            let entry = counters
-                .entry(route_key.to_owned())
-                .or_insert_with(|| AtomicUsize::new(0));
-            entry.fetch_add(1, Ordering::Relaxed) % urls.len()
-        } else {
-            0
-        };
-        let rotated: Vec<String> = urls[start_idx..]
-            .iter()
-            .chain(urls[..start_idx].iter())
-            .cloned()
-            .collect();
-        let first = rotated.first()?.clone();
-        let state = RetryState {
-            urls: rotated,
-            attempt: 0,
-            max_attempts: retry.attempts as usize,
-            conditions: retry.conditions.clone(),
-            backoff_ms: retry.backoff_ms,
-        };
-        Some((first, Some(state)))
+    retry: &RetryConfig,
+) -> Option<(String, RetryState)> {
+    let start_idx = if urls.len() > 1 {
+        let entry = counters
+            .entry(route_key.to_owned())
+            .or_insert_with(|| AtomicUsize::new(0));
+        entry.fetch_add(1, Ordering::Relaxed) % urls.len()
     } else {
-        let url = upstream::pick_round_robin(&urls, route_key, counters)?;
-        Some((url, None))
-    }
+        0
+    };
+    let rotated: Vec<String> = urls[start_idx..]
+        .iter()
+        .chain(urls[..start_idx].iter())
+        .cloned()
+        .collect();
+    let first = rotated.first()?.clone();
+    let state = RetryState {
+        urls: rotated,
+        attempt: 0,
+        max_attempts: retry.attempts as usize,
+        conditions: retry.conditions.clone(),
+        backoff_ms: retry.backoff_ms,
+    };
+    Some((first, state))
 }
 
 fn find_route<'a>(

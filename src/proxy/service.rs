@@ -14,8 +14,8 @@ use pingora_proxy::{ProxyHttp, Session};
 use prometheus::{CounterVec, HistogramVec};
 
 use crate::config::schema::{
-    ApiKeyConfig, AppConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig, IpFilterConfig,
-    LimitsConfig, ProxyTimeout, RateLimitConfig,
+    ApiKeyConfig, AppConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig, HealthCheckConfig,
+    IpFilterConfig, LimitsConfig, ProxyTimeout, RateLimitConfig,
 };
 use crate::filter::rate_limit::RateLimiter;
 use crate::filter::{
@@ -24,6 +24,7 @@ use crate::filter::{
 };
 use crate::handler::{fallback, health, metrics as metrics_handler, response, static_files};
 use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
+use crate::proxy::health::UpstreamRegistry;
 use crate::proxy::{router, upstream};
 use crate::util::log_writer::LogWriter;
 
@@ -77,6 +78,8 @@ pub struct AppState {
     pub metrics: Arc<ConduitMetrics>,
     /// Access-log writer — shared across all worker threads.
     pub log_writer: Arc<LogWriter>,
+    /// Per-upstream health state and least-conn inflight counts.
+    pub upstream_health: Arc<UpstreamRegistry>,
 }
 
 impl AppState {
@@ -88,6 +91,7 @@ impl AppState {
             rate_limiter: Arc::new(DashMap::new()),
             metrics: ConduitMetrics::global(),
             log_writer: Arc::new(LogWriter::new()),
+            upstream_health: Arc::new(UpstreamRegistry::new()),
         }
     }
 }
@@ -132,7 +136,13 @@ impl ConduitProxy {
                 .unwrap_or_else(|| session.req_header().uri.path().to_owned());
             let path = session.req_header().uri.path().to_owned();
 
-            let req_ctx = router::route_request(&config, &host, &path, &self.state.round_robin);
+            let req_ctx = router::route_request(
+                &config,
+                &host,
+                &path,
+                &self.state.round_robin,
+                &self.state.upstream_health,
+            );
             let site = config.sites.get(req_ctx.site_idx);
 
             let ip_cfg = site.and_then(|s| s.ip_filter.clone());
@@ -367,8 +377,48 @@ impl ConduitProxy {
 
         match handler_kind {
             HandlerKind::Health => {
-                let extra = ctx.as_ref().unwrap().extra_headers.as_slice().to_vec();
-                health::handle_health(session, &extra).await?;
+                let (extra, upstream_pairs) = {
+                    let req_ctx = ctx.as_ref().unwrap();
+                    let extra = req_ctx.extra_headers.clone();
+
+                    // Collect upstream statuses when healthCheck.includeUpstreams is set.
+                    let upstream_pairs: Vec<(String, bool)> = {
+                        let config = self.state.config.load();
+                        let site = config.sites.get(req_ctx.site_idx);
+                        let include = site
+                            .and_then(|s| s.health_check.as_ref())
+                            .and_then(|hc| match hc {
+                                HealthCheckConfig::Options(opts) => opts.include_upstreams,
+                                _ => None,
+                            })
+                            .unwrap_or(false);
+
+                        if include {
+                            use crate::proxy::upstream as us;
+                            site.and_then(|s| s.proxy.as_ref())
+                                .map(|proxy| {
+                                    us::target_urls_from_proxy(proxy)
+                                        .into_iter()
+                                        .map(|url| {
+                                            let healthy =
+                                                self.state.upstream_health.is_healthy(&url);
+                                            (url, healthy)
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            vec![]
+                        }
+                    };
+                    (extra, upstream_pairs)
+                };
+
+                let pairs_ref: Vec<(&str, bool)> = upstream_pairs
+                    .iter()
+                    .map(|(u, h)| (u.as_str(), *h))
+                    .collect();
+                health::handle_health(session, &pairs_ref, &extra).await?;
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
                 Ok(true)
             }
@@ -495,6 +545,11 @@ impl ProxyHttp for ConduitProxy {
             )
         })?;
         let mut peer = HttpPeer::new(socket_addr, tls, sni);
+
+        // Negotiate HTTP/2 with the upstream when the route sets `http2: true`.
+        if req_ctx.proxy_http2 {
+            peer.options.alpn = pingora_core::upstreams::peer::ALPN::H2H1;
+        }
 
         apply_peer_options(
             &mut peer,
@@ -684,6 +739,10 @@ impl ProxyHttp for ConduitProxy {
         if let Some(req_ctx) = ctx.as_ref() {
             if !matches!(req_ctx.upstream, UpstreamTarget::Local(_)) {
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                // For least-conn routes, release the per-upstream slot.
+                if let Some(ref url) = req_ctx.proxy_upstream_url {
+                    self.state.upstream_health.conn_dec(url);
+                }
             }
         }
 
