@@ -83,7 +83,9 @@ pub enum UpstreamTarget {
 pub enum LocalHandler {
     Health,
     Fallback,
-    Metrics { token: Option<String> },
+    Metrics {
+        token: Option<String>,
+    },
     StaticFile {
         roots: Vec<PathBuf>,
         options: Arc<StaticOptions>,
@@ -102,13 +104,16 @@ impl AcceptEncoding {
     pub fn parse(value: &str) -> Self {
         let mut enc = Self::default();
         for part in value.split(',') {
-            let token = part
-                .trim()
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_ascii_lowercase();
+            let mut segments = part.trim().split(';');
+            let token = segments.next().unwrap_or("").trim().to_ascii_lowercase();
+            // Skip encodings explicitly disabled with q=0 or q=0.0.
+            let is_zero_q = segments.any(|seg| {
+                let seg = seg.trim();
+                seg.eq_ignore_ascii_case("q=0") || seg.eq_ignore_ascii_case("q=0.0")
+            });
+            if is_zero_q {
+                continue;
+            }
             match token.as_str() {
                 "br" => enc.brotli = true,
                 "gzip" => enc.gzip = true,

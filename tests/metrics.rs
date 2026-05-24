@@ -47,10 +47,10 @@ fn metrics_body_contains_prometheus_lines() {
     let _ = reqwest::blocking::get(srv.url("/__health__"));
     let resp = reqwest::blocking::get(srv.url("/__metrics__")).expect("send");
     let body = resp.text().expect("body");
-    // Prometheus text format always has HELP and TYPE lines.
+    // Prometheus text format always includes HELP and TYPE comment lines.
     assert!(
-        body.contains("# HELP") || body.contains("# TYPE") || body.is_empty() == false,
-        "metrics body should contain Prometheus text format"
+        body.contains("# HELP") || body.contains("# TYPE"),
+        "metrics body should contain Prometheus text format markers (# HELP or # TYPE), got: {body}"
     );
 }
 
@@ -133,5 +133,9 @@ fn metrics_custom_path_works() {
     assert_eq!(resp.status(), 200, "custom metrics path should return 200");
     // Default path should NOT work.
     let resp2 = reqwest::blocking::get(srv.url("/__metrics__")).expect("send");
-    assert_eq!(resp2.status(), 404, "default path should return 404 when custom path configured");
+    assert_eq!(
+        resp2.status(),
+        404,
+        "default path should return 404 when custom path configured"
+    );
 }

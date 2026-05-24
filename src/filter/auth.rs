@@ -46,10 +46,15 @@ pub fn check_basic_auth(cfg: &BasicAuthConfig, session: &Session) -> BasicAuthRe
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let b64 = match auth_value.strip_prefix("Basic ") {
-        Some(b) => b.trim(),
+    // RFC 7235: scheme token is case-insensitive ("basic" / "Basic" / "BASIC").
+    let (scheme, rest) = match auth_value.split_once(' ') {
+        Some(pair) => pair,
         None => return BasicAuthResult::Denied { challenge, realm },
     };
+    if !scheme.eq_ignore_ascii_case("Basic") {
+        return BasicAuthResult::Denied { challenge, realm };
+    }
+    let b64 = rest.trim();
 
     let decoded = match base64::engine::general_purpose::STANDARD.decode(b64) {
         Ok(b) => b,

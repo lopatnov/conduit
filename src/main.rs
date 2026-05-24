@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::process;
 use std::time::{Duration, Instant};
@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use conduit::cli::args::{Cli, Command, UpstreamsCommand};
 use conduit::cli::init;
-use conduit::config::{self, validate};
 use conduit::config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget, ProxyTarget};
+use conduit::config::{self, validate};
 use conduit::server::builder;
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -164,13 +164,12 @@ fn cmd_probe(config_path: &str) {
 
     // Print aligned results table.
     let url_width = results.iter().map(|(u, ..)| u.len()).max().unwrap_or(10);
-    let status_width = results
-        .iter()
-        .map(|(_, s, ..)| s.len())
-        .max()
-        .unwrap_or(10);
+    let status_width = results.iter().map(|(_, s, ..)| s.len()).max().unwrap_or(10);
 
-    println!("{:<url_width$}  {:<status_width$}  Latency", "URL", "Status");
+    println!(
+        "{:<url_width$}  {:<status_width$}  Latency",
+        "URL", "Status"
+    );
     println!("{}", "-".repeat(url_width + status_width + 12));
 
     let mut any_error = false;
@@ -271,11 +270,15 @@ fn probe_url(url: &str) -> (String, Option<u16>, Duration) {
     // Plain HTTP: send HEAD and read the status line.
     let result = (|| -> anyhow::Result<u16> {
         let addr_str = format!("{host}:{port}");
-        let mut stream = TcpStream::connect(&*addr_str)?;
+        let sock_addr = addr_str
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr_str}"))?;
+        let mut stream = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(10))?;
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
         write!(
             stream,
-            "HEAD {path} HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+            "HEAD {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
         )?;
         stream.flush()?;
         let mut response = String::new();
@@ -364,7 +367,12 @@ fn admin_post(path: &str, addr: &str) {
 }
 
 fn http_get(path: &str, addr: &str) -> anyhow::Result<String> {
-    let mut stream = TcpStream::connect(addr)?;
+    let sock = addr
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr}"))?;
+    let mut stream = TcpStream::connect_timeout(&sock, Duration::from_secs(5))?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     write!(stream, "GET /{path} HTTP/1.0\r\nHost: {addr}\r\n\r\n")?;
     stream.flush()?;
     let mut response = String::new();
@@ -373,7 +381,12 @@ fn http_get(path: &str, addr: &str) -> anyhow::Result<String> {
 }
 
 fn http_post(path: &str, addr: &str) -> anyhow::Result<String> {
-    let mut stream = TcpStream::connect(addr)?;
+    let sock = addr
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr}"))?;
+    let mut stream = TcpStream::connect_timeout(&sock, Duration::from_secs(5))?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     write!(
         stream,
         "POST /{path} HTTP/1.0\r\nHost: {addr}\r\nContent-Length: 0\r\n\r\n"

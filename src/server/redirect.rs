@@ -28,13 +28,23 @@ impl ProxyHttp for RedirectProxy {
     where
         Self::CTX: Send + Sync,
     {
-        // Extract the host (without port).
+        // Extract the host (without port), handling IPv6 bracketed addresses.
         let host = session
             .req_header()
             .headers
             .get("host")
             .and_then(|v| v.to_str().ok())
-            .map(|h| h.split(':').next().unwrap_or(h).to_owned())
+            .map(|h| {
+                if h.starts_with('[') {
+                    // IPv6: "[::1]:8080" or "[::1]" → keep "[::1]"
+                    h.split(']')
+                        .next()
+                        .map(|s| format!("{s}]"))
+                        .unwrap_or_else(|| h.to_owned())
+                } else {
+                    h.split(':').next().unwrap_or(h).to_owned()
+                }
+            })
             .unwrap_or_default();
 
         // Preserve path and query string.
@@ -59,11 +69,7 @@ impl ProxyHttp for RedirectProxy {
     }
 
     /// Never called — all requests are handled in `request_filter`.
-    async fn upstream_peer(
-        &self,
-        _session: &mut Session,
-        _ctx: &mut (),
-    ) -> Result<Box<HttpPeer>>
+    async fn upstream_peer(&self, _session: &mut Session, _ctx: &mut ()) -> Result<Box<HttpPeer>>
     where
         Self::CTX: Send + Sync,
     {

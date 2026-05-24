@@ -33,7 +33,17 @@ pub fn interpolate(text: &str) -> String {
         }
 
         match env::var(&var_name) {
-            Ok(val) => result.push_str(&val),
+            Ok(val) => {
+                // JSON-escape the value so that special characters (quotes,
+                // backslashes, control chars) cannot break the JSON structure
+                // or inject unexpected keys/values.
+                // serde_json::to_string produces `"escaped"` — strip the quotes
+                // since the $VAR placeholder is already inside a JSON string.
+                let escaped = serde_json::to_string(&val)
+                    .map(|s| s[1..s.len() - 1].to_owned())
+                    .unwrap_or(val);
+                result.push_str(&escaped);
+            }
             Err(_) => {
                 result.push('$');
                 result.push_str(&var_name);
@@ -71,5 +81,20 @@ mod tests {
     fn ignores_double_dollar() {
         let out = interpolate("$$VAR");
         assert_eq!(out, "$$VAR");
+    }
+
+    #[test]
+    fn escapes_quotes_in_value() {
+        std::env::set_var("CONDUIT_TEST_QUOTE", r#"say "hello""#);
+        let out = interpolate(r#"{"msg": "$CONDUIT_TEST_QUOTE"}"#);
+        // The double-quotes inside the value must be escaped so the JSON stays valid.
+        assert_eq!(out, r#"{"msg": "say \"hello\""}"#);
+    }
+
+    #[test]
+    fn escapes_backslash_in_value() {
+        std::env::set_var("CONDUIT_TEST_BACKSLASH", r"C:\path\to\file");
+        let out = interpolate(r#"{"path": "$CONDUIT_TEST_BACKSLASH"}"#);
+        assert_eq!(out, r#"{"path": "C:\\path\\to\\file"}"#);
     }
 }

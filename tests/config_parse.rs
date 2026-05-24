@@ -6,6 +6,7 @@ use conduit::config::{
         SecurityHeadersConfig, StaticConfig,
     },
 };
+use serial_test::serial;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -525,6 +526,7 @@ fn upload_config() {
 // ── Environment variable interpolation ────────────────────────────────────
 
 #[test]
+#[serial]
 fn env_interpolation_in_config() {
     std::env::set_var("CONDUIT_PARSE_TEST_PORT", "9999");
     // interpolation is text-level: the value is substituted before JSON parsing

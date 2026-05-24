@@ -78,7 +78,10 @@ fn preflight_with_specific_origin_echoes_origin() {
         .get("vary")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert!(vary.contains("Origin"), "Vary: Origin expected, got '{vary}'");
+    assert!(
+        vary.contains("Origin"),
+        "Vary: Origin expected, got '{vary}'"
+    );
 }
 
 #[test]
@@ -98,9 +101,7 @@ fn preflight_disallowed_origin_returns_204_no_acao() {
     assert_eq!(resp.status(), 204);
     // No ACAO header should be present
     assert!(
-        resp.headers()
-            .get("access-control-allow-origin")
-            .is_none(),
+        resp.headers().get("access-control-allow-origin").is_none(),
         "disallowed origin must not receive ACAO header"
     );
 }
@@ -155,7 +156,10 @@ fn regular_get_has_acao_header_when_cors_enabled() {
         .get("access-control-allow-origin")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert_eq!(acao, "*", "GET to CORS-enabled static site should carry ACAO: *");
+    assert_eq!(
+        acao, "*",
+        "GET to CORS-enabled static site should carry ACAO: *"
+    );
 }
 
 #[test]
@@ -186,9 +190,7 @@ fn no_cors_header_when_cors_disabled() {
         .expect("send");
     assert_eq!(resp.status(), 200);
     assert!(
-        resp.headers()
-            .get("access-control-allow-origin")
-            .is_none(),
+        resp.headers().get("access-control-allow-origin").is_none(),
         "cors: false must not emit ACAO header"
     );
 }

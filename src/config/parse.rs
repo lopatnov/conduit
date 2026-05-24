@@ -15,7 +15,7 @@ struct VersionProbe {
 pub fn load_config(path: &Path) -> Result<AppConfig> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("Cannot read config file: {}", path.display()))?;
-    from_str(&raw)
+    from_str(&raw).with_context(|| format!("Cannot parse config file: {}", path.display()))
 }
 
 /// Parse a config JSON string, performing env interpolation first.

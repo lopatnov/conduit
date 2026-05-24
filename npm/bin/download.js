@@ -65,15 +65,30 @@ function getAssetName() {
 // --------------------------------------------------------------------------
 // Download helper (follows redirects, no external dependencies)
 // --------------------------------------------------------------------------
+const MAX_REDIRECTS = 10;
+
 function download(url, dest) {
   return new Promise((resolve, reject) => {
     const file = createWriteStream(dest);
+    let redirectCount = 0;
 
     function request(url) {
       get(url, { headers: { "User-Agent": `conduit-npm/${VERSION}` } }, (res) => {
         if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
-          // Follow redirect
-          request(res.headers.location);
+          if (++redirectCount > MAX_REDIRECTS) {
+            file.close();
+            try { unlinkSync(dest); } catch { /* ignore */ }
+            reject(new Error(`Too many redirects (>${MAX_REDIRECTS}) for ${url}`));
+            return;
+          }
+          if (!res.headers.location) {
+            file.close();
+            try { unlinkSync(dest); } catch { /* ignore */ }
+            reject(new Error(`Redirect with no Location header from ${url}`));
+            return;
+          }
+          // Follow redirect (resolve relative URLs against current URL).
+          request(new URL(res.headers.location, url).href);
           return;
         }
 

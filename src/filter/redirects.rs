@@ -11,7 +11,9 @@ pub fn apply_redirects(rules: &[RedirectRule], path: &str) -> Option<(String, u1
     for rule in rules {
         if let Some(mut location) = match_rule(&rule.from, &rule.to, path_only) {
             if !query.is_empty() {
-                location.push('?');
+                // If the target already contains '?' (e.g. a hard-coded query
+                // string in rule.to), append with '&' to avoid "?a=1?b=2".
+                location.push(if location.contains('?') { '&' } else { '?' });
                 location.push_str(query);
             }
             let status = rule.status.unwrap_or(302);
@@ -56,6 +58,9 @@ fn match_rule(from: &str, to: &str, path: &str) -> Option<String> {
     }
 
     // Substitute captured values into the `to` template.
+    // Sort by descending name length so that `:id2` is replaced before `:id`,
+    // preventing shorter names from partially matching longer-named placeholders.
+    captures.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
     let mut result = to.to_string();
     for (name, value) in &captures {
         result = result.replace(&format!(":{name}"), value);
@@ -69,7 +74,11 @@ mod tests {
     use crate::config::schema::RedirectRule;
 
     fn rule(from: &str, to: &str, status: u16) -> RedirectRule {
-        RedirectRule { from: from.into(), to: to.into(), status: Some(status) }
+        RedirectRule {
+            from: from.into(),
+            to: to.into(),
+            status: Some(status),
+        }
     }
 
     #[test]
@@ -133,7 +142,11 @@ mod tests {
 
     #[test]
     fn default_status_302() {
-        let rules = vec![RedirectRule { from: "/a".into(), to: "/b".into(), status: None }];
+        let rules = vec![RedirectRule {
+            from: "/a".into(),
+            to: "/b".into(),
+            status: None,
+        }];
         assert_eq!(apply_redirects(&rules, "/a"), Some(("/b".into(), 302)));
     }
 

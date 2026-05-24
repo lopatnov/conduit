@@ -110,6 +110,16 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
             }
         }
     }
+    if let Some(fb) = &site.fallback {
+        if let Some(status) = fb.status {
+            if !(100..=599).contains(&status) {
+                errors.push(ValidationError::new(
+                    format!("{prefix}.fallback.status"),
+                    format!("Invalid fallback status {status} — must be a valid HTTP status code (100–599)"),
+                ));
+            }
+        }
+    }
 }
 
 fn validate_tls(tls: &TlsConfig, prefix: &str, errors: &mut Vec<ValidationError>) {

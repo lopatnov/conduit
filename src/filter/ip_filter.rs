@@ -37,7 +37,10 @@ fn client_ip(session: &Session, trust_proxy: bool) -> Option<IpAddr> {
             }
         }
     }
-    session.client_addr().and_then(|a| a.as_inet()).map(|a| a.ip())
+    session
+        .client_addr()
+        .and_then(|a| a.as_inet())
+        .map(|a| a.ip())
 }
 
 fn matches_rule(ip: &IpAddr, rule: &str) -> bool {

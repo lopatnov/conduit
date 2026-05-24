@@ -308,7 +308,7 @@
         },
         "retry": {
           "type": "object",
-          "required": ["attempts"],
+          "required": ["attempts", "conditions"],
           "properties": {
             "attempts":   { "type": "integer", "minimum": 1 },
             "conditions": { "type": "array", "items": { "type": "string", "enum": ["connection_error", "5xx", "timeout"] } },
@@ -344,7 +344,7 @@
         { "type": "string", "description": "Upstream URL." },
         {
           "type": "object",
-          "required": ["url"],
+          "required": ["url", "weight"],
           "properties": {
             "url":    { "type": "string" },
             "weight": { "type": "integer", "minimum": 1 }

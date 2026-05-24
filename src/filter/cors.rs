@@ -111,7 +111,10 @@ fn build_response_headers(opts: Option<&CorsOptions>, origin: &str) -> Vec<(Stri
     h.push(("Access-Control-Allow-Headers".to_owned(), allowed_headers));
 
     if credentials {
-        h.push(("Access-Control-Allow-Credentials".to_owned(), "true".to_owned()));
+        h.push((
+            "Access-Control-Allow-Credentials".to_owned(),
+            "true".to_owned(),
+        ));
     }
 
     h

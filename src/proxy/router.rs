@@ -70,8 +70,20 @@ fn resolve_proxy(
         ProxyConfig::Single(url) => {
             let addr = upstream::url_to_host_port(url)?;
             let tls = upstream::url_is_tls(url);
-            let sni = if tls { upstream::url_host(url) } else { String::new() };
-            Some((UpstreamTarget::Proxy { addr, tls, sni, strip_prefix: None }, None))
+            let sni = if tls {
+                upstream::url_host(url)
+            } else {
+                String::new()
+            };
+            Some((
+                UpstreamTarget::Proxy {
+                    addr,
+                    tls,
+                    sni,
+                    strip_prefix: None,
+                },
+                None,
+            ))
         }
         ProxyConfig::Routes(routes) => {
             let (route_key, route_target) = find_route(routes, path)?;
@@ -115,7 +127,11 @@ fn resolve_proxy(
 
             let addr = upstream::url_to_host_port(&chosen_url)?;
             let tls = upstream::url_is_tls(&chosen_url);
-            let sni = if tls { upstream::url_host(&chosen_url) } else { String::new() };
+            let sni = if tls {
+                upstream::url_host(&chosen_url)
+            } else {
+                String::new()
+            };
             let strip = if upstream::strip_prefix_enabled(route_target) {
                 Some(route_key.trim_end_matches('/').to_string())
             } else {
@@ -123,7 +139,12 @@ fn resolve_proxy(
             };
 
             Some((
-                UpstreamTarget::Proxy { addr, tls, sni, strip_prefix: strip },
+                UpstreamTarget::Proxy {
+                    addr,
+                    tls,
+                    sni,
+                    strip_prefix: strip,
+                },
                 retry_state,
             ))
         }

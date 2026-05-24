@@ -69,10 +69,16 @@ impl TestServer {
         let mut admin_ok = false;
         loop {
             if !proxy_ok {
-                // Accept any HTTP response (including 4xx/5xx) — the port is listening.
-                if reqwest::blocking::get(&health_http).is_ok()
-                    || insecure.get(&health_https).send().is_ok()
-                {
+                // Require a successful response — not just a TCP connection.
+                let http_ok = reqwest::blocking::get(&health_http)
+                    .map(|r| r.status().is_success())
+                    .unwrap_or(false);
+                let https_ok = insecure
+                    .get(&health_https)
+                    .send()
+                    .map(|r| r.status().is_success())
+                    .unwrap_or(false);
+                if http_ok || https_ok {
                     proxy_ok = true;
                 }
             }

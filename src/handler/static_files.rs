@@ -55,7 +55,10 @@ pub async fn handle_static(
 
     let file_size = meta.len();
     let mtime = meta.modified().unwrap_or(UNIX_EPOCH);
-    let mtime_secs = mtime.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let mtime_secs = mtime
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let etag = format!("\"{mtime_secs:x}-{file_size:x}\"");
     let last_modified = httpdate::fmt_http_date(mtime);
     let cache_control = make_cache_control(options);
@@ -66,8 +69,7 @@ pub async fn handle_static(
     // If-None-Match
     if let Some(inm) = hdrs.get("if-none-match").and_then(|v| v.to_str().ok()) {
         if inm == etag || inm == "*" {
-            return write_not_modified(session, &etag, &last_modified, &cache_control, extra)
-                .await;
+            return write_not_modified(session, &etag, &last_modified, &cache_control, extra).await;
         }
     }
 
@@ -198,12 +200,39 @@ async fn serve_full(
     }
 
     session.write_response_header(Box::new(resp), false).await?;
-    let body = tokio::fs::read(path).await.map_err(|e| {
+    // Stream in fixed-size chunks to avoid loading large files into memory.
+    stream_file(session, path, 0, size).await
+}
+
+/// Stream `length` bytes from `file` starting at `offset` in 64 KiB chunks.
+async fn stream_file(session: &mut Session, path: &Path, offset: u64, length: u64) -> Result<()> {
+    const CHUNK: usize = 64 * 1024;
+    let mut file = tokio::fs::File::open(path).await.map_err(|e| {
         pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
     })?;
-    session
-        .write_response_body(Some(Bytes::from(body)), true)
-        .await
+    if offset > 0 {
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(|e| {
+                pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
+            })?;
+    }
+    let mut remaining = length;
+    let mut buf = vec![0u8; CHUNK];
+    while remaining > 0 {
+        let to_read = (remaining as usize).min(CHUNK);
+        let n = file.read(&mut buf[..to_read]).await.map_err(|e| {
+            pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
+        })?;
+        if n == 0 {
+            break; // Unexpected EOF — client will detect truncation.
+        }
+        remaining -= n as u64;
+        let chunk = Bytes::copy_from_slice(&buf[..n]);
+        let done = remaining == 0;
+        session.write_response_body(Some(chunk), done).await?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -245,23 +274,7 @@ async fn serve_range(
     }
 
     session.write_response_header(Box::new(resp), false).await?;
-
-    let mut file = tokio::fs::File::open(path).await.map_err(|e| {
-        pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
-    })?;
-    file.seek(std::io::SeekFrom::Start(start))
-        .await
-        .map_err(|e| {
-            pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
-        })?;
-
-    let mut buf = vec![0u8; length as usize];
-    file.read_exact(&mut buf).await.map_err(|e| {
-        pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
-    })?;
-    session
-        .write_response_body(Some(Bytes::from(buf)), true)
-        .await
+    stream_file(session, path, start, length).await
 }
 
 async fn write_not_modified(
@@ -336,8 +349,9 @@ fn percent_decode(s: &str) -> String {
             let hex = &bytes[i + 1..i + 3];
             if let Ok(hs) = std::str::from_utf8(hex) {
                 if let Ok(byte) = u8::from_str_radix(hs, 16) {
-                    // Never decode %2F ('/') — that would allow path traversal.
-                    if byte != b'/' {
+                    // Never decode %2F ('/') or %5C ('\') — both are path
+                    // separators and decoding them would allow path traversal.
+                    if byte != b'/' && byte != b'\\' {
                         out.push(byte);
                         i += 3;
                         continue;
@@ -352,8 +366,11 @@ fn percent_decode(s: &str) -> String {
 }
 
 fn sanitize_path(path: &str) -> String {
+    // Normalize backslashes to forward slashes before splitting so that
+    // Windows path separators cannot be used to bypass traversal checks.
+    let normalized = path.replace('\\', "/");
     let mut parts: Vec<&str> = Vec::new();
-    for segment in path.split('/') {
+    for segment in normalized.split('/') {
         match segment {
             "" | "." => {}
             ".." => {

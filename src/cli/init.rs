@@ -101,7 +101,12 @@ pub fn run_init(output_path: &str) -> anyhow::Result<()> {
         .interact()?;
 
     // ── Logging ─────────────────────────────────────────────────────────────
-    let log_formats = ["dev (human-readable)", "json (structured)", "combined (Apache)", "none"];
+    let log_formats = [
+        "dev (human-readable)",
+        "json (structured)",
+        "combined (Apache)",
+        "none",
+    ];
     let log_choice = Select::new()
         .with_prompt("Log format")
         .items(&log_formats)

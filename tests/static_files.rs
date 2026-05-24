@@ -1,7 +1,7 @@
 mod common;
 
-use std::fs;
 use serial_test::serial;
+use std::fs;
 
 fn make_static_server(files: &[(&str, &str)]) -> (common::TestServer, tempfile::TempDir) {
     let static_dir = tempfile::tempdir().expect("tempdir");
@@ -39,7 +39,12 @@ fn static_content_type_html() {
     let (server, _dir) = make_static_server(&[("index.html", "<h1>hi</h1>")]);
     let resp = reqwest::blocking::get(server.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
-    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(ct.starts_with("text/html"), "unexpected content-type: {ct}");
 }
 
@@ -110,8 +115,14 @@ fn static_206_range_request() {
         .send()
         .expect("GET with Range");
     assert_eq!(resp.status(), 206);
+    let content_range = resp
+        .headers()
+        .get("content-range")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     assert_eq!(resp.text().unwrap(), "2345");
-    // Content-Range header
+    assert_eq!(content_range, "bytes 2-5/10", "Content-Range header mismatch");
 }
 
 #[test]
@@ -154,10 +165,7 @@ fn static_404_for_dotfile_default() {
 fn static_head_returns_no_body() {
     let (server, _dir) = make_static_server(&[("file.txt", "body content")]);
     let client = reqwest::blocking::Client::new();
-    let resp = client
-        .head(server.url("/file.txt"))
-        .send()
-        .expect("HEAD");
+    let resp = client.head(server.url("/file.txt")).send().expect("HEAD");
     assert_eq!(resp.status(), 200);
     let body = resp.text().unwrap();
     assert!(body.is_empty(), "HEAD should return no body");
@@ -174,7 +182,10 @@ fn static_etag_and_last_modified_present() {
         resp.headers().contains_key("last-modified"),
         "missing last-modified"
     );
-    assert!(resp.headers().contains_key("cache-control"), "missing cache-control");
+    assert!(
+        resp.headers().contains_key("cache-control"),
+        "missing cache-control"
+    );
 }
 
 #[test]
@@ -207,5 +218,8 @@ fn static_cache_control_max_age() {
         .unwrap()
         .to_str()
         .unwrap();
-    assert!(cc.contains("max-age=3600"), "expected max-age=3600, got: {cc}");
+    assert!(
+        cc.contains("max-age=3600"),
+        "expected max-age=3600, got: {cc}"
+    );
 }

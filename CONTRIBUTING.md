@@ -39,7 +39,7 @@ cargo run -- -c examples/minimal.json
 
 ## Project Structure
 
-```
+```text
 src/
 ├── main.rs              entry point — CLI dispatch
 ├── cli/
@@ -168,13 +168,16 @@ All code must pass clippy with zero warnings.
 2. Create a feature branch: `git checkout -b feat/my-feature`
 3. Make your changes
 4. Ensure all checks pass:
+
    ```bash
    cargo fmt --check
    cargo clippy -- -D warnings
    cargo test
    ```
+
 5. Commit with a clear message:
-   ```
+
+   ```text
    feat: add weighted round-robin load balancing
 
    Implements ProxyTarget::Weighted with static weights configured in
@@ -185,7 +188,7 @@ All code must pass clippy with zero warnings.
 
 ### Commit message format
 
-```
+```text
 <type>: <short summary>
 
 <body — explain why, not what>

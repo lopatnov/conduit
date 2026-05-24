@@ -24,8 +24,7 @@ impl BackgroundService for AdminApiService {
         {
             let limiter = self.state.rate_limiter.clone();
             tokio::spawn(async move {
-                let mut interval =
-                    tokio::time::interval(std::time::Duration::from_secs(60));
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
                 loop {
                     interval.tick().await;
                     crate::filter::rate_limit::cleanup(&limiter);

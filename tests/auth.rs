@@ -11,8 +11,7 @@ fn plain_client() -> Client {
 
 /// Build the value of an `Authorization: Basic …` header.
 fn basic_header(user: &str, pass: &str) -> String {
-    let encoded = base64::engine::general_purpose::STANDARD
-        .encode(format!("{user}:{pass}"));
+    let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
     format!("Basic {encoded}")
 }
 
@@ -58,8 +57,14 @@ fn basic_auth_www_authenticate_header_present() {
         .expect("missing WWW-Authenticate")
         .to_str()
         .expect("non-utf8 header");
-    assert!(www_auth.contains("Basic"), "expected Basic scheme, got: {www_auth}");
-    assert!(www_auth.contains("Test Realm"), "expected realm, got: {www_auth}");
+    assert!(
+        www_auth.contains("Basic"),
+        "expected Basic scheme, got: {www_auth}"
+    );
+    assert!(
+        www_auth.contains("Test Realm"),
+        "expected realm, got: {www_auth}"
+    );
 }
 
 #[test]
@@ -93,7 +98,11 @@ fn basic_auth_correct_credentials_alice() {
         .header("Authorization", basic_header("alice", "secret"))
         .send()
         .expect("GET /");
-    assert_ne!(resp.status().as_u16(), 401, "alice's credentials should be accepted");
+    assert_ne!(
+        resp.status().as_u16(),
+        401,
+        "alice's credentials should be accepted"
+    );
 }
 
 #[test]
@@ -104,7 +113,11 @@ fn basic_auth_correct_credentials_bob() {
         .header("Authorization", basic_header("bob", "hunter2"))
         .send()
         .expect("GET /");
-    assert_ne!(resp.status().as_u16(), 401, "bob's credentials should be accepted");
+    assert_ne!(
+        resp.status().as_u16(),
+        401,
+        "bob's credentials should be accepted"
+    );
 }
 
 #[test]
@@ -172,7 +185,10 @@ fn server_with_api_key() -> common::TestServer {
 #[test]
 fn api_key_missing_returns_401() {
     let srv = server_with_api_key();
-    let resp = plain_client().get(srv.url("/data")).send().expect("GET /data");
+    let resp = plain_client()
+        .get(srv.url("/data"))
+        .send()
+        .expect("GET /data");
     assert_eq!(resp.status().as_u16(), 401);
 }
 
@@ -267,8 +283,15 @@ fn rate_limit_blocks_after_limit_exceeded() {
     for _ in 0..3 {
         plain_client().get(srv.url("/")).send().ok();
     }
-    let resp = plain_client().get(srv.url("/")).send().expect("4th request");
-    assert_eq!(resp.status().as_u16(), 429, "4th request should be rate-limited");
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .send()
+        .expect("4th request");
+    assert_eq!(
+        resp.status().as_u16(),
+        429,
+        "4th request should be rate-limited"
+    );
 }
 
 #[test]
@@ -281,7 +304,11 @@ fn rate_limit_skip_path_not_counted() {
         .get(srv.url("/__health__"))
         .send()
         .expect("GET /__health__");
-    assert_eq!(resp.status().as_u16(), 200, "health must not be rate-limited");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "health must not be rate-limited"
+    );
 }
 
 #[test]
@@ -342,7 +369,11 @@ fn basic_auth_and_rate_limit_combined() {
             .send()
             .unwrap_or_else(|_| panic!("request {i} failed"));
         assert_ne!(r.status().as_u16(), 401, "request {i}: auth should pass");
-        assert_ne!(r.status().as_u16(), 429, "request {i}: should not be rate-limited");
+        assert_ne!(
+            r.status().as_u16(),
+            429,
+            "request {i}: should not be rate-limited"
+        );
     }
 
     // All 3 tokens exhausted — next request (even with valid auth) gets 429.

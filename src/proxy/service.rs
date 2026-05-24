@@ -14,8 +14,8 @@ use pingora_proxy::{ProxyHttp, Session};
 use prometheus::{CounterVec, HistogramVec};
 
 use crate::config::schema::AppConfig;
-use crate::filter::{auth, cors, ip_filter, limits, rate_limit, redirects, security_headers};
 use crate::filter::rate_limit::RateLimiter;
+use crate::filter::{auth, cors, ip_filter, limits, rate_limit, redirects, security_headers};
 use crate::handler::{fallback, health, metrics as metrics_handler, response, static_files};
 use crate::proxy::ctx::{LocalHandler, RequestCtx, UpstreamTarget};
 use crate::proxy::{router, upstream};
@@ -107,9 +107,17 @@ impl ProxyHttp for ConduitProxy {
         let is_cors_preflight = cors::is_preflight(session);
 
         // ── Load config once — extract all per-site filters ───────────────────
-        let (mut req_ctx, ip_cfg, limits_cfg, rate_limit_cfg, basic_auth_cfg, api_key_cfg,
-             cors_cfg, security_cfg, redirect_result) =
-        {
+        let (
+            mut req_ctx,
+            ip_cfg,
+            limits_cfg,
+            rate_limit_cfg,
+            basic_auth_cfg,
+            api_key_cfg,
+            cors_cfg,
+            security_cfg,
+            redirect_result,
+        ) = {
             let config = self.state.config.load();
             let host = extract_host(session);
             let path_and_query = session
@@ -123,19 +131,28 @@ impl ProxyHttp for ConduitProxy {
             let req_ctx = router::route_request(&config, &host, &path, &self.state.round_robin);
             let site = config.sites.get(req_ctx.site_idx);
 
-            let ip_cfg         = site.and_then(|s| s.ip_filter.clone());
-            let limits_cfg     = site.and_then(|s| s.limits.clone());
+            let ip_cfg = site.and_then(|s| s.ip_filter.clone());
+            let limits_cfg = site.and_then(|s| s.limits.clone());
             let rate_limit_cfg = site.and_then(|s| s.rate_limit.clone());
             let basic_auth_cfg = site.and_then(|s| s.basic_auth.clone());
-            let api_key_cfg    = site.and_then(|s| s.api_key.clone());
-            let cors_cfg       = site.and_then(|s| s.cors.clone());
-            let security_cfg   = site.and_then(|s| s.security_headers.clone());
+            let api_key_cfg = site.and_then(|s| s.api_key.clone());
+            let cors_cfg = site.and_then(|s| s.cors.clone());
+            let security_cfg = site.and_then(|s| s.security_headers.clone());
             let redirect_result = site
                 .and_then(|s| s.redirects.as_deref())
                 .and_then(|rules| redirects::apply_redirects(rules, &path_and_query));
 
-            (req_ctx, ip_cfg, limits_cfg, rate_limit_cfg, basic_auth_cfg, api_key_cfg,
-             cors_cfg, security_cfg, redirect_result)
+            (
+                req_ctx,
+                ip_cfg,
+                limits_cfg,
+                rate_limit_cfg,
+                basic_auth_cfg,
+                api_key_cfg,
+                cors_cfg,
+                security_cfg,
+                redirect_result,
+            )
         };
 
         // ── Build planned response headers (CORS + security) ──────────────────
@@ -149,10 +166,7 @@ impl ProxyHttp for ConduitProxy {
                 .as_ref()
                 .map(|c| security_headers::header_entries(c))
                 .unwrap_or_default();
-            req_ctx.extra_headers = cors_hdrs
-                .into_iter()
-                .chain(sec_hdrs)
-                .collect();
+            req_ctx.extra_headers = cors_hdrs.into_iter().chain(sec_hdrs).collect();
         }
 
         // Pre-compute just the security part for the preflight response
@@ -164,7 +178,7 @@ impl ProxyHttp for ConduitProxy {
 
         // Determine handler kind so we can skip filters for the health endpoint.
         let handler_kind = match &req_ctx.upstream {
-            UpstreamTarget::Local(LocalHandler::Health)  => HandlerKind::Health,
+            UpstreamTarget::Local(LocalHandler::Health) => HandlerKind::Health,
             UpstreamTarget::Local(LocalHandler::Metrics { .. }) => HandlerKind::Metrics,
             UpstreamTarget::Local(LocalHandler::StaticFile { .. }) => HandlerKind::StaticFile,
             UpstreamTarget::Local(_) => HandlerKind::Fallback,
@@ -309,7 +323,10 @@ impl ProxyHttp for ConduitProxy {
                     ..
                 }) = ctx.as_ref()
                 {
-                    (token.as_deref().map(str::to_owned), extra_headers.as_slice().to_vec())
+                    (
+                        token.as_deref().map(str::to_owned),
+                        extra_headers.as_slice().to_vec(),
+                    )
                 } else {
                     unreachable!()
                 };
@@ -318,22 +335,26 @@ impl ProxyHttp for ConduitProxy {
                 Ok(true)
             }
             HandlerKind::StaticFile => {
-                let (roots, options, strip_prefix, extra) =
-                    if let Some(RequestCtx {
-                        upstream:
-                            UpstreamTarget::Local(LocalHandler::StaticFile {
-                                roots,
-                                options,
-                                strip_prefix,
-                            }),
-                        extra_headers,
-                        ..
-                    }) = ctx.as_ref()
-                    {
-                        (roots.clone(), options.clone(), strip_prefix.clone(), extra_headers.clone())
-                    } else {
-                        unreachable!()
-                    };
+                let (roots, options, strip_prefix, extra) = if let Some(RequestCtx {
+                    upstream:
+                        UpstreamTarget::Local(LocalHandler::StaticFile {
+                            roots,
+                            options,
+                            strip_prefix,
+                        }),
+                    extra_headers,
+                    ..
+                }) = ctx.as_ref()
+                {
+                    (
+                        roots.clone(),
+                        options.clone(),
+                        strip_prefix.clone(),
+                        extra_headers.clone(),
+                    )
+                } else {
+                    unreachable!()
+                };
                 static_files::handle_static(
                     session,
                     &roots,
@@ -387,14 +408,16 @@ impl ProxyHttp for ConduitProxy {
                 )
             })?;
             let tls = upstream::url_is_tls(url);
-            let sni = if tls { upstream::url_host(url) } else { String::new() };
+            let sni = if tls {
+                upstream::url_host(url)
+            } else {
+                String::new()
+            };
             retry.attempt += 1;
             (addr_str, tls, sni)
         } else {
             match &req_ctx.upstream {
-                UpstreamTarget::Proxy { addr, tls, sni, .. } => {
-                    (addr.clone(), *tls, sni.clone())
-                }
+                UpstreamTarget::Proxy { addr, tls, sni, .. } => (addr.clone(), *tls, sni.clone()),
                 _ => {
                     return Err(pingora_core::Error::explain(
                         pingora_core::ErrorType::InternalError,
@@ -439,7 +462,22 @@ impl ProxyHttp for ConduitProxy {
             upstream_request.insert_header("x-forwarded-for", xff)?;
         }
 
-        upstream_request.insert_header("x-forwarded-proto", "http")?;
+        let proto = {
+            // Determine the downstream protocol from the site's TLS configuration.
+            let config = self.state.config.load();
+            let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+            if config
+                .sites
+                .get(site_idx)
+                .and_then(|s| s.tls.as_ref())
+                .is_some()
+            {
+                "https"
+            } else {
+                "http"
+            }
+        };
+        upstream_request.insert_header("x-forwarded-proto", proto)?;
 
         if let Some(ctx_ref) = ctx.as_ref() {
             if let UpstreamTarget::Proxy {

@@ -84,7 +84,10 @@ fn redirect_param_single_segment() {
         .send()
         .expect("GET /blog/hello-world");
     assert_eq!(resp.status().as_u16(), 301);
-    assert_eq!(resp.headers().get("location").unwrap(), "/posts/hello-world");
+    assert_eq!(
+        resp.headers().get("location").unwrap(),
+        "/posts/hello-world"
+    );
 }
 
 #[test]
@@ -131,5 +134,8 @@ fn redirect_to_external_url() {
     let srv = server_with_redirects();
     let resp = no_follow().get(srv.url("/ext")).send().expect("GET /ext");
     assert_eq!(resp.status().as_u16(), 302);
-    assert_eq!(resp.headers().get("location").unwrap(), "https://example.com");
+    assert_eq!(
+        resp.headers().get("location").unwrap(),
+        "https://example.com"
+    );
 }

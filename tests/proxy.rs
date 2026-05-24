@@ -178,9 +178,17 @@ fn proxy_strip_prefix_rewrites_path() {
     let resp = reqwest::blocking::get(server.url("/api/users")).expect("GET");
     assert_eq!(resp.status(), 200);
 
-    // Give the upstream thread a moment to capture the path
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    let path = received_path.lock().unwrap().clone();
+    // Poll until the upstream thread captures the path (up to 1 s).
+    let path = {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            let p = received_path.lock().unwrap().clone();
+            if !p.is_empty() || std::time::Instant::now() >= deadline {
+                break p;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
     assert_eq!(path, "/users", "upstream should see /users, not /api/users");
 }
 
@@ -203,8 +211,10 @@ fn proxy_x_forwarded_for_header_set() {
                 for line in request.lines() {
                     let lower = line.to_lowercase();
                     if lower.starts_with("x-forwarded-for:") {
-                        *captured.lock().unwrap() =
-                            line.split_once(':').map(|(_, v)| v.trim().to_string()).unwrap_or_default();
+                        *captured.lock().unwrap() = line
+                            .split_once(':')
+                            .map(|(_, v)| v.trim().to_string())
+                            .unwrap_or_default();
                         break;
                     }
                 }
@@ -224,8 +234,17 @@ fn proxy_x_forwarded_for_header_set() {
     let server = proxy_server(serde_json::json!(format!("http://127.0.0.1:{port}")));
     let _ = reqwest::blocking::get(server.url("/check")).expect("GET");
 
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    let xff = xff_received.lock().unwrap().clone();
+    // Poll until the upstream thread captures the header (up to 1 s).
+    let xff = {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            let v = xff_received.lock().unwrap().clone();
+            if !v.is_empty() || std::time::Instant::now() >= deadline {
+                break v;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
     assert!(!xff.is_empty(), "X-Forwarded-For header should be set");
 }
 
@@ -241,7 +260,11 @@ fn proxy_health_not_forwarded_to_upstream() {
     let body: serde_json::Value = resp.json().expect("JSON");
     assert_eq!(body["status"], "ok");
     // Upstream should NOT have been hit
-    assert_eq!(upstream.hit_count(), 0, "health endpoint must not reach upstream");
+    assert_eq!(
+        upstream.hit_count(),
+        0,
+        "health endpoint must not reach upstream"
+    );
 }
 
 // ── Retry tests ───────────────────────────────────────────────────────────────
@@ -291,13 +314,19 @@ fn proxy_retry_connection_error_falls_through_to_working_upstream() {
     let resp = reqwest::blocking::get(server.url("/test")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().unwrap(), "retry-ok");
-    assert_eq!(working.hit_count(), 1, "working upstream should be hit once after retry");
+    assert_eq!(
+        working.hit_count(),
+        1,
+        "working upstream should be hit once after retry"
+    );
 }
 
 #[test]
 #[serial]
 fn proxy_retry_no_retry_without_condition() {
-    // Same setup, but no retry config → request to dead port returns 502.
+    // Both dead_port and working are in the targets list, but no retry is
+    // configured.  Round-robin always starts at index 0 (dead_port), so the
+    // first — and only — attempt fails with 502.  working must not be contacted.
     let dead_port = common::free_port();
     let working = MockUpstream::start("should-not-reach");
 
@@ -310,7 +339,14 @@ fn proxy_retry_no_retry_without_condition() {
             "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
             "sites": [{
                 "port": port,
-                "proxy": format!("http://127.0.0.1:{dead_port}")
+                "proxy": {
+                    "/": {
+                        "targets": [
+                            format!("http://127.0.0.1:{dead_port}"),
+                            working.url()
+                        ]
+                    }
+                }
             }]
         }),
     );
@@ -318,7 +354,11 @@ fn proxy_retry_no_retry_without_condition() {
     let resp = reqwest::blocking::get(server.url("/test")).expect("GET");
     // Without retry, Pingora returns 502 Bad Gateway for a refused connection.
     assert_eq!(resp.status(), 502);
-    assert_eq!(working.hit_count(), 0, "working upstream must not be reached");
+    assert_eq!(
+        working.hit_count(),
+        0,
+        "working upstream must not be reached"
+    );
 }
 
 #[test]
@@ -356,6 +396,13 @@ fn proxy_retry_on_5xx_falls_through_to_working_upstream() {
     let resp = reqwest::blocking::get(server.url("/anything")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().unwrap(), "5xx-retry-ok");
-    assert!(bad_hit.load(Ordering::SeqCst), "bad upstream should have been hit");
-    assert_eq!(good.hit_count(), 1, "good upstream should be hit after 5xx retry");
+    assert!(
+        bad_hit.load(Ordering::SeqCst),
+        "bad upstream should have been hit"
+    );
+    assert_eq!(
+        good.hit_count(),
+        1,
+        "good upstream should be hit after 5xx retry"
+    );
 }

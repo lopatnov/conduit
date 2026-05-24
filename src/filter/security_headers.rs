@@ -15,7 +15,10 @@ fn defaults() -> Vec<(String, String)> {
     vec![
         ("X-Content-Type-Options".to_owned(), "nosniff".to_owned()),
         ("X-Frame-Options".to_owned(), "SAMEORIGIN".to_owned()),
-        ("Referrer-Policy".to_owned(), "strict-origin-when-cross-origin".to_owned()),
+        (
+            "Referrer-Policy".to_owned(),
+            "strict-origin-when-cross-origin".to_owned(),
+        ),
         ("X-XSS-Protection".to_owned(), "1; mode=block".to_owned()),
     ]
 }
@@ -62,8 +65,12 @@ mod tests {
     #[test]
     fn enabled_returns_defaults() {
         let h = header_entries(&SecurityHeadersConfig::Enabled(true));
-        assert!(h.iter().any(|(k, v)| k == "X-Content-Type-Options" && v == "nosniff"));
-        assert!(h.iter().any(|(k, v)| k == "X-Frame-Options" && v == "SAMEORIGIN"));
+        assert!(h
+            .iter()
+            .any(|(k, v)| k == "X-Content-Type-Options" && v == "nosniff"));
+        assert!(h
+            .iter()
+            .any(|(k, v)| k == "X-Frame-Options" && v == "SAMEORIGIN"));
         assert!(h.iter().any(|(k, _)| k == "Referrer-Policy"));
         assert!(h.iter().any(|(k, _)| k == "X-XSS-Protection"));
     }
@@ -77,8 +84,12 @@ mod tests {
             referrer_policy: None,
         };
         let h = header_entries(&SecurityHeadersConfig::Options(opts));
-        assert!(h.iter().any(|(k, v)| k == "Strict-Transport-Security" && v.starts_with("max-age=31536000")));
-        assert!(h.iter().any(|(k, v)| k == "Content-Security-Policy" && v == "default-src 'self'"));
+        assert!(h
+            .iter()
+            .any(|(k, v)| k == "Strict-Transport-Security" && v.starts_with("max-age=31536000")));
+        assert!(h
+            .iter()
+            .any(|(k, v)| k == "Content-Security-Policy" && v == "default-src 'self'"));
         assert!(h.iter().any(|(k, v)| k == "X-Frame-Options" && v == "DENY"));
     }
 }

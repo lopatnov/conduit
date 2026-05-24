@@ -41,11 +41,11 @@ cargo bench
 # Manual wrk benchmark — static files
 cargo build --release
 ./target/release/conduit -c examples/minimal.json &
-wrk -t8 -c200 -d30s http://localhost:3000/
+wrk -t8 -c200 -d30s http://localhost:8080/
 
 # Manual wrk benchmark — proxy passthrough
 ./target/release/conduit -c examples/minimal.json &
-wrk -t8 -c200 -d30s http://localhost:3000/api/ping
+wrk -t8 -c200 -d30s http://localhost:8080/api/ping
 ```
 
 Install wrk: `sudo apt install wrk` (Ubuntu) · `brew install wrk` (macOS)

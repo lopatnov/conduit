@@ -29,18 +29,25 @@ pub async fn handle_metrics(
                 resp.insert_header(k.clone(), v.clone())?;
             }
             session.write_response_header(Box::new(resp), false).await?;
-            return session
-                .write_response_body(Some(Bytes::new()), true)
-                .await;
+            return session.write_response_body(Some(Bytes::new()), true).await;
         }
     }
 
     let encoder = TextEncoder::new();
     let metric_families = prometheus::gather();
     let mut output = Vec::new();
-    encoder
-        .encode(&metric_families, &mut output)
-        .unwrap_or_default();
+    if let Err(e) = encoder.encode(&metric_families, &mut output) {
+        let msg = format!("metrics encoding error: {e}");
+        let body = bytes::Bytes::from(msg);
+        let mut resp = ResponseHeader::build(500, Some(2 + extra.len()))?;
+        resp.insert_header("content-type", "text/plain")?;
+        resp.insert_header("content-length", body.len().to_string())?;
+        for (k, v) in extra {
+            resp.insert_header(k.clone(), v.clone())?;
+        }
+        session.write_response_header(Box::new(resp), false).await?;
+        return session.write_response_body(Some(body), true).await;
+    }
 
     let mut resp = ResponseHeader::build(200, Some(2 + extra.len()))?;
     resp.insert_header("content-type", encoder.format_type())?;

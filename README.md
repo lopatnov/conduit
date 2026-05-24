@@ -74,7 +74,7 @@ Minimum working config — save as `conduit.json`:
 }
 ```
 
-```
+```text
 GET /            → serves ./dist/index.html
 GET /style.css   → serves ./dist/style.css
 GET /api/users   → proxied to http://localhost:4000/api/users
@@ -197,7 +197,7 @@ strip          = true   # strip debug symbols
 
 ## CLI Commands
 
-```
+```text
 conduit                         start the server (reads conduit.json)
 conduit -c <file>               start with a specific config file
 conduit --version               print version and exit

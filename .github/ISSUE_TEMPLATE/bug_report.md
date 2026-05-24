@@ -14,8 +14,9 @@ assignees: ""
 
 ## Config
 
+Minimal `conduit.json` that reproduces the issue:
+
 ```json
-// Minimal conduit.json that reproduces the issue
 {
   "port": 3000
 }
@@ -33,6 +34,6 @@ assignees: ""
 
 ## Logs
 
-```
+```bash
 RUST_LOG=debug conduit 2>&1
 ```
