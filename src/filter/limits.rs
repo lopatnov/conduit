@@ -11,27 +11,34 @@ pub enum CheckResult {
 /// Check declared Content-Length against maxBodyBytes and header size against maxHeaderBytes.
 /// Timeout enforcement requires OS-level socket options and is deferred.
 pub fn check(config: &LimitsConfig, session: &Session) -> CheckResult {
-    let req = session.req_header();
-
-    if let Some(max_header) = config.max_header_bytes {
-        if header_size(session) > max_header {
-            return CheckResult::HeaderTooLarge;
-        }
+    if config
+        .max_header_bytes
+        .is_some_and(|max| header_size(session) > max)
+    {
+        return CheckResult::HeaderTooLarge;
     }
 
-    if let Some(max_body) = config.max_body_bytes {
-        if let Some(cl) = req.headers.get("content-length") {
-            if let Ok(s) = cl.to_str() {
-                if let Ok(len) = s.parse::<u64>() {
-                    if len > max_body {
-                        return CheckResult::BodyTooLarge;
-                    }
-                }
-            }
-        }
+    if config
+        .max_body_bytes
+        .zip(declared_content_length(session))
+        .is_some_and(|(max, len)| len > max)
+    {
+        return CheckResult::BodyTooLarge;
     }
 
     CheckResult::Ok
+}
+
+/// Parse the Content-Length request header into a byte count, if present and valid.
+fn declared_content_length(session: &Session) -> Option<u64> {
+    session
+        .req_header()
+        .headers
+        .get("content-length")?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()
 }
 
 fn header_size(session: &Session) -> u64 {

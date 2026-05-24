@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::config::schema::{
-    AppConfig, LoadBalanceStrategy, ProxyConfig, ProxyRouteTarget, ProxyTarget, SiteConfig,
-    TlsConfig,
+    AppConfig, FallbackConfig, LoadBalanceStrategy, ProxyConfig, ProxyRouteConfig,
+    ProxyRouteTarget, ProxyTarget, RateLimitConfig, RedirectRule, SiteConfig, TlsConfig,
 };
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -85,39 +85,62 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
         validate_proxy(proxy, &format!("{prefix}.proxy"), errors);
     }
     if let Some(rate_limit) = &site.rate_limit {
-        if rate_limit.window_secs == 0 {
-            errors.push(ValidationError::new(
-                format!("{prefix}.rateLimit.windowSecs"),
-                "windowSecs must be greater than 0",
-            ));
-        }
-        if rate_limit.limit == 0 {
-            errors.push(ValidationError::new(
-                format!("{prefix}.rateLimit.limit"),
-                "limit must be greater than 0",
-            ));
-        }
+        validate_rate_limit(rate_limit, prefix, errors);
     }
     if let Some(redirects) = &site.redirects {
-        for (j, rule) in redirects.iter().enumerate() {
-            if let Some(status) = rule.status {
-                if !matches!(status, 301 | 302 | 307 | 308) {
-                    errors.push(ValidationError::new(
-                        format!("{prefix}.redirects[{j}].status"),
-                        format!("Invalid redirect status {status} — must be 301, 302, 307, or 308"),
-                    ));
-                }
+        validate_redirect_rules(redirects, prefix, errors);
+    }
+    if let Some(fb) = &site.fallback {
+        validate_fallback(fb, prefix, errors);
+    }
+}
+
+fn validate_rate_limit(
+    rate_limit: &RateLimitConfig,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    if rate_limit.window_secs == 0 {
+        errors.push(ValidationError::new(
+            format!("{prefix}.rateLimit.windowSecs"),
+            "windowSecs must be greater than 0",
+        ));
+    }
+    if rate_limit.limit == 0 {
+        errors.push(ValidationError::new(
+            format!("{prefix}.rateLimit.limit"),
+            "limit must be greater than 0",
+        ));
+    }
+}
+
+fn validate_redirect_rules(
+    redirects: &[RedirectRule],
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    for (j, rule) in redirects.iter().enumerate() {
+        if let Some(status) = rule.status {
+            if !matches!(status, 301 | 302 | 307 | 308) {
+                errors.push(ValidationError::new(
+                    format!("{prefix}.redirects[{j}].status"),
+                    format!("Invalid redirect status {status} — must be 301, 302, 307, or 308"),
+                ));
             }
         }
     }
-    if let Some(fb) = &site.fallback {
-        if let Some(status) = fb.status {
-            if !(100..=599).contains(&status) {
-                errors.push(ValidationError::new(
-                    format!("{prefix}.fallback.status"),
-                    format!("Invalid fallback status {status} — must be a valid HTTP status code (100–599)"),
-                ));
-            }
+}
+
+fn validate_fallback(fb: &FallbackConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
+    if let Some(status) = fb.status {
+        if !(100..=599).contains(&status) {
+            errors.push(ValidationError::new(
+                format!("{prefix}.fallback.status"),
+                format!(
+                    "Invalid fallback status {status} \
+                     — must be a valid HTTP status code (100–599)"
+                ),
+            ));
         }
     }
 }
@@ -148,27 +171,31 @@ fn validate_proxy(proxy: &ProxyConfig, prefix: &str, errors: &mut Vec<Validation
     if let ProxyConfig::Routes(routes) = proxy {
         for (route, target) in routes {
             if let ProxyRouteTarget::Full(cfg) = target {
-                if cfg.strategy == Some(LoadBalanceStrategy::WeightedRoundRobin) {
-                    let has_simple = cfg
-                        .targets
-                        .iter()
-                        .any(|t| matches!(t, ProxyTarget::Simple(_)));
-                    if has_simple {
-                        errors.push(ValidationError::new(
-                            format!("{prefix}[\"{route}\"].targets"),
-                            "Strategy 'weighted-round-robin' requires weighted targets: \
-                             { \"url\": \"...\", \"weight\": N }",
-                        ));
-                    }
-                }
-
-                if cfg.targets.is_empty() {
-                    errors.push(ValidationError::new(
-                        format!("{prefix}[\"{route}\"].targets"),
-                        "At least one target is required",
-                    ));
-                }
+                validate_route_config(cfg, &format!("{prefix}[\"{route}\"]"), errors);
             }
+        }
+    }
+}
+
+fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
+    if cfg.targets.is_empty() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.targets"),
+            "At least one target is required",
+        ));
+    }
+
+    if cfg.strategy == Some(LoadBalanceStrategy::WeightedRoundRobin) {
+        let has_simple = cfg
+            .targets
+            .iter()
+            .any(|t| matches!(t, ProxyTarget::Simple(_)));
+        if has_simple {
+            errors.push(ValidationError::new(
+                format!("{prefix}.targets"),
+                "Strategy 'weighted-round-robin' requires weighted targets: \
+                 { \"url\": \"...\", \"weight\": N }",
+            ));
         }
     }
 }

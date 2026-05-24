@@ -67,87 +67,83 @@ fn resolve_proxy(
     counters: &DashMap<String, AtomicUsize>,
 ) -> Option<(UpstreamTarget, Option<RetryState>)> {
     match config {
-        ProxyConfig::Single(url) => {
-            let addr = upstream::url_to_host_port(url)?;
-            let tls = upstream::url_is_tls(url);
-            let sni = if tls {
-                upstream::url_host(url)
-            } else {
-                String::new()
-            };
-            Some((
-                UpstreamTarget::Proxy {
-                    addr,
-                    tls,
-                    sni,
-                    strip_prefix: None,
-                },
-                None,
-            ))
-        }
+        ProxyConfig::Single(url) => Some((url_to_proxy_upstream(url, None)?, None)),
         ProxyConfig::Routes(routes) => {
             let (route_key, route_target) = find_route(routes, path)?;
             let urls = upstream::target_urls(route_target);
 
-            // Extract retry config (only available for `Full` targets).
             let retry_cfg = match route_target {
                 ProxyRouteTarget::Full(cfg) => cfg.retry.as_ref(),
                 _ => None,
             };
 
-            let (chosen_url, retry_state) = if let Some(retry) = retry_cfg {
-                // Use the round-robin counter to pick the starting position and
-                // rotate the URL list so that upstream_peer() can simply walk it.
-                let start_idx = if urls.len() > 1 {
-                    let entry = counters
-                        .entry(route_key.to_owned())
-                        .or_insert_with(|| AtomicUsize::new(0));
-                    entry.fetch_add(1, Ordering::Relaxed) % urls.len()
-                } else {
-                    0
-                };
-                let rotated: Vec<String> = urls[start_idx..]
-                    .iter()
-                    .chain(urls[..start_idx].iter())
-                    .cloned()
-                    .collect();
-                let first = rotated.first()?.clone();
-                let state = RetryState {
-                    urls: rotated,
-                    attempt: 0,
-                    max_attempts: retry.attempts as usize,
-                    conditions: retry.conditions.clone(),
-                    backoff_ms: retry.backoff_ms,
-                };
-                (first, Some(state))
-            } else {
-                let url = upstream::pick_round_robin(&urls, route_key, counters)?;
-                (url, None)
-            };
+            let (chosen_url, retry_state) = pick_url(urls, route_key, counters, retry_cfg)?;
 
-            let addr = upstream::url_to_host_port(&chosen_url)?;
-            let tls = upstream::url_is_tls(&chosen_url);
-            let sni = if tls {
-                upstream::url_host(&chosen_url)
-            } else {
-                String::new()
-            };
             let strip = if upstream::strip_prefix_enabled(route_target) {
                 Some(route_key.trim_end_matches('/').to_string())
             } else {
                 None
             };
 
-            Some((
-                UpstreamTarget::Proxy {
-                    addr,
-                    tls,
-                    sni,
-                    strip_prefix: strip,
-                },
-                retry_state,
-            ))
+            Some((url_to_proxy_upstream(&chosen_url, strip)?, retry_state))
         }
+    }
+}
+
+/// Convert a target URL + optional strip prefix into an `UpstreamTarget::Proxy`.
+fn url_to_proxy_upstream(url: &str, strip_prefix: Option<String>) -> Option<UpstreamTarget> {
+    let addr = upstream::url_to_host_port(url)?;
+    let tls = upstream::url_is_tls(url);
+    let sni = if tls {
+        upstream::url_host(url)
+    } else {
+        String::new()
+    };
+    Some(UpstreamTarget::Proxy {
+        addr,
+        tls,
+        sni,
+        strip_prefix,
+    })
+}
+
+/// Pick a URL from `urls` for the given route, with optional retry state.
+///
+/// With retry: rotates the list starting at the round-robin position so that
+/// `upstream_peer()` can simply walk it on each attempt.
+/// Without retry: standard round-robin selection.
+fn pick_url(
+    urls: Vec<String>,
+    route_key: &str,
+    counters: &DashMap<String, AtomicUsize>,
+    retry_cfg: Option<&crate::config::schema::RetryConfig>,
+) -> Option<(String, Option<RetryState>)> {
+    if let Some(retry) = retry_cfg {
+        let start_idx = if urls.len() > 1 {
+            let entry = counters
+                .entry(route_key.to_owned())
+                .or_insert_with(|| AtomicUsize::new(0));
+            entry.fetch_add(1, Ordering::Relaxed) % urls.len()
+        } else {
+            0
+        };
+        let rotated: Vec<String> = urls[start_idx..]
+            .iter()
+            .chain(urls[..start_idx].iter())
+            .cloned()
+            .collect();
+        let first = rotated.first()?.clone();
+        let state = RetryState {
+            urls: rotated,
+            attempt: 0,
+            max_attempts: retry.attempts as usize,
+            conditions: retry.conditions.clone(),
+            backoff_ms: retry.backoff_ms,
+        };
+        Some((first, Some(state)))
+    } else {
+        let url = upstream::pick_round_robin(&urls, route_key, counters)?;
+        Some((url, None))
     }
 }
 
@@ -178,28 +174,30 @@ fn resolve_static_roots(cfg: &StaticConfig, path: &str) -> (Vec<PathBuf>, Option
     match cfg {
         StaticConfig::Single(s) => (vec![PathBuf::from(s)], None),
         StaticConfig::Multi(v) => (v.iter().map(PathBuf::from).collect(), None),
-        StaticConfig::Mapped(m) => {
-            let mut best: Option<(&str, &str)> = None;
-            for (prefix, root) in m {
-                let norm = prefix.trim_end_matches('/');
-                let matches = if norm.is_empty() {
-                    true
-                } else {
-                    path == norm || path.starts_with(&format!("{norm}/"))
-                };
-                if matches {
-                    let len = norm.len();
-                    if best.is_none_or(|(b, _)| len > b.trim_end_matches('/').len()) {
-                        best = Some((prefix.as_str(), root.as_str()));
-                    }
-                }
-            }
-            match best {
-                Some((pfx, root)) => (vec![PathBuf::from(root)], Some(pfx.to_string())),
-                None => (vec![], None),
+        StaticConfig::Mapped(m) => match find_best_mapped_prefix(m, path) {
+            Some((pfx, root)) => (vec![PathBuf::from(root)], Some(pfx.to_string())),
+            None => (vec![], None),
+        },
+    }
+}
+
+/// Find the longest prefix in a mapped static config that matches `path`.
+fn find_best_mapped_prefix<'a>(
+    m: &'a indexmap::IndexMap<String, String>,
+    path: &str,
+) -> Option<(&'a str, &'a str)> {
+    let mut best: Option<(&str, &str)> = None;
+    for (prefix, root) in m {
+        let norm = prefix.trim_end_matches('/');
+        let matches = norm.is_empty() || path == norm || path.starts_with(&format!("{norm}/"));
+        if matches {
+            let len = norm.len();
+            if best.is_none_or(|(b, _)| len > b.trim_end_matches('/').len()) {
+                best = Some((prefix.as_str(), root.as_str()));
             }
         }
     }
+    best
 }
 
 /// Returns `Some(token)` when `path` matches the configured metrics endpoint.

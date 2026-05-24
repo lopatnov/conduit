@@ -21,20 +21,7 @@ pub async fn handle_static(
 ) -> Result<()> {
     let method = session.req_header().method.clone();
     let req_path = session.req_header().uri.path().to_owned();
-
-    let decoded = percent_decode(&req_path);
-    let rel = match strip_prefix {
-        Some(pfx) => {
-            let trimmed = pfx.trim_end_matches('/');
-            let after = if trimmed.is_empty() {
-                decoded.as_str()
-            } else {
-                decoded.strip_prefix(trimmed).unwrap_or(&decoded)
-            };
-            sanitize_path(after)
-        }
-        None => sanitize_path(&decoded),
-    };
+    let rel = decode_rel_path(&req_path, strip_prefix);
 
     let dot_policy = options.dot_files.as_deref().unwrap_or("ignore");
     if has_dotfile(&rel) {
@@ -66,29 +53,8 @@ pub async fn handle_static(
 
     let hdrs = session.req_header().headers.clone();
 
-    // If-None-Match
-    if let Some(inm) = hdrs.get("if-none-match").and_then(|v| v.to_str().ok()) {
-        if inm == etag || inm == "*" {
-            return write_not_modified(session, &etag, &last_modified, &cache_control, extra).await;
-        }
-    }
-
-    // If-Modified-Since (only when no If-None-Match)
-    if hdrs.get("if-none-match").is_none() {
-        if let Some(ims) = hdrs.get("if-modified-since").and_then(|v| v.to_str().ok()) {
-            if let Ok(ims_time) = httpdate::parse_http_date(ims) {
-                if mtime <= ims_time + Duration::from_secs(1) {
-                    return write_not_modified(
-                        session,
-                        &etag,
-                        &last_modified,
-                        &cache_control,
-                        extra,
-                    )
-                    .await;
-                }
-            }
-        }
+    if is_not_modified(&hdrs, &etag, mtime) {
+        return write_not_modified(session, &etag, &last_modified, &cache_control, extra).await;
     }
 
     let is_head = method.as_str() == "HEAD";
@@ -386,4 +352,37 @@ fn has_dotfile(rel_path: &str) -> bool {
     rel_path
         .split('/')
         .any(|seg| seg.starts_with('.') && !seg.is_empty())
+}
+
+/// Decode and sanitize the request path, optionally stripping a route prefix.
+fn decode_rel_path(req_path: &str, strip_prefix: Option<&str>) -> String {
+    let decoded = percent_decode(req_path);
+    match strip_prefix {
+        Some(pfx) => {
+            let trimmed = pfx.trim_end_matches('/');
+            let after = if trimmed.is_empty() {
+                decoded.as_str()
+            } else {
+                decoded.strip_prefix(trimmed).unwrap_or(&decoded)
+            };
+            sanitize_path(after)
+        }
+        None => sanitize_path(&decoded),
+    }
+}
+
+/// Return `true` when the request is fresh and should receive a 304 response.
+///
+/// Checks `If-None-Match` first (taking precedence over `If-Modified-Since`
+/// per RFC 9110 §13.1).
+fn is_not_modified(hdrs: &http::HeaderMap, etag: &str, mtime: std::time::SystemTime) -> bool {
+    if let Some(inm) = hdrs.get("if-none-match").and_then(|v| v.to_str().ok()) {
+        return inm == etag || inm == "*";
+    }
+    if let Some(ims) = hdrs.get("if-modified-since").and_then(|v| v.to_str().ok()) {
+        if let Ok(ims_time) = httpdate::parse_http_date(ims) {
+            return mtime <= ims_time + Duration::from_secs(1);
+        }
+    }
+    false
 }
