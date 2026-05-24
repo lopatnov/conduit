@@ -364,13 +364,13 @@ to specific origins:
 }
 ```
 
-| Field            | Default | Description                          |
-| ---------------- | ------- | ------------------------------------ |
+| Field            | Default | Description                             |
+| ---------------- | ------- | --------------------------------------- |
 | `origins`        | any     | Allowed origins; echoes origin when set |
-| `methods`        | all     | Allowed methods                      |
-| `allowedHeaders` | all     | Allowed request headers              |
-| `credentials`    | `false` | Allow cookies / auth headers         |
-| `maxAgeSecs`     | `86400` | How long to cache preflight response |
+| `methods`        | all     | Allowed methods                         |
+| `allowedHeaders` | all     | Allowed request headers                 |
+| `credentials`    | `false` | Allow cookies / auth headers            |
+| `maxAgeSecs`     | `86400` | How long to cache preflight response    |
 
 CORS preflight (`OPTIONS`) requests bypass auth and rate limiting — browsers send them
 without credentials.
@@ -692,11 +692,11 @@ Proxy requests to one or more backends.
 
 **Retry conditions:**
 
-| Condition          | Description                         |
-| ------------------ | ----------------------------------- |
-| `connection_error` | Retry when the upstream is down     |
-| `5xx`              | Retry when upstream returns 5xx     |
-| `timeout`          | Retry on read/write timeout         |
+| Condition          | Description                     |
+| ------------------ | ------------------------------- |
+| `connection_error` | Retry when the upstream is down |
+| `5xx`              | Retry when upstream returns 5xx |
+| `timeout`          | Retry on read/write timeout     |
 
 ---
 
@@ -743,10 +743,10 @@ Requests without `Authorization: Bearer <token>` receive `401 Unauthorized`.
 
 Metrics exposed:
 
-| Metric                             | Type      | Description                     |
-| ---------------------------------- | --------- | ------------------------------- |
+| Metric                             | Type      | Description                      |
+| ---------------------------------- | --------- | -------------------------------- |
 | `conduit_requests_total`           | counter   | Total requests, by method/status |
-| `conduit_request_duration_seconds` | histogram | Request latency                 |
+| `conduit_request_duration_seconds` | histogram | Request latency                  |
 
 ---
 
