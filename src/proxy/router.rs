@@ -19,6 +19,8 @@ pub fn route_request(
 
     let (upstream, retry) = if is_health_path(site, path) {
         (UpstreamTarget::Local(LocalHandler::Health), None)
+    } else if let Some(token) = metrics_token(site, path) {
+        (UpstreamTarget::Local(LocalHandler::Metrics { token }), None)
     } else if let Some(site) = site {
         route_site(site, path, counters)
     } else {
@@ -176,6 +178,20 @@ fn resolve_static_roots(cfg: &StaticConfig, path: &str) -> (Vec<PathBuf>, Option
                 None => (vec![], None),
             }
         }
+    }
+}
+
+/// Returns `Some(token)` when `path` matches the configured metrics endpoint.
+/// `token` is `None` when the endpoint has no auth token.
+fn metrics_token(site: Option<&SiteConfig>, path: &str) -> Option<Option<String>> {
+    let site = site?;
+    let metrics = site.metrics.as_ref()?;
+    let bare = path.split('?').next().unwrap_or(path);
+    let metrics_path = metrics.path.as_deref().unwrap_or("/__metrics__");
+    if bare == metrics_path {
+        Some(metrics.token.clone())
+    } else {
+        None
     }
 }
 

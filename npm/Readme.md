@@ -5,11 +5,11 @@
 
 **High-performance reverse proxy and static file server** — powered by [Cloudflare Pingora](https://github.com/cloudflare/pingora). Runs as a native Rust binary, distributed via npm for convenience.
 
-- **150k+ req/s** static files · **80k+ req/s** proxy passthrough
 - **Single binary** — no Node.js runtime needed after install
 - **One JSON file** describes your entire server
-- **Hot-reload** in dev · **Auto-TLS** (Let's Encrypt) in production
-- Drop-in upgrade for `express-reverse-proxy` with 10–20× more throughput
+- Static file server, reverse proxy, TLS termination, HTTP/2, IP filtering, redirects
+- Hot-reload in dev and Auto-TLS (Let's Encrypt) in production — [coming soon](https://github.com/lopatnov/conduit#implementation-status)
+- Drop-in upgrade path from `express-reverse-proxy`
 
 ## Installation
 
@@ -55,7 +55,7 @@ Minimal `conduit.json`:
 
 ## CLI
 
-```
+```bash
 conduit                         start server (reads conduit.json)
 conduit -c <file>               use a specific config file
 conduit init                    interactive wizard
@@ -71,13 +71,13 @@ conduit --version
 
 ## Supported Platforms
 
-| Platform | Architecture | Supported |
-|---|---|---|
-| Linux | x86-64 | ✅ |
-| Linux | ARM64 | ✅ |
-| macOS | x86-64 (Intel) | ✅ |
-| macOS | ARM64 (Apple Silicon) | ✅ |
-| Windows | x86-64 | ✅ |
+| Platform | Architecture          | Supported |
+| -------- | --------------------- | --------- |
+| Linux    | x86-64                | ✅        |
+| Linux    | ARM64                 | ✅        |
+| macOS    | x86-64 (Intel)        | ✅        |
+| macOS    | ARM64 (Apple Silicon) | ✅        |
+| Windows  | x86-64                | ✅        |
 
 ## Alternatives
 

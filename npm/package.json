@@ -1,6 +1,6 @@
 {
   "name": "@lopatnov/conduit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "High-performance reverse proxy and static file server powered by Cloudflare Pingora",
   "keywords": [
     "reverse-proxy",

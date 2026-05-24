@@ -20,6 +20,19 @@ pub struct AdminApiService {
 #[async_trait]
 impl BackgroundService for AdminApiService {
     async fn start(&self, mut shutdown: ShutdownWatch) {
+        // Spawn a background task that evicts stale rate-limiter entries every 60 s.
+        {
+            let limiter = self.state.rate_limiter.clone();
+            tokio::spawn(async move {
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    crate::filter::rate_limit::cleanup(&limiter);
+                }
+            });
+        }
+
         let app = build_router(self.state.clone());
         let listener = match TcpListener::bind(&self.bind).await {
             Ok(l) => l,

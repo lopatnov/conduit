@@ -10,7 +10,6 @@
 - One JSON file describes your entire server — no DSL, no YAML, no Caddyfile
 - Serves static files, proxies to backends, terminates TLS, and load-balances — all in one binary
 - Drop-in replacement for `express-reverse-proxy` with a fraction of the memory and latency
-- Hot-reload in development, auto-TLS (Let's Encrypt) in production
 
 ```bash
 npx @lopatnov/conduit        # run without installing
@@ -29,21 +28,16 @@ cargo install lopatnov-conduit
   - [port / host](#port--host)
   - [tls](#tls)
   - [http2](#http2)
-  - [logging](#logging)
-  - [compression](#compression)
-  - [responseTime](#responsetime)
   - [securityHeaders](#securityheaders)
   - [cors](#cors)
   - [ipFilter](#ipfilter)
   - [limits](#limits)
   - [rateLimit](#ratelimit)
   - [basicAuth](#basicauth)
-  - [headers](#headers)
+  - [apiKey](#apikey)
   - [redirects](#redirects)
   - [static / staticOptions](#static--staticoptions)
-  - [hotReload](#hotreload)
   - [proxy](#proxy)
-  - [upload](#upload)
   - [healthCheck](#healthcheck)
   - [metrics](#metrics)
   - [fallback](#fallback)
@@ -115,14 +109,14 @@ cargo install lopatnov-conduit
 
 Download from [GitHub Releases](https://github.com/lopatnov/conduit/releases):
 
-| Platform | File |
-|---|---|
-| Linux x86-64 | `conduit-x86_64-unknown-linux-gnu.tar.gz` |
+| Platform                   | File                                       |
+| -------------------------- | ------------------------------------------ |
+| Linux x86-64               | `conduit-x86_64-unknown-linux-gnu.tar.gz`  |
 | Linux x86-64 musl (Docker) | `conduit-x86_64-unknown-linux-musl.tar.gz` |
-| Linux ARM64 | `conduit-aarch64-unknown-linux-gnu.tar.gz` |
-| macOS Intel | `conduit-x86_64-apple-darwin.tar.gz` |
-| macOS Apple Silicon | `conduit-aarch64-apple-darwin.tar.gz` |
-| Windows x86-64 | `conduit-x86_64-pc-windows-msvc.exe.zip` |
+| Linux ARM64                | `conduit-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS Intel                | `conduit-x86_64-apple-darwin.tar.gz`       |
+| macOS Apple Silicon        | `conduit-aarch64-apple-darwin.tar.gz`      |
+| Windows x86-64             | `conduit-x86_64-pc-windows-msvc.exe.zip`   |
 
 ```bash
 # Linux example
@@ -214,36 +208,16 @@ conduit probe [-c <file>]       HEAD to every upstream, show latency table
 conduit fmt [-c <file>]         pretty-print config to stdout
 conduit fmt --write [-c <file>] pretty-print config back to the file
 
-conduit reload                  apply config changes without restart
 conduit status                  show server uptime, version, inflight requests
-conduit upstreams               list upstreams with live/down status and latency
 conduit shutdown                graceful shutdown (waits for inflight requests)
 ```
 
-### Dynamic upstream management (in-memory only)
-
-```bash
-# Add a new backend — takes effect immediately, lost on restart
-conduit upstreams add --route /api --target http://b3:4000
-
-# Add with weight (weighted-round-robin only)
-conduit upstreams add --route /api --target http://b3:4000 --weight 2
-
-# Remove a backend
-conduit upstreams remove --route /api --target http://b1:4000
-
-# Change weight
-conduit upstreams weight --route /api --target http://b1:4000 --weight 5
-```
-
-Use `conduit reload` to reset to the config file after dynamic changes.
-
 ### Environment variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `RUST_LOG` | `info` | Log level: `error` `warn` `info` `debug` `trace` |
-| `CONDUIT_ADMIN` | `127.0.0.1:2019` | Admin API address for management commands |
+| Variable        | Default          | Description                                      |
+| --------------- | ---------------- | ------------------------------------------------ |
+| `RUST_LOG`      | `info`           | Log level: `error` `warn` `info` `debug` `trace` |
+| `CONDUIT_ADMIN` | `127.0.0.1:2019` | Admin API address for management commands        |
 
 ---
 
@@ -277,16 +251,14 @@ Default port: `3000`.
 
 ### `tls`
 
-Terminate HTTPS. Two modes: manual certificates or automatic Let's Encrypt.
-
-**Manual certificates** — you supply the PEM files:
+Terminate HTTPS. Supply PEM certificate and key files:
 
 ```json
 {
   "port": 443,
   "tls": {
     "cert": "./certs/cert.pem",
-    "key":  "./certs/key.pem"
+    "key": "./certs/key.pem"
   }
 }
 ```
@@ -298,32 +270,13 @@ Terminate HTTPS. Two modes: manual certificates or automatic Let's Encrypt.
   "port": 443,
   "tls": {
     "cert": "./certs/cert.pem",
-    "key":  "./certs/key.pem",
+    "key": "./certs/key.pem",
     "httpRedirectPort": 80
   }
 }
 ```
 
 Requests to port 80 are permanently redirected to `https://` on port 443.
-
-**Auto-TLS via Let's Encrypt** (Phase 3) — no cert files needed:
-
-```json
-{
-  "host": "app.example.com",
-  "port": 443,
-  "tls": {
-    "acme": {
-      "email":   "admin@example.com",
-      "storage": "./certs",
-      "challenge": "http-01"
-    }
-  }
-}
-```
-
-Conduit obtains and renews the certificate automatically.
-`challenge` can be `"http-01"` (default) or `"tls-alpn-01"`.
 
 > Conduit uses **rustls** — not OpenSSL. TLS version strings use rustls format
 > (`"TLSv1.3"`), not OpenSSL format (`"TLSv1.3"` is the same, but cipher names differ).
@@ -348,117 +301,39 @@ With `"http2": true` the defaults are used:
 { "http2": true }
 ```
 
-| Field | Default | Description |
-|---|---|---|
-| `maxConcurrentStreams` | `100` | Max parallel streams per connection |
-| `initialWindowSize` | `65535` | Flow control window (bytes) |
-
----
-
-### `logging`
-
-Log incoming requests. Accepts `false`, `true`, a format name, or an object.
-
-```json
-{ "logging": false }
-```
-
-```json
-{ "logging": true }
-```
-
-```json
-{ "logging": "dev" }
-```
-
-Available format names:
-
-| Format | Output |
-|---|---|
-| `"combined"` | Apache combined log (default) |
-| `"common"` | Apache common log |
-| `"dev"` | Colored, compact — good for terminals |
-| `"short"` | Method + URL + status + time |
-| `"json"` | Structured JSON — good for log aggregators |
-
-Write to a file:
-
-```json
-{ "logging": { "format": "json", "file": "./logs/access.log" } }
-```
-
-The file is atomically swapped on `conduit reload` — no log lines are lost.
-
----
-
-### `compression`
-
-Compress responses with gzip and/or brotli. Accepts `false`, `true`, or an object.
-
-```json
-{ "compression": true }
-```
-
-```json
-{
-  "compression": {
-    "algorithms": ["br", "gzip"],
-    "level": 6,
-    "minBytes": 1024
-  }
-}
-```
-
-| Field | Default | Description |
-|---|---|---|
-| `algorithms` | `["br", "gzip"]` | Compression algorithms, in preference order |
-| `level` | `6` | Compression level (1 = fast, 9 = best) |
-| `minBytes` | `1024` | Skip compression for responses smaller than this |
-
-Conduit reads the client's `Accept-Encoding` header and picks the best matching algorithm.
-
----
-
-### `responseTime`
-
-Add an `X-Response-Time` header showing how long the server took to respond.
-
-```json
-{ "responseTime": true }
-```
-
-```json
-{ "responseTime": { "digits": 3 } }
-```
-
-`digits` controls decimal places in the millisecond value. Default: `3` (e.g., `1.234ms`).
+| Field                  | Default | Description                         |
+| ---------------------- | ------- | ----------------------------------- |
+| `maxConcurrentStreams` | `100`   | Max parallel streams per connection |
+| `initialWindowSize`    | `65535` | Flow control window (bytes)         |
 
 ---
 
 ### `securityHeaders`
 
-Add a standard set of security headers to every response.
+Add a standard set of security headers to every response. Accepts `false`, `true`, or an object.
 
 ```json
 { "securityHeaders": true }
 ```
 
-Headers added:
+Headers added with `true`:
 
-| Header | Value |
-|---|---|
-| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` |
-| `X-Content-Type-Options` | `nosniff` |
-| `X-Frame-Options` | `SAMEORIGIN` |
-| `Referrer-Policy` | `strict-origin-when-cross-origin` |
-| `Content-Security-Policy` | `default-src 'self'` |
+| Header                   | Value                             |
+| ------------------------ | --------------------------------- |
+| `X-Content-Type-Options` | `nosniff`                         |
+| `X-Frame-Options`        | `SAMEORIGIN`                      |
+| `Referrer-Policy`        | `strict-origin-when-cross-origin` |
+| `X-XSS-Protection`       | `1; mode=block`                   |
 
-Fine-tune individual headers with the object form:
+Fine-tune with the object form:
 
 ```json
 {
   "securityHeaders": {
-    "contentSecurityPolicy": "default-src 'self'; img-src *"
+    "contentSecurityPolicy": "default-src 'self'; img-src *",
+    "hsts": "max-age=31536000; includeSubDomains",
+    "frameOptions": "DENY",
+    "referrerPolicy": "no-referrer"
   }
 }
 ```
@@ -474,7 +349,8 @@ or an object.
 { "cors": true }
 ```
 
-`true` allows any origin. For production, restrict to specific origins:
+`true` allows any origin with `Access-Control-Allow-Origin: *`. For production, restrict
+to specific origins:
 
 ```json
 {
@@ -488,13 +364,16 @@ or an object.
 }
 ```
 
-| Field | Default | Description |
-|---|---|---|
-| `origins` | `["*"]` | Allowed origins |
-| `methods` | all | Allowed methods |
-| `allowedHeaders` | all | Allowed request headers |
-| `credentials` | `false` | Allow cookies / auth headers |
-| `maxAgeSecs` | `86400` | How long to cache preflight response |
+| Field            | Default | Description                          |
+| ---------------- | ------- | ------------------------------------ |
+| `origins`        | any     | Allowed origins; echoes origin when set |
+| `methods`        | all     | Allowed methods                      |
+| `allowedHeaders` | all     | Allowed request headers              |
+| `credentials`    | `false` | Allow cookies / auth headers         |
+| `maxAgeSecs`     | `86400` | How long to cache preflight response |
+
+CORS preflight (`OPTIONS`) requests bypass auth and rate limiting — browsers send them
+without credentials.
 
 ---
 
@@ -546,17 +425,15 @@ Reject oversized requests before they reach the proxy or handlers.
 {
   "limits": {
     "maxBodyBytes": 1048576,
-    "maxHeaderBytes": 8192,
-    "timeoutSecs": 30
+    "maxHeaderBytes": 8192
   }
 }
 ```
 
-| Field | Description | Status code |
-|---|---|---|
-| `maxBodyBytes` | Max request body size | `413 Request Entity Too Large` |
+| Field            | Description           | Status code                           |
+| ---------------- | --------------------- | ------------------------------------- |
+| `maxBodyBytes`   | Max request body size | `413 Request Entity Too Large`        |
 | `maxHeaderBytes` | Max total header size | `431 Request Header Fields Too Large` |
-| `timeoutSecs` | Max request duration | `408 Request Timeout` |
 
 ---
 
@@ -599,13 +476,13 @@ Clients exceeding the limit receive `429 Too Many Requests`.
 }
 ```
 
-| Field | Default | Description |
-|---|---|---|
-| `windowSecs` | required | Time window in seconds |
-| `limit` | required | Max requests per window |
-| `algorithm` | `"token-bucket"` | Rate limit algorithm |
-| `keyBy` | `"ip"` | `"ip"` or `"header:X-Name"` |
-| `skipPaths` | `[]` | Paths exempt from limiting (glob patterns) |
+| Field        | Default          | Description                                |
+| ------------ | ---------------- | ------------------------------------------ |
+| `windowSecs` | required         | Time window in seconds                     |
+| `limit`      | required         | Max requests per window                    |
+| `algorithm`  | `"token-bucket"` | Rate limit algorithm                       |
+| `keyBy`      | `"ip"`           | `"ip"` or `"header:X-Name"`                |
+| `skipPaths`  | `[]`             | Paths exempt from limiting (glob patterns) |
 
 ---
 
@@ -654,24 +531,31 @@ Health (`/__health__`) and metrics (`/__metrics__`) endpoints always bypass auth
 
 ---
 
-### `headers`
+### `apiKey`
 
-Add custom headers to every response from this site.
+Require an API key passed in a request header.
 
 ```json
 {
-  "headers": {
-    "X-Powered-By": "Conduit",
-    "Cache-Control": "no-store",
-    "X-Request-ID": "generated-per-request"
+  "apiKey": {
+    "keys": ["$API_KEY_1", "$API_KEY_2"],
+    "header": "X-API-Key"
   }
 }
 ```
 
-Set a header to `""` to remove it from the response:
+Requests with a missing or incorrect key receive `401 Unauthorized`.
+
+Skip auth for specific paths:
 
 ```json
-{ "headers": { "Server": "" } }
+{
+  "apiKey": {
+    "keys": ["$API_KEY"],
+    "header": "Authorization",
+    "skipPaths": ["/__health__", "/public/**"]
+  }
+}
 ```
 
 ---
@@ -683,21 +567,21 @@ Redirect paths with 3xx responses. First matching rule wins.
 ```json
 {
   "redirects": [
-    { "from": "/old-page",   "to": "/new-page",       "status": 301 },
-    { "from": "/blog/:slug", "to": "/posts/:slug",     "status": 308 },
-    { "from": "/docs",       "to": "https://docs.example.com", "status": 302 }
+    { "from": "/old-page", "to": "/new-page", "status": 301 },
+    { "from": "/blog/:slug", "to": "/posts/:slug", "status": 308 },
+    { "from": "/docs", "to": "https://docs.example.com", "status": 302 }
   ]
 }
 ```
 
 `:param` captures a path segment and substitutes it in `to`.
 
-| Status | Meaning |
-|---|---|
-| `301` | Moved Permanently (GET stays GET) |
-| `302` | Found — temporary redirect |
-| `307` | Temporary Redirect (method preserved) |
-| `308` | Permanent Redirect (method preserved) |
+| Status | Meaning                               |
+| ------ | ------------------------------------- |
+| `301`  | Moved Permanently (GET stays GET)     |
+| `302`  | Found — temporary redirect            |
+| `307`  | Temporary Redirect (method preserved) |
+| `308`  | Permanent Redirect (method preserved) |
 
 ---
 
@@ -722,7 +606,7 @@ Serve files from a directory.
 ```json
 {
   "static": {
-    "/":       "./dist",
+    "/": "./dist",
     "/assets": "./assets"
   }
 }
@@ -734,56 +618,22 @@ Serve files from a directory.
 {
   "static": "./dist",
   "staticOptions": {
-    "etag":          true,
-    "lastModified":  true,
-    "maxAge":        "7d",
-    "index":         ["index.html"],
-    "dotFiles":      "ignore",
-    "preCompressed": true
+    "etag": true,
+    "lastModified": true,
+    "maxAge": "7d",
+    "index": ["index.html"],
+    "dotFiles": "ignore"
   }
 }
 ```
 
-| Field | Default | Description |
-|---|---|---|
-| `etag` | `true` | Generate ETag headers (enables 304 Not Modified) |
-| `lastModified` | `true` | Set Last-Modified header |
-| `maxAge` | `"0"` | Cache-Control max-age (`"1h"`, `"7d"`, `"1y"`) |
-| `index` | `["index.html"]` | Directory index filenames |
-| `dotFiles` | `"ignore"` | `"ignore"` \| `"allow"` \| `"deny"` |
-| `preCompressed` | `false` | Serve `.br` / `.gz` variant if the client supports it |
-
----
-
-### `hotReload`
-
-Inject a browser hot-reload script — the page refreshes automatically when watched files change.
-
-```json
-{ "hotReload": true }
-```
-
-Watch only specific file extensions:
-
-```json
-{
-  "hotReload": {
-    "extensions": [".html", ".css", ".js", ".ts", ".json"]
-  }
-}
-```
-
-Conduit serves a small SSE endpoint at `/__hot-reload__` and injects a `<script>` tag
-that listens for file-change events and calls `location.reload()`.
-
-Works best combined with `staticOptions.etag: false` to prevent stale caching in dev:
-
-```json
-{
-  "hotReload": true,
-  "staticOptions": { "etag": false, "lastModified": false }
-}
-```
+| Field          | Default          | Description                                      |
+| -------------- | ---------------- | ------------------------------------------------ |
+| `etag`         | `true`           | Generate ETag headers (enables 304 Not Modified) |
+| `lastModified` | `true`           | Set Last-Modified header                         |
+| `maxAge`       | `"0"`            | Cache-Control max-age (`"1h"`, `"7d"`, `"1y"`)   |
+| `index`        | `["index.html"]` | Directory index filenames                        |
+| `dotFiles`     | `"ignore"`       | `"ignore"` \| `"allow"` \| `"deny"`              |
 
 ---
 
@@ -802,7 +652,7 @@ Proxy requests to one or more backends.
 ```json
 {
   "proxy": {
-    "/api":    "http://api-server:4000",
+    "/api": "http://api-server:4000",
     "/images": "http://image-server:5000"
   }
 }
@@ -818,177 +668,35 @@ Proxy requests to one or more backends.
 }
 ```
 
-**Full form** — load balancing, health checks, caching, retries:
+**Full form** — with `stripPrefix` and retries:
 
 ```json
 {
   "proxy": {
     "/api": {
       "targets": ["http://b1:4000", "http://b2:4000"],
-      "strategy": "least-conn",
       "stripPrefix": true,
-      "healthCheck": {
-        "path": "/health",
-        "intervalSecs": 10,
-        "unhealthyThreshold": 2
-      },
       "retry": {
         "attempts": 3,
         "conditions": ["connection_error", "5xx"],
         "backoffMs": 100
-      },
-      "cache": {
-        "store": "memory",
-        "maxSizeMb": 256,
-        "ttlSecs": 300,
-        "skipIfCookie": true
       }
     }
   }
 }
 ```
-
-**Weighted round-robin** — send more traffic to powerful servers:
-
-```json
-{
-  "proxy": {
-    "/api": {
-      "targets": [
-        { "url": "http://big-server:4000",   "weight": 3 },
-        { "url": "http://small-server:4000", "weight": 1 }
-      ],
-      "strategy": "weighted-round-robin"
-    }
-  }
-}
-```
-
-**Sticky sessions** — same client always goes to the same backend:
-
-```json
-{
-  "proxy": {
-    "/api": {
-      "targets": ["http://b1:4000", "http://b2:4000"],
-      "strategy": "ip-hash",
-      "hashKey": "ip"
-    }
-  }
-}
-```
-
-**Load balancing strategies:**
-
-| Strategy | Description |
-|---|---|
-| `round-robin` | Cycle through backends in order (default) |
-| `weighted-round-robin` | Cycle with weights — needs `WeightedTarget` objects |
-| `random` | Pick a random backend |
-| `least-conn` | Pick the backend with fewest active connections |
-| `least-response-time` | Pick the fastest backend (measured in background) |
-| `ip-hash` | Hash client IP → same client, same backend |
-| `consistent-hash` | Ketama hash — minimal reshuffling when backends change |
 
 **`stripPrefix`** — remove the route prefix before forwarding:
 
-```json
-{
-  "proxy": {
-    "/api": {
-      "targets": ["http://backend:4000"],
-      "stripPrefix": true
-    }
-  }
-}
-```
-
 `GET /api/users` → forwarded as `GET /users` to the backend.
 
-**Proxy cache** — cache backend responses in memory:
+**Retry conditions:**
 
-```json
-{
-  "proxy": {
-    "/api/public": {
-      "targets": ["http://backend:4000"],
-      "cache": {
-        "store": "memory",
-        "maxSizeMb": 256,
-        "ttlSecs": 300,
-        "varyHeaders": ["Accept-Language"],
-        "skipIfCookie": true,
-        "skipPaths": ["/api/public/auth/**"],
-        "methods": ["GET", "HEAD"]
-      }
-    }
-  }
-}
-```
-
-| Field | Default | Description |
-|---|---|---|
-| `store` | required | `"memory"` \| `"disk:./cache"` \| `"redis://..."` |
-| `maxSizeMb` | unlimited | Max cache size |
-| `ttlSecs` | from response | Override cache TTL |
-| `varyHeaders` | `[]` | Include these headers in the cache key |
-| `skipIfCookie` | `false` | Never cache responses to requests with cookies |
-| `skipPaths` | `[]` | Glob patterns to never cache |
-| `methods` | `["GET","HEAD"]` | Which HTTP methods to cache |
-
----
-
-### `upload`
-
-Accept file uploads at a given path and save them to disk.
-
-```json
-{
-  "upload": {
-    "path": "/upload",
-    "dir":  "./uploads"
-  }
-}
-```
-
-With limits and type filtering:
-
-```json
-{
-  "upload": {
-    "path": "/upload",
-    "dir": "./uploads",
-    "maxFileSizeBytes":  10485760,
-    "maxTotalSizeBytes": 52428800,
-    "maxFiles": 5,
-    "allowedMimeTypes": ["image/jpeg", "image/png", "image/webp"]
-  }
-}
-```
-
-Upload a file:
-
-```bash
-curl -F "file=@photo.jpg" http://localhost:3000/upload
-```
-
-Response:
-
-```json
-{ "files": [{ "name": "a3f2c1d0-....jpg", "size": 204800 }] }
-```
-
-Files are saved with UUID v4 names to prevent collisions and path traversal.
-
-| Field | Description |
-|---|---|
-| `path` | URL path that accepts `POST multipart/form-data` |
-| `dir` | Directory where files are saved |
-| `maxFileSizeBytes` | Reject individual files larger than this |
-| `maxTotalSizeBytes` | Reject the whole request if total exceeds this |
-| `maxFiles` | Max number of files per request |
-| `allowedMimeTypes` | Whitelist of accepted MIME types |
-| `fieldName` | Form field name (default: any) |
+| Condition          | Description                         |
+| ------------------ | ----------------------------------- |
+| `connection_error` | Retry when the upstream is down     |
+| `5xx`              | Retry when upstream returns 5xx     |
+| `timeout`          | Retry on read/write timeout         |
 
 ---
 
@@ -1003,7 +711,7 @@ Expose a health check endpoint.
 Default path: `/__health__`. Always returns `200 OK` with a JSON body:
 
 ```json
-{ "status": "ok", "uptime": 3600, "version": "0.1.0" }
+{ "status": "ok", "uptime": 3600, "version": "0.2.0" }
 ```
 
 Custom path:
@@ -1035,14 +743,10 @@ Requests without `Authorization: Bearer <token>` receive `401 Unauthorized`.
 
 Metrics exposed:
 
-| Metric | Type | Description |
-|---|---|---|
-| `conduit_requests_total` | counter | Total requests, by status and route |
-| `conduit_request_duration_seconds` | histogram | Request latency |
-| `conduit_inflight_requests` | gauge | Currently active requests |
-| `conduit_upstream_health` | gauge | 1 = healthy, 0 = down, per upstream |
-| `conduit_cache_hits_total` | counter | Proxy cache hits |
-| `conduit_cache_misses_total` | counter | Proxy cache misses |
+| Metric                             | Type      | Description                     |
+| ---------------------------------- | --------- | ------------------------------- |
+| `conduit_requests_total`           | counter   | Total requests, by method/status |
+| `conduit_request_duration_seconds` | histogram | Request latency                 |
 
 ---
 
@@ -1070,7 +774,7 @@ Return a response when nothing else matched — useful for SPAs.
     "byAccept": {
       "html": { "status": 200, "file": "./dist/index.html" },
       "json": { "status": 404, "body": { "error": "Not Found" } },
-      "*":    { "status": 200, "file": "./dist/index.html" }
+      "*": { "status": 200, "file": "./dist/index.html" }
     }
   }
 }
@@ -1105,7 +809,7 @@ Run multiple virtual hosts from one Conduit process.
     {
       "host": "app.example.com",
       "port": 443,
-      "tls": { "acme": { "email": "ops@example.com" }, "httpRedirectPort": 80 },
+      "tls": { "cert": "$CERT", "key": "$KEY", "httpRedirectPort": 80 },
       "static": "./dist",
       "proxy": { "/api": "http://api:4000" }
     },
@@ -1155,20 +859,20 @@ that doesn't match a named host. Sites are evaluated in order.
 {
   "host": "app.example.com",
   "port": 443,
-  "tls": { "acme": { "email": "ops@example.com" }, "httpRedirectPort": 80 },
+  "tls": { "cert": "$CERT", "key": "$KEY", "httpRedirectPort": 80 },
   "http2": true,
-  "compression": true,
   "securityHeaders": true,
-  "logging": { "format": "json", "file": "/var/log/conduit/access.log" },
+  "cors": {
+    "origins": ["https://app.example.com"],
+    "credentials": true
+  },
   "static": "./dist",
-  "staticOptions": { "maxAge": "7d", "preCompressed": true },
+  "staticOptions": { "maxAge": "7d" },
   "proxy": {
     "/api": {
       "targets": ["http://api1:4000", "http://api2:4000"],
-      "strategy": "least-conn",
       "stripPrefix": true,
-      "healthCheck": { "path": "/health", "intervalSecs": 10 },
-      "cache": { "store": "memory", "ttlSecs": 60, "skipIfCookie": true }
+      "retry": { "attempts": 3, "conditions": ["connection_error", "5xx"] }
     }
   },
   "rateLimit": { "windowSecs": 60, "limit": 300, "skipPaths": ["/__health__"] },
@@ -1178,7 +882,7 @@ that doesn't match a named host. Sites are evaluated in order.
     "byAccept": {
       "html": { "status": 200, "file": "./dist/index.html" },
       "json": { "status": 404, "body": { "error": "Not Found" } },
-      "*":    { "status": 200, "file": "./dist/index.html" }
+      "*": { "status": 200, "file": "./dist/index.html" }
     }
   }
 }
@@ -1189,9 +893,7 @@ that doesn't match a named host. Sites are evaluated in order.
 ```json
 {
   "port": 3000,
-  "logging": "dev",
   "cors": true,
-  "hotReload": { "extensions": [".html", ".css", ".js", ".ts", ".json"] },
   "static": "./src",
   "staticOptions": { "etag": false, "lastModified": false },
   "proxy": { "/api": "http://localhost:4000" },
@@ -1204,37 +906,31 @@ that doesn't match a named host. Sites are evaluated in order.
 ```json
 {
   "port": 8080,
-  "logging": "combined",
   "ipFilter": { "allow": ["10.0.0.0/8"] },
   "proxy": {
-    "/users":   "http://users-svc:4001",
-    "/orders":  "http://orders-svc:4002",
-    "/catalog": {
-      "targets": ["http://catalog1:4003", "http://catalog2:4003"],
-      "strategy": "round-robin",
-      "healthCheck": { "path": "/health", "intervalSecs": 5 }
-    }
+    "/users": "http://users-svc:4001",
+    "/orders": "http://orders-svc:4002",
+    "/catalog": ["http://catalog1:4003", "http://catalog2:4003"]
   },
   "healthCheck": true,
   "metrics": { "path": "/__metrics__" }
 }
 ```
 
-### File upload service
+### TLS + HTTP/2 site
 
 ```json
 {
-  "port": 3000,
-  "ipFilter": { "allow": ["10.0.0.0/8"] },
-  "limits": { "maxBodyBytes": 52428800 },
-  "upload": {
-    "path": "/upload",
-    "dir": "./uploads",
-    "maxFileSizeBytes": 10485760,
-    "maxFiles": 10,
-    "allowedMimeTypes": ["image/jpeg", "image/png", "image/webp", "application/pdf"]
+  "port": 443,
+  "tls": {
+    "cert": "./certs/cert.pem",
+    "key": "./certs/key.pem",
+    "httpRedirectPort": 80
   },
-  "static": { "/files": "./uploads" },
+  "http2": true,
+  "securityHeaders": true,
+  "static": "./dist",
+  "staticOptions": { "maxAge": "1d" },
   "healthCheck": true
 }
 ```
@@ -1253,31 +949,13 @@ Change the address in the `global` config:
 Or override for a single command:
 
 ```bash
-conduit reload --admin 127.0.0.1:2019
+conduit status --admin 127.0.0.1:2019
 ```
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/status` | GET | Server version, uptime, inflight requests |
-| `/reload` | POST | Apply config changes (hot-reload) |
-| `/shutdown` | POST | Graceful shutdown |
-| `/upstreams` | GET | All upstreams with health and latency |
-| `/upstreams/add` | POST | Add upstream in memory |
-| `/upstreams/remove` | POST | Remove upstream from memory |
-| `/upstreams/weight` | POST | Change upstream weight |
-
-**What `reload` can and cannot change without restart:**
-
-| Can reload | Cannot reload (requires restart) |
-|---|---|
-| `proxy`, `static`, `fallback` | `port` |
-| `logging`, `compression`, `cors` | `tls.cert` / `tls.key` |
-| `rateLimit`, `basicAuth`, `ipFilter` | `http2.*` |
-| `headers`, `redirects`, `limits` | `global.workers` |
-| `metrics`, `healthCheck`, `upload` | `global.admin.bind` |
-
-When you try to reload a cold field, Conduit returns an error listing exactly which fields
-need a restart.
+| Endpoint    | Method | Description                               |
+| ----------- | ------ | ----------------------------------------- |
+| `/status`   | GET    | Server version, uptime, inflight requests |
+| `/shutdown` | POST   | Graceful shutdown                         |
 
 ---
 
@@ -1336,9 +1014,6 @@ services:
 ## Benchmarks
 
 See [BENCHMARKS.md](BENCHMARKS.md).
-
-> **Note:** Published numbers are design targets, not yet measured results.
-> Real benchmark runs will be added as the project matures.
 
 ---
 

@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -11,18 +11,63 @@ use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
+use prometheus::{CounterVec, HistogramVec};
 
 use crate::config::schema::AppConfig;
-use crate::filter::{ip_filter, limits, redirects};
-use crate::handler::{fallback, health, response, static_files};
+use crate::filter::{auth, cors, ip_filter, limits, rate_limit, redirects, security_headers};
+use crate::filter::rate_limit::RateLimiter;
+use crate::handler::{fallback, health, metrics as metrics_handler, response, static_files};
 use crate::proxy::ctx::{LocalHandler, RequestCtx, UpstreamTarget};
 use crate::proxy::{router, upstream};
+
+// ── Prometheus metrics (registered once per process) ─────────────────────────
+
+static METRICS: OnceLock<Arc<ConduitMetrics>> = OnceLock::new();
+
+pub struct ConduitMetrics {
+    pub requests_total: CounterVec,
+    pub request_duration_seconds: HistogramVec,
+}
+
+impl ConduitMetrics {
+    pub fn global() -> Arc<Self> {
+        METRICS
+            .get_or_init(|| {
+                let requests_total = prometheus::register_counter_vec!(
+                    "conduit_requests_total",
+                    "Total number of HTTP requests handled",
+                    &["method", "status"]
+                )
+                .expect("register conduit_requests_total");
+
+                let request_duration_seconds = prometheus::register_histogram_vec!(
+                    "conduit_request_duration_seconds",
+                    "HTTP request duration in seconds",
+                    &["method", "status"],
+                    vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+                )
+                .expect("register conduit_request_duration_seconds");
+
+                Arc::new(Self {
+                    requests_total,
+                    request_duration_seconds,
+                })
+            })
+            .clone()
+    }
+}
+
+// ── AppState ──────────────────────────────────────────────────────────────────
 
 pub struct AppState {
     pub config: Arc<ArcSwap<AppConfig>>,
     pub inflight: Arc<AtomicUsize>,
     /// Per-route round-robin counters shared across all request threads.
     pub round_robin: Arc<DashMap<String, AtomicUsize>>,
+    /// Token-bucket rate-limiter state, keyed by client IP or header value.
+    pub rate_limiter: Arc<RateLimiter>,
+    /// Prometheus metrics counters and histograms.
+    pub metrics: Arc<ConduitMetrics>,
 }
 
 impl AppState {
@@ -31,9 +76,13 @@ impl AppState {
             config: Arc::new(ArcSwap::new(Arc::new(config))),
             inflight: Arc::new(AtomicUsize::new(0)),
             round_robin: Arc::new(DashMap::new()),
+            rate_limiter: Arc::new(DashMap::new()),
+            metrics: ConduitMetrics::global(),
         }
     }
 }
+
+// ── ConduitProxy ──────────────────────────────────────────────────────────────
 
 pub struct ConduitProxy {
     pub state: Arc<AppState>,
@@ -53,10 +102,16 @@ impl ProxyHttp for ConduitProxy {
     {
         self.state.inflight.fetch_add(1, Ordering::Relaxed);
 
-        let (req_ctx, ip_cfg, limits_cfg, redirect_result) = {
+        // ── Gather request metadata before borrowing the config ───────────────
+        let request_origin = cors::request_origin(session);
+        let is_cors_preflight = cors::is_preflight(session);
+
+        // ── Load config once — extract all per-site filters ───────────────────
+        let (mut req_ctx, ip_cfg, limits_cfg, rate_limit_cfg, basic_auth_cfg, api_key_cfg,
+             cors_cfg, security_cfg, redirect_result) =
+        {
             let config = self.state.config.load();
             let host = extract_host(session);
-            // Include query string so redirect rules can preserve it.
             let path_and_query = session
                 .req_header()
                 .uri
@@ -64,17 +119,59 @@ impl ProxyHttp for ConduitProxy {
                 .map(|pq| pq.as_str().to_owned())
                 .unwrap_or_else(|| session.req_header().uri.path().to_owned());
             let path = session.req_header().uri.path().to_owned();
-            let req_ctx =
-                router::route_request(&config, &host, &path, &self.state.round_robin);
+
+            let req_ctx = router::route_request(&config, &host, &path, &self.state.round_robin);
             let site = config.sites.get(req_ctx.site_idx);
-            let ip_cfg = site.and_then(|s| s.ip_filter.clone());
-            let limits_cfg = site.and_then(|s| s.limits.clone());
+
+            let ip_cfg         = site.and_then(|s| s.ip_filter.clone());
+            let limits_cfg     = site.and_then(|s| s.limits.clone());
+            let rate_limit_cfg = site.and_then(|s| s.rate_limit.clone());
+            let basic_auth_cfg = site.and_then(|s| s.basic_auth.clone());
+            let api_key_cfg    = site.and_then(|s| s.api_key.clone());
+            let cors_cfg       = site.and_then(|s| s.cors.clone());
+            let security_cfg   = site.and_then(|s| s.security_headers.clone());
             let redirect_result = site
                 .and_then(|s| s.redirects.as_deref())
                 .and_then(|rules| redirects::apply_redirects(rules, &path_and_query));
-            (req_ctx, ip_cfg, limits_cfg, redirect_result)
+
+            (req_ctx, ip_cfg, limits_cfg, rate_limit_cfg, basic_auth_cfg, api_key_cfg,
+             cors_cfg, security_cfg, redirect_result)
         };
 
+        // ── Build planned response headers (CORS + security) ──────────────────
+        // These are injected into every response written for this request.
+        {
+            let cors_hdrs = cors_cfg
+                .as_ref()
+                .map(|c| cors::response_headers(c, request_origin.as_deref()))
+                .unwrap_or_default();
+            let sec_hdrs = security_cfg
+                .as_ref()
+                .map(|c| security_headers::header_entries(c))
+                .unwrap_or_default();
+            req_ctx.extra_headers = cors_hdrs
+                .into_iter()
+                .chain(sec_hdrs)
+                .collect();
+        }
+
+        // Pre-compute just the security part for the preflight response
+        // (preflight adds its own CORS headers separately).
+        let sec_only: Vec<(String, String)> = security_cfg
+            .as_ref()
+            .map(|c| security_headers::header_entries(c))
+            .unwrap_or_default();
+
+        // Determine handler kind so we can skip filters for the health endpoint.
+        let handler_kind = match &req_ctx.upstream {
+            UpstreamTarget::Local(LocalHandler::Health)  => HandlerKind::Health,
+            UpstreamTarget::Local(LocalHandler::Metrics { .. }) => HandlerKind::Metrics,
+            UpstreamTarget::Local(LocalHandler::StaticFile { .. }) => HandlerKind::StaticFile,
+            UpstreamTarget::Local(_) => HandlerKind::Fallback,
+            _ => HandlerKind::Proxy,
+        };
+
+        // ── 1. IP filter (all requests, including health) ─────────────────────
         if let Some(ref ip_cfg) = ip_cfg {
             if !ip_filter::is_allowed(ip_cfg, session) {
                 response::write_response(
@@ -82,6 +179,7 @@ impl ProxyHttp for ConduitProxy {
                     403,
                     "text/plain",
                     Bytes::from_static(b"Forbidden"),
+                    &req_ctx.extra_headers,
                 )
                 .await?;
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
@@ -89,23 +187,26 @@ impl ProxyHttp for ConduitProxy {
             }
         }
 
-        // Redirects are checked after IP filtering but before auth / rate limiting.
-        // Health and metrics paths are never redirected (they have no redirect rules
-        // in practice, but the health check match is already handled above in routing).
-        if let Some((location, status)) = redirect_result {
-            response::write_redirect(session, status, &location).await?;
-            self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-            return Ok(true);
+        // ── 2. CORS preflight ─────────────────────────────────────────────────
+        // Handled after ip_filter but before any auth — OPTIONS preflights must
+        // not be blocked by authentication (browsers send them without credentials).
+        if is_cors_preflight {
+            if let Some(ref cfg) = cors_cfg {
+                cors::handle_preflight(
+                    session,
+                    cfg,
+                    request_origin.as_deref().unwrap_or(""),
+                    &sec_only,
+                )
+                .await?;
+                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                return Ok(true);
+            }
         }
 
-        let handler_kind = match &req_ctx.upstream {
-            UpstreamTarget::Local(LocalHandler::Health) => HandlerKind::Health,
-            UpstreamTarget::Local(LocalHandler::StaticFile { .. }) => HandlerKind::StaticFile,
-            UpstreamTarget::Local(_) => HandlerKind::Fallback,
-            _ => HandlerKind::Proxy,
-        };
-
+        // ── 3–5. Limits, rate-limit, and auth are skipped for health ──────────
         if !matches!(handler_kind, HandlerKind::Health) {
+            // 3. Request size / header limits.
             if let Some(ref limits_cfg) = limits_cfg {
                 match limits::check(limits_cfg, session) {
                     limits::CheckResult::BodyTooLarge => {
@@ -114,6 +215,7 @@ impl ProxyHttp for ConduitProxy {
                             413,
                             "text/plain",
                             Bytes::from_static(b"Request Entity Too Large"),
+                            &req_ctx.extra_headers,
                         )
                         .await?;
                         self.state.inflight.fetch_sub(1, Ordering::Relaxed);
@@ -125,6 +227,7 @@ impl ProxyHttp for ConduitProxy {
                             431,
                             "text/plain",
                             Bytes::from_static(b"Request Header Fields Too Large"),
+                            &req_ctx.extra_headers,
                         )
                         .await?;
                         self.state.inflight.fetch_sub(1, Ordering::Relaxed);
@@ -133,18 +236,89 @@ impl ProxyHttp for ConduitProxy {
                     limits::CheckResult::Ok => {}
                 }
             }
+
+            // 4. Token-bucket rate limiting.
+            if let Some(ref rl_cfg) = rate_limit_cfg {
+                if !rate_limit::check(rl_cfg, session, &self.state.rate_limiter) {
+                    response::write_response(
+                        session,
+                        429,
+                        "text/plain",
+                        Bytes::from_static(b"Too Many Requests"),
+                        &req_ctx.extra_headers,
+                    )
+                    .await?;
+                    self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                    return Ok(true);
+                }
+            }
+
+            // 5a. Basic Auth.
+            if let Some(ref auth_cfg) = basic_auth_cfg {
+                match auth::check_basic_auth(auth_cfg, session) {
+                    auth::BasicAuthResult::Allowed => {}
+                    auth::BasicAuthResult::Denied { challenge, realm } => {
+                        let www_auth = if challenge {
+                            Some(format!("Basic realm=\"{realm}\""))
+                        } else {
+                            None
+                        };
+                        response::write_denied(
+                            session,
+                            www_auth.as_deref(),
+                            &req_ctx.extra_headers,
+                        )
+                        .await?;
+                        self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                        return Ok(true);
+                    }
+                }
+            }
+
+            // 5b. API key auth.
+            if let Some(ref key_cfg) = api_key_cfg {
+                if !auth::check_api_key(key_cfg, session) {
+                    response::write_denied(session, None, &req_ctx.extra_headers).await?;
+                    self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                    return Ok(true);
+                }
+            }
         }
 
+        // ── 6. Redirects ──────────────────────────────────────────────────────
+        if let Some((location, status)) = redirect_result {
+            response::write_redirect(session, status, &location, &req_ctx.extra_headers).await?;
+            self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+            return Ok(true);
+        }
+
+        // ── 7. Dispatch ───────────────────────────────────────────────────────
         *ctx = Some(req_ctx);
 
         match handler_kind {
             HandlerKind::Health => {
-                health::handle_health(session).await?;
+                let extra = ctx.as_ref().unwrap().extra_headers.as_slice();
+                health::handle_health(session, extra).await?;
+                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                Ok(true)
+            }
+            HandlerKind::Metrics => {
+                let (token, extra) = if let Some(RequestCtx {
+                    upstream: UpstreamTarget::Local(LocalHandler::Metrics { token }),
+                    extra_headers,
+                    ..
+                }) = ctx.as_ref()
+                {
+                    (token.as_deref().map(str::to_owned), extra_headers.as_slice().to_vec())
+                } else {
+                    unreachable!()
+                };
+                metrics_handler::handle_metrics(session, token.as_deref(), &extra).await?;
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
                 Ok(true)
             }
             HandlerKind::StaticFile => {
-                let (roots, options, strip_prefix) =
+                let (roots, options, strip_prefix, extra) =
                     if let Some(RequestCtx {
                         upstream:
                             UpstreamTarget::Local(LocalHandler::StaticFile {
@@ -152,23 +326,33 @@ impl ProxyHttp for ConduitProxy {
                                 options,
                                 strip_prefix,
                             }),
+                        extra_headers,
                         ..
                     }) = ctx.as_ref()
                     {
-                        (roots.clone(), options.clone(), strip_prefix.clone())
+                        (roots.clone(), options.clone(), strip_prefix.clone(), extra_headers.clone())
                     } else {
                         unreachable!()
                     };
-                static_files::handle_static(session, &roots, &options, strip_prefix.as_deref())
-                    .await?;
+                static_files::handle_static(
+                    session,
+                    &roots,
+                    &options,
+                    strip_prefix.as_deref(),
+                    &extra,
+                )
+                .await?;
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
                 Ok(true)
             }
             HandlerKind::Fallback => {
                 let config = self.state.config.load();
-                let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                let (site_idx, extra) = ctx
+                    .as_ref()
+                    .map(|c| (c.site_idx, c.extra_headers.clone()))
+                    .unwrap_or((0, vec![]));
                 let site = config.sites.get(site_idx);
-                fallback::handle_fallback(session, site).await?;
+                fallback::handle_fallback(session, site, &extra).await?;
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
                 Ok(true)
             }
@@ -186,7 +370,6 @@ impl ProxyHttp for ConduitProxy {
     {
         let req_ctx = ctx.as_mut().expect("ctx set in request_filter");
 
-        // Apply backoff before every retry attempt (attempt > 0).
         if let Some(ref retry) = req_ctx.retry {
             if retry.attempt > 0 {
                 if let Some(ms) = retry.backoff_ms {
@@ -195,8 +378,6 @@ impl ProxyHttp for ConduitProxy {
             }
         }
 
-        // When retry state is present, let it drive URL selection.
-        // This covers both the initial attempt (urls[0]) and all retries.
         let (addr_str, tls, sni) = if let Some(ref mut retry) = req_ctx.retry {
             let url = &retry.urls[retry.attempt % retry.urls.len()];
             let addr_str = upstream::url_to_host_port(url).ok_or_else(|| {
@@ -210,7 +391,6 @@ impl ProxyHttp for ConduitProxy {
             retry.attempt += 1;
             (addr_str, tls, sni)
         } else {
-            // No retry configured: use the addr already resolved by the router.
             match &req_ctx.upstream {
                 UpstreamTarget::Proxy { addr, tls, sni, .. } => {
                     (addr.clone(), *tls, sni.clone())
@@ -242,7 +422,6 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
-        // Add X-Forwarded-For
         let client_ip = session
             .client_addr()
             .and_then(|a| a.as_inet())
@@ -260,10 +439,8 @@ impl ProxyHttp for ConduitProxy {
             upstream_request.insert_header("x-forwarded-for", xff)?;
         }
 
-        // X-Forwarded-Proto (TLS support added in Phase 1.9)
         upstream_request.insert_header("x-forwarded-proto", "http")?;
 
-        // Strip prefix from request path if configured.
         if let Some(ctx_ref) = ctx.as_ref() {
             if let UpstreamTarget::Proxy {
                 strip_prefix: Some(pfx),
@@ -283,11 +460,6 @@ impl ProxyHttp for ConduitProxy {
         Ok(())
     }
 
-    /// Called when the upstream response header arrives.
-    ///
-    /// If the response is a 5xx and the route is configured to retry on 5xx,
-    /// we return an error here.  Pingora will invoke `error_while_proxy`, where
-    /// we mark the error as retryable, triggering a fresh call to `upstream_peer`.
     async fn upstream_response_filter(
         &self,
         _session: &mut Session,
@@ -297,15 +469,16 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
+        // Inject CORS + security headers into proxy responses.
         if let Some(req_ctx) = ctx.as_ref() {
+            for (name, value) in &req_ctx.extra_headers {
+                upstream_response.insert_header(name.clone(), value.clone())?;
+            }
+
+            // 5xx retry logic.
             if let Some(retry) = &req_ctx.retry {
                 let status = upstream_response.status.as_u16();
-                if status >= 500
-                    && retry.has_attempts_left()
-                    && retry.has_condition("5xx")
-                {
-                    // Returning an error here causes Pingora to call
-                    // `error_while_proxy`, where we mark this as retryable.
+                if status >= 500 && retry.has_attempts_left() && retry.has_condition("5xx") {
                     return Err(pingora_core::Error::explain(
                         pingora_core::ErrorType::Custom("5xx_retry"),
                         format!("upstream returned HTTP {status}; will retry"),
@@ -316,10 +489,6 @@ impl ProxyHttp for ConduitProxy {
         Ok(())
     }
 
-    /// Called when the connection to the upstream could not be established.
-    ///
-    /// We mark the error as retryable if the route is configured to retry on
-    /// `"connection_error"` or `"timeout"` and attempts remain.
     fn fail_to_connect(
         &self,
         _session: &mut Session,
@@ -342,7 +511,6 @@ impl ProxyHttp for ConduitProxy {
                             | SocketError
                     );
                     let is_timeout = matches!(e.etype(), ConnectTimedout);
-
                     if (is_conn_err && retry.has_condition("connection_error"))
                         || (is_timeout && retry.has_condition("timeout"))
                     {
@@ -354,8 +522,6 @@ impl ProxyHttp for ConduitProxy {
         e
     }
 
-    /// Called after a connection was established but an error occurred during
-    /// proxying (read/write errors, timeout, or our synthetic `5xx_retry`).
     fn error_while_proxy(
         &self,
         peer: &HttpPeer,
@@ -366,7 +532,6 @@ impl ProxyHttp for ConduitProxy {
     ) -> Box<pingora_core::Error> {
         use pingora_core::ErrorType::*;
 
-        // Apply default Pingora logic first: decide retry based on connection reuse.
         let mut e = e.more_context(format!("Peer: {peer}"));
         e.retry
             .decide_reuse(client_reused && !session.as_ref().retry_buffer_truncated());
@@ -374,10 +539,8 @@ impl ProxyHttp for ConduitProxy {
         if let Some(req_ctx) = ctx.as_ref() {
             if let Some(retry) = &req_ctx.retry {
                 if retry.has_attempts_left() {
-                    let is_timeout =
-                        matches!(e.etype(), ReadTimedout | WriteTimedout);
+                    let is_timeout = matches!(e.etype(), ReadTimedout | WriteTimedout);
                     let is_5xx_retry = matches!(e.etype(), Custom("5xx_retry"));
-
                     if (is_timeout && retry.has_condition("timeout"))
                         || (is_5xx_retry && retry.has_condition("5xx"))
                     {
@@ -391,22 +554,46 @@ impl ProxyHttp for ConduitProxy {
 
     async fn logging(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         _e: Option<&pingora_core::Error>,
         ctx: &mut Self::CTX,
     ) where
         Self::CTX: Send + Sync,
     {
-        if let Some(req_ctx) = ctx {
+        // Decrement inflight for proxy requests (local handlers decrement inline).
+        if let Some(req_ctx) = ctx.as_ref() {
             if !matches!(req_ctx.upstream, UpstreamTarget::Local(_)) {
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
             }
         }
+
+        // Record Prometheus metrics.
+        let method = session.req_header().method.as_str().to_owned();
+        let status = session
+            .response_written()
+            .map(|h| h.status.as_u16().to_string())
+            .unwrap_or_else(|| "0".to_owned());
+        let elapsed = ctx
+            .as_ref()
+            .map(|c| c.start_time.elapsed().as_secs_f64())
+            .unwrap_or(0.0);
+
+        self.state
+            .metrics
+            .requests_total
+            .with_label_values(&[&method, &status])
+            .inc();
+        self.state
+            .metrics
+            .request_duration_seconds
+            .with_label_values(&[&method, &status])
+            .observe(elapsed);
     }
 }
 
 enum HandlerKind {
     Health,
+    Metrics,
     StaticFile,
     Fallback,
     Proxy,
@@ -443,4 +630,3 @@ fn rebuild_uri(original: &http::Uri, new_path: &str) -> Result<http::Uri> {
         )
     })
 }
-

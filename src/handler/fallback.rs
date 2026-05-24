@@ -5,16 +5,31 @@ use pingora_proxy::Session;
 use crate::config::schema::{FallbackConfig, SiteConfig};
 use crate::handler::response::write_response;
 
-pub async fn handle_fallback(session: &mut Session, site: Option<&SiteConfig>) -> Result<()> {
+pub async fn handle_fallback(
+    session: &mut Session,
+    site: Option<&SiteConfig>,
+    extra: &[(String, String)],
+) -> Result<()> {
     if let Some(site) = site {
         if let Some(fb) = &site.fallback {
-            return handle_configured(session, fb).await;
+            return handle_configured(session, fb, extra).await;
         }
     }
-    write_response(session, 404, "text/plain", Bytes::from_static(b"Not Found")).await
+    write_response(
+        session,
+        404,
+        "text/plain",
+        Bytes::from_static(b"Not Found"),
+        extra,
+    )
+    .await
 }
 
-async fn handle_configured(session: &mut Session, fb: &FallbackConfig) -> Result<()> {
+async fn handle_configured(
+    session: &mut Session,
+    fb: &FallbackConfig,
+    extra: &[(String, String)],
+) -> Result<()> {
     let status = fb.status.unwrap_or(404);
     let body = if let Some(b) = &fb.body {
         Bytes::from(b.to_string())
@@ -26,5 +41,5 @@ async fn handle_configured(session: &mut Session, fb: &FallbackConfig) -> Result
     } else {
         "text/plain"
     };
-    write_response(session, status, ct, body).await
+    write_response(session, status, ct, body, extra).await
 }

@@ -13,6 +13,9 @@ pub struct RequestCtx {
     pub accept_enc: AcceptEncoding,
     /// Populated when the matched route has a `retry` configuration.
     pub retry: Option<RetryState>,
+    /// CORS + security headers to inject into every response for this request.
+    /// Computed once in `request_filter` and reused for all write paths.
+    pub extra_headers: Vec<(String, String)>,
 }
 
 impl RequestCtx {
@@ -23,6 +26,7 @@ impl RequestCtx {
             start_time: Instant::now(),
             accept_enc: AcceptEncoding::default(),
             retry,
+            extra_headers: Vec::new(),
         }
     }
 }

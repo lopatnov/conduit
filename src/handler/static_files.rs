@@ -17,6 +17,7 @@ pub async fn handle_static(
     roots: &[PathBuf],
     options: &Arc<StaticOptions>,
     strip_prefix: Option<&str>,
+    extra: &[(String, String)],
 ) -> Result<()> {
     let method = session.req_header().method.clone();
     let req_path = session.req_header().uri.path().to_owned();
@@ -38,18 +39,18 @@ pub async fn handle_static(
     let dot_policy = options.dot_files.as_deref().unwrap_or("ignore");
     if has_dotfile(&rel) {
         return match dot_policy {
-            "deny" => write_error(session, 403, "Forbidden").await,
-            _ => write_error(session, 404, "Not Found").await,
+            "deny" => write_error(session, 403, "Forbidden", extra).await,
+            _ => write_error(session, 404, "Not Found", extra).await,
         };
     }
 
     let Some(file_path) = find_file(roots, &rel, options).await else {
-        return write_error(session, 404, "Not Found").await;
+        return write_error(session, 404, "Not Found", extra).await;
     };
 
     let meta = match tokio::fs::metadata(&file_path).await {
         Ok(m) => m,
-        Err(_) => return write_error(session, 404, "Not Found").await,
+        Err(_) => return write_error(session, 404, "Not Found", extra).await,
     };
 
     let file_size = meta.len();
@@ -65,7 +66,8 @@ pub async fn handle_static(
     // If-None-Match
     if let Some(inm) = hdrs.get("if-none-match").and_then(|v| v.to_str().ok()) {
         if inm == etag || inm == "*" {
-            return write_not_modified(session, &etag, &last_modified, &cache_control).await;
+            return write_not_modified(session, &etag, &last_modified, &cache_control, extra)
+                .await;
         }
     }
 
@@ -73,10 +75,15 @@ pub async fn handle_static(
     if hdrs.get("if-none-match").is_none() {
         if let Some(ims) = hdrs.get("if-modified-since").and_then(|v| v.to_str().ok()) {
             if let Ok(ims_time) = httpdate::parse_http_date(ims) {
-                // Allow 1-second rounding
                 if mtime <= ims_time + Duration::from_secs(1) {
-                    return write_not_modified(session, &etag, &last_modified, &cache_control)
-                        .await;
+                    return write_not_modified(
+                        session,
+                        &etag,
+                        &last_modified,
+                        &cache_control,
+                        extra,
+                    )
+                    .await;
                 }
             }
         }
@@ -84,7 +91,6 @@ pub async fn handle_static(
 
     let is_head = method.as_str() == "HEAD";
 
-    // Range request
     if let Some(range_hdr) = hdrs.get("range").and_then(|v| v.to_str().ok()) {
         return serve_range(
             session,
@@ -96,6 +102,7 @@ pub async fn handle_static(
             &last_modified,
             &cache_control,
             is_head,
+            extra,
         )
         .await;
     }
@@ -109,6 +116,7 @@ pub async fn handle_static(
         &last_modified,
         &cache_control,
         is_head,
+        extra,
     )
     .await
 }
@@ -128,7 +136,6 @@ async fn find_file(roots: &[PathBuf], rel: &str, options: &StaticOptions) -> Opt
             _ => {}
         }
     }
-    // For empty rel (root path), try index directly on each root
     if rel.is_empty() {
         for root in roots {
             if let Some(p) = find_index(root, options).await {
@@ -144,7 +151,11 @@ async fn find_index(dir: &Path, options: &StaticOptions) -> Option<PathBuf> {
     let indices = options.index.as_deref().unwrap_or(&defaults);
     for name in indices {
         let p = dir.join(name);
-        if tokio::fs::metadata(&p).await.map(|m| m.is_file()).unwrap_or(false) {
+        if tokio::fs::metadata(&p)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+        {
             return Some(p);
         }
     }
@@ -152,6 +163,13 @@ async fn find_index(dir: &Path, options: &StaticOptions) -> Option<PathBuf> {
 }
 
 // ── Response helpers ───────────────────────────────────────────────────────
+
+fn insert_extra(resp: &mut ResponseHeader, extra: &[(String, String)]) -> Result<()> {
+    for (name, value) in extra {
+        resp.insert_header(name.clone(), value.clone())?;
+    }
+    Ok(())
+}
 
 #[allow(clippy::too_many_arguments)]
 async fn serve_full(
@@ -163,14 +181,16 @@ async fn serve_full(
     last_modified: &str,
     cache_control: &str,
     is_head: bool,
+    extra: &[(String, String)],
 ) -> Result<()> {
-    let mut resp = ResponseHeader::build(200, Some(6))?;
+    let mut resp = ResponseHeader::build(200, Some(6 + extra.len()))?;
     resp.insert_header("content-type", content_type)?;
     resp.insert_header("content-length", size.to_string())?;
     resp.insert_header("etag", etag)?;
     resp.insert_header("last-modified", last_modified)?;
     resp.insert_header("cache-control", cache_control)?;
     resp.insert_header("accept-ranges", "bytes")?;
+    insert_extra(&mut resp, extra)?;
 
     if is_head {
         session.write_response_header(Box::new(resp), true).await?;
@@ -178,10 +198,9 @@ async fn serve_full(
     }
 
     session.write_response_header(Box::new(resp), false).await?;
-
-    let body = tokio::fs::read(path)
-        .await
-        .map_err(|e| pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string()))?;
+    let body = tokio::fs::read(path).await.map_err(|e| {
+        pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
+    })?;
     session
         .write_response_body(Some(Bytes::from(body)), true)
         .await
@@ -198,17 +217,19 @@ async fn serve_range(
     last_modified: &str,
     cache_control: &str,
     is_head: bool,
+    extra: &[(String, String)],
 ) -> Result<()> {
     let Some((start, end)) = parse_range(&range_hdr, total) else {
-        let mut resp = ResponseHeader::build(416, Some(2))?;
+        let mut resp = ResponseHeader::build(416, Some(2 + extra.len()))?;
         resp.insert_header("content-range", format!("bytes */{total}"))?;
         resp.insert_header("content-length", "0")?;
+        insert_extra(&mut resp, extra)?;
         session.write_response_header(Box::new(resp), true).await?;
         return Ok(());
     };
 
     let length = end - start + 1;
-    let mut resp = ResponseHeader::build(206, Some(7))?;
+    let mut resp = ResponseHeader::build(206, Some(7 + extra.len()))?;
     resp.insert_header("content-type", content_type)?;
     resp.insert_header("content-length", length.to_string())?;
     resp.insert_header("content-range", format!("bytes {start}-{end}/{total}"))?;
@@ -216,6 +237,7 @@ async fn serve_range(
     resp.insert_header("last-modified", last_modified)?;
     resp.insert_header("cache-control", cache_control)?;
     resp.insert_header("accept-ranges", "bytes")?;
+    insert_extra(&mut resp, extra)?;
 
     if is_head {
         session.write_response_header(Box::new(resp), true).await?;
@@ -224,17 +246,19 @@ async fn serve_range(
 
     session.write_response_header(Box::new(resp), false).await?;
 
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .map_err(|e| pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string()))?;
+    let mut file = tokio::fs::File::open(path).await.map_err(|e| {
+        pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
+    })?;
     file.seek(std::io::SeekFrom::Start(start))
         .await
-        .map_err(|e| pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string()))?;
+        .map_err(|e| {
+            pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
+        })?;
 
     let mut buf = vec![0u8; length as usize];
-    file.read_exact(&mut buf)
-        .await
-        .map_err(|e| pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string()))?;
+    file.read_exact(&mut buf).await.map_err(|e| {
+        pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
+    })?;
     session
         .write_response_body(Some(Bytes::from(buf)), true)
         .await
@@ -245,19 +269,27 @@ async fn write_not_modified(
     etag: &str,
     last_modified: &str,
     cache_control: &str,
+    extra: &[(String, String)],
 ) -> Result<()> {
-    let mut resp = ResponseHeader::build(304, Some(3))?;
+    let mut resp = ResponseHeader::build(304, Some(3 + extra.len()))?;
     resp.insert_header("etag", etag)?;
     resp.insert_header("last-modified", last_modified)?;
     resp.insert_header("cache-control", cache_control)?;
+    insert_extra(&mut resp, extra)?;
     session.write_response_header(Box::new(resp), true).await
 }
 
-async fn write_error(session: &mut Session, status: u16, msg: &'static str) -> Result<()> {
+async fn write_error(
+    session: &mut Session,
+    status: u16,
+    msg: &'static str,
+    extra: &[(String, String)],
+) -> Result<()> {
     let body = Bytes::from_static(msg.as_bytes());
-    let mut resp = ResponseHeader::build(status, Some(2))?;
+    let mut resp = ResponseHeader::build(status, Some(2 + extra.len()))?;
     resp.insert_header("content-type", "text/plain")?;
     resp.insert_header("content-length", body.len().to_string())?;
+    insert_extra(&mut resp, extra)?;
     session.write_response_header(Box::new(resp), false).await?;
     session.write_response_body(Some(body), true).await
 }
@@ -304,7 +336,7 @@ fn percent_decode(s: &str) -> String {
             let hex = &bytes[i + 1..i + 3];
             if let Ok(hs) = std::str::from_utf8(hex) {
                 if let Ok(byte) = u8::from_str_radix(hs, 16) {
-                    // Never decode %2F ('/') — that would allow path traversal
+                    // Never decode %2F ('/') — that would allow path traversal.
                     if byte != b'/' {
                         out.push(byte);
                         i += 3;
@@ -334,5 +366,7 @@ fn sanitize_path(path: &str) -> String {
 }
 
 fn has_dotfile(rel_path: &str) -> bool {
-    rel_path.split('/').any(|seg| seg.starts_with('.') && !seg.is_empty())
+    rel_path
+        .split('/')
+        .any(|seg| seg.starts_with('.') && !seg.is_empty())
 }
