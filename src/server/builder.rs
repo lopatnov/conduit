@@ -12,6 +12,9 @@ use crate::config::schema::{AppConfig, SiteConfig};
 use crate::proxy::service::{AppState, ConduitProxy};
 use crate::server::tls as tls_util;
 
+/// Maps a TCP port to `(cert_path, key_path, h2_enabled)` for TLS-enabled ports.
+type TlsPortMap = HashMap<u16, (String, String, bool)>;
+
 /// Classify each site's port into either a TLS entry (cert, key, h2-enabled)
 /// or a plain-TCP entry.
 ///
@@ -19,8 +22,8 @@ use crate::server::tls as tls_util;
 /// ACME or incomplete TLS configuration fall back to plain TCP.
 ///
 /// Returns `(port_tls, port_plain)`.
-fn classify_ports(sites: &[SiteConfig]) -> (HashMap<u16, (String, String, bool)>, HashSet<u16>) {
-    let mut port_tls: HashMap<u16, (String, String, bool)> = HashMap::new();
+fn classify_ports(sites: &[SiteConfig]) -> (TlsPortMap, HashSet<u16>) {
+    let mut port_tls: TlsPortMap = HashMap::new();
     let mut port_plain: HashSet<u16> = HashSet::new();
 
     if sites.is_empty() {

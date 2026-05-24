@@ -14,7 +14,8 @@ use pingora_proxy::{ProxyHttp, Session};
 use prometheus::{CounterVec, HistogramVec};
 
 use crate::config::schema::{
-    ApiKeyConfig, AppConfig, BasicAuthConfig, IpFilterConfig, LimitsConfig, RateLimitConfig,
+    ApiKeyConfig, AppConfig, BasicAuthConfig, CorsConfig, IpFilterConfig, LimitsConfig,
+    RateLimitConfig,
 };
 use crate::filter::rate_limit::RateLimiter;
 use crate::filter::{auth, cors, ip_filter, limits, rate_limit, redirects, security_headers};
@@ -174,24 +175,21 @@ impl ConduitProxy {
         let handler_kind = handler_kind_of(&req_ctx.upstream);
 
         // ── Guard filters (ip, cors, limits, auth, redirects) ─────────────────
-        if self
-            .run_guard_filters(
-                session,
-                &ip_cfg,
-                &limits_cfg,
-                &rate_limit_cfg,
-                &basic_auth_cfg,
-                &api_key_cfg,
-                &cors_cfg,
-                redirect_result,
-                &handler_kind,
-                is_cors_preflight,
-                &sec_only,
-                request_origin.as_deref(),
-                &req_ctx.extra_headers,
-            )
-            .await?
-        {
+        let guards = GuardCtx {
+            ip_cfg,
+            limits_cfg,
+            rate_limit_cfg,
+            basic_auth_cfg,
+            api_key_cfg,
+            cors_cfg,
+            redirect_result,
+            handler_kind: handler_kind.clone(),
+            is_preflight: is_cors_preflight,
+            sec_only,
+            origin: request_origin,
+            extra_headers: req_ctx.extra_headers.clone(),
+        };
+        if self.run_guard_filters(session, guards).await? {
             return Ok(true);
         }
 
@@ -205,31 +203,16 @@ impl ConduitProxy {
     /// Returns `Ok(true)` when a filter has already written a response and
     /// decremented the inflight counter (caller must return `Ok(true)` too).
     /// Returns `Ok(false)` to continue to the dispatcher.
-    async fn run_guard_filters(
-        &self,
-        session: &mut Session,
-        ip_cfg: &Option<IpFilterConfig>,
-        limits_cfg: &Option<LimitsConfig>,
-        rate_limit_cfg: &Option<RateLimitConfig>,
-        basic_auth_cfg: &Option<BasicAuthConfig>,
-        api_key_cfg: &Option<ApiKeyConfig>,
-        cors_cfg: &Option<crate::config::schema::CorsConfig>,
-        redirect_result: Option<(String, u16)>,
-        handler_kind: &HandlerKind,
-        is_cors_preflight: bool,
-        sec_only: &[(String, String)],
-        request_origin: Option<&str>,
-        extra_headers: &[(String, String)],
-    ) -> Result<bool> {
+    async fn run_guard_filters(&self, session: &mut Session, guards: GuardCtx) -> Result<bool> {
         // 1. IP filter — applied to every request, including health and metrics.
-        if let Some(ref cfg) = ip_cfg {
+        if let Some(ref cfg) = guards.ip_cfg {
             if !ip_filter::is_allowed(cfg, session) {
                 response::write_response(
                     session,
                     403,
                     "text/plain",
                     Bytes::from_static(b"Forbidden"),
-                    extra_headers,
+                    &guards.extra_headers,
                 )
                 .await?;
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
@@ -238,17 +221,17 @@ impl ConduitProxy {
         }
 
         // 2. CORS preflight — before auth; browsers send OPTIONS without credentials.
-        if is_cors_preflight {
-            if let Some(ref cfg) = cors_cfg {
-                cors::handle_preflight(session, cfg, request_origin.unwrap_or(""), sec_only)
-                    .await?;
+        if guards.is_preflight {
+            if let Some(ref cfg) = guards.cors_cfg {
+                let origin = guards.origin.as_deref().unwrap_or("");
+                cors::handle_preflight(session, cfg, origin, &guards.sec_only).await?;
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
                 return Ok(true);
             }
         }
 
         // Health endpoint bypasses all remaining filters.
-        if matches!(handler_kind, HandlerKind::Health) {
+        if matches!(guards.handler_kind, HandlerKind::Health) {
             return Ok(false);
         }
 
@@ -256,11 +239,11 @@ impl ConduitProxy {
         if self
             .check_non_health_guards(
                 session,
-                limits_cfg,
-                rate_limit_cfg,
-                basic_auth_cfg,
-                api_key_cfg,
-                extra_headers,
+                &guards.limits_cfg,
+                &guards.rate_limit_cfg,
+                &guards.basic_auth_cfg,
+                &guards.api_key_cfg,
+                &guards.extra_headers,
             )
             .await?
         {
@@ -268,8 +251,8 @@ impl ConduitProxy {
         }
 
         // 6. Redirects.
-        if let Some((location, status)) = redirect_result {
-            response::write_redirect(session, status, &location, extra_headers).await?;
+        if let Some((location, status)) = guards.redirect_result {
+            response::write_redirect(session, status, &location, &guards.extra_headers).await?;
             self.state.inflight.fetch_sub(1, Ordering::Relaxed);
             return Ok(true);
         }
@@ -688,12 +671,30 @@ impl ProxyHttp for ConduitProxy {
     }
 }
 
+#[derive(Clone)]
 enum HandlerKind {
     Health,
     Metrics,
     StaticFile,
     Fallback,
     Proxy,
+}
+
+/// All per-request guard data bundled into one value to keep `run_guard_filters`
+/// within clippy's argument-count limit (7).
+struct GuardCtx {
+    ip_cfg: Option<IpFilterConfig>,
+    limits_cfg: Option<LimitsConfig>,
+    rate_limit_cfg: Option<RateLimitConfig>,
+    basic_auth_cfg: Option<BasicAuthConfig>,
+    api_key_cfg: Option<ApiKeyConfig>,
+    cors_cfg: Option<CorsConfig>,
+    redirect_result: Option<(String, u16)>,
+    handler_kind: HandlerKind,
+    is_preflight: bool,
+    sec_only: Vec<(String, String)>,
+    origin: Option<String>,
+    extra_headers: Vec<(String, String)>,
 }
 
 /// Classify a request's upstream target into a `HandlerKind` for filter routing.
