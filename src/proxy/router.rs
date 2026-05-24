@@ -4,7 +4,10 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
-use crate::config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget, SiteConfig, StaticConfig};
+use crate::config::schema::{
+    AppConfig, ConnectionPoolConfig, ProxyConfig, ProxyRouteTarget, ProxyTimeout, SiteConfig,
+    StaticConfig,
+};
 use crate::proxy::ctx::{LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::upstream;
 
@@ -17,24 +20,34 @@ pub fn route_request(
     let site_idx = find_site_idx(config, host).unwrap_or(0);
     let site = config.sites.get(site_idx);
 
-    let (upstream, retry) = if is_health_path(site, path) {
-        (UpstreamTarget::Local(LocalHandler::Health), None)
+    let (upstream, retry, proxy_timeout, proxy_pool) = if is_health_path(site, path) {
+        (UpstreamTarget::Local(LocalHandler::Health), None, None, None)
     } else if let Some(token) = metrics_token(site, path) {
-        (UpstreamTarget::Local(LocalHandler::Metrics { token }), None)
+        (
+            UpstreamTarget::Local(LocalHandler::Metrics { token }),
+            None,
+            None,
+            None,
+        )
     } else if let Some(site) = site {
         route_site(site, path, counters)
     } else {
-        (UpstreamTarget::Local(LocalHandler::Fallback), None)
+        (UpstreamTarget::Local(LocalHandler::Fallback), None, None, None)
     };
 
-    RequestCtx::new(site_idx, upstream, retry)
+    RequestCtx::new(site_idx, upstream, retry, proxy_timeout, proxy_pool)
 }
 
 fn route_site(
     site: &SiteConfig,
     path: &str,
     counters: &DashMap<String, AtomicUsize>,
-) -> (UpstreamTarget, Option<RetryState>) {
+) -> (
+    UpstreamTarget,
+    Option<RetryState>,
+    Option<ProxyTimeout>,
+    Option<ConnectionPoolConfig>,
+) {
     // Proxy routes take priority over static files.
     if let Some(proxy_cfg) = &site.proxy {
         if let Some(result) = resolve_proxy(proxy_cfg, path, counters) {
@@ -54,27 +67,40 @@ fn route_site(
                     strip_prefix,
                 }),
                 None,
+                None,
+                None,
             );
         }
     }
 
-    (UpstreamTarget::Local(LocalHandler::Fallback), None)
+    (UpstreamTarget::Local(LocalHandler::Fallback), None, None, None)
 }
 
 fn resolve_proxy(
     config: &ProxyConfig,
     path: &str,
     counters: &DashMap<String, AtomicUsize>,
-) -> Option<(UpstreamTarget, Option<RetryState>)> {
+) -> Option<(
+    UpstreamTarget,
+    Option<RetryState>,
+    Option<ProxyTimeout>,
+    Option<ConnectionPoolConfig>,
+)> {
     match config {
-        ProxyConfig::Single(url) => Some((url_to_proxy_upstream(url, None)?, None)),
+        ProxyConfig::Single(url) => {
+            Some((url_to_proxy_upstream(url, None)?, None, None, None))
+        }
         ProxyConfig::Routes(routes) => {
             let (route_key, route_target) = find_route(routes, path)?;
             let urls = upstream::target_urls(route_target);
 
-            let retry_cfg = match route_target {
-                ProxyRouteTarget::Full(cfg) => cfg.retry.as_ref(),
-                _ => None,
+            let (retry_cfg, proxy_timeout, proxy_pool) = match route_target {
+                ProxyRouteTarget::Full(cfg) => (
+                    cfg.retry.as_ref(),
+                    cfg.timeout.clone(),
+                    cfg.pool.clone(),
+                ),
+                _ => (None, None, None),
             };
 
             let (chosen_url, retry_state) = pick_url(urls, route_key, counters, retry_cfg)?;
@@ -85,7 +111,12 @@ fn resolve_proxy(
                 None
             };
 
-            Some((url_to_proxy_upstream(&chosen_url, strip)?, retry_state))
+            Some((
+                url_to_proxy_upstream(&chosen_url, strip)?,
+                retry_state,
+                proxy_timeout,
+                proxy_pool,
+            ))
         }
     }
 }

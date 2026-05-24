@@ -2,14 +2,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
+use async_compression::tokio::bufread::{BrotliEncoder, DeflateEncoder, GzipEncoder};
+use async_compression::Level;
 use bytes::Bytes;
 use pingora_core::Result;
 use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncSeekExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 
 use crate::config::schema::StaticOptions;
+use crate::filter::compression::CompressOptions;
+use crate::proxy::ctx::AcceptEncoding;
 use crate::util::mime;
 
 pub async fn handle_static(
@@ -18,6 +21,8 @@ pub async fn handle_static(
     options: &Arc<StaticOptions>,
     strip_prefix: Option<&str>,
     extra: &[(String, String)],
+    compress_opts: Option<&CompressOptions>,
+    accept_enc: &AcceptEncoding,
 ) -> Result<()> {
     let method = session.req_header().method.clone();
     let req_path = session.req_header().uri.path().to_owned();
@@ -59,6 +64,8 @@ pub async fn handle_static(
 
     let is_head = method.as_str() == "HEAD";
 
+    // Range requests bypass compression — byte ranges are incompatible with
+    // Content-Encoding transforms.
     if let Some(range_hdr) = hdrs.get("range").and_then(|v| v.to_str().ok()) {
         return serve_range(
             session,
@@ -75,6 +82,12 @@ pub async fn handle_static(
         .await;
     }
 
+    // Pick a compression encoding if the config and client both support it.
+    let compress = compress_opts.and_then(|opts| {
+        crate::filter::compression::best_encoding(opts, accept_enc, file_size)
+            .map(|enc| (enc, opts.level))
+    });
+
     serve_full(
         session,
         &file_path,
@@ -85,6 +98,7 @@ pub async fn handle_static(
         &cache_control,
         is_head,
         extra,
+        compress,
     )
     .await
 }
@@ -150,24 +164,128 @@ async fn serve_full(
     cache_control: &str,
     is_head: bool,
     extra: &[(String, String)],
+    compress: Option<(&'static str, u8)>,
 ) -> Result<()> {
-    let mut resp = ResponseHeader::build(200, Some(6 + extra.len()))?;
-    resp.insert_header("content-type", content_type)?;
-    resp.insert_header("content-length", size.to_string())?;
-    resp.insert_header("etag", etag)?;
-    resp.insert_header("last-modified", last_modified)?;
-    resp.insert_header("cache-control", cache_control)?;
-    resp.insert_header("accept-ranges", "bytes")?;
-    insert_extra(&mut resp, extra)?;
+    if let Some((encoding, level)) = compress {
+        // Compressed response — no Content-Length (chunked transfer encoding).
+        let header_count = 6 + extra.len(); // no content-length, +2 for encoding+vary
+        let mut resp = ResponseHeader::build(200, Some(header_count))?;
+        resp.insert_header("content-type", content_type)?;
+        resp.insert_header("etag", etag)?;
+        resp.insert_header("last-modified", last_modified)?;
+        resp.insert_header("cache-control", cache_control)?;
+        resp.insert_header("accept-ranges", "bytes")?;
+        resp.insert_header("content-encoding", encoding)?;
+        resp.insert_header("vary", "accept-encoding")?;
+        insert_extra(&mut resp, extra)?;
 
-    if is_head {
-        session.write_response_header(Box::new(resp), true).await?;
-        return Ok(());
+        if is_head {
+            session.write_response_header(Box::new(resp), true).await?;
+            return Ok(());
+        }
+
+        session.write_response_header(Box::new(resp), false).await?;
+        stream_file_compressed(session, path, 0, size, encoding, level).await
+    } else {
+        let mut resp = ResponseHeader::build(200, Some(6 + extra.len()))?;
+        resp.insert_header("content-type", content_type)?;
+        resp.insert_header("content-length", size.to_string())?;
+        resp.insert_header("etag", etag)?;
+        resp.insert_header("last-modified", last_modified)?;
+        resp.insert_header("cache-control", cache_control)?;
+        resp.insert_header("accept-ranges", "bytes")?;
+        insert_extra(&mut resp, extra)?;
+
+        if is_head {
+            session.write_response_header(Box::new(resp), true).await?;
+            return Ok(());
+        }
+
+        session.write_response_header(Box::new(resp), false).await?;
+        stream_file(session, path, 0, size).await
+    }
+}
+
+/// Stream a file compressed with the given encoding and quality level.
+///
+/// Uses Tokio async encoders so no blocking thread is required.  No
+/// Content-Length is sent — the HTTP/1.1 layer uses chunked transfer encoding
+/// automatically.
+async fn stream_file_compressed(
+    session: &mut Session,
+    path: &Path,
+    offset: u64,
+    length: u64,
+    encoding: &str,
+    level: u8,
+) -> Result<()> {
+    let mut file = tokio::fs::File::open(path).await.map_err(|e| {
+        pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
+    })?;
+    if offset > 0 {
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(|e| {
+                pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
+            })?;
     }
 
-    session.write_response_header(Box::new(resp), false).await?;
-    // Stream in fixed-size chunks to avoid loading large files into memory.
-    stream_file(session, path, 0, size).await
+    // Limit the file reader to `length` bytes.
+    let limited = file.take(length);
+    let buf_reader = tokio::io::BufReader::new(limited);
+    let lev = Level::Precise(i32::from(level));
+
+    match encoding {
+        "br" => {
+            let encoder = BrotliEncoder::with_quality(buf_reader, lev);
+            stream_encoded(session, encoder).await
+        }
+        "gzip" => {
+            let encoder = GzipEncoder::with_quality(buf_reader, lev);
+            stream_encoded(session, encoder).await
+        }
+        "deflate" => {
+            let encoder = DeflateEncoder::with_quality(buf_reader, lev);
+            stream_encoded(session, encoder).await
+        }
+        _ => {
+            // Unknown encoding — fall back to uncompressed streaming.
+            stream_file(session, path, offset, length).await
+        }
+    }
+}
+
+/// Drain an `AsyncRead` encoder in 64 KiB chunks, signalling `done=true` on
+/// the last write.
+///
+/// We use a "one-chunk-ahead" pattern: we always buffer the chunk we just read
+/// and send it on the *next* iteration, so we know whether there is more data
+/// before we call `write_response_body`.  This lets us set `done=true` on the
+/// final chunk without reading an extra zero-length chunk first.
+async fn stream_encoded<R: AsyncRead + Unpin>(session: &mut Session, mut reader: R) -> Result<()> {
+    const CHUNK: usize = 64 * 1024;
+    let mut buf = vec![0u8; CHUNK];
+    let mut pending: Option<Bytes> = None;
+
+    loop {
+        let n = reader.read(&mut buf).await.map_err(|e| {
+            pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
+        })?;
+
+        if n == 0 {
+            // EOF — flush whatever is pending (may be None if the file was empty).
+            let chunk = pending.take();
+            session.write_response_body(chunk, true).await?;
+            return Ok(());
+        }
+
+        // Send the previously buffered chunk (not done yet — we have more data).
+        if let Some(prev) = pending.take() {
+            session.write_response_body(Some(prev), false).await?;
+        }
+
+        pending = Some(Bytes::copy_from_slice(&buf[..n]));
+    }
 }
 
 /// Stream `length` bytes from `file` starting at `offset` in 64 KiB chunks.

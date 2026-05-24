@@ -18,10 +18,14 @@ use crate::config::schema::{
     RateLimitConfig,
 };
 use crate::filter::rate_limit::RateLimiter;
-use crate::filter::{auth, cors, ip_filter, limits, rate_limit, redirects, security_headers};
+use crate::filter::{
+    auth, compression, cors, ip_filter, limits, logging, rate_limit, redirects, response_time,
+    security_headers,
+};
 use crate::handler::{fallback, health, metrics as metrics_handler, response, static_files};
-use crate::proxy::ctx::{LocalHandler, RequestCtx, UpstreamTarget};
+use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, UpstreamTarget};
 use crate::proxy::{router, upstream};
+use crate::util::log_writer::LogWriter;
 
 // ── Prometheus metrics (registered once per process) ─────────────────────────
 
@@ -71,6 +75,8 @@ pub struct AppState {
     pub rate_limiter: Arc<RateLimiter>,
     /// Prometheus metrics counters and histograms.
     pub metrics: Arc<ConduitMetrics>,
+    /// Access-log writer — shared across all worker threads.
+    pub log_writer: Arc<LogWriter>,
 }
 
 impl AppState {
@@ -81,6 +87,7 @@ impl AppState {
             round_robin: Arc::new(DashMap::new()),
             rate_limiter: Arc::new(DashMap::new()),
             metrics: ConduitMetrics::global(),
+            log_writer: Arc::new(LogWriter::new()),
         }
     }
 }
@@ -151,6 +158,15 @@ impl ConduitProxy {
                 redirect_result,
             )
         };
+
+        // Parse Accept-Encoding header once and store it in the request context.
+        let ae_str = session
+            .req_header()
+            .headers
+            .get("accept-encoding")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        req_ctx.accept_enc = AcceptEncoding::parse(ae_str);
 
         // Compute security headers once; reused both in the full extra_headers set
         // and in the preflight path that injects security headers without CORS headers.
@@ -333,10 +349,24 @@ impl ConduitProxy {
         ctx: &mut Option<RequestCtx>,
         handler_kind: HandlerKind,
     ) -> Result<bool> {
+        // Append X-Response-Time to extra_headers if configured for this site.
+        // Done once here so all local handler arms automatically include it.
+        if let Some(req_ctx) = ctx.as_mut() {
+            let config = self.state.config.load();
+            let site = config.sites.get(req_ctx.site_idx);
+            let rt_cfg = site.and_then(|s| s.response_time.as_ref());
+            if response_time::is_enabled(rt_cfg) {
+                let digits = response_time::decimal_digits(rt_cfg);
+                let elapsed = req_ctx.start_time.elapsed();
+                let value = response_time::format_elapsed(elapsed, digits);
+                req_ctx.extra_headers.push(("x-response-time".to_owned(), value));
+            }
+        }
+
         match handler_kind {
             HandlerKind::Health => {
-                let extra = ctx.as_ref().unwrap().extra_headers.as_slice();
-                health::handle_health(session, extra).await?;
+                let extra = ctx.as_ref().unwrap().extra_headers.as_slice().to_vec();
+                health::handle_health(session, &extra).await?;
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
                 Ok(true)
             }
@@ -359,6 +389,21 @@ impl ConduitProxy {
                 Ok(true)
             }
             HandlerKind::StaticFile => {
+                // Load compression options for this site before pattern-matching ctx.
+                let compress_opts = {
+                    let config = self.state.config.load();
+                    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                    config
+                        .sites
+                        .get(site_idx)
+                        .and_then(|s| s.compression.as_ref())
+                        .and_then(compression::effective)
+                };
+                let accept_enc = ctx
+                    .as_ref()
+                    .map(|c| c.accept_enc.clone())
+                    .unwrap_or_default();
+
                 let (roots, options, strip_prefix, extra) = if let Some(RequestCtx {
                     upstream:
                         UpstreamTarget::Local(LocalHandler::StaticFile {
@@ -385,6 +430,8 @@ impl ConduitProxy {
                     &options,
                     strip_prefix.as_deref(),
                     &extra,
+                    compress_opts.as_ref(),
+                    &accept_enc,
                 )
                 .await?;
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
@@ -475,7 +522,29 @@ impl ProxyHttp for ConduitProxy {
                 format!("invalid upstream address: {addr_str}"),
             )
         })?;
-        Ok(Box::new(HttpPeer::new(socket_addr, tls, sni)))
+        let mut peer = HttpPeer::new(socket_addr, tls, sni);
+
+        // Apply per-route connection timeouts.
+        if let Some(ref timeout) = req_ctx.proxy_timeout {
+            if let Some(ms) = timeout.connect_ms {
+                peer.options.connection_timeout = Some(Duration::from_millis(ms));
+            }
+            if let Some(ms) = timeout.read_ms {
+                peer.options.read_timeout = Some(Duration::from_millis(ms));
+            }
+            if let Some(ms) = timeout.send_ms {
+                peer.options.write_timeout = Some(Duration::from_millis(ms));
+            }
+        }
+
+        // Apply per-route connection pool settings.
+        if let Some(ref pool) = req_ctx.proxy_pool {
+            if let Some(secs) = pool.idle_timeout_secs {
+                peer.options.idle_timeout = Some(Duration::from_secs(secs));
+            }
+        }
+
+        Ok(Box::new(peer))
     }
 
     async fn upstream_request_filter(
@@ -549,10 +618,23 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
-        // Inject CORS + security headers into proxy responses.
         if let Some(req_ctx) = ctx.as_ref() {
+            // Inject CORS + security headers into proxy responses.
             for (name, value) in &req_ctx.extra_headers {
                 upstream_response.insert_header(name.clone(), value.clone())?;
+            }
+
+            // X-Response-Time for proxy responses.
+            {
+                let config = self.state.config.load();
+                let site = config.sites.get(req_ctx.site_idx);
+                let rt_cfg = site.and_then(|s| s.response_time.as_ref());
+                if response_time::is_enabled(rt_cfg) {
+                    let digits = response_time::decimal_digits(rt_cfg);
+                    let elapsed = req_ctx.start_time.elapsed();
+                    let value = response_time::format_elapsed(elapsed, digits);
+                    upstream_response.insert_header("x-response-time", value)?;
+                }
             }
 
             // 5xx retry logic.
@@ -645,6 +727,18 @@ impl ProxyHttp for ConduitProxy {
             if !matches!(req_ctx.upstream, UpstreamTarget::Local(_)) {
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
             }
+        }
+
+        // Write access log entry.
+        let start_time = ctx
+            .as_ref()
+            .map(|c| c.start_time)
+            .unwrap_or_else(std::time::Instant::now);
+        {
+            let config = self.state.config.load();
+            let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+            let site = config.sites.get(site_idx);
+            logging::write_access_log(session, start_time, site, &self.state.log_writer);
         }
 
         // Record Prometheus metrics.

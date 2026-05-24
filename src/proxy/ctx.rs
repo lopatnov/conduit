@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::config::schema::StaticOptions;
+use crate::config::schema::{ConnectionPoolConfig, ProxyTimeout, StaticOptions};
 
 #[derive(Debug)]
 pub struct RequestCtx {
@@ -16,10 +16,20 @@ pub struct RequestCtx {
     /// CORS + security headers to inject into every response for this request.
     /// Computed once in `request_filter` and reused for all write paths.
     pub extra_headers: Vec<(String, String)>,
+    /// Per-route proxy connection timeouts (from `proxy.*.timeout`).
+    pub proxy_timeout: Option<ProxyTimeout>,
+    /// Per-route connection pool settings (from `proxy.*.pool`).
+    pub proxy_pool: Option<ConnectionPoolConfig>,
 }
 
 impl RequestCtx {
-    pub fn new(site_idx: usize, upstream: UpstreamTarget, retry: Option<RetryState>) -> Self {
+    pub fn new(
+        site_idx: usize,
+        upstream: UpstreamTarget,
+        retry: Option<RetryState>,
+        proxy_timeout: Option<ProxyTimeout>,
+        proxy_pool: Option<ConnectionPoolConfig>,
+    ) -> Self {
         Self {
             site_idx,
             upstream,
@@ -27,6 +37,8 @@ impl RequestCtx {
             accept_enc: AcceptEncoding::default(),
             retry,
             extra_headers: Vec::new(),
+            proxy_timeout,
+            proxy_pool,
         }
     }
 }
@@ -93,7 +105,7 @@ pub enum LocalHandler {
     },
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct AcceptEncoding {
     pub brotli: bool,
     pub gzip: bool,
