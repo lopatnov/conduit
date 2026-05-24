@@ -57,8 +57,10 @@ pub fn interpolate(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    #[serial]
     fn replaces_known_var() {
         std::env::set_var("CONDUIT_TEST_TOKEN", "secret");
         let out = interpolate(r#"{"token": "$CONDUIT_TEST_TOKEN"}"#);
@@ -84,6 +86,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn escapes_quotes_in_value() {
         std::env::set_var("CONDUIT_TEST_QUOTE", r#"say "hello""#);
         let out = interpolate(r#"{"msg": "$CONDUIT_TEST_QUOTE"}"#);
@@ -92,6 +95,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn escapes_backslash_in_value() {
         std::env::set_var("CONDUIT_TEST_BACKSLASH", r"C:\path\to\file");
         let out = interpolate(r#"{"path": "$CONDUIT_TEST_BACKSLASH"}"#);

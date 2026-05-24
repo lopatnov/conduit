@@ -69,12 +69,21 @@ impl TestServer {
         let mut admin_ok = false;
         loop {
             if !proxy_ok {
-                // Any HTTP response (including 4xx) means the proxy is up and
-                // handling requests.  A 403 from an IP-filter test is still
-                // "ready" — the server is running, it is just enforcing policy.
-                // We only retry on connection errors (server not yet started).
-                let http_ok = reqwest::blocking::get(&health_http).is_ok();
-                let https_ok = insecure.get(&health_https).send().is_ok();
+                // Accept 2xx, 401 (auth-protected health), and 403 (IP-filter tests
+                // that deny 127.0.0.1) as "server ready" signals.  Connection errors
+                // (server not yet started) leave proxy_ok false so we keep polling.
+                let is_ready = |r: reqwest::blocking::Response| -> bool {
+                    let s = r.status().as_u16();
+                    r.status().is_success() || s == 401 || s == 403
+                };
+                let http_ok = reqwest::blocking::get(&health_http)
+                    .map(is_ready)
+                    .unwrap_or(false);
+                let https_ok = insecure
+                    .get(&health_https)
+                    .send()
+                    .map(is_ready)
+                    .unwrap_or(false);
                 if http_ok || https_ok {
                     proxy_ok = true;
                 }

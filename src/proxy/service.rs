@@ -155,6 +155,13 @@ impl ProxyHttp for ConduitProxy {
             )
         };
 
+        // Compute security headers once; reused both in the full extra_headers set
+        // and in the preflight path that injects security headers without CORS headers.
+        let sec_only: Vec<(String, String)> = security_cfg
+            .as_ref()
+            .map(security_headers::header_entries)
+            .unwrap_or_default();
+
         // ── Build planned response headers (CORS + security) ──────────────────
         // These are injected into every response written for this request.
         {
@@ -162,19 +169,11 @@ impl ProxyHttp for ConduitProxy {
                 .as_ref()
                 .map(|c| cors::response_headers(c, request_origin.as_deref()))
                 .unwrap_or_default();
-            let sec_hdrs = security_cfg
-                .as_ref()
-                .map(security_headers::header_entries)
-                .unwrap_or_default();
-            req_ctx.extra_headers = cors_hdrs.into_iter().chain(sec_hdrs).collect();
+            req_ctx.extra_headers = cors_hdrs
+                .into_iter()
+                .chain(sec_only.iter().cloned())
+                .collect();
         }
-
-        // Pre-compute just the security part for the preflight response
-        // (preflight adds its own CORS headers separately).
-        let sec_only: Vec<(String, String)> = security_cfg
-            .as_ref()
-            .map(security_headers::header_entries)
-            .unwrap_or_default();
 
         // Determine handler kind so we can skip filters for the health endpoint.
         let handler_kind = match &req_ctx.upstream {

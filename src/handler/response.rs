@@ -29,17 +29,19 @@ pub async fn write_denied(
 
 /// Write a redirect response (3xx + Location header, empty body).
 ///
-/// Panics in debug builds if `status` is not in the 3xx range.
+/// Returns an error if `status` is not in the 3xx range.
 pub async fn write_redirect(
     session: &mut Session,
     status: u16,
     location: &str,
     extra: &[(String, String)],
 ) -> Result<()> {
-    debug_assert!(
-        (300..400).contains(&status),
-        "write_redirect called with non-3xx status {status}"
-    );
+    if !(300..400).contains(&status) {
+        return Err(pingora_core::Error::explain(
+            pingora_core::ErrorType::InternalError,
+            format!("write_redirect called with non-3xx status {status}"),
+        ));
+    }
     let mut resp = ResponseHeader::build(status, Some(2 + extra.len()))?;
     resp.insert_header("location", location)?;
     resp.insert_header("content-length", "0")?;

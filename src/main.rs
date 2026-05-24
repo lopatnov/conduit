@@ -252,16 +252,26 @@ fn probe_url(url: &str) -> (String, Option<u16>, Duration) {
                 Err(e) => return (format!("unreachable: {e}"), None, start.elapsed()),
             },
             Err(_) => {
-                // host:port needs DNS resolution — fall back to connect without timeout.
-                match TcpStream::connect(&*addr_str) {
-                    Ok(_) => {
+                // host:port needs DNS resolution — resolve then connect with timeout.
+                let resolved = addr_str.to_socket_addrs().ok().and_then(|mut a| a.next());
+                match resolved {
+                    Some(sock) => match TcpStream::connect_timeout(&sock, Duration::from_secs(5)) {
+                        Ok(_) => {
+                            return (
+                                "TCP open (HTTPS — HEAD skipped)".to_owned(),
+                                None,
+                                start.elapsed(),
+                            )
+                        }
+                        Err(e) => return (format!("unreachable: {e}"), None, start.elapsed()),
+                    },
+                    None => {
                         return (
-                            "TCP open (HTTPS — HEAD skipped)".to_owned(),
+                            format!("unreachable: cannot resolve {addr_str}"),
                             None,
                             start.elapsed(),
                         )
                     }
-                    Err(e) => return (format!("unreachable: {e}"), None, start.elapsed()),
                 }
             }
         }
