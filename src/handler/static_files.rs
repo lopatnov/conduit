@@ -380,10 +380,13 @@ fn decode_rel_path(req_path: &str, strip_prefix: Option<&str>) -> String {
 /// Return `true` when the request is fresh and should receive a 304 response.
 ///
 /// Checks `If-None-Match` first (taking precedence over `If-Modified-Since`
-/// per RFC 9110 §13.1).
+/// per RFC 9110 §13.1).  Per RFC 9110 §13.1.2, `If-None-Match` may contain a
+/// comma-separated list of ETags; the server must match against any of them.
 fn is_not_modified(hdrs: &http::HeaderMap, etag: &str, mtime: std::time::SystemTime) -> bool {
     if let Some(inm) = hdrs.get("if-none-match").and_then(|v| v.to_str().ok()) {
-        return inm == etag || inm == "*";
+        // A wildcard matches any ETag; otherwise check each comma-separated value.
+        // Per RFC 9110 the list may look like: `"abc123", "def456"`.
+        return inm == "*" || inm.split(',').any(|token| token.trim() == etag);
     }
     if let Some(ims) = hdrs.get("if-modified-since").and_then(|v| v.to_str().ok()) {
         if let Ok(ims_time) = httpdate::parse_http_date(ims) {

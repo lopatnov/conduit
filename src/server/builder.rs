@@ -41,6 +41,11 @@ fn classify_ports(sites: &[SiteConfig]) -> (TlsPortMap, HashSet<u16>) {
             if tls_cfg.acme.is_some() {
                 // Auto-TLS via ACME — implemented in Phase 3.1.
                 // Fall back to plain TCP for now so the port is at least reachable.
+                tracing::warn!(
+                    port,
+                    "ACME TLS is not yet implemented (Phase 3.1); \
+                     serving plain HTTP on this port instead"
+                );
                 port_plain.insert(port);
             } else if let (Some(cert), Some(key)) = (&tls_cfg.cert, &tls_cfg.key) {
                 port_tls
