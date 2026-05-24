@@ -19,9 +19,7 @@ use crate::server::tls as tls_util;
 /// ACME or incomplete TLS configuration fall back to plain TCP.
 ///
 /// Returns `(port_tls, port_plain)`.
-fn classify_ports(
-    sites: &[SiteConfig],
-) -> (HashMap<u16, (String, String, bool)>, HashSet<u16>) {
+fn classify_ports(sites: &[SiteConfig]) -> (HashMap<u16, (String, String, bool)>, HashSet<u16>) {
     let mut port_tls: HashMap<u16, (String, String, bool)> = HashMap::new();
     let mut port_plain: HashSet<u16> = HashSet::new();
 
