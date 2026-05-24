@@ -60,7 +60,7 @@ fn match_rule(from: &str, to: &str, path: &str) -> Option<String> {
     // Substitute captured values into the `to` template.
     // Sort by descending name length so that `:id2` is replaced before `:id`,
     // preventing shorter names from partially matching longer-named placeholders.
-    captures.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    captures.sort_by_key(|c| std::cmp::Reverse(c.0.len()));
     let mut result = to.to_string();
     for (name, value) in &captures {
         result = result.replace(&format!(":{name}"), value);

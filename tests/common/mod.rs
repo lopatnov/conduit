@@ -69,15 +69,12 @@ impl TestServer {
         let mut admin_ok = false;
         loop {
             if !proxy_ok {
-                // Require a successful response — not just a TCP connection.
-                let http_ok = reqwest::blocking::get(&health_http)
-                    .map(|r| r.status().is_success())
-                    .unwrap_or(false);
-                let https_ok = insecure
-                    .get(&health_https)
-                    .send()
-                    .map(|r| r.status().is_success())
-                    .unwrap_or(false);
+                // Any HTTP response (including 4xx) means the proxy is up and
+                // handling requests.  A 403 from an IP-filter test is still
+                // "ready" — the server is running, it is just enforcing policy.
+                // We only retry on connection errors (server not yet started).
+                let http_ok = reqwest::blocking::get(&health_http).is_ok();
+                let https_ok = insecure.get(&health_https).send().is_ok();
                 if http_ok || https_ok {
                     proxy_ok = true;
                 }

@@ -122,7 +122,10 @@ fn static_206_range_request() {
         .unwrap_or("")
         .to_string();
     assert_eq!(resp.text().unwrap(), "2345");
-    assert_eq!(content_range, "bytes 2-5/10", "Content-Range header mismatch");
+    assert_eq!(
+        content_range, "bytes 2-5/10",
+        "Content-Range header mismatch"
+    );
 }
 
 #[test]
