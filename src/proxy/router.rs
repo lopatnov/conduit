@@ -11,6 +11,14 @@ use crate::config::schema::{
 use crate::proxy::ctx::{LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::upstream;
 
+/// Resolved routing result: upstream target plus optional retry/timeout/pool config.
+type RouteResult = (
+    UpstreamTarget,
+    Option<RetryState>,
+    Option<ProxyTimeout>,
+    Option<ConnectionPoolConfig>,
+);
+
 pub fn route_request(
     config: &AppConfig,
     host: &str,
@@ -52,12 +60,7 @@ fn route_site(
     site: &SiteConfig,
     path: &str,
     counters: &DashMap<String, AtomicUsize>,
-) -> (
-    UpstreamTarget,
-    Option<RetryState>,
-    Option<ProxyTimeout>,
-    Option<ConnectionPoolConfig>,
-) {
+) -> RouteResult {
     // Proxy routes take priority over static files.
     if let Some(proxy_cfg) = &site.proxy {
         if let Some(result) = resolve_proxy(proxy_cfg, path, counters) {
@@ -95,12 +98,7 @@ fn resolve_proxy(
     config: &ProxyConfig,
     path: &str,
     counters: &DashMap<String, AtomicUsize>,
-) -> Option<(
-    UpstreamTarget,
-    Option<RetryState>,
-    Option<ProxyTimeout>,
-    Option<ConnectionPoolConfig>,
-)> {
+) -> Option<RouteResult> {
     match config {
         ProxyConfig::Single(url) => Some((url_to_proxy_upstream(url, None)?, None, None, None)),
         ProxyConfig::Routes(routes) => {
