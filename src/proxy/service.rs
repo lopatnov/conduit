@@ -14,8 +14,8 @@ use pingora_proxy::{ProxyHttp, Session};
 use prometheus::{CounterVec, HistogramVec};
 
 use crate::config::schema::{
-    ApiKeyConfig, AppConfig, BasicAuthConfig, CorsConfig, IpFilterConfig, LimitsConfig,
-    RateLimitConfig,
+    ApiKeyConfig, AppConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig, IpFilterConfig,
+    LimitsConfig, ProxyTimeout, RateLimitConfig,
 };
 use crate::filter::rate_limit::RateLimiter;
 use crate::filter::{
@@ -23,7 +23,7 @@ use crate::filter::{
     security_headers,
 };
 use crate::handler::{fallback, health, metrics as metrics_handler, response, static_files};
-use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, UpstreamTarget};
+use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::{router, upstream};
 use crate::util::log_writer::LogWriter;
 
@@ -483,40 +483,10 @@ impl ProxyHttp for ConduitProxy {
         let req_ctx = ctx.as_mut().expect("ctx set in request_filter");
 
         if let Some(ref retry) = req_ctx.retry {
-            if retry.attempt > 0 {
-                if let Some(ms) = retry.backoff_ms {
-                    tokio::time::sleep(Duration::from_millis(ms)).await;
-                }
-            }
+            apply_backoff(retry).await;
         }
 
-        let (addr_str, tls, sni) = if let Some(ref mut retry) = req_ctx.retry {
-            let url = &retry.urls[retry.attempt % retry.urls.len()];
-            let addr_str = upstream::url_to_host_port(url).ok_or_else(|| {
-                pingora_core::Error::explain(
-                    pingora_core::ErrorType::ConnectProxyFailure,
-                    format!("invalid upstream address: {url}"),
-                )
-            })?;
-            let tls = upstream::url_is_tls(url);
-            let sni = if tls {
-                upstream::url_host(url)
-            } else {
-                String::new()
-            };
-            retry.attempt += 1;
-            (addr_str, tls, sni)
-        } else {
-            match &req_ctx.upstream {
-                UpstreamTarget::Proxy { addr, tls, sni, .. } => (addr.clone(), *tls, sni.clone()),
-                _ => {
-                    return Err(pingora_core::Error::explain(
-                        pingora_core::ErrorType::InternalError,
-                        "upstream_peer called for local handler",
-                    ))
-                }
-            }
-        };
+        let (addr_str, tls, sni) = resolve_peer_addr(req_ctx)?;
 
         let socket_addr: SocketAddr = addr_str.parse().map_err(|_| {
             pingora_core::Error::explain(
@@ -526,25 +496,11 @@ impl ProxyHttp for ConduitProxy {
         })?;
         let mut peer = HttpPeer::new(socket_addr, tls, sni);
 
-        // Apply per-route connection timeouts.
-        if let Some(ref timeout) = req_ctx.proxy_timeout {
-            if let Some(ms) = timeout.connect_ms {
-                peer.options.connection_timeout = Some(Duration::from_millis(ms));
-            }
-            if let Some(ms) = timeout.read_ms {
-                peer.options.read_timeout = Some(Duration::from_millis(ms));
-            }
-            if let Some(ms) = timeout.send_ms {
-                peer.options.write_timeout = Some(Duration::from_millis(ms));
-            }
-        }
-
-        // Apply per-route connection pool settings.
-        if let Some(ref pool) = req_ctx.proxy_pool {
-            if let Some(secs) = pool.idle_timeout_secs {
-                peer.options.idle_timeout = Some(Duration::from_secs(secs));
-            }
-        }
+        apply_peer_options(
+            &mut peer,
+            req_ctx.proxy_timeout.as_ref(),
+            req_ctx.proxy_pool.as_ref(),
+        );
 
         Ok(Box::new(peer))
     }
@@ -764,6 +720,73 @@ impl ProxyHttp for ConduitProxy {
             .request_duration_seconds
             .with_label_values(&[&method, &status])
             .observe(elapsed);
+    }
+}
+
+// ── upstream_peer helpers ─────────────────────────────────────────────────────
+
+/// Sleep for the configured backoff duration when this is a retry attempt (not the first try).
+async fn apply_backoff(retry: &RetryState) {
+    if retry.attempt > 0 {
+        if let Some(ms) = retry.backoff_ms {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+        }
+    }
+}
+
+/// Resolve the upstream `(addr, tls, sni)` from the request context.
+///
+/// On a retry the address rotates through the URL list and the attempt counter
+/// is incremented.  On the first attempt the values come from `ctx.upstream`.
+fn resolve_peer_addr(req_ctx: &mut RequestCtx) -> pingora_core::Result<(String, bool, String)> {
+    if let Some(ref mut retry) = req_ctx.retry {
+        let url = &retry.urls[retry.attempt % retry.urls.len()];
+        let addr = upstream::url_to_host_port(url).ok_or_else(|| {
+            pingora_core::Error::explain(
+                pingora_core::ErrorType::ConnectProxyFailure,
+                format!("invalid upstream address: {url}"),
+            )
+        })?;
+        let tls = upstream::url_is_tls(url);
+        let sni = if tls {
+            upstream::url_host(url)
+        } else {
+            String::new()
+        };
+        retry.attempt += 1;
+        Ok((addr, tls, sni))
+    } else {
+        match &req_ctx.upstream {
+            UpstreamTarget::Proxy { addr, tls, sni, .. } => Ok((addr.clone(), *tls, sni.clone())),
+            _ => Err(pingora_core::Error::explain(
+                pingora_core::ErrorType::InternalError,
+                "upstream_peer called for local handler",
+            )),
+        }
+    }
+}
+
+/// Apply per-route timeout and connection-pool settings to an `HttpPeer`.
+fn apply_peer_options(
+    peer: &mut HttpPeer,
+    timeout: Option<&ProxyTimeout>,
+    pool: Option<&ConnectionPoolConfig>,
+) {
+    if let Some(t) = timeout {
+        if let Some(ms) = t.connect_ms {
+            peer.options.connection_timeout = Some(Duration::from_millis(ms));
+        }
+        if let Some(ms) = t.read_ms {
+            peer.options.read_timeout = Some(Duration::from_millis(ms));
+        }
+        if let Some(ms) = t.send_ms {
+            peer.options.write_timeout = Some(Duration::from_millis(ms));
+        }
+    }
+    if let Some(p) = pool {
+        if let Some(secs) = p.idle_timeout_secs {
+            peer.options.idle_timeout = Some(Duration::from_secs(secs));
+        }
     }
 }
 
