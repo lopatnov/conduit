@@ -1,5 +1,7 @@
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use serde_json::Value as JsonValue;
+
 use pingora_proxy::Session;
 
 use crate::config::schema::{LogFormat, LoggingConfig, SiteConfig};
@@ -105,9 +107,23 @@ fn format_line(session: &Session, start_time: Instant, format: &LogFormat) -> St
         }
         LogFormat::Json => {
             let t = iso8601_now();
-            format!(
-                r#"{{"time":"{t}","method":"{method}","path":"{path}","status":{status},"bytes":{body_bytes},"duration_ms":{elapsed_ms},"ip":"{client_ip}"}}"#
-            )
+            // Parse body_bytes: "-" (no Content-Length) → null; a valid
+            // number → JSON integer. Use serde_json for all string fields so
+            // that paths containing `"` or `\` don't produce invalid JSON.
+            let bytes: JsonValue = body_bytes
+                .parse::<u64>()
+                .map(JsonValue::from)
+                .unwrap_or(JsonValue::Null);
+            serde_json::json!({
+                "time":        t,
+                "method":      method,
+                "path":        path,
+                "status":      status.parse::<u16>().unwrap_or(0),
+                "bytes":       bytes,
+                "duration_ms": elapsed_ms as u64,
+                "ip":          client_ip,
+            })
+            .to_string()
         }
     }
 }

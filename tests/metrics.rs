@@ -1,6 +1,13 @@
 mod common;
 
 use common::{free_port, TestServer};
+// Tests here start real conduit child processes and use free_port() which has
+// a TOCTOU gap (the OS socket is released before the server binds).  Running
+// the tests sequentially with #[serial] prevents concurrent port collisions
+// that cause "Connection refused" on ubuntu CI runners.
+// The proper fix (keeping the TcpListener alive until conduit takes over the
+// socket) would require the binary to accept pre-bound listeners — deferred to
+// a future test-infrastructure cleanup.
 use serial_test::serial;
 
 fn metrics_server(metrics: serde_json::Value) -> TestServer {
