@@ -21,7 +21,12 @@ pub fn route_request(
     let site = config.sites.get(site_idx);
 
     let (upstream, retry, proxy_timeout, proxy_pool) = if is_health_path(site, path) {
-        (UpstreamTarget::Local(LocalHandler::Health), None, None, None)
+        (
+            UpstreamTarget::Local(LocalHandler::Health),
+            None,
+            None,
+            None,
+        )
     } else if let Some(token) = metrics_token(site, path) {
         (
             UpstreamTarget::Local(LocalHandler::Metrics { token }),
@@ -32,7 +37,12 @@ pub fn route_request(
     } else if let Some(site) = site {
         route_site(site, path, counters)
     } else {
-        (UpstreamTarget::Local(LocalHandler::Fallback), None, None, None)
+        (
+            UpstreamTarget::Local(LocalHandler::Fallback),
+            None,
+            None,
+            None,
+        )
     };
 
     RequestCtx::new(site_idx, upstream, retry, proxy_timeout, proxy_pool)
@@ -73,7 +83,12 @@ fn route_site(
         }
     }
 
-    (UpstreamTarget::Local(LocalHandler::Fallback), None, None, None)
+    (
+        UpstreamTarget::Local(LocalHandler::Fallback),
+        None,
+        None,
+        None,
+    )
 }
 
 fn resolve_proxy(
@@ -87,19 +102,15 @@ fn resolve_proxy(
     Option<ConnectionPoolConfig>,
 )> {
     match config {
-        ProxyConfig::Single(url) => {
-            Some((url_to_proxy_upstream(url, None)?, None, None, None))
-        }
+        ProxyConfig::Single(url) => Some((url_to_proxy_upstream(url, None)?, None, None, None)),
         ProxyConfig::Routes(routes) => {
             let (route_key, route_target) = find_route(routes, path)?;
             let urls = upstream::target_urls(route_target);
 
             let (retry_cfg, proxy_timeout, proxy_pool) = match route_target {
-                ProxyRouteTarget::Full(cfg) => (
-                    cfg.retry.as_ref(),
-                    cfg.timeout.clone(),
-                    cfg.pool.clone(),
-                ),
+                ProxyRouteTarget::Full(cfg) => {
+                    (cfg.retry.as_ref(), cfg.timeout.clone(), cfg.pool.clone())
+                }
                 _ => (None, None, None),
             };
 

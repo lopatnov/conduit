@@ -82,9 +82,7 @@ fn format_line(session: &Session, start_time: Instant, format: &LogFormat) -> St
         LogFormat::Common => {
             let t = clf_now();
             let ver = http_version(session);
-            format!(
-                r#"{client_ip} - - [{t}] "{method} {path} {ver}" {status} {body_bytes}"#
-            )
+            format!(r#"{client_ip} - - [{t}] "{method} {path} {ver}" {status} {body_bytes}"#)
         }
         LogFormat::Combined => {
             let t = clf_now();

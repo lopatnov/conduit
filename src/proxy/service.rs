@@ -359,7 +359,9 @@ impl ConduitProxy {
                 let digits = response_time::decimal_digits(rt_cfg);
                 let elapsed = req_ctx.start_time.elapsed();
                 let value = response_time::format_elapsed(elapsed, digits);
-                req_ctx.extra_headers.push(("x-response-time".to_owned(), value));
+                req_ctx
+                    .extra_headers
+                    .push(("x-response-time".to_owned(), value));
             }
         }
 

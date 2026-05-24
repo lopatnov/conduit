@@ -189,8 +189,7 @@ mod tests {
         );
 
         // Decompress and verify roundtrip.
-        let mut dec =
-            GzipDecoder::new(tokio::io::BufReader::new(std::io::Cursor::new(compressed)));
+        let mut dec = GzipDecoder::new(tokio::io::BufReader::new(std::io::Cursor::new(compressed)));
         let mut decoded = Vec::new();
         dec.read_to_end(&mut decoded).await.unwrap();
         assert_eq!(decoded, original.as_ref());
