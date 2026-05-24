@@ -1,6 +1,7 @@
 mod common;
 
 use common::{free_port, TestServer};
+use serial_test::serial;
 
 fn metrics_server(metrics: serde_json::Value) -> TestServer {
     let port = free_port();
@@ -19,6 +20,7 @@ fn metrics_server(metrics: serde_json::Value) -> TestServer {
 }
 
 #[test]
+#[serial]
 fn metrics_endpoint_returns_200() {
     let srv = metrics_server(serde_json::json!({ "path": "/__metrics__" }));
     let resp = reqwest::blocking::get(srv.url("/__metrics__")).expect("send");
@@ -26,6 +28,7 @@ fn metrics_endpoint_returns_200() {
 }
 
 #[test]
+#[serial]
 fn metrics_content_type_is_prometheus_text() {
     let srv = metrics_server(serde_json::json!({ "path": "/__metrics__" }));
     let resp = reqwest::blocking::get(srv.url("/__metrics__")).expect("send");
@@ -41,6 +44,7 @@ fn metrics_content_type_is_prometheus_text() {
 }
 
 #[test]
+#[serial]
 fn metrics_body_contains_prometheus_lines() {
     let srv = metrics_server(serde_json::json!({ "path": "/__metrics__" }));
     // Make a request first so counters are non-zero.
@@ -55,6 +59,7 @@ fn metrics_body_contains_prometheus_lines() {
 }
 
 #[test]
+#[serial]
 fn metrics_with_token_no_auth_returns_401() {
     let srv = metrics_server(serde_json::json!({
         "path": "/__metrics__",
@@ -65,6 +70,7 @@ fn metrics_with_token_no_auth_returns_401() {
 }
 
 #[test]
+#[serial]
 fn metrics_with_token_wrong_token_returns_401() {
     let srv = metrics_server(serde_json::json!({
         "path": "/__metrics__",
@@ -80,6 +86,7 @@ fn metrics_with_token_wrong_token_returns_401() {
 }
 
 #[test]
+#[serial]
 fn metrics_with_token_correct_bearer_returns_200() {
     let srv = metrics_server(serde_json::json!({
         "path": "/__metrics__",
@@ -95,6 +102,7 @@ fn metrics_with_token_correct_bearer_returns_200() {
 }
 
 #[test]
+#[serial]
 fn metrics_401_has_www_authenticate_header() {
     let srv = metrics_server(serde_json::json!({
         "path": "/__metrics__",
@@ -114,6 +122,7 @@ fn metrics_401_has_www_authenticate_header() {
 }
 
 #[test]
+#[serial]
 fn metrics_custom_path_works() {
     let port = free_port();
     let admin_port = free_port();

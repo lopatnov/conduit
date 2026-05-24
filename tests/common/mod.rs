@@ -39,7 +39,7 @@ impl TestServer {
             .spawn()
             .expect("spawn conduit");
 
-        let server = TestServer {
+        let mut server = TestServer {
             child,
             port,
             admin_port,
@@ -53,7 +53,11 @@ impl TestServer {
     ///
     /// Tries both `http://` and `https://` (with cert validation disabled) on
     /// the proxy port so TLS and non-TLS sites are handled transparently.
-    fn wait_ready(&self) {
+    ///
+    /// Also polls `child.try_wait()` on every iteration so that a server that
+    /// exits prematurely (e.g. due to a port-bind failure) is detected
+    /// immediately rather than after the full 15-second deadline.
+    fn wait_ready(&mut self) {
         let health_http = format!("http://127.0.0.1:{}/__health__", self.port);
         let health_https = format!("https://127.0.0.1:{}/__health__", self.port);
         let admin_url = format!("http://127.0.0.1:{}/status", self.admin_port);
@@ -68,6 +72,18 @@ impl TestServer {
         let mut proxy_ok = false;
         let mut admin_ok = false;
         loop {
+            // Detect premature server exit (e.g. failed port bind) before the
+            // deadline so we get a clear message rather than a timeout or a
+            // misleading "Connection refused" in the test body.
+            match self.child.try_wait() {
+                Ok(Some(status)) => panic!(
+                    "conduit server exited prematurely with {status} \
+                     (proxy_ok={proxy_ok}, admin_ok={admin_ok})"
+                ),
+                Ok(None) => {} // still running — continue polling
+                Err(e) => panic!("could not check server liveness: {e}"),
+            }
+
             if !proxy_ok && probe_proxy(&health_http, &health_https, &insecure) {
                 proxy_ok = true;
             }
