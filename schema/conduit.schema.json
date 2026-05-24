@@ -11,6 +11,7 @@
   "$defs": {
     "AppConfig": {
       "type": "object",
+      "required": ["sites"],
       "properties": {
         "version": { "type": "integer", "minimum": 1, "description": "Config schema version." },
         "global": { "$ref": "#/$defs/GlobalConfig" },

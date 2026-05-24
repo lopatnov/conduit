@@ -14,6 +14,8 @@ pub struct TokenBucket {
     capacity: f64,
     /// Tokens added per second (`limit / window_secs`).
     refill_rate: f64,
+    /// Configured window length in seconds; used by cleanup to set the idle TTL.
+    window_secs: u64,
     /// Last time the bucket was refilled or a token was consumed.
     last_touched: Instant,
 }
@@ -26,6 +28,7 @@ impl TokenBucket {
             tokens: capacity,
             capacity,
             refill_rate,
+            window_secs: window_secs.max(1),
             last_touched: Instant::now(),
         }
     }
@@ -100,9 +103,10 @@ pub fn check(cfg: &RateLimitConfig, session: &Session, limiter: &RateLimiter) ->
 
 /// Remove stale entries from the rate-limiter map.
 ///
-/// An entry is considered stale when it has not been touched for 240 seconds
-/// (double the default token-bucket window). Called every 60 seconds by
-/// the background cleanup task.
+/// An entry is considered stale when it has not been touched for twice its
+/// configured window.  This ensures that even long windows (e.g. `windowSecs:
+/// 3600`) retain bucket state long enough for the next request to be correctly
+/// rate-limited.  Called every 60 seconds by the background cleanup task.
 pub fn cleanup(limiter: &RateLimiter) {
-    limiter.retain(|_, bucket| !bucket.is_stale(240));
+    limiter.retain(|_, bucket| !bucket.is_stale(bucket.window_secs * 2));
 }

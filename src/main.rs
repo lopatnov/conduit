@@ -383,7 +383,10 @@ fn http_get(path: &str, addr: &str) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr}"))?;
     let mut stream = TcpStream::connect_timeout(&sock, Duration::from_secs(5))?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    write!(stream, "GET /{path} HTTP/1.0\r\nHost: {addr}\r\n\r\n")?;
+    write!(
+        stream,
+        "GET /{path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+    )?;
     stream.flush()?;
     let mut response = String::new();
     stream.read_to_string(&mut response)?;
@@ -399,7 +402,7 @@ fn http_post(path: &str, addr: &str) -> anyhow::Result<String> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     write!(
         stream,
-        "POST /{path} HTTP/1.0\r\nHost: {addr}\r\nContent-Length: 0\r\n\r\n"
+        "POST /{path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     )?;
     stream.flush()?;
     let mut response = String::new();
