@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use pingora_core::server::configuration::Opt;
@@ -8,9 +8,54 @@ use pingora_proxy::http_proxy_service;
 
 use crate::admin::api::AdminApiService;
 use crate::config::defaults::DEFAULT_ADMIN_BIND;
-use crate::config::schema::AppConfig;
+use crate::config::schema::{AppConfig, SiteConfig};
 use crate::proxy::service::{AppState, ConduitProxy};
 use crate::server::tls as tls_util;
+
+/// Classify each site's port into either a TLS entry (cert, key, h2-enabled)
+/// or a plain-TCP entry.
+///
+/// When multiple sites share a port the first TLS config wins.  Ports with
+/// ACME or incomplete TLS configuration fall back to plain TCP.
+///
+/// Returns `(port_tls, port_plain)`.
+fn classify_ports(
+    sites: &[SiteConfig],
+) -> (HashMap<u16, (String, String, bool)>, HashSet<u16>) {
+    let mut port_tls: HashMap<u16, (String, String, bool)> = HashMap::new();
+    let mut port_plain: HashSet<u16> = HashSet::new();
+
+    if sites.is_empty() {
+        port_plain.insert(8080);
+        return (port_tls, port_plain);
+    }
+
+    for site in sites {
+        let port = site
+            .port
+            .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
+        let enable_h2 = site.http2.is_some();
+
+        if let Some(tls_cfg) = &site.tls {
+            if tls_cfg.acme.is_some() {
+                // Auto-TLS via ACME — implemented in Phase 3.1.
+                // Fall back to plain TCP for now so the port is at least reachable.
+                port_plain.insert(port);
+            } else if let (Some(cert), Some(key)) = (&tls_cfg.cert, &tls_cfg.key) {
+                port_tls
+                    .entry(port)
+                    .or_insert_with(|| (cert.clone(), key.clone(), enable_h2));
+            } else {
+                // Incomplete TLS config (no cert/key and no ACME) → plain TCP.
+                port_plain.insert(port);
+            }
+        } else {
+            port_plain.insert(port);
+        }
+    }
+
+    (port_tls, port_plain)
+}
 
 pub fn run_server(config: AppConfig) -> anyhow::Result<()> {
     // Install the ring crypto provider for rustls before any TLS initialization.
@@ -43,38 +88,7 @@ pub fn run_server(config: AppConfig) -> anyhow::Result<()> {
     };
     let mut proxy_service = http_proxy_service(&server.configuration, proxy);
 
-    // Build a port-keyed map of TLS settings and whether H2 should be enabled.
-    // When multiple sites share a port (virtual hosting), the first TLS config wins.
-    let mut port_tls: HashMap<u16, (String, String, bool)> = HashMap::new(); // port → (cert, key, h2)
-    let mut port_plain: std::collections::HashSet<u16> = std::collections::HashSet::new();
-
-    if config.sites.is_empty() {
-        port_plain.insert(8080);
-    } else {
-        for site in &config.sites {
-            let port = site
-                .port
-                .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
-            let enable_h2 = site.http2.is_some();
-
-            if let Some(tls_cfg) = &site.tls {
-                if tls_cfg.acme.is_some() {
-                    // Auto-TLS via ACME — implemented in Phase 3.1.
-                    // Fall back to plain TCP for now so the port is at least reachable.
-                    port_plain.insert(port);
-                } else if let (Some(cert), Some(key)) = (&tls_cfg.cert, &tls_cfg.key) {
-                    port_tls
-                        .entry(port)
-                        .or_insert_with(|| (cert.clone(), key.clone(), enable_h2));
-                } else {
-                    // Incomplete TLS config (no cert/key and no ACME) → plain TCP.
-                    port_plain.insert(port);
-                }
-            } else {
-                port_plain.insert(port);
-            }
-        }
-    }
+    let (port_tls, port_plain) = classify_ports(&config.sites);
 
     // Add TLS listeners.
     for (port, (cert, key, enable_h2)) in &port_tls {

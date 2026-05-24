@@ -68,32 +68,11 @@ impl TestServer {
         let mut proxy_ok = false;
         let mut admin_ok = false;
         loop {
-            if !proxy_ok {
-                // Accept 2xx, 401 (auth-protected health), and 403 (IP-filter tests
-                // that deny 127.0.0.1) as "server ready" signals.  Connection errors
-                // (server not yet started) leave proxy_ok false so we keep polling.
-                let is_ready = |r: reqwest::blocking::Response| -> bool {
-                    let s = r.status().as_u16();
-                    r.status().is_success() || s == 401 || s == 403
-                };
-                let http_ok = reqwest::blocking::get(&health_http)
-                    .map(is_ready)
-                    .unwrap_or(false);
-                let https_ok = insecure
-                    .get(&health_https)
-                    .send()
-                    .map(is_ready)
-                    .unwrap_or(false);
-                if http_ok || https_ok {
-                    proxy_ok = true;
-                }
+            if !proxy_ok && probe_proxy(&health_http, &health_https, &insecure) {
+                proxy_ok = true;
             }
-            if !admin_ok {
-                if let Ok(r) = reqwest::blocking::get(&admin_url) {
-                    if r.status().is_success() {
-                        admin_ok = true;
-                    }
-                }
+            if !admin_ok && probe_admin(&admin_url) {
+                admin_ok = true;
             }
             if proxy_ok && admin_ok {
                 return;
@@ -121,6 +100,37 @@ impl Drop for TestServer {
         self.child.kill().ok();
         self.child.wait().ok();
     }
+}
+
+/// Return `true` when an HTTP response status counts as "server ready".
+///
+/// Accepts 2xx, 401 (auth-protected health), and 403 (IP-filter tests that
+/// deny 127.0.0.1).  Connection errors return `false` so polling continues.
+fn is_ready_status(r: reqwest::blocking::Response) -> bool {
+    let s = r.status().as_u16();
+    r.status().is_success() || s == 401 || s == 403
+}
+
+/// Poll both the HTTP and HTTPS health endpoints once.
+///
+/// Returns `true` if either endpoint replies with a "ready" status.
+fn probe_proxy(http: &str, https: &str, insecure: &reqwest::blocking::Client) -> bool {
+    let http_ok = reqwest::blocking::get(http)
+        .map(is_ready_status)
+        .unwrap_or(false);
+    let https_ok = insecure
+        .get(https)
+        .send()
+        .map(is_ready_status)
+        .unwrap_or(false);
+    http_ok || https_ok
+}
+
+/// Poll the admin `/status` endpoint once.  Returns `true` on a 2xx response.
+fn probe_admin(url: &str) -> bool {
+    reqwest::blocking::get(url)
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
 }
 
 /// Bind to port 0, get the OS-assigned port, then release the socket.

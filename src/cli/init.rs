@@ -3,6 +3,45 @@ use std::path::Path;
 use dialoguer::{Confirm, Input, Select};
 use serde_json::{json, Value};
 
+/// Ask the user how to configure TLS (if at all).
+///
+/// Returns `None` when the user opts out of TLS, or a JSON value representing
+/// either a manual-cert or ACME block.
+fn ask_tls_config() -> anyhow::Result<Option<Value>> {
+    let want_tls = Confirm::new()
+        .with_prompt("Enable TLS (HTTPS)?")
+        .default(false)
+        .interact()?;
+
+    if !want_tls {
+        return Ok(None);
+    }
+
+    let tls_options = ["Manual certificate files", "Auto (Let's Encrypt / ACME)"];
+    let tls_choice = Select::new()
+        .with_prompt("TLS mode")
+        .items(&tls_options)
+        .default(0)
+        .interact()?;
+
+    if tls_choice == 0 {
+        let cert: String = Input::new()
+            .with_prompt("Certificate file path")
+            .default("./certs/cert.pem".to_owned())
+            .interact_text()?;
+        let key: String = Input::new()
+            .with_prompt("Private key file path")
+            .default("./certs/key.pem".to_owned())
+            .interact_text()?;
+        Ok(Some(json!({ "cert": cert, "key": key })))
+    } else {
+        let email: String = Input::new()
+            .with_prompt("ACME account email")
+            .interact_text()?;
+        Ok(Some(json!({ "acme": { "email": email } })))
+    }
+}
+
 /// Run the interactive `conduit init` wizard.
 ///
 /// Asks a series of questions and writes a `conduit.json` to `output_path`.
@@ -61,38 +100,7 @@ pub fn run_init(output_path: &str) -> anyhow::Result<()> {
     };
 
     // ── TLS ─────────────────────────────────────────────────────────────────
-    let want_tls = Confirm::new()
-        .with_prompt("Enable TLS (HTTPS)?")
-        .default(false)
-        .interact()?;
-
-    let tls_config: Option<Value> = if want_tls {
-        let tls_options = ["Manual certificate files", "Auto (Let's Encrypt / ACME)"];
-        let tls_choice = Select::new()
-            .with_prompt("TLS mode")
-            .items(&tls_options)
-            .default(0)
-            .interact()?;
-
-        if tls_choice == 0 {
-            let cert: String = Input::new()
-                .with_prompt("Certificate file path")
-                .default("./certs/cert.pem".to_owned())
-                .interact_text()?;
-            let key: String = Input::new()
-                .with_prompt("Private key file path")
-                .default("./certs/key.pem".to_owned())
-                .interact_text()?;
-            Some(json!({ "cert": cert, "key": key }))
-        } else {
-            let email: String = Input::new()
-                .with_prompt("ACME account email")
-                .interact_text()?;
-            Some(json!({ "acme": { "email": email } }))
-        }
-    } else {
-        None
-    };
+    let tls_config = ask_tls_config()?;
 
     // ── Health check ────────────────────────────────────────────────────────
     let want_health = Confirm::new()

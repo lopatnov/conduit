@@ -13,7 +13,9 @@ use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
 use prometheus::{CounterVec, HistogramVec};
 
-use crate::config::schema::AppConfig;
+use crate::config::schema::{
+    ApiKeyConfig, AppConfig, BasicAuthConfig, IpFilterConfig, LimitsConfig, RateLimitConfig,
+};
 use crate::filter::rate_limit::RateLimiter;
 use crate::filter::{auth, cors, ip_filter, limits, rate_limit, redirects, security_headers};
 use crate::handler::{fallback, health, metrics as metrics_handler, response, static_files};
@@ -88,18 +90,12 @@ pub struct ConduitProxy {
     pub state: Arc<AppState>,
 }
 
-#[async_trait]
-impl ProxyHttp for ConduitProxy {
-    type CTX = Option<RequestCtx>;
-
-    fn new_ctx(&self) -> Self::CTX {
-        None
-    }
-
-    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool>
-    where
-        Self::CTX: Send + Sync,
-    {
+impl ConduitProxy {
+    async fn do_request_filter(
+        &self,
+        session: &mut Session,
+        ctx: &mut Option<RequestCtx>,
+    ) -> Result<bool> {
         self.state.inflight.fetch_add(1, Ordering::Relaxed);
 
         // ── Gather request metadata before borrowing the config ───────────────
@@ -175,24 +171,65 @@ impl ProxyHttp for ConduitProxy {
                 .collect();
         }
 
-        // Determine handler kind so we can skip filters for the health endpoint.
-        let handler_kind = match &req_ctx.upstream {
-            UpstreamTarget::Local(LocalHandler::Health) => HandlerKind::Health,
-            UpstreamTarget::Local(LocalHandler::Metrics { .. }) => HandlerKind::Metrics,
-            UpstreamTarget::Local(LocalHandler::StaticFile { .. }) => HandlerKind::StaticFile,
-            UpstreamTarget::Local(_) => HandlerKind::Fallback,
-            _ => HandlerKind::Proxy,
-        };
+        let handler_kind = handler_kind_of(&req_ctx.upstream);
 
-        // ── 1. IP filter (all requests, including health) ─────────────────────
-        if let Some(ref ip_cfg) = ip_cfg {
-            if !ip_filter::is_allowed(ip_cfg, session) {
+        // ── Guard filters (ip, cors, limits, auth, redirects) ─────────────────
+        if self
+            .run_guard_filters(
+                session,
+                &ip_cfg,
+                &limits_cfg,
+                &rate_limit_cfg,
+                &basic_auth_cfg,
+                &api_key_cfg,
+                &cors_cfg,
+                redirect_result,
+                &handler_kind,
+                is_cors_preflight,
+                &sec_only,
+                request_origin.as_deref(),
+                &req_ctx.extra_headers,
+            )
+            .await?
+        {
+            return Ok(true);
+        }
+
+        // ── Dispatch ──────────────────────────────────────────────────────────
+        *ctx = Some(req_ctx);
+        self.dispatch_local(session, ctx, handler_kind).await
+    }
+
+    /// Run all guard filters in pipeline order.
+    ///
+    /// Returns `Ok(true)` when a filter has already written a response and
+    /// decremented the inflight counter (caller must return `Ok(true)` too).
+    /// Returns `Ok(false)` to continue to the dispatcher.
+    async fn run_guard_filters(
+        &self,
+        session: &mut Session,
+        ip_cfg: &Option<IpFilterConfig>,
+        limits_cfg: &Option<LimitsConfig>,
+        rate_limit_cfg: &Option<RateLimitConfig>,
+        basic_auth_cfg: &Option<BasicAuthConfig>,
+        api_key_cfg: &Option<ApiKeyConfig>,
+        cors_cfg: &Option<crate::config::schema::CorsConfig>,
+        redirect_result: Option<(String, u16)>,
+        handler_kind: &HandlerKind,
+        is_cors_preflight: bool,
+        sec_only: &[(String, String)],
+        request_origin: Option<&str>,
+        extra_headers: &[(String, String)],
+    ) -> Result<bool> {
+        // 1. IP filter — applied to every request, including health and metrics.
+        if let Some(ref cfg) = ip_cfg {
+            if !ip_filter::is_allowed(cfg, session) {
                 response::write_response(
                     session,
                     403,
                     "text/plain",
                     Bytes::from_static(b"Forbidden"),
-                    &req_ctx.extra_headers,
+                    extra_headers,
                 )
                 .await?;
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
@@ -200,114 +237,119 @@ impl ProxyHttp for ConduitProxy {
             }
         }
 
-        // ── 2. CORS preflight ─────────────────────────────────────────────────
-        // Handled after ip_filter but before any auth — OPTIONS preflights must
-        // not be blocked by authentication (browsers send them without credentials).
+        // 2. CORS preflight — before auth; browsers send OPTIONS without credentials.
         if is_cors_preflight {
             if let Some(ref cfg) = cors_cfg {
-                cors::handle_preflight(
-                    session,
-                    cfg,
-                    request_origin.as_deref().unwrap_or(""),
-                    &sec_only,
-                )
-                .await?;
+                cors::handle_preflight(session, cfg, request_origin.unwrap_or(""), sec_only)
+                    .await?;
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
                 return Ok(true);
             }
         }
 
-        // ── 3–5. Limits, rate-limit, and auth are skipped for health ──────────
-        if !matches!(handler_kind, HandlerKind::Health) {
-            // 3. Request size / header limits.
-            if let Some(ref limits_cfg) = limits_cfg {
-                match limits::check(limits_cfg, session) {
-                    limits::CheckResult::BodyTooLarge => {
-                        response::write_response(
-                            session,
-                            413,
-                            "text/plain",
-                            Bytes::from_static(b"Request Entity Too Large"),
-                            &req_ctx.extra_headers,
-                        )
-                        .await?;
-                        self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                        return Ok(true);
-                    }
-                    limits::CheckResult::HeaderTooLarge => {
-                        response::write_response(
-                            session,
-                            431,
-                            "text/plain",
-                            Bytes::from_static(b"Request Header Fields Too Large"),
-                            &req_ctx.extra_headers,
-                        )
-                        .await?;
-                        self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                        return Ok(true);
-                    }
-                    limits::CheckResult::Ok => {}
-                }
-            }
-
-            // 4. Token-bucket rate limiting.
-            if let Some(ref rl_cfg) = rate_limit_cfg {
-                if !rate_limit::check(rl_cfg, session, &self.state.rate_limiter) {
-                    response::write_response(
-                        session,
-                        429,
-                        "text/plain",
-                        Bytes::from_static(b"Too Many Requests"),
-                        &req_ctx.extra_headers,
-                    )
-                    .await?;
-                    self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                    return Ok(true);
-                }
-            }
-
-            // 5a. Basic Auth.
-            if let Some(ref auth_cfg) = basic_auth_cfg {
-                match auth::check_basic_auth(auth_cfg, session) {
-                    auth::BasicAuthResult::Allowed => {}
-                    auth::BasicAuthResult::Denied { challenge, realm } => {
-                        let www_auth = if challenge {
-                            Some(format!("Basic realm=\"{realm}\""))
-                        } else {
-                            None
-                        };
-                        response::write_denied(
-                            session,
-                            www_auth.as_deref(),
-                            &req_ctx.extra_headers,
-                        )
-                        .await?;
-                        self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                        return Ok(true);
-                    }
-                }
-            }
-
-            // 5b. API key auth.
-            if let Some(ref key_cfg) = api_key_cfg {
-                if !auth::check_api_key(key_cfg, session) {
-                    response::write_denied(session, None, &req_ctx.extra_headers).await?;
-                    self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                    return Ok(true);
-                }
-            }
+        // Health endpoint bypasses all remaining filters.
+        if matches!(handler_kind, HandlerKind::Health) {
+            return Ok(false);
         }
 
-        // ── 6. Redirects ──────────────────────────────────────────────────────
+        // 3–5. Size limits, rate limiting, and authentication.
+        if self
+            .check_non_health_guards(
+                session,
+                limits_cfg,
+                rate_limit_cfg,
+                basic_auth_cfg,
+                api_key_cfg,
+                extra_headers,
+            )
+            .await?
+        {
+            return Ok(true);
+        }
+
+        // 6. Redirects.
         if let Some((location, status)) = redirect_result {
-            response::write_redirect(session, status, &location, &req_ctx.extra_headers).await?;
+            response::write_redirect(session, status, &location, extra_headers).await?;
             self.state.inflight.fetch_sub(1, Ordering::Relaxed);
             return Ok(true);
         }
 
-        // ── 7. Dispatch ───────────────────────────────────────────────────────
-        *ctx = Some(req_ctx);
+        Ok(false)
+    }
 
+    /// Check size limits, rate limiting, and authentication for non-health requests.
+    ///
+    /// Returns `Ok(true)` when the request was rejected (response written,
+    /// inflight decremented).
+    async fn check_non_health_guards(
+        &self,
+        session: &mut Session,
+        limits_cfg: &Option<LimitsConfig>,
+        rate_limit_cfg: &Option<RateLimitConfig>,
+        basic_auth_cfg: &Option<BasicAuthConfig>,
+        api_key_cfg: &Option<ApiKeyConfig>,
+        extra_headers: &[(String, String)],
+    ) -> Result<bool> {
+        // 3. Request size / header limits.
+        if let Some(ref cfg) = limits_cfg {
+            if let Some((status, body)) = limits_rejection(limits::check(cfg, session)) {
+                response::write_response(session, status, "text/plain", body, extra_headers)
+                    .await?;
+                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                return Ok(true);
+            }
+        }
+
+        // 4. Token-bucket rate limiting.
+        if let Some(ref rl_cfg) = rate_limit_cfg {
+            if !rate_limit::check(rl_cfg, session, &self.state.rate_limiter) {
+                response::write_response(
+                    session,
+                    429,
+                    "text/plain",
+                    Bytes::from_static(b"Too Many Requests"),
+                    extra_headers,
+                )
+                .await?;
+                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                return Ok(true);
+            }
+        }
+
+        // 5a. Basic Auth.
+        if let Some(ref auth_cfg) = basic_auth_cfg {
+            if let auth::BasicAuthResult::Denied { challenge, realm } =
+                auth::check_basic_auth(auth_cfg, session)
+            {
+                let www_auth = challenge.then(|| format!("Basic realm=\"{realm}\""));
+                response::write_denied(session, www_auth.as_deref(), extra_headers).await?;
+                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                return Ok(true);
+            }
+        }
+
+        // 5b. API key auth.
+        if let Some(ref key_cfg) = api_key_cfg {
+            if !auth::check_api_key(key_cfg, session) {
+                response::write_denied(session, None, extra_headers).await?;
+                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Dispatch a request to the appropriate local handler.
+    ///
+    /// Returns `Ok(true)` for local handlers (response fully written) or
+    /// `Ok(false)` for proxy/upload targets (Pingora continues the pipeline).
+    async fn dispatch_local(
+        &self,
+        session: &mut Session,
+        ctx: &mut Option<RequestCtx>,
+        handler_kind: HandlerKind,
+    ) -> Result<bool> {
         match handler_kind {
             HandlerKind::Health => {
                 let extra = ctx.as_ref().unwrap().extra_headers.as_slice();
@@ -378,6 +420,24 @@ impl ProxyHttp for ConduitProxy {
             }
             HandlerKind::Proxy => Ok(false),
         }
+    }
+}
+
+// ── ProxyHttp trait implementation ────────────────────────────────────────────
+
+#[async_trait]
+impl ProxyHttp for ConduitProxy {
+    type CTX = Option<RequestCtx>;
+
+    fn new_ctx(&self) -> Self::CTX {
+        None
+    }
+
+    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool>
+    where
+        Self::CTX: Send + Sync,
+    {
+        self.do_request_filter(session, ctx).await
     }
 
     async fn upstream_peer(
@@ -634,6 +694,31 @@ enum HandlerKind {
     StaticFile,
     Fallback,
     Proxy,
+}
+
+/// Classify a request's upstream target into a `HandlerKind` for filter routing.
+fn handler_kind_of(upstream: &UpstreamTarget) -> HandlerKind {
+    match upstream {
+        UpstreamTarget::Local(LocalHandler::Health) => HandlerKind::Health,
+        UpstreamTarget::Local(LocalHandler::Metrics { .. }) => HandlerKind::Metrics,
+        UpstreamTarget::Local(LocalHandler::StaticFile { .. }) => HandlerKind::StaticFile,
+        UpstreamTarget::Local(_) => HandlerKind::Fallback,
+        _ => HandlerKind::Proxy,
+    }
+}
+
+/// Map a `limits::CheckResult` to the HTTP rejection status + body, or `None`
+/// when the request is within the configured limits.
+fn limits_rejection(result: limits::CheckResult) -> Option<(u16, Bytes)> {
+    match result {
+        limits::CheckResult::BodyTooLarge => {
+            Some((413, Bytes::from_static(b"Request Entity Too Large")))
+        }
+        limits::CheckResult::HeaderTooLarge => {
+            Some((431, Bytes::from_static(b"Request Header Fields Too Large")))
+        }
+        limits::CheckResult::Ok => None,
+    }
 }
 
 fn extract_host(session: &Session) -> String {

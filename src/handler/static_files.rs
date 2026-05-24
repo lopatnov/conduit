@@ -306,23 +306,29 @@ fn parse_range(header: &str, total: u64) -> Option<(u64, u64)> {
     Some((start, end))
 }
 
+/// Attempt to decode a two-byte hex sequence (the digits after `%`) into a
+/// raw byte.  Returns `None` if the sequence is invalid or encodes a path
+/// separator (`/` or `\`), which must never be decoded to prevent traversal.
+fn try_decode_percent_seq(hex: &[u8]) -> Option<u8> {
+    let hs = std::str::from_utf8(hex).ok()?;
+    let byte = u8::from_str_radix(hs, 16).ok()?;
+    // Never decode %2F ('/') or %5C ('\') — path separators allow traversal.
+    if byte == b'/' || byte == b'\\' {
+        return None;
+    }
+    Some(byte)
+}
+
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = &bytes[i + 1..i + 3];
-            if let Ok(hs) = std::str::from_utf8(hex) {
-                if let Ok(byte) = u8::from_str_radix(hs, 16) {
-                    // Never decode %2F ('/') or %5C ('\') — both are path
-                    // separators and decoding them would allow path traversal.
-                    if byte != b'/' && byte != b'\\' {
-                        out.push(byte);
-                        i += 3;
-                        continue;
-                    }
-                }
+            if let Some(byte) = try_decode_percent_seq(&bytes[i + 1..i + 3]) {
+                out.push(byte);
+                i += 3;
+                continue;
             }
         }
         out.push(bytes[i]);
