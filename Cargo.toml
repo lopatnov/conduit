@@ -58,7 +58,7 @@ dashmap  = "6"  # v7 is RC as of 2026-05 — upgrade after stable release
 
 # --- Functionality ---
 mime_guess = "2"
-notify     = "7"
+notify     = "8"
 regex      = "1"
 multer     = "3"
 uuid       = { version = "1", features = ["v4"] }
