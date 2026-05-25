@@ -50,7 +50,7 @@ async-compression = { version = "0.4", features = ["gzip", "brotli", "deflate", 
 # --- Observability ---
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-prometheus         = "0.13"
+prometheus         = "0.14"
 
 # --- Performance & state ---
 arc-swap = "1"
