@@ -190,16 +190,23 @@ fn resolve_proxy(
                 None
             };
 
-            // Only store the upstream URL when using least-conn so the logging()
-            // hook can decrement the per-upstream inflight counter.
-            let proxy_upstream_url = if is_least_conn {
-                Some(chosen_url.clone())
-            } else {
-                None
+            // url_to_proxy_upstream may return None for a malformed URL.
+            // If least-conn already incremented the inflight counter we must
+            // release it here — the logging() hook won't run on this request.
+            let upstream = match url_to_proxy_upstream(&chosen_url, strip) {
+                Some(u) => u,
+                None => {
+                    if is_least_conn {
+                        upstream_health.conn_dec(&chosen_url);
+                    }
+                    return None;
+                }
             };
 
+            let proxy_upstream_url = is_least_conn.then(|| chosen_url.clone());
+
             Some((
-                url_to_proxy_upstream(&chosen_url, strip)?,
+                upstream,
                 retry_state,
                 proxy_timeout,
                 proxy_pool,

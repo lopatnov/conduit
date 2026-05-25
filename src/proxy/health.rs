@@ -106,7 +106,7 @@ impl UpstreamRegistry {
     /// Pick the URL from `urls` with the lowest current inflight count and
     /// increment its count.
     ///
-    /// Falls back to the first URL when the slice is empty.
+    /// Returns `None` when `urls` is empty.
     pub fn pick_least_conn(&self, urls: &[String]) -> Option<String> {
         let chosen = urls.iter().min_by_key(|url| self.conn_load(url))?.clone();
         self.conn_inc(&chosen);
@@ -168,7 +168,12 @@ pub fn spawn_health_checks(registry: Arc<UpstreamRegistry>, config: &AppConfig) 
                 continue;
             }
 
-            let path = hc.path.clone().unwrap_or_else(|| "/".to_string());
+            let raw_path = hc.path.clone().unwrap_or_else(|| "/".to_string());
+            let path = if raw_path.starts_with('/') {
+                raw_path
+            } else {
+                format!("/{raw_path}")
+            };
             let interval_secs = hc.interval_secs.unwrap_or(10).max(1);
             let unhealthy_threshold = hc.unhealthy_threshold.unwrap_or(3);
             let healthy_threshold = hc.healthy_threshold.unwrap_or(1);

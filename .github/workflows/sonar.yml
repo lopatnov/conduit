@@ -30,7 +30,7 @@ jobs:
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6  # v2.7.8
 
       - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin --locked
+        run: cargo install cargo-tarpaulin --locked --version 0.35.4
 
       # Unit tests only: integration tests spawn child processes which confuse
       # tarpaulin's instrumentation. Coverage of the library code is what
