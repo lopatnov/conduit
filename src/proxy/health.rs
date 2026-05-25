@@ -271,6 +271,67 @@ async fn probe_http(host_port: &str, path: &str) -> (bool, u64) {
 mod tests {
     use super::*;
 
+    // ── probe_http ────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn probe_http_succeeds_on_200() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 256];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+            }
+        });
+
+        let (ok, latency_ms) = probe_http(&format!("127.0.0.1:{port}"), "/").await;
+        assert!(ok, "probe should succeed on HTTP 200");
+        assert!(latency_ms < 5000);
+    }
+
+    #[tokio::test]
+    async fn probe_http_fails_on_500() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 256];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+            }
+        });
+
+        let (ok, _) = probe_http(&format!("127.0.0.1:{port}"), "/").await;
+        assert!(!ok, "probe should fail on HTTP 500");
+    }
+
+    #[tokio::test]
+    async fn probe_http_fails_when_nothing_listening() {
+        // Bind then drop so the port is released before we call probe_http.
+        let port = {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let (ok, latency_ms) = probe_http(&format!("127.0.0.1:{port}"), "/").await;
+        assert!(!ok, "probe should fail when nothing is listening");
+        assert_eq!(latency_ms, 0);
+    }
+
     #[test]
     fn conn_inc_dec_saturates() {
         let reg = UpstreamRegistry::new();

@@ -377,3 +377,333 @@ fn find_site_idx(config: &AppConfig, host: &str) -> Option<usize> {
     }
     Some(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::schema::{
+        AppConfig, HealthCheckConfig, HealthCheckOptions, LoadBalanceStrategy, MetricsConfig,
+        RetryConfig, SiteConfig,
+    };
+    use crate::proxy::health::UpstreamRegistry;
+
+    // ── find_route ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn find_route_longest_prefix_wins() {
+        use crate::config::schema::ProxyRouteTarget;
+        use indexmap::IndexMap;
+        let mut routes = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Url("http://root:4000".to_string()),
+        );
+        routes.insert(
+            "/api".to_string(),
+            ProxyRouteTarget::Url("http://api:4000".to_string()),
+        );
+        routes.insert(
+            "/api/v2".to_string(),
+            ProxyRouteTarget::Url("http://apiv2:4000".to_string()),
+        );
+        let (key, _) = find_route(&routes, "/api/v2/users").unwrap();
+        assert_eq!(key, "/api/v2");
+    }
+
+    #[test]
+    fn find_route_root_catches_all() {
+        use crate::config::schema::ProxyRouteTarget;
+        use indexmap::IndexMap;
+        let mut routes = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Url("http://root:4000".to_string()),
+        );
+        let (key, _) = find_route(&routes, "/anything/here").unwrap();
+        assert_eq!(key, "/");
+    }
+
+    #[test]
+    fn find_route_no_match_returns_none() {
+        use crate::config::schema::ProxyRouteTarget;
+        use indexmap::IndexMap;
+        let mut routes = IndexMap::new();
+        routes.insert(
+            "/api".to_string(),
+            ProxyRouteTarget::Url("http://api:4000".to_string()),
+        );
+        assert!(find_route(&routes, "/other").is_none());
+    }
+
+    // ── find_best_mapped_prefix ───────────────────────────────────────────────
+
+    #[test]
+    fn mapped_prefix_longest_wins() {
+        use indexmap::IndexMap;
+        let mut m = IndexMap::new();
+        m.insert("/".to_string(), "./root".to_string());
+        m.insert("/docs".to_string(), "./docs".to_string());
+        let (pfx, root) = find_best_mapped_prefix(&m, "/docs/guide").unwrap();
+        assert_eq!(pfx, "/docs");
+        assert_eq!(root, "./docs");
+    }
+
+    #[test]
+    fn mapped_prefix_no_match_returns_none() {
+        use indexmap::IndexMap;
+        let mut m = IndexMap::new();
+        m.insert("/docs".to_string(), "./docs".to_string());
+        assert!(find_best_mapped_prefix(&m, "/other").is_none());
+    }
+
+    // ── is_health_path ────────────────────────────────────────────────────────
+
+    #[test]
+    fn health_path_default_matches() {
+        assert!(is_health_path(None, "/__health__"));
+    }
+
+    #[test]
+    fn health_path_non_health_does_not_match() {
+        assert!(!is_health_path(None, "/other"));
+    }
+
+    #[test]
+    fn health_path_disabled_via_false() {
+        let site = SiteConfig {
+            health_check: Some(HealthCheckConfig::Enabled(false)),
+            ..Default::default()
+        };
+        assert!(!is_health_path(Some(&site), "/__health__"));
+    }
+
+    #[test]
+    fn health_path_enabled_via_true() {
+        let site = SiteConfig {
+            health_check: Some(HealthCheckConfig::Enabled(true)),
+            ..Default::default()
+        };
+        assert!(is_health_path(Some(&site), "/__health__"));
+    }
+
+    #[test]
+    fn health_path_custom_path_configured() {
+        let site = SiteConfig {
+            health_check: Some(HealthCheckConfig::Options(HealthCheckOptions {
+                path: Some("/health".to_string()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(is_health_path(Some(&site), "/health"));
+        assert!(!is_health_path(Some(&site), "/__health__"));
+    }
+
+    // ── metrics_token ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn metrics_token_no_site_returns_none() {
+        assert!(metrics_token(None, "/__metrics__").is_none());
+    }
+
+    #[test]
+    fn metrics_token_default_path_no_auth() {
+        let site = SiteConfig {
+            metrics: Some(MetricsConfig {
+                path: None,
+                token: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(metrics_token(Some(&site), "/__metrics__"), Some(None));
+    }
+
+    #[test]
+    fn metrics_token_custom_path_with_token() {
+        let site = SiteConfig {
+            metrics: Some(MetricsConfig {
+                path: Some("/m".to_string()),
+                token: Some("secret".to_string()),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            metrics_token(Some(&site), "/m"),
+            Some(Some("secret".to_string()))
+        );
+        assert!(metrics_token(Some(&site), "/__metrics__").is_none());
+    }
+
+    // ── find_site_idx ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn site_idx_empty_config_returns_none() {
+        assert!(find_site_idx(&AppConfig::default(), "example.com").is_none());
+    }
+
+    #[test]
+    fn site_idx_exact_host_match() {
+        let config = AppConfig {
+            sites: vec![
+                SiteConfig {
+                    host: Some("other.com".to_string()),
+                    ..Default::default()
+                },
+                SiteConfig {
+                    host: Some("example.com".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(find_site_idx(&config, "example.com"), Some(1));
+    }
+
+    #[test]
+    fn site_idx_wildcard_fallback() {
+        let config = AppConfig {
+            sites: vec![
+                SiteConfig {
+                    host: Some("example.com".to_string()),
+                    ..Default::default()
+                },
+                SiteConfig {
+                    host: Some("*".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(find_site_idx(&config, "other.com"), Some(1));
+    }
+
+    // ── pick_with_retry ───────────────────────────────────────────────────────
+
+    #[test]
+    fn retry_single_url_builds_state() {
+        let urls = vec!["http://a:4000".to_string()];
+        let counters = DashMap::new();
+        let retry = RetryConfig {
+            attempts: 3,
+            conditions: vec!["5xx".to_string()],
+            backoff_ms: None,
+        };
+        let (url, state) = pick_with_retry(urls, "r", &counters, &retry).unwrap();
+        assert_eq!(url, "http://a:4000");
+        assert_eq!(state.max_attempts, 3);
+        assert!(state.has_condition("5xx"));
+        assert!(!state.has_condition("connection_error"));
+    }
+
+    #[test]
+    fn retry_multiple_urls_rotates() {
+        let urls = vec!["http://a:4000".to_string(), "http://b:4000".to_string()];
+        let counters = DashMap::new();
+        let retry = RetryConfig {
+            attempts: 2,
+            conditions: vec!["connection_error".to_string()],
+            backoff_ms: Some(50),
+        };
+        let (url, state) = pick_with_retry(urls.clone(), "r", &counters, &retry).unwrap();
+        assert!(urls.contains(&url));
+        assert_eq!(state.urls.len(), 2);
+        assert_eq!(state.backoff_ms, Some(50));
+    }
+
+    #[test]
+    fn retry_empty_urls_returns_none() {
+        let counters = DashMap::new();
+        let retry = RetryConfig {
+            attempts: 3,
+            conditions: vec![],
+            backoff_ms: None,
+        };
+        assert!(pick_with_retry(vec![], "r", &counters, &retry).is_none());
+    }
+
+    // ── pick_url_by_strategy ──────────────────────────────────────────────────
+
+    #[test]
+    fn strategy_default_round_robin() {
+        let urls = vec!["http://a:4000".to_string(), "http://b:4000".to_string()];
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let (url, retry, is_lc) =
+            pick_url_by_strategy(urls.clone(), "r", &counters, None, None, &reg).unwrap();
+        assert!(urls.contains(&url));
+        assert!(retry.is_none());
+        assert!(!is_lc);
+    }
+
+    #[test]
+    fn strategy_random_returns_valid_url() {
+        let urls = vec!["http://a:4000".to_string(), "http://b:4000".to_string()];
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let (url, _, is_lc) = pick_url_by_strategy(
+            urls.clone(),
+            "r",
+            &counters,
+            None,
+            Some(&LoadBalanceStrategy::Random),
+            &reg,
+        )
+        .unwrap();
+        assert!(urls.contains(&url));
+        assert!(!is_lc);
+    }
+
+    #[test]
+    fn strategy_least_conn_increments_counter() {
+        let urls = vec!["http://a:4000".to_string(), "http://b:4000".to_string()];
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let (url, _, is_lc) = pick_url_by_strategy(
+            urls.clone(),
+            "r",
+            &counters,
+            None,
+            Some(&LoadBalanceStrategy::LeastConn),
+            &reg,
+        )
+        .unwrap();
+        assert!(urls.contains(&url));
+        assert!(is_lc, "least-conn must set the is_least_conn flag");
+        assert_eq!(
+            reg.conn_load(&url),
+            1,
+            "inflight counter must be incremented"
+        );
+    }
+
+    #[test]
+    fn strategy_with_retry_overrides_load_balancing() {
+        let urls = vec!["http://a:4000".to_string(), "http://b:4000".to_string()];
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let retry_cfg = RetryConfig {
+            attempts: 3,
+            conditions: vec!["5xx".to_string()],
+            backoff_ms: None,
+        };
+        let (url, retry, is_lc) = pick_url_by_strategy(
+            urls.clone(),
+            "r",
+            &counters,
+            Some(&retry_cfg),
+            Some(&LoadBalanceStrategy::LeastConn),
+            &reg,
+        )
+        .unwrap();
+        assert!(urls.contains(&url));
+        assert!(retry.is_some(), "retry state must be built");
+        assert!(!is_lc, "retry path never sets least-conn flag");
+    }
+
+    #[test]
+    fn strategy_empty_urls_returns_none() {
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        assert!(pick_url_by_strategy(vec![], "r", &counters, None, None, &reg).is_none());
+    }
+}
