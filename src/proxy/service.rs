@@ -7,6 +7,7 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
+use pingora_cache::{CacheKey, NoCacheReason, RespCacheable};
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
 use pingora_http::{RequestHeader, ResponseHeader};
@@ -23,6 +24,7 @@ use crate::filter::{
     security_headers,
 };
 use crate::handler::{fallback, health, metrics as metrics_handler, response, static_files};
+use crate::proxy::cache as proxy_cache;
 use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
 use crate::proxy::{router, upstream};
@@ -35,6 +37,10 @@ static METRICS: OnceLock<Arc<ConduitMetrics>> = OnceLock::new();
 pub struct ConduitMetrics {
     pub requests_total: CounterVec,
     pub request_duration_seconds: HistogramVec,
+    /// Incremented for every proxy response served from the cache (phase = Hit).
+    pub cache_hits_total: CounterVec,
+    /// Incremented for every proxy cache miss (phase = Miss or Expired).
+    pub cache_misses_total: CounterVec,
 }
 
 impl ConduitMetrics {
@@ -56,9 +62,25 @@ impl ConduitMetrics {
                 )
                 .expect("register conduit_request_duration_seconds");
 
+                let cache_hits_total = prometheus::register_counter_vec!(
+                    "conduit_cache_hits_total",
+                    "Number of proxy responses served from the cache",
+                    &["route"]
+                )
+                .expect("register conduit_cache_hits_total");
+
+                let cache_misses_total = prometheus::register_counter_vec!(
+                    "conduit_cache_misses_total",
+                    "Number of proxy cache misses (upstream was contacted)",
+                    &["route"]
+                )
+                .expect("register conduit_cache_misses_total");
+
                 Arc::new(Self {
                     requests_total,
                     request_duration_seconds,
+                    cache_hits_total,
+                    cache_misses_total,
                 })
             })
             .clone()
@@ -671,6 +693,101 @@ impl ProxyHttp for ConduitProxy {
         Ok(())
     }
 
+    /// Enable the cache for proxy routes that carry a `cache` configuration.
+    ///
+    /// Called by Pingora after `request_filter`; only reached for upstream-bound
+    /// requests (local handlers return `Ok(true)` in `request_filter`).
+    fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        let Some(req_ctx) = ctx.as_ref() else {
+            return Ok(());
+        };
+        let Some(ref cfg) = req_ctx.proxy_cache_cfg else {
+            return Ok(());
+        };
+
+        // Only "memory" store is supported in Phase 2.6.
+        if cfg.store != "memory" {
+            tracing::warn!(
+                store = %cfg.store,
+                "unsupported cache store — caching disabled for this route"
+            );
+            return Ok(());
+        }
+
+        // Check request-side policy (method, cookies, skip-paths).
+        let method = session.req_header().method.as_str();
+        let path = session.req_header().uri.path();
+        let has_cookie = session.req_header().headers.contains_key("cookie");
+
+        if !proxy_cache::should_cache_request(cfg, method, has_cookie, path) {
+            return Ok(());
+        }
+
+        session
+            .cache
+            .enable(proxy_cache::cache_storage(), None, None, None, None);
+        Ok(())
+    }
+
+    /// Build a deterministic cache key: namespace = Host header, primary = scheme:path[?query].
+    fn cache_key_callback(&self, session: &Session, ctx: &mut Self::CTX) -> Result<CacheKey>
+    where
+        Self::CTX: Send + Sync,
+    {
+        // Use extract_host() so the port suffix is stripped (e.g. "example.com:8080" → "example.com").
+        // This keeps the cache key consistent with how the router matches virtual hosts.
+        let host_str = extract_host(session);
+        let host = host_str.as_str();
+
+        // Derive scheme from whether the matched site has TLS configured.
+        let scheme = {
+            let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+            let config = self.state.config.load();
+            if config
+                .sites
+                .get(site_idx)
+                .and_then(|s| s.tls.as_ref())
+                .is_some()
+            {
+                "https"
+            } else {
+                "http"
+            }
+        };
+
+        let uri = &session.req_header().uri;
+        let path = uri.path();
+        let query = uri.query().filter(|q| !q.is_empty());
+
+        Ok(proxy_cache::build_cache_key(host, scheme, path, query))
+    }
+
+    /// Decide whether an upstream response is cacheable.
+    ///
+    /// Returns [`RespCacheable::Cacheable`] for `200 OK` responses when the
+    /// route has a non-zero `ttl_secs`.  Everything else is uncacheable.
+    fn response_cache_filter(
+        &self,
+        _session: &Session,
+        resp: &ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<RespCacheable>
+    where
+        Self::CTX: Send + Sync,
+    {
+        let cacheable = ctx
+            .as_ref()
+            .and_then(|c| c.proxy_cache_cfg.as_ref())
+            .map(|cfg| proxy_cache::response_cacheable(cfg, resp))
+            .unwrap_or(RespCacheable::Uncacheable(NoCacheReason::Custom(
+                "no-cache-cfg",
+            )));
+        Ok(cacheable)
+    }
+
     fn fail_to_connect(
         &self,
         _session: &mut Session,
@@ -786,6 +903,33 @@ impl ProxyHttp for ConduitProxy {
             .request_duration_seconds
             .with_label_values(&[&method, &status])
             .observe(elapsed);
+
+        // Cache hit / miss counters (only for proxy requests with caching enabled).
+        if ctx
+            .as_ref()
+            .and_then(|c| c.proxy_cache_cfg.as_ref())
+            .is_some()
+        {
+            use pingora_cache::CachePhase;
+            let route = session.req_header().uri.path().to_owned();
+            match session.cache.phase() {
+                CachePhase::Hit => {
+                    self.state
+                        .metrics
+                        .cache_hits_total
+                        .with_label_values(&[&route])
+                        .inc();
+                }
+                CachePhase::Miss | CachePhase::Expired => {
+                    self.state
+                        .metrics
+                        .cache_misses_total
+                        .with_label_values(&[&route])
+                        .inc();
+                }
+                _ => {}
+            }
+        }
     }
 }
 

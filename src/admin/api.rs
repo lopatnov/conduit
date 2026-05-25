@@ -7,11 +7,23 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use pingora_core::server::ShutdownWatch;
 use pingora_core::services::background::BackgroundService;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 use crate::proxy::health;
 use crate::proxy::service::AppState;
+
+/// Request body for `/upstreams/add`, `/upstreams/remove`, and `/upstreams/weight`.
+#[derive(Deserialize)]
+struct UpstreamModifyRequest {
+    /// Proxy route path (e.g. `"/api"`).
+    route: String,
+    /// Full upstream URL (e.g. `"http://backend:4000"`).
+    target: String,
+    /// Target weight — required for `/weight`, optional for `/add` (default 1).
+    weight: Option<u32>,
+}
 
 pub struct AdminApiService {
     pub state: Arc<AppState>,
@@ -79,8 +91,15 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     }))
 }
 
-async fn reload_handler() -> Json<Value> {
-    Json(json!({ "status": "not_implemented", "message": "hot reload — Phase 2.7" }))
+async fn reload_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    // Clear runtime upstream overrides so the config file is the single source
+    // of truth.  Full hot config reload (swapping AppConfig via ArcSwap) is
+    // Phase 2.7; here we only handle the in-memory side of reload.
+    state.upstream_health.clear_overrides();
+    Json(json!({
+        "status": "partial",
+        "message": "runtime upstream overrides cleared; full hot reload — Phase 2.7"
+    }))
 }
 
 async fn shutdown_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
@@ -128,14 +147,52 @@ async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({ "upstreams": entries }))
 }
 
-async fn upstreams_add_handler() -> Json<Value> {
-    Json(json!({ "status": "not_implemented", "message": "dynamic upstreams — Phase 2.5c" }))
+async fn upstreams_add_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UpstreamModifyRequest>,
+) -> Json<Value> {
+    let weight = req.weight.unwrap_or(1).max(1);
+    state
+        .upstream_health
+        .add_upstream(&req.route, &req.target, weight);
+    Json(json!({
+        "status": "ok",
+        "route":  req.route,
+        "target": req.target,
+        "weight": weight,
+    }))
 }
 
-async fn upstreams_remove_handler() -> Json<Value> {
-    Json(json!({ "status": "not_implemented", "message": "dynamic upstreams — Phase 2.5c" }))
+async fn upstreams_remove_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UpstreamModifyRequest>,
+) -> Json<Value> {
+    let removed = state
+        .upstream_health
+        .remove_upstream(&req.route, &req.target);
+    Json(json!({
+        "status": if removed { "ok" } else { "not_found" },
+        "route":   req.route,
+        "target":  req.target,
+    }))
 }
 
-async fn upstreams_weight_handler() -> Json<Value> {
-    Json(json!({ "status": "not_implemented", "message": "dynamic upstreams — Phase 2.5c" }))
+async fn upstreams_weight_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UpstreamModifyRequest>,
+) -> Json<Value> {
+    let Some(weight) = req.weight else {
+        return Json(json!({ "status": "error", "message": "weight is required" }));
+    };
+    // Clamp to minimum 1 — weight 0 causes division-by-zero in WRR scheduling.
+    let weight = weight.max(1);
+    let updated = state
+        .upstream_health
+        .set_weight(&req.route, &req.target, weight);
+    Json(json!({
+        "status": if updated { "ok" } else { "not_found" },
+        "route":   req.route,
+        "target":  req.target,
+        "weight":  weight,
+    }))
 }

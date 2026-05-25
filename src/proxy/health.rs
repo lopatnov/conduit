@@ -59,6 +59,16 @@ pub struct UpstreamRegistry {
     /// Incremented in the router when a URL is selected; decremented in the
     /// `logging()` hook after the response is sent.
     pub conn_count: DashMap<String, AtomicUsize>,
+    /// Runtime upstream overrides: `route_path → [(url, weight)]`.
+    ///
+    /// When present for a route, these targets are used **instead of** the
+    /// config-file targets.  An explicit empty vec means all targets have been
+    /// removed.  `None` (key absent) means "use config" (no override).
+    ///
+    /// Mutated by `POST /upstreams/add|remove|weight` and cleared by
+    /// `POST /reload` so that the config file is the single source of truth
+    /// after a reload.
+    pub overrides: DashMap<String, Vec<(String, u32)>>,
 }
 
 impl Default for UpstreamRegistry {
@@ -72,6 +82,7 @@ impl UpstreamRegistry {
         Self {
             statuses: DashMap::new(),
             conn_count: DashMap::new(),
+            overrides: DashMap::new(),
         }
     }
 
@@ -134,6 +145,59 @@ impl UpstreamRegistry {
         } else {
             healthy
         }
+    }
+
+    // ── Runtime upstream overrides (Phase 2.5c) ───────────────────────────────
+
+    /// Return the runtime override target list for `route`, or `None` when no
+    /// override has been applied (caller should fall back to the config).
+    pub fn get_override_targets(&self, route: &str) -> Option<Vec<(String, u32)>> {
+        self.overrides.get(route).map(|e| e.value().clone())
+    }
+
+    /// Add `url` with `weight` to the runtime override list for `route`.
+    ///
+    /// If `url` is already present its weight is updated.  If no override list
+    /// exists yet it is created, seeded with the provided URL.
+    pub fn add_upstream(&self, route: &str, url: &str, weight: u32) {
+        let mut entry = self.overrides.entry(route.to_owned()).or_default();
+        if let Some(existing) = entry.iter_mut().find(|(u, _)| u == url) {
+            existing.1 = weight;
+        } else {
+            entry.push((url.to_owned(), weight));
+        }
+    }
+
+    /// Remove `url` from the runtime override list for `route`.
+    ///
+    /// Returns `true` if the URL was found and removed.  Leaves the (possibly
+    /// empty) override list in place so subsequent adds work correctly.
+    pub fn remove_upstream(&self, route: &str, url: &str) -> bool {
+        if let Some(mut entry) = self.overrides.get_mut(route) {
+            let before = entry.len();
+            entry.retain(|(u, _)| u != url);
+            return entry.len() < before;
+        }
+        false
+    }
+
+    /// Update the weight of `url` within the runtime override list for `route`.
+    ///
+    /// Returns `true` when the URL was found and its weight updated, `false`
+    /// when either `route` has no override list or `url` is not in it.
+    pub fn set_weight(&self, route: &str, url: &str, weight: u32) -> bool {
+        if let Some(mut entry) = self.overrides.get_mut(route) {
+            if let Some(existing) = entry.iter_mut().find(|(u, _)| u == url) {
+                existing.1 = weight;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Drop all runtime overrides (called on `POST /reload`).
+    pub fn clear_overrides(&self) {
+        self.overrides.clear();
     }
 }
 
@@ -500,5 +564,106 @@ mod tests {
         let result = reg.filter_healthy(&urls);
         assert_eq!(result.len(), 1);
         assert_eq!(*result[0], "http://b:4000");
+    }
+
+    // ── override management ───────────────────────────────────────────────────
+
+    #[test]
+    fn add_upstream_creates_override_and_updates_weight() {
+        let reg = UpstreamRegistry::new();
+
+        // No override yet → None
+        assert!(reg.get_override_targets("/api").is_none());
+
+        reg.add_upstream("/api", "http://a:4000", 1);
+        let ov = reg.get_override_targets("/api").unwrap();
+        assert_eq!(ov, vec![("http://a:4000".to_string(), 1)]);
+
+        // Add a second target.
+        reg.add_upstream("/api", "http://b:4000", 2);
+        let ov = reg.get_override_targets("/api").unwrap();
+        assert_eq!(ov.len(), 2);
+
+        // Update weight of existing target.
+        reg.add_upstream("/api", "http://a:4000", 5);
+        let ov = reg.get_override_targets("/api").unwrap();
+        let a_weight = ov
+            .iter()
+            .find(|(u, _)| u == "http://a:4000")
+            .map(|(_, w)| *w);
+        assert_eq!(a_weight, Some(5), "weight must be updated in place");
+        assert_eq!(ov.len(), 2, "no duplicate entries on weight update");
+    }
+
+    #[test]
+    fn remove_upstream_returns_true_when_found() {
+        let reg = UpstreamRegistry::new();
+        reg.add_upstream("/api", "http://a:4000", 1);
+        reg.add_upstream("/api", "http://b:4000", 1);
+
+        let removed = reg.remove_upstream("/api", "http://a:4000");
+        assert!(removed, "remove should return true when URL was present");
+
+        let ov = reg.get_override_targets("/api").unwrap();
+        assert_eq!(ov.len(), 1);
+        assert_eq!(ov[0].0, "http://b:4000");
+    }
+
+    #[test]
+    fn remove_upstream_returns_false_when_missing() {
+        let reg = UpstreamRegistry::new();
+        // No override list at all.
+        assert!(!reg.remove_upstream("/api", "http://x:4000"));
+
+        // Override list exists but URL not in it.
+        reg.add_upstream("/api", "http://a:4000", 1);
+        assert!(!reg.remove_upstream("/api", "http://x:4000"));
+    }
+
+    #[test]
+    fn remove_all_leaves_empty_override_list() {
+        let reg = UpstreamRegistry::new();
+        reg.add_upstream("/", "http://a:4000", 1);
+        reg.remove_upstream("/", "http://a:4000");
+
+        // Key must still exist (empty list) so callers know there IS an override.
+        let ov = reg.get_override_targets("/");
+        assert!(ov.is_some(), "empty override list must still be present");
+        assert!(ov.unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_weight_updates_existing_target() {
+        let reg = UpstreamRegistry::new();
+        reg.add_upstream("/api", "http://a:4000", 1);
+
+        let updated = reg.set_weight("/api", "http://a:4000", 10);
+        assert!(updated, "set_weight must return true for known URL");
+
+        let ov = reg.get_override_targets("/api").unwrap();
+        assert_eq!(ov[0].1, 10);
+    }
+
+    #[test]
+    fn set_weight_returns_false_when_not_found() {
+        let reg = UpstreamRegistry::new();
+        // Route not in overrides at all.
+        assert!(!reg.set_weight("/api", "http://a:4000", 5));
+
+        // Route exists but URL not in it.
+        reg.add_upstream("/api", "http://b:4000", 1);
+        assert!(!reg.set_weight("/api", "http://a:4000", 5));
+    }
+
+    #[test]
+    fn clear_overrides_removes_all_routes() {
+        let reg = UpstreamRegistry::new();
+        reg.add_upstream("/api", "http://a:4000", 1);
+        reg.add_upstream("/web", "http://b:4000", 1);
+        assert_eq!(reg.overrides.len(), 2);
+
+        reg.clear_overrides();
+        assert!(reg.overrides.is_empty());
+        assert!(reg.get_override_targets("/api").is_none());
     }
 }

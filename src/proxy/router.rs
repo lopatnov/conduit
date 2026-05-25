@@ -5,8 +5,8 @@ use std::sync::Arc;
 use dashmap::DashMap;
 
 use crate::config::schema::{
-    AppConfig, ConnectionPoolConfig, LoadBalanceStrategy, ProxyConfig, ProxyRouteTarget,
-    ProxyTimeout, RetryConfig, SiteConfig, StaticConfig,
+    AppConfig, CacheConfig, ConnectionPoolConfig, LoadBalanceStrategy, ProxyConfig,
+    ProxyRouteTarget, ProxyTimeout, RetryConfig, SiteConfig, StaticConfig,
 };
 use crate::proxy::ctx::{LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
@@ -14,14 +14,15 @@ use crate::proxy::upstream;
 
 /// Resolved routing result: all per-route data needed to populate `RequestCtx`.
 ///
-/// Fields: (upstream, retry, timeout, pool, http2, upstream_url_for_least_conn)
+/// Fields: (upstream, retry, timeout, pool, http2, upstream_url_for_least_conn, cache_cfg)
 type RouteResult = (
     UpstreamTarget,
     Option<RetryState>,
     Option<ProxyTimeout>,
     Option<ConnectionPoolConfig>,
-    bool,           // proxy_http2
-    Option<String>, // upstream URL selected (for least-conn decrement)
+    bool,                // proxy_http2
+    Option<String>,      // upstream URL selected (for least-conn decrement)
+    Option<CacheConfig>, // per-route cache config, if caching is enabled
 );
 
 pub fn route_request(
@@ -35,37 +36,47 @@ pub fn route_request(
     let site_idx = find_site_idx(config, host).unwrap_or(0);
     let site = config.sites.get(site_idx);
 
-    let (upstream, retry, proxy_timeout, proxy_pool, proxy_http2, proxy_upstream_url) =
-        if is_health_path(site, path) {
-            (
-                UpstreamTarget::Local(LocalHandler::Health),
-                None,
-                None,
-                None,
-                false,
-                None,
-            )
-        } else if let Some(token) = metrics_token(site, path) {
-            (
-                UpstreamTarget::Local(LocalHandler::Metrics { token }),
-                None,
-                None,
-                None,
-                false,
-                None,
-            )
-        } else if let Some(site) = site {
-            route_site(site, path, client_ip, counters, upstream_health)
-        } else {
-            (
-                UpstreamTarget::Local(LocalHandler::Fallback),
-                None,
-                None,
-                None,
-                false,
-                None,
-            )
-        };
+    let (
+        upstream,
+        retry,
+        proxy_timeout,
+        proxy_pool,
+        proxy_http2,
+        proxy_upstream_url,
+        proxy_cache_cfg,
+    ) = if is_health_path(site, path) {
+        (
+            UpstreamTarget::Local(LocalHandler::Health),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+    } else if let Some(token) = metrics_token(site, path) {
+        (
+            UpstreamTarget::Local(LocalHandler::Metrics { token }),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+    } else if let Some(site) = site {
+        route_site(site, path, client_ip, counters, upstream_health)
+    } else {
+        (
+            UpstreamTarget::Local(LocalHandler::Fallback),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+    };
 
     RequestCtx::new(
         site_idx,
@@ -75,6 +86,7 @@ pub fn route_request(
         proxy_pool,
         proxy_http2,
         proxy_upstream_url,
+        proxy_cache_cfg,
     )
 }
 
@@ -108,6 +120,7 @@ fn route_site(
                 None,
                 false,
                 None,
+                None,
             );
         }
     }
@@ -118,6 +131,7 @@ fn route_site(
         None,
         None,
         false,
+        None,
         None,
     )
 }
@@ -137,12 +151,27 @@ fn resolve_proxy(
             None,
             false,
             None,
+            None,
         )),
         ProxyConfig::Routes(routes) => {
             let (route_key, route_target) = find_route(routes, path)?;
-            let all_urls = upstream::target_urls(route_target);
 
-            let (retry_cfg, proxy_timeout, proxy_pool, strategy, proxy_http2, hash_key) =
+            // ── Runtime override check ────────────────────────────────────────
+            // When the operator has issued `conduit upstreams add/remove/weight`,
+            // those targets replace the config-file targets for this route.
+            let runtime_targets = upstream_health.get_override_targets(route_key);
+            let (all_urls, all_weighted_base): (Vec<String>, Vec<(String, u32)>) =
+                if let Some(ref ov) = runtime_targets {
+                    let urls = ov.iter().map(|(u, _)| u.clone()).collect();
+                    (urls, ov.clone())
+                } else {
+                    (
+                        upstream::target_urls(route_target),
+                        upstream::weighted_targets(route_target),
+                    )
+                };
+
+            let (retry_cfg, proxy_timeout, proxy_pool, strategy, proxy_http2, hash_key, cache_cfg) =
                 match route_target {
                     ProxyRouteTarget::Full(cfg) => (
                         cfg.retry.as_ref(),
@@ -151,8 +180,9 @@ fn resolve_proxy(
                         cfg.strategy.as_ref(),
                         cfg.http2.unwrap_or(false),
                         cfg.hash_key.as_deref().unwrap_or("ip"),
+                        cfg.cache.clone(),
                     ),
-                    _ => (None, None, None, None, false, "ip"),
+                    _ => (None, None, None, None, false, "ip", None),
                 };
 
             // Filter to healthy upstreams; if all are down keep all (fail-open).
@@ -160,8 +190,7 @@ fn resolve_proxy(
             let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
 
             // Build weighted list filtered to healthy targets.
-            let all_weighted = upstream::weighted_targets(route_target);
-            let weighted: Vec<(String, u32)> = all_weighted
+            let weighted: Vec<(String, u32)> = all_weighted_base
                 .into_iter()
                 .filter(|(url, _)| urls.contains(url))
                 .collect();
@@ -218,6 +247,7 @@ fn resolve_proxy(
                 proxy_pool,
                 proxy_http2,
                 proxy_upstream_url,
+                cache_cfg,
             ))
         }
     }
@@ -1120,6 +1150,88 @@ mod tests {
         assert!(
             matches!(ctx_b.upstream, UpstreamTarget::Proxy { .. }),
             "empty client_ip should still route to a proxy target"
+        );
+    }
+
+    // ── runtime override integration ──────────────────────────────────────────
+
+    #[test]
+    fn override_replaces_config_targets() {
+        use crate::config::schema::ProxyConfig;
+        use indexmap::IndexMap;
+
+        let mut routes = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Url("http://config-target:4000".to_string()),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+
+        // Without an override → config target is used.
+        let ctx = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg);
+        let addr_config = match &ctx.upstream {
+            UpstreamTarget::Proxy { addr, .. } => addr.clone(),
+            other => panic!("expected Proxy, got {other:?}"),
+        };
+        assert!(
+            addr_config.contains("config-target"),
+            "before override, config target must be used"
+        );
+
+        // Apply an override.
+        reg.add_upstream("/", "http://override-target:9000", 1);
+
+        let ctx2 = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg);
+        let addr_override = match &ctx2.upstream {
+            UpstreamTarget::Proxy { addr, .. } => addr.clone(),
+            other => panic!("expected Proxy, got {other:?}"),
+        };
+        assert!(
+            addr_override.contains("override-target"),
+            "after override, runtime target must be used: got {addr_override}"
+        );
+    }
+
+    #[test]
+    fn empty_override_falls_through_to_fallback() {
+        // When the override list is explicitly empty, no URL can be selected
+        // and the request should fall through to the Fallback handler.
+        use crate::config::schema::ProxyConfig;
+        use indexmap::IndexMap;
+
+        let mut routes = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Url("http://config-target:4000".to_string()),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+
+        // Create an override, then remove the only entry → empty list.
+        reg.add_upstream("/", "http://temp:4000", 1);
+        reg.remove_upstream("/", "http://temp:4000");
+
+        let ctx = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg);
+        // Empty override list → no URL → falls through to Fallback (not Proxy).
+        assert!(
+            matches!(ctx.upstream, UpstreamTarget::Local(LocalHandler::Fallback)),
+            "empty override must yield Fallback, got {:?}",
+            ctx.upstream
         );
     }
 }

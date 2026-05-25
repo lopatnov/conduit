@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::config::schema::{ConnectionPoolConfig, ProxyTimeout, StaticOptions};
+use crate::config::schema::{CacheConfig, ConnectionPoolConfig, ProxyTimeout, StaticOptions};
 
 #[derive(Debug)]
 pub struct RequestCtx {
@@ -29,9 +29,15 @@ pub struct RequestCtx {
     /// hook can decrement the per-upstream connection counter after the response
     /// is sent.
     pub proxy_upstream_url: Option<String>,
+    /// Cache configuration for this route (`proxy.*.cache`), if caching is enabled.
+    ///
+    /// `None` means the route has no cache config and caching is disabled for
+    /// this request.
+    pub proxy_cache_cfg: Option<CacheConfig>,
 }
 
 impl RequestCtx {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         site_idx: usize,
         upstream: UpstreamTarget,
@@ -40,6 +46,7 @@ impl RequestCtx {
         proxy_pool: Option<ConnectionPoolConfig>,
         proxy_http2: bool,
         proxy_upstream_url: Option<String>,
+        proxy_cache_cfg: Option<CacheConfig>,
     ) -> Self {
         Self {
             site_idx,
@@ -52,6 +59,7 @@ impl RequestCtx {
             proxy_pool,
             proxy_http2,
             proxy_upstream_url,
+            proxy_cache_cfg,
         }
     }
 }

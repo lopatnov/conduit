@@ -148,6 +148,18 @@ jobs:
           path: dist/
           merge-multiple: true
 
+      # Also attach bare binaries so that npm's download.js fallback can
+      # fetch the binary directly (without needing to unpack an archive).
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e  # v4.2.1
+        with:
+          pattern: binary-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Set executable bit on Unix binaries
+        run: chmod +x dist/conduit-*-linux-* dist/conduit-*-darwin* 2>/dev/null || true
+
       - name: Extract version from tag
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
