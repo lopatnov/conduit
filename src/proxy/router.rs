@@ -5,8 +5,8 @@ use std::sync::Arc;
 use dashmap::DashMap;
 
 use crate::config::schema::{
-    AppConfig, ConnectionPoolConfig, LoadBalanceStrategy, ProxyConfig, ProxyRouteTarget,
-    ProxyTimeout, RetryConfig, SiteConfig, StaticConfig,
+    AppConfig, CacheConfig, ConnectionPoolConfig, LoadBalanceStrategy, ProxyConfig,
+    ProxyRouteTarget, ProxyTimeout, RetryConfig, SiteConfig, StaticConfig,
 };
 use crate::proxy::ctx::{LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
@@ -14,14 +14,15 @@ use crate::proxy::upstream;
 
 /// Resolved routing result: all per-route data needed to populate `RequestCtx`.
 ///
-/// Fields: (upstream, retry, timeout, pool, http2, upstream_url_for_least_conn)
+/// Fields: (upstream, retry, timeout, pool, http2, upstream_url_for_least_conn, cache_cfg)
 type RouteResult = (
     UpstreamTarget,
     Option<RetryState>,
     Option<ProxyTimeout>,
     Option<ConnectionPoolConfig>,
-    bool,           // proxy_http2
-    Option<String>, // upstream URL selected (for least-conn decrement)
+    bool,                // proxy_http2
+    Option<String>,      // upstream URL selected (for least-conn decrement)
+    Option<CacheConfig>, // per-route cache config, if caching is enabled
 );
 
 pub fn route_request(
@@ -35,7 +36,7 @@ pub fn route_request(
     let site_idx = find_site_idx(config, host).unwrap_or(0);
     let site = config.sites.get(site_idx);
 
-    let (upstream, retry, proxy_timeout, proxy_pool, proxy_http2, proxy_upstream_url) =
+    let (upstream, retry, proxy_timeout, proxy_pool, proxy_http2, proxy_upstream_url, proxy_cache_cfg) =
         if is_health_path(site, path) {
             (
                 UpstreamTarget::Local(LocalHandler::Health),
@@ -43,6 +44,7 @@ pub fn route_request(
                 None,
                 None,
                 false,
+                None,
                 None,
             )
         } else if let Some(token) = metrics_token(site, path) {
@@ -52,6 +54,7 @@ pub fn route_request(
                 None,
                 None,
                 false,
+                None,
                 None,
             )
         } else if let Some(site) = site {
@@ -64,6 +67,7 @@ pub fn route_request(
                 None,
                 false,
                 None,
+                None,
             )
         };
 
@@ -75,6 +79,7 @@ pub fn route_request(
         proxy_pool,
         proxy_http2,
         proxy_upstream_url,
+        proxy_cache_cfg,
     )
 }
 
@@ -108,6 +113,7 @@ fn route_site(
                 None,
                 false,
                 None,
+                None,
             );
         }
     }
@@ -118,6 +124,7 @@ fn route_site(
         None,
         None,
         false,
+        None,
         None,
     )
 }
@@ -136,6 +143,7 @@ fn resolve_proxy(
             None,
             None,
             false,
+            None,
             None,
         )),
         ProxyConfig::Routes(routes) => {
@@ -156,7 +164,7 @@ fn resolve_proxy(
                     )
                 };
 
-            let (retry_cfg, proxy_timeout, proxy_pool, strategy, proxy_http2, hash_key) =
+            let (retry_cfg, proxy_timeout, proxy_pool, strategy, proxy_http2, hash_key, cache_cfg) =
                 match route_target {
                     ProxyRouteTarget::Full(cfg) => (
                         cfg.retry.as_ref(),
@@ -165,8 +173,9 @@ fn resolve_proxy(
                         cfg.strategy.as_ref(),
                         cfg.http2.unwrap_or(false),
                         cfg.hash_key.as_deref().unwrap_or("ip"),
+                        cfg.cache.clone(),
                     ),
-                    _ => (None, None, None, None, false, "ip"),
+                    _ => (None, None, None, None, false, "ip", None),
                 };
 
             // Filter to healthy upstreams; if all are down keep all (fail-open).
@@ -231,6 +240,7 @@ fn resolve_proxy(
                 proxy_pool,
                 proxy_http2,
                 proxy_upstream_url,
+                cache_cfg,
             ))
         }
     }

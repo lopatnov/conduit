@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod ctx;
 pub mod health;
 pub mod router;
