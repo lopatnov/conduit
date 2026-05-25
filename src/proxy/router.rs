@@ -44,7 +44,22 @@ pub fn route_request(
         proxy_http2,
         proxy_upstream_url,
         proxy_cache_cfg,
-    ) = if is_health_path(site, path) {
+    ) = if let Some(token) = acme_challenge_token(path) {
+        // ACME HTTP-01 challenge — served before any site-level routing so that
+        // the challenge is available even on sites that redirect or auth-protect
+        // everything.
+        (
+            UpstreamTarget::Local(LocalHandler::AcmeChallenge {
+                token: token.to_owned(),
+            }),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+    } else if is_health_path(site, path) {
         (
             UpstreamTarget::Local(LocalHandler::Health),
             None,
@@ -444,6 +459,12 @@ fn is_health_path(site: Option<&SiteConfig>, path: &str) -> bool {
         }
     }
     bare == default_path
+}
+
+/// If `path` starts with the ACME HTTP-01 challenge prefix, return the token
+/// portion.  E.g. `/.well-known/acme-challenge/abc123` → `Some("abc123")`.
+fn acme_challenge_token(path: &str) -> Option<&str> {
+    path.strip_prefix("/.well-known/acme-challenge/")
 }
 
 fn find_site_idx(config: &AppConfig, host: &str) -> Option<usize> {

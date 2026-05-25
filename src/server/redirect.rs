@@ -1,4 +1,8 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
+use bytes::Bytes;
+use dashmap::DashMap;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
 use pingora_http::ResponseHeader;
@@ -8,13 +12,21 @@ use pingora_proxy::{ProxyHttp, Session};
 ///
 /// Configured with the HTTPS port so that it can build the redirect URL.
 /// Returns `308 Permanent Redirect` to preserve the request method.
+///
+/// Also serves ACME HTTP-01 challenge tokens from `acme_challenges` so that
+/// certificate renewal works on the HTTP port without a separate listener.
 pub struct RedirectProxy {
     https_port: u16,
+    /// Shared ACME HTTP-01 challenge store.  Checked before redirecting.
+    acme_challenges: Arc<DashMap<String, String>>,
 }
 
 impl RedirectProxy {
-    pub fn new(https_port: u16) -> Self {
-        Self { https_port }
+    pub fn new(https_port: u16, acme_challenges: Arc<DashMap<String, String>>) -> Self {
+        Self {
+            https_port,
+            acme_challenges,
+        }
     }
 }
 
@@ -28,6 +40,35 @@ impl ProxyHttp for RedirectProxy {
     where
         Self::CTX: Send + Sync,
     {
+        let path = session.req_header().uri.path().to_owned();
+
+        // Serve ACME HTTP-01 challenges before redirecting so that certificate
+        // renewal works even when the HTTP port is a pure redirect service.
+        if let Some(token) = path.strip_prefix("/.well-known/acme-challenge/") {
+            let body = match self.acme_challenges.get(token) {
+                Some(key_auth) => Bytes::copy_from_slice(key_auth.as_bytes()),
+                None => {
+                    let mut resp = ResponseHeader::build(404, Some(1))?;
+                    resp.insert_header("Content-Length", "19")?;
+                    session.write_response_header(Box::new(resp), false).await?;
+                    session
+                        .write_response_body(
+                            Some(Bytes::from_static(b"challenge not found\n")),
+                            true,
+                        )
+                        .await?;
+                    return Ok(true);
+                }
+            };
+            let len = body.len().to_string();
+            let mut resp = ResponseHeader::build(200, Some(2))?;
+            resp.insert_header("Content-Type", "text/plain; charset=utf-8")?;
+            resp.insert_header("Content-Length", len.as_str())?;
+            session.write_response_header(Box::new(resp), false).await?;
+            session.write_response_body(Some(body), true).await?;
+            return Ok(true);
+        }
+
         // Extract the host (without port), handling IPv6 bracketed addresses.
         let host = session
             .req_header()

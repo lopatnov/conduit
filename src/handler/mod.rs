@@ -1,3 +1,4 @@
+pub mod acme_challenge;
 pub mod fallback;
 pub mod health;
 pub mod metrics;

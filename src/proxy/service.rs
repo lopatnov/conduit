@@ -24,7 +24,10 @@ use crate::filter::{
     auth, compression, cors, ip_filter, limits, logging, rate_limit, redirects, response_time,
     security_headers,
 };
-use crate::handler::{fallback, health, metrics as metrics_handler, response, static_files};
+use crate::handler::{
+    acme_challenge as acme_handler, fallback, health, metrics as metrics_handler, response,
+    static_files,
+};
 use crate::proxy::cache as proxy_cache;
 use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
@@ -105,6 +108,11 @@ pub struct AppState {
     pub upstream_health: Arc<UpstreamRegistry>,
     /// Path to the config file — used by `POST /reload` to re-read and hot-swap.
     pub config_path: PathBuf,
+    /// Active ACME HTTP-01 challenge tokens: `token → key_authorization`.
+    ///
+    /// Populated by the ACME flow during certificate procurement/renewal;
+    /// served to the CA via the `/.well-known/acme-challenge/{token}` handler.
+    pub acme_challenges: Arc<DashMap<String, String>>,
 }
 
 impl AppState {
@@ -118,6 +126,7 @@ impl AppState {
             log_writer: Arc::new(LogWriter::new()),
             upstream_health: Arc::new(UpstreamRegistry::new()),
             config_path,
+            acme_challenges: Arc::new(DashMap::new()),
         }
     }
 }
@@ -297,8 +306,11 @@ impl ConduitProxy {
             }
         }
 
-        // Health endpoint bypasses all remaining filters.
-        if matches!(guards.handler_kind, HandlerKind::Health) {
+        // Health and ACME challenge endpoints bypass all remaining filters.
+        if matches!(
+            guards.handler_kind,
+            HandlerKind::Health | HandlerKind::AcmeChallenge
+        ) {
             return Ok(false);
         }
 
@@ -417,6 +429,21 @@ impl ConduitProxy {
         }
 
         match handler_kind {
+            HandlerKind::AcmeChallenge => {
+                let token = if let Some(RequestCtx {
+                    upstream: UpstreamTarget::Local(LocalHandler::AcmeChallenge { token }),
+                    ..
+                }) = ctx.as_ref()
+                {
+                    token.clone()
+                } else {
+                    unreachable!()
+                };
+                acme_handler::handle_acme_challenge(session, &token, &self.state.acme_challenges)
+                    .await?;
+                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                Ok(true)
+            }
             HandlerKind::Health => {
                 let (extra, upstream_pairs) = {
                     let req_ctx = ctx.as_ref().unwrap();
@@ -1015,6 +1042,7 @@ fn apply_peer_options(
 #[derive(Clone)]
 enum HandlerKind {
     Health,
+    AcmeChallenge,
     Metrics,
     StaticFile,
     Fallback,
@@ -1042,6 +1070,7 @@ struct GuardCtx {
 fn handler_kind_of(upstream: &UpstreamTarget) -> HandlerKind {
     match upstream {
         UpstreamTarget::Local(LocalHandler::Health) => HandlerKind::Health,
+        UpstreamTarget::Local(LocalHandler::AcmeChallenge { .. }) => HandlerKind::AcmeChallenge,
         UpstreamTarget::Local(LocalHandler::Metrics { .. }) => HandlerKind::Metrics,
         UpstreamTarget::Local(LocalHandler::StaticFile { .. }) => HandlerKind::StaticFile,
         UpstreamTarget::Local(_) => HandlerKind::Fallback,

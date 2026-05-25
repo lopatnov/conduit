@@ -124,6 +124,11 @@ pub enum LocalHandler {
         options: Arc<StaticOptions>,
         strip_prefix: Option<String>,
     },
+    /// HTTP-01 ACME challenge response — served at
+    /// `/.well-known/acme-challenge/{token}`.
+    AcmeChallenge {
+        token: String,
+    },
 }
 
 #[derive(Debug, Default, Clone)]
