@@ -216,4 +216,38 @@ mod tests {
         // Should contain "+" and "+0000"
         assert!(ts.contains("+0000"), "bad CLF ts: {ts}");
     }
+
+    #[test]
+    fn civil_from_days_leap_year() {
+        // 2000-02-29 is a valid leap day.
+        // Days since epoch to 2000-02-29: manually verified = 11_016
+        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
+    }
+
+    #[test]
+    fn civil_from_days_negative_epoch() {
+        // 1969-12-31 = day -1 before Unix epoch
+        assert_eq!(civil_from_days(-1), (1969, 12, 31));
+    }
+
+    #[test]
+    fn civil_from_days_year_boundary() {
+        // 2024-01-01 = days since epoch: 19_723 (verified via date math)
+        // 2024 is a leap year, but Jan 1 is just after New Year
+        let (y, m, d) = civil_from_days(19_723);
+        assert_eq!(y, 2024);
+        assert_eq!(m, 1);
+        assert_eq!(d, 1);
+    }
+
+    #[test]
+    fn iso8601_contains_date_separators() {
+        let ts = iso8601_now();
+        // Format: YYYY-MM-DDTHH:MM:SSZ
+        assert_eq!(ts.chars().nth(4), Some('-'));
+        assert_eq!(ts.chars().nth(7), Some('-'));
+        assert_eq!(ts.chars().nth(10), Some('T'));
+        assert_eq!(ts.chars().nth(13), Some(':'));
+        assert_eq!(ts.chars().nth(16), Some(':'));
+    }
 }

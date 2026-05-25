@@ -149,3 +149,105 @@ impl AcceptEncoding {
         enc
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── AcceptEncoding::parse ─────────────────────────────────────────────────
+
+    #[test]
+    fn parse_empty_enables_nothing() {
+        let enc = AcceptEncoding::parse("");
+        assert!(!enc.brotli && !enc.gzip && !enc.deflate);
+    }
+
+    #[test]
+    fn parse_gzip_only() {
+        let enc = AcceptEncoding::parse("gzip");
+        assert!(enc.gzip);
+        assert!(!enc.brotli);
+        assert!(!enc.deflate);
+    }
+
+    #[test]
+    fn parse_br_only() {
+        let enc = AcceptEncoding::parse("br");
+        assert!(enc.brotli);
+        assert!(!enc.gzip);
+    }
+
+    #[test]
+    fn parse_multiple_encodings() {
+        let enc = AcceptEncoding::parse("br, gzip, deflate");
+        assert!(enc.brotli);
+        assert!(enc.gzip);
+        assert!(enc.deflate);
+    }
+
+    #[test]
+    fn parse_q_zero_disables_encoding() {
+        let enc = AcceptEncoding::parse("gzip;q=0, br");
+        assert!(!enc.gzip, "gzip with q=0 must be skipped");
+        assert!(enc.brotli);
+    }
+
+    #[test]
+    fn parse_q_zero_zero_disables_encoding() {
+        let enc = AcceptEncoding::parse("gzip;q=0.0");
+        assert!(!enc.gzip);
+    }
+
+    #[test]
+    fn parse_case_insensitive() {
+        let enc = AcceptEncoding::parse("GZip, BR, Deflate");
+        assert!(enc.gzip);
+        assert!(enc.brotli);
+        assert!(enc.deflate);
+    }
+
+    #[test]
+    fn parse_unknown_token_ignored() {
+        let enc = AcceptEncoding::parse("identity, zstd, gzip");
+        assert!(enc.gzip);
+        assert!(!enc.brotli);
+    }
+
+    // ── RetryState ────────────────────────────────────────────────────────────
+
+    fn make_retry(attempt: usize, max: usize, conditions: &[&str]) -> RetryState {
+        RetryState {
+            urls: vec!["http://a:4000".to_string()],
+            attempt,
+            max_attempts: max,
+            conditions: conditions.iter().map(|s| s.to_string()).collect(),
+            backoff_ms: None,
+        }
+    }
+
+    #[test]
+    fn has_attempts_left_when_under_max() {
+        assert!(make_retry(0, 3, &[]).has_attempts_left());
+        assert!(make_retry(2, 3, &[]).has_attempts_left());
+    }
+
+    #[test]
+    fn no_attempts_left_when_at_max() {
+        assert!(!make_retry(3, 3, &[]).has_attempts_left());
+        assert!(!make_retry(5, 3, &[]).has_attempts_left());
+    }
+
+    #[test]
+    fn has_condition_matches_exact_string() {
+        let rs = make_retry(0, 3, &["5xx", "connection_error"]);
+        assert!(rs.has_condition("5xx"));
+        assert!(rs.has_condition("connection_error"));
+        assert!(!rs.has_condition("timeout"));
+    }
+
+    #[test]
+    fn has_condition_empty_list_never_matches() {
+        let rs = make_retry(0, 3, &[]);
+        assert!(!rs.has_condition("5xx"));
+    }
+}

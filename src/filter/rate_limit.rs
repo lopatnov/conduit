@@ -110,3 +110,70 @@ pub fn check(cfg: &RateLimitConfig, session: &Session, limiter: &RateLimiter) ->
 pub fn cleanup(limiter: &RateLimiter) {
     limiter.retain(|_, bucket| !bucket.is_stale(bucket.window_secs * 2));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bucket_starts_full_and_allows_limit_requests() {
+        let mut b = TokenBucket::new(3, 60);
+        assert!(b.try_consume(), "1st token");
+        assert!(b.try_consume(), "2nd token");
+        assert!(b.try_consume(), "3rd token");
+        assert!(!b.try_consume(), "4th token must be denied");
+    }
+
+    #[test]
+    fn bucket_with_zero_window_secs_uses_minimum_one() {
+        // window_secs 0 is normalised to 1 internally.
+        let mut b = TokenBucket::new(1, 0);
+        assert!(b.try_consume());
+        assert!(!b.try_consume());
+    }
+
+    #[test]
+    fn is_stale_with_zero_threshold_is_always_true() {
+        let b = TokenBucket::new(10, 60);
+        assert!(b.is_stale(0), "elapsed >= 0 is always true");
+    }
+
+    #[test]
+    fn is_stale_with_huge_threshold_is_false() {
+        let b = TokenBucket::new(10, 60);
+        assert!(!b.is_stale(u64::MAX));
+    }
+
+    #[test]
+    fn cleanup_preserves_fresh_bucket() {
+        let limiter = RateLimiter::new();
+        limiter.insert("key".to_string(), TokenBucket::new(10, 60));
+        cleanup(&limiter);
+        assert_eq!(limiter.len(), 1, "fresh bucket should survive cleanup");
+    }
+
+    #[test]
+    fn cleanup_on_empty_limiter_is_noop() {
+        let limiter = RateLimiter::new();
+        cleanup(&limiter);
+        assert_eq!(limiter.len(), 0);
+    }
+
+    #[test]
+    fn multiple_buckets_independent() {
+        let limiter = RateLimiter::new();
+        limiter.insert("a".to_string(), TokenBucket::new(1, 60));
+        limiter.insert("b".to_string(), TokenBucket::new(2, 60));
+        {
+            let mut a = limiter.get_mut("a").unwrap();
+            assert!(a.try_consume());
+            assert!(!a.try_consume());
+        }
+        {
+            let mut b = limiter.get_mut("b").unwrap();
+            assert!(b.try_consume());
+            assert!(b.try_consume());
+            assert!(!b.try_consume());
+        }
+    }
+}

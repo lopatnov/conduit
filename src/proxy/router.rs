@@ -860,4 +860,177 @@ mod tests {
         assert!(urls.contains(&url));
         assert!(!is_lc);
     }
+
+    // ── url_to_proxy_upstream ─────────────────────────────────────────────────
+
+    #[test]
+    fn proxy_upstream_http_url() {
+        let target = url_to_proxy_upstream("http://backend:4000", None).unwrap();
+        match target {
+            UpstreamTarget::Proxy { addr, tls, sni, strip_prefix } => {
+                assert_eq!(addr, "backend:4000");
+                assert!(!tls);
+                assert!(sni.is_empty());
+                assert!(strip_prefix.is_none());
+            }
+            _ => panic!("expected Proxy variant"),
+        }
+    }
+
+    #[test]
+    fn proxy_upstream_https_url_sets_tls_and_sni() {
+        let target = url_to_proxy_upstream("https://api.example.com:443", None).unwrap();
+        match target {
+            UpstreamTarget::Proxy { addr, tls, sni, .. } => {
+                assert_eq!(addr, "api.example.com:443");
+                assert!(tls);
+                assert_eq!(sni, "api.example.com");
+            }
+            _ => panic!("expected Proxy variant"),
+        }
+    }
+
+    #[test]
+    fn proxy_upstream_with_strip_prefix() {
+        let target =
+            url_to_proxy_upstream("http://backend:4000", Some("/api".to_string())).unwrap();
+        match target {
+            UpstreamTarget::Proxy { strip_prefix, .. } => {
+                assert_eq!(strip_prefix, Some("/api".to_string()));
+            }
+            _ => panic!("expected Proxy variant"),
+        }
+    }
+
+    // ── resolve_static_roots ──────────────────────────────────────────────────
+
+    #[test]
+    fn static_roots_single() {
+        use crate::config::schema::StaticConfig;
+        use std::path::PathBuf;
+        let (roots, strip) =
+            resolve_static_roots(&StaticConfig::Single("./dist".to_string()), "/");
+        assert_eq!(roots, vec![PathBuf::from("./dist")]);
+        assert!(strip.is_none());
+    }
+
+    #[test]
+    fn static_roots_multi() {
+        use crate::config::schema::StaticConfig;
+        use std::path::PathBuf;
+        let (roots, strip) = resolve_static_roots(
+            &StaticConfig::Multi(vec!["./a".to_string(), "./b".to_string()]),
+            "/",
+        );
+        assert_eq!(roots, vec![PathBuf::from("./a"), PathBuf::from("./b")]);
+        assert!(strip.is_none());
+    }
+
+    #[test]
+    fn static_roots_mapped_matches_prefix() {
+        use crate::config::schema::StaticConfig;
+        use indexmap::IndexMap;
+        let mut m = IndexMap::new();
+        m.insert("/docs".to_string(), "./docs-root".to_string());
+        m.insert("/".to_string(), "./web".to_string());
+        let (roots, strip) = resolve_static_roots(&StaticConfig::Mapped(m), "/docs/guide");
+        assert_eq!(roots.len(), 1);
+        assert!(roots[0].to_str().unwrap().contains("docs-root"));
+        assert_eq!(strip.as_deref(), Some("/docs"));
+    }
+
+    #[test]
+    fn static_roots_mapped_no_match_returns_empty() {
+        use crate::config::schema::StaticConfig;
+        use indexmap::IndexMap;
+        let mut m = IndexMap::new();
+        m.insert("/docs".to_string(), "./docs-root".to_string());
+        let (roots, _) = resolve_static_roots(&StaticConfig::Mapped(m), "/other");
+        assert!(roots.is_empty());
+    }
+
+    // ── route_request (integration of all routing logic) ─────────────────────
+
+    #[test]
+    fn route_request_health_path() {
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                health_check: Some(HealthCheckConfig::Enabled(true)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let ctx = route_request(&config, "localhost", "/__health__", "127.0.0.1", &counters, &reg);
+        assert!(matches!(ctx.upstream, UpstreamTarget::Local(LocalHandler::Health)));
+    }
+
+    #[test]
+    fn route_request_static_file() {
+        use crate::config::schema::StaticConfig;
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                static_files: Some(StaticConfig::Single("./dist".to_string())),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let ctx =
+            route_request(&config, "localhost", "/index.html", "127.0.0.1", &counters, &reg);
+        assert!(matches!(
+            ctx.upstream,
+            UpstreamTarget::Local(LocalHandler::StaticFile { .. })
+        ));
+    }
+
+    #[test]
+    fn route_request_proxy_single() {
+        use crate::config::schema::ProxyConfig;
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Single("http://backend:4000".to_string())),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let ctx = route_request(&config, "localhost", "/api/data", "127.0.0.1", &counters, &reg);
+        assert!(matches!(ctx.upstream, UpstreamTarget::Proxy { .. }));
+    }
+
+    #[test]
+    fn route_request_no_config_returns_fallback() {
+        let config = AppConfig::default();
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let ctx = route_request(&config, "localhost", "/", "127.0.0.1", &counters, &reg);
+        assert!(matches!(ctx.upstream, UpstreamTarget::Local(LocalHandler::Fallback)));
+    }
+
+    #[test]
+    fn route_request_metrics_path() {
+        use crate::config::schema::MetricsConfig;
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                metrics: Some(MetricsConfig {
+                    path: Some("/__metrics__".to_string()),
+                    token: Some("tok".to_string()),
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let ctx =
+            route_request(&config, "localhost", "/__metrics__", "127.0.0.1", &counters, &reg);
+        assert!(matches!(
+            ctx.upstream,
+            UpstreamTarget::Local(LocalHandler::Metrics { .. })
+        ));
+    }
 }
