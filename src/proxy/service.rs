@@ -710,6 +710,10 @@ impl ProxyHttp for ConduitProxy {
 
         // Only "memory" store is supported in Phase 2.6.
         if cfg.store != "memory" {
+            tracing::warn!(
+                store = %cfg.store,
+                "unsupported cache store — caching disabled for this route"
+            );
             return Ok(());
         }
 
@@ -733,12 +737,10 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
-        let host = session
-            .req_header()
-            .headers
-            .get("host")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
+        // Use extract_host() so the port suffix is stripped (e.g. "example.com:8080" → "example.com").
+        // This keeps the cache key consistent with how the router matches virtual hosts.
+        let host_str = extract_host(session);
+        let host = host_str.as_str();
 
         // Derive scheme from whether the matched site has TLS configured.
         let scheme = {

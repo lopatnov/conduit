@@ -56,15 +56,10 @@ pub fn should_cache_request(cfg: &CacheConfig, method: &str, has_cookie: bool, p
     // Method filter (default: GET and HEAD only).
     let default_methods = ["GET", "HEAD"];
     let allowed: &[String] = cfg.methods.as_deref().unwrap_or(&[]);
-    let method_upper = method.to_ascii_uppercase();
     let method_ok = if allowed.is_empty() {
-        default_methods
-            .iter()
-            .any(|m| m.eq_ignore_ascii_case(&method_upper))
+        default_methods.iter().any(|m| m.eq_ignore_ascii_case(method))
     } else {
-        allowed
-            .iter()
-            .any(|m| m.eq_ignore_ascii_case(&method_upper))
+        allowed.iter().any(|m| m.eq_ignore_ascii_case(method))
     };
     if !method_ok {
         return false;
@@ -116,11 +111,8 @@ pub fn response_cacheable(cfg: &CacheConfig, resp: &ResponseHeader) -> RespCache
 /// Everything else is an exact prefix match (path == pattern or
 /// path starts with `pattern/`).
 fn path_matches(pattern: &str, path: &str) -> bool {
-    if let Some(prefix) = pattern.strip_suffix("/**") {
-        path == prefix || path.starts_with(&format!("{prefix}/"))
-    } else {
-        path == pattern || path.starts_with(&format!("{pattern}/"))
-    }
+    let prefix = pattern.strip_suffix("/**").unwrap_or(pattern);
+    path == prefix || path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'))
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────

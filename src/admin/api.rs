@@ -184,6 +184,8 @@ async fn upstreams_weight_handler(
     let Some(weight) = req.weight else {
         return Json(json!({ "status": "error", "message": "weight is required" }));
     };
+    // Clamp to minimum 1 — weight 0 causes division-by-zero in WRR scheduling.
+    let weight = weight.max(1);
     let updated = state
         .upstream_health
         .set_weight(&req.route, &req.target, weight);
