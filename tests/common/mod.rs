@@ -1,4 +1,5 @@
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::Duration;
 
@@ -7,6 +8,8 @@ pub struct TestServer {
     child: Child,
     pub port: u16,
     pub admin_port: u16,
+    /// Path to the config file — used by `rewrite_config` + `reload`.
+    pub cfg_path: PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -43,6 +46,7 @@ impl TestServer {
             child,
             port,
             admin_port,
+            cfg_path: cfg_path.clone(),
             _dir: dir,
         };
         server.wait_ready();
@@ -108,6 +112,24 @@ impl TestServer {
 
     pub fn admin_url(&self, path: &str) -> String {
         format!("http://127.0.0.1:{}{path}", self.admin_port)
+    }
+
+    /// Overwrite the config file on disk with a new JSON value.
+    ///
+    /// Call [`Self::reload`] afterwards to apply the change.
+    pub fn rewrite_config(&self, config: serde_json::Value) {
+        std::fs::write(&self.cfg_path, config.to_string()).expect("rewrite config");
+    }
+
+    /// POST to `POST /reload` and return the parsed JSON response.
+    pub fn reload(&self) -> serde_json::Value {
+        let client = reqwest::blocking::Client::new();
+        client
+            .post(self.admin_url("/reload"))
+            .send()
+            .expect("POST /reload")
+            .json()
+            .expect("JSON response from /reload")
     }
 }
 

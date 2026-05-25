@@ -93,7 +93,7 @@ fn run_server(config_path: &str) {
         }
         process::exit(1);
     }
-    if let Err(e) = builder::run_server(cfg) {
+    if let Err(e) = builder::run_server(cfg, path.to_path_buf()) {
         eprintln!("server error: {e}");
         process::exit(1);
     }

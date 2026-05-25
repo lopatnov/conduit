@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use pingora_core::server::configuration::Opt;
@@ -63,7 +64,7 @@ fn classify_ports(sites: &[SiteConfig]) -> (TlsPortMap, HashSet<u16>) {
     (port_tls, port_plain)
 }
 
-pub fn run_server(config: AppConfig) -> anyhow::Result<()> {
+pub fn run_server(config: AppConfig, config_path: PathBuf) -> anyhow::Result<()> {
     // Install the ring crypto provider for rustls before any TLS initialization.
     // This is a no-op if another provider was already installed (e.g., in tests).
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -76,7 +77,7 @@ pub fn run_server(config: AppConfig) -> anyhow::Result<()> {
         .unwrap_or(DEFAULT_ADMIN_BIND)
         .to_owned();
 
-    let state = Arc::new(AppState::new(config.clone()));
+    let state = Arc::new(AppState::new(config.clone(), config_path));
 
     let opt = Opt {
         upgrade: false,

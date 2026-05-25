@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -102,10 +103,12 @@ pub struct AppState {
     pub log_writer: Arc<LogWriter>,
     /// Per-upstream health state and least-conn inflight counts.
     pub upstream_health: Arc<UpstreamRegistry>,
+    /// Path to the config file — used by `POST /reload` to re-read and hot-swap.
+    pub config_path: PathBuf,
 }
 
 impl AppState {
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: AppConfig, config_path: PathBuf) -> Self {
         Self {
             config: Arc::new(ArcSwap::new(Arc::new(config))),
             inflight: Arc::new(AtomicUsize::new(0)),
@@ -114,6 +117,7 @@ impl AppState {
             metrics: ConduitMetrics::global(),
             log_writer: Arc::new(LogWriter::new()),
             upstream_health: Arc::new(UpstreamRegistry::new()),
+            config_path,
         }
     }
 }
@@ -147,6 +151,7 @@ impl ConduitProxy {
             cors_cfg,
             security_cfg,
             redirect_result,
+            custom_headers,
         ) = {
             let config = self.state.config.load();
             let host = extract_host(session);
@@ -184,6 +189,11 @@ impl ConduitProxy {
             let redirect_result = site
                 .and_then(|s| s.redirects.as_deref())
                 .and_then(|rules| redirects::apply_redirects(rules, &path_and_query));
+            // Custom response headers defined in site.headers — applied to every response.
+            let custom_headers: Vec<(String, String)> = site
+                .and_then(|s| s.headers.as_ref())
+                .map(|h| h.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default();
 
             (
                 req_ctx,
@@ -195,6 +205,7 @@ impl ConduitProxy {
                 cors_cfg,
                 security_cfg,
                 redirect_result,
+                custom_headers,
             )
         };
 
@@ -214,7 +225,7 @@ impl ConduitProxy {
             .map(security_headers::header_entries)
             .unwrap_or_default();
 
-        // ── Build planned response headers (CORS + security) ──────────────────
+        // ── Build planned response headers (CORS + security + custom) ────────
         // These are injected into every response written for this request.
         {
             let cors_hdrs = cors_cfg
@@ -224,6 +235,7 @@ impl ConduitProxy {
             req_ctx.extra_headers = cors_hdrs
                 .into_iter()
                 .chain(sec_only.iter().cloned())
+                .chain(custom_headers)
                 .collect();
         }
 

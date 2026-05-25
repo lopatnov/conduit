@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
+use crate::config;
 use crate::proxy::health;
 use crate::proxy::service::AppState;
 
@@ -92,14 +93,98 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 async fn reload_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
-    // Clear runtime upstream overrides so the config file is the single source
-    // of truth.  Full hot config reload (swapping AppConfig via ArcSwap) is
-    // Phase 2.7; here we only handle the in-memory side of reload.
+    // Re-parse the config file.
+    let new_config = match config::load_config(&state.config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(json!({
+                "status": "error",
+                "message": format!("failed to parse config: {e}"),
+            }));
+        }
+    };
+
+    // Detect fields that require a restart (cold changes).
+    let cold_fields = detect_cold_changes(&state.config.load(), &new_config);
+    if !cold_fields.is_empty() {
+        return Json(json!({
+            "status": "error",
+            "message": "cold fields changed — restart required",
+            "cold_fields": cold_fields,
+        }));
+    }
+
+    // Apply: hot-swap config, clear runtime upstream overrides, reset rate limiter.
+    state.config.store(Arc::new(new_config));
     state.upstream_health.clear_overrides();
-    Json(json!({
-        "status": "partial",
-        "message": "runtime upstream overrides cleared; full hot reload — Phase 2.7"
-    }))
+    state.rate_limiter.clear();
+
+    Json(json!({ "status": "ok", "message": "config reloaded" }))
+}
+
+/// Return the list of field paths that changed between `old` and `new` and
+/// require a server restart (cold fields).
+///
+/// Cold fields: `global.workers`, `global.backlog`, `global.admin.bind`,
+/// `sites[N].port`, `sites[N].tls.cert`, `sites[N].tls.key`.
+fn detect_cold_changes(
+    old: &crate::config::schema::AppConfig,
+    new: &crate::config::schema::AppConfig,
+) -> Vec<String> {
+    let mut cold = Vec::new();
+
+    // global.workers / global.backlog / global.admin.bind
+    let old_g = old.global.as_ref();
+    let new_g = new.global.as_ref();
+    if old_g.and_then(|g| g.workers) != new_g.and_then(|g| g.workers) {
+        cold.push("global.workers".to_string());
+    }
+    if old_g.and_then(|g| g.backlog) != new_g.and_then(|g| g.backlog) {
+        cold.push("global.backlog".to_string());
+    }
+    let old_bind = old_g
+        .and_then(|g| g.admin.as_ref())
+        .and_then(|a| a.bind.as_deref());
+    let new_bind = new_g
+        .and_then(|g| g.admin.as_ref())
+        .and_then(|a| a.bind.as_deref());
+    if old_bind != new_bind {
+        cold.push("global.admin.bind".to_string());
+    }
+
+    // per-site cold fields: port, tls.cert, tls.key
+    let old_sites = &old.sites;
+    let new_sites = &new.sites;
+    let n = old_sites.len().max(new_sites.len());
+    for i in 0..n {
+        let o = old_sites.get(i);
+        let nw = new_sites.get(i);
+        // port
+        if o.and_then(|s| s.port) != nw.and_then(|s| s.port) {
+            cold.push(format!("sites[{i}].port"));
+        }
+        // tls.cert / tls.key (manual cert, not ACME)
+        let old_cert = o
+            .and_then(|s| s.tls.as_ref())
+            .and_then(|t| t.cert.as_deref());
+        let new_cert = nw
+            .and_then(|s| s.tls.as_ref())
+            .and_then(|t| t.cert.as_deref());
+        if old_cert != new_cert {
+            cold.push(format!("sites[{i}].tls.cert"));
+        }
+        let old_key = o
+            .and_then(|s| s.tls.as_ref())
+            .and_then(|t| t.key.as_deref());
+        let new_key = nw
+            .and_then(|s| s.tls.as_ref())
+            .and_then(|t| t.key.as_deref());
+        if old_key != new_key {
+            cold.push(format!("sites[{i}].tls.key"));
+        }
+    }
+
+    cold
 }
 
 async fn shutdown_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
