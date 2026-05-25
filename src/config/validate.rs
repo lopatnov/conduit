@@ -337,4 +337,42 @@ mod tests {
             e[0].message
         );
     }
+
+    #[test]
+    fn fallback_status_below_range_invalid() {
+        let e = errs(r#"{ "fallback": { "status": 99 } }"#);
+        assert!(!e.is_empty(), "status 99 is below 100 and must be rejected");
+        assert!(
+            e[0].message.contains("99") || e[0].message.contains("status"),
+            "got: {}",
+            e[0].message
+        );
+    }
+
+    #[test]
+    fn fallback_status_above_range_invalid() {
+        let e = errs(r#"{ "fallback": { "status": 600 } }"#);
+        assert!(
+            !e.is_empty(),
+            "status 600 is above 599 and must be rejected"
+        );
+    }
+
+    #[test]
+    fn fallback_status_in_range_valid() {
+        assert!(errs(r#"{ "fallback": { "status": 404 } }"#).is_empty());
+        assert!(errs(r#"{ "fallback": { "status": 200 } }"#).is_empty());
+    }
+
+    #[test]
+    fn fallback_no_status_valid() {
+        assert!(errs(r#"{ "fallback": {} }"#).is_empty());
+    }
+
+    #[test]
+    fn tls_missing_cert() {
+        let e = errs(r#"{ "tls": { "key": "a.key" } }"#);
+        assert_eq!(e.len(), 1);
+        assert!(e[0].message.contains("cert"), "got: {}", e[0].message);
+    }
 }

@@ -17,4 +17,5 @@ exclude_files = [
     "src/handler/hot_reload.rs",
     "src/util/log_writer.rs",
     "src/filter/limits.rs",
+    "src/filter/logging.rs",
 ]

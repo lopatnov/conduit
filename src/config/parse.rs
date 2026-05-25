@@ -55,3 +55,75 @@ pub fn normalize(file: ConfigFile) -> AppConfig {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::schema::SiteConfig;
+
+    #[test]
+    fn unsupported_version_returns_error() {
+        let result = from_str(r#"{"version": 999, "port": 8080}"#);
+        assert!(result.is_err(), "version 999 must be rejected");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("999") || msg.contains("version") || msg.contains("upgrade"),
+            "error message should mention version: {msg}"
+        );
+    }
+
+    #[test]
+    fn supported_version_parses_ok() {
+        assert!(from_str(r#"{"version": 1, "port": 8080}"#).is_ok());
+    }
+
+    #[test]
+    fn no_version_field_parses_ok() {
+        assert!(from_str(r#"{"port": 8080}"#).is_ok());
+    }
+
+    #[test]
+    fn invalid_json_returns_error() {
+        let result = from_str(r#"{"port": "not-a-number"}"#);
+        assert!(result.is_err(), "invalid port type must fail to parse");
+    }
+
+    #[test]
+    fn normalize_full_config_returns_sites() {
+        use crate::config::schema::GlobalConfig;
+        let app = AppConfig {
+            global: Some(GlobalConfig {
+                workers: Some(4),
+                ..Default::default()
+            }),
+            sites: vec![SiteConfig::default()],
+        };
+        let out = normalize(ConfigFile::Full(app.clone()));
+        assert_eq!(out.sites.len(), 1);
+        assert!(out.global.is_some());
+    }
+
+    #[test]
+    fn normalize_single_site_wraps_in_vec() {
+        let out = normalize(ConfigFile::Single(Box::new(SiteConfig::default())));
+        assert_eq!(out.sites.len(), 1);
+        assert!(out.global.is_none());
+    }
+
+    #[test]
+    fn normalize_sites_array_preserves_order() {
+        let sites = vec![
+            SiteConfig {
+                port: Some(8080),
+                ..Default::default()
+            },
+            SiteConfig {
+                port: Some(8081),
+                ..Default::default()
+            },
+        ];
+        let out = normalize(ConfigFile::Sites(sites));
+        assert_eq!(out.sites[0].port, Some(8080));
+        assert_eq!(out.sites[1].port, Some(8081));
+    }
+}

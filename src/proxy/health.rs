@@ -137,6 +137,36 @@ impl UpstreamRegistry {
     }
 }
 
+// ── Health state update ───────────────────────────────────────────────────────
+
+/// Apply a single probe result to an upstream's health entry.
+///
+/// Called from the background health-check task after each TCP probe.  Extracted
+/// into a pure function so the threshold logic can be unit-tested without a live
+/// network connection or a running Tokio runtime.
+pub(crate) fn apply_probe_result(
+    entry: &mut UpstreamEntry,
+    ok: bool,
+    latency_ms: u64,
+    healthy_threshold: u32,
+    unhealthy_threshold: u32,
+) {
+    if ok {
+        entry.consecutive_failures = 0;
+        entry.consecutive_successes = entry.consecutive_successes.saturating_add(1);
+        entry.latency_ms = Some(latency_ms);
+        if entry.consecutive_successes >= healthy_threshold {
+            entry.healthy = true;
+        }
+    } else {
+        entry.consecutive_successes = 0;
+        entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
+        if entry.consecutive_failures >= unhealthy_threshold {
+            entry.healthy = false;
+        }
+    }
+}
+
 // ── Background health check tasks ─────────────────────────────────────────────
 
 /// Spawn a Tokio background task for every proxy route that has
@@ -193,31 +223,22 @@ pub fn spawn_health_checks(registry: Arc<UpstreamRegistry>, config: &AppConfig) 
 
                         let mut entry = reg.statuses.entry(url.clone()).or_default();
 
-                        if ok {
-                            entry.consecutive_failures = 0;
-                            entry.consecutive_successes =
-                                entry.consecutive_successes.saturating_add(1);
-                            entry.latency_ms = Some(latency_ms);
-                            if entry.consecutive_successes >= healthy_threshold {
-                                if !entry.healthy {
-                                    tracing::info!(url, "upstream recovered");
-                                }
-                                entry.healthy = true;
-                            }
-                        } else {
-                            entry.consecutive_successes = 0;
-                            entry.consecutive_failures =
-                                entry.consecutive_failures.saturating_add(1);
-                            if entry.consecutive_failures >= unhealthy_threshold {
-                                if entry.healthy {
-                                    tracing::warn!(
-                                        url,
-                                        failures = entry.consecutive_failures,
-                                        "upstream marked unhealthy"
-                                    );
-                                }
-                                entry.healthy = false;
-                            }
+                        let was_healthy = entry.healthy;
+                        apply_probe_result(
+                            &mut entry,
+                            ok,
+                            latency_ms,
+                            healthy_threshold,
+                            unhealthy_threshold,
+                        );
+                        if ok && !was_healthy && entry.healthy {
+                            tracing::info!(url, "upstream recovered");
+                        } else if !ok && was_healthy && !entry.healthy {
+                            tracing::warn!(
+                                url,
+                                failures = entry.consecutive_failures,
+                                "upstream marked unhealthy"
+                            );
                         }
                     }
                 }
@@ -275,6 +296,69 @@ async fn probe_http(host_port: &str, path: &str) -> (bool, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── apply_probe_result ────────────────────────────────────────────────────
+
+    fn fresh() -> UpstreamEntry {
+        UpstreamEntry::default()
+    }
+
+    #[test]
+    fn probe_success_increments_successes_and_records_latency() {
+        let mut e = fresh();
+        apply_probe_result(&mut e, true, 42, 2, 3);
+        assert_eq!(e.consecutive_successes, 1);
+        assert_eq!(e.consecutive_failures, 0);
+        assert_eq!(e.latency_ms, Some(42));
+        assert!(e.healthy, "should stay healthy after first success");
+    }
+
+    #[test]
+    fn probe_enough_successes_marks_healthy() {
+        let mut e = UpstreamEntry {
+            healthy: false,
+            consecutive_failures: 5,
+            consecutive_successes: 0,
+            latency_ms: None,
+        };
+        apply_probe_result(&mut e, true, 10, 2, 3);
+        assert!(!e.healthy, "one success is not enough (threshold = 2)");
+        apply_probe_result(&mut e, true, 10, 2, 3);
+        assert!(e.healthy, "two successes should restore health");
+        assert_eq!(e.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn probe_failure_increments_failures_and_clears_successes() {
+        let mut e = fresh();
+        apply_probe_result(&mut e, false, 0, 1, 3);
+        assert_eq!(e.consecutive_failures, 1);
+        assert_eq!(e.consecutive_successes, 0);
+        assert!(e.healthy, "one failure is not enough (threshold = 3)");
+    }
+
+    #[test]
+    fn probe_enough_failures_marks_unhealthy() {
+        let mut e = fresh();
+        apply_probe_result(&mut e, false, 0, 1, 3);
+        apply_probe_result(&mut e, false, 0, 1, 3);
+        assert!(e.healthy, "two failures, threshold = 3 → still healthy");
+        apply_probe_result(&mut e, false, 0, 1, 3);
+        assert!(!e.healthy, "three failures → unhealthy");
+    }
+
+    #[test]
+    fn probe_success_after_failure_resets_failure_counter() {
+        let mut e = UpstreamEntry {
+            healthy: true,
+            consecutive_failures: 2,
+            consecutive_successes: 0,
+            latency_ms: None,
+        };
+        apply_probe_result(&mut e, true, 5, 1, 3);
+        assert_eq!(e.consecutive_failures, 0);
+        assert!(e.healthy);
+    }
 
     // ── probe_http ────────────────────────────────────────────────────────────
 
