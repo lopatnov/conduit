@@ -235,7 +235,7 @@ jobs:
 
       - name: Set package version
         working-directory: npm
-        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
 
       - name: Publish npm package
         working-directory: npm
