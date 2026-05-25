@@ -1,0 +1,34 @@
+{
+  "host": "example.com",
+  "port": 443,
+  "tls": {
+    "acme": {
+      "email": "admin@example.com",
+      "storage": "./certs",
+      "challenge": "http-01"
+    },
+    "httpRedirectPort": 80
+  },
+  "http2": { "maxConcurrentStreams": 100 },
+  "compression": true,
+  "securityHeaders": true,
+  "logging": "json",
+  "static": "./dist",
+  "staticOptions": { "maxAge": "7d", "preCompressed": true },
+  "proxy": {
+    "/api": {
+      "targets": ["http://backend:4000"],
+      "stripPrefix": true,
+      "healthCheck": { "path": "/health", "intervalSecs": 15 }
+    }
+  },
+  "healthCheck": true,
+  "metrics": { "path": "/__metrics__", "token": "$METRICS_TOKEN" },
+  "fallback": {
+    "byAccept": {
+      "html": { "status": 200, "file": "./dist/index.html" },
+      "json": { "status": 404, "body": { "error": "Not Found" } },
+      "*": { "status": 200, "file": "./dist/index.html" }
+    }
+  }
+}

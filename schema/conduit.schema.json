@@ -1,0 +1,378 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lopatnov/conduit/schema/conduit.schema.json",
+  "title": "Conduit configuration",
+  "description": "Configuration schema for the Conduit reverse proxy. Accepts a full object, an array of sites, or a single-site object.",
+  "oneOf": [
+    { "$ref": "#/$defs/AppConfig" },
+    { "type": "array", "items": { "$ref": "#/$defs/SiteConfig" } },
+    { "$ref": "#/$defs/SiteConfig" }
+  ],
+  "$defs": {
+    "AppConfig": {
+      "type": "object",
+      "required": ["sites"],
+      "properties": {
+        "version": { "type": "integer", "minimum": 1, "description": "Config schema version." },
+        "global": { "$ref": "#/$defs/GlobalConfig" },
+        "sites": { "type": "array", "items": { "$ref": "#/$defs/SiteConfig" } }
+      }
+    },
+    "GlobalConfig": {
+      "type": "object",
+      "properties": {
+        "workers":             { "type": "integer", "minimum": 1 },
+        "backlog":             { "type": "integer", "minimum": 1 },
+        "shutdownTimeoutSecs": { "type": "integer", "minimum": 0 },
+        "admin": {
+          "type": "object",
+          "properties": {
+            "bind": { "type": "string", "examples": ["127.0.0.1:2019"] }
+          }
+        }
+      }
+    },
+    "SiteConfig": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string", "description": "Virtual host name. '*' matches any host." },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "tls":  { "$ref": "#/$defs/TlsConfig" },
+        "http2": {
+          "type": "object",
+          "properties": {
+            "maxConcurrentStreams": { "type": "integer" },
+            "initialWindowSize":   { "type": "integer" }
+          }
+        },
+        "logging":        { "$ref": "#/$defs/LoggingConfig" },
+        "compression":    { "$ref": "#/$defs/CompressionConfig" },
+        "responseTime":   { "$ref": "#/$defs/BoolOrObject" },
+        "securityHeaders":{ "$ref": "#/$defs/BoolOrObject" },
+        "cors":           { "$ref": "#/$defs/CorsConfig" },
+        "hotReload":      { "$ref": "#/$defs/HotReloadConfig" },
+        "healthCheck":    { "$ref": "#/$defs/HealthCheckConfig" },
+        "rateLimit": {
+          "type": "object",
+          "required": ["windowSecs", "limit"],
+          "properties": {
+            "windowSecs": { "type": "integer", "minimum": 1 },
+            "limit":      { "type": "integer", "minimum": 1 },
+            "algorithm":  { "type": "string", "enum": ["token-bucket"] },
+            "keyBy":      { "type": "string", "enum": ["ip", "header"] },
+            "skipPaths":  { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "basicAuth": {
+          "type": "object",
+          "required": ["users"],
+          "properties": {
+            "users":     { "type": "object", "additionalProperties": { "type": "string" } },
+            "challenge": { "type": "boolean" },
+            "realm":     { "type": "string" },
+            "skipPaths": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "apiKey": {
+          "type": "object",
+          "required": ["keys"],
+          "properties": {
+            "keys":      { "type": "array", "items": { "type": "string" } },
+            "header":    { "type": "string" },
+            "skipPaths": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "ipFilter": {
+          "type": "object",
+          "properties": {
+            "allow":      { "type": "array", "items": { "type": "string" } },
+            "deny":       { "type": "array", "items": { "type": "string" } },
+            "trustProxy": { "type": "boolean" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "maxBodyBytes":   { "type": "integer", "minimum": 0 },
+            "maxHeaderBytes": { "type": "integer", "minimum": 0 },
+            "timeoutSecs":    { "type": "integer", "minimum": 0 }
+          }
+        },
+        "headers":   { "type": "object", "additionalProperties": { "type": "string" } },
+        "redirects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "to"],
+            "properties": {
+              "from":   { "type": "string" },
+              "to":     { "type": "string" },
+              "status": { "type": "integer", "enum": [301, 302, 307, 308] }
+            }
+          }
+        },
+        "static": { "$ref": "#/$defs/StaticConfig" },
+        "staticOptions": {
+          "type": "object",
+          "properties": {
+            "etag":          { "type": "boolean" },
+            "lastModified":  { "type": "boolean" },
+            "maxAge":        { "type": "string", "examples": ["1d", "30m", "1h"] },
+            "index":         { "type": "array", "items": { "type": "string" } },
+            "dotFiles":      { "type": "string", "enum": ["ignore", "allow", "deny"] },
+            "preCompressed": { "type": "boolean" }
+          }
+        },
+        "proxy":   { "$ref": "#/$defs/ProxyConfig" },
+        "upload": {
+          "type": "object",
+          "required": ["path", "dir"],
+          "properties": {
+            "path":               { "type": "string" },
+            "dir":                { "type": "string" },
+            "maxFileSizeBytes":   { "type": "integer", "minimum": 0 },
+            "maxTotalSizeBytes":  { "type": "integer", "minimum": 0 },
+            "maxFiles":           { "type": "integer", "minimum": 1 },
+            "allowedMimeTypes":   { "type": "array", "items": { "type": "string" } },
+            "fieldName":          { "type": "string" }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "properties": {
+            "path":  { "type": "string" },
+            "token": { "type": "string" }
+          }
+        },
+        "fallback": { "$ref": "#/$defs/FallbackConfig" },
+        "middleware": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type":   { "type": "string" },
+              "config": {},
+              "path":   { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "TlsConfig": {
+      "type": "object",
+      "properties": {
+        "cert":             { "type": "string" },
+        "key":              { "type": "string" },
+        "ca":               { "type": "string" },
+        "httpRedirectPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "versions":         { "type": "array", "items": { "type": "string" } },
+        "ciphers":          { "type": "array", "items": { "type": "string" } },
+        "acme": {
+          "type": "object",
+          "required": ["email"],
+          "properties": {
+            "email":     { "type": "string", "format": "email" },
+            "directory": { "type": "string" },
+            "storage":   { "type": "string" },
+            "challenge": { "type": "string", "enum": ["http-01", "tls-alpn-01"] }
+          }
+        }
+      }
+    },
+    "LoggingConfig": {
+      "oneOf": [
+        { "type": "boolean" },
+        { "type": "string", "enum": ["dev", "json", "combined", "common", "short"] },
+        {
+          "type": "object",
+          "properties": {
+            "format": { "type": "string", "enum": ["dev", "json", "combined", "common", "short"] },
+            "file":   { "type": "string" }
+          }
+        }
+      ]
+    },
+    "CompressionConfig": {
+      "oneOf": [
+        { "type": "boolean" },
+        {
+          "type": "object",
+          "properties": {
+            "algorithms": { "type": "array", "items": { "type": "string", "enum": ["br", "gzip", "deflate"] } },
+            "level":      { "type": "integer", "minimum": 0, "maximum": 9 },
+            "minBytes":   { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "BoolOrObject": {
+      "oneOf": [
+        { "type": "boolean" },
+        { "type": "object" }
+      ]
+    },
+    "CorsConfig": {
+      "oneOf": [
+        { "type": "boolean" },
+        {
+          "type": "object",
+          "properties": {
+            "origins":        { "type": "array", "items": { "type": "string" } },
+            "methods":        { "type": "array", "items": { "type": "string" } },
+            "allowedHeaders": { "type": "array", "items": { "type": "string" } },
+            "credentials":    { "type": "boolean" },
+            "maxAgeSecs":     { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "HotReloadConfig": {
+      "oneOf": [
+        { "type": "boolean" },
+        {
+          "type": "object",
+          "properties": {
+            "extensions": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      ]
+    },
+    "HealthCheckConfig": {
+      "oneOf": [
+        { "type": "boolean" },
+        {
+          "type": "object",
+          "properties": {
+            "path":             { "type": "string" },
+            "includeUpstreams": { "type": "boolean" }
+          }
+        }
+      ]
+    },
+    "StaticConfig": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } },
+        { "type": "object", "additionalProperties": { "type": "string" } }
+      ]
+    },
+    "ProxyConfig": {
+      "oneOf": [
+        { "type": "string", "description": "Single upstream URL." },
+        {
+          "type": "object",
+          "description": "Route map: path prefix → upstream config.",
+          "additionalProperties": { "$ref": "#/$defs/ProxyRouteTarget" }
+        }
+      ]
+    },
+    "ProxyRouteTarget": {
+      "oneOf": [
+        { "type": "string", "description": "Single upstream URL shorthand." },
+        { "type": "array", "items": { "type": "string" }, "description": "Round-robin shorthand." },
+        { "$ref": "#/$defs/ProxyRouteConfig" }
+      ]
+    },
+    "ProxyRouteConfig": {
+      "type": "object",
+      "required": ["targets"],
+      "properties": {
+        "targets": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ProxyTarget" }
+        },
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "round-robin", "weighted-round-robin", "random",
+            "least-conn", "least-response-time", "ip-hash", "consistent-hash"
+          ]
+        },
+        "hashKey":     { "type": "string" },
+        "http2":       { "type": "boolean" },
+        "stripPrefix": { "type": "boolean" },
+        "timeout": {
+          "type": "object",
+          "properties": {
+            "connectMs": { "type": "integer", "minimum": 0 },
+            "sendMs":    { "type": "integer", "minimum": 0 },
+            "readMs":    { "type": "integer", "minimum": 0 }
+          }
+        },
+        "pool": {
+          "type": "object",
+          "properties": {
+            "maxIdle":         { "type": "integer", "minimum": 0 },
+            "idleTimeoutSecs": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "retry": {
+          "type": "object",
+          "required": ["attempts", "conditions"],
+          "properties": {
+            "attempts":   { "type": "integer", "minimum": 1 },
+            "conditions": { "type": "array", "items": { "type": "string", "enum": ["connection_error", "5xx", "timeout"] } },
+            "backoffMs":  { "type": "integer", "minimum": 0 }
+          }
+        },
+        "healthCheck": {
+          "type": "object",
+          "properties": {
+            "path":               { "type": "string" },
+            "intervalSecs":       { "type": "integer", "minimum": 1 },
+            "unhealthyThreshold": { "type": "integer", "minimum": 1 },
+            "healthyThreshold":   { "type": "integer", "minimum": 1 }
+          }
+        },
+        "cache": {
+          "type": "object",
+          "required": ["store"],
+          "properties": {
+            "store":        { "type": "string" },
+            "maxSizeMb":    { "type": "integer", "minimum": 1 },
+            "ttlSecs":      { "type": "integer", "minimum": 0 },
+            "varyHeaders":  { "type": "array", "items": { "type": "string" } },
+            "skipPaths":    { "type": "array", "items": { "type": "string" } },
+            "skipIfCookie": { "type": "boolean" },
+            "methods":      { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "ProxyTarget": {
+      "oneOf": [
+        { "type": "string", "description": "Upstream URL." },
+        {
+          "type": "object",
+          "required": ["url", "weight"],
+          "properties": {
+            "url":    { "type": "string" },
+            "weight": { "type": "integer", "minimum": 1 }
+          }
+        }
+      ]
+    },
+    "FallbackConfig": {
+      "type": "object",
+      "properties": {
+        "status":  { "type": "integer" },
+        "body":    {},
+        "file":    { "type": "string" },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "byAccept": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "status":  { "type": "integer" },
+              "body":    {},
+              "file":    { "type": "string" },
+              "headers": { "type": "object", "additionalProperties": { "type": "string" } }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,80 @@
+version: 2
+
+updates:
+  # ── Rust (Cargo) ─────────────────────────────────────────────────────────────
+  #
+  # Weekly on Mondays.  Pingora subcrates share a version tag and must always
+  # be bumped in a single PR; the group enforces that.  The serde and tracing
+  # families also tend to release in sync, so they are grouped too.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    rebase-strategy: "auto"
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # pingora + pingora-core + pingora-proxy + pingora-load-balancing +
+      # pingora-cache + pingora-http all share the same version.
+      pingora:
+        patterns:
+          - "pingora*"
+      serde:
+        patterns:
+          - "serde"
+          - "serde_*"
+      tracing:
+        patterns:
+          - "tracing"
+          - "tracing-*"
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────────
+  #
+  # Monthly — action updates are low-risk and low-frequency.
+  # All action bumps are grouped into one PR to avoid noise.
+  # Workflow files use pinned SHA commits; Dependabot updates both the SHA
+  # and the version comment (e.g. "# v4.2.2") automatically.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    rebase-strategy: "auto"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      all-actions:
+        patterns:
+          - "*"
+
+  # ── npm (npx wrapper) ────────────────────────────────────────────────────────
+  #
+  # The npm package currently has no runtime dependencies, but Dependabot
+  # will pick up any future additions automatically.
+  - package-ecosystem: "npm"
+    directory: "/npm"
+    schedule:
+      interval: "monthly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    rebase-strategy: "auto"
+    labels:
+      - "dependencies"
+      - "npm"
+    commit-message:
+      prefix: "chore(deps)"

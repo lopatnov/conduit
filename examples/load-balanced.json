@@ -1,0 +1,27 @@
+{
+  "port": 8080,
+  "logging": "combined",
+  "proxy": {
+    "/api": {
+      "targets": [
+        { "url": "http://powerful:4000", "weight": 3 },
+        { "url": "http://normal:4000", "weight": 1 }
+      ],
+      "strategy": "weighted-round-robin",
+      "stripPrefix": true,
+      "healthCheck": { "path": "/health", "intervalSecs": 10, "unhealthyThreshold": 2 },
+      "retry": { "attempts": 2, "conditions": ["connection_error", "5xx"], "backoffMs": 100 }
+    },
+    "/auth": {
+      "targets": ["http://auth1:5000", "http://auth2:5000"],
+      "strategy": "ip-hash",
+      "hashKey": "ip"
+    },
+    "/search": {
+      "targets": ["http://search1:6000", "http://search2:6000", "http://search3:6000"],
+      "strategy": "least-conn"
+    }
+  },
+  "healthCheck": true,
+  "metrics": { "path": "/__metrics__" }
+}

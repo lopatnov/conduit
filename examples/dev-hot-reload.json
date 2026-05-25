@@ -1,0 +1,14 @@
+{
+  "port": 3000,
+  "logging": "dev",
+  "hotReload": {
+    "extensions": [".html", ".css", ".js", ".ts", ".json"]
+  },
+  "cors": true,
+  "static": "./src",
+  "staticOptions": { "etag": false, "lastModified": false },
+  "proxy": {
+    "/api": "http://localhost:4000"
+  },
+  "fallback": { "status": 200, "file": "./src/index.html" }
+}

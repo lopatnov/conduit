@@ -1,0 +1,24 @@
+{
+  "port": 8080,
+  "proxy": {
+    "/api/public": {
+      "targets": ["http://backend:4000"],
+      "stripPrefix": false,
+      "cache": {
+        "store": "memory",
+        "maxSizeMb": 256,
+        "ttlSecs": 300,
+        "varyHeaders": ["Accept-Encoding", "Accept-Language"],
+        "skipIfCookie": true,
+        "skipPaths": ["/api/public/auth/**", "/api/public/user/**"],
+        "methods": ["GET", "HEAD"]
+      }
+    },
+    "/api/private": {
+      "targets": ["http://backend:4000"],
+      "stripPrefix": false
+    }
+  },
+  "healthCheck": true,
+  "metrics": { "path": "/__metrics__" }
+}

@@ -1,0 +1,23 @@
+{
+  "port": 443,
+  "tls": {
+    "cert": "./certs/cert.pem",
+    "key": "./certs/key.pem",
+    "httpRedirectPort": 80
+  },
+  "http2": { "maxConcurrentStreams": 100 },
+  "compression": true,
+  "securityHeaders": true,
+  "logging": { "format": "json", "file": "./logs/access.log" },
+  "static": "./dist",
+  "staticOptions": { "maxAge": "1d", "etag": true, "lastModified": true },
+  "proxy": {
+    "/api": {
+      "targets": ["http://backend:4000"],
+      "http2": true,
+      "stripPrefix": true,
+      "timeout": { "connectMs": 2000, "sendMs": 10000, "readMs": 30000 }
+    }
+  },
+  "healthCheck": true
+}
