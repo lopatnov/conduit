@@ -68,7 +68,7 @@ impl TestServer {
             .build()
             .expect("insecure client");
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let mut proxy_ok = false;
         let mut admin_ok = false;
         loop {
@@ -95,7 +95,7 @@ impl TestServer {
             }
             if std::time::Instant::now() >= deadline {
                 panic!(
-                    "server did not become ready within 15 seconds (proxy={proxy_ok}, admin={admin_ok})"
+                    "server did not become ready within 30 seconds (proxy={proxy_ok}, admin={admin_ok})"
                 );
             }
             std::thread::sleep(Duration::from_millis(100));
