@@ -867,7 +867,12 @@ mod tests {
     fn proxy_upstream_http_url() {
         let target = url_to_proxy_upstream("http://backend:4000", None).unwrap();
         match target {
-            UpstreamTarget::Proxy { addr, tls, sni, strip_prefix } => {
+            UpstreamTarget::Proxy {
+                addr,
+                tls,
+                sni,
+                strip_prefix,
+            } => {
                 assert_eq!(addr, "backend:4000");
                 assert!(!tls);
                 assert!(sni.is_empty());
@@ -908,8 +913,7 @@ mod tests {
     fn static_roots_single() {
         use crate::config::schema::StaticConfig;
         use std::path::PathBuf;
-        let (roots, strip) =
-            resolve_static_roots(&StaticConfig::Single("./dist".to_string()), "/");
+        let (roots, strip) = resolve_static_roots(&StaticConfig::Single("./dist".to_string()), "/");
         assert_eq!(roots, vec![PathBuf::from("./dist")]);
         assert!(strip.is_none());
     }
@@ -962,8 +966,18 @@ mod tests {
         };
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
-        let ctx = route_request(&config, "localhost", "/__health__", "127.0.0.1", &counters, &reg);
-        assert!(matches!(ctx.upstream, UpstreamTarget::Local(LocalHandler::Health)));
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/__health__",
+            "127.0.0.1",
+            &counters,
+            &reg,
+        );
+        assert!(matches!(
+            ctx.upstream,
+            UpstreamTarget::Local(LocalHandler::Health)
+        ));
     }
 
     #[test]
@@ -978,8 +992,14 @@ mod tests {
         };
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
-        let ctx =
-            route_request(&config, "localhost", "/index.html", "127.0.0.1", &counters, &reg);
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/index.html",
+            "127.0.0.1",
+            &counters,
+            &reg,
+        );
         assert!(matches!(
             ctx.upstream,
             UpstreamTarget::Local(LocalHandler::StaticFile { .. })
@@ -998,7 +1018,14 @@ mod tests {
         };
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
-        let ctx = route_request(&config, "localhost", "/api/data", "127.0.0.1", &counters, &reg);
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/api/data",
+            "127.0.0.1",
+            &counters,
+            &reg,
+        );
         assert!(matches!(ctx.upstream, UpstreamTarget::Proxy { .. }));
     }
 
@@ -1008,7 +1035,10 @@ mod tests {
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
         let ctx = route_request(&config, "localhost", "/", "127.0.0.1", &counters, &reg);
-        assert!(matches!(ctx.upstream, UpstreamTarget::Local(LocalHandler::Fallback)));
+        assert!(matches!(
+            ctx.upstream,
+            UpstreamTarget::Local(LocalHandler::Fallback)
+        ));
     }
 
     #[test]
@@ -1026,8 +1056,14 @@ mod tests {
         };
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
-        let ctx =
-            route_request(&config, "localhost", "/__metrics__", "127.0.0.1", &counters, &reg);
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/__metrics__",
+            "127.0.0.1",
+            &counters,
+            &reg,
+        );
         assert!(matches!(
             ctx.upstream,
             UpstreamTarget::Local(LocalHandler::Metrics { .. })
