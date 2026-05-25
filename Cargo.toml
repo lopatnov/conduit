@@ -65,7 +65,7 @@ uuid       = { version = "1", features = ["v4"] }
 
 # --- TLS ---
 instant-acme = "0.7"
-rcgen        = "0.13"
+rcgen        = "0.14"
 # ring is the crypto provider for rustls; needed to install before TLS starts.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
