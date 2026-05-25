@@ -52,12 +52,7 @@ pub fn build_cache_key(host: &str, scheme: &str, path: &str, query: Option<&str>
 /// - HTTP method not in the configured allow-list (default: GET + HEAD only).
 /// - Request carries a `Cookie` header and `skipIfCookie` is `true`.
 /// - The request path matches one of the `skipPaths` patterns.
-pub fn should_cache_request(
-    cfg: &CacheConfig,
-    method: &str,
-    has_cookie: bool,
-    path: &str,
-) -> bool {
+pub fn should_cache_request(cfg: &CacheConfig, method: &str, has_cookie: bool, path: &str) -> bool {
     // Method filter (default: GET and HEAD only).
     let default_methods = ["GET", "HEAD"];
     let allowed: &[String] = cfg.methods.as_deref().unwrap_or(&[]);
@@ -67,7 +62,9 @@ pub fn should_cache_request(
             .iter()
             .any(|m| m.eq_ignore_ascii_case(&method_upper))
     } else {
-        allowed.iter().any(|m| m.eq_ignore_ascii_case(&method_upper))
+        allowed
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(&method_upper))
     };
     if !method_ok {
         return false;
@@ -228,7 +225,12 @@ mod tests {
         c.skip_paths = Some(vec!["/api/auth/**".into()]);
         assert!(!should_cache_request(&c, "GET", false, "/api/auth"));
         assert!(!should_cache_request(&c, "GET", false, "/api/auth/"));
-        assert!(!should_cache_request(&c, "GET", false, "/api/auth/anything"));
+        assert!(!should_cache_request(
+            &c,
+            "GET",
+            false,
+            "/api/auth/anything"
+        ));
     }
 
     #[test]

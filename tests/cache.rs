@@ -86,14 +86,12 @@ fn cache_second_request_served_from_memory() {
     );
 
     // First request — cache miss; upstream is contacted.
-    let r1 = reqwest::blocking::get(srv.url("/cached/item"))
-        .expect("GET 1");
+    let r1 = reqwest::blocking::get(srv.url("/cached/item")).expect("GET 1");
     assert_eq!(r1.status(), 200, "first request must return 200");
     assert_eq!(upstream.hit_count(), 1, "first request must reach upstream");
 
     // Second identical request — must be a cache hit; upstream not contacted again.
-    let r2 = reqwest::blocking::get(srv.url("/cached/item"))
-        .expect("GET 2");
+    let r2 = reqwest::blocking::get(srv.url("/cached/item")).expect("GET 2");
     assert_eq!(r2.status(), 200, "second request must return 200");
     assert_eq!(
         upstream.hit_count(),
@@ -190,12 +188,14 @@ fn cache_skip_paths_bypasses_cache() {
     );
 
     // Request to a private path — must NOT be cached.
-    let _ = reqwest::blocking::get(srv.url("/data/private/secret"))
-        .expect("GET private 1");
-    assert_eq!(upstream.hit_count(), 1, "first private request must hit upstream");
+    let _ = reqwest::blocking::get(srv.url("/data/private/secret")).expect("GET private 1");
+    assert_eq!(
+        upstream.hit_count(),
+        1,
+        "first private request must hit upstream"
+    );
 
-    let _ = reqwest::blocking::get(srv.url("/data/private/secret"))
-        .expect("GET private 2");
+    let _ = reqwest::blocking::get(srv.url("/data/private/secret")).expect("GET private 2");
     assert_eq!(
         upstream.hit_count(),
         2,
@@ -203,12 +203,14 @@ fn cache_skip_paths_bypasses_cache() {
     );
 
     // Request to a cacheable path — must be cached after the first hit.
-    let _ = reqwest::blocking::get(srv.url("/data/public/item"))
-        .expect("GET public 1");
-    assert_eq!(upstream.hit_count(), 3, "first public request must hit upstream");
+    let _ = reqwest::blocking::get(srv.url("/data/public/item")).expect("GET public 1");
+    assert_eq!(
+        upstream.hit_count(),
+        3,
+        "first public request must hit upstream"
+    );
 
-    let _ = reqwest::blocking::get(srv.url("/data/public/item"))
-        .expect("GET public 2");
+    let _ = reqwest::blocking::get(srv.url("/data/public/item")).expect("GET public 2");
     assert_eq!(
         upstream.hit_count(),
         3,
@@ -248,8 +250,7 @@ fn cache_zero_ttl_disables_caching() {
     );
 
     for i in 1..=3_u16 {
-        let r = reqwest::blocking::get(srv.url("/no-cache/item"))
-            .expect("GET");
+        let r = reqwest::blocking::get(srv.url("/no-cache/item")).expect("GET");
         assert_eq!(r.status(), 200);
         assert_eq!(
             upstream.hit_count(),

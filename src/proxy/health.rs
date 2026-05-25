@@ -587,7 +587,10 @@ mod tests {
         // Update weight of existing target.
         reg.add_upstream("/api", "http://a:4000", 5);
         let ov = reg.get_override_targets("/api").unwrap();
-        let a_weight = ov.iter().find(|(u, _)| u == "http://a:4000").map(|(_, w)| *w);
+        let a_weight = ov
+            .iter()
+            .find(|(u, _)| u == "http://a:4000")
+            .map(|(_, w)| *w);
         assert_eq!(a_weight, Some(5), "weight must be updated in place");
         assert_eq!(ov.len(), 2, "no duplicate entries on weight update");
     }

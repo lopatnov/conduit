@@ -697,11 +697,7 @@ impl ProxyHttp for ConduitProxy {
     ///
     /// Called by Pingora after `request_filter`; only reached for upstream-bound
     /// requests (local handlers return `Ok(true)` in `request_filter`).
-    fn request_cache_filter(
-        &self,
-        session: &mut Session,
-        ctx: &mut Self::CTX,
-    ) -> Result<()>
+    fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<()>
     where
         Self::CTX: Send + Sync,
     {
@@ -720,10 +716,7 @@ impl ProxyHttp for ConduitProxy {
         // Check request-side policy (method, cookies, skip-paths).
         let method = session.req_header().method.as_str();
         let path = session.req_header().uri.path();
-        let has_cookie = session
-            .req_header()
-            .headers
-            .contains_key("cookie");
+        let has_cookie = session.req_header().headers.contains_key("cookie");
 
         if !proxy_cache::should_cache_request(cfg, method, has_cookie, path) {
             return Ok(());
@@ -736,11 +729,7 @@ impl ProxyHttp for ConduitProxy {
     }
 
     /// Build a deterministic cache key: namespace = Host header, primary = scheme:path[?query].
-    fn cache_key_callback(
-        &self,
-        session: &Session,
-        ctx: &mut Self::CTX,
-    ) -> Result<CacheKey>
+    fn cache_key_callback(&self, session: &Session, ctx: &mut Self::CTX) -> Result<CacheKey>
     where
         Self::CTX: Send + Sync,
     {
@@ -791,7 +780,9 @@ impl ProxyHttp for ConduitProxy {
             .as_ref()
             .and_then(|c| c.proxy_cache_cfg.as_ref())
             .map(|cfg| proxy_cache::response_cacheable(cfg, resp))
-            .unwrap_or(RespCacheable::Uncacheable(NoCacheReason::Custom("no-cache-cfg")));
+            .unwrap_or(RespCacheable::Uncacheable(NoCacheReason::Custom(
+                "no-cache-cfg",
+            )));
         Ok(cacheable)
     }
 

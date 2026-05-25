@@ -36,40 +36,47 @@ pub fn route_request(
     let site_idx = find_site_idx(config, host).unwrap_or(0);
     let site = config.sites.get(site_idx);
 
-    let (upstream, retry, proxy_timeout, proxy_pool, proxy_http2, proxy_upstream_url, proxy_cache_cfg) =
-        if is_health_path(site, path) {
-            (
-                UpstreamTarget::Local(LocalHandler::Health),
-                None,
-                None,
-                None,
-                false,
-                None,
-                None,
-            )
-        } else if let Some(token) = metrics_token(site, path) {
-            (
-                UpstreamTarget::Local(LocalHandler::Metrics { token }),
-                None,
-                None,
-                None,
-                false,
-                None,
-                None,
-            )
-        } else if let Some(site) = site {
-            route_site(site, path, client_ip, counters, upstream_health)
-        } else {
-            (
-                UpstreamTarget::Local(LocalHandler::Fallback),
-                None,
-                None,
-                None,
-                false,
-                None,
-                None,
-            )
-        };
+    let (
+        upstream,
+        retry,
+        proxy_timeout,
+        proxy_pool,
+        proxy_http2,
+        proxy_upstream_url,
+        proxy_cache_cfg,
+    ) = if is_health_path(site, path) {
+        (
+            UpstreamTarget::Local(LocalHandler::Health),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+    } else if let Some(token) = metrics_token(site, path) {
+        (
+            UpstreamTarget::Local(LocalHandler::Metrics { token }),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+    } else if let Some(site) = site {
+        route_site(site, path, client_ip, counters, upstream_health)
+    } else {
+        (
+            UpstreamTarget::Local(LocalHandler::Fallback),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+    };
 
     RequestCtx::new(
         site_idx,

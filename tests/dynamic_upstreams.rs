@@ -112,8 +112,16 @@ fn add_upstream_routes_traffic_to_new_target() {
         let resp = reqwest::blocking::get(srv.url("/")).expect("GET");
         assert_eq!(resp.status(), 200);
     }
-    assert_eq!(original.hit_count(), 4, "pre-add: all hits should go to original");
-    assert_eq!(added.hit_count(), 0, "pre-add: added upstream should be idle");
+    assert_eq!(
+        original.hit_count(),
+        4,
+        "pre-add: all hits should go to original"
+    );
+    assert_eq!(
+        added.hit_count(),
+        0,
+        "pre-add: added upstream should be idle"
+    );
 
     // Add the new upstream via the Admin API.
     let admin_addr = format!("127.0.0.1:{admin_port}");
@@ -230,7 +238,10 @@ fn remove_unknown_upstream_returns_not_found() {
         "upstreams/remove",
         r#"{"route":"/api","target":"http://ghost:4000"}"#,
     );
-    assert_eq!(resp["status"], "not_found", "unknown URL must return not_found: {resp}");
+    assert_eq!(
+        resp["status"], "not_found",
+        "unknown URL must return not_found: {resp}"
+    );
 }
 
 #[test]
@@ -310,7 +321,10 @@ fn weight_update_unknown_target_returns_not_found() {
         "upstreams/weight",
         r#"{"route":"/api","target":"http://ghost:4000","weight":5}"#,
     );
-    assert_eq!(resp["status"], "not_found", "unknown URL must return not_found: {resp}");
+    assert_eq!(
+        resp["status"], "not_found",
+        "unknown URL must return not_found: {resp}"
+    );
 }
 
 #[test]
