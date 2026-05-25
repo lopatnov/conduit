@@ -28,6 +28,7 @@ pub fn route_request(
     config: &AppConfig,
     host: &str,
     path: &str,
+    client_ip: &str,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
 ) -> RequestCtx {
@@ -54,7 +55,7 @@ pub fn route_request(
                 None,
             )
         } else if let Some(site) = site {
-            route_site(site, path, counters, upstream_health)
+            route_site(site, path, client_ip, counters, upstream_health)
         } else {
             (
                 UpstreamTarget::Local(LocalHandler::Fallback),
@@ -80,12 +81,13 @@ pub fn route_request(
 fn route_site(
     site: &SiteConfig,
     path: &str,
+    client_ip: &str,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
 ) -> RouteResult {
     // Proxy routes take priority over static files.
     if let Some(proxy_cfg) = &site.proxy {
-        if let Some(result) = resolve_proxy(proxy_cfg, path, counters, upstream_health) {
+        if let Some(result) = resolve_proxy(proxy_cfg, path, client_ip, counters, upstream_health) {
             return result;
         }
     }
@@ -123,6 +125,7 @@ fn route_site(
 fn resolve_proxy(
     config: &ProxyConfig,
     path: &str,
+    client_ip: &str,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
 ) -> Option<RouteResult> {
@@ -139,21 +142,38 @@ fn resolve_proxy(
             let (route_key, route_target) = find_route(routes, path)?;
             let all_urls = upstream::target_urls(route_target);
 
-            let (retry_cfg, proxy_timeout, proxy_pool, strategy, proxy_http2) = match route_target {
-                ProxyRouteTarget::Full(cfg) => (
-                    cfg.retry.as_ref(),
-                    cfg.timeout.clone(),
-                    cfg.pool.clone(),
-                    cfg.strategy.as_ref(),
-                    cfg.http2.unwrap_or(false),
-                ),
-                _ => (None, None, None, None, false),
-            };
+            let (retry_cfg, proxy_timeout, proxy_pool, strategy, proxy_http2, hash_key) =
+                match route_target {
+                    ProxyRouteTarget::Full(cfg) => (
+                        cfg.retry.as_ref(),
+                        cfg.timeout.clone(),
+                        cfg.pool.clone(),
+                        cfg.strategy.as_ref(),
+                        cfg.http2.unwrap_or(false),
+                        cfg.hash_key.as_deref().unwrap_or("ip"),
+                    ),
+                    _ => (None, None, None, None, false, "ip"),
+                };
 
             // Filter to healthy upstreams; if all are down keep all (fail-open).
             let healthy = upstream_health.filter_healthy(&all_urls);
-            let urls: Vec<String> = healthy.into_iter().cloned().collect();
+            let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
 
+            // Build weighted list filtered to healthy targets.
+            let all_weighted = upstream::weighted_targets(route_target);
+            let weighted: Vec<(String, u32)> = all_weighted
+                .into_iter()
+                .filter(|(url, _)| urls.contains(url))
+                .collect();
+
+            // Compute hash value for ip-hash and consistent-hash strategies.
+            let hash_input = if hash_key == "url" { path } else { client_ip };
+            let hash_val = upstream::fnv1a_hash(hash_input);
+
+            let hash_ctx = HashCtx {
+                weighted: &weighted,
+                hash_val,
+            };
             let (chosen_url, retry_state, is_least_conn) = pick_url_by_strategy(
                 urls,
                 route_key,
@@ -161,6 +181,7 @@ fn resolve_proxy(
                 retry_cfg,
                 strategy,
                 upstream_health,
+                &hash_ctx,
             )?;
 
             let strip = if upstream::strip_prefix_enabled(route_target) {
@@ -189,6 +210,15 @@ fn resolve_proxy(
     }
 }
 
+/// Extra context required by hash-based and weighted strategies.
+struct HashCtx<'a> {
+    /// `(url, weight)` pairs for `WeightedRoundRobin`.
+    weighted: &'a [(String, u32)],
+    /// Precomputed FNV-1a hash of the appropriate key (client IP or request
+    /// URL) for `IpHash` and `ConsistentHash`.
+    hash_val: u64,
+}
+
 /// Pick a URL and optional retry state according to the configured strategy.
 ///
 /// Returns `(url, retry_state, is_least_conn)`.  `is_least_conn` is `true`
@@ -201,6 +231,7 @@ fn pick_url_by_strategy(
     retry_cfg: Option<&RetryConfig>,
     strategy: Option<&LoadBalanceStrategy>,
     upstream_health: &UpstreamRegistry,
+    hash_ctx: &HashCtx<'_>,
 ) -> Option<(String, Option<RetryState>, bool)> {
     // With retry configured, always use round-robin rotation regardless of strategy.
     if let Some(retry) = retry_cfg {
@@ -217,9 +248,20 @@ fn pick_url_by_strategy(
             let url = upstream_health.pick_least_conn(&urls)?;
             Some((url, None, true))
         }
-        // RoundRobin is the default; WeightedRoundRobin, LeastResponseTime,
-        // IpHash, ConsistentHash fall back to RoundRobin (Phase 2.5b).
-        _ => {
+        LoadBalanceStrategy::WeightedRoundRobin => {
+            let url = upstream::pick_weighted_round_robin(hash_ctx.weighted, route_key, counters)?;
+            Some((url, None, false))
+        }
+        LoadBalanceStrategy::IpHash | LoadBalanceStrategy::ConsistentHash => {
+            let url = upstream::pick_by_hash(&urls, hash_ctx.hash_val)?;
+            Some((url, None, false))
+        }
+        LoadBalanceStrategy::LeastResponseTime => {
+            let url =
+                upstream::pick_least_response_time(&urls, upstream_health, route_key, counters)?;
+            Some((url, None, false))
+        }
+        LoadBalanceStrategy::RoundRobin => {
             let url = upstream::pick_round_robin(&urls, route_key, counters)?;
             Some((url, None, false))
         }
@@ -623,13 +665,21 @@ mod tests {
 
     // ── pick_url_by_strategy ──────────────────────────────────────────────────
 
+    fn no_hash<'a>() -> HashCtx<'a> {
+        HashCtx {
+            weighted: &[],
+            hash_val: 0,
+        }
+    }
+
     #[test]
     fn strategy_default_round_robin() {
         let urls = vec!["http://a:4000".to_string(), "http://b:4000".to_string()];
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
         let (url, retry, is_lc) =
-            pick_url_by_strategy(urls.clone(), "r", &counters, None, None, &reg).unwrap();
+            pick_url_by_strategy(urls.clone(), "r", &counters, None, None, &reg, &no_hash())
+                .unwrap();
         assert!(urls.contains(&url));
         assert!(retry.is_none());
         assert!(!is_lc);
@@ -647,6 +697,7 @@ mod tests {
             None,
             Some(&LoadBalanceStrategy::Random),
             &reg,
+            &no_hash(),
         )
         .unwrap();
         assert!(urls.contains(&url));
@@ -665,6 +716,7 @@ mod tests {
             None,
             Some(&LoadBalanceStrategy::LeastConn),
             &reg,
+            &no_hash(),
         )
         .unwrap();
         assert!(urls.contains(&url));
@@ -693,6 +745,7 @@ mod tests {
             Some(&retry_cfg),
             Some(&LoadBalanceStrategy::LeastConn),
             &reg,
+            &no_hash(),
         )
         .unwrap();
         assert!(urls.contains(&url));
@@ -704,6 +757,100 @@ mod tests {
     fn strategy_empty_urls_returns_none() {
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
-        assert!(pick_url_by_strategy(vec![], "r", &counters, None, None, &reg).is_none());
+        assert!(
+            pick_url_by_strategy(vec![], "r", &counters, None, None, &reg, &no_hash()).is_none()
+        );
+    }
+
+    #[test]
+    fn strategy_wrr_selects_by_weight() {
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let urls = vec!["http://a:4000".to_string(), "http://b:4000".to_string()];
+        let weighted = vec![
+            ("http://a:4000".to_string(), 3u32),
+            ("http://b:4000".to_string(), 1u32),
+        ];
+        let ctx = HashCtx {
+            weighted: &weighted,
+            hash_val: 0,
+        };
+        let results: Vec<_> = (0..4)
+            .map(|_| {
+                pick_url_by_strategy(
+                    urls.clone(),
+                    "r",
+                    &counters,
+                    None,
+                    Some(&LoadBalanceStrategy::WeightedRoundRobin),
+                    &reg,
+                    &ctx,
+                )
+                .unwrap()
+                .0
+            })
+            .collect();
+        let a_count = results
+            .iter()
+            .filter(|u| u.as_str() == "http://a:4000")
+            .count();
+        assert_eq!(a_count, 3, "a should win 3 out of 4 slots");
+    }
+
+    #[test]
+    fn strategy_ip_hash_is_deterministic() {
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let urls = vec!["http://a:4000".to_string(), "http://b:4000".to_string()];
+        let hash_val = upstream::fnv1a_hash("1.2.3.4");
+        let ctx = HashCtx {
+            weighted: &[],
+            hash_val,
+        };
+        let first = pick_url_by_strategy(
+            urls.clone(),
+            "r",
+            &counters,
+            None,
+            Some(&LoadBalanceStrategy::IpHash),
+            &reg,
+            &ctx,
+        )
+        .unwrap()
+        .0;
+        let second = pick_url_by_strategy(
+            urls.clone(),
+            "r",
+            &counters,
+            None,
+            Some(&LoadBalanceStrategy::IpHash),
+            &reg,
+            &ctx,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            first, second,
+            "same IP hash must always select the same upstream"
+        );
+    }
+
+    #[test]
+    fn strategy_lrt_returns_valid_url() {
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let urls = vec!["http://a:4000".to_string(), "http://b:4000".to_string()];
+        let (url, _, is_lc) = pick_url_by_strategy(
+            urls.clone(),
+            "r",
+            &counters,
+            None,
+            Some(&LoadBalanceStrategy::LeastResponseTime),
+            &reg,
+            &no_hash(),
+        )
+        .unwrap();
+        assert!(urls.contains(&url));
+        assert!(!is_lc);
     }
 }

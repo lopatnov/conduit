@@ -136,10 +136,17 @@ impl ConduitProxy {
                 .unwrap_or_else(|| session.req_header().uri.path().to_owned());
             let path = session.req_header().uri.path().to_owned();
 
+            let client_ip = session
+                .client_addr()
+                .and_then(|a| a.as_inet())
+                .map(|a| a.ip().to_string())
+                .unwrap_or_default();
+
             let req_ctx = router::route_request(
                 &config,
                 &host,
                 &path,
+                &client_ip,
                 &self.state.round_robin,
                 &self.state.upstream_health,
             );
