@@ -1,0 +1,75 @@
+name: Publish to npm (manual)
+
+# Use this workflow when the npm publish step of the Release workflow fails.
+# It downloads bare binaries from the existing GitHub Release and publishes.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish-npm:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${INPUT_TAG#v}" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+
+      # Download bare binaries from the GitHub Release assets.
+      # These are the same binaries that were built and attached by the Release workflow.
+      - name: Download binaries from GitHub Release
+        run: |
+          mkdir -p npm/bin/native
+          VERSION="${{ steps.version.outputs.version }}"
+          BASE="https://github.com/${{ github.repository }}/releases/download/v${VERSION}"
+
+          declare -A ASSETS=(
+            ["conduit-x86_64-unknown-linux-gnu"]="conduit-x86_64-unknown-linux-gnu"
+            ["conduit-x86_64-unknown-linux-musl"]="conduit-x86_64-unknown-linux-musl"
+            ["conduit-aarch64-unknown-linux-gnu"]="conduit-aarch64-unknown-linux-gnu"
+            ["conduit-x86_64-apple-darwin"]="conduit-x86_64-apple-darwin"
+            ["conduit-aarch64-apple-darwin"]="conduit-aarch64-apple-darwin"
+            ["conduit-x86_64-pc-windows-msvc.exe"]="conduit-x86_64-pc-windows-msvc.exe"
+          )
+
+          for ASSET_NAME in "${!ASSETS[@]}"; do
+            DEST="npm/bin/native/${ASSETS[$ASSET_NAME]}"
+            echo "Downloading $ASSET_NAME → $DEST"
+            curl -fsSL "$BASE/$ASSET_NAME" -o "$DEST"
+          done
+
+      - name: Set executable bit on Unix binaries
+        run: chmod +x npm/bin/native/conduit-*-linux-* npm/bin/native/conduit-*-darwin* 2>/dev/null || true
+
+      - name: Set package version
+        working-directory: npm
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Publish npm package
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
