@@ -57,7 +57,9 @@ pub fn should_cache_request(cfg: &CacheConfig, method: &str, has_cookie: bool, p
     let default_methods = ["GET", "HEAD"];
     let allowed: &[String] = cfg.methods.as_deref().unwrap_or(&[]);
     let method_ok = if allowed.is_empty() {
-        default_methods.iter().any(|m| m.eq_ignore_ascii_case(method))
+        default_methods
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(method))
     } else {
         allowed.iter().any(|m| m.eq_ignore_ascii_case(method))
     };
@@ -112,7 +114,10 @@ pub fn response_cacheable(cfg: &CacheConfig, resp: &ResponseHeader) -> RespCache
 /// path starts with `pattern/`).
 fn path_matches(pattern: &str, path: &str) -> bool {
     let prefix = pattern.strip_suffix("/**").unwrap_or(pattern);
-    path == prefix || path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'))
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
