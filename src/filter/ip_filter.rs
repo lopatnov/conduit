@@ -146,4 +146,74 @@ mod tests {
         assert!(matches_rule(&ip, "2001:db8::/32"));
         assert!(!matches_rule(&ip, "2001:db9::/32"));
     }
+
+    #[test]
+    fn ipv4_mapped_ipv6_matches_ipv4_subnet() {
+        // ::ffff:127.0.0.1 is the IPv4-mapped IPv6 form of 127.0.0.1.
+        // It should match an IPv4 CIDR rule.
+        let ip: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert!(matches_rule(&ip, "127.0.0.0/8"));
+        assert!(!matches_rule(&ip, "10.0.0.0/8"));
+    }
+
+    #[test]
+    fn ipv6_not_mapped_does_not_match_ipv4_subnet() {
+        // A regular IPv6 address (not IPv4-mapped) must NOT match an IPv4 rule.
+        let ip: IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(!matches_rule(&ip, "127.0.0.0/8"));
+    }
+
+    #[test]
+    fn ipv4_does_not_match_ipv6_subnet() {
+        // An IPv4 address must not match a non-IPv4-mapped IPv6 network.
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        assert!(!matches_rule(&ip, "2001:db8::/32"));
+    }
+
+    #[test]
+    fn invalid_cidr_address_returns_false() {
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        // "not-an-ip/24" — address part fails to parse → false
+        assert!(!matches_rule(&ip, "not-an-ip/24"));
+        // "1.2.3.4/abc" — prefix part fails to parse → false
+        assert!(!matches_rule(&ip, "1.2.3.4/abc"));
+    }
+
+    #[test]
+    fn ipv4_prefix_zero_matches_all() {
+        let ip: IpAddr = "203.0.113.5".parse().unwrap();
+        assert!(ipv4_in_subnet(
+            "203.0.113.5".parse().unwrap(),
+            "0.0.0.0".parse().unwrap(),
+            0
+        ));
+        let _ = ip; // silence unused warning
+    }
+
+    #[test]
+    fn ipv6_prefix_zero_matches_all() {
+        assert!(ipv6_in_subnet(
+            "2001:db8::1".parse().unwrap(),
+            "::".parse().unwrap(),
+            0
+        ));
+    }
+
+    #[test]
+    fn ipv4_prefix_above_32_returns_false() {
+        assert!(!ipv4_in_subnet(
+            "1.2.3.4".parse().unwrap(),
+            "1.2.3.4".parse().unwrap(),
+            33
+        ));
+    }
+
+    #[test]
+    fn ipv6_prefix_above_128_returns_false() {
+        assert!(!ipv6_in_subnet(
+            "::1".parse().unwrap(),
+            "::1".parse().unwrap(),
+            129
+        ));
+    }
 }

@@ -167,7 +167,13 @@ fn resolve_proxy(
                 .collect();
 
             // Compute hash value for ip-hash and consistent-hash strategies.
-            let hash_input = if hash_key == "url" { path } else { client_ip };
+            // Fall back to path when the client IP is unavailable so that the
+            // load is still distributed rather than all landing on one bucket.
+            let hash_input = if hash_key == "url" || client_ip.is_empty() {
+                path
+            } else {
+                client_ip
+            };
             let hash_val = upstream::fnv1a_hash(hash_input);
 
             let hash_ctx = HashCtx {

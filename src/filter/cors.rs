@@ -201,4 +201,80 @@ mod tests {
         let h = preflight_headers(&any_origin_cfg(), "https://a.com");
         assert!(h.iter().any(|(k, _)| k == "Access-Control-Max-Age"));
     }
+
+    #[test]
+    fn preflight_disabled_returns_empty() {
+        let h = preflight_headers(&CorsConfig::Enabled(false), "https://a.com");
+        assert!(h.is_empty(), "disabled CORS → no preflight headers");
+    }
+
+    #[test]
+    fn preflight_options_allowed_origin_includes_max_age() {
+        let cfg = specific_origin_cfg("https://allowed.com");
+        let h = preflight_headers(&cfg, "https://allowed.com");
+        assert!(
+            h.iter().any(|(k, _)| k == "Access-Control-Max-Age"),
+            "allowed origin must include max-age"
+        );
+        let acao = h.iter().find(|(k, _)| k == "Access-Control-Allow-Origin");
+        assert_eq!(
+            acao.map(|(_, v)| v.as_str()),
+            Some("https://allowed.com"),
+            "echo origin for specific-origin configs"
+        );
+    }
+
+    #[test]
+    fn preflight_options_custom_max_age() {
+        let cfg = CorsConfig::Options(CorsOptions {
+            origins: Some(vec!["https://a.com".to_owned()]),
+            methods: None,
+            allowed_headers: None,
+            credentials: None,
+            max_age_secs: Some(3600),
+        });
+        let h = preflight_headers(&cfg, "https://a.com");
+        let max_age = h.iter().find(|(k, _)| k == "Access-Control-Max-Age");
+        assert_eq!(max_age.map(|(_, v)| v.as_str()), Some("3600"));
+    }
+
+    #[test]
+    fn preflight_options_rejected_origin_returns_empty() {
+        let cfg = specific_origin_cfg("https://allowed.com");
+        let h = preflight_headers(&cfg, "https://other.com");
+        assert!(h.is_empty(), "rejected origin → no preflight headers");
+    }
+
+    #[test]
+    fn response_headers_with_credentials() {
+        let cfg = CorsConfig::Options(CorsOptions {
+            origins: None,
+            methods: None,
+            allowed_headers: None,
+            credentials: Some(true),
+            max_age_secs: None,
+        });
+        let h = response_headers(&cfg, Some("https://a.com"));
+        let cred = h
+            .iter()
+            .find(|(k, _)| k == "Access-Control-Allow-Credentials");
+        assert_eq!(
+            cred.map(|(_, v)| v.as_str()),
+            Some("true"),
+            "credentials:true must emit Allow-Credentials header"
+        );
+        // Origin should be echoed (not wildcard) when credentials is true.
+        let acao = h.iter().find(|(k, _)| k == "Access-Control-Allow-Origin");
+        assert_eq!(acao.map(|(_, v)| v.as_str()), Some("https://a.com"));
+    }
+
+    #[test]
+    fn wildcard_origin_no_credentials_header() {
+        let h = response_headers(&any_origin_cfg(), Some("https://a.com"));
+        assert!(
+            !h.iter()
+                .any(|(k, _)| k == "Access-Control-Allow-Credentials"),
+            "wildcard CORS must NOT emit credentials header"
+        );
+    }
 }

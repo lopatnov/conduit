@@ -108,7 +108,7 @@ pub fn check(cfg: &RateLimitConfig, session: &Session, limiter: &RateLimiter) ->
 /// 3600`) retain bucket state long enough for the next request to be correctly
 /// rate-limited.  Called every 60 seconds by the background cleanup task.
 pub fn cleanup(limiter: &RateLimiter) {
-    limiter.retain(|_, bucket| !bucket.is_stale(bucket.window_secs * 2));
+    limiter.retain(|_, bucket| !bucket.is_stale(bucket.window_secs.saturating_mul(2)));
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ pub fn url_to_host_port(url: &str) -> Option<String> {
     let without_scheme = url
         .trim_start_matches("https://")
         .trim_start_matches("http://");
-    let host_port = without_scheme.split('/').next()?;
+    let host_port = without_scheme.split(['/', '?', '#']).next()?;
     if host_port.is_empty() {
         return None;
     }
@@ -49,7 +49,7 @@ pub fn url_host(url: &str) -> String {
     let without_scheme = url
         .trim_start_matches("https://")
         .trim_start_matches("http://");
-    let host_port = without_scheme.split('/').next().unwrap_or("");
+    let host_port = without_scheme.split(['/', '?', '#']).next().unwrap_or("");
     if host_port.starts_with('[') {
         // IPv6 literal: strip brackets, ignore port.
         host_port
