@@ -43,9 +43,33 @@ fn main() {
             let addr = resolve_admin(args.admin.as_deref());
             match args.command {
                 None => admin_get("upstreams", &addr),
-                Some(UpstreamsCommand::Add(_)) => unimplemented_cmd("upstreams add"),
-                Some(UpstreamsCommand::Remove(_)) => unimplemented_cmd("upstreams remove"),
-                Some(UpstreamsCommand::Weight(_)) => unimplemented_cmd("upstreams weight"),
+                Some(UpstreamsCommand::Add(a)) => {
+                    let weight = a.weight.unwrap_or(1);
+                    let body = format!(
+                        r#"{{"route":{},"target":{},"weight":{}}}"#,
+                        serde_json::to_string(&a.route).unwrap(),
+                        serde_json::to_string(&a.target).unwrap(),
+                        weight
+                    );
+                    admin_post_json("upstreams/add", &addr, &body);
+                }
+                Some(UpstreamsCommand::Remove(r)) => {
+                    let body = format!(
+                        r#"{{"route":{},"target":{}}}"#,
+                        serde_json::to_string(&r.route).unwrap(),
+                        serde_json::to_string(&r.target).unwrap(),
+                    );
+                    admin_post_json("upstreams/remove", &addr, &body);
+                }
+                Some(UpstreamsCommand::Weight(w)) => {
+                    let body = format!(
+                        r#"{{"route":{},"target":{},"weight":{}}}"#,
+                        serde_json::to_string(&w.route).unwrap(),
+                        serde_json::to_string(&w.target).unwrap(),
+                        w.weight
+                    );
+                    admin_post_json("upstreams/weight", &addr, &body);
+                }
             }
         }
     }
@@ -410,14 +434,38 @@ fn http_post(path: &str, addr: &str) -> anyhow::Result<String> {
     Ok(extract_body(&response))
 }
 
+/// POST to `path` on the admin API with a JSON body.
+fn admin_post_json(path: &str, addr: &str, json_body: &str) {
+    match http_post_json(path, addr, json_body) {
+        Ok(body) => println!("{body}"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+fn http_post_json(path: &str, addr: &str, json_body: &str) -> anyhow::Result<String> {
+    let sock = addr
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr}"))?;
+    let mut stream = TcpStream::connect_timeout(&sock, Duration::from_secs(5))?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    write!(
+        stream,
+        "POST /{path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{json_body}",
+        len = json_body.len()
+    )?;
+    stream.flush()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    Ok(extract_body(&response))
+}
+
 fn extract_body(response: &str) -> String {
     response
         .find("\r\n\r\n")
         .map(|pos| response[pos + 4..].to_owned())
         .unwrap_or_else(|| response.to_owned())
-}
-
-fn unimplemented_cmd(name: &str) -> ! {
-    eprintln!("'{name}' is not yet implemented.");
-    process::exit(1);
 }

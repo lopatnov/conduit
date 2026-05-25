@@ -140,7 +140,21 @@ fn resolve_proxy(
         )),
         ProxyConfig::Routes(routes) => {
             let (route_key, route_target) = find_route(routes, path)?;
-            let all_urls = upstream::target_urls(route_target);
+
+            // ── Runtime override check ────────────────────────────────────────
+            // When the operator has issued `conduit upstreams add/remove/weight`,
+            // those targets replace the config-file targets for this route.
+            let runtime_targets = upstream_health.get_override_targets(route_key);
+            let (all_urls, all_weighted_base): (Vec<String>, Vec<(String, u32)>) =
+                if let Some(ref ov) = runtime_targets {
+                    let urls = ov.iter().map(|(u, _)| u.clone()).collect();
+                    (urls, ov.clone())
+                } else {
+                    (
+                        upstream::target_urls(route_target),
+                        upstream::weighted_targets(route_target),
+                    )
+                };
 
             let (retry_cfg, proxy_timeout, proxy_pool, strategy, proxy_http2, hash_key) =
                 match route_target {
@@ -160,8 +174,7 @@ fn resolve_proxy(
             let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
 
             // Build weighted list filtered to healthy targets.
-            let all_weighted = upstream::weighted_targets(route_target);
-            let weighted: Vec<(String, u32)> = all_weighted
+            let weighted: Vec<(String, u32)> = all_weighted_base
                 .into_iter()
                 .filter(|(url, _)| urls.contains(url))
                 .collect();
@@ -1120,6 +1133,88 @@ mod tests {
         assert!(
             matches!(ctx_b.upstream, UpstreamTarget::Proxy { .. }),
             "empty client_ip should still route to a proxy target"
+        );
+    }
+
+    // ── runtime override integration ──────────────────────────────────────────
+
+    #[test]
+    fn override_replaces_config_targets() {
+        use crate::config::schema::ProxyConfig;
+        use indexmap::IndexMap;
+
+        let mut routes = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Url("http://config-target:4000".to_string()),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+
+        // Without an override → config target is used.
+        let ctx = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg);
+        let addr_config = match &ctx.upstream {
+            UpstreamTarget::Proxy { addr, .. } => addr.clone(),
+            other => panic!("expected Proxy, got {other:?}"),
+        };
+        assert!(
+            addr_config.contains("config-target"),
+            "before override, config target must be used"
+        );
+
+        // Apply an override.
+        reg.add_upstream("/", "http://override-target:9000", 1);
+
+        let ctx2 = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg);
+        let addr_override = match &ctx2.upstream {
+            UpstreamTarget::Proxy { addr, .. } => addr.clone(),
+            other => panic!("expected Proxy, got {other:?}"),
+        };
+        assert!(
+            addr_override.contains("override-target"),
+            "after override, runtime target must be used: got {addr_override}"
+        );
+    }
+
+    #[test]
+    fn empty_override_falls_through_to_fallback() {
+        // When the override list is explicitly empty, no URL can be selected
+        // and the request should fall through to the Fallback handler.
+        use crate::config::schema::ProxyConfig;
+        use indexmap::IndexMap;
+
+        let mut routes = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Url("http://config-target:4000".to_string()),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+
+        // Create an override, then remove the only entry → empty list.
+        reg.add_upstream("/", "http://temp:4000", 1);
+        reg.remove_upstream("/", "http://temp:4000");
+
+        let ctx = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg);
+        // Empty override list → no URL → falls through to Fallback (not Proxy).
+        assert!(
+            matches!(ctx.upstream, UpstreamTarget::Local(LocalHandler::Fallback)),
+            "empty override must yield Fallback, got {:?}",
+            ctx.upstream
         );
     }
 }
