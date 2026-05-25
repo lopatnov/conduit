@@ -7,16 +7,24 @@ use crate::config::schema::IpFilterConfig;
 /// Returns `true` if the request is allowed through, `false` if it should be blocked (403).
 pub fn is_allowed(config: &IpFilterConfig, session: &Session) -> bool {
     let trust_proxy = config.trust_proxy.unwrap_or(false);
-    let client_ip = client_ip(session, trust_proxy);
+    let ip = client_ip(session, trust_proxy);
+    apply_ip_filter(ip, config)
+}
 
+/// Pure filtering logic: given a resolved client IP (or `None` when unknown),
+/// decide whether the request passes the allow/deny rules.
+///
+/// Extracted for unit testability — `is_allowed` is a thin wrapper that
+/// resolves the IP from the Pingora session and then calls this.
+pub(crate) fn apply_ip_filter(ip: Option<IpAddr>, config: &IpFilterConfig) -> bool {
     match (&config.allow, &config.deny) {
         // Whitelist mode: IP must be in allow list
-        (Some(allow), _) => client_ip
+        (Some(allow), _) => ip
             .map(|ip| allow.iter().any(|r| matches_rule(&ip, r)))
             .unwrap_or(false),
 
         // Blacklist mode: block if in deny list
-        (None, Some(deny)) => client_ip
+        (None, Some(deny)) => ip
             .map(|ip| !deny.iter().any(|r| matches_rule(&ip, r)))
             .unwrap_or(true),
 
@@ -25,14 +33,19 @@ pub fn is_allowed(config: &IpFilterConfig, session: &Session) -> bool {
     }
 }
 
+/// Parse the first (leftmost) IP address from an `X-Forwarded-For` header value.
+///
+/// Extracted for unit testability — `client_ip` calls this when `trust_proxy` is enabled.
+pub(crate) fn parse_xff(xff: &str) -> Option<IpAddr> {
+    xff.split(',').next()?.trim().parse().ok()
+}
+
 fn client_ip(session: &Session, trust_proxy: bool) -> Option<IpAddr> {
     if trust_proxy {
         if let Some(xff) = session.req_header().headers.get("x-forwarded-for") {
             if let Ok(s) = xff.to_str() {
-                if let Some(first) = s.split(',').next() {
-                    if let Ok(ip) = first.trim().parse::<IpAddr>() {
-                        return Some(ip);
-                    }
+                if let Some(ip) = parse_xff(s) {
+                    return Some(ip);
                 }
             }
         }
@@ -215,5 +228,104 @@ mod tests {
             "::1".parse().unwrap(),
             129
         ));
+    }
+
+    // ── apply_ip_filter ───────────────────────────────────────────────────────
+
+    fn cfg_allow(cidrs: &[&str]) -> IpFilterConfig {
+        IpFilterConfig {
+            allow: Some(cidrs.iter().map(|s| s.to_string()).collect()),
+            deny: None,
+            trust_proxy: None,
+        }
+    }
+
+    fn cfg_deny(cidrs: &[&str]) -> IpFilterConfig {
+        IpFilterConfig {
+            allow: None,
+            deny: Some(cidrs.iter().map(|s| s.to_string()).collect()),
+            trust_proxy: None,
+        }
+    }
+
+    fn cfg_none() -> IpFilterConfig {
+        IpFilterConfig {
+            allow: None,
+            deny: None,
+            trust_proxy: None,
+        }
+    }
+
+    #[test]
+    fn whitelist_ip_in_list_is_allowed() {
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        assert!(apply_ip_filter(Some(ip), &cfg_allow(&["10.0.0.0/8"])));
+    }
+
+    #[test]
+    fn whitelist_ip_not_in_list_is_denied() {
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        assert!(!apply_ip_filter(Some(ip), &cfg_allow(&["10.0.0.0/8"])));
+    }
+
+    #[test]
+    fn whitelist_unknown_ip_is_denied() {
+        // When IP cannot be resolved, whitelist mode must deny (fail-closed).
+        assert!(!apply_ip_filter(None, &cfg_allow(&["10.0.0.0/8"])));
+    }
+
+    #[test]
+    fn blacklist_ip_in_list_is_denied() {
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        assert!(!apply_ip_filter(Some(ip), &cfg_deny(&["1.2.3.4"])));
+    }
+
+    #[test]
+    fn blacklist_ip_not_in_list_is_allowed() {
+        let ip: IpAddr = "8.8.8.8".parse().unwrap();
+        assert!(apply_ip_filter(Some(ip), &cfg_deny(&["1.2.3.4"])));
+    }
+
+    #[test]
+    fn blacklist_unknown_ip_is_allowed() {
+        // When IP cannot be resolved, blacklist mode must allow (fail-open).
+        assert!(apply_ip_filter(None, &cfg_deny(&["1.2.3.4"])));
+    }
+
+    #[test]
+    fn no_rules_always_allows() {
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        assert!(apply_ip_filter(Some(ip), &cfg_none()));
+        assert!(apply_ip_filter(None, &cfg_none()));
+    }
+
+    // ── parse_xff ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn xff_single_ip() {
+        let ip = parse_xff("203.0.113.1");
+        assert_eq!(ip, Some("203.0.113.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn xff_first_of_multiple_ips() {
+        let ip = parse_xff("203.0.113.1, 10.0.0.1, 192.168.1.1");
+        assert_eq!(ip, Some("203.0.113.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn xff_invalid_ip_returns_none() {
+        assert_eq!(parse_xff("not-an-ip"), None);
+    }
+
+    #[test]
+    fn xff_empty_string_returns_none() {
+        assert_eq!(parse_xff(""), None);
+    }
+
+    #[test]
+    fn xff_ipv6() {
+        let ip = parse_xff("2001:db8::1");
+        assert_eq!(ip, Some("2001:db8::1".parse().unwrap()));
     }
 }

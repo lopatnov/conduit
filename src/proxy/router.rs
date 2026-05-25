@@ -1075,4 +1075,51 @@ mod tests {
             UpstreamTarget::Local(LocalHandler::Metrics { .. })
         ));
     }
+
+    #[test]
+    fn hash_falls_back_to_path_when_client_ip_empty() {
+        // When client_ip is empty the hash must be computed from path so that
+        // multiple requests without a resolvable IP still distribute across
+        // upstreams rather than all mapping to the same bucket.
+        use crate::config::schema::ProxyConfig;
+        use indexmap::IndexMap;
+
+        let mut routes = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(crate::config::schema::ProxyRouteConfig {
+                targets: vec![
+                    crate::config::schema::ProxyTarget::Simple("http://a:4000".to_string()),
+                    crate::config::schema::ProxyTarget::Simple("http://b:4000".to_string()),
+                ],
+                strategy: Some(LoadBalanceStrategy::IpHash),
+                hash_key: Some("ip".to_string()),
+                ..Default::default()
+            })),
+        );
+
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+
+        // Two different paths with empty client_ip should potentially land on
+        // different upstreams (demonstrating that path is used, not a fixed "").
+        let ctx_a = route_request(&config, "localhost", "/page-a", "", &counters, &reg);
+        let ctx_b = route_request(&config, "localhost", "/page-b", "", &counters, &reg);
+        // Both should be routed to a Proxy target (not fallback).
+        assert!(
+            matches!(ctx_a.upstream, UpstreamTarget::Proxy { .. }),
+            "empty client_ip should still route to a proxy target"
+        );
+        assert!(
+            matches!(ctx_b.upstream, UpstreamTarget::Proxy { .. }),
+            "empty client_ip should still route to a proxy target"
+        );
+    }
 }

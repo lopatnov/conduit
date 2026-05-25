@@ -306,6 +306,28 @@ mod tests {
         assert_eq!(url_to_host_port("http://"), None);
     }
 
+    #[test]
+    fn host_port_strips_query_string() {
+        // URLs with query strings must not include '?' in the host:port.
+        assert_eq!(
+            url_to_host_port("http://backend:8080?health=1"),
+            Some("backend:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn host_port_strips_fragment() {
+        assert_eq!(
+            url_to_host_port("http://backend:8080#section"),
+            Some("backend:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn host_strips_query_string() {
+        assert_eq!(url_host("http://example.com:8080?x=1"), "example.com");
+    }
+
     // ── url_is_tls ────────────────────────────────────────────────────────────
 
     #[test]
