@@ -486,18 +486,30 @@ impl ConduitProxy {
 
                         if include {
                             use crate::proxy::upstream as us;
-                            site.and_then(|s| s.proxy.as_ref())
-                                .map(|proxy| {
-                                    us::target_urls_from_proxy(proxy)
-                                        .into_iter()
-                                        .map(|url| {
-                                            let healthy =
-                                                self.state.upstream_health.is_healthy(&url);
-                                            (url, healthy)
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default()
+                            if let Some(s) = site {
+                                let mut urls: Vec<String> = Vec::new();
+                                // Top-level proxy field.
+                                if let Some(proxy) = &s.proxy {
+                                    urls.extend(us::target_urls_from_proxy(proxy));
+                                }
+                                // routes array (Phase 3.6).
+                                if let Some(routes) = &s.routes {
+                                    for rc in routes {
+                                        if let Some(rt) = &rc.proxy {
+                                            urls.extend(us::target_urls(rt));
+                                        }
+                                    }
+                                }
+                                urls.into_iter()
+                                    .map(|url| {
+                                        let healthy =
+                                            self.state.upstream_health.is_healthy(&url);
+                                        (url, healthy)
+                                    })
+                                    .collect()
+                            } else {
+                                vec![]
+                            }
                         } else {
                             vec![]
                         }
