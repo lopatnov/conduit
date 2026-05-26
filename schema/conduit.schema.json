@@ -124,6 +124,11 @@
           }
         },
         "proxy":   { "$ref": "#/$defs/ProxyConfig" },
+        "routes": {
+          "type": "array",
+          "description": "Explicit route table with match criteria. Matched in order; first match wins. Backward-compatible with top-level 'proxy' and 'static'.",
+          "items": { "$ref": "#/$defs/RouteConfig" }
+        },
         "upload": {
           "type": "object",
           "required": ["path", "dir"],
@@ -414,6 +419,42 @@
               "headers": { "type": "object", "additionalProperties": { "type": "string" } }
             }
           }
+        }
+      }
+    },
+    "RouteConfig": {
+      "type": "object",
+      "required": ["match"],
+      "properties": {
+        "match": { "$ref": "#/$defs/MatchConfig" },
+        "proxy":  { "$ref": "#/$defs/ProxyRouteTarget" },
+        "static": { "$ref": "#/$defs/StaticConfig" }
+      },
+      "description": "A single route rule: match criteria → proxy or static handler."
+    },
+    "MatchConfig": {
+      "type": "object",
+      "description": "Criteria that must all be satisfied for a route to fire. Absent fields match anything.",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Glob path pattern. '*' matches within a segment; '**' matches any depth.",
+          "examples": ["/api/**", "/blog/*", "/health"]
+        },
+        "method": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "HTTP methods (case-insensitive). Examples: [\"GET\"], [\"POST\", \"PUT\"]."
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Request header values that must be present and match (exact or regex)."
+        },
+        "query": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Query parameter values that must be present and match (exact or regex)."
         }
       }
     }

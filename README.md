@@ -40,6 +40,7 @@ cargo install lopatnov-conduit
   - [redirects](#redirects)
   - [static / staticOptions](#static--staticoptions)
   - [proxy](#proxy)
+  - [routes (advanced routing)](#routes-advanced-routing)
   - [Load balancing](#load-balancing)
   - [healthCheck](#healthcheck)
   - [metrics](#metrics)
@@ -772,6 +773,62 @@ Rules are regex-based (RE2 syntax). The first matching rule wins. Applied after 
 ```
 
 `groupStrategy` selects which group handles the request; `strategy` within each group distributes across its targets. All [seven load-balancing strategies](#load-balancing) apply at both levels independently.
+
+---
+
+### `routes` (advanced routing)
+
+An explicit route table that gives you full control over matching. Routes are evaluated in order; the first match wins.
+
+```json
+{
+  "routes": [
+    {
+      "match": { "path": "/api/**", "method": ["POST", "PUT", "PATCH", "DELETE"] },
+      "proxy": {
+        "targets": ["http://write-backend:4000"],
+        "strategy": "least-conn"
+      }
+    },
+    {
+      "match": { "path": "/api/**" },
+      "proxy": "http://read-backend:4000"
+    },
+    {
+      "match": { "path": "/public/**" },
+      "static": "./public"
+    }
+  ]
+}
+```
+
+**Match criteria** (all present fields must match):
+
+| Field     | Type                   | Description                                               |
+| --------- | ---------------------- | --------------------------------------------------------- |
+| `path`    | glob string            | `*` — one segment, `**` — any depth. Default: match all. |
+| `method`  | `string[]`             | HTTP methods (case-insensitive). Default: match all.      |
+| `headers` | `{ name: pattern }`    | Header values (exact string or regex). Default: match all.|
+| `query`   | `{ param: pattern }`   | Query param values (exact or regex). Default: match all.  |
+
+**Header / query matching:**
+
+```json
+{
+  "routes": [
+    {
+      "match": {
+        "path": "/api/**",
+        "headers": { "X-API-Version": "v2" },
+        "query":   { "format": "json" }
+      },
+      "proxy": "http://v2-backend:4000"
+    }
+  ]
+}
+```
+
+**Backward compatibility:** top-level `proxy` and `static` fields are automatically converted to routes at parse time, so existing configs continue to work.
 
 ---
 
