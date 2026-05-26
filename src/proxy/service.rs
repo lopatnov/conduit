@@ -191,10 +191,16 @@ impl ConduitProxy {
                 .map(|a| a.ip().to_string())
                 .unwrap_or_default();
 
+            let method = session.req_header().method.as_str().to_owned();
+            let query = session.req_header().uri.query().map(str::to_owned);
+
             let req_ctx = router::route_request(
                 &config,
                 &host,
                 &path,
+                &method,
+                &session.req_header().headers,
+                query.as_deref(),
                 &client_ip,
                 &self.state.round_robin,
                 &self.state.upstream_health,

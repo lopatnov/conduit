@@ -115,7 +115,11 @@ pub struct SiteConfig {
     pub metrics: Option<MetricsConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback: Option<FallbackConfig>,
-    // Phase 3.5: pub routes: Option<Vec<RouteConfig>>,
+    /// Phase 3.6: advanced per-site routing rules.  Routes are matched in
+    /// declaration order; the first match wins.  When present, routes are
+    /// evaluated before the top-level `proxy` / `static` shorthand.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routes: Option<Vec<RouteConfig>>,
     // Phase 5 (optional): pub cgi: Option<CgiConfig>,
 }
 
@@ -634,3 +638,53 @@ pub struct FallbackRule {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<IndexMap<String, String>>,
 }
+
+// ── Routes (Phase 3.6) ─────────────────────────────────────────────────────
+
+/// A single named routing rule.
+///
+/// `match` describes when the rule applies; the first of `proxy` / `static`
+/// that is set describes what to do.  Routes are evaluated in declaration
+/// order before the top-level `proxy` / `static` shorthand.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RouteConfig {
+    /// Match criteria (path glob, method, headers).
+    pub r#match: MatchConfig,
+    /// Proxy this request to an upstream when the match succeeds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<ProxyRouteTarget>,
+    /// Serve static files from this path when the match succeeds.
+    #[serde(rename = "static", skip_serializing_if = "Option::is_none")]
+    pub static_files: Option<StaticConfig>,
+}
+
+/// Criteria that must all be satisfied for a [`RouteConfig`] to fire.
+///
+/// All fields are optional; an absent field matches anything.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchConfig {
+    /// Glob-style path pattern.
+    ///
+    /// `*` matches any character sequence within a single path segment.
+    /// `**` matches any character sequence including `/` (i.e. any sub-path).
+    ///
+    /// Examples: `/api/**`, `/blog/*`, `/health`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// HTTP methods that must match (case-insensitive).
+    ///
+    /// Examples: `["GET"]`, `["POST", "PUT", "PATCH"]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<Vec<String>>,
+    /// Request header values that must be present and match (exact string or regex).
+    ///
+    /// All entries must match simultaneously.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<IndexMap<String, String>>,
+    /// Query parameter values that must be present and match (exact string or regex).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<IndexMap<String, String>>,
+}
+
