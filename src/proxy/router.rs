@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -32,6 +33,7 @@ pub fn route_request(
     client_ip: &str,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
+    upload_addr: Option<SocketAddr>,
 ) -> RequestCtx {
     let site_idx = find_site_idx(config, host).unwrap_or(0);
     let site = config.sites.get(site_idx);
@@ -80,7 +82,7 @@ pub fn route_request(
             None,
         )
     } else if let Some(site) = site {
-        route_site(site, path, client_ip, counters, upstream_health)
+        route_site(site, path, client_ip, counters, upstream_health, upload_addr)
     } else {
         (
             UpstreamTarget::Local(LocalHandler::Fallback),
@@ -111,7 +113,25 @@ fn route_site(
     client_ip: &str,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
+    upload_addr: Option<SocketAddr>,
 ) -> RouteResult {
+    // Upload path takes priority — it is a precise prefix configured by the
+    // operator and must not be shadowed by a catch-all proxy route.
+    if let (Some(ref upload_cfg), Some(addr)) = (&site.upload, upload_addr) {
+        let upload_prefix = upload_cfg.path.trim_end_matches('/');
+        if path == upload_prefix || path.starts_with(&format!("{upload_prefix}/")) {
+            return (
+                UpstreamTarget::Upload { addr },
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+            );
+        }
+    }
+
     // Proxy routes take priority over static files.
     if let Some(proxy_cfg) = &site.proxy {
         if let Some(result) = resolve_proxy(proxy_cfg, path, client_ip, counters, upstream_health) {
@@ -1030,6 +1050,7 @@ mod tests {
             "127.0.0.1",
             &counters,
             &reg,
+            None,
         );
         assert!(matches!(
             ctx.upstream,
@@ -1056,6 +1077,7 @@ mod tests {
             "127.0.0.1",
             &counters,
             &reg,
+            None,
         );
         assert!(matches!(
             ctx.upstream,
@@ -1082,6 +1104,7 @@ mod tests {
             "127.0.0.1",
             &counters,
             &reg,
+            None,
         );
         assert!(matches!(ctx.upstream, UpstreamTarget::Proxy { .. }));
     }
@@ -1091,7 +1114,7 @@ mod tests {
         let config = AppConfig::default();
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
-        let ctx = route_request(&config, "localhost", "/", "127.0.0.1", &counters, &reg);
+        let ctx = route_request(&config, "localhost", "/", "127.0.0.1", &counters, &reg, None);
         assert!(matches!(
             ctx.upstream,
             UpstreamTarget::Local(LocalHandler::Fallback)
@@ -1120,6 +1143,7 @@ mod tests {
             "127.0.0.1",
             &counters,
             &reg,
+            None,
         );
         assert!(matches!(
             ctx.upstream,
@@ -1161,8 +1185,8 @@ mod tests {
 
         // Two different paths with empty client_ip should potentially land on
         // different upstreams (demonstrating that path is used, not a fixed "").
-        let ctx_a = route_request(&config, "localhost", "/page-a", "", &counters, &reg);
-        let ctx_b = route_request(&config, "localhost", "/page-b", "", &counters, &reg);
+        let ctx_a = route_request(&config, "localhost", "/page-a", "", &counters, &reg, None);
+        let ctx_b = route_request(&config, "localhost", "/page-b", "", &counters, &reg, None);
         // Both should be routed to a Proxy target (not fallback).
         assert!(
             matches!(ctx_a.upstream, UpstreamTarget::Proxy { .. }),
@@ -1197,7 +1221,7 @@ mod tests {
         let reg = UpstreamRegistry::new();
 
         // Without an override → config target is used.
-        let ctx = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg);
+        let ctx = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg, None);
         let addr_config = match &ctx.upstream {
             UpstreamTarget::Proxy { addr, .. } => addr.clone(),
             other => panic!("expected Proxy, got {other:?}"),
@@ -1210,7 +1234,7 @@ mod tests {
         // Apply an override.
         reg.add_upstream("/", "http://override-target:9000", 1);
 
-        let ctx2 = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg);
+        let ctx2 = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg, None);
         let addr_override = match &ctx2.upstream {
             UpstreamTarget::Proxy { addr, .. } => addr.clone(),
             other => panic!("expected Proxy, got {other:?}"),
@@ -1247,7 +1271,7 @@ mod tests {
         reg.add_upstream("/", "http://temp:4000", 1);
         reg.remove_upstream("/", "http://temp:4000");
 
-        let ctx = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg);
+        let ctx = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg, None);
         // Empty override list → no URL → falls through to Fallback (not Proxy).
         assert!(
             matches!(ctx.upstream, UpstreamTarget::Local(LocalHandler::Fallback)),

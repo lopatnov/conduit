@@ -113,10 +113,14 @@ pub struct AppState {
     /// Populated by the ACME flow during certificate procurement/renewal;
     /// served to the CA via the `/.well-known/acme-challenge/{token}` handler.
     pub acme_challenges: Arc<DashMap<String, String>>,
+    /// Loopback address of the Axum upload server, or `None` when no site
+    /// has an `upload` block.  Populated before Pingora starts so the router
+    /// can forward matching requests without a config look-up.
+    pub upload_addr: Option<SocketAddr>,
 }
 
 impl AppState {
-    pub fn new(config: AppConfig, config_path: PathBuf) -> Self {
+    pub fn new(config: AppConfig, config_path: PathBuf, upload_addr: Option<SocketAddr>) -> Self {
         Self {
             config: Arc::new(ArcSwap::new(Arc::new(config))),
             inflight: Arc::new(AtomicUsize::new(0)),
@@ -127,6 +131,7 @@ impl AppState {
             upstream_health: Arc::new(UpstreamRegistry::new()),
             config_path,
             acme_challenges: Arc::new(DashMap::new()),
+            upload_addr,
         }
     }
 }
@@ -185,6 +190,7 @@ impl ConduitProxy {
                 &client_ip,
                 &self.state.round_robin,
                 &self.state.upstream_health,
+                self.state.upload_addr,
             );
             let site = config.sites.get(req_ctx.site_idx);
 
@@ -672,18 +678,25 @@ impl ProxyHttp for ConduitProxy {
         upstream_request.insert_header("x-forwarded-proto", proto)?;
 
         if let Some(ctx_ref) = ctx.as_ref() {
-            if let UpstreamTarget::Proxy {
-                strip_prefix: Some(pfx),
-                ..
-            } = &ctx_ref.upstream
-            {
-                let old_path = upstream_request.uri.path().to_owned();
-                let new_path = old_path.strip_prefix(pfx.as_str()).unwrap_or("/");
-                let new_path = if new_path.is_empty() { "/" } else { new_path };
-                if new_path != old_path {
-                    let new_uri = rebuild_uri(&upstream_request.uri, new_path)?;
-                    upstream_request.set_uri(new_uri);
+            match &ctx_ref.upstream {
+                UpstreamTarget::Proxy {
+                    strip_prefix: Some(pfx),
+                    ..
+                } => {
+                    let old_path = upstream_request.uri.path().to_owned();
+                    let new_path = old_path.strip_prefix(pfx.as_str()).unwrap_or("/");
+                    let new_path = if new_path.is_empty() { "/" } else { new_path };
+                    if new_path != old_path {
+                        let new_uri = rebuild_uri(&upstream_request.uri, new_path)?;
+                        upstream_request.set_uri(new_uri);
+                    }
                 }
+                UpstreamTarget::Upload { .. } => {
+                    // Tell the upload server which site's config to apply.
+                    upstream_request
+                        .insert_header("x-conduit-site-idx", ctx_ref.site_idx.to_string())?;
+                }
+                _ => {}
             }
         }
 
@@ -1007,7 +1020,8 @@ fn resolve_peer_addr(req_ctx: &mut RequestCtx) -> pingora_core::Result<(String, 
     } else {
         match &req_ctx.upstream {
             UpstreamTarget::Proxy { addr, tls, sni, .. } => Ok((addr.clone(), *tls, sni.clone())),
-            _ => Err(pingora_core::Error::explain(
+            UpstreamTarget::Upload { addr } => Ok((addr.to_string(), false, String::new())),
+            UpstreamTarget::Local(_) => Err(pingora_core::Error::explain(
                 pingora_core::ErrorType::InternalError,
                 "upstream_peer called for local handler",
             )),

@@ -13,7 +13,7 @@ use tempfile::TempDir;
 fn make_self_signed_cert() -> (TempDir, String, String) {
     use rcgen::{generate_simple_self_signed, CertifiedKey};
 
-    let CertifiedKey { cert, key_pair } =
+    let CertifiedKey { cert, signing_key } =
         generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
             .expect("rcgen cert generation");
 
@@ -29,7 +29,7 @@ fn make_self_signed_cert() -> (TempDir, String, String) {
 
     std::fs::File::create(&key_path)
         .expect("create key.pem")
-        .write_all(key_pair.serialize_pem().as_bytes())
+        .write_all(signing_key.serialize_pem().as_bytes())
         .expect("write key.pem");
 
     (

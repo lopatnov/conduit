@@ -82,7 +82,7 @@ base64    = "0.22"
 # rhai = "1"
 
 [dev-dependencies]
-reqwest     = { version = "0.12", default-features = false, features = ["http2", "rustls-tls", "blocking", "json"] }
+reqwest     = { version = "0.12", default-features = false, features = ["http2", "rustls-tls", "blocking", "json", "multipart"] }
 criterion   = { version = "0.8", features = ["html_reports"] }
 tempfile    = "3"
 serial_test = "3"

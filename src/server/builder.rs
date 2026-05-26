@@ -12,6 +12,7 @@ use crate::config::defaults::DEFAULT_ADMIN_BIND;
 use crate::config::schema::{AppConfig, SiteConfig};
 use crate::proxy::service::{AppState, ConduitProxy};
 use crate::server::{acme as acme_util, tls as tls_util};
+use crate::upload::UploadService;
 
 /// Maps a TCP port to `(cert_path, key_path, h2_enabled)` for TLS-enabled ports.
 type TlsPortMap = HashMap<u16, (String, String, bool)>;
@@ -81,8 +82,26 @@ pub fn run_server(config: AppConfig, config_path: PathBuf) -> anyhow::Result<()>
         .unwrap_or(DEFAULT_ADMIN_BIND)
         .to_owned();
 
+    // Bind the upload server listener before creating AppState so the router
+    // can forward matching requests to the loopback address immediately.
+    // Uses a std::net::TcpListener (sync) here; converted to Tokio inside the
+    // UploadService::start() which runs on Pingora's async runtime.
+    let (upload_addr, upload_std_listener) = if config.sites.iter().any(|s| s.upload.is_some()) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| anyhow::anyhow!("failed to bind upload server: {e}"))?;
+        let addr = listener
+            .local_addr()
+            .map_err(|e| anyhow::anyhow!("upload listener local_addr: {e}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| anyhow::anyhow!("upload listener set_nonblocking: {e}"))?;
+        (Some(addr), Some(listener))
+    } else {
+        (None, None)
+    };
+
     // Create AppState early so acme_challenges can be shared with the ACME flow.
-    let state = Arc::new(AppState::new(config.clone(), config_path));
+    let state = Arc::new(AppState::new(config.clone(), config_path, upload_addr));
 
     // ── Phase 3.1: ACME certificate procurement ──────────────────────────────
     // For each site that uses `tls.acme`, obtain (or load a cached) certificate
@@ -145,10 +164,16 @@ pub fn run_server(config: AppConfig, config_path: PathBuf) -> anyhow::Result<()>
 
     // ── Admin API background service ─────────────────────────────────────────
     let admin = AdminApiService {
-        state,
+        state: state.clone(),
         bind: admin_bind,
     };
     server.add_service(background_service("admin-api", admin));
+
+    // ── Upload server background service ─────────────────────────────────────
+    if let Some(std_listener) = upload_std_listener {
+        let upload_svc = UploadService::new(state, std_listener);
+        server.add_service(background_service("upload-server", upload_svc));
+    }
 
     server.run_forever()
 }
