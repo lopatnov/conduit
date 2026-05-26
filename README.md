@@ -40,6 +40,7 @@ cargo install lopatnov-conduit
   - [redirects](#redirects)
   - [static / staticOptions](#static--staticoptions)
   - [proxy](#proxy)
+  - [Load balancing](#load-balancing)
   - [healthCheck](#healthcheck)
   - [metrics](#metrics)
   - [fallback](#fallback)
@@ -726,6 +727,99 @@ Proxy requests to one or more backends.
 | `connection_error` | Retry when the upstream is down |
 | `5xx`              | Retry when upstream returns 5xx |
 | `timeout`          | Retry on read/write timeout     |
+
+**Path rewrite** — transform the request path before forwarding:
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://backend:4000"],
+      "stripPrefix": true,
+      "rewrite": [
+        { "from": "^/v[0-9]+/(.+)$", "to": "/$1" },
+        { "from": "^/users/([0-9]+)$", "to": "/members/$1" }
+      ]
+    }
+  }
+}
+```
+
+Rules are regex-based (RE2 syntax). The first matching rule wins. Applied after `stripPrefix`.
+
+**Upstream groups** — two-level load balancing for geographic or tiered routing:
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "groups": [
+        {
+          "name": "us-east",
+          "targets": ["http://us-east-1:4000", "http://us-east-2:4000"],
+          "strategy": "least-conn"
+        },
+        {
+          "name": "eu-west",
+          "targets": ["http://eu-west-1:4000", "http://eu-west-2:4000"],
+          "strategy": "least-conn"
+        }
+      ],
+      "groupStrategy": "ip-hash"
+    }
+  }
+}
+```
+
+`groupStrategy` selects which group handles the request; `strategy` within each group distributes across its targets. All [seven load-balancing strategies](#load-balancing) apply at both levels independently.
+
+---
+
+### Load balancing
+
+Controlled by the `strategy` field inside a `proxy` route. Applies to both flat `targets` and `groups`.
+
+| Strategy               | Value                   | Description                                              |
+| ---------------------- | ----------------------- | -------------------------------------------------------- |
+| Round-robin            | `round-robin`           | Default. Rotate evenly across all healthy backends.      |
+| Weighted round-robin   | `weighted-round-robin`  | Like round-robin, but respects the `weight` field.       |
+| Random                 | `random`                | Pick a backend at random each request.                   |
+| Least connections      | `least-conn`            | Send to the backend with the fewest active connections.  |
+| Least response time    | `least-response-time`   | Send to the backend with the lowest recent latency.      |
+| IP hash                | `ip-hash`               | Sticky sessions — same client IP always hits same backend. |
+| Consistent hash        | `consistent-hash`       | Ketama ring — minimal reshuffling when backends change.  |
+
+**Weighted round-robin** requires targets with explicit weights:
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "targets": [
+        { "url": "http://powerful:4000", "weight": 3 },
+        { "url": "http://normal:4000",   "weight": 1 }
+      ],
+      "strategy": "weighted-round-robin"
+    }
+  }
+}
+```
+
+**IP hash / consistent hash** — configure which value to hash:
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://b1:4000", "http://b2:4000"],
+      "strategy": "ip-hash",
+      "hashKey": "ip"
+    }
+  }
+}
+```
+
+`hashKey` accepts `"ip"` (default), `"url"`, or `"header:X-My-Key"`.
 
 ---
 
