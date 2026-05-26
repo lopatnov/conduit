@@ -85,6 +85,14 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
     if let Some(proxy) = &site.proxy {
         validate_proxy(proxy, &format!("{prefix}.proxy"), errors);
     }
+    // Validate each entry in the `routes` array (Phase 3.6).
+    if let Some(routes) = &site.routes {
+        for (i, route) in routes.iter().enumerate() {
+            if let Some(ProxyRouteTarget::Full(cfg)) = &route.proxy {
+                validate_route_config(cfg, &format!("{prefix}.routes[{i}].proxy"), errors);
+            }
+        }
+    }
     if let Some(rate_limit) = &site.rate_limit {
         validate_rate_limit(rate_limit, prefix, errors);
     }
@@ -523,5 +531,23 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn routes_array_rewrite_regex_validated() {
+        let e = errs(
+            r#"{
+                "routes": [
+                    {
+                        "match": { "path": "/api/**" },
+                        "proxy": {
+                            "targets": ["http://b:4000"],
+                            "rewrite": [{ "from": "[bad", "to": "/" }]
+                        }
+                    }
+                ]
+            }"#,
+        );
+        assert!(!e.is_empty(), "invalid regex in routes array must be caught");
     }
 }
