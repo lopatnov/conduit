@@ -221,13 +221,67 @@ fn validate_tls(tls: &TlsConfig, prefix: &str, errors: &mut Vec<ValidationError>
 }
 
 fn validate_proxy(proxy: &ProxyConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
-    if let ProxyConfig::Routes(routes) = proxy {
-        for (route, target) in routes {
-            if let ProxyRouteTarget::Full(cfg) = target {
-                validate_route_config(cfg, &format!("{prefix}[\"{route}\"]"), errors);
+    match proxy {
+        ProxyConfig::Single(url) => {
+            if !is_valid_upstream_url(url) {
+                errors.push(ValidationError::new(
+                    prefix,
+                    format!("Invalid upstream URL '{url}' — must start with http:// or https://"),
+                ));
+            }
+        }
+        ProxyConfig::Routes(routes) => {
+            for (route, target) in routes {
+                let route_prefix = format!("{prefix}[\"{route}\"]");
+                validate_proxy_route_target(target, &route_prefix, errors);
             }
         }
     }
+}
+
+fn validate_proxy_route_target(
+    target: &ProxyRouteTarget,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    match target {
+        ProxyRouteTarget::Url(url) => {
+            if !is_valid_upstream_url(url) {
+                errors.push(ValidationError::new(
+                    prefix,
+                    format!("Invalid upstream URL '{url}' — must start with http:// or https://"),
+                ));
+            }
+        }
+        ProxyRouteTarget::RoundRobin(urls) => {
+            for (i, url) in urls.iter().enumerate() {
+                if !is_valid_upstream_url(url) {
+                    errors.push(ValidationError::new(
+                        format!("{prefix}[{i}]"),
+                        format!(
+                            "Invalid upstream URL '{url}' — must start with http:// or https://"
+                        ),
+                    ));
+                }
+            }
+        }
+        ProxyRouteTarget::Full(cfg) => {
+            validate_route_config(cfg, prefix, errors);
+        }
+    }
+}
+
+/// Return `true` when the string is an absolute http:// or https:// URL with a non-empty host.
+fn is_valid_upstream_url(url: &str) -> bool {
+    let rest = if let Some(r) = url.strip_prefix("http://") {
+        r
+    } else if let Some(r) = url.strip_prefix("https://") {
+        r
+    } else {
+        return false;
+    };
+    // After stripping the scheme the host must be non-empty.
+    !rest.split('/').next().unwrap_or("").is_empty()
 }
 
 fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
@@ -273,6 +327,20 @@ fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<
                 format!("{prefix}.targets"),
                 "Strategy 'weighted-round-robin' requires weighted targets: \
                  { \"url\": \"...\", \"weight\": N }",
+            ));
+        }
+    }
+
+    // Validate target URLs.
+    for (i, target) in cfg.targets.iter().enumerate() {
+        let url = match target {
+            ProxyTarget::Simple(u)   => u.as_str(),
+            ProxyTarget::Weighted(w) => w.url.as_str(),
+        };
+        if !is_valid_upstream_url(url) {
+            errors.push(ValidationError::new(
+                format!("{prefix}.targets[{i}]"),
+                format!("Invalid upstream URL '{url}' — must start with http:// or https://"),
             ));
         }
     }
@@ -575,6 +643,30 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn invalid_upstream_url_single_proxy() {
+        let e = errs(r#"{ "proxy": "not-a-url" }"#);
+        assert!(!e.is_empty(), "non-HTTP URL must be rejected");
+        assert!(e[0].message.contains("http://") || e[0].message.contains("https://"));
+    }
+
+    #[test]
+    fn invalid_upstream_url_in_roundrobin_array() {
+        let e = errs(r#"{ "proxy": { "/api": ["http://ok:4000", "ftp://bad:4000"] } }"#);
+        assert!(!e.is_empty());
+        assert!(e[0].message.contains("ftp://bad"));
+    }
+
+    #[test]
+    fn valid_upstream_urls_no_errors() {
+        assert!(errs(r#"{ "proxy": "http://localhost:4000" }"#).is_empty());
+        assert!(errs(r#"{ "proxy": "https://api.example.com" }"#).is_empty());
+        assert!(errs(
+            r#"{ "proxy": { "/api": { "targets": ["http://b1:4000", "http://b2:4000"] } } }"#
+        )
+        .is_empty());
     }
 
     #[test]
