@@ -48,6 +48,15 @@
       "isBackground": true,
       "problemMatcher": []
     },
+    // Pre-launch helper used by "Demo: Debug Conduit" launch config.
+    // Builds Conduit AND starts the API server so F5 lands straight into debugging.
+    {
+      "label": "Demo: Build + API Server",
+      "dependsOn": ["cargo build", "Demo: API Server"],
+      "dependsOrder": "sequence",
+      "presentation": { "reveal": "silent" }
+    },
+
     // ── Build ────────────────────────────────────────────────────────────────
     {
       "label": "cargo build",
