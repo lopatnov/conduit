@@ -1,0 +1,18 @@
+# cargo-audit configuration
+# https://docs.rs/cargo-audit/latest/cargo_audit/
+
+[advisories]
+
+# RUSTSEC-2024-0437 — protobuf 2.28.0: uncontrolled recursion / crash
+#
+# Root cause: pingora-core 0.8.0 depends on prometheus 0.13.4, which in turn
+# requires protobuf ^2. The advisory fix requires protobuf >=3.7.2, but
+# prometheus 0.13.x uses the protobuf 2.x API exclusively. Our own direct
+# dependency (prometheus 0.14) already uses protobuf 3.7.2 (not vulnerable).
+#
+# Blocked by: Pingora upstream upgrading their prometheus dependency.
+# Tracking:   https://github.com/cloudflare/pingora/issues
+# Risk note:  crash is only reachable by parsing crafted protobuf binary data.
+#             Conduit never parses protobuf from untrusted sources — prometheus
+#             metrics are write-only output.
+ignore = ["RUSTSEC-2024-0437"]

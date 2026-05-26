@@ -44,6 +44,44 @@ Conduit ships Pingora **0.8** which contains all three fixes above.
 The custom `ConduitCacheKey` (host + scheme + path + query) is required by design —
 Pingora 0.8 removed the default cache key implementation to force explicit opt-in.
 
+## Known Unfixable Transitive Vulnerabilities
+
+These advisories affect transitive dependencies that Conduit cannot upgrade without waiting for
+an upstream project to update first. Each entry explains why it cannot be fixed and what the
+actual risk is.
+
+### RUSTSEC-2024-0437 — protobuf 2.28.0: Uncontrolled Recursion / Crash
+
+| Field | Value |
+|---|---|
+| Advisory | [RUSTSEC-2024-0437](https://rustsec.org/advisories/RUSTSEC-2024-0437) |
+| Affected crate | `protobuf 2.28.0` |
+| Fix requires | `protobuf ≥ 3.7.2` |
+| Status | **Acknowledged — cannot fix without upstream change** |
+| Tracked in | `.cargo/audit.toml` (`ignore = ["RUSTSEC-2024-0437"]`) |
+
+**Root cause chain:**
+
+```
+conduit → pingora-core 0.8.0 → prometheus 0.13.4 → protobuf ^2 (uses 2.x API)
+```
+
+`prometheus 0.13.x` uses the `protobuf 2.x` API exclusively and is incompatible with
+`protobuf 3.x`. Upgrading `protobuf` to ≥ 3.7.2 would require Pingora to upgrade their
+`prometheus` dependency to `0.14.x`, which is an upstream decision.
+
+**Why Conduit is not at risk:**
+
+The vulnerability allows a crash via uncontrolled recursion when **parsing crafted protobuf
+binary data**. Conduit never parses protobuf data from untrusted sources — `prometheus` is
+used exclusively as a write-only metrics output library. Prometheus text-format scraping
+does not involve protobuf parsing.
+
+**Our own direct `prometheus 0.14` dependency already uses `protobuf 3.7.2`** (not vulnerable).
+The vulnerable `protobuf 2.28.0` is only reachable through Pingora's own metrics code path.
+
+**Blocked by:** Pingora upstream upgrading `prometheus 0.13.4` → `0.14.x`.
+
 ## Security Design Decisions
 
 - **Admin API binds to loopback only** (`127.0.0.1:2019`) — never exposed to the network

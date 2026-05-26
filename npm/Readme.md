@@ -5,80 +5,144 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/lopatnov/conduit/blob/main/LICENSE)
 [![GitHub](https://img.shields.io/badge/source-GitHub-181717.svg)](https://github.com/lopatnov/conduit)
 
-> **High-performance reverse proxy and static file server** — one JSON file, one binary, zero dependencies.
+> **High-performance reverse proxy and static file server** — one JSON config, one binary, zero runtime dependencies.
 
-Built on [Cloudflare Pingora](https://github.com/cloudflare/pingora), distributed as a native Rust binary via npm for convenience.
+Built on [Cloudflare Pingora](https://github.com/cloudflare/pingora). Distributed as a native Rust binary via npm for convenience.
 
 ---
 
-## Installation
+## Getting Started
+
+**No installation needed:**
 
 ```bash
-# Try without installing (always latest)
-npx @lopatnov/conduit
+npx @lopatnov/conduit init    # interactive setup wizard
+npx @lopatnov/conduit         # start
+```
 
-# Install globally — then just type `conduit`
+**Or install globally** — then just type `conduit`:
+
+```bash
 npm install -g @lopatnov/conduit
 ```
 
-> **How it works:** The `postinstall` script downloads the correct pre-built native binary for your
-> platform from [GitHub Releases](https://github.com/lopatnov/conduit/releases).
-> No compilation required. The Node.js runtime is only needed for the `npx` / `npm install` step —
-> the server itself runs as a standalone native binary.
-
-To skip the automatic download (e.g. you built from source):
-
-```bash
-CONDUIT_SKIP_DOWNLOAD=1 npm install -g @lopatnov/conduit
-```
+> **How it works:** `postinstall` downloads the correct pre-built native binary for your platform from
+> [GitHub Releases](https://github.com/lopatnov/conduit/releases). No compilation. Node.js is only
+> needed for `npx` / `npm install` — the server runs as a standalone native binary.
 
 ---
 
-## Quick Start
+## Minimal Config
 
-```bash
-conduit init        # interactive setup wizard
-conduit             # start the server
-conduit validate    # validate config without starting
+Create `conduit.json`:
+
+```json
+{
+  "port": 3000,
+  "proxy": { "/api": "http://localhost:4000" }
+}
 ```
 
-Minimal `conduit.json` — serve static files and proxy an API:
+Run it:
+
+```bash
+conduit
+```
+
+Done. `GET /api/users` → `http://localhost:4000/api/users`.
+
+---
+
+## Common Recipes
+
+### Serve static files
+
+```json
+{
+  "port": 3000,
+  "static": "./dist"
+}
+```
+
+### Reverse proxy to a backend
+
+```json
+{
+  "port": 3000,
+  "proxy": "http://localhost:4000"
+}
+```
+
+### SPA + API (most common)
 
 ```json
 {
   "port": 3000,
   "static": "./dist",
-  "proxy": { "/api": "http://localhost:4000" }
+  "proxy": { "/api": "http://localhost:4000" },
+  "fallback": { "status": 200, "file": "./dist/index.html" }
 }
 ```
 
+### Dev server with hot reload
+
+```json
+{
+  "port": 3000,
+  "logging": "dev",
+  "hotReload": true,
+  "cors": true,
+  "static": "./src",
+  "proxy": { "/api": "http://localhost:4000" },
+  "fallback": { "status": 200, "file": "./src/index.html" }
+}
 ```
-GET /           → ./dist/index.html
-GET /style.css  → ./dist/style.css
-GET /api/users  → http://localhost:4000/api/users
+
+### Load-balanced backend with health checks
+
+```json
+{
+  "port": 8080,
+  "proxy": {
+    "/api": {
+      "targets": ["http://api1:4000", "http://api2:4000", "http://api3:4000"],
+      "strategy": "least-conn",
+      "healthCheck": { "path": "/health", "intervalSecs": 10 }
+    }
+  }
+}
 ```
 
----
+### Production SPA with Auto-TLS
 
-## Features
-
-| Feature | Description |
-| --- | --- |
-| **Static files** | ETag, Last-Modified, Range, gzip/brotli compression |
-| **Reverse proxy** | Round-robin, weighted, least-conn, IP-hash, consistent-hash |
-| **TLS** | Manual certs or Auto-TLS via Let's Encrypt (ACME) |
-| **HTTP/2** | ALPN negotiation, configurable streams |
-| **IP filtering** | CIDR allow/deny lists, trust X-Forwarded-For |
-| **Rate limiting** | Token-bucket, keyed by IP or header |
-| **Basic auth** | Per-site, with configurable skip-paths |
-| **CORS** | Preflight handling, origin allow-list |
-| **Security headers** | CSP, HSTS, X-Frame-Options, and more |
-| **Health check** | `/__health__` with upstream status |
-| **Prometheus metrics** | `/__metrics__` with request counters and histograms |
-| **Redirects** | Named params (`:slug`), status codes 301/302/307/308 |
-| **SPA fallback** | Serve `index.html` for unknown paths |
-| **Hot config reload** | `conduit reload` — no restart needed |
-| **Virtual hosting** | Multiple sites, one process |
+```json
+{
+  "port": 443,
+  "tls": { "acme": { "email": "admin@example.com" } },
+  "compression": true,
+  "securityHeaders": true,
+  "static": "./dist",
+  "staticOptions": { "maxAge": "7d", "preCompressed": true },
+  "proxy": {
+    "/api": {
+      "targets": ["http://api1:4000", "http://api2:4000"],
+      "strategy": "least-conn",
+      "stripPrefix": true,
+      "retry": { "attempts": 3, "conditions": ["connection_error", "5xx"] },
+      "cache": { "store": "memory", "ttlSecs": 60, "skipIfCookie": true }
+    }
+  },
+  "healthCheck": true,
+  "metrics": { "path": "/__metrics__", "token": "$METRICS_TOKEN" },
+  "rateLimit": { "windowSecs": 60, "limit": 200 },
+  "fallback": {
+    "byAccept": {
+      "html": { "status": 200, "file": "./dist/index.html" },
+      "json": { "status": 404, "body": { "error": "Not Found" } }
+    }
+  }
+}
+```
 
 ---
 
@@ -94,64 +158,55 @@ conduit validate            validate config (exit 0 = OK)
 conduit probe               HEAD each upstream, show latency
 conduit fmt [--write]       pretty-print config to stdout or file
 
-conduit reload              hot-reload config
-conduit status              server uptime and inflight requests
-conduit upstreams           upstream health and latency
+conduit reload              hot-reload config without restart
+conduit status              show uptime and inflight requests
+conduit upstreams           list upstream health and latency
 conduit shutdown            graceful shutdown
 ```
 
 ---
 
-## Configuration Example
+## Features
 
-```json
-{
-  "port": 443,
-  "tls": {
-    "acme": { "email": "admin@example.com" }
-  },
-  "http2": true,
-  "compression": true,
-  "securityHeaders": true,
-  "cors": { "origins": ["https://app.example.com"], "credentials": true },
-  "rateLimit": { "windowSecs": 60, "limit": 200 },
-  "static": "./dist",
-  "staticOptions": { "maxAge": "7d" },
-  "proxy": {
-    "/api": {
-      "targets": ["http://api1:4000", "http://api2:4000"],
-      "strategy": "least-conn",
-      "stripPrefix": true,
-      "retry": { "attempts": 3, "conditions": ["connection_error", "5xx"] }
-    }
-  },
-  "healthCheck": true,
-  "metrics": { "path": "/__metrics__", "token": "$METRICS_TOKEN" },
-  "fallback": {
-    "byAccept": {
-      "html": { "status": 200, "file": "./dist/index.html" },
-      "json": { "status": 404, "body": { "error": "Not Found" } }
-    }
-  }
-}
-```
-
-See the [full documentation](https://github.com/lopatnov/conduit#configuration) for all options.
+| Feature | Details |
+| --- | --- |
+| **Static files** | ETag, Last-Modified, Range, dotfile control |
+| **Compression** | gzip + brotli (async, streaming), pre-compressed `.br`/`.gz` |
+| **Reverse proxy** | Round-robin, weighted, random, least-conn, IP-hash, consistent-hash |
+| **Load balancing** | 7 strategies; upstream health checks; retry on failure |
+| **Auto-TLS** | Let's Encrypt via ACME — automatic issue and renewal |
+| **HTTP/2** | ALPN negotiation; H/2 upstream support |
+| **WebSocket** | Transparent proxying |
+| **Hot config reload** | `conduit reload` — zero-downtime, no restart |
+| **IP filtering** | CIDR allow/deny lists; trust X-Forwarded-For |
+| **Rate limiting** | Token-bucket, keyed by IP or header |
+| **Auth** | Basic auth + API key, per-route skip-paths |
+| **CORS** | Origin allow-list, credentials, preflight |
+| **Security headers** | CSP, HSTS, X-Frame-Options, Referrer-Policy |
+| **Proxy cache** | In-memory cache with TTL, Vary, skip-paths |
+| **Health check** | `/__health__` with optional upstream status |
+| **Prometheus** | `/__metrics__` — request counters, duration histograms |
+| **File upload** | `multipart/form-data` — UUID filenames, MIME validation |
+| **Redirects** | Named params (`:slug`), 301/302/307/308 |
+| **Routes** | Glob path + method + header + query predicates |
+| **Virtual hosting** | Multiple sites (`host` matching) in one process |
+| **SPA fallback** | Per-Accept-type fallback rules |
+| **Structured logging** | `dev`, `combined`, `json`, `short`, `common` formats |
 
 ---
 
 ## Supported Platforms
 
-| Platform | Architecture          |
-| -------- | --------------------- |
-| Linux    | x86-64 (glibc)        |
-| Linux    | x86-64 (musl/Docker)  |
-| Linux    | ARM64                 |
-| macOS    | Intel (x86-64)        |
-| macOS    | Apple Silicon (ARM64) |
-| Windows  | x86-64                |
+| Platform | Architecture |
+| --- | --- |
+| Linux | x86-64 (glibc) |
+| Linux | x86-64 (musl / Docker) |
+| Linux | ARM64 |
+| macOS | Intel (x86-64) |
+| macOS | Apple Silicon (ARM64) |
+| Windows | x86-64 |
 
-If your platform is not listed or the download fails, install from source:
+If your platform isn't listed or the download fails, install from source:
 
 ```bash
 cargo install lopatnov-conduit

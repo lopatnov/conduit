@@ -2,9 +2,13 @@
 
 > **These are design targets, not yet measured results.**
 >
-> Conduit is currently in active development (v0.3.x). The numbers below are the
-> performance goals the project is designed to reach. Real benchmark results will be
-> added here as development stabilises — contributions welcome.
+> Conduit is currently in active development (Phase 3.6 complete, working toward v0.3.0).
+> The numbers below are the performance goals the project is designed to reach.
+> Real benchmark results will be added here as development stabilises — contributions welcome.
+>
+> **What is fully implemented:** static file serving, reverse proxy, load balancing (7 strategies),
+> TLS + Auto-TLS, HTTP/2, WebSocket, proxy cache, rate limiting, auth, compression, CORS,
+> security headers, hot config reload, file upload, browser hot-reload, and advanced routing.
 
 ## Performance Targets
 
