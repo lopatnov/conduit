@@ -25,10 +25,12 @@ const products = [
 
 function send(res, statusCode, body) {
   const json = JSON.stringify(body, null, 2);
-  res.writeHead(statusCode, {
-    'Content-Type': 'application/json',
-    'Content-Length': Buffer.byteLength(json),
-  });
+  // Do NOT set Content-Length. Conduit may compress the response and
+  // rewrite the body length; an explicit upstream Content-Length would
+  // mismatch the compressed size and corrupt the response.
+  // Node automatically uses chunked transfer-encoding when no
+  // Content-Length is provided, which is correct here.
+  res.writeHead(statusCode, { 'Content-Type': 'application/json' });
   res.end(json);
 }
 

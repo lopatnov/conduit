@@ -25,4 +25,10 @@ target
 # npm — downloaded native binaries (vendored by CI, not committed)
 /npm/bin/native/
 
+# Demo — Playwright and Node dependencies
+/demo/node_modules/
+/demo/package-lock.json
+/demo/playwright-report/
+/demo/test-results/
+
 /coverage

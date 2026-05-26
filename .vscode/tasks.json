@@ -105,6 +105,33 @@
       },
       "presentation": { "reveal": "always" }
     },
+    // ── Demo tests ───────────────────────────────────────────────────────────
+    {
+      "label": "Demo: Install test deps",
+      "type": "shell",
+      "command": "npm install",
+      "options": { "cwd": "${workspaceFolder}/demo" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "new" }
+    },
+    {
+      "label": "Demo: Playwright tests",
+      "type": "shell",
+      "command": "npx playwright test",
+      "options": { "cwd": "${workspaceFolder}/demo" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "new" },
+      "group": { "kind": "test", "isDefault": false }
+    },
+    {
+      "label": "Demo: Playwright tests (UI mode)",
+      "type": "shell",
+      "command": "npx playwright test --ui",
+      "options": { "cwd": "${workspaceFolder}/demo" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "new" }
+    },
+
     // ── Conduit CLI ──────────────────────────────────────────────────────────
     {
       "label": "conduit: validate demo config",
