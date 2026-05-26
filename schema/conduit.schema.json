@@ -152,13 +152,23 @@
         "fallback": { "$ref": "#/$defs/FallbackConfig" },
         "middleware": {
           "type": "array",
+          "description": "Ordered middleware chain executed after built-in filters.",
           "items": {
             "type": "object",
             "required": ["type"],
             "properties": {
-              "type":   { "type": "string" },
-              "config": {},
-              "path":   { "type": "string" }
+              "type": {
+                "type": "string",
+                "enum": ["script", "ipFilter", "rateLimit", "auth", "headers"],
+                "description": "Middleware type. Use \"script\" for Rhai scripts (Phase 4)."
+              },
+              "config": {
+                "description": "Type-specific configuration object (used by built-in types)."
+              },
+              "path": {
+                "type": "string",
+                "description": "Path to the Rhai script file. Required when type is \"script\"."
+              }
             }
           }
         }

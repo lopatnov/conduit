@@ -81,7 +81,7 @@ http      = "1"
 base64    = "0.22"
 
 # Phase 4: Rhai scripting middleware
-# rhai = "1"
+rhai = { version = "1", features = ["sync"] }
 
 [dev-dependencies]
 reqwest     = { version = "0.12", default-features = false, features = ["http2", "rustls-tls", "blocking", "json", "multipart"] }

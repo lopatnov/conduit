@@ -8,4 +8,5 @@ pub mod logging;
 pub mod rate_limit;
 pub mod redirects;
 pub mod response_time;
+pub mod script;
 pub mod security_headers;

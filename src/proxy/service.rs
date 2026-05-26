@@ -17,12 +17,12 @@ use prometheus::{CounterVec, HistogramVec};
 
 use crate::config::schema::{
     ApiKeyConfig, AppConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig, HealthCheckConfig,
-    IpFilterConfig, LimitsConfig, ProxyTimeout, RateLimitConfig,
+    IpFilterConfig, LimitsConfig, MiddlewareEntry, ProxyTimeout, RateLimitConfig,
 };
 use crate::filter::rate_limit::RateLimiter;
 use crate::filter::{
     auth, compression, cors, ip_filter, limits, logging, rate_limit, redirects, response_time,
-    security_headers,
+    script, security_headers,
 };
 use crate::handler::{
     acme_challenge as acme_handler, fallback, health, hot_reload as hot_reload_handler,
@@ -174,6 +174,11 @@ impl ConduitProxy {
             security_cfg,
             redirect_result,
             custom_headers,
+            middleware,
+            script_method,
+            script_path_str,
+            script_query,
+            script_headers,
         ) = {
             let config = self.state.config.load();
             let host = extract_host(session);
@@ -193,6 +198,16 @@ impl ConduitProxy {
 
             let method = session.req_header().method.as_str().to_owned();
             let query = session.req_header().uri.query().map(str::to_owned);
+
+            // Collect request headers for Rhai scripts (lower-cased keys).
+            let req_headers_for_script: std::collections::HashMap<String, String> = session
+                .req_header()
+                .headers
+                .iter()
+                .filter_map(|(k, v)| {
+                    v.to_str().ok().map(|vs| (k.as_str().to_ascii_lowercase(), vs.to_owned()))
+                })
+                .collect();
 
             let req_ctx = router::route_request(
                 &config,
@@ -223,6 +238,11 @@ impl ConduitProxy {
                 .and_then(|s| s.headers.as_ref())
                 .map(|h| h.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 .unwrap_or_default();
+            // Middleware chain entries for this site.
+            let middleware: Vec<MiddlewareEntry> = site
+                .and_then(|s| s.middleware.as_ref())
+                .map(|m| m.clone())
+                .unwrap_or_default();
 
             (
                 req_ctx,
@@ -235,6 +255,11 @@ impl ConduitProxy {
                 security_cfg,
                 redirect_result,
                 custom_headers,
+                middleware,
+                method,
+                path,
+                query.unwrap_or_default(),
+                req_headers_for_script,
             )
         };
 
@@ -270,7 +295,7 @@ impl ConduitProxy {
 
         let handler_kind = handler_kind_of(&req_ctx.upstream);
 
-        // ── Guard filters (ip, cors, limits, auth, redirects) ─────────────────
+        // ── Guard filters (ip, cors, limits, auth, redirects, scripts) ──────────
         let guards = GuardCtx {
             ip_cfg,
             limits_cfg,
@@ -279,11 +304,16 @@ impl ConduitProxy {
             api_key_cfg,
             cors_cfg,
             redirect_result,
+            middleware,
             handler_kind: handler_kind.clone(),
             is_preflight: is_cors_preflight,
             sec_only,
             origin: request_origin,
             extra_headers: req_ctx.extra_headers.clone(),
+            script_method,
+            script_path: script_path_str,
+            script_query,
+            script_headers,
         };
         if self.run_guard_filters(session, guards).await? {
             return Ok(true);
@@ -357,6 +387,45 @@ impl ConduitProxy {
             response::write_redirect(session, status, &location, &guards.extra_headers).await?;
             self.state.inflight.fetch_sub(1, Ordering::Relaxed);
             return Ok(true);
+        }
+
+        // 7. Rhai script middleware — type: "script" entries from site.middleware.
+        for entry in &guards.middleware {
+            if entry.r#type != "script" {
+                continue;
+            }
+            let Some(ref script_path) = entry.path else {
+                continue;
+            };
+            match script::run_script(
+                script_path,
+                &guards.script_path,
+                &guards.script_method,
+                &guards.script_query,
+                guards.script_headers.clone(),
+            ) {
+                script::ScriptOutcome::Continue => {}
+                script::ScriptOutcome::Abort {
+                    status,
+                    body,
+                    extra_headers,
+                } => {
+                    // Merge the script's extra headers with the standard extra
+                    // headers (CORS, security, custom) so both sets are sent.
+                    let mut all_headers = guards.extra_headers.clone();
+                    all_headers.extend(extra_headers);
+                    response::write_response(
+                        session,
+                        status,
+                        "text/plain",
+                        Bytes::from(body),
+                        &all_headers,
+                    )
+                    .await?;
+                    self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                    return Ok(true);
+                }
+            }
         }
 
         Ok(false)
@@ -1151,11 +1220,19 @@ struct GuardCtx {
     api_key_cfg: Option<ApiKeyConfig>,
     cors_cfg: Option<CorsConfig>,
     redirect_result: Option<(String, u16)>,
+    /// Middleware chain entries — Rhai `type: "script"` entries are executed
+    /// after the built-in filters and redirects.
+    middleware: Vec<MiddlewareEntry>,
     handler_kind: HandlerKind,
     is_preflight: bool,
     sec_only: Vec<(String, String)>,
     origin: Option<String>,
     extra_headers: Vec<(String, String)>,
+    /// Request info forwarded to Rhai scripts (method, path, query, headers).
+    script_method: String,
+    script_path: String,
+    script_query: String,
+    script_headers: std::collections::HashMap<String, String>,
 }
 
 /// Classify a request's upstream target into a `HandlerKind` for filter routing.

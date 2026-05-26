@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use crate::config::schema::{
-    AppConfig, FallbackConfig, IpFilterConfig, LoadBalanceStrategy, MetricsConfig, ProxyConfig,
-    ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig, RedirectRule, RewriteRule,
-    SiteConfig, TlsConfig, UploadConfig,
+    AppConfig, FallbackConfig, IpFilterConfig, LoadBalanceStrategy, MetricsConfig,
+    MiddlewareEntry, ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig,
+    RedirectRule, RewriteRule, SiteConfig, TlsConfig, UploadConfig,
 };
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -110,6 +110,40 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
     }
     if let Some(fb) = &site.fallback {
         validate_fallback(fb, prefix, errors);
+    }
+    if let Some(middleware) = &site.middleware {
+        validate_middleware(middleware, prefix, errors);
+    }
+}
+
+fn validate_middleware(
+    entries: &[MiddlewareEntry],
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    for (i, entry) in entries.iter().enumerate() {
+        let entry_prefix = format!("{prefix}.middleware[{i}]");
+        match entry.r#type.as_str() {
+            "script" => {
+                // A script entry must supply the `path` field.
+                if entry.path.is_none() {
+                    errors.push(ValidationError::new(
+                        format!("{entry_prefix}.path"),
+                        "middleware type \"script\" requires a \"path\" field",
+                    ));
+                }
+            }
+            "ipFilter" | "rateLimit" | "auth" | "headers" => {
+                // Built-in types — currently executed via top-level config fields;
+                // listed here so the validator accepts them without error.
+            }
+            other => {
+                errors.push(ValidationError::new(
+                    format!("{entry_prefix}.type"),
+                    format!("unknown middleware type \"{other}\""),
+                ));
+            }
+        }
     }
 }
 
@@ -762,5 +796,56 @@ mod tests {
             }"#,
         );
         assert!(!e.is_empty(), "invalid regex in routes array must be caught");
+    }
+
+    // ── middleware validation ─────────────────────────────────────────────────
+
+    #[test]
+    fn middleware_script_without_path_is_invalid() {
+        let e = errs(r#"{ "middleware": [{ "type": "script" }] }"#);
+        assert!(!e.is_empty(), "script entry without path must be rejected");
+        assert!(
+            e[0].message.contains("path"),
+            "error must mention missing path, got: {}",
+            e[0].message
+        );
+    }
+
+    #[test]
+    fn middleware_script_with_path_is_valid() {
+        assert!(
+            errs(r#"{ "middleware": [{ "type": "script", "path": "./my.rhai" }] }"#).is_empty()
+        );
+    }
+
+    #[test]
+    fn middleware_builtin_type_is_valid() {
+        assert!(errs(r#"{ "middleware": [{ "type": "ipFilter" }] }"#).is_empty());
+        assert!(errs(r#"{ "middleware": [{ "type": "rateLimit" }] }"#).is_empty());
+        assert!(errs(r#"{ "middleware": [{ "type": "auth" }] }"#).is_empty());
+        assert!(errs(r#"{ "middleware": [{ "type": "headers" }] }"#).is_empty());
+    }
+
+    #[test]
+    fn middleware_unknown_type_is_invalid() {
+        let e = errs(r#"{ "middleware": [{ "type": "magic" }] }"#);
+        assert!(!e.is_empty(), "unknown middleware type must be rejected");
+        assert!(
+            e[0].message.contains("unknown middleware type"),
+            "got: {}",
+            e[0].message
+        );
+    }
+
+    #[test]
+    fn middleware_mixed_entries_validated() {
+        // Script with path + script without path: one error expected.
+        let e = errs(
+            r#"{ "middleware": [
+                { "type": "script", "path": "./ok.rhai" },
+                { "type": "script" }
+            ] }"#,
+        );
+        assert_eq!(e.len(), 1, "exactly one script entry is missing path");
     }
 }
