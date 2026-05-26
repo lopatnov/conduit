@@ -2,14 +2,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use dashmap::DashMap;
 use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, LetsEncrypt,
-    NewAccount, NewOrder, OrderStatus,
+    NewAccount, NewOrder, RetryPolicy,
 };
-use rcgen::{CertificateParams, DistinguishedName, KeyPair, PKCS_ECDSA_P256_SHA256};
-use tokio::net::TcpListener;
 
 use crate::config::schema::AcmeConfig;
 
@@ -106,14 +104,14 @@ async fn obtain_certificate(
     let directory_url = acme_cfg
         .directory
         .as_deref()
-        .unwrap_or_else(|| LetsEncrypt::Production.url());
+        .unwrap_or_else(|| LetsEncrypt::Production.url())
+        .to_owned();
 
-    let account = load_or_create_account(acme_cfg, directory_url).await?;
+    let account = load_or_create_account(acme_cfg, &directory_url).await?;
 
+    let identifiers = [Identifier::Dns(domain.to_string())];
     let mut order = account
-        .new_order(&NewOrder {
-            identifiers: &[Identifier::Dns(domain.to_string())],
-        })
+        .new_order(&NewOrder::new(&identifiers))
         .await
         .context("ACME new-order request failed")?;
 
@@ -125,88 +123,53 @@ async fn obtain_certificate(
     }
 
     // Populate challenge tokens and notify the CA to begin validation.
-    let authorizations = order
-        .authorizations()
-        .await
-        .context("ACME authorizations fetch failed")?;
+    let mut authorizations = order.authorizations();
+    while let Some(authz_result) = authorizations.next().await {
+        let mut authz = authz_result.context("ACME authorizations fetch failed")?;
 
-    for authz in &authorizations {
         if authz.status == AuthorizationStatus::Valid {
             continue; // already validated from a previous attempt
         }
-        let challenge = authz
-            .challenges
-            .iter()
-            .find(|c| c.r#type == ChallengeType::Http01)
+
+        let mut challenge_handle = authz
+            .challenge(ChallengeType::Http01)
             .ok_or_else(|| anyhow::anyhow!("no HTTP-01 challenge available for domain {domain}"))?;
 
-        let key_auth = order.key_authorization(challenge);
-        challenges.insert(challenge.token.clone(), key_auth.as_str().to_owned());
+        let key_auth = challenge_handle.key_authorization();
+        let token = challenge_handle.token.clone();
+        challenges.insert(token, key_auth.as_str().to_owned());
 
-        order
-            .set_challenge_ready(&challenge.url)
+        challenge_handle
+            .set_ready()
             .await
             .context("set_challenge_ready failed")?;
     }
 
-    // Poll the order until it reaches Ready or Valid (CA has validated all challenges).
-    let mut attempts: u32 = 0;
-    loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let state = order.refresh().await.context("ACME order refresh failed")?;
-        match state.status {
-            OrderStatus::Ready | OrderStatus::Valid => break,
-            OrderStatus::Processing | OrderStatus::Pending => {}
-            s => bail!("unexpected ACME order status: {s:?}"),
-        }
-        attempts += 1;
-        if attempts > 60 {
-            bail!("ACME order timed out after 120 seconds");
-        }
-    }
+    // Poll the order until all challenges are validated and the order is ready.
+    let retry = RetryPolicy::default();
+    order
+        .poll_ready(&retry)
+        .await
+        .context("ACME order timed out waiting for challenge validation")?;
 
-    // Shut down the challenge server (best effort — errors are non-fatal).
+    // Shut down the temporary challenge server (best effort — errors are non-fatal).
     let _ = stop_tx.send(());
 
-    // Remove challenge tokens from the shared store.
-    for authz in &authorizations {
-        if let Some(ch) = authz
-            .challenges
-            .iter()
-            .find(|c| c.r#type == ChallengeType::Http01)
-        {
-            challenges.remove(&ch.token);
-        }
-    }
+    // Clear challenge tokens from the shared store.
+    challenges.clear();
 
-    // Generate a fresh key-pair and CSR, then finalize the order.
-    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
-        .context("ECDSA key-pair generation failed")?;
-    let mut params =
-        CertificateParams::new(vec![domain.to_string()]).context("CertificateParams failed")?;
-    params.distinguished_name = DistinguishedName::new();
-    let csr = params
-        .serialize_request(&key_pair)
-        .context("CSR serialization failed")?;
+    // Finalize the order: instant-acme generates a fresh ECDSA key-pair and CSR
+    // internally (via the `rcgen` feature), then sends the CSR to the CA.
+    // Returns the private key as PEM.
+    let key_pem = order.finalize().await.context("ACME finalize failed")?;
 
-    order
-        .finalize(csr.der())
+    // Retrieve the issued certificate chain (polls until the CA makes it available).
+    let cert_chain_pem = order
+        .poll_certificate(&retry)
         .await
-        .context("ACME finalize failed")?;
+        .context("ACME certificate fetch failed")?;
 
-    // Retrieve the issued certificate chain (poll until available).
-    let cert_chain_pem = loop {
-        match order
-            .certificate()
-            .await
-            .context("ACME certificate fetch failed")?
-        {
-            Some(chain) => break chain,
-            None => tokio::time::sleep(Duration::from_secs(1)).await,
-        }
-    };
-
-    Ok((cert_chain_pem, key_pair.serialize_pem()))
+    Ok((cert_chain_pem, key_pem))
 }
 
 /// Load a persisted ACME account from `storage_dir/acme_account.json`, or
@@ -223,24 +186,28 @@ async fn load_or_create_account(
             .with_context(|| format!("reading ACME credentials from {creds_path:?}"))?;
         let creds: AccountCredentials = serde_json::from_str(&json)
             .with_context(|| format!("parsing ACME credentials in {creds_path:?}"))?;
-        let account = Account::from_credentials(creds)
+        let account = Account::builder()
+            .context("failed to create ACME HTTP client")?
+            .from_credentials(creds)
             .await
             .context("restoring ACME account from credentials failed")?;
         tracing::debug!("ACME account restored from {creds_path:?}");
         return Ok(account);
     }
 
-    let (account, credentials) = Account::create(
-        &NewAccount {
-            contact: &[&format!("mailto:{}", acme_cfg.email)],
-            terms_of_service_agreed: true,
-            only_return_existing: false,
-        },
-        directory_url,
-        None,
-    )
-    .await
-    .context("ACME account creation failed")?;
+    let (account, credentials) = Account::builder()
+        .context("failed to create ACME HTTP client")?
+        .create(
+            &NewAccount {
+                contact: &[&format!("mailto:{}", acme_cfg.email)],
+                terms_of_service_agreed: true,
+                only_return_existing: false,
+            },
+            directory_url.to_owned(),
+            None,
+        )
+        .await
+        .context("ACME account creation failed")?;
 
     std::fs::create_dir_all(storage)?;
     let json = serde_json::to_string_pretty(&credentials)?;
@@ -265,6 +232,7 @@ async fn run_challenge_server(
     use axum::response::IntoResponse;
     use axum::routing::get;
     use axum::Router;
+    use tokio::net::TcpListener;
 
     async fn challenge_handler(
         Path(token): Path<String>,

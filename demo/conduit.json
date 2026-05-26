@@ -1,0 +1,48 @@
+{
+  "port": 8080,
+  "logging": "dev",
+  "cors": true,
+  "compression": true,
+  "securityHeaders": true,
+  "responseTime": true,
+  "headers": {
+    "X-Powered-By": "Conduit"
+  },
+  "static": "./demo/dist",
+  "staticOptions": {
+    "etag": true,
+    "lastModified": true
+  },
+  "proxy": {
+    "/api": {
+      "targets": ["http://localhost:4000"],
+      "stripPrefix": true,
+      "retry": {
+        "attempts": 2,
+        "conditions": ["connection_error"]
+      }
+    }
+  },
+  "redirects": [
+    { "from": "/old-page", "to": "/", "status": 301 }
+  ],
+  "rateLimit": {
+    "windowSecs": 60,
+    "limit": 300,
+    "skipPaths": ["/__health__", "/__metrics__"]
+  },
+  "healthCheck": {
+    "path": "/__health__",
+    "includeUpstreams": true
+  },
+  "metrics": {
+    "path": "/__metrics__"
+  },
+  "fallback": {
+    "byAccept": {
+      "html": { "status": 200, "file": "./demo/dist/index.html" },
+      "json": { "status": 404, "body": { "error": "Not Found" } },
+      "*":    { "status": 200, "file": "./demo/dist/index.html" }
+    }
+  }
+}

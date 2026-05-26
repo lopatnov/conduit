@@ -1,7 +1,16 @@
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "conduit", about = "High-performance reverse proxy", version)]
+#[command(
+    name = "conduit",
+    about = "High-performance reverse proxy and static file server",
+    long_about = "High-performance reverse proxy and static file server built on Cloudflare Pingora.\n\
+                  \n\
+                  Created by Oleksandr Lopatnov\n\
+                  \u{2022} GitHub:   https://github.com/lopatnov\n\
+                  \u{2022} LinkedIn: https://linkedin.com/in/lopatnov",
+    version
+)]
 pub struct Cli {
     /// Config file path
     #[arg(

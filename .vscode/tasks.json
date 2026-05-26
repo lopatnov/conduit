@@ -1,17 +1,91 @@
 {
-	"version": "2.0.0",
-	"tasks": [
-		{
-            "label": "cargo build",
-            "type": "shell",
-            "command": "cargo",
-            "args": [
-                "build"
-            ],
-            "problemMatcher": "$rustc",
-            "presentation": {
-                "reveal": "always"
-            }
+  "version": "2.0.0",
+  "tasks": [
+    // ── Demo ────────────────────────────────────────────────────────────────
+    {
+      "label": "Demo: Start (Conduit + API)",
+      "dependsOn": ["Demo: API Server", "Demo: Conduit Server"],
+      "dependsOrder": "parallel",
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Demo: API Server",
+      "type": "shell",
+      "command": "node demo/api/server.js",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "group": "demo"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": { "regexp": "." },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "\\[demo-api\\]",
+          "endsPattern": "Listening on"
         }
-	]
+      }
+    },
+    {
+      "label": "Demo: Conduit Server",
+      "type": "shell",
+      "command": "cargo run --release -- -c demo/conduit.json",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "group": "demo"
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    // ── Build ────────────────────────────────────────────────────────────────
+    {
+      "label": "cargo build",
+      "type": "shell",
+      "command": "cargo build",
+      "problemMatcher": "$rustc",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": { "reveal": "always" }
+    },
+    {
+      "label": "cargo build --release",
+      "type": "shell",
+      "command": "cargo build --release",
+      "problemMatcher": "$rustc",
+      "presentation": { "reveal": "always" }
+    },
+    // ── Test ─────────────────────────────────────────────────────────────────
+    {
+      "label": "cargo test",
+      "type": "shell",
+      "command": "cargo test",
+      "problemMatcher": "$rustc",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "presentation": { "reveal": "always" }
+    },
+    // ── Conduit CLI ──────────────────────────────────────────────────────────
+    {
+      "label": "conduit: validate demo config",
+      "type": "shell",
+      "command": "cargo run -- validate -c demo/conduit.json",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always" }
+    }
+  ]
 }

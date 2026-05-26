@@ -7,12 +7,14 @@
 
 **High-performance reverse proxy and static file server** built on [Cloudflare Pingora](https://github.com/cloudflare/pingora).
 
-- One JSON file describes your entire server — no DSL, no YAML, no Caddyfile
-- Serves static files, proxies to backends, terminates TLS, and load-balances — all in one binary
-- Drop-in replacement for `express-reverse-proxy` with a fraction of the memory and latency
+Serves static files, proxies to backends, terminates TLS, and load-balances — configured with a single JSON file and packaged as a single binary with no runtime dependencies.
 
 ```bash
-npx @lopatnov/conduit        # run without installing
+# Try it immediately — no installation needed
+npx @lopatnov/conduit
+
+# Or install globally
+npm install -g @lopatnov/conduit
 cargo install lopatnov-conduit
 ```
 
@@ -82,9 +84,32 @@ GET /api/users   → proxied to http://localhost:4000/api/users
 
 ---
 
+## Live Demo
+
+The repository includes a self-contained demo with a web UI and a mock API server:
+
+```bash
+# Terminal 1 — mock API
+node demo/api/server.js
+
+# Terminal 2 — Conduit
+conduit -c demo/conduit.json
+```
+
+Then open **http://localhost:8080** in your browser.
+
+**VS Code users:** run the _"Demo: Start (Conduit + API)"_ task (`Terminal → Run Task…`)
+to launch both processes at once.
+
+See [`demo/README.md`](demo/README.md) for details.
+
+---
+
 ## Installation
 
-### npx — no install required
+### Option 1 — npx (no installation, always latest)
+
+Run directly without installing anything:
 
 ```bash
 npx @lopatnov/conduit
@@ -92,20 +117,24 @@ npx @lopatnov/conduit -c my-config.json
 npx @lopatnov/conduit validate
 ```
 
-### npm — global install
+### Option 2 — npm global install
+
+Install once, run anywhere as `conduit`:
 
 ```bash
 npm install -g @lopatnov/conduit
 conduit
+conduit -c my-config.json
+conduit validate
 ```
 
-### Cargo
+### Option 3 — Cargo
 
 ```bash
 cargo install lopatnov-conduit
 ```
 
-### Pre-built binaries
+### Option 4 — Pre-built binaries
 
 Download from [GitHub Releases](https://github.com/lopatnov/conduit/releases):
 

@@ -1,6 +1,6 @@
 [package]
 name        = "lopatnov-conduit"
-version     = "0.2.0"
+version     = "0.3.0"
 edition     = "2021"
 description = "High-performance reverse proxy and file server built on Cloudflare Pingora"
 license     = "Apache-2.0"
@@ -33,8 +33,8 @@ humantime           = "2"
 
 # --- CLI ---
 clap        = { version = "4", features = ["derive", "env"] }
-dialoguer   = "0.11"
-indicatif   = "0.17"
+dialoguer   = "0.12"
+indicatif   = "0.18"
 async-trait = "0.1"
 
 # --- Pingora HTTP types ---
@@ -42,7 +42,7 @@ pingora-http = "0.8"
 
 # --- Async runtime & HTTP ---
 tokio = { version = "1", features = ["full"] }
-axum  = "0.8"
+axum  = { version = "0.8", features = ["multipart"] }
 
 # --- Compression ---
 async-compression = { version = "0.4", features = ["gzip", "brotli", "deflate", "tokio"] }
@@ -50,7 +50,7 @@ async-compression = { version = "0.4", features = ["gzip", "brotli", "deflate", 
 # --- Observability ---
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-prometheus         = "0.13"
+prometheus         = "0.14"
 
 # --- Performance & state ---
 arc-swap = "1"
@@ -58,14 +58,14 @@ dashmap  = "6"  # v7 is RC as of 2026-05 — upgrade after stable release
 
 # --- Functionality ---
 mime_guess = "2"
-notify     = "7"
+notify     = "8"
 regex      = "1"
 multer     = "3"
 uuid       = { version = "1", features = ["v4"] }
 
 # --- TLS / ACME ---
-instant-acme = "0.7"
-rcgen        = "0.13"
+instant-acme = { version = "0.8", features = ["rcgen"] }
+rcgen        = "0.14"
 x509-parser  = "0.16"
 # ring is the crypto provider for rustls; needed to install before TLS starts.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
@@ -83,7 +83,7 @@ base64    = "0.22"
 
 [dev-dependencies]
 reqwest     = { version = "0.12", default-features = false, features = ["http2", "rustls-tls", "blocking", "json"] }
-criterion   = { version = "0.5", features = ["html_reports"] }
+criterion   = { version = "0.8", features = ["html_reports"] }
 tempfile    = "3"
 serial_test = "3"
 
