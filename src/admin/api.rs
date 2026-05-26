@@ -286,98 +286,119 @@ async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
             (None, None) => "*".to_string(),
         };
 
-        let Some(proxy_cfg) = &site.proxy else {
-            continue;
-        };
+        // Collect proxy targets from both top-level `proxy` and `routes` array.
+        // Each entry is (match_path, route_target).
+        let mut proxy_entries: Vec<(String, &ProxyRouteTarget)> = Vec::new();
 
-        match proxy_cfg {
-            ProxyConfig::Single(url) => {
-                let mut h = health_of(url);
-                h["url"] = json!(url);
-                routes.push(json!({
-                    "site":     site_label,
-                    "path":     "/",
-                    "strategy": "round-robin",
-                    "targets":  [h],
-                }));
+        if let Some(proxy_cfg) = &site.proxy {
+            match proxy_cfg {
+                ProxyConfig::Single(url) => {
+                    // Wrap the single URL as a Url variant and push directly.
+                    let mut h = health_of(url);
+                    h["url"] = json!(url);
+                    routes.push(json!({
+                        "site":     site_label.clone(),
+                        "path":     "/",
+                        "strategy": "round-robin",
+                        "targets":  [h],
+                    }));
+                }
+                ProxyConfig::Routes(route_map) => {
+                    for (path, rt) in route_map {
+                        proxy_entries.push((path.clone(), rt));
+                    }
+                }
             }
-            ProxyConfig::Routes(route_map) => {
-                for (path, route_target) in route_map {
-                    let (strategy_str, targets): (&str, Vec<Value>) = match route_target {
-                        ProxyRouteTarget::Url(url) => {
-                            let mut h = health_of(url);
-                            h["url"] = json!(url);
-                            h["weight"] = json!(1u32);
-                            ("round-robin", vec![h])
-                        }
-                        ProxyRouteTarget::RoundRobin(urls) => {
-                            let tgts = urls
-                                .iter()
-                                .map(|url| {
-                                    let mut h = health_of(url);
-                                    h["url"] = json!(url);
-                                    h["weight"] = json!(1u32);
-                                    h
-                                })
-                                .collect();
-                            ("round-robin", tgts)
-                        }
-                        ProxyRouteTarget::Full(cfg) => {
-                            let strat = match cfg.strategy.as_ref().unwrap_or(&LoadBalanceStrategy::RoundRobin) {
-                                LoadBalanceStrategy::RoundRobin        => "round-robin",
-                                LoadBalanceStrategy::WeightedRoundRobin => "weighted-round-robin",
-                                LoadBalanceStrategy::Random            => "random",
-                                LoadBalanceStrategy::LeastConn         => "least-conn",
-                                LoadBalanceStrategy::LeastResponseTime => "least-response-time",
-                                LoadBalanceStrategy::IpHash            => "ip-hash",
-                                LoadBalanceStrategy::ConsistentHash    => "consistent-hash",
-                            };
-                            let tgts = cfg
-                                .targets
-                                .iter()
-                                .map(|t| {
-                                    let (url, weight) = match t {
-                                        ProxyTarget::Simple(u)    => (u.as_str(), 1u32),
-                                        ProxyTarget::Weighted(w)  => (w.url.as_str(), w.weight),
-                                    };
-                                    let mut h = health_of(url);
-                                    h["url"]    = json!(url);
-                                    h["weight"] = json!(weight);
-                                    h
-                                })
-                                .collect();
-                            (strat, tgts)
-                        }
-                    };
+        }
 
-                    // Also include any runtime overrides for this route.
-                    let override_targets: Vec<Value> = registry
-                        .get_override_targets(path)
-                        .unwrap_or_default()
+        // Also collect proxy targets from the `routes` array (Phase 3.6).
+        if let Some(route_list) = &site.routes {
+            for rc in route_list {
+                if let Some(rt) = &rc.proxy {
+                    let path = rc
+                        .r#match
+                        .path
+                        .clone()
+                        .unwrap_or_else(|| "/**".to_string());
+                    proxy_entries.push((path, rt));
+                }
+            }
+        }
+
+        for (path, route_target) in &proxy_entries {
+            let (strategy_str, targets): (&str, Vec<Value>) = match route_target {
+                ProxyRouteTarget::Url(url) => {
+                    let mut h = health_of(url);
+                    h["url"]    = json!(url);
+                    h["weight"] = json!(1u32);
+                    ("round-robin", vec![h])
+                }
+                ProxyRouteTarget::RoundRobin(urls) => {
+                    let tgts = urls
                         .iter()
-                        .map(|(url, weight)| {
+                        .map(|url| {
                             let mut h = health_of(url);
-                            h["url"]     = json!(url);
-                            h["weight"]  = json!(weight);
-                            h["runtime"] = json!(true);
+                            h["url"]    = json!(url);
+                            h["weight"] = json!(1u32);
                             h
                         })
                         .collect();
-
-                    let all_targets: Vec<Value> = if override_targets.is_empty() {
-                        targets
-                    } else {
-                        override_targets
-                    };
-
-                    routes.push(json!({
-                        "site":     site_label,
-                        "path":     path,
-                        "strategy": strategy_str,
-                        "targets":  all_targets,
-                    }));
+                    ("round-robin", tgts)
                 }
-            }
+                ProxyRouteTarget::Full(cfg) => {
+                    let strat = match cfg.strategy.as_ref().unwrap_or(&LoadBalanceStrategy::RoundRobin) {
+                        LoadBalanceStrategy::RoundRobin         => "round-robin",
+                        LoadBalanceStrategy::WeightedRoundRobin => "weighted-round-robin",
+                        LoadBalanceStrategy::Random             => "random",
+                        LoadBalanceStrategy::LeastConn          => "least-conn",
+                        LoadBalanceStrategy::LeastResponseTime  => "least-response-time",
+                        LoadBalanceStrategy::IpHash             => "ip-hash",
+                        LoadBalanceStrategy::ConsistentHash     => "consistent-hash",
+                    };
+                    let tgts = cfg
+                        .targets
+                        .iter()
+                        .map(|t| {
+                            let (url, weight) = match t {
+                                ProxyTarget::Simple(u)   => (u.as_str(), 1u32),
+                                ProxyTarget::Weighted(w) => (w.url.as_str(), w.weight),
+                            };
+                            let mut h = health_of(url);
+                            h["url"]    = json!(url);
+                            h["weight"] = json!(weight);
+                            h
+                        })
+                        .collect();
+                    (strat, tgts)
+                }
+            };
+
+            // Include any runtime overrides for this route.
+            let override_targets: Vec<Value> = registry
+                .get_override_targets(path)
+                .unwrap_or_default()
+                .iter()
+                .map(|(url, weight)| {
+                    let mut h = health_of(url);
+                    h["url"]     = json!(url);
+                    h["weight"]  = json!(weight);
+                    h["runtime"] = json!(true);
+                    h
+                })
+                .collect();
+
+            let all_targets: Vec<Value> = if override_targets.is_empty() {
+                targets
+            } else {
+                override_targets
+            };
+
+            routes.push(json!({
+                "site":     site_label.clone(),
+                "path":     path,
+                "strategy": strategy_str,
+                "targets":  all_targets,
+            }));
         }
     }
 

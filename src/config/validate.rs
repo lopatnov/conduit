@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use crate::config::schema::{
     AppConfig, FallbackConfig, LoadBalanceStrategy, ProxyConfig, ProxyRouteConfig,
-    ProxyRouteTarget, ProxyTarget, RateLimitConfig, RedirectRule, SiteConfig, TlsConfig,
+    ProxyRouteTarget, ProxyTarget, RateLimitConfig, RedirectRule, RewriteRule, SiteConfig,
+    TlsConfig,
 };
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -220,6 +221,27 @@ fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<
                 format!("{prefix}.targets"),
                 "Strategy 'weighted-round-robin' requires weighted targets: \
                  { \"url\": \"...\", \"weight\": N }",
+            ));
+        }
+    }
+
+    // Validate rewrite rule regexes at config-load time so bad patterns are
+    // caught by `conduit validate` rather than silently failing at request time.
+    if let Some(rules) = &cfg.rewrite {
+        validate_rewrite_rules(rules, prefix, errors);
+    }
+}
+
+fn validate_rewrite_rules(
+    rules: &[RewriteRule],
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    for (i, rule) in rules.iter().enumerate() {
+        if let Err(e) = regex::Regex::new(&rule.from) {
+            errors.push(ValidationError::new(
+                format!("{prefix}.rewrite[{i}].from"),
+                format!("Invalid regex '{}': {e}", rule.from),
             ));
         }
     }
@@ -461,6 +483,45 @@ mod tests {
             )
             .is_empty(),
             "groups without top-level targets must be valid"
+        );
+    }
+
+    #[test]
+    fn invalid_rewrite_regex_detected() {
+        let e = errs(
+            r#"{
+                "proxy": {
+                    "/api": {
+                        "targets": ["http://b:4000"],
+                        "rewrite": [{ "from": "(unclosed", "to": "/" }]
+                    }
+                }
+            }"#,
+        );
+        assert!(!e.is_empty(), "invalid regex must be caught");
+        assert!(
+            e[0].path.contains("rewrite"),
+            "error path must reference rewrite field, got: {}",
+            e[0].path
+        );
+    }
+
+    #[test]
+    fn valid_rewrite_rules_no_errors() {
+        assert!(
+            errs(
+                r#"{
+                    "proxy": {
+                        "/api": {
+                            "targets": ["http://b:4000"],
+                            "rewrite": [
+                                { "from": "^/v[0-9]+/(.+)$", "to": "/$1" }
+                            ]
+                        }
+                    }
+                }"#
+            )
+            .is_empty()
         );
     }
 }
