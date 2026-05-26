@@ -49,13 +49,15 @@
       "problemMatcher": []
     },
     // Pre-launch helper used by "Demo: Debug Conduit" launch config.
-    // Runs cargo build (blocking) then starts the API server (background).
-    // The isBackground + problemMatcher here propagates the readiness signal to
-    // VS Code so that the debugger launches only after both steps are done.
+    // Single shell command: build first (blocking), then start the API server.
+    // VS Code watches the output of this single task for the readiness signal,
+    // then unblocks the debugger. A compound dependsOn task has no output of
+    // its own, so problemMatcher can never fire on it — hence the && approach.
     {
       "label": "Demo: Build + API Server",
-      "dependsOn": ["cargo build", "Demo: API Server"],
-      "dependsOrder": "sequence",
+      "type": "shell",
+      "command": "cargo build && node demo/api/server.js",
+      "options": { "cwd": "${workspaceFolder}" },
       "isBackground": true,
       "problemMatcher": {
         "pattern": { "regexp": "." },
@@ -65,7 +67,11 @@
           "endsPattern": "Instance :4001 ready"
         }
       },
-      "presentation": { "reveal": "silent" }
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "group": "demo"
+      }
     },
 
     // ── Build ────────────────────────────────────────────────────────────────
