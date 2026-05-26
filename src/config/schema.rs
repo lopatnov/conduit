@@ -460,6 +460,7 @@ pub enum ProxyRouteTarget {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyRouteConfig {
+    #[serde(default)]
     pub targets: Vec<ProxyTarget>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strategy: Option<LoadBalanceStrategy>,
@@ -485,6 +486,27 @@ pub struct ProxyRouteConfig {
     /// Capture groups (`$1`, `$2`, …) are supported in `to`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rewrite: Option<Vec<RewriteRule>>,
+    /// Two-level load balancing: outer strategy picks a group, inner strategy
+    /// picks within the group.  Mutually exclusive with `targets` — if
+    /// `groups` is set, `targets` is ignored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<UpstreamGroup>>,
+    /// Outer strategy used to pick which group services a request.
+    /// Defaults to `round-robin` when `groups` is present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_strategy: Option<LoadBalanceStrategy>,
+}
+
+/// A named group of upstream targets with its own balancing strategy.
+/// Used together with `ProxyRouteConfig.groups` + `group_strategy`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamGroup {
+    pub name: String,
+    pub targets: Vec<ProxyTarget>,
+    /// Intra-group strategy. Defaults to `round-robin`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<LoadBalanceStrategy>,
 }
 
 /// A single path rewrite rule: the first match in `rewrite` that matches the

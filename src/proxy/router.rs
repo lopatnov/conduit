@@ -7,7 +7,7 @@ use dashmap::DashMap;
 
 use crate::config::schema::{
     AppConfig, CacheConfig, ConnectionPoolConfig, LoadBalanceStrategy, ProxyConfig,
-    ProxyRouteTarget, ProxyTimeout, RetryConfig, SiteConfig, StaticConfig,
+    ProxyRouteTarget, ProxyTimeout, RetryConfig, SiteConfig, StaticConfig, UpstreamGroup,
 };
 use crate::proxy::ctx::{LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
@@ -239,6 +239,30 @@ fn resolve_proxy(
         ProxyConfig::Routes(routes) => {
             let (route_key, route_target) = find_route(routes, path)?;
 
+            // ── Two-level (grouped) routing ───────────────────────────────────
+            // When the route config has `groups`, bypass flat-target logic and
+            // resolve via pick_group → pick_within_group.
+            if let ProxyRouteTarget::Full(cfg) = route_target {
+                if let Some(groups) = &cfg.groups {
+                    return resolve_grouped(
+                        cfg.group_strategy.as_ref(),
+                        groups,
+                        cfg.hash_key.as_deref().unwrap_or("ip"),
+                        route_key,
+                        path,
+                        client_ip,
+                        counters,
+                        upstream_health,
+                        cfg.strip_prefix.unwrap_or(false),
+                        cfg.timeout.clone(),
+                        cfg.pool.clone(),
+                        cfg.http2.unwrap_or(false),
+                        cfg.cache.clone(),
+                        cfg.rewrite.clone(),
+                    );
+                }
+            }
+
             // ── Runtime override check ────────────────────────────────────────
             // When the operator has issued `conduit upstreams add/remove/weight`,
             // those targets replace the config-file targets for this route.
@@ -338,6 +362,129 @@ fn resolve_proxy(
             ))
         }
     }
+}
+
+/// Two-level load balancing: pick a group via `group_strategy`, then pick a
+/// target within the group using each group's own `strategy`.
+///
+/// Group selection keys:
+/// - `hash_key = "ip"` → hash client IP across groups (sticky per client)
+/// - `hash_key = "url"` → hash request path across groups
+/// - Other strategies (round-robin, random, least-conn, …) work as usual.
+#[allow(clippy::too_many_arguments)]
+fn resolve_grouped(
+    group_strategy: Option<&LoadBalanceStrategy>,
+    groups: &[UpstreamGroup],
+    hash_key: &str,
+    route_key: &str,
+    path: &str,
+    client_ip: &str,
+    counters: &DashMap<String, AtomicUsize>,
+    upstream_health: &UpstreamRegistry,
+    strip_prefix_flag: bool,
+    proxy_timeout: Option<crate::config::schema::ProxyTimeout>,
+    proxy_pool: Option<crate::config::schema::ConnectionPoolConfig>,
+    proxy_http2: bool,
+    cache_cfg: Option<crate::config::schema::CacheConfig>,
+    rewrite_rules: Option<Vec<crate::config::schema::RewriteRule>>,
+) -> Option<RouteResult> {
+    if groups.is_empty() {
+        return None;
+    }
+
+    // Outer pick: choose which group handles this request.
+    let group_key = format!("{route_key}__group");
+    let hash_input = if hash_key == "url" || client_ip.is_empty() {
+        path
+    } else {
+        client_ip
+    };
+    let hash_val = upstream::fnv1a_hash(hash_input);
+
+    let group_names: Vec<String> = groups.iter().map(|g| g.name.clone()).collect();
+    let picked_name = {
+        let ctx = HashCtx {
+            weighted: &[],
+            hash_val,
+        };
+        pick_url_by_strategy(
+            group_names.clone(),
+            &group_key,
+            counters,
+            None,
+            group_strategy,
+            upstream_health,
+            &ctx,
+        )
+        .map(|(name, _, _)| name)?
+    };
+
+    let group = groups.iter().find(|g| g.name == picked_name)?;
+
+    // Inner pick: choose a target within the selected group.
+    let all_urls: Vec<String> = group
+        .targets
+        .iter()
+        .map(|t| match t {
+            crate::config::schema::ProxyTarget::Simple(u) => u.clone(),
+            crate::config::schema::ProxyTarget::Weighted(w) => w.url.clone(),
+        })
+        .collect();
+    let weighted: Vec<(String, u32)> = group
+        .targets
+        .iter()
+        .map(|t| match t {
+            crate::config::schema::ProxyTarget::Simple(u) => (u.clone(), 1u32),
+            crate::config::schema::ProxyTarget::Weighted(w) => (w.url.clone(), w.weight),
+        })
+        .collect();
+
+    let healthy = upstream_health.filter_healthy(&all_urls);
+    let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
+    let weighted_healthy: Vec<(String, u32)> = weighted
+        .into_iter()
+        .filter(|(u, _)| urls.contains(u))
+        .collect();
+
+    let inner_key = format!("{route_key}__group__{}", group.name);
+    let inner_ctx = HashCtx {
+        weighted: &weighted_healthy,
+        hash_val,
+    };
+    let (chosen_url, retry_state, is_least_conn) = pick_url_by_strategy(
+        urls,
+        &inner_key,
+        counters,
+        None,
+        group.strategy.as_ref(),
+        upstream_health,
+        &inner_ctx,
+    )?;
+
+    let strip = strip_prefix_flag.then(|| route_key.trim_end_matches('/').to_string());
+    let upstream = match url_to_proxy_upstream(&chosen_url, strip) {
+        Some(UpstreamTarget::Proxy { addr, tls, sni, strip_prefix, .. }) => {
+            UpstreamTarget::Proxy { addr, tls, sni, strip_prefix, rewrite: rewrite_rules }
+        }
+        Some(other) => other,
+        None => {
+            if is_least_conn {
+                upstream_health.conn_dec(&chosen_url);
+            }
+            return None;
+        }
+    };
+
+    let proxy_upstream_url = is_least_conn.then(|| chosen_url.clone());
+    Some((
+        upstream,
+        retry_state,
+        proxy_timeout,
+        proxy_pool,
+        proxy_http2,
+        proxy_upstream_url,
+        cache_cfg,
+    ))
 }
 
 /// Extra context required by hash-based and weighted strategies.

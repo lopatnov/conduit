@@ -178,11 +178,22 @@ fn validate_proxy(proxy: &ProxyConfig, prefix: &str, errors: &mut Vec<Validation
 }
 
 fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
-    if cfg.targets.is_empty() {
+    // When `groups` is configured, `targets` may be empty.
+    if cfg.targets.is_empty() && cfg.groups.is_none() {
         errors.push(ValidationError::new(
             format!("{prefix}.targets"),
-            "At least one target is required",
+            "At least one target is required (or use 'groups' for two-level balancing)",
         ));
+    }
+    if let Some(groups) = &cfg.groups {
+        for (i, group) in groups.iter().enumerate() {
+            if group.targets.is_empty() {
+                errors.push(ValidationError::new(
+                    format!("{prefix}.groups[{i}].targets"),
+                    "At least one target is required in each group",
+                ));
+            }
+        }
     }
 
     if cfg.strategy == Some(LoadBalanceStrategy::WeightedRoundRobin) {
