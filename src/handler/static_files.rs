@@ -82,7 +82,30 @@ pub async fn handle_static(
         .await;
     }
 
-    // Pick a compression encoding if the config and client both support it.
+    // Pre-compressed files: serve `.br` / `.gz` sibling files when available
+    // and the client accepts the encoding.  This avoids CPU-intensive on-the-fly
+    // compression for assets that were pre-compressed at build time.
+    if options.pre_compressed.unwrap_or(false) {
+        if let Some((pre_path, encoding)) = find_pre_compressed(&file_path, accept_enc).await {
+            let pre_meta = tokio::fs::metadata(&pre_path).await.ok();
+            let pre_size = pre_meta.map(|m| m.len()).unwrap_or(0);
+            return serve_pre_compressed(
+                session,
+                &pre_path,
+                pre_size,
+                &content_type,
+                encoding,
+                &etag,
+                &last_modified,
+                &cache_control,
+                is_head,
+                extra,
+            )
+            .await;
+        }
+    }
+
+    // Pick an on-the-fly encoding if the config and client both support it.
     let compress = compress_opts.and_then(|opts| {
         crate::filter::compression::best_encoding(opts, accept_enc, file_size)
             .map(|enc| (enc, opts.level))
@@ -204,6 +227,81 @@ async fn serve_full(
         session.write_response_header(Box::new(resp), false).await?;
         stream_file(session, path, 0, size).await
     }
+}
+
+/// Look for a pre-compressed sibling file next to `path`.
+///
+/// Preference order: brotli (`.br`) → gzip (`.gz`), filtered by what the
+/// client declares in `Accept-Encoding`.  Returns the path to the
+/// pre-compressed file and its encoding token (`"br"` or `"gzip"`), or `None`
+/// when no suitable sibling exists.
+async fn find_pre_compressed(
+    path: &Path,
+    accept_enc: &AcceptEncoding,
+) -> Option<(PathBuf, &'static str)> {
+    // Candidates in preference order.
+    let candidates: &[(&'static str, &'static str)] =
+        &[("br", ".br"), ("gzip", ".gz")];
+
+    for (enc, suffix) in candidates {
+        let accept = match *enc {
+            "br" => accept_enc.brotli,
+            "gzip" => accept_enc.gzip,
+            _ => false,
+        };
+        if !accept {
+            continue;
+        }
+        let mut pre = path.as_os_str().to_owned();
+        pre.push(suffix);
+        let pre_path = PathBuf::from(pre);
+        if tokio::fs::metadata(&pre_path)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+        {
+            return Some((pre_path, enc));
+        }
+    }
+    None
+}
+
+/// Serve a pre-compressed file directly — no on-the-fly encoding needed.
+///
+/// Sends the original resource's `Content-Type`, `ETag`, `Last-Modified`, and
+/// `Cache-Control`, while adding `Content-Encoding` and `Vary: accept-encoding`
+/// to inform caches that this representation is encoding-specific.
+#[allow(clippy::too_many_arguments)]
+async fn serve_pre_compressed(
+    session: &mut Session,
+    pre_path: &Path,
+    pre_size: u64,
+    content_type: &str,
+    encoding: &'static str,
+    etag: &str,
+    last_modified: &str,
+    cache_control: &str,
+    is_head: bool,
+    extra: &[(String, String)],
+) -> Result<()> {
+    let mut resp = ResponseHeader::build(200, Some(8 + extra.len()))?;
+    resp.insert_header("content-type", content_type)?;
+    resp.insert_header("content-length", pre_size.to_string())?;
+    resp.insert_header("content-encoding", encoding)?;
+    resp.insert_header("vary", "accept-encoding")?;
+    resp.insert_header("etag", etag)?;
+    resp.insert_header("last-modified", last_modified)?;
+    resp.insert_header("cache-control", cache_control)?;
+    resp.insert_header("accept-ranges", "none")?; // ranges unsupported on pre-compressed
+    insert_extra(&mut resp, extra)?;
+
+    if is_head {
+        session.write_response_header(Box::new(resp), true).await?;
+        return Ok(());
+    }
+
+    session.write_response_header(Box::new(resp), false).await?;
+    stream_file(session, pre_path, 0, pre_size).await
 }
 
 /// Stream a file compressed with the given encoding and quality level.
