@@ -1,0 +1,88 @@
+# Jekyll / GitHub Pages configuration
+# https://pages.github.com/themes/ — Cayman
+
+theme:       jekyll-theme-cayman
+title:       Conduit
+description: >-
+  High-performance reverse proxy and static file server built on
+  Cloudflare Pingora. One JSON config, one binary, no runtime dependencies.
+
+# Shown as download buttons in the Cayman header
+show_downloads: true
+
+# Repository info (used by some Jekyll plugins and the theme)
+github:
+  owner_name:      lopatnov
+  repository_name: conduit
+
+# Site URL — update once the custom domain is set, or leave as-is for *.github.io
+url: "https://lopatnov.github.io"
+baseurl: "/conduit"
+
+# Markdown engine
+markdown: kramdown
+kramdown:
+  input:        GFM
+  syntax_highlighter: rouge
+
+# Syntax highlighting
+highlighter: rouge
+
+# Permalinks
+permalink: pretty
+
+# Plugins enabled on GitHub Pages (safe list)
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+# ── Exclude non-documentation files from Jekyll processing ───────────────────
+#
+# GitHub Pages runs Jekyll on the repo root; we only want the *.md docs and
+# schema/examples published.  Everything else (Rust source, build artifacts,
+# demo code, scripts) is excluded.
+#
+exclude:
+  - src/
+  - tests/
+  - benches/
+  - target/
+  - demo/
+  - contrib/
+  - scripts/
+  - npm/
+  - schema/
+  - examples/
+  - Cargo.toml
+  - Cargo.lock
+  - Makefile
+  - rust-toolchain.toml
+  - .cargo/
+  - .github/
+  - .gitignore
+  - .gitattributes
+  - "*.rs"
+  - "*.toml"
+  - "*.lock"
+  - "Dockerfile"
+
+# ── SEO (jekyll-seo-tag) ─────────────────────────────────────────────────────
+author:
+  name:    "Oleksandr Lopatnov"
+  github:  "lopatnov"
+  twitter: ""              # fill in if applicable
+
+social:
+  name:  "Oleksandr Lopatnov"
+  links:
+    - "https://github.com/lopatnov"
+
+twitter:
+  card: summary
+
+# ── Defaults ─────────────────────────────────────────────────────────────────
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
