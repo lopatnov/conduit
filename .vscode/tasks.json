@@ -31,7 +31,7 @@
         "background": {
           "activeOnStart": true,
           "beginsPattern": "\\[demo-api\\]",
-          "endsPattern": "Listening on"
+          "endsPattern": "Instance :4001 ready"
         }
       }
     },
@@ -49,11 +49,22 @@
       "problemMatcher": []
     },
     // Pre-launch helper used by "Demo: Debug Conduit" launch config.
-    // Builds Conduit AND starts the API server so F5 lands straight into debugging.
+    // Runs cargo build (blocking) then starts the API server (background).
+    // The isBackground + problemMatcher here propagates the readiness signal to
+    // VS Code so that the debugger launches only after both steps are done.
     {
       "label": "Demo: Build + API Server",
       "dependsOn": ["cargo build", "Demo: API Server"],
       "dependsOrder": "sequence",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": { "regexp": "." },
+        "background": {
+          "activeOnStart": false,
+          "beginsPattern": "\\[demo-api\\]",
+          "endsPattern": "Instance :4001 ready"
+        }
+      },
       "presentation": { "reveal": "silent" }
     },
 
