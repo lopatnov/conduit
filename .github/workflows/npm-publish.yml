@@ -14,6 +14,7 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write   # required for npm provenance attestation (Trusted Publisher)
 
 env:
   CARGO_TERM_COLOR: always
@@ -81,7 +82,7 @@ jobs:
         working-directory: npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: npm publish --access public --provenance
 
       # ── Publish to GitHub Packages ──────────────────────────────────────
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
