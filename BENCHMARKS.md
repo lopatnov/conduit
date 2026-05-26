@@ -33,6 +33,7 @@ Disk:  NVMe SSD
 ### Config
 
 **Conduit** (`conduit.json`):
+
 ```json
 {
   "port": 8080,
@@ -42,20 +43,21 @@ Disk:  NVMe SSD
 ```
 
 **express-reverse-proxy** (`server.js`):
+
 ```js
-import proxy from 'express-reverse-proxy';
-const app = proxy({ port: 8080, static: './bench/static' });
+import proxy from "express-reverse-proxy";
+const app = proxy({ port: 8080, static: "./bench/static" });
 ```
 
 ### Results
 
-| Metric              | express-reverse-proxy | Conduit       | Improvement   |
-| ------------------- | --------------------- | ------------- | ------------- |
-| **Requests/sec**    | ~8,200                | **~142,000**  | **17×**       |
-| **Latency P50**     | ~22 ms                | **~1.1 ms**   | **20×**       |
-| **Latency P99**     | ~48 ms                | **~2.3 ms**   | **21×**       |
-| **Memory (idle)**   | ~58 MB                | **~8 MB**     | **7× less**   |
-| **Startup time**    | ~420 ms               | **~28 ms**    | **15× faster**|
+| Metric            | express-reverse-proxy | Conduit      | Improvement    |
+| ----------------- | --------------------- | ------------ | -------------- |
+| **Requests/sec**  | ~8,200                | **~142,000** | **17×**        |
+| **Latency P50**   | ~22 ms                | **~1.1 ms**  | **20×**        |
+| **Latency P99**   | ~48 ms                | **~2.3 ms**  | **21×**        |
+| **Memory (idle)** | ~58 MB                | **~8 MB**    | **7× less**    |
+| **Startup time**  | ~420 ms               | **~28 ms**   | **15× faster** |
 
 ```
 # Conduit
@@ -94,6 +96,7 @@ A minimal echo backend (`python3 -m http.server 4000`) was used as the upstream.
 ### Config
 
 **Conduit:**
+
 ```json
 {
   "port": 8080,
@@ -102,17 +105,18 @@ A minimal echo backend (`python3 -m http.server 4000`) was used as the upstream.
 ```
 
 **express-reverse-proxy:**
+
 ```json
 { "port": 8080, "proxy": { "/": "http://localhost:4000" } }
 ```
 
 ### Results
 
-| Metric              | express-reverse-proxy | Conduit       | Improvement   |
-| ------------------- | --------------------- | ------------- | ------------- |
-| **Requests/sec**    | ~6,100                | **~84,000**   | **14×**       |
-| **Latency P50**     | ~28 ms                | **~1.9 ms**   | **15×**       |
-| **Latency P99**     | ~62 ms                | **~4.1 ms**   | **15×**       |
+| Metric           | express-reverse-proxy | Conduit     | Improvement |
+| ---------------- | --------------------- | ----------- | ----------- |
+| **Requests/sec** | ~6,100                | **~84,000** | **14×**     |
+| **Latency P50**  | ~28 ms                | **~1.9 ms** | **15×**     |
+| **Latency P99**  | ~62 ms                | **~4.1 ms** | **15×**     |
 
 ```
 # Conduit
@@ -134,14 +138,14 @@ Latency P99:   61.87ms
 
 ## Performance Targets vs Actual Results
 
-| Metric                      | Target    | Measured   | Status |
-| --------------------------- | --------- | ---------- | ------ |
-| Static file req/s           | ≥ 150,000 | ~142,000   | ✅ within 5% of target |
-| Proxy passthrough req/s     | ≥ 80,000  | ~84,000    | ✅ exceeds target |
-| P99 proxy latency           | ≤ 2 ms    | ~4.1 ms    | ⚠️ above target (upstream adds ~2 ms) |
-| Memory (idle, 1 site)       | ≤ 10 MB   | ~8 MB      | ✅ |
-| Cold start time             | ≤ 50 ms   | ~28 ms     | ✅ |
-| Binary size (musl, stripped)| ≤ 15 MB   | ~14.2 MB   | ✅ |
+| Metric                       | Target    | Measured | Status                                |
+| ---------------------------- | --------- | -------- | ------------------------------------- |
+| Static file req/s            | ≥ 150,000 | ~142,000 | ✅ within 5% of target                |
+| Proxy passthrough req/s      | ≥ 80,000  | ~84,000  | ✅ exceeds target                     |
+| P99 proxy latency            | ≤ 2 ms    | ~4.1 ms  | ⚠️ above target (upstream adds ~2 ms) |
+| Memory (idle, 1 site)        | ≤ 10 MB   | ~8 MB    | ✅                                    |
+| Cold start time              | ≤ 50 ms   | ~28 ms   | ✅                                    |
+| Binary size (musl, stripped) | ≤ 15 MB   | ~14.2 MB | ✅                                    |
 
 > The P99 proxy latency of ~4 ms includes the upstream's response time (~2 ms for a Python
 > HTTP server). With a real high-performance backend (Go, Rust) the P99 drops to ~1.8 ms.
@@ -215,15 +219,15 @@ Runs the `criterion`-based benchmarks in `benches/`.
 
 ## Why the difference?
 
-| Factor | express-reverse-proxy | Conduit |
-| --- | --- | --- |
-| **Language** | Node.js (V8 JIT) | Rust (native code, no GC) |
-| **I/O model** | Single-threaded event loop | Multi-threaded Tokio async runtime |
-| **Proxy engine** | `http-proxy` (pure JS) | Cloudflare Pingora (C++ + Rust, production-hardened) |
-| **Connection pooling** | Per-request | Persistent pools with keep-alive |
-| **Memory allocator** | V8 heap (GC pauses) | Rust allocator (zero GC pauses) |
-| **Static files** | `express-static` middleware chain | Direct Pingora handler, no middleware overhead |
-| **Binary startup** | Cold JIT compile on every start | Pre-compiled native binary |
+| Factor                 | express-reverse-proxy             | Conduit                                              |
+| ---------------------- | --------------------------------- | ---------------------------------------------------- |
+| **Language**           | Node.js (V8 JIT)                  | Rust (native code, no GC)                            |
+| **I/O model**          | Single-threaded event loop        | Multi-threaded Tokio async runtime                   |
+| **Proxy engine**       | `http-proxy` (pure JS)            | Cloudflare Pingora (C++ + Rust, production-hardened) |
+| **Connection pooling** | Per-request                       | Persistent pools with keep-alive                     |
+| **Memory allocator**   | V8 heap (GC pauses)               | Rust allocator (zero GC pauses)                      |
+| **Static files**       | `express-static` middleware chain | Direct Pingora handler, no middleware overhead       |
+| **Binary startup**     | Cold JIT compile on every start   | Pre-compiled native binary                           |
 
 The fundamental advantage is that Conduit has no GC pauses, no JIT warm-up period, and no
 event-loop bottleneck. All requests run in parallel across all CPU cores from the first request.

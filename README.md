@@ -113,9 +113,9 @@ node demo/api/server.js
 conduit -c demo/conduit.json
 ```
 
-| URL | Description |
-| --- | --- |
-| [http://localhost:8080](http://localhost:8080) | Public app — proxy, cache, compression, rate limiting |
+| URL                                            | Description                                                  |
+| ---------------------------------------------- | ------------------------------------------------------------ |
+| [http://localhost:8080](http://localhost:8080) | Public app — proxy, cache, compression, rate limiting        |
 | [http://localhost:8081](http://localhost:8081) | Admin panel — protected with Basic Auth (`admin / demo1234`) |
 
 **VS Code users:** run the _"Demo: Start (Conduit + API)"_ task (`Terminal → Run Task…`)
@@ -358,12 +358,12 @@ Accepts `false`, `true`, a format string, or an object.
 { "logging": { "format": "combined", "file": "./logs/access.log" } }
 ```
 
-| Format     | Description                                              |
-| ---------- | -------------------------------------------------------- |
-| `dev`      | Colorized, short — for development                       |
-| `combined` | Apache Combined Log Format — for production              |
-| `common`   | Apache Common Log Format                                 |
-| `short`    | Short, without timestamps                                |
+| Format     | Description                                             |
+| ---------- | ------------------------------------------------------- |
+| `dev`      | Colorized, short — for development                      |
+| `combined` | Apache Combined Log Format — for production             |
+| `common`   | Apache Common Log Format                                |
+| `short`    | Short, without timestamps                               |
 | `json`     | Structured JSON — for log aggregation (ELK, Loki, etc.) |
 
 ---
@@ -499,11 +499,11 @@ Blocked requests receive `403 Forbidden`. IPv4, IPv6, and IPv4-mapped IPv6 are a
 }
 ```
 
-| Field            | Description                | Status code                           |
-| ---------------- | -------------------------- | ------------------------------------- |
-| `maxBodyBytes`   | Max request body size      | `413 Request Entity Too Large`        |
-| `maxHeaderBytes` | Max total header size      | `431 Request Header Fields Too Large` |
-| `timeoutSecs`    | Per-request timeout fallback | applied to all proxy peer timeouts  |
+| Field            | Description                  | Status code                           |
+| ---------------- | ---------------------------- | ------------------------------------- |
+| `maxBodyBytes`   | Max request body size        | `413 Request Entity Too Large`        |
+| `maxHeaderBytes` | Max total header size        | `431 Request Header Fields Too Large` |
+| `timeoutSecs`    | Per-request timeout fallback | applied to all proxy peer timeouts    |
 
 ---
 
@@ -595,9 +595,9 @@ First matching rule wins. Supports `:param` captures and query string preservati
 ```json
 {
   "redirects": [
-    { "from": "/old-page",    "to": "/new-page",         "status": 301 },
-    { "from": "/blog/:slug",  "to": "/posts/:slug",       "status": 308 },
-    { "from": "/docs",        "to": "https://docs.example.com", "status": 302 }
+    { "from": "/old-page", "to": "/new-page", "status": 301 },
+    { "from": "/blog/:slug", "to": "/posts/:slug", "status": 308 },
+    { "from": "/docs", "to": "https://docs.example.com", "status": 302 }
   ]
 }
 ```
@@ -699,7 +699,7 @@ First matching rule wins. Supports `:param` captures and query string preservati
       "strategy": "least-conn",
       "stripPrefix": true,
       "http2": false,
-      "timeout":     { "connectMs": 2000, "readMs": 30000 },
+      "timeout": { "connectMs": 2000, "readMs": 30000 },
       "healthCheck": { "path": "/health", "intervalSecs": 10 },
       "retry": { "attempts": 3, "conditions": ["connection_error", "5xx"] },
       "cache": { "store": "memory", "ttlSecs": 300 }
@@ -717,9 +717,7 @@ First matching rule wins. Supports `:param` captures and query string preservati
   "proxy": {
     "/api": {
       "targets": ["http://backend:4000"],
-      "rewrite": [
-        { "from": "^/v[0-9]+/(.+)$", "to": "/$1" }
-      ]
+      "rewrite": [{ "from": "^/v[0-9]+/(.+)$", "to": "/$1" }]
     }
   }
 }
@@ -732,8 +730,16 @@ First matching rule wins. Supports `:param` captures and query string preservati
   "proxy": {
     "/api": {
       "groups": [
-        { "name": "us-east", "targets": ["http://us1:4000", "http://us2:4000"], "strategy": "least-conn" },
-        { "name": "eu-west", "targets": ["http://eu1:4000", "http://eu2:4000"], "strategy": "least-conn" }
+        {
+          "name": "us-east",
+          "targets": ["http://us1:4000", "http://us2:4000"],
+          "strategy": "least-conn"
+        },
+        {
+          "name": "eu-west",
+          "targets": ["http://eu1:4000", "http://eu2:4000"],
+          "strategy": "least-conn"
+        }
       ],
       "groupStrategy": "ip-hash"
     }
@@ -759,8 +765,14 @@ Explicit route table evaluated in order; first match wins.
 {
   "routes": [
     {
-      "match": { "path": "/api/**", "method": ["POST", "PUT", "PATCH", "DELETE"] },
-      "proxy": { "targets": ["http://write-backend:4000"], "strategy": "least-conn" }
+      "match": {
+        "path": "/api/**",
+        "method": ["POST", "PUT", "PATCH", "DELETE"]
+      },
+      "proxy": {
+        "targets": ["http://write-backend:4000"],
+        "strategy": "least-conn"
+      }
     },
     {
       "match": { "path": "/api/**" },
@@ -776,12 +788,12 @@ Explicit route table evaluated in order; first match wins.
 
 **Match criteria** (all present fields must match):
 
-| Field     | Type                 | Description                                               |
-| --------- | -------------------- | --------------------------------------------------------- |
+| Field     | Type                 | Description                                              |
+| --------- | -------------------- | -------------------------------------------------------- |
 | `path`    | glob string          | `*` — one segment, `**` — any depth. Default: match all. |
-| `method`  | `string[]`           | HTTP methods (case-insensitive). Default: match all.      |
-| `headers` | `{ name: pattern }`  | Header values (exact string or regex).                    |
-| `query`   | `{ param: pattern }` | Query param values (exact or regex).                      |
+| `method`  | `string[]`           | HTTP methods (case-insensitive). Default: match all.     |
+| `headers` | `{ name: pattern }`  | Header values (exact string or regex).                   |
+| `query`   | `{ param: pattern }` | Query param values (exact or regex).                     |
 
 Backward compatibility: top-level `proxy` and `static` are automatically converted to routes.
 
@@ -791,15 +803,15 @@ Backward compatibility: top-level `proxy` and `static` are automatically convert
 
 Controlled by the `strategy` field inside a `proxy` route.
 
-| Strategy             | Value                   | Description                                              |
-| -------------------- | ----------------------- | -------------------------------------------------------- |
-| Round-robin          | `round-robin`           | Default. Rotate evenly across all healthy backends.      |
-| Weighted round-robin | `weighted-round-robin`  | Respects the `weight` field.                             |
-| Random               | `random`                | Pick a backend at random each request.                   |
-| Least connections    | `least-conn`            | Send to the backend with the fewest active connections.  |
-| Least response time  | `least-response-time`   | Send to the backend with the lowest recent latency.      |
-| IP hash              | `ip-hash`               | Sticky sessions — same client IP always hits same backend. |
-| Consistent hash      | `consistent-hash`       | Ketama ring — minimal reshuffling when backends change.  |
+| Strategy             | Value                  | Description                                                |
+| -------------------- | ---------------------- | ---------------------------------------------------------- |
+| Round-robin          | `round-robin`          | Default. Rotate evenly across all healthy backends.        |
+| Weighted round-robin | `weighted-round-robin` | Respects the `weight` field.                               |
+| Random               | `random`               | Pick a backend at random each request.                     |
+| Least connections    | `least-conn`           | Send to the backend with the fewest active connections.    |
+| Least response time  | `least-response-time`  | Send to the backend with the lowest recent latency.        |
+| IP hash              | `ip-hash`              | Sticky sessions — same client IP always hits same backend. |
+| Consistent hash      | `consistent-hash`      | Ketama ring — minimal reshuffling when backends change.    |
 
 **Weighted round-robin** requires explicit weights:
 
@@ -809,7 +821,7 @@ Controlled by the `strategy` field inside a `proxy` route.
     "/api": {
       "targets": [
         { "url": "http://powerful:4000", "weight": 3 },
-        { "url": "http://normal:4000",   "weight": 1 }
+        { "url": "http://normal:4000", "weight": 1 }
       ],
       "strategy": "weighted-round-robin"
     }
@@ -831,24 +843,24 @@ Cache upstream responses in memory, Redis, or on disk.
     "/api": {
       "targets": ["http://backend:4000"],
       "cache": {
-        "store":        "memory",
-        "maxSizeMb":    256,
-        "ttlSecs":      300,
-        "varyHeaders":  ["Accept-Language"],
-        "skipPaths":    ["/api/auth/**", "/api/user/**"],
+        "store": "memory",
+        "maxSizeMb": 256,
+        "ttlSecs": 300,
+        "varyHeaders": ["Accept-Language"],
+        "skipPaths": ["/api/auth/**", "/api/user/**"],
         "skipIfCookie": true,
-        "methods":      ["GET", "HEAD"]
+        "methods": ["GET", "HEAD"]
       }
     }
   }
 }
 ```
 
-| `store` value     | Description                          |
-| ----------------- | ------------------------------------ |
-| `"memory"`        | In-process LRU — fastest, non-shared |
-| `"redis://..."`   | Redis — shared across instances      |
-| `"disk:./cache"`  | Local filesystem — survives restarts |
+| `store` value    | Description                          |
+| ---------------- | ------------------------------------ |
+| `"memory"`       | In-process LRU — fastest, non-shared |
+| `"redis://..."`  | Redis — shared across instances      |
+| `"disk:./cache"` | Local filesystem — survives restarts |
 
 ---
 
@@ -883,7 +895,7 @@ Accept `multipart/form-data` file uploads.
   "upload": {
     "path": "/upload",
     "dir": "./uploads",
-    "maxFileSizeBytes":  10485760,
+    "maxFileSizeBytes": 10485760,
     "maxTotalSizeBytes": 52428800,
     "maxFiles": 5,
     "allowedMimeTypes": ["image/jpeg", "image/png", "application/pdf"]
@@ -957,7 +969,7 @@ Return a response when nothing else matched.
     "byAccept": {
       "html": { "status": 200, "file": "./dist/index.html" },
       "json": { "status": 404, "body": { "error": "Not Found" } },
-      "*":    { "status": 200, "file": "./dist/index.html" }
+      "*": { "status": 200, "file": "./dist/index.html" }
     }
   }
 }
@@ -1065,7 +1077,9 @@ Run multiple virtual hosts from one Conduit process.
   "compression": true,
   "securityHeaders": true,
   "static": "./dist",
-  "proxy": { "/api": { "targets": ["http://api:4000"], "strategy": "least-conn" } },
+  "proxy": {
+    "/api": { "targets": ["http://api:4000"], "strategy": "least-conn" }
+  },
   "healthCheck": true
 }
 ```
@@ -1091,8 +1105,8 @@ Run multiple virtual hosts from one Conduit process.
   "port": 8080,
   "ipFilter": { "allow": ["10.0.0.0/8"] },
   "proxy": {
-    "/users":   "http://users-svc:4001",
-    "/orders":  "http://orders-svc:4002",
+    "/users": "http://users-svc:4001",
+    "/orders": "http://orders-svc:4002",
     "/catalog": ["http://catalog1:4003", "http://catalog2:4003"]
   },
   "healthCheck": true,
@@ -1110,7 +1124,7 @@ Run multiple virtual hosts from one Conduit process.
     "/api": {
       "targets": [
         { "url": "http://powerful:4000", "weight": 3 },
-        { "url": "http://normal:4000",   "weight": 1 }
+        { "url": "http://normal:4000", "weight": 1 }
       ],
       "strategy": "weighted-round-robin"
     },
@@ -1133,15 +1147,15 @@ Runs on `127.0.0.1:2019` (loopback only — never exposed to the network).
 { "global": { "admin": { "bind": "127.0.0.1:2019" } } }
 ```
 
-| Endpoint              | Method | Description                               |
-| --------------------- | ------ | ----------------------------------------- |
-| `/status`             | GET    | Server version, uptime, inflight requests |
-| `/reload`             | POST   | Hot-reload config from disk               |
-| `/shutdown`           | POST   | Graceful shutdown                         |
-| `/upstreams`          | GET    | Health, latency, and weights per backend  |
-| `/upstreams/add`      | POST   | Add an upstream (in memory only)          |
-| `/upstreams/remove`   | POST   | Remove an upstream                        |
-| `/upstreams/weight`   | POST   | Change a backend's weight (WRR only)      |
+| Endpoint            | Method | Description                               |
+| ------------------- | ------ | ----------------------------------------- |
+| `/status`           | GET    | Server version, uptime, inflight requests |
+| `/reload`           | POST   | Hot-reload config from disk               |
+| `/shutdown`         | POST   | Graceful shutdown                         |
+| `/upstreams`        | GET    | Health, latency, and weights per backend  |
+| `/upstreams/add`    | POST   | Add an upstream (in memory only)          |
+| `/upstreams/remove` | POST   | Remove an upstream                        |
+| `/upstreams/weight` | POST   | Change a backend's weight (WRR only)      |
 
 Dynamic upstream changes survive until `conduit reload` — which resets from the config file.
 
@@ -1230,11 +1244,11 @@ the workspace without adding `$schema` to every file:
 
 **Settings → Languages & Frameworks → Schemas and DTDs → JSON Schema Mappings**
 
-| Field | Value |
-|---|---|
-| Schema URL | `https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json` |
-| Schema version | JSON Schema version 2020-12 |
-| File path pattern | `conduit*.json` |
+| Field             | Value                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------ |
+| Schema URL        | `https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json` |
+| Schema version    | JSON Schema version 2020-12                                                          |
+| File path pattern | `conduit*.json`                                                                      |
 
 ### Any other editor
 
