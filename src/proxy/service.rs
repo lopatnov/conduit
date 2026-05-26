@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use pingora_cache::{CacheKey, NoCacheReason, RespCacheable};
+use pingora_cache::storage::Storage as CacheStorage;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
 use pingora_http::{RequestHeader, ResponseHeader};
@@ -30,6 +31,7 @@ use crate::handler::{
     metrics as metrics_handler, response, static_files,
 };
 use crate::proxy::cache as proxy_cache;
+use crate::proxy::{cache_disk, cache_redis};
 use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
 use crate::proxy::{router, upstream};
@@ -777,10 +779,20 @@ impl ProxyHttp for ConduitProxy {
             peer.options.alpn = pingora_core::upstreams::peer::ALPN::H2H1;
         }
 
+        // Derive fallback timeout from `limits.timeoutSecs` on the matched site.
+        let limits_timeout_secs = {
+            let cfg = self.state.config.load();
+            cfg.sites
+                .get(req_ctx.site_idx)
+                .and_then(|s| s.limits.as_ref())
+                .and_then(|l| l.timeout_secs)
+        };
+
         apply_peer_options(
             &mut peer,
             req_ctx.proxy_timeout.as_ref(),
             req_ctx.proxy_pool.as_ref(),
+            limits_timeout_secs,
         );
 
         Ok(Box::new(peer))
@@ -939,14 +951,21 @@ impl ProxyHttp for ConduitProxy {
             return Ok(());
         };
 
-        // Only "memory" store is supported in Phase 2.6.
-        if cfg.store != "memory" {
-            tracing::warn!(
-                store = %cfg.store,
-                "unsupported cache store — caching disabled for this route"
-            );
-            return Ok(());
-        }
+        // Select storage backend based on store string.
+        let storage: &'static (dyn CacheStorage + Sync) =
+            if cfg.store == "memory" {
+                proxy_cache::cache_storage()
+            } else if let Some(url) = cfg.store.strip_prefix("redis://").map(|_| cfg.store.as_str()) {
+                cache_redis::get_or_create(url)
+            } else if let Some(dir) = cfg.store.strip_prefix("disk:") {
+                cache_disk::get_or_create(dir)
+            } else {
+                tracing::warn!(
+                    store = %cfg.store,
+                    "unsupported cache store — caching disabled for this route"
+                );
+                return Ok(());
+            };
 
         // Check request-side policy (method, cookies, skip-paths).
         let method = session.req_header().method.as_str();
@@ -959,7 +978,7 @@ impl ProxyHttp for ConduitProxy {
 
         session
             .cache
-            .enable(proxy_cache::cache_storage(), None, None, None, None);
+            .enable(storage, None, None, None, None);
         Ok(())
     }
 
@@ -993,7 +1012,29 @@ impl ProxyHttp for ConduitProxy {
         let path = uri.path();
         let query = uri.query().filter(|q| !q.is_empty());
 
-        Ok(proxy_cache::build_cache_key(host, scheme, path, query))
+        // Vary-based cache key differentiation: include the specified request
+        // header values so that different representations are stored separately.
+        let vary_headers = {
+            let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+            let config = self.state.config.load();
+            config
+                .sites
+                .get(site_idx)
+                .and_then(|_s| {
+                    ctx.as_ref()
+                        .and_then(|c| c.proxy_cache_cfg.as_ref())
+                        .and_then(|cc| cc.vary_headers.clone())
+                })
+        };
+
+        Ok(proxy_cache::build_cache_key(
+            host,
+            scheme,
+            path,
+            query,
+            vary_headers.as_deref(),
+            Some(&session.req_header().headers),
+        ))
     }
 
     /// Decide whether an upstream response is cacheable.
@@ -1208,23 +1249,41 @@ fn resolve_peer_addr(req_ctx: &mut RequestCtx) -> pingora_core::Result<(String, 
     }
 }
 
-/// Apply per-route timeout and connection-pool settings to an `HttpPeer`.
+/// Apply per-route timeout, connection-pool settings, and global limits to an
+/// `HttpPeer`.
+///
+/// Priority (highest → lowest):
+/// 1. `proxy.*.timeout.*` — per-route fine-grained timeouts
+/// 2. `limits.timeoutSecs` — site-wide fallback timeout
+///
+/// `limits.timeout_secs` is applied to all three timeout fields only when
+/// the corresponding per-route field is absent.
 fn apply_peer_options(
     peer: &mut HttpPeer,
     timeout: Option<&ProxyTimeout>,
     pool: Option<&ConnectionPoolConfig>,
+    limits_timeout_secs: Option<u64>,
 ) {
-    if let Some(t) = timeout {
-        if let Some(ms) = t.connect_ms {
-            peer.options.connection_timeout = Some(Duration::from_millis(ms));
-        }
-        if let Some(ms) = t.read_ms {
-            peer.options.read_timeout = Some(Duration::from_millis(ms));
-        }
-        if let Some(ms) = t.send_ms {
-            peer.options.write_timeout = Some(Duration::from_millis(ms));
-        }
-    }
+    let fallback_ms = limits_timeout_secs.map(|s| s.saturating_mul(1000));
+
+    // connection_timeout
+    peer.options.connection_timeout = timeout
+        .and_then(|t| t.connect_ms)
+        .or(fallback_ms)
+        .map(Duration::from_millis);
+
+    // read_timeout
+    peer.options.read_timeout = timeout
+        .and_then(|t| t.read_ms)
+        .or(fallback_ms)
+        .map(Duration::from_millis);
+
+    // write_timeout
+    peer.options.write_timeout = timeout
+        .and_then(|t| t.send_ms)
+        .or(fallback_ms)
+        .map(Duration::from_millis);
+
     if let Some(p) = pool {
         if let Some(secs) = p.idle_timeout_secs {
             peer.options.idle_timeout = Some(Duration::from_secs(secs));

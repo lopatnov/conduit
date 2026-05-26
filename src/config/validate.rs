@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::{Duration, SystemTime};
 
 use crate::config::schema::{
     AppConfig, FallbackConfig, IpFilterConfig, LoadBalanceStrategy, MetricsConfig,
@@ -293,6 +294,67 @@ fn validate_tls(tls: &TlsConfig, prefix: &str, errors: &mut Vec<ValidationError>
         errors.push(ValidationError::new(
             prefix,
             format!("TLS 'cert' and 'key' must both be set — '{missing}' is missing"),
+        ));
+    }
+
+    // Cert expiry check — only for manual certificates (ACME manages renewal itself).
+    if !has_acme {
+        if let Some(ref cert_path) = tls.cert {
+            check_cert_expiry(cert_path, &format!("{prefix}.cert"), errors);
+        }
+    }
+}
+
+/// Check a PEM certificate file for expiry.
+///
+/// - If the cert is already expired → validation error.
+/// - If the cert expires within 30 days → validation error with "WARNING:" prefix
+///   (surfaced as an error so `conduit validate` exits non-zero, prompting renewal).
+/// - If the file does not exist yet → silently ignored (cert may be provisioned later).
+/// - If the file cannot be parsed → silently ignored (startup will fail with a clearer error).
+fn check_cert_expiry(cert_path: &str, prefix: &str, errors: &mut Vec<ValidationError>) {
+    let pem_bytes = match std::fs::read(cert_path) {
+        Ok(b) => b,
+        Err(_) => return, // file not found yet — skip
+    };
+
+    // Parse the first PEM block.
+    let (_, pem) = match x509_parser::pem::parse_x509_pem(&pem_bytes) {
+        Ok(v) => v,
+        Err(_) => return, // not a valid PEM — skip
+    };
+    let cert = match pem.parse_x509() {
+        Ok(c) => c,
+        Err(_) => return, // unparseable DER — skip
+    };
+
+    let not_after = cert.validity().not_after.to_datetime();
+
+    // Convert `not_after` (x509_parser's `time::OffsetDateTime`) to `SystemTime`.
+    let unix_secs = not_after.unix_timestamp();
+    let expires_at = if unix_secs >= 0 {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(unix_secs as u64)
+    } else {
+        SystemTime::UNIX_EPOCH
+    };
+
+    let now = SystemTime::now();
+    let warn_threshold = now + Duration::from_secs(30 * 24 * 3600);
+
+    if expires_at <= now {
+        errors.push(ValidationError::new(
+            prefix,
+            format!("TLS certificate has expired (not_after = {unix_secs})"),
+        ));
+    } else if expires_at <= warn_threshold {
+        let days_left = expires_at
+            .duration_since(now)
+            .unwrap_or_default()
+            .as_secs()
+            / 86400;
+        errors.push(ValidationError::new(
+            prefix,
+            format!("WARNING: TLS certificate expires in {days_left} day(s) — renew soon"),
         ));
     }
 }

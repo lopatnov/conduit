@@ -34,13 +34,40 @@ pub fn cache_storage() -> &'static MemCache {
 ///
 /// The `namespace` is the `host` value so that different virtual-hosts with
 /// the same path are stored independently.  The `primary` key is
-/// `scheme:path` (with `?query` appended when present).  The `user_tag` is
-/// left empty — Conduit does not need per-user cache quotas.
-pub fn build_cache_key(host: &str, scheme: &str, path: &str, query: Option<&str>) -> CacheKey {
-    let primary = match query {
+/// `scheme:path` (with `?query` appended when present).
+///
+/// When `vary_headers` is provided, each header name is looked up in
+/// `request_headers` and the `name=value` pairs are appended to the primary
+/// key separated by `\0`.  This means `Accept-Language: en` and
+/// `Accept-Language: fr` produce different cache entries for the same URL.
+pub fn build_cache_key(
+    host: &str,
+    scheme: &str,
+    path: &str,
+    query: Option<&str>,
+    vary_headers: Option<&[String]>,
+    request_headers: Option<&http::HeaderMap>,
+) -> CacheKey {
+    let base = match query {
         Some(q) if !q.is_empty() => format!("{scheme}:{path}?{q}"),
         _ => format!("{scheme}:{path}"),
     };
+
+    let primary = match (vary_headers, request_headers) {
+        (Some(vary), Some(headers)) if !vary.is_empty() => {
+            let mut parts = vec![base];
+            for name in vary {
+                let val = headers
+                    .get(name.as_str())
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                parts.push(format!("{name}={val}"));
+            }
+            parts.join("\0")
+        }
+        _ => base,
+    };
+
     CacheKey::new(host, primary, "")
 }
 
@@ -142,18 +169,42 @@ mod tests {
 
     #[test]
     fn cache_key_without_query() {
-        // Should not panic and should produce a key.
-        let _ = build_cache_key("example.com", "https", "/api/data", None);
+        let _ = build_cache_key("example.com", "https", "/api/data", None, None, None);
     }
 
     #[test]
     fn cache_key_with_empty_query() {
-        let _ = build_cache_key("example.com", "https", "/api/data", Some(""));
+        let _ = build_cache_key("example.com", "https", "/api/data", Some(""), None, None);
     }
 
     #[test]
     fn cache_key_with_query() {
-        let _ = build_cache_key("example.com", "https", "/search", Some("q=hello"));
+        let _ = build_cache_key("example.com", "https", "/search", Some("q=hello"), None, None);
+    }
+
+    #[test]
+    fn cache_key_vary_headers_differentiates() {
+        let mut h1 = http::HeaderMap::new();
+        h1.insert("accept-language", "en".parse().unwrap());
+        let mut h2 = http::HeaderMap::new();
+        h2.insert("accept-language", "fr".parse().unwrap());
+
+        let vary = vec!["accept-language".to_string()];
+        let k1 = build_cache_key("h.com", "https", "/", None, Some(&vary), Some(&h1));
+        let k2 = build_cache_key("h.com", "https", "/", None, Some(&vary), Some(&h2));
+        // Different header values must produce different keys.
+        assert_ne!(k1.to_compact().primary, k2.to_compact().primary);
+    }
+
+    #[test]
+    fn cache_key_vary_headers_same_value_equal() {
+        let mut h = http::HeaderMap::new();
+        h.insert("accept-language", "en".parse().unwrap());
+        let vary = vec!["accept-language".to_string()];
+        let k1 = build_cache_key("h.com", "https", "/", None, Some(&vary), Some(&h));
+        let k2 = build_cache_key("h.com", "https", "/", None, Some(&vary), Some(&h));
+        // Same header value must produce the same key.
+        assert_eq!(k1.to_compact().primary, k2.to_compact().primary);
     }
 
     // ── should_cache_request ──────────────────────────────────────────────────
