@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 use crate::config;
+use crate::config::schema::LoggingConfig;
 use crate::proxy::health;
 use crate::proxy::service::AppState;
 
@@ -113,6 +114,31 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
             "cold_fields": cold_fields,
         }));
     }
+
+    // Switch log writer if any site's logging.file path changed.
+    {
+        let old_cfg = state.config.load();
+        for (i, new_site) in new_config.sites.iter().enumerate() {
+            let old_file = old_cfg
+                .sites
+                .get(i)
+                .and_then(|s| log_file_path(&s.logging));
+            let new_file = log_file_path(&new_site.logging);
+            if old_file != new_file {
+                match new_file {
+                    Some(path) => {
+                        if let Err(e) = state.log_writer.switch_file(path) {
+                            tracing::warn!(path, "reload: failed to switch log file: {e}");
+                        }
+                    }
+                    None => state.log_writer.use_stdout(),
+                }
+            }
+        }
+    }
+
+    // Spawn health-check tasks for any newly-configured routes.
+    health::spawn_health_checks(state.upstream_health.clone(), &new_config);
 
     // Apply: hot-swap config, clear runtime upstream overrides, reset rate limiter.
     state.config.store(Arc::new(new_config));
@@ -280,4 +306,14 @@ async fn upstreams_weight_handler(
         "target":  req.target,
         "weight":  weight,
     }))
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Extract the `logging.file` path from a `LoggingConfig`, if any.
+fn log_file_path(cfg: &Option<LoggingConfig>) -> Option<&str> {
+    match cfg {
+        Some(LoggingConfig::Options(opts)) => opts.file.as_deref(),
+        _ => None,
+    }
 }
