@@ -276,18 +276,37 @@
     },
     "ProxyRouteConfig": {
       "type": "object",
-      "required": ["targets"],
       "properties": {
         "targets": {
           "type": "array",
-          "items": { "$ref": "#/$defs/ProxyTarget" }
+          "items": { "$ref": "#/$defs/ProxyTarget" },
+          "description": "Upstream targets. Required unless 'groups' is set."
         },
         "strategy": {
           "type": "string",
           "enum": [
             "round-robin", "weighted-round-robin", "random",
             "least-conn", "least-response-time", "ip-hash", "consistent-hash"
-          ]
+          ],
+          "description": "Load-balancing strategy for flat targets."
+        },
+        "groups": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/UpstreamGroup" },
+          "description": "Two-level load balancing: outer groupStrategy picks a group, inner strategy picks a target within that group."
+        },
+        "groupStrategy": {
+          "type": "string",
+          "enum": [
+            "round-robin", "weighted-round-robin", "random",
+            "least-conn", "least-response-time", "ip-hash", "consistent-hash"
+          ],
+          "description": "Strategy used to select among groups when 'groups' is configured."
+        },
+        "rewrite": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RewriteRule" },
+          "description": "Path rewrite rules applied after strip_prefix. First matching rule wins."
         },
         "hashKey":     { "type": "string" },
         "http2":       { "type": "boolean" },
@@ -338,6 +357,30 @@
             "methods":      { "type": "array", "items": { "type": "string" } }
           }
         }
+      }
+    },
+    "UpstreamGroup": {
+      "type": "object",
+      "required": ["name", "targets"],
+      "properties": {
+        "name":     { "type": "string", "description": "Logical group name for identification." },
+        "targets":  { "type": "array", "items": { "$ref": "#/$defs/ProxyTarget" }, "minItems": 1 },
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "round-robin", "weighted-round-robin", "random",
+            "least-conn", "least-response-time", "ip-hash", "consistent-hash"
+          ],
+          "description": "Intra-group load-balancing strategy."
+        }
+      }
+    },
+    "RewriteRule": {
+      "type": "object",
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "type": "string", "description": "Regex pattern matched against the request path." },
+        "to":   { "type": "string", "description": "Replacement string (supports capture groups $1, $2, ...)." }
       }
     },
     "ProxyTarget": {

@@ -1,0 +1,26 @@
+{
+  "port": 8080,
+  "proxy": {
+    "/api": {
+      "groups": [
+        {
+          "name": "us-east",
+          "targets": [
+            "http://us-east-1:4000",
+            "http://us-east-2:4000"
+          ],
+          "strategy": "least-conn"
+        },
+        {
+          "name": "eu-west",
+          "targets": [
+            "http://eu-west-1:4000",
+            "http://eu-west-2:4000"
+          ],
+          "strategy": "least-conn"
+        }
+      ],
+      "groupStrategy": "ip-hash"
+    }
+  }
+}
