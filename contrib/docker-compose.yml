@@ -1,0 +1,58 @@
+version: "3.9"
+
+# Example Conduit setup: conduit as reverse proxy in front of an API service.
+#
+# Usage:
+#   docker compose -f contrib/docker-compose.yml up
+#
+# Then:
+#   http://localhost:8080/       → served from ./dist/ (static files)
+#   http://localhost:8080/api/   → proxied to api:4000 (stripPrefix: true)
+#   http://localhost:8080/__health__ → Conduit health check
+#
+# Customise conduit.json to match your application.
+
+services:
+  conduit:
+    image: lopatnov/conduit:latest
+    # Or build from source:
+    # build:
+    #   context: ..
+    #   dockerfile: contrib/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../conduit.json:/etc/conduit/conduit.json:ro
+      - ../dist:/dist:ro
+    environment:
+      - RUST_LOG=info
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+
+  api:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ../demo/api:/app:ro
+    command: node server.js
+    expose:
+      - "4000"
+    restart: unless-stopped
+
+# Example conduit.json for this compose setup:
+#
+# {
+#   "port": 8080,
+#   "static": "/dist",
+#   "healthCheck": true,
+#   "proxy": {
+#     "/api": {
+#       "targets": ["http://api:4000"],
+#       "stripPrefix": true,
+#       "healthCheck": { "path": "/health", "intervalSecs": 10 }
+#     }
+#   },
+#   "fallback": { "status": 200, "file": "/dist/index.html" }
+# }

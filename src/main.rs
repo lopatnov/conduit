@@ -4,8 +4,9 @@ use std::path::Path;
 use std::process;
 use std::time::{Duration, Instant};
 
-use clap::Parser;
-use conduit::cli::args::{Cli, Command, UpstreamsCommand};
+use clap::{CommandFactory, Parser};
+use clap_complete::Shell as ClapShell;
+use conduit::cli::args::{Cli, Command, Shell, UpstreamsCommand};
 use conduit::cli::init;
 use conduit::config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget, ProxyTarget};
 use conduit::config::{self, validate};
@@ -38,6 +39,29 @@ fn main() {
         Some(Command::Shutdown(args)) => {
             let addr = resolve_admin(args.admin.as_deref());
             admin_post("shutdown", &addr);
+        }
+        Some(Command::Completions(args)) => {
+            let clap_shell = match args.shell {
+                Shell::Bash => ClapShell::Bash,
+                Shell::Zsh => ClapShell::Zsh,
+                Shell::Fish => ClapShell::Fish,
+                Shell::PowerShell => ClapShell::PowerShell,
+                Shell::Elvish => ClapShell::Elvish,
+            };
+            clap_complete::generate(
+                clap_shell,
+                &mut Cli::command(),
+                "conduit",
+                &mut std::io::stdout(),
+            );
+        }
+        Some(Command::Man) => {
+            let cmd = Cli::command();
+            let man = clap_mangen::Man::new(cmd);
+            man.render(&mut std::io::stdout()).unwrap_or_else(|e| {
+                eprintln!("error generating man page: {e}");
+                process::exit(1);
+            });
         }
         Some(Command::Upstreams(args)) => {
             let addr = resolve_admin(args.admin.as_deref());

@@ -480,6 +480,25 @@ pub struct ProxyRouteConfig {
     pub cache: Option<CacheConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryConfig>,
+    /// Path rewrite rules applied in order before forwarding to upstream.
+    /// Each rule is a regex `from` pattern and a replacement `to` string.
+    /// Capture groups (`$1`, `$2`, …) are supported in `to`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rewrite: Option<Vec<RewriteRule>>,
+}
+
+/// A single path rewrite rule: the first match in `rewrite` that matches the
+/// request path is applied; subsequent rules are not checked.
+///
+/// ```json
+/// { "from": "^/old/(.+)$", "to": "/new/$1" }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RewriteRule {
+    /// Regex pattern to match against the request path.
+    pub from: String,
+    /// Replacement string — capture groups `$1` … `$N` are expanded.
+    pub to: String,
 }
 
 /// `"http://b1:4000"` | `{ "url": "http://b1:4000", "weight": 3 }`

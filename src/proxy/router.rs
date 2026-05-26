@@ -254,7 +254,7 @@ fn resolve_proxy(
                     )
                 };
 
-            let (retry_cfg, proxy_timeout, proxy_pool, strategy, proxy_http2, hash_key, cache_cfg) =
+            let (retry_cfg, proxy_timeout, proxy_pool, strategy, proxy_http2, hash_key, cache_cfg, rewrite_rules) =
                 match route_target {
                     ProxyRouteTarget::Full(cfg) => (
                         cfg.retry.as_ref(),
@@ -264,8 +264,9 @@ fn resolve_proxy(
                         cfg.http2.unwrap_or(false),
                         cfg.hash_key.as_deref().unwrap_or("ip"),
                         cfg.cache.clone(),
+                        cfg.rewrite.clone(),
                     ),
-                    _ => (None, None, None, None, false, "ip", None),
+                    _ => (None, None, None, None, false, "ip", None, None),
                 };
 
             // Filter to healthy upstreams; if all are down keep all (fail-open).
@@ -312,7 +313,10 @@ fn resolve_proxy(
             // If least-conn already incremented the inflight counter we must
             // release it here — the logging() hook won't run on this request.
             let upstream = match url_to_proxy_upstream(&chosen_url, strip) {
-                Some(u) => u,
+                Some(UpstreamTarget::Proxy { addr, tls, sni, strip_prefix, .. }) => {
+                    UpstreamTarget::Proxy { addr, tls, sni, strip_prefix, rewrite: rewrite_rules }
+                }
+                Some(other) => other,
                 None => {
                     if is_least_conn {
                         upstream_health.conn_dec(&chosen_url);
@@ -408,6 +412,7 @@ pub fn url_to_proxy_upstream(url: &str, strip_prefix: Option<String>) -> Option<
         tls,
         sni,
         strip_prefix,
+        rewrite: None,
     })
 }
 
@@ -1023,6 +1028,7 @@ mod tests {
                 tls,
                 sni,
                 strip_prefix,
+                ..
             } => {
                 assert_eq!(addr, "backend:4000");
                 assert!(!tls);

@@ -32,10 +32,12 @@ indexmap            = { version = "2", features = ["serde"] }
 humantime           = "2"
 
 # --- CLI ---
-clap        = { version = "4", features = ["derive", "env"] }
-dialoguer   = "0.12"
-indicatif   = "0.18"
-async-trait = "0.1"
+clap          = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+clap_mangen   = "0.2"
+dialoguer     = "0.12"
+indicatif     = "0.18"
+async-trait   = "0.1"
 
 # --- Pingora HTTP types ---
 pingora-http = "0.8"

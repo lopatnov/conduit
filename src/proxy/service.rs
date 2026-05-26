@@ -716,15 +716,42 @@ impl ProxyHttp for ConduitProxy {
 
         if let Some(ctx_ref) = ctx.as_ref() {
             match &ctx_ref.upstream {
-                UpstreamTarget::Proxy {
-                    strip_prefix: Some(pfx),
-                    ..
-                } => {
-                    let old_path = upstream_request.uri.path().to_owned();
-                    let new_path = old_path.strip_prefix(pfx.as_str()).unwrap_or("/");
-                    let new_path = if new_path.is_empty() { "/" } else { new_path };
-                    if new_path != old_path {
-                        let new_uri = rebuild_uri(&upstream_request.uri, new_path)?;
+                UpstreamTarget::Proxy { strip_prefix, rewrite, .. } => {
+                    let mut path = upstream_request.uri.path().to_owned();
+
+                    // 1. Strip prefix (if configured).
+                    if let Some(pfx) = strip_prefix {
+                        let stripped = path.strip_prefix(pfx.as_str()).unwrap_or("/");
+                        path = if stripped.is_empty() {
+                            "/".to_owned()
+                        } else {
+                            stripped.to_owned()
+                        };
+                    }
+
+                    // 2. Apply rewrite rules (first match wins).
+                    if let Some(rules) = rewrite {
+                        for rule in rules {
+                            match regex::Regex::new(&rule.from) {
+                                Ok(re) => {
+                                    if re.is_match(&path) {
+                                        path = re.replacen(&path, 1, rule.to.as_str()).into_owned();
+                                        break; // first match wins
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        pattern = %rule.from,
+                                        "rewrite rule regex error: {e}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    // Commit the (possibly rewritten) path.
+                    if path != upstream_request.uri.path() {
+                        let new_uri = rebuild_uri(&upstream_request.uri, &path)?;
                         upstream_request.set_uri(new_uri);
                     }
                 }

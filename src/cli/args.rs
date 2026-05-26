@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(
@@ -44,6 +44,10 @@ pub enum Command {
     Shutdown(AdminArgs),
     /// Manage upstream targets at runtime
     Upstreams(UpstreamsArgs),
+    /// Print shell completions to stdout
+    Completions(CompletionsArgs),
+    /// Generate man page to stdout
+    Man,
 }
 
 #[derive(Args)]
@@ -91,6 +95,22 @@ pub enum UpstreamsCommand {
     Remove(UpstreamRemoveArgs),
     /// Change a target's weight (WeightedRoundRobin only)
     Weight(UpstreamWeightArgs),
+}
+
+/// Shell for which to generate completions.
+#[derive(ValueEnum, Clone, Debug)]
+pub enum Shell {
+    Bash,
+    Zsh,
+    Fish,
+    PowerShell,
+    Elvish,
+}
+
+#[derive(Args)]
+pub struct CompletionsArgs {
+    /// Target shell
+    pub shell: Shell,
 }
 
 #[derive(Args)]

@@ -252,8 +252,137 @@ async fn shutdown_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    use crate::config::schema::{LoadBalanceStrategy, ProxyConfig, ProxyRouteTarget, ProxyTarget};
+
     let registry = &state.upstream_health;
-    let mut entries: Vec<Value> = registry
+    let config = state.config.load();
+
+    // Helper: look up health entry for a URL.
+    let health_of = |url: &str| -> Value {
+        match registry.statuses.get(url) {
+            Some(e) => json!({
+                "healthy":               e.healthy,
+                "latency_ms":            e.latency_ms,
+                "consecutive_failures":  e.consecutive_failures,
+                "consecutive_successes": e.consecutive_successes,
+            }),
+            // URL has no health-check probe configured — unknown status.
+            None => json!({
+                "healthy":               Value::Null,
+                "latency_ms":            Value::Null,
+                "consecutive_failures":  0,
+                "consecutive_successes": 0,
+            }),
+        }
+    };
+
+    // Build per-route view from config.
+    let mut routes: Vec<Value> = Vec::new();
+    for site in &config.sites {
+        let site_label = match (&site.host, site.port) {
+            (Some(h), Some(p)) => format!("{h}:{p}"),
+            (Some(h), None) => h.clone(),
+            (None, Some(p)) => format!("*:{p}"),
+            (None, None) => "*".to_string(),
+        };
+
+        let Some(proxy_cfg) = &site.proxy else {
+            continue;
+        };
+
+        match proxy_cfg {
+            ProxyConfig::Single(url) => {
+                let mut h = health_of(url);
+                h["url"] = json!(url);
+                routes.push(json!({
+                    "site":     site_label,
+                    "path":     "/",
+                    "strategy": "round-robin",
+                    "targets":  [h],
+                }));
+            }
+            ProxyConfig::Routes(route_map) => {
+                for (path, route_target) in route_map {
+                    let (strategy_str, targets): (&str, Vec<Value>) = match route_target {
+                        ProxyRouteTarget::Url(url) => {
+                            let mut h = health_of(url);
+                            h["url"] = json!(url);
+                            h["weight"] = json!(1u32);
+                            ("round-robin", vec![h])
+                        }
+                        ProxyRouteTarget::RoundRobin(urls) => {
+                            let tgts = urls
+                                .iter()
+                                .map(|url| {
+                                    let mut h = health_of(url);
+                                    h["url"] = json!(url);
+                                    h["weight"] = json!(1u32);
+                                    h
+                                })
+                                .collect();
+                            ("round-robin", tgts)
+                        }
+                        ProxyRouteTarget::Full(cfg) => {
+                            let strat = match cfg.strategy.as_ref().unwrap_or(&LoadBalanceStrategy::RoundRobin) {
+                                LoadBalanceStrategy::RoundRobin        => "round-robin",
+                                LoadBalanceStrategy::WeightedRoundRobin => "weighted-round-robin",
+                                LoadBalanceStrategy::Random            => "random",
+                                LoadBalanceStrategy::LeastConn         => "least-conn",
+                                LoadBalanceStrategy::LeastResponseTime => "least-response-time",
+                                LoadBalanceStrategy::IpHash            => "ip-hash",
+                                LoadBalanceStrategy::ConsistentHash    => "consistent-hash",
+                            };
+                            let tgts = cfg
+                                .targets
+                                .iter()
+                                .map(|t| {
+                                    let (url, weight) = match t {
+                                        ProxyTarget::Simple(u)    => (u.as_str(), 1u32),
+                                        ProxyTarget::Weighted(w)  => (w.url.as_str(), w.weight),
+                                    };
+                                    let mut h = health_of(url);
+                                    h["url"]    = json!(url);
+                                    h["weight"] = json!(weight);
+                                    h
+                                })
+                                .collect();
+                            (strat, tgts)
+                        }
+                    };
+
+                    // Also include any runtime overrides for this route.
+                    let override_targets: Vec<Value> = registry
+                        .get_override_targets(path)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|(url, weight)| {
+                            let mut h = health_of(url);
+                            h["url"]     = json!(url);
+                            h["weight"]  = json!(weight);
+                            h["runtime"] = json!(true);
+                            h
+                        })
+                        .collect();
+
+                    let all_targets: Vec<Value> = if override_targets.is_empty() {
+                        targets
+                    } else {
+                        override_targets
+                    };
+
+                    routes.push(json!({
+                        "site":     site_label,
+                        "path":     path,
+                        "strategy": strategy_str,
+                        "targets":  all_targets,
+                    }));
+                }
+            }
+        }
+    }
+
+    // Backward-compatible flat list: all URLs with known health status.
+    let mut flat: Vec<Value> = registry
         .statuses
         .iter()
         .map(|e| {
@@ -266,9 +395,9 @@ async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
             })
         })
         .collect();
-    // Stable sort for deterministic output.
-    entries.sort_by(|a, b| a["url"].as_str().cmp(&b["url"].as_str()));
-    Json(json!({ "upstreams": entries }))
+    flat.sort_by(|a, b| a["url"].as_str().cmp(&b["url"].as_str()));
+
+    Json(json!({ "upstreams": flat, "routes": routes }))
 }
 
 async fn upstreams_add_handler(
