@@ -270,11 +270,27 @@ fn collect_upstream_urls(app: &AppConfig) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut urls = Vec::new();
 
+    let mut push = |url: String| {
+        if seen.insert(url.clone()) {
+            urls.push(url);
+        }
+    };
+
     for site in &app.sites {
-        let Some(proxy) = &site.proxy else { continue };
-        for url in extract_proxy_urls(proxy) {
-            if seen.insert(url.clone()) {
-                urls.push(url);
+        // Top-level proxy field.
+        if let Some(proxy) = &site.proxy {
+            for url in extract_proxy_urls(proxy) {
+                push(url);
+            }
+        }
+        // routes array (Phase 3.6).
+        if let Some(routes) = &site.routes {
+            for route in routes {
+                if let Some(proxy_target) = &route.proxy {
+                    for url in extract_route_target_urls(proxy_target) {
+                        push(url);
+                    }
+                }
             }
         }
     }
@@ -285,19 +301,35 @@ fn collect_upstream_urls(app: &AppConfig) -> Vec<String> {
 fn extract_proxy_urls(proxy: &ProxyConfig) -> Vec<String> {
     match proxy {
         ProxyConfig::Single(url) => vec![url.clone()],
-        ProxyConfig::Routes(routes) => {
-            let mut out = Vec::new();
-            for target in routes.values() {
-                match target {
-                    ProxyRouteTarget::Url(url) => out.push(url.clone()),
-                    ProxyRouteTarget::RoundRobin(urls) => out.extend(urls.iter().cloned()),
-                    ProxyRouteTarget::Full(cfg) => {
-                        for t in &cfg.targets {
-                            out.push(match t {
-                                ProxyTarget::Simple(url) => url.clone(),
-                                ProxyTarget::Weighted(w) => w.url.clone(),
-                            });
-                        }
+        ProxyConfig::Routes(routes) => routes
+            .values()
+            .flat_map(extract_route_target_urls)
+            .collect(),
+    }
+}
+
+/// Flatten a `ProxyRouteTarget` into raw URL strings.
+fn extract_route_target_urls(target: &ProxyRouteTarget) -> Vec<String> {
+    match target {
+        ProxyRouteTarget::Url(url) => vec![url.clone()],
+        ProxyRouteTarget::RoundRobin(urls) => urls.clone(),
+        ProxyRouteTarget::Full(cfg) => {
+            let mut out: Vec<String> = cfg
+                .targets
+                .iter()
+                .map(|t| match t {
+                    ProxyTarget::Simple(url) => url.clone(),
+                    ProxyTarget::Weighted(w) => w.url.clone(),
+                })
+                .collect();
+            // Also collect URLs from groups.
+            if let Some(groups) = &cfg.groups {
+                for group in groups {
+                    for t in &group.targets {
+                        out.push(match t {
+                            ProxyTarget::Simple(url) => url.clone(),
+                            ProxyTarget::Weighted(w) => w.url.clone(),
+                        });
                     }
                 }
             }
