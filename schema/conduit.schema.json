@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/lopatnov/conduit/schema/conduit.schema.json",
+  "$id": "https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json",
   "title": "Conduit configuration",
   "description": "Configuration schema for the Conduit reverse proxy. Accepts a full object, an array of sites, or a single-site object.",
   "oneOf": [

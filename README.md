@@ -1192,6 +1192,61 @@ services:
 
 ---
 
+## Editor Integration (JSON Schema)
+
+Conduit ships a [JSON Schema](schema/conduit.schema.json) that enables autocompletion,
+hover documentation, and inline validation in any JSON-aware editor.
+
+### VS Code — automatic (recommended)
+
+Add one line to your `conduit.json`:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json",
+  "port": 3000
+}
+```
+
+VS Code picks up `$schema` automatically — no extension needed.
+
+### VS Code — workspace-wide
+
+Add to `.vscode/settings.json` to enable validation for **all** `conduit*.json` files in
+the workspace without adding `$schema` to every file:
+
+```json
+{
+  "json.schemas": [
+    {
+      "fileMatch": ["conduit.json", "conduit.*.json"],
+      "url": "https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json"
+    }
+  ]
+}
+```
+
+### IntelliJ / WebStorm
+
+**Settings → Languages & Frameworks → Schemas and DTDs → JSON Schema Mappings**
+
+| Field | Value |
+|---|---|
+| Schema URL | `https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json` |
+| Schema version | JSON Schema version 2020-12 |
+| File path pattern | `conduit*.json` |
+
+### Any other editor
+
+Use the schema URL directly — most modern editors that support JSON Schema accept a `$schema`
+property or a manual mapping:
+
+```
+https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json
+```
+
+---
+
 ## Benchmarks
 
 See [BENCHMARKS.md](BENCHMARKS.md) for methodology and results.

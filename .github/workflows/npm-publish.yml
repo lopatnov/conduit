@@ -1,7 +1,8 @@
-name: Publish to npm (manual)
+name: Publish to npm + GitHub Packages (manual)
 
 # Use this workflow when the npm publish step of the Release workflow fails.
-# It downloads bare binaries from the existing GitHub Release and publishes.
+# It downloads bare binaries from the existing GitHub Release and publishes
+# to both npmjs.com and GitHub Packages.
 on:
   workflow_dispatch:
     inputs:
@@ -12,13 +13,14 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   publish-npm:
-    name: Publish to npm
+    name: Publish to npm + GitHub Packages
     runs-on: ubuntu-latest
 
     steps:
@@ -26,11 +28,6 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.tag }}
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
-        with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
 
       - name: Extract version from tag
         id: version
@@ -66,10 +63,34 @@ jobs:
 
       - name: Set package version
         working-directory: npm
-        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+        run: |
+          node -e "
+            const fs = require('fs');
+            const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            p.version = '${{ steps.version.outputs.version }}';
+            fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
+          "
 
-      - name: Publish npm package
+      # ── Publish to npmjs.com ────────────────────────────────────────────
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish to npmjs.com
         working-directory: npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+      # ── Publish to GitHub Packages ──────────────────────────────────────
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: "20"
+          registry-url: "https://npm.pkg.github.com"
+
+      - name: Publish to GitHub Packages
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm publish --access public
