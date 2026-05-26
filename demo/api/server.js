@@ -34,6 +34,19 @@ function send(res, statusCode, body) {
 
 function makeRoutes(port) {
   return {
+    'GET /': (_, res) =>
+      send(res, 200, {
+        service: 'conduit-demo-api',
+        port,
+        note: 'This is a mock backend. Access it through Conduit at http://localhost:8080/api/*',
+        routes: [
+          'GET  /health',
+          'GET  /users',
+          'GET  /products',
+          'GET  /info',
+          'POST /echo',
+        ],
+      }),
     'GET /health':   (_, res) => send(res, 200, { status: 'ok', service: 'demo-api', port }),
     'GET /users':    (_, res) => send(res, 200, { users, servedBy: port }),
     'GET /products': (_, res) => send(res, 200, { products, servedBy: port }),
