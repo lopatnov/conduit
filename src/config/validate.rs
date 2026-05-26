@@ -193,6 +193,20 @@ fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<
                     "At least one target is required in each group",
                 ));
             }
+            // Within a group, weighted-round-robin also requires weighted targets.
+            if group.strategy == Some(LoadBalanceStrategy::WeightedRoundRobin) {
+                let has_simple = group
+                    .targets
+                    .iter()
+                    .any(|t| matches!(t, ProxyTarget::Simple(_)));
+                if has_simple {
+                    errors.push(ValidationError::new(
+                        format!("{prefix}.groups[{i}].targets"),
+                        "Strategy 'weighted-round-robin' requires weighted targets: \
+                         { \"url\": \"...\", \"weight\": N }",
+                    ));
+                }
+            }
         }
     }
 
@@ -385,5 +399,68 @@ mod tests {
         let e = errs(r#"{ "tls": { "key": "a.key" } }"#);
         assert_eq!(e.len(), 1);
         assert!(e[0].message.contains("cert"), "got: {}", e[0].message);
+    }
+
+    #[test]
+    fn groups_empty_targets_in_group_invalid() {
+        let e = errs(
+            r#"{
+                "proxy": {
+                    "/api": {
+                        "groups": [
+                            { "name": "a", "targets": [] },
+                            { "name": "b", "targets": ["http://b1:4000"] }
+                        ]
+                    }
+                }
+            }"#,
+        );
+        assert!(!e.is_empty(), "empty group targets must be rejected");
+        assert!(
+            e[0].message.contains("target") || e[0].message.contains("group"),
+            "got: {}",
+            e[0].message
+        );
+    }
+
+    #[test]
+    fn groups_weighted_rr_with_simple_targets_invalid() {
+        let e = errs(
+            r#"{
+                "proxy": {
+                    "/api": {
+                        "groups": [
+                            {
+                                "name": "a",
+                                "targets": ["http://b1:4000", "http://b2:4000"],
+                                "strategy": "weighted-round-robin"
+                            }
+                        ]
+                    }
+                }
+            }"#,
+        );
+        assert!(!e.is_empty());
+        assert!(e[0].message.contains("weighted"), "got: {}", e[0].message);
+    }
+
+    #[test]
+    fn groups_no_top_level_targets_valid() {
+        assert!(
+            errs(
+                r#"{
+                    "proxy": {
+                        "/api": {
+                            "groups": [
+                                { "name": "a", "targets": ["http://b1:4000"] },
+                                { "name": "b", "targets": ["http://b2:4000"] }
+                            ]
+                        }
+                    }
+                }"#
+            )
+            .is_empty(),
+            "groups without top-level targets must be valid"
+        );
     }
 }
