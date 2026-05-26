@@ -34,7 +34,7 @@ humantime           = "2"
 # --- CLI ---
 clap          = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
-clap_mangen   = "0.2"
+clap_mangen   = "0.3"
 dialoguer     = "0.12"
 indicatif     = "0.18"
 async-trait   = "0.1"
@@ -68,7 +68,7 @@ uuid       = { version = "1", features = ["v4"] }
 # --- TLS / ACME ---
 instant-acme = { version = "0.8", features = ["rcgen"] }
 rcgen        = "0.14"
-x509-parser  = "0.16"
+x509-parser  = "0.17"
 # ring is the crypto provider for rustls; needed to install before TLS starts.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
@@ -85,10 +85,10 @@ rhai = { version = "1", features = ["sync"] }
 
 # Phase 4.2: Redis-backed rate limiting
 # TLS features disabled — Redis is typically on an internal network.
-redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
 
 [dev-dependencies]
-reqwest     = { version = "0.12", default-features = false, features = ["http2", "rustls-tls", "blocking", "json", "multipart"] }
+reqwest     = { version = "0.13", default-features = false, features = ["http2", "rustls", "blocking", "json", "multipart"] }
 criterion   = { version = "0.8", features = ["html_reports"] }
 tempfile    = "3"
 serial_test = "3"

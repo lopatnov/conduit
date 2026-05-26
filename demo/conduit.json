@@ -1,48 +1,96 @@
 {
-  "port": 8080,
-  "logging": "dev",
-  "cors": true,
-  "compression": true,
-  "securityHeaders": true,
-  "responseTime": true,
-  "headers": {
-    "X-Powered-By": "Conduit"
+  "global": {
+    "workers": 2,
+    "admin": { "bind": "127.0.0.1:2019" }
   },
-  "static": "./demo/dist",
-  "staticOptions": {
-    "etag": true,
-    "lastModified": true
-  },
-  "proxy": {
-    "/api": {
-      "targets": ["http://localhost:4000"],
-      "stripPrefix": true,
-      "retry": {
-        "attempts": 2,
-        "conditions": ["connection_error"]
+  "sites": [
+    {
+      "comment": "Site 1 — Public app (port 8080): static files + proxied API",
+      "port": 8080,
+      "logging": "dev",
+      "cors": true,
+      "compression": true,
+      "securityHeaders": true,
+      "responseTime": true,
+      "headers": {
+        "X-Powered-By": "Conduit",
+        "X-Site": "public"
+      },
+      "rateLimit": {
+        "windowSecs": 60,
+        "limit": 300,
+        "skipPaths": ["/__health__", "/__metrics__"]
+      },
+      "static": "./demo/dist",
+      "staticOptions": {
+        "etag": true,
+        "lastModified": true
+      },
+      "proxy": {
+        "/api": {
+          "targets": ["http://localhost:4000", "http://localhost:4001"],
+          "strategy": "round-robin",
+          "stripPrefix": true,
+          "retry": {
+            "attempts": 2,
+            "conditions": ["connection_error"]
+          },
+          "cache": {
+            "store": "memory",
+            "ttlSecs": 10,
+            "skipPaths": ["/echo"],
+            "skipIfCookie": false
+          }
+        }
+      },
+      "redirects": [
+        { "from": "/old-page", "to": "/", "status": 301 },
+        { "from": "/docs/:page", "to": "/", "status": 302 }
+      ],
+      "healthCheck": {
+        "path": "/__health__",
+        "includeUpstreams": true
+      },
+      "metrics": {
+        "path": "/__metrics__"
+      },
+      "fallback": {
+        "byAccept": {
+          "html": { "status": 200, "file": "./demo/dist/index.html" },
+          "json": { "status": 404, "body": { "error": "Not Found" } },
+          "*":    { "status": 200, "file": "./demo/dist/index.html" }
+        }
+      }
+    },
+    {
+      "comment": "Site 2 — Admin panel (port 8081): protected with Basic Auth",
+      "port": 8081,
+      "logging": "dev",
+      "responseTime": true,
+      "basicAuth": {
+        "users": { "admin": "demo1234" },
+        "challenge": true,
+        "realm": "Conduit Demo Admin",
+        "skipPaths": ["/__health__"]
+      },
+      "headers": {
+        "X-Powered-By": "Conduit",
+        "X-Site": "admin"
+      },
+      "static": "./demo/admin",
+      "healthCheck": {
+        "path": "/__health__"
+      },
+      "proxy": {
+        "/api": {
+          "targets": ["http://localhost:4000"],
+          "stripPrefix": true
+        }
+      },
+      "fallback": {
+        "status": 200,
+        "file": "./demo/admin/index.html"
       }
     }
-  },
-  "redirects": [
-    { "from": "/old-page", "to": "/", "status": 301 }
-  ],
-  "rateLimit": {
-    "windowSecs": 60,
-    "limit": 300,
-    "skipPaths": ["/__health__", "/__metrics__"]
-  },
-  "healthCheck": {
-    "path": "/__health__",
-    "includeUpstreams": true
-  },
-  "metrics": {
-    "path": "/__metrics__"
-  },
-  "fallback": {
-    "byAccept": {
-      "html": { "status": 200, "file": "./demo/dist/index.html" },
-      "json": { "status": 404, "body": { "error": "Not Found" } },
-      "*":    { "status": 200, "file": "./demo/dist/index.html" }
-    }
-  }
+  ]
 }

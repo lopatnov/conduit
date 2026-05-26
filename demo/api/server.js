@@ -1,11 +1,15 @@
 /**
- * Demo API server — mock backend for the Conduit demo.
+ * Demo API server — mock backends for the Conduit demo.
+ *
+ * Starts two identical HTTP servers on ports 4000 and 4001 so that the
+ * round-robin load balancing on site 1 (port 8080) can be observed live.
+ *
  * Run with: node demo/api/server.js
  */
 
 import { createServer } from 'node:http';
 
-const PORT = 4000;
+const PORTS = [4000, 4001];
 
 const users = [
   { id: 1, name: 'Alice',  email: 'alice@example.com',  role: 'admin'  },
@@ -28,56 +32,68 @@ function send(res, statusCode, body) {
   res.end(json);
 }
 
-const routes = {
-  'GET /health': (_, res) => send(res, 200, { status: 'ok', service: 'demo-api' }),
-  'GET /users':  (_, res) => send(res, 200, { users }),
-  'GET /products': (_, res) => send(res, 200, { products }),
-  'GET /info': (req, res) =>
-    send(res, 200, {
-      message: 'Conduit demo API',
-      receivedHeaders: Object.fromEntries(
-        ['host', 'x-forwarded-for', 'x-forwarded-proto', 'x-response-time']
-          .map((h) => [h, req.headers[h] ?? null])
-      ),
-      timestamp: new Date().toISOString(),
-    }),
-  'POST /echo': async (req, res) => {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    let body;
-    try { body = JSON.parse(Buffer.concat(chunks).toString()); }
-    catch { body = { raw: Buffer.concat(chunks).toString() }; }
-    send(res, 200, { echo: body });
-  },
-};
+function makeRoutes(port) {
+  return {
+    'GET /health':   (_, res) => send(res, 200, { status: 'ok', service: 'demo-api', port }),
+    'GET /users':    (_, res) => send(res, 200, { users, servedBy: port }),
+    'GET /products': (_, res) => send(res, 200, { products, servedBy: port }),
+    'GET /info': (req, res) =>
+      send(res, 200, {
+        message: 'Conduit demo API',
+        servedBy: port,
+        receivedHeaders: Object.fromEntries(
+          ['host', 'x-forwarded-for', 'x-forwarded-proto', 'x-response-time', 'x-site']
+            .map((h) => [h, req.headers[h] ?? null]),
+        ),
+        timestamp: new Date().toISOString(),
+      }),
+    'POST /echo': async (req, res) => {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      let body;
+      try { body = JSON.parse(Buffer.concat(chunks).toString()); }
+      catch { body = { raw: Buffer.concat(chunks).toString() }; }
+      send(res, 200, { echo: body, servedBy: port });
+    },
+  };
+}
 
-const server = createServer((req, res) => {
-  const key = `${req.method} ${req.url.split('?')[0]}`;
-  const handler = routes[key];
-  if (handler) {
-    Promise.resolve(handler(req, res)).catch((err) => {
-      console.error(err);
-      send(res, 500, { error: 'Internal server error' });
-    });
-  } else {
-    send(res, 404, { error: `No route for ${key}` });
-  }
-});
+for (const port of PORTS) {
+  const routes = makeRoutes(port);
 
-server.listen(PORT, () => {
-  console.log(`[demo-api] Listening on http://localhost:${PORT}`);
-  console.log('  GET  /health    → health check');
-  console.log('  GET  /users     → list users');
-  console.log('  GET  /products  → list products');
-  console.log('  GET  /info      → request info (shows proxy headers)');
-  console.log('  POST /echo      → echo the request body');
-});
+  const server = createServer((req, res) => {
+    const key = `${req.method} ${req.url.split('?')[0]}`;
+    const handler = routes[key];
+    if (handler) {
+      Promise.resolve(handler(req, res)).catch((err) => {
+        console.error(err);
+        send(res, 500, { error: 'Internal server error' });
+      });
+    } else {
+      send(res, 404, { error: `No route for ${key}` });
+    }
+  });
 
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`[demo-api] Port ${PORT} is already in use. Is the server already running?`);
-  } else {
-    console.error('[demo-api]', err);
-  }
-  process.exit(1);
-});
+  server.listen(port, () => {
+    console.log(`[demo-api] Instance :${port} ready`);
+  });
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`[demo-api] Port ${port} is already in use.`);
+    } else {
+      console.error(`[demo-api :${port}]`, err);
+    }
+    process.exit(1);
+  });
+}
+
+console.log('');
+console.log('[demo-api] Two instances started on ports 4000 and 4001');
+console.log('[demo-api] Conduit round-robins across both — watch "servedBy" in responses');
+console.log('');
+console.log('  GET  /health    → health check');
+console.log('  GET  /users     → list users');
+console.log('  GET  /products  → list products');
+console.log('  GET  /info      → request info (shows proxy headers)');
+console.log('  POST /echo      → echo the request body');
