@@ -53,6 +53,19 @@ impl BackgroundService for AdminApiService {
             health::spawn_health_checks(self.state.upstream_health.clone(), &config);
         }
 
+        // Spawn the browser hot-reload file watcher if any site has hotReload enabled.
+        {
+            let config = self.state.config.load();
+            if let Some((dirs, extensions)) =
+                crate::handler::hot_reload::build_watch_config(&config)
+            {
+                let reload_tx = self.state.hot_reload_tx.clone();
+                tokio::spawn(crate::handler::hot_reload::run_file_watcher(
+                    dirs, extensions, reload_tx,
+                ));
+            }
+        }
+
         let app = build_router(self.state.clone());
         let listener = match TcpListener::bind(&self.bind).await {
             Ok(l) => l,

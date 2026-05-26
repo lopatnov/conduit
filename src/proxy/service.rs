@@ -25,8 +25,8 @@ use crate::filter::{
     security_headers,
 };
 use crate::handler::{
-    acme_challenge as acme_handler, fallback, health, metrics as metrics_handler, response,
-    static_files,
+    acme_challenge as acme_handler, fallback, health, hot_reload as hot_reload_handler,
+    metrics as metrics_handler, response, static_files,
 };
 use crate::proxy::cache as proxy_cache;
 use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
@@ -117,10 +117,17 @@ pub struct AppState {
     /// has an `upload` block.  Populated before Pingora starts so the router
     /// can forward matching requests without a config look-up.
     pub upload_addr: Option<SocketAddr>,
+    /// Broadcast channel for hot-reload browser signals.
+    ///
+    /// When the file watcher detects a change in a watched directory, it sends
+    /// `()` on this channel.  All active SSE connections (`/__hot-reload__`)
+    /// subscribe and forward a `data: reload` event to the browser.
+    pub hot_reload_tx: tokio::sync::broadcast::Sender<()>,
 }
 
 impl AppState {
     pub fn new(config: AppConfig, config_path: PathBuf, upload_addr: Option<SocketAddr>) -> Self {
+        let (hot_reload_tx, _) = tokio::sync::broadcast::channel(16);
         Self {
             config: Arc::new(ArcSwap::new(Arc::new(config))),
             inflight: Arc::new(AtomicUsize::new(0)),
@@ -132,6 +139,7 @@ impl AppState {
             config_path,
             acme_challenges: Arc::new(DashMap::new()),
             upload_addr,
+            hot_reload_tx,
         }
     }
 }
@@ -312,10 +320,13 @@ impl ConduitProxy {
             }
         }
 
-        // Health and ACME challenge endpoints bypass all remaining filters.
+        // Health, ACME challenge, and hot-reload endpoints bypass all remaining filters.
         if matches!(
             guards.handler_kind,
-            HandlerKind::Health | HandlerKind::AcmeChallenge
+            HandlerKind::Health
+                | HandlerKind::AcmeChallenge
+                | HandlerKind::HotReloadSse
+                | HandlerKind::HotReloadJs
         ) {
             return Ok(false);
         }
@@ -571,6 +582,26 @@ impl ConduitProxy {
                     .unwrap_or((0, vec![]));
                 let site = config.sites.get(site_idx);
                 fallback::handle_fallback(session, site, &extra).await?;
+                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                Ok(true)
+            }
+            HandlerKind::HotReloadJs => {
+                let extra = ctx
+                    .as_ref()
+                    .map(|c| c.extra_headers.clone())
+                    .unwrap_or_default();
+                hot_reload_handler::handle_client_js(session, &extra).await?;
+                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                Ok(true)
+            }
+            HandlerKind::HotReloadSse => {
+                let extra = ctx
+                    .as_ref()
+                    .map(|c| c.extra_headers.clone())
+                    .unwrap_or_default();
+                let rx = self.state.hot_reload_tx.subscribe();
+                // inflight is decremented after the SSE stream ends (inside handle_sse).
+                hot_reload_handler::handle_sse(session, rx, &extra).await?;
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
                 Ok(true)
             }
@@ -1060,6 +1091,8 @@ enum HandlerKind {
     Metrics,
     StaticFile,
     Fallback,
+    HotReloadSse,
+    HotReloadJs,
     Proxy,
 }
 
@@ -1087,6 +1120,8 @@ fn handler_kind_of(upstream: &UpstreamTarget) -> HandlerKind {
         UpstreamTarget::Local(LocalHandler::AcmeChallenge { .. }) => HandlerKind::AcmeChallenge,
         UpstreamTarget::Local(LocalHandler::Metrics { .. }) => HandlerKind::Metrics,
         UpstreamTarget::Local(LocalHandler::StaticFile { .. }) => HandlerKind::StaticFile,
+        UpstreamTarget::Local(LocalHandler::HotReloadSse) => HandlerKind::HotReloadSse,
+        UpstreamTarget::Local(LocalHandler::HotReloadJs) => HandlerKind::HotReloadJs,
         UpstreamTarget::Local(_) => HandlerKind::Fallback,
         _ => HandlerKind::Proxy,
     }

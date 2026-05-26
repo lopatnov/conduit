@@ -129,6 +129,12 @@ pub enum LocalHandler {
     AcmeChallenge {
         token: String,
     },
+    /// Server-Sent Events stream at `/__hot-reload__`.
+    /// Clients subscribe and receive a `data: reload` event on file change.
+    HotReloadSse,
+    /// Client-side JavaScript served at `/__hot-reload__/client.js`.
+    /// Connects to the SSE stream and reloads the page on events.
+    HotReloadJs,
 }
 
 #[derive(Debug, Default, Clone)]

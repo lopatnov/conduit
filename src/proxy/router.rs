@@ -81,6 +81,26 @@ pub fn route_request(
             None,
             None,
         )
+    } else if is_hot_reload_js_path(site, path) {
+        (
+            UpstreamTarget::Local(LocalHandler::HotReloadJs),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+    } else if is_hot_reload_sse_path(site, path) {
+        (
+            UpstreamTarget::Local(LocalHandler::HotReloadSse),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
     } else if let Some(site) = site {
         route_site(site, path, client_ip, counters, upstream_health, upload_addr)
     } else {
@@ -479,6 +499,32 @@ fn is_health_path(site: Option<&SiteConfig>, path: &str) -> bool {
         }
     }
     bare == default_path
+}
+
+/// Returns `true` when the path targets the SSE hot-reload endpoint
+/// (`/__hot-reload__`) and the site has `hotReload` enabled.
+fn is_hot_reload_sse_path(site: Option<&SiteConfig>, path: &str) -> bool {
+    use crate::config::schema::HotReloadConfig;
+    let Some(site) = site else { return false };
+    let Some(hr) = &site.hot_reload else { return false };
+    if matches!(hr, HotReloadConfig::Enabled(false)) {
+        return false;
+    }
+    let bare = path.split('?').next().unwrap_or(path);
+    bare == "/__hot-reload__"
+}
+
+/// Returns `true` when the path targets the hot-reload client JS file
+/// (`/__hot-reload__/client.js`) and the site has `hotReload` enabled.
+fn is_hot_reload_js_path(site: Option<&SiteConfig>, path: &str) -> bool {
+    use crate::config::schema::HotReloadConfig;
+    let Some(site) = site else { return false };
+    let Some(hr) = &site.hot_reload else { return false };
+    if matches!(hr, HotReloadConfig::Enabled(false)) {
+        return false;
+    }
+    let bare = path.split('?').next().unwrap_or(path);
+    bare == "/__hot-reload__/client.js"
 }
 
 /// If `path` starts with the ACME HTTP-01 challenge prefix, return the token
