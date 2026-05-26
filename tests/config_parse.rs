@@ -537,6 +537,151 @@ fn env_interpolation_in_config() {
     );
 }
 
+// ── routes array (Phase 3.6) ──────────────────────────────────────────────
+
+#[test]
+fn routes_array_parsed() {
+    let cfg = parse(
+        r#"{
+            "routes": [
+                {
+                    "match": { "path": "/api/**", "method": ["GET", "POST"] },
+                    "proxy": "http://backend:4000"
+                },
+                {
+                    "match": { "path": "/public/**" },
+                    "static": "./public"
+                }
+            ]
+        }"#,
+    );
+    let routes = cfg.sites[0].routes.as_ref().expect("routes must be set");
+    assert_eq!(routes.len(), 2);
+    assert_eq!(routes[0].r#match.path.as_deref(), Some("/api/**"));
+    let method = routes[0].r#match.method.as_ref().expect("method must be set");
+    assert_eq!(method, &["GET", "POST"]);
+    assert!(matches!(routes[0].proxy, Some(ProxyRouteTarget::Url(_))));
+    assert_eq!(routes[1].r#match.path.as_deref(), Some("/public/**"));
+    assert!(routes[1].static_files.is_some());
+}
+
+#[test]
+fn routes_array_full_proxy_config() {
+    let cfg = parse(
+        r#"{
+            "routes": [
+                {
+                    "match": { "path": "/api/**" },
+                    "proxy": {
+                        "targets": ["http://b1:4000", "http://b2:4000"],
+                        "strategy": "least-conn",
+                        "stripPrefix": true
+                    }
+                }
+            ]
+        }"#,
+    );
+    let route = &cfg.sites[0].routes.as_ref().unwrap()[0];
+    if let Some(ProxyRouteTarget::Full(pcfg)) = &route.proxy {
+        assert_eq!(pcfg.strategy, Some(LoadBalanceStrategy::LeastConn));
+        assert_eq!(pcfg.strip_prefix, Some(true));
+    } else {
+        panic!("expected Full proxy target");
+    }
+}
+
+// ── upstream groups (Phase 3.7b) ──────────────────────────────────────────
+
+#[test]
+fn groups_parsed() {
+    let cfg = parse(
+        r#"{
+            "proxy": {
+                "/api": {
+                    "groups": [
+                        { "name": "us-east", "targets": ["http://us1:4000", "http://us2:4000"], "strategy": "round-robin" },
+                        { "name": "eu-west", "targets": ["http://eu1:4000"], "strategy": "least-conn" }
+                    ],
+                    "groupStrategy": "ip-hash"
+                }
+            }
+        }"#,
+    );
+    if let Some(ProxyConfig::Routes(routes)) = &cfg.sites[0].proxy {
+        if let Some(ProxyRouteTarget::Full(pcfg)) = routes.get("/api") {
+            let groups = pcfg.groups.as_ref().expect("groups must be set");
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[0].name, "us-east");
+            assert_eq!(groups[0].targets.len(), 2);
+            assert_eq!(groups[0].strategy, Some(LoadBalanceStrategy::RoundRobin));
+            assert_eq!(groups[1].name, "eu-west");
+            assert_eq!(groups[1].strategy, Some(LoadBalanceStrategy::LeastConn));
+            assert_eq!(pcfg.group_strategy, Some(LoadBalanceStrategy::IpHash));
+        } else {
+            panic!("expected Full target for /api");
+        }
+    } else {
+        panic!("expected Routes proxy config");
+    }
+}
+
+#[test]
+fn groups_no_top_level_targets_parsed() {
+    // groups without top-level targets must deserialise successfully (serde(default))
+    let cfg = parse(
+        r#"{
+            "proxy": {
+                "/": {
+                    "groups": [
+                        { "name": "a", "targets": ["http://a:4000"] }
+                    ]
+                }
+            }
+        }"#,
+    );
+    if let Some(ProxyConfig::Routes(routes)) = &cfg.sites[0].proxy {
+        if let Some(ProxyRouteTarget::Full(pcfg)) = routes.get("/") {
+            assert!(pcfg.targets.is_empty(), "top-level targets must default to []");
+            assert!(pcfg.groups.is_some());
+        } else {
+            panic!("expected Full target");
+        }
+    } else {
+        panic!("expected Routes");
+    }
+}
+
+// ── rewrite rules (Phase 3.7) ─────────────────────────────────────────────
+
+#[test]
+fn rewrite_rules_parsed() {
+    let cfg = parse(
+        r#"{
+            "proxy": {
+                "/api": {
+                    "targets": ["http://backend:4000"],
+                    "rewrite": [
+                        { "from": "^/v[0-9]+/(.+)$", "to": "/$1" },
+                        { "from": "^/users/([0-9]+)$", "to": "/members/$1" }
+                    ]
+                }
+            }
+        }"#,
+    );
+    if let Some(ProxyConfig::Routes(routes)) = &cfg.sites[0].proxy {
+        if let Some(ProxyRouteTarget::Full(pcfg)) = routes.get("/api") {
+            let rules = pcfg.rewrite.as_ref().expect("rewrite must be set");
+            assert_eq!(rules.len(), 2);
+            assert_eq!(rules[0].from, "^/v[0-9]+/(.+)$");
+            assert_eq!(rules[0].to, "/$1");
+        } else {
+            panic!("expected Full target");
+        }
+    } else {
+        panic!("expected Routes");
+    }
+}
+
 // ── Error paths ────────────────────────────────────────────────────────────
 
 #[test]
