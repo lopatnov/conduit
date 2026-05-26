@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use crate::config::schema::{
-    AppConfig, FallbackConfig, IpFilterConfig, LoadBalanceStrategy, ProxyConfig, ProxyRouteConfig,
-    ProxyRouteTarget, ProxyTarget, RateLimitConfig, RedirectRule, RewriteRule, SiteConfig,
-    TlsConfig,
+    AppConfig, FallbackConfig, IpFilterConfig, LoadBalanceStrategy, MetricsConfig, ProxyConfig,
+    ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig, RedirectRule, RewriteRule,
+    SiteConfig, TlsConfig, UploadConfig,
 };
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -96,6 +96,12 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
     if let Some(ip_filter) = &site.ip_filter {
         validate_ip_filter(ip_filter, prefix, errors);
     }
+    if let Some(upload) = &site.upload {
+        validate_upload(upload, prefix, errors);
+    }
+    if let Some(metrics) = &site.metrics {
+        validate_metrics(metrics, prefix, errors);
+    }
     if let Some(rate_limit) = &site.rate_limit {
         validate_rate_limit(rate_limit, prefix, errors);
     }
@@ -152,6 +158,32 @@ fn validate_fallback(fb: &FallbackConfig, prefix: &str, errors: &mut Vec<Validat
                     "Invalid fallback status {status} \
                      — must be a valid HTTP status code (100–599)"
                 ),
+            ));
+        }
+    }
+}
+
+fn validate_upload(cfg: &UploadConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
+    if !cfg.path.starts_with('/') {
+        errors.push(ValidationError::new(
+            format!("{prefix}.upload.path"),
+            format!("Upload path '{}' must start with '/'", cfg.path),
+        ));
+    }
+    if cfg.dir.trim().is_empty() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.upload.dir"),
+            "Upload directory path must not be empty",
+        ));
+    }
+}
+
+fn validate_metrics(cfg: &MetricsConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
+    if let Some(path) = &cfg.path {
+        if !path.starts_with('/') {
+            errors.push(ValidationError::new(
+                format!("{prefix}.metrics.path"),
+                format!("Metrics path '{path}' must start with '/'"),
             ));
         }
     }
@@ -688,6 +720,30 @@ mod tests {
     fn ip_filter_prefix_too_large_invalid() {
         let e = errs(r#"{ "ipFilter": { "deny": ["10.0.0.0/33"] } }"#);
         assert!(!e.is_empty(), "/33 is invalid for IPv4");
+    }
+
+    #[test]
+    fn upload_path_without_leading_slash_invalid() {
+        let e = errs(r#"{ "upload": { "path": "upload", "dir": "./uploads" } }"#);
+        assert!(!e.is_empty(), "upload path without leading slash must be rejected");
+        assert!(e[0].path.contains("upload.path"), "got: {}", e[0].path);
+    }
+
+    #[test]
+    fn upload_valid_config_no_errors() {
+        assert!(errs(r#"{ "upload": { "path": "/upload", "dir": "./uploads" } }"#).is_empty());
+    }
+
+    #[test]
+    fn metrics_path_without_leading_slash_invalid() {
+        let e = errs(r#"{ "metrics": { "path": "metrics" } }"#);
+        assert!(!e.is_empty(), "metrics path without leading slash must be rejected");
+        assert!(e[0].path.contains("metrics.path"), "got: {}", e[0].path);
+    }
+
+    #[test]
+    fn metrics_valid_path_no_errors() {
+        assert!(errs(r#"{ "metrics": { "path": "/__metrics__" } }"#).is_empty());
     }
 
     #[test]
