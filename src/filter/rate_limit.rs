@@ -50,8 +50,13 @@ impl TokenBucket {
         }
     }
 
+    /// Return the configured window length in seconds.
+    pub fn window_secs(&self) -> u64 {
+        self.window_secs
+    }
+
     /// Returns `true` if this bucket has not been touched for `max_idle_secs`.
-    fn is_stale(&self, max_idle_secs: u64) -> bool {
+    pub fn is_stale(&self, max_idle_secs: u64) -> bool {
         self.last_touched.elapsed().as_secs() >= max_idle_secs
     }
 }
@@ -64,6 +69,12 @@ pub type RateLimiter = DashMap<String, TokenBucket>;
 /// `keyBy`:
 /// - `"ip"` (default) — client IP address
 /// - `"header:X-Foo"` — value of the named request header
+///
+/// Public so the Redis rate limiter can reuse the same key derivation logic.
+pub fn extract_client_key(cfg: &RateLimitConfig, session: &Session) -> String {
+    extract_key(cfg, session)
+}
+
 fn extract_key(cfg: &RateLimitConfig, session: &Session) -> String {
     let key_by = cfg.key_by.as_deref().unwrap_or("ip");
 

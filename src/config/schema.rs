@@ -331,6 +331,13 @@ pub struct RateLimitConfig {
     pub key_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_paths: Option<Vec<String>>,
+    /// Backend store for the rate limiter.
+    ///
+    /// - `"memory"` (default) — in-process `DashMap<String, TokenBucket>`.
+    /// - `"redis://host:port"` — Redis-backed, with automatic failover to the
+    ///   in-memory bucket when Redis is unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

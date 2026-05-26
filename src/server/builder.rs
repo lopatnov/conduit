@@ -9,7 +9,9 @@ use pingora_proxy::http_proxy_service;
 
 use crate::admin::api::AdminApiService;
 use crate::config::defaults::DEFAULT_ADMIN_BIND;
-use crate::config::schema::{AppConfig, SiteConfig};
+use crate::config::schema::AppConfig;
+use crate::config::schema::SiteConfig;
+use crate::filter::rate_limit_redis::RedisRateLimiter;
 use crate::proxy::service::{AppState, ConduitProxy};
 use crate::server::{acme as acme_util, tls as tls_util};
 use crate::upload::UploadService;
@@ -100,8 +102,47 @@ pub fn run_server(config: AppConfig, config_path: PathBuf) -> anyhow::Result<()>
         (None, None)
     };
 
+    // If any site uses a Redis-backed rate limiter, connect to Redis now.
+    // Connection failures are logged as warnings; the server falls back to the
+    // in-memory rate limiter rather than refusing to start.
+    let redis_rl = {
+        let url_opt = config.sites.iter().find_map(|s| {
+            s.rate_limit
+                .as_ref()
+                .and_then(|rl| rl.store.as_deref())
+                .filter(|s| s.starts_with("redis://"))
+                .map(str::to_owned)
+        });
+        if let Some(ref url) = url_opt {
+            // The ACME block below already spins up a Tokio runtime for async
+            // work.  Reuse the same approach: a temporary single-threaded
+            // runtime just for the Redis handshake.
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| anyhow::anyhow!("cannot build tokio runtime for Redis: {e}"))?;
+            match rt.block_on(RedisRateLimiter::connect(url)) {
+                Ok(rrl) => {
+                    tracing::info!("Redis rate limiter connected to {url}");
+                    Some(Arc::new(rrl))
+                }
+                Err(e) => {
+                    tracing::warn!("Redis rate limiter unavailable ({url}): {e} — using memory fallback");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+
     // Create AppState early so acme_challenges can be shared with the ACME flow.
-    let state = Arc::new(AppState::new(config.clone(), config_path, upload_addr));
+    let state = Arc::new(AppState::new_with_redis(
+        config.clone(),
+        config_path,
+        upload_addr,
+        redis_rl,
+    ));
 
     // ── Phase 3.1: ACME certificate procurement ──────────────────────────────
     // For each site that uses `tls.acme`, obtain (or load a cached) certificate

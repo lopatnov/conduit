@@ -20,6 +20,7 @@ use crate::config::schema::{
     IpFilterConfig, LimitsConfig, MiddlewareEntry, ProxyTimeout, RateLimitConfig,
 };
 use crate::filter::rate_limit::RateLimiter;
+use crate::filter::rate_limit_redis::RedisRateLimiter;
 use crate::filter::{
     auth, compression, cors, ip_filter, limits, logging, rate_limit, redirects, response_time,
     script, security_headers,
@@ -123,10 +124,23 @@ pub struct AppState {
     /// `()` on this channel.  All active SSE connections (`/__hot-reload__`)
     /// subscribe and forward a `data: reload` event to the browser.
     pub hot_reload_tx: tokio::sync::broadcast::Sender<()>,
+    /// Redis-backed rate limiter, instantiated when any site configures
+    /// `rateLimit.store: "redis://..."`.  `None` when no site uses Redis
+    /// rate limiting.
+    pub redis_rate_limiter: Option<Arc<RedisRateLimiter>>,
 }
 
 impl AppState {
     pub fn new(config: AppConfig, config_path: PathBuf, upload_addr: Option<SocketAddr>) -> Self {
+        Self::new_with_redis(config, config_path, upload_addr, None)
+    }
+
+    pub fn new_with_redis(
+        config: AppConfig,
+        config_path: PathBuf,
+        upload_addr: Option<SocketAddr>,
+        redis_rate_limiter: Option<Arc<RedisRateLimiter>>,
+    ) -> Self {
         let (hot_reload_tx, _) = tokio::sync::broadcast::channel(16);
         Self {
             config: Arc::new(ArcSwap::new(Arc::new(config))),
@@ -140,6 +154,7 @@ impl AppState {
             acme_challenges: Arc::new(DashMap::new()),
             upload_addr,
             hot_reload_tx,
+            redis_rate_limiter,
         }
     }
 }
@@ -456,7 +471,26 @@ impl ConduitProxy {
 
         // 4. Token-bucket rate limiting.
         if let Some(ref rl_cfg) = rate_limit_cfg {
-            if !rate_limit::check(rl_cfg, session, &self.state.rate_limiter) {
+            // Determine whether to use Redis or the in-memory limiter.
+            let allowed = match rl_cfg
+                .store
+                .as_deref()
+                .filter(|s| s.starts_with("redis://"))
+            {
+                Some(_) => {
+                    // Use Redis if the rate limiter was initialised at startup.
+                    // Fall through to memory if it is absent (startup failure).
+                    if let Some(ref rrl) = self.state.redis_rate_limiter {
+                        let key = rate_limit::extract_client_key(rl_cfg, session);
+                        rrl.check(&key, rl_cfg.limit, rl_cfg.window_secs).await
+                    } else {
+                        // Redis connection failed at startup — use memory.
+                        rate_limit::check(rl_cfg, session, &self.state.rate_limiter)
+                    }
+                }
+                None => rate_limit::check(rl_cfg, session, &self.state.rate_limiter),
+            };
+            if !allowed {
                 response::write_response(
                     session,
                     429,

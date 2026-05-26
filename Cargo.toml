@@ -83,6 +83,10 @@ base64    = "0.22"
 # Phase 4: Rhai scripting middleware
 rhai = { version = "1", features = ["sync"] }
 
+# Phase 4.2: Redis-backed rate limiting
+# TLS features disabled — Redis is typically on an internal network.
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"] }
+
 [dev-dependencies]
 reqwest     = { version = "0.12", default-features = false, features = ["http2", "rustls-tls", "blocking", "json", "multipart"] }
 criterion   = { version = "0.8", features = ["html_reports"] }

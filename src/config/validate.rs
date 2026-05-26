@@ -164,6 +164,17 @@ fn validate_rate_limit(
             "limit must be greater than 0",
         ));
     }
+    // Validate the store field: must be "memory" or a redis:// URL.
+    if let Some(store) = &rate_limit.store {
+        if store != "memory" && !store.starts_with("redis://") {
+            errors.push(ValidationError::new(
+                format!("{prefix}.rateLimit.store"),
+                format!(
+                    "invalid store \"{store}\" — must be \"memory\" or a redis:// URL"
+                ),
+            ));
+        }
+    }
 }
 
 fn validate_redirect_rules(
@@ -796,6 +807,29 @@ mod tests {
             }"#,
         );
         assert!(!e.is_empty(), "invalid regex in routes array must be caught");
+    }
+
+    // ── rateLimit.store validation ────────────────────────────────────────────
+
+    #[test]
+    fn rate_limit_memory_store_valid() {
+        assert!(errs(
+            r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "store": "memory" } }"#
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn rate_limit_redis_store_valid() {
+        assert!(errs(r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://127.0.0.1:6379" } }"#)
+            .is_empty());
+    }
+
+    #[test]
+    fn rate_limit_invalid_store_rejected() {
+        let e = errs(r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "store": "memcached://localhost" } }"#);
+        assert!(!e.is_empty(), "invalid store must be rejected");
+        assert!(e[0].path.contains("store"), "got: {}", e[0].path);
     }
 
     // ── middleware validation ─────────────────────────────────────────────────

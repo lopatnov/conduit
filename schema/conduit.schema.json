@@ -60,7 +60,12 @@
             "limit":      { "type": "integer", "minimum": 1 },
             "algorithm":  { "type": "string", "enum": ["token-bucket"] },
             "keyBy":      { "type": "string", "enum": ["ip", "header"] },
-            "skipPaths":  { "type": "array", "items": { "type": "string" } }
+            "skipPaths":  { "type": "array", "items": { "type": "string" } },
+            "store": {
+              "type": "string",
+              "description": "Backend for the rate-limiter state. \"memory\" (default) uses an in-process DashMap; a Redis URL (e.g. \"redis://127.0.0.1:6379\") uses a Redis fixed-window counter with automatic fallback to memory on failure.",
+              "examples": ["memory", "redis://127.0.0.1:6379"]
+            }
           }
         },
         "basicAuth": {
