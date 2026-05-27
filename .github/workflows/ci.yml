@@ -85,20 +85,24 @@ jobs:
           done
           echo "Pebble did not start in time" && exit 1
 
-      - name: Install Pebble root CA in system trust store
+      - name: Download Pebble root CA for ACME tests
         run: |
-          # ghcr.io/letsencrypt/pebble exposes the management API on HTTPS port 15000.
-          # -k skips Pebble's own self-signed TLS on the management interface.
-          # Pipe through sudo tee: writing to /usr/local/share/ca-certificates/
-          # requires root even on GitHub's ubuntu-latest runner.
-          curl -sk https://localhost:15000/roots/0 \
-            | sudo tee /usr/local/share/ca-certificates/pebble-root.crt > /dev/null
-          sudo update-ca-certificates
-        # instant-acme uses hyper-rustls with rustls-native-certs which reads
-        # the system CA store — this makes it trust Pebble's self-signed cert.
+          # Pebble's management API (port 15000, HTTPS with self-signed cert) serves
+          # the root CA at /roots/0.  -k skips verification of Pebble's own TLS cert.
+          # The cert may arrive as DER; convert to PEM so instant-acme can load it.
+          curl -skf https://localhost:15000/roots/0 > /tmp/pebble-root-raw
+          # Try DER → PEM conversion first; fall back to treating the response as PEM.
+          openssl x509 -inform DER -in /tmp/pebble-root-raw -out /tmp/pebble-root.pem 2>/dev/null \
+            || cp /tmp/pebble-root-raw /tmp/pebble-root.pem
+          # Verify we have a valid PEM cert; fail loudly if not.
+          openssl x509 -in /tmp/pebble-root.pem -noout -subject
 
       - name: Build (debug for faster CI)
         run: cargo build
 
       - name: Run ACME tests
+        env:
+          # Tell Conduit to trust Pebble's self-signed root CA.
+          # instant-acme will use Account::builder_with_root() when this is set.
+          CONDUIT_ACME_EXTRA_ROOT: /tmp/pebble-root.pem
         run: cargo test --test acme -- --nocapture
