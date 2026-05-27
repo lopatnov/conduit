@@ -171,7 +171,7 @@ conduit
 
 ## CLI Reference
 
-```
+```text
 conduit                     start server (reads conduit.json)
 conduit -c <file>           use a specific config file
 conduit --version           print version

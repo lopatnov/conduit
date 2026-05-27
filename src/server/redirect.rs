@@ -49,7 +49,7 @@ impl ProxyHttp for RedirectProxy {
                 Some(key_auth) => Bytes::copy_from_slice(key_auth.as_bytes()),
                 None => {
                     let mut resp = ResponseHeader::build(404, Some(1))?;
-                    resp.insert_header("Content-Length", "19")?;
+                    resp.insert_header("Content-Length", "20")?;
                     session.write_response_header(Box::new(resp), false).await?;
                     session
                         .write_response_body(

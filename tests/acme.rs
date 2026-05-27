@@ -34,6 +34,10 @@ fn acme_obtains_certificate_and_serves_https() {
 
     let port = common::free_port();
     let admin_port = common::free_port();
+    // Use a free unprivileged port for the HTTP-01 challenge server.
+    // Pebble is configured with PEBBLE_VA_ALWAYS_VALID=1 in CI so it never
+    // makes a real HTTP request; any bindable port works.
+    let http_challenge_port = common::free_port();
     let dir = tempfile::tempdir().expect("tempdir");
     let cert_dir = dir.path().join("certs");
 
@@ -45,6 +49,9 @@ fn acme_obtains_certificate_and_serves_https() {
             "host": "test.example.com",
             "port": port,
             "tls": {
+                // httpRedirectPort doubles as the HTTP-01 challenge port so
+                // the ACME server can bind an unprivileged port instead of 80.
+                "httpRedirectPort": http_challenge_port,
                 "acme": {
                     "email": "test@example.com",
                     "directory": "https://localhost:14000/dir",

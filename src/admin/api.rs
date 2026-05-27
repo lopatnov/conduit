@@ -13,6 +13,7 @@ use tokio::net::TcpListener;
 
 use crate::config;
 use crate::config::schema::LoggingConfig;
+use crate::config::validate;
 use crate::proxy::health;
 use crate::proxy::service::AppState;
 
@@ -122,6 +123,16 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
             }));
         }
     };
+
+    // Validate the new config before applying it.
+    let errors = validate::validate(&new_config);
+    if !errors.is_empty() {
+        return Json(json!({
+            "status": "error",
+            "message": "config validation failed",
+            "errors": errors,
+        }));
+    }
 
     // Detect fields that require a restart (cold changes).
     let cold_fields = detect_cold_changes(&state.config.load(), &new_config);
@@ -357,20 +368,40 @@ async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
                         LoadBalanceStrategy::IpHash => "ip-hash",
                         LoadBalanceStrategy::ConsistentHash => "consistent-hash",
                     };
-                    let tgts = cfg
-                        .targets
-                        .iter()
-                        .map(|t| {
-                            let (url, weight) = match t {
-                                ProxyTarget::Simple(u) => (u.as_str(), 1u32),
-                                ProxyTarget::Weighted(w) => (w.url.as_str(), w.weight),
-                            };
-                            let mut h = health_of(url);
-                            h["url"] = json!(url);
-                            h["weight"] = json!(weight);
-                            h
-                        })
-                        .collect();
+                    // When `groups` is configured, collect all targets across
+                    // every group so the admin view reflects the full pool.
+                    let tgts: Vec<Value> = if let Some(groups) = &cfg.groups {
+                        groups
+                            .iter()
+                            .flat_map(|g| {
+                                g.targets.iter().map(|t| {
+                                    let (url, weight) = match t {
+                                        ProxyTarget::Simple(u) => (u.as_str(), 1u32),
+                                        ProxyTarget::Weighted(w) => (w.url.as_str(), w.weight),
+                                    };
+                                    let mut h = health_of(url);
+                                    h["url"] = json!(url);
+                                    h["weight"] = json!(weight);
+                                    h["group"] = json!(&g.name);
+                                    h
+                                })
+                            })
+                            .collect()
+                    } else {
+                        cfg.targets
+                            .iter()
+                            .map(|t| {
+                                let (url, weight) = match t {
+                                    ProxyTarget::Simple(u) => (u.as_str(), 1u32),
+                                    ProxyTarget::Weighted(w) => (w.url.as_str(), w.weight),
+                                };
+                                let mut h = health_of(url);
+                                h["url"] = json!(url);
+                                h["weight"] = json!(weight);
+                                h
+                            })
+                            .collect()
+                    };
                     (strat, tgts)
                 }
             };

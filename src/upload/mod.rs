@@ -53,11 +53,13 @@ impl BackgroundService for UploadService {
             tracing::info!("upload server listening on http://{addr}");
         }
 
-        axum::serve(listener, server::make_upload_router(self.state.clone()))
+        if let Err(e) = axum::serve(listener, server::make_upload_router(self.state.clone()))
             .with_graceful_shutdown(async move {
                 shutdown.changed().await.ok();
             })
             .await
-            .ok();
+        {
+            tracing::error!("upload server exited with error: {e}");
+        }
     }
 }

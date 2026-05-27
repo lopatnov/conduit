@@ -135,6 +135,9 @@ async fn obtain_certificate(
     }
 
     // Populate challenge tokens and notify the CA to begin validation.
+    // Track every token we insert so we can remove only our own entries later,
+    // leaving tokens belonging to other concurrent ACME operations intact.
+    let mut our_tokens: Vec<String> = Vec::new();
     let mut authorizations = order.authorizations();
     while let Some(authz_result) = authorizations.next().await {
         let mut authz = authz_result.context("ACME authorizations fetch failed")?;
@@ -149,6 +152,7 @@ async fn obtain_certificate(
 
         let key_auth = challenge_handle.key_authorization();
         let token = challenge_handle.token.clone();
+        our_tokens.push(token.clone());
         challenges.insert(token, key_auth.as_str().to_owned());
 
         challenge_handle
@@ -167,8 +171,11 @@ async fn obtain_certificate(
     // Shut down the temporary challenge server (best effort — errors are non-fatal).
     let _ = stop_tx.send(());
 
-    // Clear challenge tokens from the shared store.
-    challenges.clear();
+    // Remove only the tokens we inserted, preserving any tokens that belong
+    // to concurrent ACME operations for other domains.
+    for token in &our_tokens {
+        challenges.remove(token);
+    }
 
     // Finalize the order: instant-acme generates a fresh ECDSA key-pair and CSR
     // internally (via the `rcgen` feature), then sends the CSR to the CA.

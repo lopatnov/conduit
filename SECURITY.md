@@ -62,7 +62,7 @@ actual risk is.
 
 **Root cause chain:**
 
-```
+```text
 conduit → pingora-core 0.8.0 → prometheus 0.13.4 → protobuf ^2 (uses 2.x API)
 ```
 

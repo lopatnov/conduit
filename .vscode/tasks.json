@@ -27,7 +27,11 @@
       },
       "isBackground": true,
       "problemMatcher": {
-        "pattern": { "regexp": "." },
+        "owner": "demo-api",
+        "pattern": {
+          "regexp": "^(NOMATCH)$",
+          "message": 1
+        },
         "background": {
           "activeOnStart": true,
           "beginsPattern": "\\[demo-api\\]",
@@ -60,7 +64,11 @@
       "options": { "cwd": "${workspaceFolder}" },
       "isBackground": true,
       "problemMatcher": {
-        "pattern": { "regexp": "." },
+        "owner": "demo-api",
+        "pattern": {
+          "regexp": "^(NOMATCH)$",
+          "message": 1
+        },
         "background": {
           "activeOnStart": false,
           "beginsPattern": "\\[demo-api\\]",

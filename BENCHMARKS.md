@@ -13,7 +13,7 @@ Node.js tool that inspired this project.
 
 All numbers below were measured on the same machine:
 
-```
+```text
 OS:    Ubuntu 24.04 LTS (WSL2 on Windows 11)
 CPU:   AMD Ryzen 9 5950X (16 cores)
 RAM:   64 GB DDR4-3600

@@ -51,8 +51,6 @@ exclude:
   - contrib/
   - scripts/
   - npm/
-  - schema/
-  - examples/
   - Cargo.toml
   - Cargo.lock
   - Makefile

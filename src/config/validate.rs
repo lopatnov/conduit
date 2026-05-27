@@ -9,7 +9,7 @@ use crate::config::schema::{
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, serde::Serialize)]
 pub struct ValidationError {
     pub path: String,
     pub message: String,

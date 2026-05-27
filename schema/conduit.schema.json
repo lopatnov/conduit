@@ -174,7 +174,9 @@
                 "type": "string",
                 "description": "Path to the Rhai script file. Required when type is \"script\"."
               }
-            }
+            },
+            "if": { "properties": { "type": { "const": "script" } }, "required": ["type"] },
+            "then": { "required": ["path"] }
           }
         }
       }
@@ -445,7 +447,11 @@
         "proxy":  { "$ref": "#/$defs/ProxyRouteTarget" },
         "static": { "$ref": "#/$defs/StaticConfig" }
       },
-      "description": "A single route rule: match criteria → proxy or static handler."
+      "anyOf": [
+        { "required": ["proxy"] },
+        { "required": ["static"] }
+      ],
+      "description": "A single route rule: match criteria → proxy or static handler. At least one of proxy or static must be specified."
     },
     "MatchConfig": {
       "type": "object",

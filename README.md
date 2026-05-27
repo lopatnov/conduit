@@ -1255,7 +1255,7 @@ the workspace without adding `$schema` to every file:
 Use the schema URL directly — most modern editors that support JSON Schema accept a `$schema`
 property or a manual mapping:
 
-```
+```text
 https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json
 ```
 
