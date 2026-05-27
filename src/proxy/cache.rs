@@ -179,7 +179,14 @@ mod tests {
 
     #[test]
     fn cache_key_with_query() {
-        let _ = build_cache_key("example.com", "https", "/search", Some("q=hello"), None, None);
+        let _ = build_cache_key(
+            "example.com",
+            "https",
+            "/search",
+            Some("q=hello"),
+            None,
+            None,
+        );
     }
 
     #[test]

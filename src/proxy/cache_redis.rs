@@ -26,12 +26,12 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use pingora_cache::{
-    CacheKey, CacheMeta,
     storage::{HandleHit, HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeType, Storage},
     trace::SpanHandle,
+    CacheKey, CacheMeta,
 };
-use pingora_core::{Error, ErrorType};
 use pingora_core::Result as PingoraResult;
+use pingora_core::{Error, ErrorType};
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 
@@ -80,15 +80,18 @@ impl RedisCacheStorage {
                 s
             }
             Err(e) => {
-                tracing::error!(url, "Redis proxy cache connect failed: {e} — cache disabled");
+                tracing::error!(
+                    url,
+                    "Redis proxy cache connect failed: {e} — cache disabled"
+                );
                 panic!("redis cache connect: {e}")
             }
         }
     }
 
     async fn new(url: &str) -> anyhow::Result<Self> {
-        let client = redis::Client::open(url)
-            .map_err(|e| anyhow::anyhow!("invalid Redis URL: {e}"))?;
+        let client =
+            redis::Client::open(url).map_err(|e| anyhow::anyhow!("invalid Redis URL: {e}"))?;
         let conn = ConnectionManager::new(client)
             .await
             .map_err(|e| anyhow::anyhow!("cannot connect to Redis ({url}): {e}"))?;
@@ -132,20 +135,18 @@ impl Storage for RedisCacheStorage {
                 .await;
 
         match result {
-            Ok((Some(m0), Some(m1), Some(body))) => {
-                match CacheMeta::deserialize(&m0, &m1) {
-                    Ok(meta) => {
-                        let handler = Box::new(RedisHitHandler {
-                            body: Some(Bytes::from(body)),
-                        }) as HitHandler;
-                        Ok(Some((meta, handler)))
-                    }
-                    Err(e) => {
-                        tracing::warn!(key = %redis_key, "Redis cache meta deserialize error: {e}");
-                        Ok(None)
-                    }
+            Ok((Some(m0), Some(m1), Some(body))) => match CacheMeta::deserialize(&m0, &m1) {
+                Ok(meta) => {
+                    let handler = Box::new(RedisHitHandler {
+                        body: Some(Bytes::from(body)),
+                    }) as HitHandler;
+                    Ok(Some((meta, handler)))
                 }
-            }
+                Err(e) => {
+                    tracing::warn!(key = %redis_key, "Redis cache meta deserialize error: {e}");
+                    Ok(None)
+                }
+            },
             Ok(_) => Ok(None), // key not found or partial data
             Err(e) => {
                 tracing::warn!(key = %redis_key, "Redis cache lookup error: {e}");
@@ -167,9 +168,9 @@ impl Storage for RedisCacheStorage {
             .as_secs()
             .max(1);
 
-        let (meta0, meta1) = meta.serialize().map_err(|e| {
-            Error::because(ErrorType::InternalError, "cache meta serialize", e)
-        })?;
+        let (meta0, meta1) = meta
+            .serialize()
+            .map_err(|e| Error::because(ErrorType::InternalError, "cache meta serialize", e))?;
 
         Ok(Box::new(RedisMissHandler {
             redis_key: Self::redis_key(key),
@@ -202,9 +203,9 @@ impl Storage for RedisCacheStorage {
         let redis_key = Self::redis_key(key);
         let mut conn = self.conn.clone();
 
-        let (m0, m1) = meta.serialize().map_err(|e| {
-            Error::because(ErrorType::InternalError, "cache meta serialize", e)
-        })?;
+        let (m0, m1) = meta
+            .serialize()
+            .map_err(|e| Error::because(ErrorType::InternalError, "cache meta serialize", e))?;
 
         let res: redis::RedisResult<()> = redis::cmd("HMSET")
             .arg(&redis_key)

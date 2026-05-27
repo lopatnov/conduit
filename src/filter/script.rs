@@ -76,6 +76,12 @@ pub struct ScriptResponse {
     pub extra_headers: Vec<(String, String)>,
 }
 
+impl Default for ScriptResponse {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScriptResponse {
     pub fn new() -> Self {
         Self {
@@ -87,8 +93,7 @@ impl ScriptResponse {
 
     /// Append a response header.
     pub fn header(&mut self, name: &str, value: &str) {
-        self.extra_headers
-            .push((name.to_owned(), value.to_owned()));
+        self.extra_headers.push((name.to_owned(), value.to_owned()));
     }
 }
 
@@ -203,7 +208,7 @@ pub fn run_script(
             // Extract the (possibly mutated) response object from scope.
             let resp: ScriptResponse = scope
                 .get_value::<ScriptResponse>("response")
-                .unwrap_or_else(ScriptResponse::new);
+                .unwrap_or_default();
 
             if val.is_bool() && !val.cast::<bool>() {
                 ScriptOutcome::Abort {
@@ -273,7 +278,10 @@ mod tests {
 
     #[test]
     fn script_returning_false_aborts() {
-        assert!(matches!(run("false", headers(&[])), ScriptOutcome::Abort { .. }));
+        assert!(matches!(
+            run("false", headers(&[])),
+            ScriptOutcome::Abort { .. }
+        ));
     }
 
     #[test]

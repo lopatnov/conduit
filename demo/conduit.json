@@ -28,7 +28,7 @@
       },
       "proxy": {
         "/api": {
-          "targets": ["http://localhost:4000", "http://localhost:4001"],
+          "targets": ["http://127.0.0.1:4000", "http://127.0.0.1:4001"],
           "strategy": "round-robin",
           "stripPrefix": true,
           "retry": {
@@ -83,7 +83,7 @@
       },
       "proxy": {
         "/api": {
-          "targets": ["http://localhost:4000"],
+          "targets": ["http://127.0.0.1:4000"],
           "stripPrefix": true
         }
       },

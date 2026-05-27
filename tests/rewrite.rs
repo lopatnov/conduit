@@ -93,10 +93,7 @@ fn rewrite_simple_prefix_replacement() {
     );
 
     let client = reqwest::blocking::Client::new();
-    client
-        .get(server.url("/old/page"))
-        .send()
-        .expect("request");
+    client.get(server.url("/old/page")).send().expect("request");
 
     assert_eq!(
         upstream.last_path(),
@@ -115,10 +112,7 @@ fn rewrite_strips_version_prefix() {
     );
 
     let client = reqwest::blocking::Client::new();
-    client
-        .get(server.url("/v3/users"))
-        .send()
-        .expect("request");
+    client.get(server.url("/v3/users")).send().expect("request");
 
     assert_eq!(
         upstream.last_path(),
@@ -160,7 +154,10 @@ fn no_rewrite_when_no_rules_match() {
     );
 
     let client = reqwest::blocking::Client::new();
-    client.get(server.url("/anything-else")).send().expect("request");
+    client
+        .get(server.url("/anything-else"))
+        .send()
+        .expect("request");
 
     assert_eq!(
         upstream.last_path(),

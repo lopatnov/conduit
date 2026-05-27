@@ -37,6 +37,7 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        continue-on-error: true  # transient cache failures must not abort the build
 
       - name: fmt
         run: cargo fmt --check
@@ -54,10 +55,10 @@ jobs:
 
     services:
       pebble:
-        image: letsencrypt/pebble:latest
+        image: ghcr.io/letsencrypt/pebble:latest
         ports:
           - 14000:14000
-          - 5002:5002
+          - 15000:15000  # management API (ghcr.io image uses 15000, not 5002)
         env:
           # Skip real HTTP-01 validation so tests don't need a public address.
           PEBBLE_VA_ALWAYS_VALID: "1"
@@ -74,6 +75,7 @@ jobs:
           toolchain: stable
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        continue-on-error: true  # transient cache failures must not abort the build
 
       - name: Wait for Pebble to be ready
         run: |
@@ -83,17 +85,25 @@ jobs:
           done
           echo "Pebble did not start in time" && exit 1
 
-      - name: Install Pebble root CA in system trust store
+      - name: Extract Pebble TLS CA cert
         run: |
-          # Pebble serves its root CA over HTTP on the management port.
-          curl -s http://localhost:5002/roots/0 \
-            -o /usr/local/share/ca-certificates/pebble-root.crt
-          update-ca-certificates
-        # instant-acme uses hyper-rustls with rustls-native-certs which reads
-        # the system CA store — this makes it trust Pebble's self-signed cert.
+          # Pebble uses a static minica test CA (pebble.minica.pem) to sign its
+          # own HTTPS server certificate on ports 14000 and 15000.  This is
+          # separate from the dynamically-generated ACME issuing CA returned by
+          # /roots/0.  We must trust pebble.minica.pem so that instant-acme can
+          # verify Pebble's TLS cert when contacting the ACME directory endpoint.
+          PEBBLE_ID=$(docker ps -q --filter ancestor=ghcr.io/letsencrypt/pebble:latest | head -1)
+          docker cp "$PEBBLE_ID:/test/certs/pebble.minica.pem" /tmp/pebble-ca.pem
+          # Confirm we have a valid PEM cert; fail loudly if not.
+          openssl x509 -in /tmp/pebble-ca.pem -noout -subject
 
       - name: Build (debug for faster CI)
         run: cargo build
 
       - name: Run ACME tests
+        env:
+          # Trust Pebble's static TLS CA so instant-acme can verify Pebble's
+          # server certificate when connecting to https://localhost:14000/dir.
+          # Account::builder_with_root() is used when this env var is set.
+          CONDUIT_ACME_EXTRA_ROOT: /tmp/pebble-ca.pem
         run: cargo test --test acme -- --nocapture

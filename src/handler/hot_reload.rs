@@ -41,10 +41,7 @@ const CLIENT_JS: &str = r#"(function(){
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 /// Serve the client-side JavaScript at `/__hot-reload__/client.js`.
-pub async fn handle_client_js(
-    session: &mut Session,
-    extra: &[(String, String)],
-) -> Result<()> {
+pub async fn handle_client_js(session: &mut Session, extra: &[(String, String)]) -> Result<()> {
     write_response(
         session,
         200,
@@ -207,8 +204,8 @@ pub async fn run_file_watcher(
 
     // The notify callback is called from a background thread — use blocking_send.
     let exts_clone = extensions.clone();
-    let mut watcher = match notify::recommended_watcher(
-        move |res: notify::Result<notify::Event>| {
+    let mut watcher =
+        match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             let Ok(event) = res else { return };
 
             use notify::EventKind::*;
@@ -232,14 +229,13 @@ pub async fn run_file_watcher(
             if passes {
                 let _ = event_tx.blocking_send(());
             }
-        },
-    ) {
-        Ok(w) => w,
-        Err(e) => {
-            tracing::error!("hot-reload: failed to create file watcher: {e}");
-            return;
-        }
-    };
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::error!("hot-reload: failed to create file watcher: {e}");
+                return;
+            }
+        };
 
     let mut watched = 0usize;
     for dir in &dirs {
@@ -286,7 +282,7 @@ pub async fn run_file_watcher(
 
         if reload_tx.send(()).is_err() {
             break; // no active SSE subscribers — keep watcher alive in case they reconnect
-            // (broadcast channel never truly closes until the Sender is dropped)
+                   // (broadcast channel never truly closes until the Sender is dropped)
         }
     }
 

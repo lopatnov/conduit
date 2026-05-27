@@ -1,36 +1,50 @@
 // @ts-check
 import { defineConfig } from '@playwright/test';
+import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
-// Path to the Conduit binary. Override via CONDUIT_BIN env var in CI.
-const conduitBin = process.env.CONDUIT_BIN ?? '../target/debug/conduit';
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const root = resolve(__dirname, '..');
+
+// Resolve conduit binary: prefer CONDUIT_BIN env, then release, then debug.
+// Appends .exe automatically on Windows.
+function resolveConduit() {
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  if (process.env.CONDUIT_BIN) return process.env.CONDUIT_BIN;
+  const rel = resolve(root, `target/release/conduit${ext}`);
+  const dbg = resolve(root, `target/debug/conduit${ext}`);
+  return existsSync(rel) ? rel : dbg;
+}
+
+const conduitBin = resolveConduit();
 
 export default defineConfig({
   testDir: './tests',
-  timeout: 15_000,
+  timeout: 20_000,
   retries: 0,
+  reporter: [['list'], ['html', { open: 'never' }]],
 
   use: {
     baseURL: 'http://localhost:8080',
-    // API tests — no browser needed, just HTTP.
-    extraHTTPHeaders: { 'Accept': 'application/json' },
   },
 
-  // Start both servers automatically before tests.
-  // Set reuseExistingServer: true so running `conduit` + API manually also works.
+  // Start both servers automatically before running tests.
+  // reuseExistingServer: true  — reuses already-running servers (dev workflow).
   webServer: [
     {
       command: 'node api/server.js',
+      cwd: __dirname,
       port: 4001,
       reuseExistingServer: true,
-      timeout: 5_000,
+      timeout: 8_000,
     },
     {
-      command: `${conduitBin} -c conduit.json`,
+      command: `"${conduitBin}" -c demo/conduit.json`,
+      cwd: root,
       port: 8080,
       reuseExistingServer: true,
-      timeout: 10_000,
-      // Working directory is demo/ so conduit.json resolves correctly.
-      cwd: new URL('.', import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'),
+      timeout: 15_000,
     },
   ],
 });

@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
 use crate::config::schema::{
-    AppConfig, FallbackConfig, IpFilterConfig, LoadBalanceStrategy, MetricsConfig,
-    MiddlewareEntry, ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig,
-    RedirectRule, RewriteRule, SiteConfig, TlsConfig, UploadConfig,
+    AppConfig, FallbackConfig, IpFilterConfig, LoadBalanceStrategy, MetricsConfig, MiddlewareEntry,
+    ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig, RedirectRule,
+    RewriteRule, SiteConfig, TlsConfig, UploadConfig,
 };
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -170,9 +170,7 @@ fn validate_rate_limit(
         if store != "memory" && !store.starts_with("redis://") {
             errors.push(ValidationError::new(
                 format!("{prefix}.rateLimit.store"),
-                format!(
-                    "invalid store \"{store}\" — must be \"memory\" or a redis:// URL"
-                ),
+                format!("invalid store \"{store}\" — must be \"memory\" or a redis:// URL"),
             ));
         }
     }
@@ -347,11 +345,7 @@ fn check_cert_expiry(cert_path: &str, prefix: &str, errors: &mut Vec<ValidationE
             format!("TLS certificate has expired (not_after = {unix_secs})"),
         ));
     } else if expires_at <= warn_threshold {
-        let days_left = expires_at
-            .duration_since(now)
-            .unwrap_or_default()
-            .as_secs()
-            / 86400;
+        let days_left = expires_at.duration_since(now).unwrap_or_default().as_secs() / 86400;
         errors.push(ValidationError::new(
             prefix,
             format!("WARNING: TLS certificate expires in {days_left} day(s) — renew soon"),
@@ -473,7 +467,7 @@ fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<
     // Validate target URLs.
     for (i, target) in cfg.targets.iter().enumerate() {
         let url = match target {
-            ProxyTarget::Simple(u)   => u.as_str(),
+            ProxyTarget::Simple(u) => u.as_str(),
             ProxyTarget::Weighted(w) => w.url.as_str(),
         };
         if !is_valid_upstream_url(url) {
@@ -491,11 +485,7 @@ fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<
     }
 }
 
-fn validate_rewrite_rules(
-    rules: &[RewriteRule],
-    prefix: &str,
-    errors: &mut Vec<ValidationError>,
-) {
+fn validate_rewrite_rules(rules: &[RewriteRule], prefix: &str, errors: &mut Vec<ValidationError>) {
     for (i, rule) in rules.iter().enumerate() {
         if let Err(e) = regex::Regex::new(&rule.from) {
             errors.push(ValidationError::new(
@@ -767,9 +757,8 @@ mod tests {
 
     #[test]
     fn valid_rewrite_rules_no_errors() {
-        assert!(
-            errs(
-                r#"{
+        assert!(errs(
+            r#"{
                     "proxy": {
                         "/api": {
                             "targets": ["http://b:4000"],
@@ -779,9 +768,8 @@ mod tests {
                         }
                     }
                 }"#
-            )
-            .is_empty()
-        );
+        )
+        .is_empty());
     }
 
     #[test]
@@ -832,7 +820,10 @@ mod tests {
     #[test]
     fn upload_path_without_leading_slash_invalid() {
         let e = errs(r#"{ "upload": { "path": "upload", "dir": "./uploads" } }"#);
-        assert!(!e.is_empty(), "upload path without leading slash must be rejected");
+        assert!(
+            !e.is_empty(),
+            "upload path without leading slash must be rejected"
+        );
         assert!(e[0].path.contains("upload.path"), "got: {}", e[0].path);
     }
 
@@ -844,7 +835,10 @@ mod tests {
     #[test]
     fn metrics_path_without_leading_slash_invalid() {
         let e = errs(r#"{ "metrics": { "path": "metrics" } }"#);
-        assert!(!e.is_empty(), "metrics path without leading slash must be rejected");
+        assert!(
+            !e.is_empty(),
+            "metrics path without leading slash must be rejected"
+        );
         assert!(e[0].path.contains("metrics.path"), "got: {}", e[0].path);
     }
 
@@ -868,17 +862,20 @@ mod tests {
                 ]
             }"#,
         );
-        assert!(!e.is_empty(), "invalid regex in routes array must be caught");
+        assert!(
+            !e.is_empty(),
+            "invalid regex in routes array must be caught"
+        );
     }
 
     // ── rateLimit.store validation ────────────────────────────────────────────
 
     #[test]
     fn rate_limit_memory_store_valid() {
-        assert!(errs(
-            r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "store": "memory" } }"#
-        )
-        .is_empty());
+        assert!(
+            errs(r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "store": "memory" } }"#)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -889,7 +886,9 @@ mod tests {
 
     #[test]
     fn rate_limit_invalid_store_rejected() {
-        let e = errs(r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "store": "memcached://localhost" } }"#);
+        let e = errs(
+            r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "store": "memcached://localhost" } }"#,
+        );
         assert!(!e.is_empty(), "invalid store must be rejected");
         assert!(e[0].path.contains("store"), "got: {}", e[0].path);
     }

@@ -172,6 +172,27 @@ async fn obtain_certificate(
     Ok((cert_chain_pem, key_pem))
 }
 
+/// Create an [`instant_acme::AccountBuilder`] with the appropriate TLS root
+/// certificate configuration.
+///
+/// When the environment variable `CONDUIT_ACME_EXTRA_ROOT` is set to a path,
+/// the file at that path is loaded as an additional trusted root CA (PEM
+/// format).  This is intended for CI environments that use test ACME servers
+/// such as [Pebble](https://github.com/letsencrypt/pebble) with self-signed
+/// certificates that are not in the system trust store.
+fn account_builder() -> anyhow::Result<instant_acme::AccountBuilder> {
+    if let Ok(ca_path) = std::env::var("CONDUIT_ACME_EXTRA_ROOT") {
+        tracing::debug!(
+            ca_path,
+            "using custom ACME root CA from CONDUIT_ACME_EXTRA_ROOT"
+        );
+        Account::builder_with_root(&ca_path)
+            .with_context(|| format!("loading custom ACME root CA from {ca_path:?}"))
+    } else {
+        Account::builder().context("failed to create ACME HTTP client")
+    }
+}
+
 /// Load a persisted ACME account from `storage_dir/acme_account.json`, or
 /// create a new one with the ACME server and persist the credentials.
 async fn load_or_create_account(
@@ -186,8 +207,7 @@ async fn load_or_create_account(
             .with_context(|| format!("reading ACME credentials from {creds_path:?}"))?;
         let creds: AccountCredentials = serde_json::from_str(&json)
             .with_context(|| format!("parsing ACME credentials in {creds_path:?}"))?;
-        let account = Account::builder()
-            .context("failed to create ACME HTTP client")?
+        let account = account_builder()?
             .from_credentials(creds)
             .await
             .context("restoring ACME account from credentials failed")?;
@@ -195,8 +215,7 @@ async fn load_or_create_account(
         return Ok(account);
     }
 
-    let (account, credentials) = Account::builder()
-        .context("failed to create ACME HTTP client")?
+    let (account, credentials) = account_builder()?
         .create(
             &NewAccount {
                 contact: &[&format!("mailto:{}", acme_cfg.email)],

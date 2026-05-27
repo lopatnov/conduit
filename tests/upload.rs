@@ -1,6 +1,6 @@
 mod common;
 
-use common::{TestServer, free_port};
+use common::{free_port, TestServer};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -91,7 +91,10 @@ fn upload_single_file_returns_ok() {
     // Verify the file actually landed on disk.
     let saved_name = files[0]["name"].as_str().expect("name field");
     let saved_path = std::path::Path::new(&upload_dir).join(saved_name);
-    assert!(saved_path.exists(), "saved file should exist at {saved_path:?}");
+    assert!(
+        saved_path.exists(),
+        "saved file should exist at {saved_path:?}"
+    );
     let contents = std::fs::read_to_string(&saved_path).expect("read saved file");
     assert_eq!(contents, "hello world");
 }
@@ -147,7 +150,11 @@ fn upload_disallowed_mime_type_returns_415() {
         .send()
         .expect("POST /upload");
 
-    assert_eq!(resp.status(), 415, "HTML should be rejected as disallowed MIME");
+    assert_eq!(
+        resp.status(),
+        415,
+        "HTML should be rejected as disallowed MIME"
+    );
 }
 
 #[test]
@@ -339,11 +346,7 @@ fn upload_uuid_filename_has_correct_extension() {
 
     // UUID part (before the extension) should be 36 characters.
     let stem = saved_name.strip_suffix(".jpg").unwrap();
-    assert_eq!(
-        stem.len(),
-        36,
-        "UUID stem should be 36 chars, got: {stem}"
-    );
+    assert_eq!(stem.len(), 36, "UUID stem should be 36 chars, got: {stem}");
 
     let saved_path = std::path::Path::new(&upload_dir).join(saved_name);
     assert!(saved_path.exists());

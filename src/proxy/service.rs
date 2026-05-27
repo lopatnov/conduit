@@ -8,8 +8,8 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
-use pingora_cache::{CacheKey, NoCacheReason, RespCacheable};
 use pingora_cache::storage::Storage as CacheStorage;
+use pingora_cache::{CacheKey, NoCacheReason, RespCacheable};
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
 use pingora_http::{RequestHeader, ResponseHeader};
@@ -31,9 +31,9 @@ use crate::handler::{
     metrics as metrics_handler, response, static_files,
 };
 use crate::proxy::cache as proxy_cache;
-use crate::proxy::{cache_disk, cache_redis};
 use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
+use crate::proxy::{cache_disk, cache_redis};
 use crate::proxy::{router, upstream};
 use crate::util::log_writer::LogWriter;
 
@@ -222,9 +222,23 @@ impl ConduitProxy {
                 .headers
                 .iter()
                 .filter_map(|(k, v)| {
-                    v.to_str().ok().map(|vs| (k.as_str().to_ascii_lowercase(), vs.to_owned()))
+                    v.to_str()
+                        .ok()
+                        .map(|vs| (k.as_str().to_ascii_lowercase(), vs.to_owned()))
                 })
                 .collect();
+
+            // Extract the local port so that port-differentiated virtual hosts
+            // (e.g. port 8080 public site vs. port 8081 admin site) are routed
+            // to the correct SiteConfig even when no explicit `host` is set.
+            // Pingora's SocketAddr wraps std::net::SocketAddr; use as_inet() to
+            // reach the standard type and its .port() method.
+            let server_port: u16 = session
+                .as_ref()
+                .server_addr()
+                .and_then(|a| a.as_inet())
+                .map(|a| a.port())
+                .unwrap_or(80);
 
             let req_ctx = router::route_request(
                 &config,
@@ -234,6 +248,7 @@ impl ConduitProxy {
                 &session.req_header().headers,
                 query.as_deref(),
                 &client_ip,
+                server_port,
                 &self.state.round_robin,
                 &self.state.upstream_health,
                 self.state.upload_addr,
@@ -258,7 +273,7 @@ impl ConduitProxy {
             // Middleware chain entries for this site.
             let middleware: Vec<MiddlewareEntry> = site
                 .and_then(|s| s.middleware.as_ref())
-                .map(|m| m.clone())
+                .cloned()
                 .unwrap_or_default();
 
             (
@@ -607,8 +622,7 @@ impl ConduitProxy {
                                 }
                                 urls.into_iter()
                                     .map(|url| {
-                                        let healthy =
-                                            self.state.upstream_health.is_healthy(&url);
+                                        let healthy = self.state.upstream_health.is_healthy(&url);
                                         (url, healthy)
                                     })
                                     .collect()
@@ -684,7 +698,7 @@ impl ConduitProxy {
                 } else {
                     unreachable!()
                 };
-                static_files::handle_static(
+                let found = static_files::handle_static(
                     session,
                     &roots,
                     &options,
@@ -694,6 +708,16 @@ impl ConduitProxy {
                     &accept_enc,
                 )
                 .await?;
+
+                if !found {
+                    // File not found — delegate to the site's fallback handler
+                    // (e.g. SPA index.html for HTML requests, JSON 404 for API).
+                    let config = self.state.config.load();
+                    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                    let site = config.sites.get(site_idx);
+                    fallback::handle_fallback(session, site, &extra).await?;
+                }
+
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
                 Ok(true)
             }
@@ -843,7 +867,11 @@ impl ProxyHttp for ConduitProxy {
 
         if let Some(ctx_ref) = ctx.as_ref() {
             match &ctx_ref.upstream {
-                UpstreamTarget::Proxy { strip_prefix, rewrite, .. } => {
+                UpstreamTarget::Proxy {
+                    strip_prefix,
+                    rewrite,
+                    ..
+                } => {
                     let mut path = upstream_request.uri.path().to_owned();
 
                     // 1. Strip prefix (if configured).
@@ -952,20 +980,23 @@ impl ProxyHttp for ConduitProxy {
         };
 
         // Select storage backend based on store string.
-        let storage: &'static (dyn CacheStorage + Sync) =
-            if cfg.store == "memory" {
-                proxy_cache::cache_storage()
-            } else if let Some(url) = cfg.store.strip_prefix("redis://").map(|_| cfg.store.as_str()) {
-                cache_redis::get_or_create(url)
-            } else if let Some(dir) = cfg.store.strip_prefix("disk:") {
-                cache_disk::get_or_create(dir)
-            } else {
-                tracing::warn!(
-                    store = %cfg.store,
-                    "unsupported cache store — caching disabled for this route"
-                );
-                return Ok(());
-            };
+        let storage: &'static (dyn CacheStorage + Sync) = if cfg.store == "memory" {
+            proxy_cache::cache_storage()
+        } else if let Some(url) = cfg
+            .store
+            .strip_prefix("redis://")
+            .map(|_| cfg.store.as_str())
+        {
+            cache_redis::get_or_create(url)
+        } else if let Some(dir) = cfg.store.strip_prefix("disk:") {
+            cache_disk::get_or_create(dir)
+        } else {
+            tracing::warn!(
+                store = %cfg.store,
+                "unsupported cache store — caching disabled for this route"
+            );
+            return Ok(());
+        };
 
         // Check request-side policy (method, cookies, skip-paths).
         let method = session.req_header().method.as_str();
@@ -976,9 +1007,7 @@ impl ProxyHttp for ConduitProxy {
             return Ok(());
         }
 
-        session
-            .cache
-            .enable(storage, None, None, None, None);
+        session.cache.enable(storage, None, None, None, None);
         Ok(())
     }
 
@@ -1017,14 +1046,11 @@ impl ProxyHttp for ConduitProxy {
         let vary_headers = {
             let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
             let config = self.state.config.load();
-            config
-                .sites
-                .get(site_idx)
-                .and_then(|_s| {
-                    ctx.as_ref()
-                        .and_then(|c| c.proxy_cache_cfg.as_ref())
-                        .and_then(|cc| cc.vary_headers.clone())
-                })
+            config.sites.get(site_idx).and_then(|_s| {
+                ctx.as_ref()
+                    .and_then(|c| c.proxy_cache_cfg.as_ref())
+                    .and_then(|cc| cc.vary_headers.clone())
+            })
         };
 
         Ok(proxy_cache::build_cache_key(

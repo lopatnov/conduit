@@ -207,7 +207,10 @@ fn reload_cors_change_takes_effect() {
         }]
     }));
     let reload_resp = srv.reload();
-    assert_eq!(reload_resp["status"], "ok", "reload must succeed: {reload_resp}");
+    assert_eq!(
+        reload_resp["status"], "ok",
+        "reload must succeed: {reload_resp}"
+    );
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -257,7 +260,11 @@ fn reload_rate_limit_removal_takes_effect() {
 
     // First request to a non-health path: should succeed.
     let r1 = client.get(srv.url("/")).send().expect("first GET");
-    assert_eq!(r1.status(), 404, "first request should reach the fallback (no 429 yet)");
+    assert_eq!(
+        r1.status(),
+        404,
+        "first request should reach the fallback (no 429 yet)"
+    );
 
     // Second request on same IP: should be rate-limited (429).
     let r2 = client.get(srv.url("/")).send().expect("second GET");
@@ -269,7 +276,10 @@ fn reload_rate_limit_removal_takes_effect() {
         "sites": [{ "port": port, "healthCheck": true }]
     }));
     let reload_resp = srv.reload();
-    assert_eq!(reload_resp["status"], "ok", "reload must succeed: {reload_resp}");
+    assert_eq!(
+        reload_resp["status"], "ok",
+        "reload must succeed: {reload_resp}"
+    );
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -316,7 +326,10 @@ fn reload_log_file_switch_takes_effect() {
         }]
     }));
     let reload_resp = srv.reload();
-    assert_eq!(reload_resp["status"], "ok", "reload must succeed: {reload_resp}");
+    assert_eq!(
+        reload_resp["status"], "ok",
+        "reload must succeed: {reload_resp}"
+    );
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -329,7 +342,10 @@ fn reload_log_file_switch_takes_effect() {
         .lines()
         .filter_map(|l| l.ok())
         .collect();
-    assert!(!lines.is_empty(), "log file must contain at least one entry");
+    assert!(
+        !lines.is_empty(),
+        "log file must contain at least one entry"
+    );
     assert!(
         lines[0].contains("/__health__"),
         "log entry must mention the request path: {:?}",

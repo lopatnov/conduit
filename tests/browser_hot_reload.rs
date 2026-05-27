@@ -17,9 +17,9 @@ fn read_until(stream: &mut TcpStream, sentinel: &str, timeout: Duration) -> Stri
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match stream.read(&mut buf) {
-            Ok(0) => break,          // connection closed
+            Ok(0) => break, // connection closed
             Ok(n) => response.push_str(&String::from_utf8_lossy(&buf[..n])),
-            Err(_) => break,         // timeout or other transient error
+            Err(_) => break, // timeout or other transient error
         }
         if response.contains(sentinel) {
             break;
@@ -69,8 +69,7 @@ fn hot_reload_client_js_served() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/__hot-reload__/client.js"))
-        .expect("GET client.js");
+    let resp = reqwest::blocking::get(srv.url("/__hot-reload__/client.js")).expect("GET client.js");
     assert_eq!(resp.status().as_u16(), 200);
     let ct = resp
         .headers()
@@ -149,7 +148,12 @@ fn hot_reload_sse_sends_connected_comment() {
 
     // Use a raw TCP connection so we can read the initial SSE frame before the
     // stream blocks waiting for file-change events.
-    let raw = raw_get(port, "/__hot-reload__", ": connected", Duration::from_secs(5));
+    let raw = raw_get(
+        port,
+        "/__hot-reload__",
+        ": connected",
+        Duration::from_secs(5),
+    );
 
     assert!(
         raw.contains("HTTP/1.1 200"),
@@ -220,8 +224,8 @@ fn hot_reload_file_change_triggers_reload_event() {
     let sse_thread = {
         let static_dir = static_dir.clone();
         std::thread::spawn(move || {
-            let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
-                .expect("TCP connect for SSE");
+            let mut stream =
+                TcpStream::connect(format!("127.0.0.1:{port}")).expect("TCP connect for SSE");
             let req = format!(
                 "GET /__hot-reload__ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
             );

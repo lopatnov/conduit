@@ -61,12 +61,14 @@ fn acme_obtains_certificate_and_serves_https() {
     std::fs::write(&cfg_path, config.to_string()).expect("write config");
 
     let binary = env!("CARGO_BIN_EXE_conduit");
-    // PEBBLE_CA_CERT: path to Pebble's root CA certificate (served at
-    // http://localhost:5002/roots/0 when Pebble is running).  We use
-    // danger_accept_invalid_certs in reqwest so we don't need to install it.
+    // Propagate RUST_LOG so Conduit emits tracing output that appears in CI
+    // logs when --nocapture is used.  Default to "conduit=info" so the ACME
+    // flow (including any error messages) is visible without drowning stdout.
+    let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "conduit=info".to_owned());
     let mut child = std::process::Command::new(binary)
         .arg("--config")
         .arg(&cfg_path)
+        .env("RUST_LOG", &rust_log)
         .spawn()
         .expect("spawn conduit");
 

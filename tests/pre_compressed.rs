@@ -10,8 +10,7 @@ use serial_test::serial;
 
 /// Brotli-encoded `"hello world"` (11 bytes → 16 bytes compressed).
 const BR_HELLO: &[u8] = &[
-    0x0b, 0x05, 0x00, 0x00, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x77, 0x6f, 0x72, 0x6c, 0x64,
-    0x03,
+    0x0b, 0x05, 0x00, 0x00, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x03,
 ];
 
 /// Gzip-encoded `"hello world"` — a minimal valid gzip stream.
@@ -255,7 +254,10 @@ fn pre_compressed_br_preferred_over_gz() {
         .get("content-encoding")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert_eq!(ce, "br", "br must be preferred over gzip when both exist; got: {ce}");
+    assert_eq!(
+        ce, "br",
+        "br must be preferred over gzip when both exist; got: {ce}"
+    );
 
     // Body must be the br bytes, not gz.
     let body = resp.bytes().expect("body bytes");
@@ -303,10 +305,8 @@ fn pre_compressed_falls_back_to_gz_when_no_br() {
 #[test]
 #[serial]
 fn pre_compressed_head_returns_headers_only() {
-    let (srv, _dir) = make_server_with_precompressed(&[
-        ("file.css", b"body{}"),
-        ("file.css.br", BR_HELLO),
-    ]);
+    let (srv, _dir) =
+        make_server_with_precompressed(&[("file.css", b"body{}"), ("file.css.br", BR_HELLO)]);
 
     let client = reqwest::blocking::Client::builder()
         .no_gzip()

@@ -735,4 +735,3 @@ pub struct MatchConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<IndexMap<String, String>>,
 }
-

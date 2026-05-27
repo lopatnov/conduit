@@ -137,10 +137,7 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     {
         let old_cfg = state.config.load();
         for (i, new_site) in new_config.sites.iter().enumerate() {
-            let old_file = old_cfg
-                .sites
-                .get(i)
-                .and_then(|s| log_file_path(&s.logging));
+            let old_file = old_cfg.sites.get(i).and_then(|s| log_file_path(&s.logging));
             let new_file = log_file_path(&new_site.logging);
             if old_file != new_file {
                 match new_file {
@@ -320,11 +317,7 @@ async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         if let Some(route_list) = &site.routes {
             for rc in route_list {
                 if let Some(rt) = &rc.proxy {
-                    let path = rc
-                        .r#match
-                        .path
-                        .clone()
-                        .unwrap_or_else(|| "/**".to_string());
+                    let path = rc.r#match.path.clone().unwrap_or_else(|| "/**".to_string());
                     proxy_entries.push((path, rt));
                 }
             }
@@ -334,7 +327,7 @@ async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
             let (strategy_str, targets): (&str, Vec<Value>) = match route_target {
                 ProxyRouteTarget::Url(url) => {
                     let mut h = health_of(url);
-                    h["url"]    = json!(url);
+                    h["url"] = json!(url);
                     h["weight"] = json!(1u32);
                     ("round-robin", vec![h])
                 }
@@ -343,7 +336,7 @@ async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
                         .iter()
                         .map(|url| {
                             let mut h = health_of(url);
-                            h["url"]    = json!(url);
+                            h["url"] = json!(url);
                             h["weight"] = json!(1u32);
                             h
                         })
@@ -351,25 +344,29 @@ async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
                     ("round-robin", tgts)
                 }
                 ProxyRouteTarget::Full(cfg) => {
-                    let strat = match cfg.strategy.as_ref().unwrap_or(&LoadBalanceStrategy::RoundRobin) {
-                        LoadBalanceStrategy::RoundRobin         => "round-robin",
+                    let strat = match cfg
+                        .strategy
+                        .as_ref()
+                        .unwrap_or(&LoadBalanceStrategy::RoundRobin)
+                    {
+                        LoadBalanceStrategy::RoundRobin => "round-robin",
                         LoadBalanceStrategy::WeightedRoundRobin => "weighted-round-robin",
-                        LoadBalanceStrategy::Random             => "random",
-                        LoadBalanceStrategy::LeastConn          => "least-conn",
-                        LoadBalanceStrategy::LeastResponseTime  => "least-response-time",
-                        LoadBalanceStrategy::IpHash             => "ip-hash",
-                        LoadBalanceStrategy::ConsistentHash     => "consistent-hash",
+                        LoadBalanceStrategy::Random => "random",
+                        LoadBalanceStrategy::LeastConn => "least-conn",
+                        LoadBalanceStrategy::LeastResponseTime => "least-response-time",
+                        LoadBalanceStrategy::IpHash => "ip-hash",
+                        LoadBalanceStrategy::ConsistentHash => "consistent-hash",
                     };
                     let tgts = cfg
                         .targets
                         .iter()
                         .map(|t| {
                             let (url, weight) = match t {
-                                ProxyTarget::Simple(u)   => (u.as_str(), 1u32),
+                                ProxyTarget::Simple(u) => (u.as_str(), 1u32),
                                 ProxyTarget::Weighted(w) => (w.url.as_str(), w.weight),
                             };
                             let mut h = health_of(url);
-                            h["url"]    = json!(url);
+                            h["url"] = json!(url);
                             h["weight"] = json!(weight);
                             h
                         })
@@ -385,8 +382,8 @@ async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
                 .iter()
                 .map(|(url, weight)| {
                     let mut h = health_of(url);
-                    h["url"]     = json!(url);
-                    h["weight"]  = json!(weight);
+                    h["url"] = json!(url);
+                    h["weight"] = json!(weight);
                     h["runtime"] = json!(true);
                     h
                 })

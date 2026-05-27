@@ -171,11 +171,25 @@ fn probe_admin(url: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Bind to port 0, get the OS-assigned port, then release the socket.
+/// Return a free TCP port on 127.0.0.1.
+///
+/// Uses ports in the range 10000–19999, which is below the Linux/macOS OS
+/// ephemeral port range (32768+).  Picking from the ephemeral range meant
+/// that the OS could assign the same port to an outgoing connection in the
+/// narrow window between `free_port()` releasing the socket and the Conduit
+/// server binding it, causing flaky "Address already in use" failures.
+///
+/// An atomic counter gives each call within the same process a different
+/// starting point, further reducing intra-binary conflicts.
 pub fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("bind port 0")
-        .local_addr()
-        .expect("local_addr")
-        .port()
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static NEXT: AtomicU16 = AtomicU16::new(10000);
+    loop {
+        // Wrap monotonically within 10000–19999.
+        let p = NEXT.fetch_add(1, Ordering::Relaxed) % 10000 + 10000;
+        if TcpListener::bind(format!("127.0.0.1:{p}")).is_ok() {
+            return p;
+        }
+        // Port in use — skip it and try the next one.
+    }
 }

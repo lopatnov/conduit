@@ -125,10 +125,7 @@ fn spawn_ws_upstream() -> std::net::SocketAddr {
 
 // ── Utility: read exactly N bytes with a hard deadline ───────────────────────
 
-fn read_exact_timeout(
-    stream: &mut impl std::io::Read,
-    buf: &mut [u8],
-) -> std::io::Result<usize> {
+fn read_exact_timeout(stream: &mut impl std::io::Read, buf: &mut [u8]) -> std::io::Result<usize> {
     let mut total = 0;
     while total < buf.len() {
         match stream.read(&mut buf[total..]) {
@@ -177,7 +174,8 @@ fn sha1(data: &[u8]) -> [u8; 20] {
                 40..=59 => ((b & c) | (b & d) | (c & d), K[2]),
                 _ => (b ^ c ^ d, K[3]),
             };
-            let temp = a.rotate_left(5)
+            let temp = a
+                .rotate_left(5)
                 .wrapping_add(f)
                 .wrapping_add(e)
                 .wrapping_add(k)
@@ -243,7 +241,9 @@ fn ws_connect(addr: &str, path: &str, key: &str) -> (std::net::TcpStream, String
          Sec-WebSocket-Key: {key}\r\n\
          \r\n"
     );
-    stream.write_all(request.as_bytes()).expect("write upgrade request");
+    stream
+        .write_all(request.as_bytes())
+        .expect("write upgrade request");
     stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
 
     // Read until we find the end of headers.
@@ -269,9 +269,12 @@ fn ws_send_text(stream: &mut std::net::TcpStream, text: &str) {
     // Mask key (4 bytes).
     let mask: [u8; 4] = [0x37, 0xfa, 0x21, 0x3d];
     let mut frame = vec![
-        0x81,                  // FIN + text opcode
+        0x81,                       // FIN + text opcode
         0x80 | payload.len() as u8, // MASK bit + length
-        mask[0], mask[1], mask[2], mask[3],
+        mask[0],
+        mask[1],
+        mask[2],
+        mask[3],
     ];
     for (i, &b) in payload.iter().enumerate() {
         frame.push(b ^ mask[i % 4]);
@@ -328,7 +331,9 @@ fn websocket_upgrade_returns_101() {
         "101 response must include 'Upgrade: websocket'; got: {response}"
     );
     assert!(
-        response.to_ascii_lowercase().contains("connection: upgrade"),
+        response
+            .to_ascii_lowercase()
+            .contains("connection: upgrade"),
         "101 response must include 'Connection: Upgrade'; got: {response}"
     );
 }
@@ -395,7 +400,10 @@ fn websocket_data_is_tunneled_after_upgrade() {
         "/",
         "dGhlIHNhbXBsZSBub25jZQ==",
     );
-    assert!(response.contains("101"), "upgrade must succeed; got: {response}");
+    assert!(
+        response.contains("101"),
+        "upgrade must succeed; got: {response}"
+    );
 
     // Send a text message and expect the same payload echoed back.
     ws_send_text(&mut stream, "hello websocket");
@@ -412,13 +420,16 @@ fn websocket_data_is_tunneled_after_upgrade() {
 fn sha1_rfc6455_test_vector() {
     // SHA-1("dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
     // == b3 7a 4f 2c c0 62 4f 16 90 f6 46 06 cf 38 59 45 b2 be c4 ea
-    let input =
-        b"dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    let input = b"dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     let expected = [
-        0xb3, 0x7a, 0x4f, 0x2c, 0xc0, 0x62, 0x4f, 0x16, 0x90, 0xf6, 0x46, 0x06, 0xcf, 0x38,
-        0x59, 0x45, 0xb2, 0xbe, 0xc4, 0xea,
+        0xb3, 0x7a, 0x4f, 0x2c, 0xc0, 0x62, 0x4f, 0x16, 0x90, 0xf6, 0x46, 0x06, 0xcf, 0x38, 0x59,
+        0x45, 0xb2, 0xbe, 0xc4, 0xea,
     ];
-    assert_eq!(sha1(input), expected, "SHA-1 must match RFC 6455 test vector");
+    assert_eq!(
+        sha1(input),
+        expected,
+        "SHA-1 must match RFC 6455 test vector"
+    );
     let b64 = base64_encode(&expected);
     assert_eq!(b64, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
 }

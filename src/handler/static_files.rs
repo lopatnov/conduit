@@ -15,6 +15,12 @@ use crate::filter::compression::CompressOptions;
 use crate::proxy::ctx::AcceptEncoding;
 use crate::util::mime;
 
+/// Attempt to serve a static file.
+///
+/// Returns `Ok(true)` when a response has been written (success, 304, 403, 206,
+/// …).  Returns `Ok(false)` when the file was not found and **no response has
+/// been written yet** — the caller must handle the miss (e.g. invoke the
+/// fallback handler).
 pub async fn handle_static(
     session: &mut Session,
     roots: &[PathBuf],
@@ -23,7 +29,7 @@ pub async fn handle_static(
     extra: &[(String, String)],
     compress_opts: Option<&CompressOptions>,
     accept_enc: &AcceptEncoding,
-) -> Result<()> {
+) -> Result<bool> {
     let method = session.req_header().method.clone();
     let req_path = session.req_header().uri.path().to_owned();
     let rel = decode_rel_path(&req_path, strip_prefix);
@@ -31,18 +37,21 @@ pub async fn handle_static(
     let dot_policy = options.dot_files.as_deref().unwrap_or("ignore");
     if has_dotfile(&rel) {
         return match dot_policy {
-            "deny" => write_error(session, 403, "Forbidden", extra).await,
-            _ => write_error(session, 404, "Not Found", extra).await,
+            "deny" => {
+                write_error(session, 403, "Forbidden", extra).await?;
+                Ok(true)
+            }
+            _ => Ok(false), // treat as not-found so fallback can handle it
         };
     }
 
     let Some(file_path) = find_file(roots, &rel, options).await else {
-        return write_error(session, 404, "Not Found", extra).await;
+        return Ok(false);
     };
 
     let meta = match tokio::fs::metadata(&file_path).await {
         Ok(m) => m,
-        Err(_) => return write_error(session, 404, "Not Found", extra).await,
+        Err(_) => return Ok(false),
     };
 
     let file_size = meta.len();
@@ -59,7 +68,8 @@ pub async fn handle_static(
     let hdrs = session.req_header().headers.clone();
 
     if is_not_modified(&hdrs, &etag, mtime) {
-        return write_not_modified(session, &etag, &last_modified, &cache_control, extra).await;
+        write_not_modified(session, &etag, &last_modified, &cache_control, extra).await?;
+        return Ok(true);
     }
 
     let is_head = method.as_str() == "HEAD";
@@ -67,7 +77,7 @@ pub async fn handle_static(
     // Range requests bypass compression — byte ranges are incompatible with
     // Content-Encoding transforms.
     if let Some(range_hdr) = hdrs.get("range").and_then(|v| v.to_str().ok()) {
-        return serve_range(
+        serve_range(
             session,
             &file_path,
             file_size,
@@ -79,7 +89,8 @@ pub async fn handle_static(
             is_head,
             extra,
         )
-        .await;
+        .await?;
+        return Ok(true);
     }
 
     // Pre-compressed files: serve `.br` / `.gz` sibling files when available
@@ -89,7 +100,7 @@ pub async fn handle_static(
         if let Some((pre_path, encoding)) = find_pre_compressed(&file_path, accept_enc).await {
             let pre_meta = tokio::fs::metadata(&pre_path).await.ok();
             let pre_size = pre_meta.map(|m| m.len()).unwrap_or(0);
-            return serve_pre_compressed(
+            serve_pre_compressed(
                 session,
                 &pre_path,
                 pre_size,
@@ -101,7 +112,8 @@ pub async fn handle_static(
                 is_head,
                 extra,
             )
-            .await;
+            .await?;
+            return Ok(true);
         }
     }
 
@@ -123,7 +135,8 @@ pub async fn handle_static(
         extra,
         compress,
     )
-    .await
+    .await?;
+    Ok(true)
 }
 
 // ── File resolution ────────────────────────────────────────────────────────
@@ -240,8 +253,7 @@ async fn find_pre_compressed(
     accept_enc: &AcceptEncoding,
 ) -> Option<(PathBuf, &'static str)> {
     // Candidates in preference order.
-    let candidates: &[(&'static str, &'static str)] =
-        &[("br", ".br"), ("gzip", ".gz")];
+    let candidates: &[(&'static str, &'static str)] = &[("br", ".br"), ("gzip", ".gz")];
 
     for (enc, suffix) in candidates {
         let accept = match *enc {
