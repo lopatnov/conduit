@@ -5,7 +5,7 @@
 //! Routes are evaluated in declaration order; the first match wins.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
 use regex::Regex;
@@ -383,15 +383,34 @@ fn glob_match_inner(pat: &[u8], s: &[u8]) -> bool {
 
 // ── Regex value matching ──────────────────────────────────────────────────────
 
+/// Global cache of compiled, anchored regexes used in route header/query matching.
+///
+/// Patterns are keyed by the raw string; the value is the compiled [`Regex`]
+/// wrapped in an anchored `^(?:…)$` form.  Invalid patterns are not stored so
+/// they fall back to exact-string comparison without re-attempting compilation.
+///
+/// The cache grows at most to the number of distinct patterns in the loaded
+/// config, which is small and bounded.
+fn get_anchored_regex(pattern: &str) -> Option<Regex> {
+    static CACHE: OnceLock<DashMap<String, Regex>> = OnceLock::new();
+    let cache = CACHE.get_or_init(DashMap::new);
+    if let Some(re) = cache.get(pattern) {
+        return Some(re.clone());
+    }
+    let re = Regex::new(&format!("^(?:{pattern})$")).ok()?;
+    cache.insert(pattern.to_owned(), re.clone());
+    Some(re)
+}
+
 /// Return `true` when `value` matches `pattern`.
 ///
 /// The pattern is first tried as a full-string regex match.  If the regex is
 /// invalid it falls back to exact-string comparison (so plain header values
 /// like `"Bearer"` work without escaping).
 fn regex_match(pattern: &str, value: &str) -> bool {
-    match Regex::new(&format!("^(?:{pattern})$")) {
-        Ok(re) => re.is_match(value),
-        Err(_) => value == pattern, // malformed pattern → exact match
+    match get_anchored_regex(pattern) {
+        Some(re) => re.is_match(value),
+        None => value == pattern, // malformed pattern → exact match
     }
 }
 

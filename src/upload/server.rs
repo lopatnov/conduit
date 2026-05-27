@@ -107,14 +107,22 @@ async fn upload_handler(
         let content_type_str = field.content_type().map(str::to_owned);
 
         // MIME-type allowlist check.
-        if let (Some(ref ct), Some(allowed)) =
-            (content_type_str.as_ref(), cfg.allowed_mime_types.as_ref())
-        {
-            let ok = allowed.iter().any(|a| ct.starts_with(a.as_str()));
+        // When an allowlist is configured, a missing Content-Type header is
+        // treated as a rejection: an unknown type cannot be verified against
+        // the allowlist, so we refuse the upload rather than silently bypass
+        // the check.
+        if let Some(allowed) = cfg.allowed_mime_types.as_ref() {
+            let ct = content_type_str.as_deref().unwrap_or("");
+            let ok = !ct.is_empty() && allowed.iter().any(|a| ct.starts_with(a.as_str()));
             if !ok {
+                let msg = if ct.is_empty() {
+                    "missing Content-Type; upload rejected by mime-type allowlist".to_owned()
+                } else {
+                    format!("mime type not allowed: {ct}")
+                };
                 return (
                     StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                    Json(json!({"error": format!("mime type not allowed: {ct}")})),
+                    Json(json!({"error": msg})),
                 )
                     .into_response();
             }

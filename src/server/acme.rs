@@ -115,11 +115,23 @@ async fn obtain_certificate(
         .await
         .context("ACME new-order request failed")?;
 
-    // Start the HTTP-01 challenge server so the CA can validate domain ownership.
+    // Bind the HTTP-01 challenge server port *before* spawning the background
+    // task so that port-bind failures are reported here as ACME errors rather
+    // than being silently swallowed inside the spawned task.
+    let ch_listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{http_challenge_port}"))
+        .await
+        .with_context(|| {
+            format!("failed to bind ACME HTTP-01 challenge server on port {http_challenge_port}")
+        })?;
+    tracing::debug!(
+        port = http_challenge_port,
+        "ACME HTTP-01 challenge server bound"
+    );
+
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     {
         let ch_map = challenges.clone();
-        tokio::spawn(run_challenge_server(http_challenge_port, ch_map, stop_rx));
+        tokio::spawn(run_challenge_server(ch_listener, ch_map, stop_rx));
     }
 
     // Populate challenge tokens and notify the CA to begin validation.
@@ -237,13 +249,17 @@ async fn load_or_create_account(
     Ok(account)
 }
 
-/// Serve ACME HTTP-01 challenges on `port`.
+/// Serve ACME HTTP-01 challenges on the pre-bound `listener`.
 ///
-/// Binds `0.0.0.0:{port}` and responds to
-/// `GET /.well-known/acme-challenge/{token}` with the corresponding
-/// key-authorization from `challenges`.  Shuts down when `stop_rx` fires.
+/// Responds to `GET /.well-known/acme-challenge/{token}` with the
+/// corresponding key-authorization from `challenges`.
+/// Shuts down when `stop_rx` fires.
+///
+/// The caller must bind the [`TcpListener`] *before* spawning this task so
+/// that port-bind failures are surfaced as ACME errors rather than being
+/// silently swallowed in the background.
 async fn run_challenge_server(
-    port: u16,
+    listener: tokio::net::TcpListener,
     challenges: Arc<DashMap<String, String>>,
     stop_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
@@ -251,7 +267,6 @@ async fn run_challenge_server(
     use axum::response::IntoResponse;
     use axum::routing::get;
     use axum::Router;
-    use tokio::net::TcpListener;
 
     async fn challenge_handler(
         Path(token): Path<String>,
@@ -274,16 +289,6 @@ async fn run_challenge_server(
     let app = Router::new()
         .route("/.well-known/acme-challenge/:token", get(challenge_handler))
         .with_state(challenges);
-
-    let addr = format!("0.0.0.0:{port}");
-    let listener = match TcpListener::bind(&addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::error!("ACME HTTP-01 challenge server failed to bind {addr}: {e}");
-            return;
-        }
-    };
-    tracing::debug!("ACME HTTP-01 challenge server listening on {addr}");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {

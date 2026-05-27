@@ -119,35 +119,37 @@ impl RedisRateLimiter {
 /// Fixed-window counter check using two Redis commands.
 ///
 /// Steps:
-/// 1. `SET key 0 EX window_secs NX` — create the counter with TTL if absent.
-/// 2. `INCR key` — atomically increment; returns the new count.
+/// 1. `INCR key` — atomically create-or-increment; returns the new count.
+/// 2. `EXPIRE key window_secs` — set TTL only when count == 1 (first request in window).
 ///
 /// If `count > limit`, the request is rate-limited.
 ///
-/// The two-command approach is not perfectly atomic (a crashed process between
-/// SET and INCR could leave the counter at 0 indefinitely), but Redis is
-/// single-threaded for key operations so the race is between different *client*
-/// connections, not within a single connection.  For rate limiting this level
-/// of precision is more than adequate.
+/// Using INCR-first prevents the TTL-leak race present in the former
+/// SET-NX + INCR approach: if the key expired between the SET-NX and the
+/// INCR, the INCR would recreate the key *without* a TTL, causing the
+/// counter to persist forever.  With INCR-first the TTL is set exactly
+/// once — when the key is first created — and subsequent increments leave
+/// the existing TTL unchanged.
 async fn redis_fixed_window_check(
     conn: &mut ConnectionManager,
     redis_key: &str,
     limit: u64,
     window_secs: u64,
 ) -> Result<bool, redis::RedisError> {
-    // SET key 0 EX window_secs NX — initialise if absent.
-    redis::cmd("SET")
-        .arg(redis_key)
-        .arg(0u64)
-        .arg("EX")
-        .arg(window_secs)
-        .arg("NX")
-        .query_async::<()>(conn)
-        .await
-        .ok(); // Ignored: `None` reply when key already exists is not an error.
-
-    // INCR key — returns the new counter value.
+    // INCR key — atomically creates (at 0) then increments; returns new value.
     let count: u64 = redis::cmd("INCR").arg(redis_key).query_async(conn).await?;
+
+    // Set the TTL only on the first request of the window (count == 1).
+    // Doing this after INCR guarantees the key always gets an expiry, even
+    // if a previous window's key expired between two concurrent INCRs.
+    if count == 1 {
+        redis::cmd("EXPIRE")
+            .arg(redis_key)
+            .arg(window_secs)
+            .query_async::<()>(conn)
+            .await
+            .ok(); // non-fatal: worst case the window outlives its deadline slightly
+    }
 
     Ok(count <= limit)
 }

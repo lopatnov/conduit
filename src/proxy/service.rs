@@ -887,17 +887,17 @@ impl ProxyHttp for ConduitProxy {
                     // 2. Apply rewrite rules (first match wins).
                     if let Some(rules) = rewrite {
                         for rule in rules {
-                            match regex::Regex::new(&rule.from) {
-                                Ok(re) => {
+                            match get_rewrite_regex(&rule.from) {
+                                Some(re) => {
                                     if re.is_match(&path) {
                                         path = re.replacen(&path, 1, rule.to.as_str()).into_owned();
                                         break; // first match wins
                                     }
                                 }
-                                Err(e) => {
+                                None => {
                                     tracing::warn!(
                                         pattern = %rule.from,
-                                        "rewrite rule regex error: {e}"
+                                        "rewrite rule regex error: invalid pattern (skipped)"
                                     );
                                 }
                             }
@@ -1390,6 +1390,23 @@ fn extract_host(session: &Session) -> String {
         .and_then(|v| v.to_str().ok())
         .map(|h| h.split(':').next().unwrap_or(h).to_owned())
         .unwrap_or_default()
+}
+
+/// Return a compiled [`regex::Regex`] for `pattern`, using a process-wide cache
+/// to avoid recompiling the same pattern on every request.
+///
+/// Rewrite patterns are plain (un-anchored) regexes so that `replacen` can
+/// match anywhere in the path.  Invalid patterns are not stored; the caller
+/// should log the error and skip the rule.
+fn get_rewrite_regex(pattern: &str) -> Option<regex::Regex> {
+    static CACHE: OnceLock<DashMap<String, regex::Regex>> = OnceLock::new();
+    let cache = CACHE.get_or_init(DashMap::new);
+    if let Some(re) = cache.get(pattern) {
+        return Some(re.clone());
+    }
+    let re = regex::Regex::new(pattern).ok()?;
+    cache.insert(pattern.to_owned(), re.clone());
+    Some(re)
 }
 
 fn rebuild_uri(original: &http::Uri, new_path: &str) -> Result<http::Uri> {

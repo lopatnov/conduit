@@ -280,10 +280,10 @@ pub async fn run_file_watcher(
             // more events — keep draining
         }
 
-        if reload_tx.send(()).is_err() {
-            break; // no active SSE subscribers — keep watcher alive in case they reconnect
-                   // (broadcast channel never truly closes until the Sender is dropped)
-        }
+        // Ignore send errors: no active SSE subscribers means the signal is
+        // simply dropped, but the watcher must keep running so it can deliver
+        // the next event when a subscriber reconnects.
+        let _ = reload_tx.send(());
     }
 
     // `watcher` is dropped here, which stops the background notify thread.
