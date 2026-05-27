@@ -253,8 +253,7 @@ async fn find_pre_compressed(
     accept_enc: &AcceptEncoding,
 ) -> Option<(PathBuf, &'static str)> {
     // Candidates in preference order.
-    let candidates: &[(&'static str, &'static str)] =
-        &[("br", ".br"), ("gzip", ".gz")];
+    let candidates: &[(&'static str, &'static str)] = &[("br", ".br"), ("gzip", ".gz")];
 
     for (enc, suffix) in candidates {
         let accept = match *enc {

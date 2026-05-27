@@ -26,9 +26,7 @@ fn make_routes_server(routes_json: serde_json::Value) -> common::TestServer {
 /// Start a conduit server with `routes` + an upstream echo server.
 ///
 /// Returns `(TestServer, upstream_port)`.
-fn make_routes_server_with_upstream(
-    routes_json: serde_json::Value,
-) -> (common::TestServer, u16) {
+fn make_routes_server_with_upstream(routes_json: serde_json::Value) -> (common::TestServer, u16) {
     let upstream_port = common::free_port();
     let server_port = common::free_port();
     let admin_port = common::free_port();
@@ -76,15 +74,13 @@ fn make_routes_server_with_upstream(
 #[serial]
 fn routes_path_glob_matches() {
     let upstream_port = common::free_port();
-    let listener =
-        std::net::TcpListener::bind(format!("127.0.0.1:{upstream_port}")).expect("bind");
+    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{upstream_port}")).expect("bind");
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut s) = stream else { continue };
             let mut buf = [0u8; 4096];
             std::io::Read::read(&mut s, &mut buf).ok();
-            let resp =
-                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK";
+            let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK";
             std::io::Write::write_all(&mut s, resp.as_bytes()).ok();
         }
     });
@@ -109,11 +105,19 @@ fn routes_path_glob_matches() {
     );
 
     let resp = reqwest::blocking::get(srv.url("/api/v1/users")).expect("GET /api/v1/users");
-    assert_eq!(resp.status().as_u16(), 200, "/api/v1/users should be proxied");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "/api/v1/users should be proxied"
+    );
 
     // Path outside the glob should not match → fallback 404.
     let resp2 = reqwest::blocking::get(srv.url("/other/path")).expect("GET /other");
-    assert_eq!(resp2.status().as_u16(), 404, "/other should fall through to fallback");
+    assert_eq!(
+        resp2.status().as_u16(),
+        404,
+        "/other should fall through to fallback"
+    );
 }
 
 /// First matching route wins — ordering is respected.
@@ -124,34 +128,26 @@ fn routes_first_match_wins() {
     let port_b = common::free_port();
 
     // Upstream A: returns 200 with body "A"
-    let listener_a =
-        std::net::TcpListener::bind(format!("127.0.0.1:{port_a}")).expect("bind A");
+    let listener_a = std::net::TcpListener::bind(format!("127.0.0.1:{port_a}")).expect("bind A");
     std::thread::spawn(move || {
         for stream in listener_a.incoming() {
             let Ok(mut s) = stream else { continue };
             let mut buf = [0u8; 512];
             std::io::Read::read(&mut s, &mut buf).ok();
-            std::io::Write::write_all(
-                &mut s,
-                b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nA",
-            )
-            .ok();
+            std::io::Write::write_all(&mut s, b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nA")
+                .ok();
         }
     });
 
     // Upstream B: returns 200 with body "B"
-    let listener_b =
-        std::net::TcpListener::bind(format!("127.0.0.1:{port_b}")).expect("bind B");
+    let listener_b = std::net::TcpListener::bind(format!("127.0.0.1:{port_b}")).expect("bind B");
     std::thread::spawn(move || {
         for stream in listener_b.incoming() {
             let Ok(mut s) = stream else { continue };
             let mut buf = [0u8; 512];
             std::io::Read::read(&mut s, &mut buf).ok();
-            std::io::Write::write_all(
-                &mut s,
-                b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nB",
-            )
-            .ok();
+            std::io::Write::write_all(&mut s, b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nB")
+                .ok();
         }
     });
 
@@ -195,18 +191,14 @@ fn routes_first_match_wins() {
 #[serial]
 fn routes_method_filter() {
     let upstream_port = common::free_port();
-    let listener =
-        std::net::TcpListener::bind(format!("127.0.0.1:{upstream_port}")).expect("bind");
+    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{upstream_port}")).expect("bind");
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut s) = stream else { continue };
             let mut buf = [0u8; 512];
             std::io::Read::read(&mut s, &mut buf).ok();
-            std::io::Write::write_all(
-                &mut s,
-                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK",
-            )
-            .ok();
+            std::io::Write::write_all(&mut s, b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                .ok();
         }
     });
 
@@ -251,8 +243,7 @@ fn routes_method_filter() {
 #[serial]
 fn routes_header_predicate() {
     let upstream_port = common::free_port();
-    let listener =
-        std::net::TcpListener::bind(format!("127.0.0.1:{upstream_port}")).expect("bind");
+    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{upstream_port}")).expect("bind");
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut s) = stream else { continue };
@@ -294,7 +285,11 @@ fn routes_header_predicate() {
         .header("x-api-version", "v2")
         .send()
         .expect("with header");
-    assert_eq!(r_match.status().as_u16(), 200, "matching header should proxy");
+    assert_eq!(
+        r_match.status().as_u16(),
+        200,
+        "matching header should proxy"
+    );
 
     // Wrong value → no match → fallback 404.
     let r_no_match = client
@@ -302,11 +297,19 @@ fn routes_header_predicate() {
         .header("x-api-version", "v1")
         .send()
         .expect("wrong header");
-    assert_eq!(r_no_match.status().as_u16(), 404, "wrong header value should not match");
+    assert_eq!(
+        r_no_match.status().as_u16(),
+        404,
+        "wrong header value should not match"
+    );
 
     // Missing header → no match → fallback 404.
     let r_missing = client.get(srv.url("/guarded")).send().expect("no header");
-    assert_eq!(r_missing.status().as_u16(), 404, "missing header should not match");
+    assert_eq!(
+        r_missing.status().as_u16(),
+        404,
+        "missing header should not match"
+    );
 }
 
 // ── Query predicate ───────────────────────────────────────────────────────────
@@ -316,18 +319,14 @@ fn routes_header_predicate() {
 #[serial]
 fn routes_query_predicate() {
     let upstream_port = common::free_port();
-    let listener =
-        std::net::TcpListener::bind(format!("127.0.0.1:{upstream_port}")).expect("bind");
+    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{upstream_port}")).expect("bind");
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut s) = stream else { continue };
             let mut buf = [0u8; 512];
             std::io::Read::read(&mut s, &mut buf).ok();
-            std::io::Write::write_all(
-                &mut s,
-                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK",
-            )
-            .ok();
+            std::io::Write::write_all(&mut s, b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                .ok();
         }
     });
 
@@ -365,11 +364,19 @@ fn routes_query_predicate() {
         .get(srv.url("/search?version=1"))
         .send()
         .expect("wrong query");
-    assert_eq!(r_bad.status().as_u16(), 404, "wrong query value should not match");
+    assert_eq!(
+        r_bad.status().as_u16(),
+        404,
+        "wrong query value should not match"
+    );
 
     // Missing param → fallback.
     let r_missing = client.get(srv.url("/search")).send().expect("no query");
-    assert_eq!(r_missing.status().as_u16(), 404, "missing query param should not match");
+    assert_eq!(
+        r_missing.status().as_u16(),
+        404,
+        "missing query param should not match"
+    );
 }
 
 // ── Static action in routes ───────────────────────────────────────────────────
@@ -384,8 +391,11 @@ fn routes_static_action() {
     let dir = tempfile::tempdir().expect("tempdir");
     // File must live at <root>/files/hello.txt to be found when requesting /files/hello.txt.
     std::fs::create_dir(dir.path().join("files")).expect("mkdir files");
-    std::fs::write(dir.path().join("files").join("hello.txt"), b"hello from routes static")
-        .expect("write");
+    std::fs::write(
+        dir.path().join("files").join("hello.txt"),
+        b"hello from routes static",
+    )
+    .expect("write");
 
     let port = common::free_port();
     let admin_port = common::free_port();
@@ -435,7 +445,11 @@ fn routes_no_match_returns_404() {
     );
 
     let resp = reqwest::blocking::get(srv.url("/other")).expect("GET /other");
-    assert_eq!(resp.status().as_u16(), 404, "/other should be 404 when no route matches");
+    assert_eq!(
+        resp.status().as_u16(),
+        404,
+        "/other should be 404 when no route matches"
+    );
 }
 
 // ── No-match criterion falls through ─────────────────────────────────────────
@@ -445,18 +459,14 @@ fn routes_no_match_returns_404() {
 #[serial]
 fn routes_empty_match_catches_all() {
     let upstream_port = common::free_port();
-    let listener =
-        std::net::TcpListener::bind(format!("127.0.0.1:{upstream_port}")).expect("bind");
+    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{upstream_port}")).expect("bind");
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut s) = stream else { continue };
             let mut buf = [0u8; 512];
             std::io::Read::read(&mut s, &mut buf).ok();
-            std::io::Write::write_all(
-                &mut s,
-                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK",
-            )
-            .ok();
+            std::io::Write::write_all(&mut s, b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                .ok();
         }
     });
 
@@ -482,5 +492,9 @@ fn routes_empty_match_catches_all() {
     assert_eq!(r1.status().as_u16(), 200, "empty match should catch all");
 
     let r2 = reqwest::blocking::get(srv.url("/foo/bar/baz")).expect("GET deep");
-    assert_eq!(r2.status().as_u16(), 200, "empty match should catch deep paths");
+    assert_eq!(
+        r2.status().as_u16(),
+        200,
+        "empty match should catch deep paths"
+    );
 }

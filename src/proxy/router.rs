@@ -109,7 +109,17 @@ pub fn route_request(
             None,
         )
     } else if let Some(site) = site {
-        route_site(site, path, method, req_headers, query, client_ip, counters, upstream_health, upload_addr)
+        route_site(
+            site,
+            path,
+            method,
+            req_headers,
+            query,
+            client_ip,
+            counters,
+            upstream_health,
+            upload_addr,
+        )
     } else {
         (
             UpstreamTarget::Local(LocalHandler::Fallback),
@@ -279,20 +289,28 @@ fn resolve_proxy(
                     )
                 };
 
-            let (retry_cfg, proxy_timeout, proxy_pool, strategy, proxy_http2, hash_key, cache_cfg, rewrite_rules) =
-                match route_target {
-                    ProxyRouteTarget::Full(cfg) => (
-                        cfg.retry.as_ref(),
-                        cfg.timeout.clone(),
-                        cfg.pool.clone(),
-                        cfg.strategy.as_ref(),
-                        cfg.http2.unwrap_or(false),
-                        cfg.hash_key.as_deref().unwrap_or("ip"),
-                        cfg.cache.clone(),
-                        cfg.rewrite.clone(),
-                    ),
-                    _ => (None, None, None, None, false, "ip", None, None),
-                };
+            let (
+                retry_cfg,
+                proxy_timeout,
+                proxy_pool,
+                strategy,
+                proxy_http2,
+                hash_key,
+                cache_cfg,
+                rewrite_rules,
+            ) = match route_target {
+                ProxyRouteTarget::Full(cfg) => (
+                    cfg.retry.as_ref(),
+                    cfg.timeout.clone(),
+                    cfg.pool.clone(),
+                    cfg.strategy.as_ref(),
+                    cfg.http2.unwrap_or(false),
+                    cfg.hash_key.as_deref().unwrap_or("ip"),
+                    cfg.cache.clone(),
+                    cfg.rewrite.clone(),
+                ),
+                _ => (None, None, None, None, false, "ip", None, None),
+            };
 
             // Filter to healthy upstreams; if all are down keep all (fail-open).
             let healthy = upstream_health.filter_healthy(&all_urls);
@@ -338,9 +356,19 @@ fn resolve_proxy(
             // If least-conn already incremented the inflight counter we must
             // release it here — the logging() hook won't run on this request.
             let upstream = match url_to_proxy_upstream(&chosen_url, strip) {
-                Some(UpstreamTarget::Proxy { addr, tls, sni, strip_prefix, .. }) => {
-                    UpstreamTarget::Proxy { addr, tls, sni, strip_prefix, rewrite: rewrite_rules }
-                }
+                Some(UpstreamTarget::Proxy {
+                    addr,
+                    tls,
+                    sni,
+                    strip_prefix,
+                    ..
+                }) => UpstreamTarget::Proxy {
+                    addr,
+                    tls,
+                    sni,
+                    strip_prefix,
+                    rewrite: rewrite_rules,
+                },
                 Some(other) => other,
                 None => {
                     if is_least_conn {
@@ -464,9 +492,19 @@ fn resolve_grouped(
 
     let strip = strip_prefix_flag.then(|| route_key.trim_end_matches('/').to_string());
     let upstream = match url_to_proxy_upstream(&chosen_url, strip) {
-        Some(UpstreamTarget::Proxy { addr, tls, sni, strip_prefix, .. }) => {
-            UpstreamTarget::Proxy { addr, tls, sni, strip_prefix, rewrite: rewrite_rules }
-        }
+        Some(UpstreamTarget::Proxy {
+            addr,
+            tls,
+            sni,
+            strip_prefix,
+            ..
+        }) => UpstreamTarget::Proxy {
+            addr,
+            tls,
+            sni,
+            strip_prefix,
+            rewrite: rewrite_rules,
+        },
         Some(other) => other,
         None => {
             if is_least_conn {
@@ -687,7 +725,9 @@ fn is_health_path(site: Option<&SiteConfig>, path: &str) -> bool {
 fn is_hot_reload_sse_path(site: Option<&SiteConfig>, path: &str) -> bool {
     use crate::config::schema::HotReloadConfig;
     let Some(site) = site else { return false };
-    let Some(hr) = &site.hot_reload else { return false };
+    let Some(hr) = &site.hot_reload else {
+        return false;
+    };
     if matches!(hr, HotReloadConfig::Enabled(false)) {
         return false;
     }
@@ -700,7 +740,9 @@ fn is_hot_reload_sse_path(site: Option<&SiteConfig>, path: &str) -> bool {
 fn is_hot_reload_js_path(site: Option<&SiteConfig>, path: &str) -> bool {
     use crate::config::schema::HotReloadConfig;
     let Some(site) = site else { return false };
-    let Some(hr) = &site.hot_reload else { return false };
+    let Some(hr) = &site.hot_reload else {
+        return false;
+    };
     if matches!(hr, HotReloadConfig::Enabled(false)) {
         return false;
     }
@@ -1381,7 +1423,19 @@ mod tests {
         let config = AppConfig::default();
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
-        let ctx = route_request(&config, "localhost", "/", "GET", &http::HeaderMap::new(), None, "127.0.0.1", 80, &counters, &reg, None);
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
         assert!(matches!(
             ctx.upstream,
             UpstreamTarget::Local(LocalHandler::Fallback)
@@ -1456,8 +1510,32 @@ mod tests {
 
         // Two different paths with empty client_ip should potentially land on
         // different upstreams (demonstrating that path is used, not a fixed "").
-        let ctx_a = route_request(&config, "localhost", "/page-a", "GET", &http::HeaderMap::new(), None, "", 80, &counters, &reg, None);
-        let ctx_b = route_request(&config, "localhost", "/page-b", "GET", &http::HeaderMap::new(), None, "", 80, &counters, &reg, None);
+        let ctx_a = route_request(
+            &config,
+            "localhost",
+            "/page-a",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        let ctx_b = route_request(
+            &config,
+            "localhost",
+            "/page-b",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
         // Both should be routed to a Proxy target (not fallback).
         assert!(
             matches!(ctx_a.upstream, UpstreamTarget::Proxy { .. }),
@@ -1492,7 +1570,19 @@ mod tests {
         let reg = UpstreamRegistry::new();
 
         // Without an override → config target is used.
-        let ctx = route_request(&config, "localhost", "/", "GET", &http::HeaderMap::new(), None, "1.2.3.4", 80, &counters, &reg, None);
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "1.2.3.4",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
         let addr_config = match &ctx.upstream {
             UpstreamTarget::Proxy { addr, .. } => addr.clone(),
             other => panic!("expected Proxy, got {other:?}"),
@@ -1505,7 +1595,19 @@ mod tests {
         // Apply an override.
         reg.add_upstream("/", "http://override-target:9000", 1);
 
-        let ctx2 = route_request(&config, "localhost", "/", "GET", &http::HeaderMap::new(), None, "1.2.3.4", 80, &counters, &reg, None);
+        let ctx2 = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "1.2.3.4",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
         let addr_override = match &ctx2.upstream {
             UpstreamTarget::Proxy { addr, .. } => addr.clone(),
             other => panic!("expected Proxy, got {other:?}"),
@@ -1542,7 +1644,19 @@ mod tests {
         reg.add_upstream("/", "http://temp:4000", 1);
         reg.remove_upstream("/", "http://temp:4000");
 
-        let ctx = route_request(&config, "localhost", "/", "GET", &http::HeaderMap::new(), None, "1.2.3.4", 80, &counters, &reg, None);
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "1.2.3.4",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
         // Empty override list → no URL → falls through to Fallback (not Proxy).
         assert!(
             matches!(ctx.upstream, UpstreamTarget::Local(LocalHandler::Fallback)),

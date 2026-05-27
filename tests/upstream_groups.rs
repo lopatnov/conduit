@@ -87,11 +87,7 @@ fn groups_round_robin_distributes_across_groups() {
     let a1 = MockUpstream::start("a1");
     let b1 = MockUpstream::start("b1");
 
-    let server = grouped_server(
-        vec![a1.url()],
-        vec![b1.url()],
-        "round-robin",
-    );
+    let server = grouped_server(vec![a1.url()], vec![b1.url()], "round-robin");
 
     let client = reqwest::blocking::Client::new();
     // 4 requests: round-robin across 2 groups → 2 to each
@@ -103,7 +99,8 @@ fn groups_round_robin_distributes_across_groups() {
     assert!(
         a1.hits() > 0 && b1.hits() > 0,
         "group round-robin must distribute across groups (a={}, b={})",
-        a1.hits(), b1.hits()
+        a1.hits(),
+        b1.hits()
     );
 }
 
@@ -113,11 +110,7 @@ fn groups_ip_hash_routes_consistently_to_same_group() {
     let a1 = MockUpstream::start("a1");
     let b1 = MockUpstream::start("b1");
 
-    let server = grouped_server(
-        vec![a1.url()],
-        vec![b1.url()],
-        "ip-hash",
-    );
+    let server = grouped_server(vec![a1.url()], vec![b1.url()], "ip-hash");
 
     let client = reqwest::blocking::Client::new();
     // All requests from 127.0.0.1 must land in the same group.
@@ -131,7 +124,8 @@ fn groups_ip_hash_routes_consistently_to_same_group() {
         a1.hits() == 6 || b1.hits() == 6,
         "ip-hash group strategy must route all requests to the same group \
          (a={}, b={})",
-        a1.hits(), b1.hits()
+        a1.hits(),
+        b1.hits()
     );
 }
 
@@ -181,8 +175,10 @@ fn groups_intra_group_round_robin_across_targets() {
 
     // One group got all 6 — within that group they must be distributed.
     if a1.hits() + a2.hits() == 6 {
-        assert!(a1.hits() > 0 && a2.hits() > 0,
-            "intra-group round-robin must spread load within group-a");
+        assert!(
+            a1.hits() > 0 && a2.hits() > 0,
+            "intra-group round-robin must spread load within group-a"
+        );
     } else {
         assert_eq!(b1.hits(), 6, "all requests in group-b must go to b1");
     }

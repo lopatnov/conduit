@@ -17,11 +17,7 @@ fn free_port() -> u16 {
 /// Build a conduit config with a Rhai script middleware.
 ///
 /// The script file is written into `dir` before the server starts.
-fn make_config(
-    port: u16,
-    admin_port: u16,
-    script_path: &str,
-) -> serde_json::Value {
+fn make_config(port: u16, admin_port: u16, script_path: &str) -> serde_json::Value {
     serde_json::json!({
         "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
         "sites": [{
@@ -104,7 +100,9 @@ fn script_abort_with_response_header() {
     let resp = reqwest::blocking::get(server.url("/api")).unwrap();
     assert_eq!(resp.status(), 401);
     assert_eq!(
-        resp.headers().get("www-authenticate").and_then(|v| v.to_str().ok()),
+        resp.headers()
+            .get("www-authenticate")
+            .and_then(|v| v.to_str().ok()),
         Some("Bearer")
     );
 }
@@ -147,7 +145,11 @@ fn script_conditional_on_request_header() {
         .header("Authorization", "Bearer secret")
         .send()
         .unwrap();
-    assert_ne!(with_auth.status(), 401, "script should pass when header is present");
+    assert_ne!(
+        with_auth.status(),
+        401,
+        "script should pass when header is present"
+    );
 }
 
 /// A script with a syntax error should not crash the server; requests should
@@ -196,7 +198,9 @@ fn validate_rejects_unknown_middleware_type() {
     let app = conduit::config::from_str(&raw).expect("parse ok");
     let errors = conduit::config::validate::validate(&app);
     assert!(
-        errors.iter().any(|e| e.message.contains("unknown middleware type")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("unknown middleware type")),
         "expected unknown-type error, got: {errors:?}"
     );
 }

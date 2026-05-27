@@ -35,12 +35,12 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use pingora_cache::{
-    CacheKey, CacheMeta,
     storage::{HandleHit, HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeType, Storage},
     trace::SpanHandle,
+    CacheKey, CacheMeta,
 };
-use pingora_core::{Error, ErrorType};
 use pingora_core::Result as PingoraResult;
+use pingora_core::{Error, ErrorType};
 
 // ── Registry of per-path storage instances ───────────────────────────────────
 
@@ -107,7 +107,6 @@ fn bytes_to_hex(b: &[u8; 16]) -> String {
 }
 
 impl DiskCacheStorage {
-
     fn read_entry(path: &Path) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let mut f = std::fs::File::open(path).ok()?;
         let mut buf = Vec::new();
@@ -163,8 +162,9 @@ impl Storage for DiskCacheStorage {
                     if meta.fresh_until() <= SystemTime::now() {
                         return Ok(None);
                     }
-                    let handler =
-                        Box::new(DiskHitHandler { body: Some(Bytes::from(body)) }) as HitHandler;
+                    let handler = Box::new(DiskHitHandler {
+                        body: Some(Bytes::from(body)),
+                    }) as HitHandler;
                     Ok(Some((meta, handler)))
                 }
                 Err(e) => {
@@ -186,9 +186,9 @@ impl Storage for DiskCacheStorage {
         meta: &CacheMeta,
         _trace: &SpanHandle,
     ) -> PingoraResult<MissHandler> {
-        let (m0, m1) = meta.serialize().map_err(|e| {
-            Error::because(ErrorType::InternalError, "cache meta serialize", e)
-        })?;
+        let (m0, m1) = meta
+            .serialize()
+            .map_err(|e| Error::because(ErrorType::InternalError, "cache meta serialize", e))?;
 
         Ok(Box::new(DiskMissHandler {
             cache_path: self.entry_path(&Self::hash(key)),

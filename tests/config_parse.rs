@@ -558,7 +558,11 @@ fn routes_array_parsed() {
     let routes = cfg.sites[0].routes.as_ref().expect("routes must be set");
     assert_eq!(routes.len(), 2);
     assert_eq!(routes[0].r#match.path.as_deref(), Some("/api/**"));
-    let method = routes[0].r#match.method.as_ref().expect("method must be set");
+    let method = routes[0]
+        .r#match
+        .method
+        .as_ref()
+        .expect("method must be set");
     assert_eq!(method, &["GET", "POST"]);
     assert!(matches!(routes[0].proxy, Some(ProxyRouteTarget::Url(_))));
     assert_eq!(routes[1].r#match.path.as_deref(), Some("/public/**"));
@@ -641,7 +645,10 @@ fn groups_no_top_level_targets_parsed() {
     );
     if let Some(ProxyConfig::Routes(routes)) = &cfg.sites[0].proxy {
         if let Some(ProxyRouteTarget::Full(pcfg)) = routes.get("/") {
-            assert!(pcfg.targets.is_empty(), "top-level targets must default to []");
+            assert!(
+                pcfg.targets.is_empty(),
+                "top-level targets must default to []"
+            );
             assert!(pcfg.groups.is_some());
         } else {
             panic!("expected Full target");

@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::config::schema::{CacheConfig, ConnectionPoolConfig, ProxyTimeout, RewriteRule, StaticOptions};
+use crate::config::schema::{
+    CacheConfig, ConnectionPoolConfig, ProxyTimeout, RewriteRule, StaticOptions,
+};
 
 #[derive(Debug)]
 pub struct RequestCtx {

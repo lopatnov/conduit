@@ -127,7 +127,9 @@ pub fn run_server(config: AppConfig, config_path: PathBuf) -> anyhow::Result<()>
                     Some(Arc::new(rrl))
                 }
                 Err(e) => {
-                    tracing::warn!("Redis rate limiter unavailable ({url}): {e} — using memory fallback");
+                    tracing::warn!(
+                        "Redis rate limiter unavailable ({url}): {e} — using memory fallback"
+                    );
                     None
                 }
             }

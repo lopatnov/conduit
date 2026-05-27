@@ -88,11 +88,11 @@ fn pick_by_accept<'a>(
 /// | any other key | the key as a literal substring        |
 fn accept_matches(accept: &str, key: &str) -> bool {
     let patterns: &[&str] = match key {
-        "html"  => &["text/html"],
-        "json"  => &["application/json"],
-        "text"  => &["text/plain", "text/"],
+        "html" => &["text/html"],
+        "json" => &["application/json"],
+        "text" => &["text/plain", "text/"],
         "image" => &["image/"],
-        other   => &[other],
+        other => &[other],
     };
     let accept_lc = accept.to_ascii_lowercase();
     patterns.iter().any(|p| accept_lc.contains(p))

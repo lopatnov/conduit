@@ -47,8 +47,8 @@ impl RedisRateLimiter {
     /// running).  At that point the caller can fall back to a pure-memory
     /// implementation and log the failure.
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
-        let client = redis::Client::open(url)
-            .map_err(|e| anyhow::anyhow!("invalid Redis URL: {e}"))?;
+        let client =
+            redis::Client::open(url).map_err(|e| anyhow::anyhow!("invalid Redis URL: {e}"))?;
         let conn = ConnectionManager::new(client)
             .await
             .map_err(|e| anyhow::anyhow!("cannot connect to Redis ({url}): {e}"))?;
@@ -82,7 +82,10 @@ impl RedisRateLimiter {
         match result {
             Ok(Ok(allowed)) => allowed,
             Ok(Err(e)) => {
-                tracing::warn!(key = client_key, "Redis rate-limit error (memory fallback): {e}");
+                tracing::warn!(
+                    key = client_key,
+                    "Redis rate-limit error (memory fallback): {e}"
+                );
                 self.fallback_check(client_key, limit, window_secs)
             }
             Err(_timeout) => {
@@ -144,10 +147,7 @@ async fn redis_fixed_window_check(
         .ok(); // Ignored: `None` reply when key already exists is not an error.
 
     // INCR key — returns the new counter value.
-    let count: u64 = redis::cmd("INCR")
-        .arg(redis_key)
-        .query_async(conn)
-        .await?;
+    let count: u64 = redis::cmd("INCR").arg(redis_key).query_async(conn).await?;
 
     Ok(count <= limit)
 }

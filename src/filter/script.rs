@@ -87,8 +87,7 @@ impl ScriptResponse {
 
     /// Append a response header.
     pub fn header(&mut self, name: &str, value: &str) {
-        self.extra_headers
-            .push((name.to_owned(), value.to_owned()));
+        self.extra_headers.push((name.to_owned(), value.to_owned()));
     }
 }
 
@@ -273,7 +272,10 @@ mod tests {
 
     #[test]
     fn script_returning_false_aborts() {
-        assert!(matches!(run("false", headers(&[])), ScriptOutcome::Abort { .. }));
+        assert!(matches!(
+            run("false", headers(&[])),
+            ScriptOutcome::Abort { .. }
+        ));
     }
 
     #[test]

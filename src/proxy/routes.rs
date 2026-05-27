@@ -4,8 +4,8 @@
 //! header predicates, query predicates) plus an action (`proxy` or `static`).
 //! Routes are evaluated in declaration order; the first match wins.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use regex::Regex;
@@ -39,7 +39,13 @@ pub fn match_routes(
 ) -> Option<RouteResult> {
     for route in routes {
         if route_matches(&route.r#match, path, method, req_headers, query) {
-            return Some(route_to_result(route, path, counters, upstream_health, static_options));
+            return Some(route_to_result(
+                route,
+                path,
+                counters,
+                upstream_health,
+                static_options,
+            ));
         }
     }
     None
@@ -64,10 +70,7 @@ fn route_matches(
 
     // 2. Method.
     if let Some(methods) = &m.method {
-        if !methods
-            .iter()
-            .any(|m| m.eq_ignore_ascii_case(method))
-        {
+        if !methods.iter().any(|m| m.eq_ignore_ascii_case(method)) {
             return false;
         }
     }
@@ -128,7 +131,12 @@ fn route_to_result(
                     options,
                     strip_prefix,
                 }),
-                None, None, None, false, None, None,
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
             );
         }
     }
@@ -136,7 +144,12 @@ fn route_to_result(
     // No action configured — fall through to fallback.
     (
         UpstreamTarget::Local(LocalHandler::Fallback),
-        None, None, None, false, None, None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
     )
 }
 
@@ -150,7 +163,15 @@ fn proxy_target_to_result(
     match target {
         ProxyRouteTarget::Url(url) => {
             let Some(upstream) = router::url_to_proxy_upstream(url, None) else {
-                return (UpstreamTarget::Local(LocalHandler::Fallback), None, None, None, false, None, None);
+                return (
+                    UpstreamTarget::Local(LocalHandler::Fallback),
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                    None,
+                );
             };
             (upstream, None, None, None, false, None, None)
         }
@@ -163,7 +184,15 @@ fn proxy_target_to_result(
             };
             let url = &urls[idx];
             let Some(upstream) = router::url_to_proxy_upstream(url, None) else {
-                return (UpstreamTarget::Local(LocalHandler::Fallback), None, None, None, false, None, None);
+                return (
+                    UpstreamTarget::Local(LocalHandler::Fallback),
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                    None,
+                );
             };
             (upstream, None, None, None, false, None, None)
         }
@@ -197,7 +226,12 @@ fn proxy_target_to_result(
             if urls.is_empty() {
                 return (
                     UpstreamTarget::Local(LocalHandler::Fallback),
-                    None, None, None, false, None, None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                    None,
                 );
             }
 
@@ -206,7 +240,10 @@ fn proxy_target_to_result(
             let hash_val = upstream::fnv1a_hash(path);
 
             // Pick URL using the configured strategy.
-            let strategy = cfg.strategy.as_ref().unwrap_or(&LoadBalanceStrategy::RoundRobin);
+            let strategy = cfg
+                .strategy
+                .as_ref()
+                .unwrap_or(&LoadBalanceStrategy::RoundRobin);
             let route_key = path; // stable key for round-robin counters
             let pick_result = match strategy {
                 LoadBalanceStrategy::Random => {
@@ -234,14 +271,16 @@ fn proxy_target_to_result(
             let Some((chosen_url, is_least_conn)) = pick_result else {
                 return (
                     UpstreamTarget::Local(LocalHandler::Fallback),
-                    None, None, None, false, None, None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                    None,
                 );
             };
 
-            let strip = cfg
-                .strip_prefix
-                .unwrap_or(false)
-                .then(|| path.to_string());
+            let strip = cfg.strip_prefix.unwrap_or(false).then(|| path.to_string());
 
             let upstream = match router::url_to_proxy_upstream(&chosen_url, strip) {
                 Some(u) => u,
@@ -251,7 +290,12 @@ fn proxy_target_to_result(
                     }
                     return (
                         UpstreamTarget::Local(LocalHandler::Fallback),
-                        None, None, None, false, None, None,
+                        None,
+                        None,
+                        None,
+                        false,
+                        None,
+                        None,
                     );
                 }
             };
@@ -329,14 +373,10 @@ fn glob_match_inner(pat: &[u8], s: &[u8]) -> bool {
         // `*` against empty string — never matches.
         ([b'*', ..], []) => false,
         // `?` — match any single non-`/` character.
-        ([b'?', rest_p @ ..], [c, rest_s @ ..]) if *c != b'/' => {
-            glob_match_inner(rest_p, rest_s)
-        }
+        ([b'?', rest_p @ ..], [c, rest_s @ ..]) if *c != b'/' => glob_match_inner(rest_p, rest_s),
         ([b'?', ..], _) => false,
         // Literal character match.
-        ([pc, rest_p @ ..], [sc, rest_s @ ..]) if pc == sc => {
-            glob_match_inner(rest_p, rest_s)
-        }
+        ([pc, rest_p @ ..], [sc, rest_s @ ..]) if pc == sc => glob_match_inner(rest_p, rest_s),
         _ => false,
     }
 }
@@ -468,8 +508,20 @@ mod tests {
             path: Some("/api/**".to_string()),
             ..Default::default()
         };
-        assert!(route_matches(&m, "/api/v1/users", "GET", &http::HeaderMap::new(), None));
-        assert!(!route_matches(&m, "/other", "GET", &http::HeaderMap::new(), None));
+        assert!(route_matches(
+            &m,
+            "/api/v1/users",
+            "GET",
+            &http::HeaderMap::new(),
+            None
+        ));
+        assert!(!route_matches(
+            &m,
+            "/other",
+            "GET",
+            &http::HeaderMap::new(),
+            None
+        ));
     }
 
     #[test]
@@ -478,9 +530,27 @@ mod tests {
             method: Some(vec!["POST".to_string(), "PUT".to_string()]),
             ..Default::default()
         };
-        assert!(route_matches(&m, "/any", "POST", &http::HeaderMap::new(), None));
-        assert!(route_matches(&m, "/any", "put", &http::HeaderMap::new(), None)); // case-insensitive
-        assert!(!route_matches(&m, "/any", "GET", &http::HeaderMap::new(), None));
+        assert!(route_matches(
+            &m,
+            "/any",
+            "POST",
+            &http::HeaderMap::new(),
+            None
+        ));
+        assert!(route_matches(
+            &m,
+            "/any",
+            "put",
+            &http::HeaderMap::new(),
+            None
+        )); // case-insensitive
+        assert!(!route_matches(
+            &m,
+            "/any",
+            "GET",
+            &http::HeaderMap::new(),
+            None
+        ));
     }
 
     #[test]
@@ -508,7 +578,19 @@ mod tests {
             query: Some(query_map),
             ..Default::default()
         };
-        assert!(route_matches(&m, "/any", "GET", &http::HeaderMap::new(), Some("version=2&other=x")));
-        assert!(!route_matches(&m, "/any", "GET", &http::HeaderMap::new(), Some("version=1")));
+        assert!(route_matches(
+            &m,
+            "/any",
+            "GET",
+            &http::HeaderMap::new(),
+            Some("version=2&other=x")
+        ));
+        assert!(!route_matches(
+            &m,
+            "/any",
+            "GET",
+            &http::HeaderMap::new(),
+            Some("version=1")
+        ));
     }
 }
