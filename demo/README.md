@@ -28,11 +28,13 @@ Then open:
 ### Option B — Two terminals
 
 **Terminal 1 — two mock API instances (ports 4000 and 4001):**
+
 ```bash
 node demo/api/server.js
 ```
 
 **Terminal 2 — Conduit (two virtual sites from one process):**
+
 ```bash
 cargo run --release -- -c demo/conduit.json
 # or, if conduit is installed globally:
@@ -88,7 +90,7 @@ Edit it while the server is running and apply with `conduit reload`.
 
 ## Directory layout
 
-```
+```text
 demo/
 ├── conduit.json        multi-site config (two sites)
 ├── api/
