@@ -106,6 +106,16 @@ async fn handle_rule(
 ) -> Result<()> {
     let status = rule.status.unwrap_or(404);
 
+    // Merge site-level `extra` headers with any rule-specific custom headers.
+    // Rule headers are appended last so they can override site-level ones.
+    let mut all_headers = extra.to_vec();
+    if let Some(ref custom) = rule.headers {
+        for (k, v) in custom {
+            all_headers.push((k.clone(), v.clone()));
+        }
+    }
+    let extra = all_headers.as_slice();
+
     // Prefer `file` over `body`.
     if let Some(ref path) = rule.file {
         match fs::read(path).await {

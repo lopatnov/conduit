@@ -54,7 +54,7 @@ jobs:
 
     services:
       pebble:
-        image: letsencrypt/pebble:latest
+        image: ghcr.io/letsencrypt/pebble:latest
         ports:
           - 14000:14000
           - 5002:5002
