@@ -226,6 +226,18 @@ impl ConduitProxy {
                 })
                 .collect();
 
+            // Extract the local port so that port-differentiated virtual hosts
+            // (e.g. port 8080 public site vs. port 8081 admin site) are routed
+            // to the correct SiteConfig even when no explicit `host` is set.
+            // Pingora's SocketAddr wraps std::net::SocketAddr; use as_inet() to
+            // reach the standard type and its .port() method.
+            let server_port: u16 = session
+                .as_ref()
+                .server_addr()
+                .and_then(|a| a.as_inet())
+                .map(|a| a.port())
+                .unwrap_or(80);
+
             let req_ctx = router::route_request(
                 &config,
                 &host,
@@ -234,6 +246,7 @@ impl ConduitProxy {
                 &session.req_header().headers,
                 query.as_deref(),
                 &client_ip,
+                server_port,
                 &self.state.round_robin,
                 &self.state.upstream_health,
                 self.state.upload_addr,
@@ -684,7 +697,7 @@ impl ConduitProxy {
                 } else {
                     unreachable!()
                 };
-                static_files::handle_static(
+                let found = static_files::handle_static(
                     session,
                     &roots,
                     &options,
@@ -694,6 +707,16 @@ impl ConduitProxy {
                     &accept_enc,
                 )
                 .await?;
+
+                if !found {
+                    // File not found — delegate to the site's fallback handler
+                    // (e.g. SPA index.html for HTML requests, JSON 404 for API).
+                    let config = self.state.config.load();
+                    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                    let site = config.sites.get(site_idx);
+                    fallback::handle_fallback(session, site, &extra).await?;
+                }
+
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
                 Ok(true)
             }

@@ -49,9 +49,10 @@ test('GET /api/info includes Conduit proxy headers', async ({ request }) => {
   const res = await request.get('/api/info');
   expect(res.status()).toBe(200);
   const body = await res.json();
-  // Conduit must inject X-Forwarded-For and X-Site
+  // Conduit must inject X-Forwarded-For into the upstream request.
   expect(body.receivedHeaders['x-forwarded-for']).toBeTruthy();
-  expect(body.receivedHeaders['x-site']).toBe('public');
+  // X-Site is a custom response header added by Conduit (not forwarded upstream).
+  expect(res.headers()['x-site']).toBe('public');
 });
 
 test('POST /api/echo echoes the request body', async ({ request }) => {

@@ -37,11 +37,12 @@ pub fn route_request(
     req_headers: &http::HeaderMap,
     query: Option<&str>,
     client_ip: &str,
+    server_port: u16,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
     upload_addr: Option<SocketAddr>,
 ) -> RequestCtx {
-    let site_idx = find_site_idx(config, host).unwrap_or(0);
+    let site_idx = find_site_idx(config, host, server_port).unwrap_or(0);
     let site = config.sites.get(site_idx);
 
     let (
@@ -713,20 +714,47 @@ fn acme_challenge_token(path: &str) -> Option<&str> {
     path.strip_prefix("/.well-known/acme-challenge/")
 }
 
-fn find_site_idx(config: &AppConfig, host: &str) -> Option<usize> {
+fn find_site_idx(config: &AppConfig, host: &str, server_port: u16) -> Option<usize> {
     if config.sites.is_empty() {
         return None;
     }
-    for (i, site) in config.sites.iter().enumerate() {
-        if site.host.as_deref() == Some(host) {
-            return Some(i);
+
+    // 1st pass: explicit host match (optionally refined by port).
+    let host_match: Option<usize> = {
+        let mut best: Option<usize> = None;
+        for (i, site) in config.sites.iter().enumerate() {
+            if site.host.as_deref() == Some(host) {
+                // Prefer a site whose configured port also matches.
+                if site.port == Some(server_port) {
+                    return Some(i);
+                }
+                if best.is_none() {
+                    best = Some(i);
+                }
+            }
         }
+        best
+    };
+    if let Some(idx) = host_match {
+        return Some(idx);
     }
+
+    // 2nd pass: catch-all sites (no explicit host), prefer port match.
+    let mut wildcard_any: Option<usize> = None;
     for (i, site) in config.sites.iter().enumerate() {
         if matches!(site.host.as_deref(), None | Some("*")) {
-            return Some(i);
+            if site.port == Some(server_port) {
+                return Some(i);
+            }
+            if wildcard_any.is_none() {
+                wildcard_any = Some(i);
+            }
         }
     }
+    if let Some(idx) = wildcard_any {
+        return Some(idx);
+    }
+
     Some(0)
 }
 
@@ -1278,6 +1306,7 @@ mod tests {
             &http::HeaderMap::new(),
             None,
             "127.0.0.1",
+            80,
             &counters,
             &reg,
             None,
@@ -1308,6 +1337,7 @@ mod tests {
             &http::HeaderMap::new(),
             None,
             "127.0.0.1",
+            80,
             &counters,
             &reg,
             None,
@@ -1338,6 +1368,7 @@ mod tests {
             &http::HeaderMap::new(),
             None,
             "127.0.0.1",
+            80,
             &counters,
             &reg,
             None,
@@ -1350,7 +1381,7 @@ mod tests {
         let config = AppConfig::default();
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
-        let ctx = route_request(&config, "localhost", "/", "GET", &http::HeaderMap::new(), None, "127.0.0.1", &counters, &reg, None);
+        let ctx = route_request(&config, "localhost", "/", "GET", &http::HeaderMap::new(), None, "127.0.0.1", 80, &counters, &reg, None);
         assert!(matches!(
             ctx.upstream,
             UpstreamTarget::Local(LocalHandler::Fallback)
@@ -1380,6 +1411,7 @@ mod tests {
             &http::HeaderMap::new(),
             None,
             "127.0.0.1",
+            80,
             &counters,
             &reg,
             None,
@@ -1424,8 +1456,8 @@ mod tests {
 
         // Two different paths with empty client_ip should potentially land on
         // different upstreams (demonstrating that path is used, not a fixed "").
-        let ctx_a = route_request(&config, "localhost", "/page-a", "GET", &http::HeaderMap::new(), None, "", &counters, &reg, None);
-        let ctx_b = route_request(&config, "localhost", "/page-b", "GET", &http::HeaderMap::new(), None, "", &counters, &reg, None);
+        let ctx_a = route_request(&config, "localhost", "/page-a", "GET", &http::HeaderMap::new(), None, "", 80, &counters, &reg, None);
+        let ctx_b = route_request(&config, "localhost", "/page-b", "GET", &http::HeaderMap::new(), None, "", 80, &counters, &reg, None);
         // Both should be routed to a Proxy target (not fallback).
         assert!(
             matches!(ctx_a.upstream, UpstreamTarget::Proxy { .. }),
@@ -1460,7 +1492,7 @@ mod tests {
         let reg = UpstreamRegistry::new();
 
         // Without an override → config target is used.
-        let ctx = route_request(&config, "localhost", "/", "GET", &http::HeaderMap::new(), None, "1.2.3.4", &counters, &reg, None);
+        let ctx = route_request(&config, "localhost", "/", "GET", &http::HeaderMap::new(), None, "1.2.3.4", 80, &counters, &reg, None);
         let addr_config = match &ctx.upstream {
             UpstreamTarget::Proxy { addr, .. } => addr.clone(),
             other => panic!("expected Proxy, got {other:?}"),
@@ -1473,7 +1505,7 @@ mod tests {
         // Apply an override.
         reg.add_upstream("/", "http://override-target:9000", 1);
 
-        let ctx2 = route_request(&config, "localhost", "/", "GET", &http::HeaderMap::new(), None, "1.2.3.4", &counters, &reg, None);
+        let ctx2 = route_request(&config, "localhost", "/", "GET", &http::HeaderMap::new(), None, "1.2.3.4", 80, &counters, &reg, None);
         let addr_override = match &ctx2.upstream {
             UpstreamTarget::Proxy { addr, .. } => addr.clone(),
             other => panic!("expected Proxy, got {other:?}"),
@@ -1510,7 +1542,7 @@ mod tests {
         reg.add_upstream("/", "http://temp:4000", 1);
         reg.remove_upstream("/", "http://temp:4000");
 
-        let ctx = route_request(&config, "localhost", "/", "GET", &http::HeaderMap::new(), None, "1.2.3.4", &counters, &reg, None);
+        let ctx = route_request(&config, "localhost", "/", "GET", &http::HeaderMap::new(), None, "1.2.3.4", 80, &counters, &reg, None);
         // Empty override list → no URL → falls through to Fallback (not Proxy).
         assert!(
             matches!(ctx.upstream, UpstreamTarget::Local(LocalHandler::Fallback)),
