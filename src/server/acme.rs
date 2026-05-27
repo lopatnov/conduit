@@ -182,7 +182,10 @@ async fn obtain_certificate(
 /// certificates that are not in the system trust store.
 fn account_builder() -> anyhow::Result<instant_acme::AccountBuilder> {
     if let Ok(ca_path) = std::env::var("CONDUIT_ACME_EXTRA_ROOT") {
-        tracing::debug!(ca_path, "using custom ACME root CA from CONDUIT_ACME_EXTRA_ROOT");
+        tracing::debug!(
+            ca_path,
+            "using custom ACME root CA from CONDUIT_ACME_EXTRA_ROOT"
+        );
         Account::builder_with_root(&ca_path)
             .with_context(|| format!("loading custom ACME root CA from {ca_path:?}"))
     } else {
