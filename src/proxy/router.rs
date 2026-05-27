@@ -960,7 +960,7 @@ mod tests {
 
     #[test]
     fn site_idx_empty_config_returns_none() {
-        assert!(find_site_idx(&AppConfig::default(), "example.com").is_none());
+        assert!(find_site_idx(&AppConfig::default(), "example.com", 80).is_none());
     }
 
     #[test]
@@ -978,7 +978,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert_eq!(find_site_idx(&config, "example.com"), Some(1));
+        assert_eq!(find_site_idx(&config, "example.com", 80), Some(1));
     }
 
     #[test]
@@ -996,7 +996,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert_eq!(find_site_idx(&config, "other.com"), Some(1));
+        assert_eq!(find_site_idx(&config, "other.com", 80), Some(1));
     }
 
     // ── pick_with_retry ───────────────────────────────────────────────────────
