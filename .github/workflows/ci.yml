@@ -57,7 +57,7 @@ jobs:
         image: ghcr.io/letsencrypt/pebble:latest
         ports:
           - 14000:14000
-          - 5002:5002
+          - 15000:15000  # management API (ghcr.io image uses 15000, not 5002)
         env:
           # Skip real HTTP-01 validation so tests don't need a public address.
           PEBBLE_VA_ALWAYS_VALID: "1"
@@ -85,8 +85,9 @@ jobs:
 
       - name: Install Pebble root CA in system trust store
         run: |
-          # Pebble serves its root CA over HTTP on the management port.
-          curl -s http://localhost:5002/roots/0 \
+          # ghcr.io/letsencrypt/pebble exposes the management API on HTTPS port 15000.
+          # -k skips Pebble's own self-signed TLS on the management interface.
+          curl -sk https://localhost:15000/roots/0 \
             -o /usr/local/share/ca-certificates/pebble-root.crt
           update-ca-certificates
         # instant-acme uses hyper-rustls with rustls-native-certs which reads

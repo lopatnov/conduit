@@ -273,7 +273,7 @@ impl ConduitProxy {
             // Middleware chain entries for this site.
             let middleware: Vec<MiddlewareEntry> = site
                 .and_then(|s| s.middleware.as_ref())
-                .map(|m| m.clone())
+                .cloned()
                 .unwrap_or_default();
 
             (
