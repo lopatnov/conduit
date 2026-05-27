@@ -197,7 +197,8 @@ wrk -t8 -c200 -d30s http://localhost:8080/api/
 ### Compare with express-reverse-proxy
 
 ```bash
-npm install -g express-reverse-proxy wrk
+# Install wrk (OS package, not npm): sudo apt install wrk  OR  brew install wrk
+npm install -g express-reverse-proxy
 
 # Run express-reverse-proxy on port 8081
 EXPRESS_PORT=8081 express-reverse-proxy &

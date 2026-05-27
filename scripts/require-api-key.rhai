@@ -13,11 +13,14 @@ if key == "" {
     return false;
 }
 
-// Optional: validate the key against a known value.
-// For production, use conduit's $ENV_VAR interpolation to inject secrets:
-//   "middleware": [{ "type": "script", "path": "./scripts/require-api-key.rhai" }]
-// and store the expected key in the script or in a side-car config file.
-if key != "changeme" {
+// Validate the key against an expected value.
+// Inject the expected value via conduit's $ENV_VAR interpolation in conduit.json:
+//
+//   "headers": { "X-Expected-Api-Key": "$MY_API_KEY" }
+//
+// then read it here with: request.header("X-Expected-Api-Key")
+let expected = request.header("X-Expected-Api-Key");
+if expected == "" || key != expected {
     response.status = 403;
     response.body   = "Invalid API key";
     return false;
