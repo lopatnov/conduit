@@ -85,24 +85,25 @@ jobs:
           done
           echo "Pebble did not start in time" && exit 1
 
-      - name: Download Pebble root CA for ACME tests
+      - name: Extract Pebble TLS CA cert
         run: |
-          # Pebble's management API (port 15000, HTTPS with self-signed cert) serves
-          # the root CA at /roots/0.  -k skips verification of Pebble's own TLS cert.
-          # The cert may arrive as DER; convert to PEM so instant-acme can load it.
-          curl -skf https://localhost:15000/roots/0 > /tmp/pebble-root-raw
-          # Try DER → PEM conversion first; fall back to treating the response as PEM.
-          openssl x509 -inform DER -in /tmp/pebble-root-raw -out /tmp/pebble-root.pem 2>/dev/null \
-            || cp /tmp/pebble-root-raw /tmp/pebble-root.pem
-          # Verify we have a valid PEM cert; fail loudly if not.
-          openssl x509 -in /tmp/pebble-root.pem -noout -subject
+          # Pebble uses a static minica test CA (pebble.minica.pem) to sign its
+          # own HTTPS server certificate on ports 14000 and 15000.  This is
+          # separate from the dynamically-generated ACME issuing CA returned by
+          # /roots/0.  We must trust pebble.minica.pem so that instant-acme can
+          # verify Pebble's TLS cert when contacting the ACME directory endpoint.
+          PEBBLE_ID=$(docker ps -q --filter ancestor=ghcr.io/letsencrypt/pebble:latest | head -1)
+          docker cp "$PEBBLE_ID:/test/certs/pebble.minica.pem" /tmp/pebble-ca.pem
+          # Confirm we have a valid PEM cert; fail loudly if not.
+          openssl x509 -in /tmp/pebble-ca.pem -noout -subject
 
       - name: Build (debug for faster CI)
         run: cargo build
 
       - name: Run ACME tests
         env:
-          # Tell Conduit to trust Pebble's self-signed root CA.
-          # instant-acme will use Account::builder_with_root() when this is set.
-          CONDUIT_ACME_EXTRA_ROOT: /tmp/pebble-root.pem
+          # Trust Pebble's static TLS CA so instant-acme can verify Pebble's
+          # server certificate when connecting to https://localhost:14000/dir.
+          # Account::builder_with_root() is used when this env var is set.
+          CONDUIT_ACME_EXTRA_ROOT: /tmp/pebble-ca.pem
         run: cargo test --test acme -- --nocapture
