@@ -25,5 +25,9 @@ EXPOSE 8080
 # Default config path inside the container.
 ENV CONDUIT_CONFIG=/etc/conduit/conduit.json
 
+# Run as an unprivileged user (scratch has no /etc/passwd, so use a numeric UID).
+# UID 65534 is the conventional "nobody" UID on Linux.
+USER 65534:65534
+
 ENTRYPOINT ["/conduit"]
 CMD ["-c", "/etc/conduit/conduit.json"]

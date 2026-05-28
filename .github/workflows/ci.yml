@@ -55,7 +55,7 @@ jobs:
 
     services:
       pebble:
-        image: ghcr.io/letsencrypt/pebble:latest
+        image: ghcr.io/letsencrypt/pebble@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199
         ports:
           - 14000:14000
           - 15000:15000  # management API (ghcr.io image uses 15000, not 5002)
@@ -92,7 +92,7 @@ jobs:
           # separate from the dynamically-generated ACME issuing CA returned by
           # /roots/0.  We must trust pebble.minica.pem so that instant-acme can
           # verify Pebble's TLS cert when contacting the ACME directory endpoint.
-          PEBBLE_ID=$(docker ps -q --filter ancestor=ghcr.io/letsencrypt/pebble:latest | head -1)
+          PEBBLE_ID=$(docker ps -q --filter ancestor=ghcr.io/letsencrypt/pebble@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199 | head -1)
           docker cp "$PEBBLE_ID:/test/certs/pebble.minica.pem" /tmp/pebble-ca.pem
           # Confirm we have a valid PEM cert; fail loudly if not.
           openssl x509 -in /tmp/pebble-ca.pem -noout -subject

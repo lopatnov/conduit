@@ -91,3 +91,15 @@ The vulnerable `protobuf 2.28.0` is only reachable through Pingora's own metrics
 - **`$VAR` interpolation** is limited to config values — not keys, not config structure
 - **IP filter** is applied before auth and rate limiting
 - **Health and metrics endpoints** bypass auth by design — protect with `ipFilter` if needed
+
+## Known Limitations
+
+### Redis TLS (`rediss://`) is not supported
+
+`rateLimit.store` accepts `redis://` URLs only. The `redis` crate is compiled without TLS
+backend features (`tls-rustls` / `tls-native-tls`) because Redis is typically deployed on
+a private internal network.
+
+If your Redis deployment requires TLS in transit, use a TLS-terminating proxy (e.g., stunnel,
+nginx stream, or a cloud Redis proxy) between Conduit and Redis, or file an issue to request
+native `rediss://` support.

@@ -29,7 +29,7 @@ services:
     restart: unless-stopped
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy
 
   api:
     image: node:20-alpine
@@ -40,6 +40,12 @@ services:
     expose:
       - "4000"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:4000/"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
 # Example conduit.json for this compose setup:
 #
