@@ -357,4 +357,117 @@ mod tests {
         // Last expression is truthy integer — treat as continue.
         assert!(matches!(run("42", headers(&[])), ScriptOutcome::Continue));
     }
+
+    #[test]
+    fn missing_script_file_continues_gracefully() {
+        // A non-existent script path should not panic.
+        let outcome = run_script(
+            "/nonexistent/path/script.rhai",
+            "/",
+            "GET",
+            "",
+            HashMap::new(),
+        );
+        assert!(matches!(outcome, ScriptOutcome::Continue));
+    }
+
+    #[test]
+    fn script_reads_request_method() {
+        let script = r#"
+            if request.method == "DELETE" { return false; }
+            true
+        "#;
+        assert!(matches!(
+            run(script, headers(&[])),
+            ScriptOutcome::Continue
+        ));
+    }
+
+    #[test]
+    fn script_reads_request_query() {
+        let script = r#"
+            if request.query == "admin=1" { return false; }
+            true
+        "#;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("query.rhai");
+        std::fs::write(&p, script).unwrap();
+        let path = p.to_str().unwrap().to_owned();
+        ast_cache().remove(&path);
+
+        // Without matching query → continue.
+        let ok = run_script(&path, "/test", "GET", "user=1", HashMap::new());
+        assert!(matches!(ok, ScriptOutcome::Continue));
+
+        // With matching query → abort.
+        ast_cache().remove(&path);
+        let blocked = run_script(&path, "/test", "GET", "admin=1", HashMap::new());
+        assert!(matches!(blocked, ScriptOutcome::Abort { .. }));
+    }
+
+    #[test]
+    fn script_abort_default_status_is_200() {
+        // Return false without setting status → status stays at default 200.
+        match run("false", headers(&[])) {
+            ScriptOutcome::Abort { status, .. } => assert_eq!(status, 200),
+            other => panic!("expected Abort, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn script_abort_clamps_out_of_range_status() {
+        // Status must be clamped to [100, 999].
+        let script = "response.status = 9999; false";
+        match run(script, headers(&[])) {
+            ScriptOutcome::Abort { status, .. } => assert_eq!(status, 999),
+            other => panic!("expected Abort, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn script_response_default_is_empty() {
+        let r = ScriptResponse::new();
+        assert_eq!(r.status, 200);
+        assert!(r.body.is_empty());
+        assert!(r.extra_headers.is_empty());
+    }
+
+    #[test]
+    fn script_request_header_case_insensitive() {
+        let mut req = ScriptRequest {
+            path: "/".to_string(),
+            method: "GET".to_string(),
+            query: "".to_string(),
+            headers: {
+                let mut m = HashMap::new();
+                m.insert("x-api-key".to_string(), "secret".to_string());
+                m
+            },
+        };
+        assert_eq!(req.header("X-API-KEY"), "secret");
+        assert_eq!(req.header("x-api-key"), "secret");
+        assert_eq!(req.header("X-Missing"), "");
+    }
+
+    #[test]
+    fn script_cached_ast_returns_same_result() {
+        // Run the same script twice; the second call uses the cached AST.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("cached.rhai");
+        std::fs::write(&p, "true").unwrap();
+        let path = p.to_str().unwrap().to_owned();
+        ast_cache().remove(&path);
+
+        let r1 = run_script(&path, "/", "GET", "", HashMap::new());
+        let r2 = run_script(&path, "/", "GET", "", HashMap::new());
+        assert!(matches!(r1, ScriptOutcome::Continue));
+        assert!(matches!(r2, ScriptOutcome::Continue));
+    }
+
+    #[test]
+    fn script_runtime_error_continues_gracefully() {
+        // A script that throws a runtime error should not panic.
+        let script = r#"throw "intentional error"; true"#;
+        assert!(matches!(run(script, headers(&[])), ScriptOutcome::Continue));
+    }
 }

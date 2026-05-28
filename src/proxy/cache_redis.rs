@@ -320,4 +320,49 @@ mod tests {
         let rk = RedisCacheStorage::redis_key(&key);
         assert!(rk.starts_with("conduit:pcache:"), "key: {rk}");
     }
+
+    #[test]
+    fn redis_key_is_32_hex_chars_after_prefix() {
+        let key = CacheKey::new("host.example", "https:/path", "");
+        let rk = RedisCacheStorage::redis_key(&key);
+        let hex_part = rk.strip_prefix("conduit:pcache:").unwrap();
+        assert_eq!(hex_part.len(), 32, "expected 32 hex chars, got {hex_part:?}");
+        assert!(
+            hex_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "non-hex chars in key: {hex_part}"
+        );
+    }
+
+    #[test]
+    fn bytes_to_hex_all_zeros() {
+        let b = [0u8; 16];
+        let h = bytes_to_hex(&b);
+        assert_eq!(h, "0".repeat(32));
+    }
+
+    #[test]
+    fn bytes_to_hex_all_ff() {
+        let b = [0xFFu8; 16];
+        let h = bytes_to_hex(&b);
+        assert_eq!(h, "ff".repeat(16));
+    }
+
+    #[test]
+    fn bytes_to_hex_known_value() {
+        let b: [u8; 16] = [
+            0x00, 0x01, 0x0F, 0x10, 0xAB, 0xCD, 0xEF, 0xFE, 0x80, 0x7F, 0x55, 0xAA, 0x11, 0x22,
+            0x33, 0x44,
+        ];
+        let h = bytes_to_hex(&b);
+        assert_eq!(h, "00010f10abcdeffе807f55aa11223344".replace('е', "e"), "hex: {h}");
+    }
+
+    #[test]
+    fn two_different_keys_produce_different_redis_keys() {
+        let k1 = CacheKey::new("host1.example", "https:/path1", "");
+        let k2 = CacheKey::new("host2.example", "https:/path2", "");
+        let rk1 = RedisCacheStorage::redis_key(&k1);
+        let rk2 = RedisCacheStorage::redis_key(&k2);
+        assert_ne!(rk1, rk2, "different cache keys must not collide");
+    }
 }

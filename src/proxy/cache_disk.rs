@@ -368,4 +368,111 @@ mod tests {
         std::fs::write(&path, b"truncated").unwrap();
         assert!(DiskCacheStorage::read_entry(&path).is_none());
     }
+
+    #[test]
+    fn read_write_empty_body() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("empty.cache");
+        let m0 = b"hdr0".to_vec();
+        let m1 = b"hdr1".to_vec();
+        let body: Vec<u8> = vec![];
+
+        DiskCacheStorage::write_entry(&path, &m0, &m1, &body).unwrap();
+        let (rm0, rm1, rbody) = DiskCacheStorage::read_entry(&path).unwrap();
+        assert_eq!(m0, rm0);
+        assert_eq!(m1, rm1);
+        assert_eq!(body, rbody);
+    }
+
+    #[test]
+    fn read_write_large_body() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("large.cache");
+        let m0 = vec![0xAA; 256];
+        let m1 = vec![0xBB; 512];
+        let body = vec![0xCC; 65_536]; // 64 KB
+
+        DiskCacheStorage::write_entry(&path, &m0, &m1, &body).unwrap();
+        let (rm0, rm1, rbody) = DiskCacheStorage::read_entry(&path).unwrap();
+        assert_eq!(m0, rm0);
+        assert_eq!(m1, rm1);
+        assert_eq!(body, rbody);
+    }
+
+    #[test]
+    fn entry_path_uses_first_two_chars_as_directory() {
+        let dir = TempDir::new().unwrap();
+        let storage = DiskCacheStorage::new(dir.path().to_str().unwrap());
+        let path = storage.entry_path("deadbeef0123");
+        let components: Vec<_> = path.components().collect();
+        // The second-to-last component should be the two-char prefix.
+        let prefix_component = &components[components.len() - 2];
+        assert_eq!(
+            prefix_component.as_os_str().to_str().unwrap(),
+            "de",
+            "expected 'de' prefix dir, got {:?}",
+            prefix_component
+        );
+    }
+
+    #[test]
+    fn write_entry_creates_parent_directory() {
+        let dir = TempDir::new().unwrap();
+        // Use a subdirectory that does not exist yet.
+        let sub = dir.path().join("newdir").join("entry.cache");
+        // write_entry calls create_dir_all internally, so this must succeed
+        // even when the parent directory does not pre-exist.
+        let result = DiskCacheStorage::write_entry(&sub, b"m0", b"m1", b"body");
+        assert!(result.is_ok(), "write_entry should create missing parent dirs");
+        assert!(sub.exists(), "file should exist after write");
+    }
+
+    #[test]
+    fn read_entry_only_header_present_returns_none() {
+        // Write only 8 bytes (two u32 length fields) with no payload.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("header_only.cache");
+        // len(m0)=0, len(m1)=0 → only 8 bytes written, body would start at byte 8
+        let mut data = vec![];
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // No meta0, meta1, or body bytes follow.
+        std::fs::write(&path, &data).unwrap();
+        // m0 and m1 are empty, body is empty — should succeed (valid zero-len entry).
+        let result = DiskCacheStorage::read_entry(&path);
+        assert!(result.is_some());
+        let (m0, m1, body) = result.unwrap();
+        assert!(m0.is_empty());
+        assert!(m1.is_empty());
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn overwrite_entry_reflects_new_content() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("overwrite.cache");
+
+        DiskCacheStorage::write_entry(&path, b"m0_v1", b"m1_v1", b"body_v1").unwrap();
+        DiskCacheStorage::write_entry(&path, b"m0_v2", b"m1_v2", b"body_v2").unwrap();
+
+        let (m0, m1, body) = DiskCacheStorage::read_entry(&path).unwrap();
+        assert_eq!(m0, b"m0_v2");
+        assert_eq!(m1, b"m1_v2");
+        assert_eq!(body, b"body_v2");
+    }
+
+    #[test]
+    fn get_or_create_returns_same_static_reference() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_str().unwrap().to_owned();
+
+        let s1 = get_or_create(&path);
+        let s2 = get_or_create(&path);
+
+        // Both references must point to the same allocation.
+        assert!(
+            std::ptr::eq(s1 as *const _, s2 as *const _),
+            "get_or_create should return the same static reference for the same path"
+        );
+    }
 }

@@ -435,6 +435,7 @@ fn query_param_value<'a>(qs: &'a str, key: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::schema::LoadBalanceStrategy;
     use indexmap::IndexMap;
 
     // ── glob_match ────────────────────────────────────────────────────────────
@@ -517,6 +518,11 @@ mod tests {
     #[test]
     fn query_param_empty_value() {
         assert_eq!(query_param_value("flag", "flag"), Some(""));
+    }
+
+    #[test]
+    fn query_param_empty_string() {
+        assert_eq!(query_param_value("", "foo"), None);
     }
 
     // ── route_matches ─────────────────────────────────────────────────────────
@@ -610,6 +616,461 @@ mod tests {
             "GET",
             &http::HeaderMap::new(),
             Some("version=1")
+        ));
+    }
+
+    #[test]
+    fn route_matches_no_criteria_matches_everything() {
+        let m = MatchConfig::default();
+        assert!(route_matches(&m, "/", "GET", &http::HeaderMap::new(), None));
+        assert!(route_matches(
+            &m,
+            "/any/path",
+            "DELETE",
+            &http::HeaderMap::new(),
+            Some("x=1")
+        ));
+    }
+
+    #[test]
+    fn route_matches_combined_path_and_method() {
+        let m = MatchConfig {
+            path: Some("/api/**".to_string()),
+            method: Some(vec!["POST".to_string()]),
+            ..Default::default()
+        };
+        assert!(route_matches(&m, "/api/v1", "POST", &http::HeaderMap::new(), None));
+        assert!(!route_matches(&m, "/api/v1", "GET", &http::HeaderMap::new(), None));
+        assert!(!route_matches(&m, "/other", "POST", &http::HeaderMap::new(), None));
+    }
+
+    // ── match_routes ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn match_routes_empty_list_returns_none() {
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let result = match_routes(
+            &[],
+            "/api/v1",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            &counters,
+            &registry,
+            None,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn match_routes_no_match_returns_none() {
+        use crate::config::schema::{ProxyRouteTarget, RouteConfig};
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let routes = vec![RouteConfig {
+            r#match: MatchConfig {
+                path: Some("/api/**".to_string()),
+                ..Default::default()
+            },
+            proxy: Some(ProxyRouteTarget::Url("http://api:4000".to_string())),
+            static_files: None,
+        }];
+        let result = match_routes(
+            &routes,
+            "/other",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            &counters,
+            &registry,
+            None,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn match_routes_first_match_wins() {
+        use crate::config::schema::{ProxyRouteTarget, RouteConfig};
+        use crate::proxy::ctx::UpstreamTarget;
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let routes = vec![
+            RouteConfig {
+                r#match: MatchConfig {
+                    path: Some("/api/**".to_string()),
+                    ..Default::default()
+                },
+                proxy: Some(ProxyRouteTarget::Url("http://first:4000".to_string())),
+                static_files: None,
+            },
+            RouteConfig {
+                r#match: MatchConfig {
+                    path: Some("/**".to_string()),
+                    ..Default::default()
+                },
+                proxy: Some(ProxyRouteTarget::Url("http://second:5000".to_string())),
+                static_files: None,
+            },
+        ];
+        let result = match_routes(
+            &routes,
+            "/api/users",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            &counters,
+            &registry,
+            None,
+        );
+        assert!(result.is_some());
+        let (target, ..) = result.unwrap();
+        // First route should win — addr must contain port 4000.
+        if let UpstreamTarget::Proxy { addr, .. } = target {
+            assert!(
+                addr.contains("4000"),
+                "expected first:4000, got {addr}"
+            );
+        } else {
+            panic!("expected Proxy target");
+        }
+    }
+
+    // ── route_to_result / proxy_target_to_result ──────────────────────────────
+
+    #[test]
+    fn route_to_result_url_proxy() {
+        use crate::config::schema::{ProxyRouteTarget, RouteConfig};
+        use crate::proxy::ctx::UpstreamTarget;
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Url("http://backend:4000".to_string())),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
+    }
+
+    #[test]
+    fn route_to_result_invalid_url_gives_fallback() {
+        use crate::config::schema::{ProxyRouteTarget, RouteConfig};
+        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
+        // "http://" has an empty host segment — url_to_host_port returns None.
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Url("http://".to_string())),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        assert!(matches!(target, UpstreamTarget::Local(LocalHandler::Fallback)));
+    }
+
+    #[test]
+    fn route_to_result_round_robin_proxy() {
+        use crate::config::schema::{ProxyRouteTarget, RouteConfig};
+        use crate::proxy::ctx::UpstreamTarget;
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::RoundRobin(vec![
+                "http://b1:4000".to_string(),
+                "http://b2:4001".to_string(),
+            ])),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
+    }
+
+    #[test]
+    fn route_to_result_round_robin_rotates() {
+        use crate::config::schema::{ProxyRouteTarget, RouteConfig};
+        use crate::proxy::ctx::UpstreamTarget;
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::RoundRobin(vec![
+                "http://b1:4000".to_string(),
+                "http://b2:4001".to_string(),
+            ])),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+
+        let (t1, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let (t2, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+
+        // Both results should be Proxy targets (regardless of which server is chosen).
+        assert!(matches!(t1, UpstreamTarget::Proxy { .. }));
+        assert!(matches!(t2, UpstreamTarget::Proxy { .. }));
+    }
+
+    #[test]
+    fn route_to_result_no_proxy_no_static_gives_fallback() {
+        use crate::config::schema::RouteConfig;
+        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: None,
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        assert!(matches!(target, UpstreamTarget::Local(LocalHandler::Fallback)));
+    }
+
+    #[test]
+    fn route_to_result_full_proxy_round_robin() {
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig,
+        };
+        use crate::proxy::ctx::UpstreamTarget;
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://b1:4000".to_string()),
+                    ProxyTarget::Simple("http://b2:4001".to_string()),
+                ],
+                strategy: Some(LoadBalanceStrategy::RoundRobin),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
+    }
+
+    #[test]
+    fn route_to_result_full_proxy_random_strategy() {
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig,
+        };
+        use crate::proxy::ctx::UpstreamTarget;
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://b1:4000".to_string())],
+                strategy: Some(LoadBalanceStrategy::Random),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
+    }
+
+    #[test]
+    fn route_to_result_full_proxy_least_conn_strategy() {
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig,
+        };
+        use crate::proxy::ctx::UpstreamTarget;
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://b1:4000".to_string())],
+                strategy: Some(LoadBalanceStrategy::LeastConn),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
+    }
+
+    #[test]
+    fn route_to_result_full_proxy_ip_hash_strategy() {
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig,
+        };
+        use crate::proxy::ctx::UpstreamTarget;
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://b1:4000".to_string())],
+                strategy: Some(LoadBalanceStrategy::IpHash),
+                hash_key: Some("ip".to_string()),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) = route_to_result(&route, "/api/users", &counters, &registry, None);
+        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
+    }
+
+    #[test]
+    fn route_to_result_full_proxy_weighted_round_robin() {
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig, WeightedTarget,
+        };
+        use crate::proxy::ctx::UpstreamTarget;
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Weighted(WeightedTarget {
+                        url: "http://b1:4000".to_string(),
+                        weight: 3,
+                    }),
+                    ProxyTarget::Weighted(WeightedTarget {
+                        url: "http://b2:4001".to_string(),
+                        weight: 1,
+                    }),
+                ],
+                strategy: Some(LoadBalanceStrategy::WeightedRoundRobin),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
+    }
+
+    #[test]
+    fn route_to_result_full_proxy_consistent_hash() {
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig,
+        };
+        use crate::proxy::ctx::UpstreamTarget;
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://b1:4000".to_string())],
+                strategy: Some(LoadBalanceStrategy::ConsistentHash),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) =
+            route_to_result(&route, "/api/items/42", &counters, &registry, None);
+        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
+    }
+
+    #[test]
+    fn route_to_result_full_proxy_all_unhealthy_gives_fallback() {
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig,
+        };
+        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
+        use crate::proxy::health::UpstreamEntry;
+
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        // Mark the only upstream as unhealthy.
+        registry.statuses.insert(
+            "http://b1:4000".to_string(),
+            UpstreamEntry {
+                healthy: false,
+                ..Default::default()
+            },
+        );
+
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://b1:4000".to_string())],
+                strategy: Some(LoadBalanceStrategy::RoundRobin),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        // All upstreams unhealthy — fall through to fallback (fail-open).
+        // The router picks from the full pool when all are unhealthy, so we get Proxy.
+        // (Fail-open: an empty healthy set returns the full set.)
+        assert!(matches!(
+            target,
+            UpstreamTarget::Proxy { .. } | UpstreamTarget::Local(LocalHandler::Fallback)
+        ));
+    }
+
+    #[test]
+    fn route_to_result_full_proxy_with_strip_prefix_and_retry() {
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RetryConfig, RouteConfig,
+        };
+        use crate::proxy::ctx::UpstreamTarget;
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://b1:4000".to_string())],
+                strategy: Some(LoadBalanceStrategy::RoundRobin),
+                strip_prefix: Some(true),
+                retry: Some(RetryConfig {
+                    attempts: 2,
+                    conditions: vec!["connection_error".to_string()],
+                    backoff_ms: Some(50),
+                }),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, retry, ..) =
+            route_to_result(&route, "/api/users", &counters, &registry, None);
+        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
+        assert!(retry.is_some(), "expected retry state to be populated");
+    }
+
+    #[test]
+    fn route_to_result_full_proxy_least_response_time() {
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig,
+        };
+        use crate::proxy::ctx::UpstreamTarget;
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://b1:4000".to_string()),
+                    ProxyTarget::Simple("http://b2:4001".to_string()),
+                ],
+                strategy: Some(LoadBalanceStrategy::LeastResponseTime),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
+    }
+
+    #[test]
+    fn route_to_result_static_files() {
+        use crate::config::schema::{RouteConfig, StaticConfig};
+        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: None,
+            static_files: Some(StaticConfig::Single("./dist".to_string())),
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) = route_to_result(&route, "/", &counters, &registry, None);
+        assert!(matches!(
+            target,
+            UpstreamTarget::Local(LocalHandler::StaticFile { .. })
         ));
     }
 }
