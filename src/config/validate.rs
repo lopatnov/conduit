@@ -1045,4 +1045,31 @@ mod tests {
             e
         );
     }
+
+    #[test]
+    fn proxy_route_url_variant_invalid_scheme_rejected() {
+        // `{ "/api": "ftp://bad" }` parses as ProxyRouteTarget::Url("ftp://bad").
+        // Exercises the Url arm of validate_proxy_route_target (lines 381-385).
+        let e = errs(r#"{ "proxy": { "/api": "ftp://bad" } }"#);
+        assert!(!e.is_empty(), "non-HTTP proxy URL must be rejected");
+        assert!(
+            e.iter()
+                .any(|err| err.message.contains("Invalid upstream URL")),
+            "error must mention invalid URL: {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn proxy_route_full_invalid_target_url_rejected() {
+        // Full form with an ftp:// target URL exercises lines 474-476 in validate_route_config.
+        let e = errs(r#"{ "proxy": { "/api": { "targets": ["ftp://bad:4000"] } } }"#);
+        assert!(!e.is_empty(), "non-HTTP target URL must be rejected");
+        assert!(
+            e.iter()
+                .any(|err| err.message.contains("Invalid upstream URL")),
+            "error must mention invalid URL: {:?}",
+            e
+        );
+    }
 }
