@@ -190,6 +190,16 @@ mod tests {
     }
 
     #[test]
+    fn cache_key_vary_headers_with_no_request_headers_ignores_vary() {
+        // vary supplied but request_headers is None → treated as base key only.
+        let vary = vec!["accept-language".to_string()];
+        let k1 = build_cache_key("h.com", "https", "/", None, Some(&vary), None);
+        let k2 = build_cache_key("h.com", "https", "/", None, None, None);
+        // Both produce the same key (vary cannot be applied without header values).
+        assert_eq!(k1.to_compact().primary, k2.to_compact().primary);
+    }
+
+    #[test]
     fn cache_key_vary_headers_differentiates() {
         let mut h1 = http::HeaderMap::new();
         h1.insert("accept-language", "en".parse().unwrap());
@@ -308,6 +318,54 @@ mod tests {
         let mut c = cfg(60);
         c.methods = Some(vec!["GET".into()]);
         assert!(!should_cache_request(&c, "HEAD", false, "/"));
+    }
+
+    // ── cache_storage ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn cache_storage_returns_static_reference() {
+        let s1 = cache_storage();
+        let s2 = cache_storage();
+        // Both calls must return the same singleton address.
+        assert!(std::ptr::eq(s1 as *const _, s2 as *const _));
+    }
+
+    // ── response_cacheable ────────────────────────────────────────────────────
+
+    fn resp(status: u16) -> ResponseHeader {
+        ResponseHeader::build(status, None).unwrap()
+    }
+
+    #[test]
+    fn response_cacheable_200_with_ttl_is_cacheable() {
+        let c = cfg(60);
+        let r = resp(200);
+        assert!(matches!(
+            response_cacheable(&c, &r),
+            RespCacheable::Cacheable(_)
+        ));
+    }
+
+    #[test]
+    fn response_cacheable_non200_is_uncacheable() {
+        let c = cfg(60);
+        for status in [201u16, 301, 404, 500] {
+            let r = resp(status);
+            assert!(
+                matches!(response_cacheable(&c, &r), RespCacheable::Uncacheable(_)),
+                "status {status} should be uncacheable"
+            );
+        }
+    }
+
+    #[test]
+    fn response_cacheable_zero_ttl_is_uncacheable() {
+        let c = cfg(0);
+        let r = resp(200);
+        assert!(matches!(
+            response_cacheable(&c, &r),
+            RespCacheable::Uncacheable(_)
+        ));
     }
 
     // ── path_matches ──────────────────────────────────────────────────────────

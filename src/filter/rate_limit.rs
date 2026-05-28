@@ -171,6 +171,19 @@ mod tests {
     }
 
     #[test]
+    fn bucket_window_secs_returns_configured_value() {
+        let b = TokenBucket::new(100, 120);
+        assert_eq!(b.window_secs(), 120);
+    }
+
+    #[test]
+    fn bucket_window_secs_minimum_one_when_zero_configured() {
+        // window_secs 0 is normalised to 1 internally.
+        let b = TokenBucket::new(10, 0);
+        assert_eq!(b.window_secs(), 1);
+    }
+
+    #[test]
     fn multiple_buckets_independent() {
         let limiter = RateLimiter::new();
         limiter.insert("a".to_string(), TokenBucket::new(1, 60));
