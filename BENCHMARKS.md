@@ -59,7 +59,7 @@ const app = proxy({ port: 8080, static: "./bench/static" });
 | **Memory (idle)** | ~58 MB                | **~8 MB**    | **7× less**    |
 | **Startup time**  | ~420 ms               | **~28 ms**   | **15× faster** |
 
-```
+```text
 # Conduit
 wrk -t8 -c200 -d30s http://localhost:8080/index.html
 
@@ -73,7 +73,7 @@ Requests/sec: 141,851.23
 Transfer/sec:    212.12MB
 ```
 
-```
+```text
 # express-reverse-proxy
 wrk -t8 -c200 -d30s http://localhost:8080/index.html
 
@@ -118,7 +118,7 @@ A minimal echo backend (`python3 -m http.server 4000`) was used as the upstream.
 | **Latency P50**  | ~28 ms                | **~1.9 ms** | **15×**     |
 | **Latency P99**  | ~62 ms                | **~4.1 ms** | **15×**     |
 
-```
+```text
 # Conduit
 Requests/sec:  84,217.18
 Transfer/sec:   12.83MB
@@ -126,7 +126,7 @@ Latency P50:    1.91ms
 Latency P99:    4.12ms
 ```
 
-```
+```text
 # express-reverse-proxy
 Requests/sec:   6,094.45
 Transfer/sec:    0.94MB
