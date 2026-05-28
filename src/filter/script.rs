@@ -377,10 +377,7 @@ mod tests {
             if request.method == "DELETE" { return false; }
             true
         "#;
-        assert!(matches!(
-            run(script, headers(&[])),
-            ScriptOutcome::Continue
-        ));
+        assert!(matches!(run(script, headers(&[])), ScriptOutcome::Continue));
     }
 
     #[test]

@@ -423,7 +423,10 @@ mod tests {
         // write_entry calls create_dir_all internally, so this must succeed
         // even when the parent directory does not pre-exist.
         let result = DiskCacheStorage::write_entry(&sub, b"m0", b"m1", b"body");
-        assert!(result.is_ok(), "write_entry should create missing parent dirs");
+        assert!(
+            result.is_ok(),
+            "write_entry should create missing parent dirs"
+        );
         assert!(sub.exists(), "file should exist after write");
     }
 

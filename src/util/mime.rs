@@ -52,6 +52,9 @@ mod tests {
 
     #[test]
     fn no_extension_falls_back_to_octet_stream() {
-        assert_eq!(content_type(Path::new("Makefile")), "application/octet-stream");
+        assert_eq!(
+            content_type(Path::new("Makefile")),
+            "application/octet-stream"
+        );
     }
 }

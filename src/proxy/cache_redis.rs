@@ -326,7 +326,11 @@ mod tests {
         let key = CacheKey::new("host.example", "https:/path", "");
         let rk = RedisCacheStorage::redis_key(&key);
         let hex_part = rk.strip_prefix("conduit:pcache:").unwrap();
-        assert_eq!(hex_part.len(), 32, "expected 32 hex chars, got {hex_part:?}");
+        assert_eq!(
+            hex_part.len(),
+            32,
+            "expected 32 hex chars, got {hex_part:?}"
+        );
         assert!(
             hex_part.chars().all(|c| c.is_ascii_hexdigit()),
             "non-hex chars in key: {hex_part}"
@@ -354,7 +358,11 @@ mod tests {
             0x33, 0x44,
         ];
         let h = bytes_to_hex(&b);
-        assert_eq!(h, "00010f10abcdeffе807f55aa11223344".replace('е', "e"), "hex: {h}");
+        assert_eq!(
+            h,
+            "00010f10abcdeffе807f55aa11223344".replace('е', "e"),
+            "hex: {h}"
+        );
     }
 
     #[test]

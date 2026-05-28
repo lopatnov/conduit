@@ -639,9 +639,27 @@ mod tests {
             method: Some(vec!["POST".to_string()]),
             ..Default::default()
         };
-        assert!(route_matches(&m, "/api/v1", "POST", &http::HeaderMap::new(), None));
-        assert!(!route_matches(&m, "/api/v1", "GET", &http::HeaderMap::new(), None));
-        assert!(!route_matches(&m, "/other", "POST", &http::HeaderMap::new(), None));
+        assert!(route_matches(
+            &m,
+            "/api/v1",
+            "POST",
+            &http::HeaderMap::new(),
+            None
+        ));
+        assert!(!route_matches(
+            &m,
+            "/api/v1",
+            "GET",
+            &http::HeaderMap::new(),
+            None
+        ));
+        assert!(!route_matches(
+            &m,
+            "/other",
+            "POST",
+            &http::HeaderMap::new(),
+            None
+        ));
     }
 
     // ── match_routes ──────────────────────────────────────────────────────────
@@ -727,10 +745,7 @@ mod tests {
         let (target, ..) = result.unwrap();
         // First route should win — addr must contain port 4000.
         if let UpstreamTarget::Proxy { addr, .. } = target {
-            assert!(
-                addr.contains("4000"),
-                "expected first:4000, got {addr}"
-            );
+            assert!(addr.contains("4000"), "expected first:4000, got {addr}");
         } else {
             panic!("expected Proxy target");
         }
@@ -766,7 +781,10 @@ mod tests {
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
         let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
-        assert!(matches!(target, UpstreamTarget::Local(LocalHandler::Fallback)));
+        assert!(matches!(
+            target,
+            UpstreamTarget::Local(LocalHandler::Fallback)
+        ));
     }
 
     #[test]
@@ -822,14 +840,15 @@ mod tests {
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
         let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
-        assert!(matches!(target, UpstreamTarget::Local(LocalHandler::Fallback)));
+        assert!(matches!(
+            target,
+            UpstreamTarget::Local(LocalHandler::Fallback)
+        ));
     }
 
     #[test]
     fn route_to_result_full_proxy_round_robin() {
-        use crate::config::schema::{
-            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig,
-        };
+        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
         use crate::proxy::ctx::UpstreamTarget;
         let route = RouteConfig {
             r#match: MatchConfig::default(),
@@ -851,9 +870,7 @@ mod tests {
 
     #[test]
     fn route_to_result_full_proxy_random_strategy() {
-        use crate::config::schema::{
-            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig,
-        };
+        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
         use crate::proxy::ctx::UpstreamTarget;
         let route = RouteConfig {
             r#match: MatchConfig::default(),
@@ -872,9 +889,7 @@ mod tests {
 
     #[test]
     fn route_to_result_full_proxy_least_conn_strategy() {
-        use crate::config::schema::{
-            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig,
-        };
+        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
         use crate::proxy::ctx::UpstreamTarget;
         let route = RouteConfig {
             r#match: MatchConfig::default(),
@@ -893,9 +908,7 @@ mod tests {
 
     #[test]
     fn route_to_result_full_proxy_ip_hash_strategy() {
-        use crate::config::schema::{
-            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig,
-        };
+        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
         use crate::proxy::ctx::UpstreamTarget;
         let route = RouteConfig {
             r#match: MatchConfig::default(),
@@ -945,9 +958,7 @@ mod tests {
 
     #[test]
     fn route_to_result_full_proxy_consistent_hash() {
-        use crate::config::schema::{
-            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig,
-        };
+        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
         use crate::proxy::ctx::UpstreamTarget;
         let route = RouteConfig {
             r#match: MatchConfig::default(),
@@ -960,16 +971,13 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) =
-            route_to_result(&route, "/api/items/42", &counters, &registry, None);
+        let (target, ..) = route_to_result(&route, "/api/items/42", &counters, &registry, None);
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
     #[test]
     fn route_to_result_full_proxy_all_unhealthy_gives_fallback() {
-        use crate::config::schema::{
-            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig,
-        };
+        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
         use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
         use crate::proxy::health::UpstreamEntry;
 
@@ -1026,17 +1034,14 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, retry, ..) =
-            route_to_result(&route, "/api/users", &counters, &registry, None);
+        let (target, retry, ..) = route_to_result(&route, "/api/users", &counters, &registry, None);
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
         assert!(retry.is_some(), "expected retry state to be populated");
     }
 
     #[test]
     fn route_to_result_full_proxy_least_response_time() {
-        use crate::config::schema::{
-            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig,
-        };
+        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
         use crate::proxy::ctx::UpstreamTarget;
         let route = RouteConfig {
             r#match: MatchConfig::default(),
