@@ -467,4 +467,28 @@ mod tests {
         let script = r#"throw "intentional error"; true"#;
         assert!(matches!(run(script, headers(&[])), ScriptOutcome::Continue));
     }
+
+    #[test]
+    fn script_response_default_trait_same_as_new() {
+        // Exercises the Default implementation for ScriptResponse.
+        let d = ScriptResponse::default();
+        let n = ScriptResponse::new();
+        assert_eq!(d.status, n.status);
+        assert_eq!(d.body, n.body);
+        assert!(d.extra_headers.is_empty());
+    }
+
+    #[test]
+    fn script_response_body_getter_accessible_via_rhai() {
+        // A script that reads response.body exercises the getter closure.
+        let script = r#"
+            let b = response.body;
+            if b == "" { response.status = 200; }
+            false
+        "#;
+        match run(script, headers(&[])) {
+            ScriptOutcome::Abort { status, .. } => assert_eq!(status, 200),
+            other => panic!("expected Abort, got {other:?}"),
+        }
+    }
 }

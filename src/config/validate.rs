@@ -943,4 +943,106 @@ mod tests {
         );
         assert_eq!(e.len(), 1, "exactly one script entry is missing path");
     }
+
+    #[test]
+    fn rate_limit_limit_zero_returns_error() {
+        let e = errs(r#"{ "rateLimit": { "windowSecs": 60, "limit": 0 } }"#);
+        assert!(!e.is_empty(), "limit 0 must be rejected");
+        assert!(
+            e.iter().any(|err| err.path.contains("limit")),
+            "error path must mention limit: {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn upload_empty_dir_invalid() {
+        let e = errs(r#"{ "upload": { "path": "/upload", "dir": "" } }"#);
+        assert!(!e.is_empty(), "empty upload dir must be rejected");
+        assert!(
+            e.iter().any(|err| err.path.contains("upload")),
+            "error path must mention upload: {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn cidr_with_non_numeric_mask_is_invalid() {
+        // "10.0.0.0/abc" — the prefix length is not a valid u32.
+        let e = errs(r#"{ "ipFilter": { "deny": ["10.0.0.0/abc"] } }"#);
+        assert!(!e.is_empty(), "CIDR with non-numeric mask must be rejected");
+        assert!(
+            e.iter().any(|err| err.path.contains("ipFilter")),
+            "error path must mention ipFilter: {:?}",
+            e
+        );
+    }
+
+    // ── TLS cert expiry ───────────────────────────────────────────────────────
+
+    /// Helper: write `content` to a temp file and return the (dir, path_string).
+    fn write_temp_file(content: &[u8], name: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, content).unwrap();
+        let path_str = path.to_str().unwrap().replace('\\', "/");
+        (dir, path_str)
+    }
+
+    #[test]
+    fn cert_expiry_invalid_pem_silently_ignored() {
+        // File exists but contains garbage — check_cert_expiry should return without error.
+        let (_dir, cert_path) = write_temp_file(b"this is not valid PEM content", "bad.pem");
+        let json = format!(r#"{{"tls": {{"cert": "{cert_path}", "key": "k.key"}}}}"#);
+        let e = errs(&json);
+        // The only possible error is "missing key" or none. No cert-expiry error.
+        assert!(
+            e.iter()
+                .all(|err| !err.message.contains("expired") && !err.message.contains("WARNING")),
+            "invalid PEM must not produce cert-expiry errors: {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn cert_expiry_expired_cert_returns_error() {
+        // Generate a cert with not_after in the past (expired ~5 years ago).
+        let mut params = rcgen::CertificateParams::new(vec!["example.com".to_string()]).unwrap();
+        params.not_before = rcgen::date_time_ymd(2020, 1, 1);
+        params.not_after = rcgen::date_time_ymd(2020, 12, 31);
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key_pair).unwrap();
+        let pem = cert.pem();
+
+        let (_dir, cert_path) = write_temp_file(pem.as_bytes(), "expired.pem");
+        let json = format!(r#"{{"tls": {{"cert": "{cert_path}", "key": "k.key"}}}}"#);
+        let e = errs(&json);
+        assert!(
+            e.iter().any(|err| err.message.contains("expired")),
+            "expired cert must produce an expiry error: {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn cert_expiry_soon_returns_warning() {
+        // Generate a cert expiring 15 days from now — within the 30-day warning window.
+        use time::{Duration, OffsetDateTime};
+        let soon = OffsetDateTime::now_utc() + Duration::days(15);
+        let mut params = rcgen::CertificateParams::new(vec!["example.com".to_string()]).unwrap();
+        params.not_before = rcgen::date_time_ymd(2020, 1, 1);
+        params.not_after = soon;
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key_pair).unwrap();
+        let pem = cert.pem();
+
+        let (_dir, cert_path) = write_temp_file(pem.as_bytes(), "soon.pem");
+        let json = format!(r#"{{"tls": {{"cert": "{cert_path}", "key": "k.key"}}}}"#);
+        let e = errs(&json);
+        assert!(
+            e.iter().any(|err| err.message.contains("WARNING")),
+            "soon-expiring cert must produce a WARNING: {:?}",
+            e
+        );
+    }
 }

@@ -1078,4 +1078,69 @@ mod tests {
             UpstreamTarget::Local(LocalHandler::StaticFile { .. })
         ));
     }
+
+    #[test]
+    fn route_to_result_round_robin_invalid_url_gives_fallback() {
+        // "http://" has an empty host — url_to_proxy_upstream returns None → Fallback.
+        use crate::config::schema::{ProxyRouteTarget, RouteConfig};
+        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::RoundRobin(vec!["http://".to_string()])),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        assert!(matches!(
+            target,
+            UpstreamTarget::Local(LocalHandler::Fallback)
+        ));
+    }
+
+    #[test]
+    fn route_to_result_full_proxy_empty_targets_gives_fallback() {
+        // Empty targets list → filter_healthy returns empty → Fallback.
+        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, RouteConfig};
+        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![],
+                strategy: Some(LoadBalanceStrategy::RoundRobin),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        assert!(matches!(
+            target,
+            UpstreamTarget::Local(LocalHandler::Fallback)
+        ));
+    }
+
+    #[test]
+    fn route_to_result_full_proxy_least_conn_invalid_url_gives_fallback() {
+        // LeastConn + invalid URL: ensures conn_dec is called before returning Fallback.
+        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
+        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://".to_string())],
+                strategy: Some(LoadBalanceStrategy::LeastConn),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        assert!(matches!(
+            target,
+            UpstreamTarget::Local(LocalHandler::Fallback)
+        ));
+    }
 }
