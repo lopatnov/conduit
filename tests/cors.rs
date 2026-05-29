@@ -169,6 +169,116 @@ fn regular_get_has_acao_header_when_cors_enabled() {
     );
 }
 
+// ── credentials: true tests ───────────────────────────────────────────────
+
+#[test]
+#[serial]
+fn credentials_true_sets_acac_header_on_preflight() {
+    let srv = cors_server(serde_json::json!({
+        "origins": ["https://app.example.com"],
+        "credentials": true
+    }));
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .request(reqwest::Method::OPTIONS, srv.url("/api"))
+        .header("Origin", "https://app.example.com")
+        .header("Access-Control-Request-Method", "POST")
+        .send()
+        .expect("preflight");
+    assert_eq!(resp.status(), 204);
+    let acac = resp
+        .headers()
+        .get("access-control-allow-credentials")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        acac, "true",
+        "credentials:true must emit Access-Control-Allow-Credentials: true on preflight"
+    );
+}
+
+#[test]
+#[serial]
+fn credentials_true_echoes_origin_not_wildcard_on_preflight() {
+    // When credentials:true, the server MUST echo the specific origin back,
+    // not the wildcard "*" — browsers reject credentialed requests with wildcard.
+    let srv = cors_server(serde_json::json!({
+        "origins": ["https://trusted.com"],
+        "credentials": true
+    }));
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .request(reqwest::Method::OPTIONS, srv.url("/"))
+        .header("Origin", "https://trusted.com")
+        .header("Access-Control-Request-Method", "GET")
+        .send()
+        .expect("preflight");
+    let acao = resp
+        .headers()
+        .get("access-control-allow-origin")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        acao, "https://trusted.com",
+        "credentials:true must echo the specific origin, not wildcard. Got: '{acao}'"
+    );
+}
+
+#[test]
+#[serial]
+fn credentials_true_sets_acac_on_regular_response() {
+    // For a regular (non-preflight) request, ACAC must also be present when
+    // credentials:true and the origin is in the allow-list.
+    let port = free_port();
+    let admin_port = free_port();
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("index.html"), "<html/>").expect("write");
+
+    let srv = TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "cors": {
+                    "origins": ["https://app.example.com"],
+                    "credentials": true
+                },
+                "static": dir.path().to_str().unwrap()
+            }]
+        }),
+    );
+    Box::leak(Box::new(dir));
+
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .get(srv.url("/index.html"))
+        .header("Origin", "https://app.example.com")
+        .send()
+        .expect("GET");
+    assert_eq!(resp.status(), 200);
+    let acac = resp
+        .headers()
+        .get("access-control-allow-credentials")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        acac, "true",
+        "credentials:true must emit ACAC: true on regular responses too"
+    );
+    // Origin must be echoed, not wildcard
+    let acao = resp
+        .headers()
+        .get("access-control-allow-origin")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        acao, "https://app.example.com",
+        "credentials:true must echo origin, got: '{acao}'"
+    );
+}
+
 #[test]
 #[serial]
 fn no_cors_header_when_cors_disabled() {

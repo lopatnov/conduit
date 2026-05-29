@@ -191,6 +191,77 @@ fn static_etag_and_last_modified_present() {
     );
 }
 
+// ── dotFiles policy tests ─────────────────────────────────────────────────
+
+/// Helper: start a server with a specific dotFiles policy and a `.hidden` file.
+fn dot_server(policy: &str) -> (common::TestServer, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join(".hidden"), "secret content").expect("write dotfile");
+    fs::write(dir.path().join("normal.txt"), "public").expect("write normal");
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let static_path = dir.path().to_str().expect("utf8").to_owned();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "static": static_path,
+                "staticOptions": { "dotFiles": policy }
+            }]
+        }),
+    );
+    (srv, dir)
+}
+
+#[test]
+#[serial]
+fn dotfiles_allow_serves_hidden_file() {
+    let (srv, _dir) = dot_server("allow");
+    let resp = reqwest::blocking::get(srv.url("/.hidden")).expect("GET");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "dotFiles:allow must serve the dotfile"
+    );
+    assert_eq!(resp.text().unwrap(), "secret content");
+}
+
+#[test]
+#[serial]
+fn dotfiles_deny_returns_403() {
+    let (srv, _dir) = dot_server("deny");
+    let resp = reqwest::blocking::get(srv.url("/.hidden")).expect("GET");
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "dotFiles:deny must return 403 Forbidden"
+    );
+}
+
+#[test]
+#[serial]
+fn dotfiles_ignore_returns_404() {
+    let (srv, _dir) = dot_server("ignore");
+    let resp = reqwest::blocking::get(srv.url("/.hidden")).expect("GET");
+    assert_eq!(
+        resp.status().as_u16(),
+        404,
+        "dotFiles:ignore must treat dotfile as not found"
+    );
+}
+
+#[test]
+#[serial]
+fn dotfiles_allow_does_not_affect_normal_files() {
+    let (srv, _dir) = dot_server("allow");
+    let resp = reqwest::blocking::get(srv.url("/normal.txt")).expect("GET");
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(resp.text().unwrap(), "public");
+}
+
 #[test]
 #[serial]
 fn static_cache_control_max_age() {

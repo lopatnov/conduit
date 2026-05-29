@@ -36,13 +36,14 @@ pub async fn handle_static(
 
     let dot_policy = options.dot_files.as_deref().unwrap_or("ignore");
     if has_dotfile(&rel) {
-        return match dot_policy {
+        match dot_policy {
+            "allow" => {} // fall through and serve the file normally
             "deny" => {
                 write_error(session, 403, "Forbidden", extra).await?;
-                Ok(true)
+                return Ok(true);
             }
-            _ => Ok(false), // treat as not-found so fallback can handle it
-        };
+            _ => return Ok(false), // "ignore": treat as not found, let fallback handle it
+        }
     }
 
     let Some(file_path) = find_file(roots, &rel, options).await else {
