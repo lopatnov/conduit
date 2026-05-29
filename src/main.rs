@@ -78,41 +78,42 @@ fn main() {
             match args.command {
                 None => admin_get("upstreams", &addr),
                 Some(UpstreamsCommand::Add(a)) => {
-                    let weight = a.weight.unwrap_or(1);
-                    let mut obj = serde_json::json!({
-                        "route":  a.route,
-                        "target": a.target,
-                        "weight": weight,
-                    });
-                    if let Some(site) = &a.site {
-                        obj["site"] = serde_json::json!(site);
-                    }
-                    admin_post_json("upstreams/add", &addr, &obj.to_string());
+                    let body = upstream_json(
+                        &a.route,
+                        &a.target,
+                        Some(a.weight.unwrap_or(1)),
+                        a.site.as_deref(),
+                    );
+                    admin_post_json("upstreams/add", &addr, &body);
                 }
                 Some(UpstreamsCommand::Remove(r)) => {
-                    let mut obj = serde_json::json!({
-                        "route":  r.route,
-                        "target": r.target,
-                    });
-                    if let Some(site) = &r.site {
-                        obj["site"] = serde_json::json!(site);
-                    }
-                    admin_post_json("upstreams/remove", &addr, &obj.to_string());
+                    let body = upstream_json(&r.route, &r.target, None, r.site.as_deref());
+                    admin_post_json("upstreams/remove", &addr, &body);
                 }
                 Some(UpstreamsCommand::Weight(w)) => {
-                    let mut obj = serde_json::json!({
-                        "route":  w.route,
-                        "target": w.target,
-                        "weight": w.weight,
-                    });
-                    if let Some(site) = &w.site {
-                        obj["site"] = serde_json::json!(site);
-                    }
-                    admin_post_json("upstreams/weight", &addr, &obj.to_string());
+                    let body =
+                        upstream_json(&w.route, &w.target, Some(w.weight), w.site.as_deref());
+                    admin_post_json("upstreams/weight", &addr, &body);
                 }
             }
         }
     }
+}
+
+// ── Upstream command helpers ───────────────────────────────────────────────
+
+/// Build the JSON body for `/upstreams/add`, `/remove`, and `/weight`.
+///
+/// Extracted to keep `main()` cognitive complexity within the allowed limit.
+fn upstream_json(route: &str, target: &str, weight: Option<u32>, site: Option<&str>) -> String {
+    let mut obj = serde_json::json!({ "route": route, "target": target });
+    if let Some(w) = weight {
+        obj["weight"] = serde_json::json!(w);
+    }
+    if let Some(s) = site {
+        obj["site"] = serde_json::json!(s);
+    }
+    obj.to_string()
 }
 
 // ── Server ─────────────────────────────────────────────────────────────────
