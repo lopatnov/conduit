@@ -169,9 +169,8 @@ fn validate_rate_limit(
     // or a rediss:// URL (TLS — requires Redis with in-transit encryption,
     // e.g. AWS ElastiCache TLS, Azure Cache for Redis).
     if let Some(store) = &rate_limit.store {
-        let valid_store = store == "memory"
-            || store.starts_with("redis://")
-            || store.starts_with("rediss://");
+        let valid_store =
+            store == "memory" || store.starts_with("redis://") || store.starts_with("rediss://");
         if !valid_store {
             errors.push(ValidationError::new(
                 format!("{prefix}.rateLimit.store"),
@@ -469,11 +468,7 @@ fn validate_groups_config(
 
 /// Emit an error when any target in `targets` is a `Simple` (unweighted) URL
 /// and the strategy is `weighted-round-robin`.
-fn check_weighted_targets(
-    targets: &[ProxyTarget],
-    field: &str,
-    errors: &mut Vec<ValidationError>,
-) {
+fn check_weighted_targets(targets: &[ProxyTarget], field: &str, errors: &mut Vec<ValidationError>) {
     let has_simple = targets.iter().any(|t| matches!(t, ProxyTarget::Simple(_)));
     if has_simple {
         errors.push(ValidationError::new(

@@ -294,7 +294,13 @@ fn spawn_health_task(
                 let (ok, latency_ms) = probe_http(&host_port, &path).await;
                 let mut entry = registry.statuses.entry(url.clone()).or_default();
                 let was_healthy = entry.healthy;
-                apply_probe_result(&mut entry, ok, latency_ms, healthy_threshold, unhealthy_threshold);
+                apply_probe_result(
+                    &mut entry,
+                    ok,
+                    latency_ms,
+                    healthy_threshold,
+                    unhealthy_threshold,
+                );
                 if ok && !was_healthy && entry.healthy {
                     tracing::info!(url, "upstream recovered");
                 } else if !ok && was_healthy && !entry.healthy {

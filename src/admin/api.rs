@@ -356,9 +356,7 @@ fn strategy_label(s: &crate::config::schema::LoadBalanceStrategy) -> &'static st
 }
 
 /// Extract `(url, weight)` from a `ProxyTarget`.
-fn proxy_target_url_weight(
-    t: &crate::config::schema::ProxyTarget,
-) -> (&str, u32) {
+fn proxy_target_url_weight(t: &crate::config::schema::ProxyTarget) -> (&str, u32) {
     use crate::config::schema::ProxyTarget;
     match t {
         ProxyTarget::Simple(u) => (u.as_str(), 1),
@@ -393,15 +391,16 @@ fn format_full_config_targets(
 }
 
 /// Convert a `ProxyRouteTarget` to `(strategy_label, target_list)`.
-fn format_proxy_route_targets<'a>(
-    rt: &'a crate::config::schema::ProxyRouteTarget,
+fn format_proxy_route_targets(
+    rt: &crate::config::schema::ProxyRouteTarget,
     registry: &health::UpstreamRegistry,
 ) -> (&'static str, Vec<Value>) {
     use crate::config::schema::{LoadBalanceStrategy, ProxyRouteTarget};
     match rt {
-        ProxyRouteTarget::Url(url) => {
-            ("round-robin", vec![url_health_entry(registry, url, 1, None)])
-        }
+        ProxyRouteTarget::Url(url) => (
+            "round-robin",
+            vec![url_health_entry(registry, url, 1, None)],
+        ),
         ProxyRouteTarget::RoundRobin(urls) => {
             let tgts = urls
                 .iter()

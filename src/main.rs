@@ -391,7 +391,11 @@ fn probe_tls_tcp(host: &str, port: u16, start: Instant) -> (String, Option<u16>,
             start.elapsed(),
         ),
         Some(addr) => match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
-            Ok(_) => ("TCP open (HTTPS — HEAD skipped)".to_owned(), None, start.elapsed()),
+            Ok(_) => (
+                "TCP open (HTTPS — HEAD skipped)".to_owned(),
+                None,
+                start.elapsed(),
+            ),
             Err(e) => (format!("unreachable: {e}"), None, start.elapsed()),
         },
     }
@@ -406,7 +410,10 @@ fn probe_http_head(host: &str, port: u16, path: &str) -> anyhow::Result<u16> {
         .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr_str}"))?;
     let mut stream = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(10))?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    write!(stream, "HEAD {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")?;
+    write!(
+        stream,
+        "HEAD {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    )?;
     stream.flush()?;
     let mut response = String::new();
     stream.read_to_string(&mut response)?;

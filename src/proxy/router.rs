@@ -159,7 +159,15 @@ fn route_site(
     if let Some(result) = match_upload_route(site, path, upload_addr) {
         return result;
     }
-    if let Some(result) = match_routes_array(site, path, method, req_headers, query, counters, upstream_health) {
+    if let Some(result) = match_routes_array(
+        site,
+        path,
+        method,
+        req_headers,
+        query,
+        counters,
+        upstream_health,
+    ) {
         return result;
     }
     if let Some(proxy_cfg) = &site.proxy {
@@ -174,11 +182,23 @@ fn route_site(
 ///
 /// Upload path takes priority — it is a precise prefix configured by the
 /// operator and must not be shadowed by a catch-all proxy route.
-fn match_upload_route(site: &SiteConfig, path: &str, upload_addr: Option<SocketAddr>) -> Option<RouteResult> {
+fn match_upload_route(
+    site: &SiteConfig,
+    path: &str,
+    upload_addr: Option<SocketAddr>,
+) -> Option<RouteResult> {
     let (upload_cfg, addr) = site.upload.as_ref().zip(upload_addr)?;
     let upload_prefix = upload_cfg.path.trim_end_matches('/');
     let matches = path == upload_prefix || path.starts_with(&format!("{upload_prefix}/"));
-    matches.then_some((UpstreamTarget::Upload { addr }, None, None, None, false, None, None))
+    matches.then_some((
+        UpstreamTarget::Upload { addr },
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+    ))
 }
 
 /// Match against the `routes` array (evaluated before legacy `proxy`/`static`).
@@ -214,12 +234,29 @@ fn match_static_or_fallback(site: &SiteConfig, path: &str) -> RouteResult {
         let (roots, strip_prefix) = resolve_static_roots(static_cfg, path);
         if !roots.is_empty() {
             return (
-                UpstreamTarget::Local(LocalHandler::StaticFile { roots, options, strip_prefix }),
-                None, None, None, false, None, None,
+                UpstreamTarget::Local(LocalHandler::StaticFile {
+                    roots,
+                    options,
+                    strip_prefix,
+                }),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
             );
         }
     }
-    (UpstreamTarget::Local(LocalHandler::Fallback), None, None, None, false, None, None)
+    (
+        UpstreamTarget::Local(LocalHandler::Fallback),
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+    )
 }
 
 fn resolve_proxy(

@@ -69,7 +69,9 @@ async fn upload_handler(
         let field = match multipart.next_field().await {
             Ok(Some(f)) => f,
             Ok(None) => break,
-            Err(e) => return err_response(StatusCode::BAD_REQUEST, &format!("multipart error: {e}")),
+            Err(e) => {
+                return err_response(StatusCode::BAD_REQUEST, &format!("multipart error: {e}"))
+            }
         };
 
         if field.name().unwrap_or("") != field_name {
@@ -82,7 +84,9 @@ async fn upload_handler(
         let original_name = field.file_name().unwrap_or("upload").to_owned();
         let content_type_str = field.content_type().map(str::to_owned);
 
-        if let Err(resp) = check_mime_type(content_type_str.as_deref(), cfg.allowed_mime_types.as_ref()) {
+        if let Err(resp) =
+            check_mime_type(content_type_str.as_deref(), cfg.allowed_mime_types.as_ref())
+        {
             return resp;
         }
 
@@ -93,11 +97,20 @@ async fn upload_handler(
 
         let file_bytes = data.len() as u64;
         if cfg.max_file_size_bytes.is_some_and(|max| file_bytes > max) {
-            return err_response(StatusCode::PAYLOAD_TOO_LARGE, "file exceeds maxFileSizeBytes");
+            return err_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "file exceeds maxFileSizeBytes",
+            );
         }
         total_bytes += file_bytes;
-        if cfg.max_total_size_bytes.is_some_and(|max| total_bytes > max) {
-            return err_response(StatusCode::PAYLOAD_TOO_LARGE, "upload exceeds maxTotalSizeBytes");
+        if cfg
+            .max_total_size_bytes
+            .is_some_and(|max| total_bytes > max)
+        {
+            return err_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "upload exceeds maxTotalSizeBytes",
+            );
         }
 
         let mime = content_type_str.unwrap_or_else(|| {
@@ -137,6 +150,10 @@ fn err_response(status: StatusCode, message: &str) -> Response {
 ///
 /// Returns `Err(Response)` with HTTP 415 when the type is absent or not in the
 /// list; returns `Ok(())` when no allowlist is configured or the type matches.
+///
+/// `Response` is intentionally kept as the `Err` variant (rather than `Box<Response>`)
+/// so the caller can directly `return resp` without an extra dereference.
+#[allow(clippy::result_large_err)]
 fn check_mime_type(
     content_type: Option<&str>,
     allowed_mime_types: Option<&Vec<String>>,
