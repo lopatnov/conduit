@@ -262,6 +262,103 @@ fn dotfiles_allow_does_not_affect_normal_files() {
     assert_eq!(resp.text().unwrap(), "public");
 }
 
+/// dotFiles policy must check every path *segment*, not just the filename.
+/// A path like /subdir/.hidden has a dotfile component one level deep.
+#[test]
+#[serial]
+fn dotfiles_allow_serves_dotfile_in_subdirectory() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sub = dir.path().join("subdir");
+    fs::create_dir(&sub).expect("mkdir subdir");
+    fs::write(sub.join(".env"), "SECRET=1").expect("write");
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let static_path = dir.path().to_str().expect("utf8").to_owned();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "static": static_path,
+                "staticOptions": { "dotFiles": "allow" }
+            }]
+        }),
+    );
+    let resp = reqwest::blocking::get(srv.url("/subdir/.env")).expect("GET");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "dotFiles:allow must serve dotfiles inside subdirectories"
+    );
+    assert_eq!(resp.text().unwrap(), "SECRET=1");
+}
+
+#[test]
+#[serial]
+fn dotfiles_deny_blocks_dotfile_in_subdirectory() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sub = dir.path().join("subdir");
+    fs::create_dir(&sub).expect("mkdir subdir");
+    fs::write(sub.join(".env"), "SECRET=1").expect("write");
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let static_path = dir.path().to_str().expect("utf8").to_owned();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "static": static_path,
+                "staticOptions": { "dotFiles": "deny" }
+            }]
+        }),
+    );
+    let resp = reqwest::blocking::get(srv.url("/subdir/.env")).expect("GET");
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "dotFiles:deny must block dotfiles inside subdirectories"
+    );
+}
+
+/// A dot-prefixed *directory* component — e.g. /.dotdir/normal.txt — must
+/// also be subject to the dotFiles policy, because every path segment is
+/// checked by has_dotfile().
+#[test]
+#[serial]
+fn dotfiles_deny_blocks_dot_directory_component() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dotdir = dir.path().join(".secrets");
+    fs::create_dir(&dotdir).expect("mkdir .secrets");
+    fs::write(dotdir.join("config.txt"), "password=hunter2").expect("write");
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let static_path = dir.path().to_str().expect("utf8").to_owned();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "static": static_path,
+                "staticOptions": { "dotFiles": "deny" }
+            }]
+        }),
+    );
+    // /.secrets/config.txt — the directory segment starts with '.'
+    let resp = reqwest::blocking::get(srv.url("/.secrets/config.txt")).expect("GET");
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "dotFiles:deny must block paths where a directory component starts with '.'"
+    );
+}
+
 #[test]
 #[serial]
 fn static_cache_control_max_age() {

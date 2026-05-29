@@ -279,6 +279,95 @@ fn credentials_true_sets_acac_on_regular_response() {
     );
 }
 
+/// credentials:true *without* an explicit origins list means "allow any origin,
+/// but still echo the actual origin back" — the server must NOT return wildcard
+/// because browsers reject credentials with ACAO: *.
+#[test]
+#[serial]
+fn credentials_true_without_origins_list_echoes_origin() {
+    // cors: { credentials: true } — no origins field
+    let srv = cors_server(serde_json::json!({ "credentials": true }));
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .request(reqwest::Method::OPTIONS, srv.url("/"))
+        .header("Origin", "https://any-origin.com")
+        .header("Access-Control-Request-Method", "GET")
+        .send()
+        .expect("preflight");
+    let acao = resp
+        .headers()
+        .get("access-control-allow-origin")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_ne!(
+        acao, "*",
+        "credentials:true must never return ACAO: * (browsers reject this)"
+    );
+    assert_eq!(
+        acao, "https://any-origin.com",
+        "credentials:true without origins list must echo the request origin, got: '{acao}'"
+    );
+    let acac = resp
+        .headers()
+        .get("access-control-allow-credentials")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(acac, "true", "ACAC header must be 'true', got: '{acac}'");
+}
+
+/// When credentials:true but the request origin is NOT in the allow-list,
+/// neither ACAO nor ACAC must be present — browsers will block the request.
+#[test]
+#[serial]
+fn credentials_true_disallowed_origin_gets_no_acac() {
+    let srv = cors_server(serde_json::json!({
+        "origins": ["https://allowed.com"],
+        "credentials": true
+    }));
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .request(reqwest::Method::OPTIONS, srv.url("/"))
+        .header("Origin", "https://evil.com")
+        .header("Access-Control-Request-Method", "POST")
+        .send()
+        .expect("preflight");
+    assert!(
+        resp.headers().get("access-control-allow-origin").is_none(),
+        "disallowed origin must not receive ACAO header"
+    );
+    assert!(
+        resp.headers()
+            .get("access-control-allow-credentials")
+            .is_none(),
+        "disallowed origin must not receive ACAC header"
+    );
+}
+
+/// credentials:false (explicit) must not emit ACAC even when an origins list
+/// is configured — the browser must not send cookies for this endpoint.
+#[test]
+#[serial]
+fn credentials_false_does_not_emit_acac() {
+    let srv = cors_server(serde_json::json!({
+        "origins": ["https://app.example.com"],
+        "credentials": false
+    }));
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .request(reqwest::Method::OPTIONS, srv.url("/"))
+        .header("Origin", "https://app.example.com")
+        .header("Access-Control-Request-Method", "GET")
+        .send()
+        .expect("preflight");
+    assert_eq!(resp.status(), 204);
+    assert!(
+        resp.headers()
+            .get("access-control-allow-credentials")
+            .is_none(),
+        "credentials:false must not emit Access-Control-Allow-Credentials"
+    );
+}
+
 #[test]
 #[serial]
 fn no_cors_header_when_cors_disabled() {
