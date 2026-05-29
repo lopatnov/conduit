@@ -124,6 +124,10 @@ pub struct UpstreamAddArgs {
     /// Weight (for weighted-round-robin)
     #[arg(long)]
     pub weight: Option<u32>,
+    /// Limit the override to a specific site label (e.g. app.example.com:443).
+    /// When omitted the override applies to every site that serves this route.
+    #[arg(long)]
+    pub site: Option<String>,
 }
 
 #[derive(Args)]
@@ -132,6 +136,10 @@ pub struct UpstreamRemoveArgs {
     pub route: String,
     #[arg(long)]
     pub target: String,
+    /// Limit the removal to a specific site label.
+    /// When omitted the wildcard override (all sites) is targeted.
+    #[arg(long)]
+    pub site: Option<String>,
 }
 
 #[derive(Args)]
@@ -142,4 +150,8 @@ pub struct UpstreamWeightArgs {
     pub target: String,
     #[arg(long)]
     pub weight: u32,
+    /// Limit the weight change to a specific site label.
+    /// When omitted the wildcard override (all sites) is targeted.
+    #[arg(long)]
+    pub site: Option<String>,
 }

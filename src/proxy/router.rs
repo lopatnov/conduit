@@ -156,6 +156,8 @@ fn route_site(
     upstream_health: &UpstreamRegistry,
     upload_addr: Option<SocketAddr>,
 ) -> RouteResult {
+    let site_label = crate::proxy::health::site_label(&site.host, site.port);
+
     if let Some(result) = match_upload_route(site, path, upload_addr) {
         return result;
     }
@@ -171,7 +173,14 @@ fn route_site(
         return result;
     }
     if let Some(proxy_cfg) = &site.proxy {
-        if let Some(result) = resolve_proxy(proxy_cfg, path, client_ip, counters, upstream_health) {
+        if let Some(result) = resolve_proxy(
+            proxy_cfg,
+            path,
+            client_ip,
+            counters,
+            upstream_health,
+            &site_label,
+        ) {
             return result;
         }
     }
@@ -265,6 +274,7 @@ fn resolve_proxy(
     client_ip: &str,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
+    site_label: &str,
 ) -> Option<RouteResult> {
     match config {
         ProxyConfig::Single(url) => Some((
@@ -306,7 +316,7 @@ fn resolve_proxy(
             // ── Runtime override check ────────────────────────────────────────
             // When the operator has issued `conduit upstreams add/remove/weight`,
             // those targets replace the config-file targets for this route.
-            let runtime_targets = upstream_health.get_override_targets(route_key);
+            let runtime_targets = upstream_health.get_override_targets(site_label, route_key);
             let (all_urls, all_weighted_base): (Vec<String>, Vec<(String, u32)>) =
                 if let Some(ref ov) = runtime_targets {
                     let urls = ov.iter().map(|(u, _)| u.clone()).collect();
@@ -1628,7 +1638,7 @@ mod tests {
         );
 
         // Apply an override.
-        reg.add_upstream("/", "http://override-target:9000", 1);
+        reg.add_upstream("*", "/", "http://override-target:9000", 1);
 
         let ctx2 = route_request(
             &config,
@@ -1676,8 +1686,8 @@ mod tests {
         let reg = UpstreamRegistry::new();
 
         // Create an override, then remove the only entry → empty list.
-        reg.add_upstream("/", "http://temp:4000", 1);
-        reg.remove_upstream("/", "http://temp:4000");
+        reg.add_upstream("*", "/", "http://temp:4000", 1);
+        reg.remove_upstream("*", "/", "http://temp:4000");
 
         let ctx = route_request(
             &config,

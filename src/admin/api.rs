@@ -26,6 +26,10 @@ struct UpstreamModifyRequest {
     target: String,
     /// Target weight — required for `/weight`, optional for `/add` (default 1).
     weight: Option<u32>,
+    /// Site label to scope the override (e.g. `"app.example.com:443"` or
+    /// `"*:8080"`).  When absent the override uses the wildcard key `"*"` and
+    /// applies to every site that serves this route (backward-compatible).
+    site: Option<String>,
 }
 
 pub struct AdminApiService {
@@ -288,7 +292,7 @@ async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         // Multi-route entries from both the proxy map and the `routes` array.
         for (path, rt) in collect_site_proxy_entries(site) {
             let (strategy_str, targets) = format_proxy_route_targets(rt, registry);
-            let targets = resolve_runtime_targets(registry, &path, targets);
+            let targets = resolve_runtime_targets(registry, &label, &path, targets);
             routes.push(json!({
                 "site":     label.clone(),
                 "path":     path,
@@ -444,11 +448,12 @@ fn collect_site_proxy_entries(
 /// Replace config targets with runtime overrides when present.
 fn resolve_runtime_targets(
     registry: &health::UpstreamRegistry,
+    site_label: &str,
     path: &str,
     config_targets: Vec<Value>,
 ) -> Vec<Value> {
     let overrides: Vec<Value> = registry
-        .get_override_targets(path)
+        .get_override_targets(site_label, path)
         .unwrap_or_default()
         .iter()
         .map(|(url, weight)| {
@@ -485,12 +490,7 @@ fn build_flat_upstream_list(registry: &health::UpstreamRegistry) -> Vec<Value> {
 
 /// Format a site's host+port as a human-readable label.
 fn make_site_label(host: &Option<String>, port: Option<u16>) -> String {
-    match (host, port) {
-        (Some(h), Some(p)) => format!("{h}:{p}"),
-        (Some(h), None) => h.clone(),
-        (None, Some(p)) => format!("*:{p}"),
-        (None, None) => "*".to_string(),
-    }
+    health::site_label(host, port)
 }
 
 async fn upstreams_add_handler(
@@ -498,11 +498,13 @@ async fn upstreams_add_handler(
     Json(req): Json<UpstreamModifyRequest>,
 ) -> Json<Value> {
     let weight = req.weight.unwrap_or(1).max(1);
+    let site = req.site.as_deref().unwrap_or("*");
     state
         .upstream_health
-        .add_upstream(&req.route, &req.target, weight);
+        .add_upstream(site, &req.route, &req.target, weight);
     Json(json!({
         "status": "ok",
+        "site":   site,
         "route":  req.route,
         "target": req.target,
         "weight": weight,
@@ -513,11 +515,13 @@ async fn upstreams_remove_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpstreamModifyRequest>,
 ) -> Json<Value> {
+    let site = req.site.as_deref().unwrap_or("*");
     let removed = state
         .upstream_health
-        .remove_upstream(&req.route, &req.target);
+        .remove_upstream(site, &req.route, &req.target);
     Json(json!({
         "status": if removed { "ok" } else { "not_found" },
+        "site":   site,
         "route":   req.route,
         "target":  req.target,
     }))
@@ -532,11 +536,13 @@ async fn upstreams_weight_handler(
     };
     // Clamp to minimum 1 — weight 0 causes division-by-zero in WRR scheduling.
     let weight = weight.max(1);
+    let site = req.site.as_deref().unwrap_or("*");
     let updated = state
         .upstream_health
-        .set_weight(&req.route, &req.target, weight);
+        .set_weight(site, &req.route, &req.target, weight);
     Json(json!({
         "status": if updated { "ok" } else { "not_found" },
+        "site":   site,
         "route":   req.route,
         "target":  req.target,
         "weight":  weight,
