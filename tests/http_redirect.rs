@@ -36,6 +36,27 @@ fn no_redirect_client() -> reqwest::blocking::Client {
         .expect("client")
 }
 
+/// Poll the redirect port until it accepts a connection or the deadline expires.
+///
+/// `wait_ready()` on the TestServer only waits for the TLS port and the admin
+/// API; the HTTP-redirect listener is spawned separately and may bind slightly
+/// later. This probe avoids the fixed 200 ms sleep that was prone to CI races.
+fn wait_for_redirect_port(http_port: u16) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match no_redirect_client()
+            .get(format!("http://127.0.0.1:{http_port}/"))
+            .send()
+        {
+            Ok(_) => return,
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(e) => panic!("redirect listener on port {http_port} did not become ready: {e}"),
+        }
+    }
+}
+
 // ── HTTP → HTTPS redirect ─────────────────────────────────────────────────
 
 #[test]
@@ -46,7 +67,6 @@ fn http_redirect_returns_308() {
     let http_port = common::free_port();
     let admin_port = common::free_port();
 
-    // The TLS site's wait_ready polls HTTPS on tls_port via the insecure client.
     let _srv = common::TestServer::start_with_config(
         tls_port,
         admin_port,
@@ -64,8 +84,7 @@ fn http_redirect_returns_308() {
         }),
     );
 
-    // Give the redirect service a moment to bind after the TLS service is ready.
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    wait_for_redirect_port(http_port);
 
     let resp = no_redirect_client()
         .get(format!("http://127.0.0.1:{http_port}/hello"))
@@ -104,7 +123,7 @@ fn http_redirect_location_is_https() {
         }),
     );
 
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    wait_for_redirect_port(http_port);
 
     let resp = no_redirect_client()
         .get(format!("http://127.0.0.1:{http_port}/some/path?q=1"))
@@ -152,7 +171,7 @@ fn http_redirect_preserves_query_string() {
         }),
     );
 
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    wait_for_redirect_port(http_port);
 
     let resp = no_redirect_client()
         .get(format!("http://127.0.0.1:{http_port}/page?foo=bar&baz=1"))
@@ -202,7 +221,7 @@ fn acme_challenge_path_returns_404_not_redirect() {
         }),
     );
 
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    wait_for_redirect_port(http_port);
 
     let resp = no_redirect_client()
         .get(format!(

@@ -64,6 +64,12 @@ fn multiple_custom_headers_all_present() {
             .and_then(|v| v.to_str().ok()),
         Some("test")
     );
+    assert_eq!(
+        resp.headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
 }
 
 // ── custom headers on health endpoint ────────────────────────────────────

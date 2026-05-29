@@ -535,7 +535,7 @@ impl ConduitProxy {
         if rl_cfg
             .store
             .as_deref()
-            .is_some_and(|s| s.starts_with("redis://"))
+            .is_some_and(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
         {
             if let Some(ref rrl) = self.state.redis_rate_limiter {
                 let key = rate_limit::extract_client_key(rl_cfg, session);

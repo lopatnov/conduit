@@ -117,7 +117,7 @@ fn connect_redis_rate_limiter_if_configured(
         s.rate_limit
             .as_ref()
             .and_then(|rl| rl.store.as_deref())
-            .filter(|s| s.starts_with("redis://"))
+            .filter(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
             .map(str::to_owned)
     });
     let Some(ref url) = url_opt else {

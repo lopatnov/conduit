@@ -2,15 +2,14 @@ mod common;
 
 use serial_test::serial;
 
-fn srv_with_response_time(enabled: serde_json::Value) -> common::TestServer {
+fn srv_with_response_time(enabled: serde_json::Value) -> (common::TestServer, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("index.html"), "<html/>").expect("write");
     let static_dir = dir.path().to_string_lossy().into_owned();
-    Box::leak(Box::new(dir));
 
     let port = common::free_port();
     let admin_port = common::free_port();
-    common::TestServer::start_with_config(
+    let srv = common::TestServer::start_with_config(
         port,
         admin_port,
         serde_json::json!({
@@ -21,7 +20,8 @@ fn srv_with_response_time(enabled: serde_json::Value) -> common::TestServer {
                 "static": static_dir
             }]
         }),
-    )
+    );
+    (srv, dir)
 }
 
 // ── responseTime: true ────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ fn srv_with_response_time(enabled: serde_json::Value) -> common::TestServer {
 #[test]
 #[serial]
 fn response_time_header_present_when_enabled() {
-    let srv = srv_with_response_time(serde_json::json!(true));
+    let (srv, _dir) = srv_with_response_time(serde_json::json!(true));
     let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert!(
@@ -41,7 +41,7 @@ fn response_time_header_present_when_enabled() {
 #[test]
 #[serial]
 fn response_time_value_is_numeric_ms() {
-    let srv = srv_with_response_time(serde_json::json!(true));
+    let (srv, _dir) = srv_with_response_time(serde_json::json!(true));
     let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
 
@@ -71,7 +71,7 @@ fn response_time_value_is_numeric_ms() {
 #[serial]
 fn response_time_on_health_endpoint() {
     // X-Response-Time should also appear on the built-in health endpoint.
-    let srv = srv_with_response_time(serde_json::json!(true));
+    let (srv, _dir) = srv_with_response_time(serde_json::json!(true));
     let resp = reqwest::blocking::get(srv.url("/__health__")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert!(
@@ -85,7 +85,7 @@ fn response_time_on_health_endpoint() {
 #[test]
 #[serial]
 fn response_time_header_absent_when_disabled() {
-    let srv = srv_with_response_time(serde_json::json!(false));
+    let (srv, _dir) = srv_with_response_time(serde_json::json!(false));
     let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert!(
@@ -99,25 +99,7 @@ fn response_time_header_absent_when_disabled() {
 #[test]
 #[serial]
 fn response_time_object_form_digits() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::fs::write(dir.path().join("index.html"), "<html/>").expect("write");
-    let static_dir = dir.path().to_string_lossy().into_owned();
-    Box::leak(Box::new(dir));
-
-    let port = common::free_port();
-    let admin_port = common::free_port();
-    let srv = common::TestServer::start_with_config(
-        port,
-        admin_port,
-        serde_json::json!({
-            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
-            "sites": [{
-                "port": port,
-                "responseTime": { "digits": 0 },
-                "static": static_dir
-            }]
-        }),
-    );
+    let (srv, _dir) = srv_with_response_time(serde_json::json!({ "digits": 0 }));
 
     let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);

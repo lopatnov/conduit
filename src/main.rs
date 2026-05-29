@@ -371,18 +371,22 @@ fn probe_url(url: &str) -> (String, Option<u16>, Duration) {
 ///
 /// Tries direct `SocketAddr` parse first, then falls back to DNS resolution.
 fn probe_tls_tcp(host: &str, port: u16, start: Instant) -> (String, Option<u16>, Duration) {
-    let addr_str = format!("{host}:{port}");
-
-    // Resolve the target: prefer a literal IP parse to avoid a DNS round-trip.
-    let sock_addr = if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
-        Some(addr)
+    // Use the (host, port) overload so IPv6 literals like "::1" are handled
+    // correctly — formatting as "{host}:{port}" produces "::1:4000" which
+    // to_socket_addrs / SocketAddr::parse cannot parse.
+    let addr_display = if host.contains(':') {
+        format!("[{host}]:{port}")
     } else {
-        addr_str.to_socket_addrs().ok().and_then(|mut a| a.next())
+        format!("{host}:{port}")
     };
+    let sock_addr = (host, port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut a| a.next());
 
     match sock_addr {
         None => (
-            format!("unreachable: cannot resolve {addr_str}"),
+            format!("unreachable: cannot resolve {addr_display}"),
             None,
             start.elapsed(),
         ),
@@ -399,11 +403,15 @@ fn probe_tls_tcp(host: &str, port: u16, start: Instant) -> (String, Option<u16>,
 
 /// Send an HTTP/1.1 HEAD request over a plain TCP stream and return the status code.
 fn probe_http_head(host: &str, port: u16, path: &str) -> anyhow::Result<u16> {
-    let addr_str = format!("{host}:{port}");
-    let sock_addr = addr_str
+    let addr_display = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let sock_addr = (host, port)
         .to_socket_addrs()?
         .next()
-        .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr_str}"))?;
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr_display}"))?;
     let mut stream = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(10))?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     write!(

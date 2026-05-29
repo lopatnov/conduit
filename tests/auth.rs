@@ -444,9 +444,10 @@ fn rate_limit_key_by_header_separate_clients_have_independent_buckets() {
 }
 
 #[test]
-fn rate_limit_key_by_header_missing_header_uses_ip_fallback() {
-    // When keyBy is a header and the header is absent, the rate limiter should
-    // still handle the request (fall back to IP key or treat as single bucket).
+fn rate_limit_key_by_header_missing_header_falls_back_to_shared_bucket() {
+    // When keyBy names a header that is absent, the rate limiter must not crash
+    // and must still enforce the limit (requests without the header share a
+    // fallback bucket, so they are subject to the same window limit).
     let port = common::free_port();
     let admin_port = common::free_port();
     let srv = common::TestServer::start_with_config(
@@ -458,22 +459,35 @@ fn rate_limit_key_by_header_missing_header_uses_ip_fallback() {
                 "port": port,
                 "rateLimit": {
                     "windowSecs": 3600,
-                    "limit": 5,
+                    "limit": 3,
                     "keyBy": "header:X-Missing-Header"
                 }
             }]
         }),
     );
 
-    // Request without the header should not crash — either allowed or limited,
-    // but must return a well-formed HTTP response.
+    // First 3 requests: must not 500 (server is alive) and not 429 yet.
+    for i in 0..3 {
+        let resp = plain_client()
+            .get(srv.url("/"))
+            .send()
+            .unwrap_or_else(|_| panic!("request {i} failed to send"));
+        let status = resp.status().as_u16();
+        assert_ne!(
+            status, 500,
+            "request {i}: missing key header must not cause 500"
+        );
+        assert_ne!(status, 429, "request {i}: should be within the limit");
+    }
+
+    // 4th request must be rate-limited — the fallback bucket is exhausted.
     let resp = plain_client()
         .get(srv.url("/"))
         .send()
-        .expect("request without key header");
-    let status = resp.status().as_u16();
-    assert!(
-        status != 500,
-        "missing key header must not cause 500, got: {status}"
+        .expect("4th request");
+    assert_eq!(
+        resp.status().as_u16(),
+        429,
+        "4th request must be rate-limited when missing-header bucket is exhausted"
     );
 }
