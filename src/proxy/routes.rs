@@ -823,9 +823,16 @@ mod tests {
         let (t1, ..) = route_to_result(&route, "/api", &counters, &registry, None);
         let (t2, ..) = route_to_result(&route, "/api", &counters, &registry, None);
 
-        // Both results should be Proxy targets (regardless of which server is chosen).
-        assert!(matches!(t1, UpstreamTarget::Proxy { .. }));
-        assert!(matches!(t2, UpstreamTarget::Proxy { .. }));
+        // Round-robin must select different upstreams on consecutive calls.
+        let a1 = match t1 {
+            UpstreamTarget::Proxy { ref addr, .. } => addr.clone(),
+            _ => panic!("expected Proxy target for first pick"),
+        };
+        let a2 = match t2 {
+            UpstreamTarget::Proxy { ref addr, .. } => addr.clone(),
+            _ => panic!("expected Proxy target for second pick"),
+        };
+        assert_ne!(a1, a2, "round-robin must rotate across upstreams");
     }
 
     #[test]
@@ -1002,13 +1009,12 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
-        // All upstreams unhealthy — fall through to fallback (fail-open).
-        // The router picks from the full pool when all are unhealthy, so we get Proxy.
-        // (Fail-open: an empty healthy set returns the full set.)
-        assert!(matches!(
-            target,
-            UpstreamTarget::Proxy { .. } | UpstreamTarget::Local(LocalHandler::Fallback)
-        ));
+        // Fail-open: when all upstreams are unhealthy the router falls back to
+        // the full (unhealthy) pool rather than refusing traffic.
+        assert!(
+            matches!(target, UpstreamTarget::Proxy { .. }),
+            "fail-open must still pick from the full upstream pool, got {target:?}"
+        );
     }
 
     #[test]
@@ -1123,7 +1129,8 @@ mod tests {
 
     #[test]
     fn route_to_result_full_proxy_least_conn_invalid_url_gives_fallback() {
-        // LeastConn + invalid URL: ensures conn_dec is called before returning Fallback.
+        // LeastConn + invalid URL (bare "http://"): the URL cannot be resolved
+        // to a host:port, so route_to_result returns Fallback.
         use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
         use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
         let route = RouteConfig {
@@ -1142,5 +1149,13 @@ mod tests {
             target,
             UpstreamTarget::Local(LocalHandler::Fallback)
         ));
+        // Verify the connection counter was not left incremented.
+        // (LeastConn increments the counter before picking the peer; on parse
+        // failure it must decrement before returning Fallback.)
+        let conn_count = counters
+            .get("http://")
+            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0);
+        assert_eq!(conn_count, 0, "conn counter must be zero after invalid-URL fallback");
     }
 }

@@ -156,78 +156,70 @@ fn route_site(
     upstream_health: &UpstreamRegistry,
     upload_addr: Option<SocketAddr>,
 ) -> RouteResult {
-    // Upload path takes priority — it is a precise prefix configured by the
-    // operator and must not be shadowed by a catch-all proxy route.
-    if let (Some(ref upload_cfg), Some(addr)) = (&site.upload, upload_addr) {
-        let upload_prefix = upload_cfg.path.trim_end_matches('/');
-        if path == upload_prefix || path.starts_with(&format!("{upload_prefix}/")) {
-            return (
-                UpstreamTarget::Upload { addr },
-                None,
-                None,
-                None,
-                false,
-                None,
-                None,
-            );
-        }
+    if let Some(result) = match_upload_route(site, path, upload_addr) {
+        return result;
     }
-
-    // `routes` array — evaluated before the legacy `proxy`/`static` shortcuts.
-    // Each RouteConfig has a MatchConfig (path glob, method, headers, query)
-    // plus an action (proxy or static).  First match wins.
-    if let Some(route_list) = &site.routes {
-        if let Some(result) = crate::proxy::routes::match_routes(
-            route_list,
-            path,
-            method,
-            req_headers,
-            query,
-            counters,
-            upstream_health,
-            site.static_options.as_ref(),
-        ) {
-            return result;
-        }
+    if let Some(result) = match_routes_array(site, path, method, req_headers, query, counters, upstream_health) {
+        return result;
     }
-
-    // Proxy routes take priority over static files.
     if let Some(proxy_cfg) = &site.proxy {
         if let Some(result) = resolve_proxy(proxy_cfg, path, client_ip, counters, upstream_health) {
             return result;
         }
     }
+    match_static_or_fallback(site, path)
+}
 
-    // Static files (only reached if no proxy route matched).
+/// Check whether the request targets the configured upload prefix.
+///
+/// Upload path takes priority — it is a precise prefix configured by the
+/// operator and must not be shadowed by a catch-all proxy route.
+fn match_upload_route(site: &SiteConfig, path: &str, upload_addr: Option<SocketAddr>) -> Option<RouteResult> {
+    let (upload_cfg, addr) = site.upload.as_ref().zip(upload_addr)?;
+    let upload_prefix = upload_cfg.path.trim_end_matches('/');
+    let matches = path == upload_prefix || path.starts_with(&format!("{upload_prefix}/"));
+    matches.then_some((UpstreamTarget::Upload { addr }, None, None, None, false, None, None))
+}
+
+/// Match against the `routes` array (evaluated before legacy `proxy`/`static`).
+///
+/// Each `RouteConfig` has a `MatchConfig` (path glob, method, headers, query)
+/// plus an action (proxy or static).  First match wins.
+#[allow(clippy::too_many_arguments)]
+fn match_routes_array(
+    site: &SiteConfig,
+    path: &str,
+    method: &str,
+    req_headers: &http::HeaderMap,
+    query: Option<&str>,
+    counters: &DashMap<String, AtomicUsize>,
+    upstream_health: &UpstreamRegistry,
+) -> Option<RouteResult> {
+    crate::proxy::routes::match_routes(
+        site.routes.as_ref()?,
+        path,
+        method,
+        req_headers,
+        query,
+        counters,
+        upstream_health,
+        site.static_options.as_ref(),
+    )
+}
+
+/// Serve static files when configured, or fall through to the global fallback handler.
+fn match_static_or_fallback(site: &SiteConfig, path: &str) -> RouteResult {
     if let Some(static_cfg) = &site.static_files {
         let options = Arc::new(site.static_options.clone().unwrap_or_default());
         let (roots, strip_prefix) = resolve_static_roots(static_cfg, path);
         if !roots.is_empty() {
             return (
-                UpstreamTarget::Local(LocalHandler::StaticFile {
-                    roots,
-                    options,
-                    strip_prefix,
-                }),
-                None,
-                None,
-                None,
-                false,
-                None,
-                None,
+                UpstreamTarget::Local(LocalHandler::StaticFile { roots, options, strip_prefix }),
+                None, None, None, false, None, None,
             );
         }
     }
-
-    (
-        UpstreamTarget::Local(LocalHandler::Fallback),
-        None,
-        None,
-        None,
-        false,
-        None,
-        None,
-    )
+    (UpstreamTarget::Local(LocalHandler::Fallback), None, None, None, false, None, None)
 }
 
 fn resolve_proxy(
@@ -760,44 +752,50 @@ fn find_site_idx(config: &AppConfig, host: &str, server_port: u16) -> Option<usi
     if config.sites.is_empty() {
         return None;
     }
-
-    // 1st pass: explicit host match (optionally refined by port).
-    let host_match: Option<usize> = {
-        let mut best: Option<usize> = None;
-        for (i, site) in config.sites.iter().enumerate() {
-            if site.host.as_deref() == Some(host) {
-                // Prefer a site whose configured port also matches.
-                if site.port == Some(server_port) {
-                    return Some(i);
-                }
-                if best.is_none() {
-                    best = Some(i);
-                }
-            }
-        }
-        best
-    };
-    if let Some(idx) = host_match {
+    // 1st pass: sites with an explicit matching host.
+    if let Some(idx) = find_host_match(&config.sites, host, server_port) {
         return Some(idx);
     }
+    // 2nd pass: catch-all sites (no host configured, or host == "*").
+    if let Some(idx) = find_wildcard_match(&config.sites, server_port) {
+        return Some(idx);
+    }
+    Some(0)
+}
 
-    // 2nd pass: catch-all sites (no explicit host), prefer port match.
-    let mut wildcard_any: Option<usize> = None;
-    for (i, site) in config.sites.iter().enumerate() {
+/// Find the first site whose `host` equals `host`, preferring an exact port match.
+fn find_host_match(
+    sites: &[crate::config::schema::SiteConfig],
+    host: &str,
+    server_port: u16,
+) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for (i, site) in sites.iter().enumerate() {
+        if site.host.as_deref() == Some(host) {
+            if site.port == Some(server_port) {
+                return Some(i); // exact host+port match
+            }
+            best.get_or_insert(i);
+        }
+    }
+    best
+}
+
+/// Find the first catch-all site (no host or `host == "*"`), preferring port match.
+fn find_wildcard_match(
+    sites: &[crate::config::schema::SiteConfig],
+    server_port: u16,
+) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for (i, site) in sites.iter().enumerate() {
         if matches!(site.host.as_deref(), None | Some("*")) {
             if site.port == Some(server_port) {
                 return Some(i);
             }
-            if wildcard_any.is_none() {
-                wildcard_any = Some(i);
-            }
+            best.get_or_insert(i);
         }
     }
-    if let Some(idx) = wildcard_any {
-        return Some(idx);
-    }
-
-    Some(0)
+    best
 }
 
 #[cfg(test)]

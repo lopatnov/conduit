@@ -431,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn read_entry_only_header_present_returns_none() {
+    fn read_entry_parses_zero_length_entry() {
         // Write only 8 bytes (two u32 length fields) with no payload.
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("header_only.cache");

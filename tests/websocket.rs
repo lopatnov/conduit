@@ -19,108 +19,123 @@ fn spawn_ws_upstream() -> std::net::SocketAddr {
     let addr = listener.local_addr().expect("local_addr");
 
     std::thread::spawn(move || {
-        // Handle one connection.
         if let Ok((stream, _)) = listener.accept() {
-            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
-            let mut writer = stream;
-
-            // Read HTTP request headers.
-            let mut headers = Vec::new();
-            loop {
-                let mut line = String::new();
-                if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
-                    break;
-                }
-                headers.push(line);
-            }
-
-            // Extract the Sec-WebSocket-Key.
-            let key = headers
-                .iter()
-                .find(|h| h.to_ascii_lowercase().starts_with("sec-websocket-key:"))
-                .and_then(|h| h.split_once(':'))
-                .map(|(_, v)| v.trim().to_owned())
-                .unwrap_or_default();
-
-            // Compute Sec-WebSocket-Accept per RFC 6455 §1.3:
-            //   base64( SHA-1( key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" ) )
-            // We implement SHA-1 inline to avoid extra dev-dependencies.
-            let magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-            let combined = format!("{key}{magic}");
-            let sha1_bytes = sha1(combined.as_bytes());
-            let accept = base64_encode(&sha1_bytes);
-
-            // Send 101 Switching Protocols.
-            let resp = format!(
-                "HTTP/1.1 101 Switching Protocols\r\n\
-                 Connection: Upgrade\r\n\
-                 Upgrade: websocket\r\n\
-                 Sec-WebSocket-Accept: {accept}\r\n\
-                 \r\n"
-            );
-            writer.write_all(resp.as_bytes()).ok();
-
-            // Echo loop: read a WebSocket frame, write it back (server → client,
-            // no masking required from server side).
-            let inner = reader.into_inner();
-            inner.set_read_timeout(Some(Duration::from_secs(5))).ok();
-            let mut raw = inner;
-
-            let mut buf = [0u8; 4096];
-            loop {
-                // Read frame header (at least 2 bytes).
-                let n = match read_exact_timeout(&mut raw, &mut buf[..2]) {
-                    Ok(n) => n,
-                    Err(_) => break,
-                };
-                if n < 2 {
-                    break;
-                }
-
-                let fin_opcode = buf[0];
-                let mask_len = buf[1];
-                let masked = (mask_len & 0x80) != 0;
-                let payload_len = (mask_len & 0x7f) as usize;
-
-                // Read masking key if present.
-                let mask_key = if masked {
-                    if read_exact_timeout(&mut raw, &mut buf[2..6]).is_err() {
-                        break;
-                    }
-                    [buf[2], buf[3], buf[4], buf[5]]
-                } else {
-                    [0u8; 4]
-                };
-
-                // Read payload.
-                let mut payload = vec![0u8; payload_len];
-                if payload_len > 0 {
-                    if read_exact_timeout(&mut raw, &mut payload).is_err() {
-                        break;
-                    }
-                }
-
-                // Unmask payload.
-                if masked {
-                    for (i, b) in payload.iter_mut().enumerate() {
-                        *b ^= mask_key[i % 4];
-                    }
-                }
-
-                // Send echo frame (server never masks).
-                let echo_header = [fin_opcode, payload_len as u8];
-                writer.write_all(&echo_header).ok();
-                writer.write_all(&payload).ok();
-
-                // Connection close opcode = 0x88 — stop echoing.
-                if fin_opcode & 0x0f == 0x8 {
-                    break;
-                }
-            }
+            handle_ws_connection(stream);
         }
     });
 
     addr
+}
+
+/// Handle one WebSocket connection: perform the HTTP upgrade handshake and
+/// run the echo loop until the peer sends a close frame or disconnects.
+fn handle_ws_connection(stream: std::net::TcpStream) {
+    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+    let mut writer = stream;
+
+    // Read HTTP request headers until the blank line.
+    let mut headers = Vec::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
+            break;
+        }
+        headers.push(line);
+    }
+
+    // Send 101 Switching Protocols with the computed Sec-WebSocket-Accept.
+    let key = extract_ws_key(&headers);
+    send_ws_101(&mut writer, &key);
+
+    // Echo loop.
+    let mut raw = reader.into_inner();
+    raw.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    ws_echo_loop(&mut raw, &mut writer);
+}
+
+/// Extract the `Sec-WebSocket-Key` value from the request headers.
+fn extract_ws_key(headers: &[String]) -> String {
+    headers
+        .iter()
+        .find(|h| h.to_ascii_lowercase().starts_with("sec-websocket-key:"))
+        .and_then(|h| h.split_once(':'))
+        .map(|(_, v)| v.trim().to_owned())
+        .unwrap_or_default()
+}
+
+/// Send an `HTTP/1.1 101 Switching Protocols` response with the correct
+/// `Sec-WebSocket-Accept` header computed from `key`.
+///
+/// Computation per RFC 6455 §1.3:
+/// `base64( SHA-1( key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" ) )`
+fn send_ws_101(writer: &mut std::net::TcpStream, key: &str) {
+    let combined = format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    let accept = base64_encode(&sha1(combined.as_bytes()));
+    let resp = format!(
+        "HTTP/1.1 101 Switching Protocols\r\n\
+         Connection: Upgrade\r\n\
+         Upgrade: websocket\r\n\
+         Sec-WebSocket-Accept: {accept}\r\n\
+         \r\n"
+    );
+    writer.write_all(resp.as_bytes()).ok();
+}
+
+/// Echo loop: read WebSocket frames from `raw` and write them back to `writer`
+/// (server never masks outgoing frames per RFC 6455).
+fn ws_echo_loop(raw: &mut std::net::TcpStream, writer: &mut std::net::TcpStream) {
+    let mut buf = [0u8; 4096];
+    loop {
+        let Some((fin_opcode, payload)) = read_ws_frame(raw, &mut buf) else {
+            break;
+        };
+        writer.write_all(&[fin_opcode, payload.len() as u8]).ok();
+        writer.write_all(&payload).ok();
+        if fin_opcode & 0x0f == 0x8 {
+            // Connection close opcode — stop echoing.
+            break;
+        }
+    }
+}
+
+/// Read one WebSocket frame from `raw`.
+///
+/// Returns `Some((fin_opcode, unmasked_payload))` on success, `None` on any
+/// read error or a truncated frame.
+fn read_ws_frame(raw: &mut impl std::io::Read, buf: &mut [u8; 4096]) -> Option<(u8, Vec<u8>)> {
+    // Frame header: at least 2 bytes.
+    let n = read_exact_timeout(raw, &mut buf[..2]).ok()?;
+    if n < 2 {
+        return None;
+    }
+
+    let fin_opcode = buf[0];
+    let mask_len = buf[1];
+    let masked = (mask_len & 0x80) != 0;
+    let payload_len = (mask_len & 0x7f) as usize;
+
+    // Optional 4-byte masking key.
+    let mask_key = if masked {
+        read_exact_timeout(raw, &mut buf[2..6]).ok()?;
+        [buf[2], buf[3], buf[4], buf[5]]
+    } else {
+        [0u8; 4]
+    };
+
+    // Payload.
+    let mut payload = vec![0u8; payload_len];
+    if payload_len > 0 {
+        read_exact_timeout(raw, &mut payload).ok()?;
+    }
+
+    // Unmask in-place.
+    if masked {
+        for (i, b) in payload.iter_mut().enumerate() {
+            *b ^= mask_key[i % 4];
+        }
+    }
+
+    Some((fin_opcode, payload))
 }
 
 // ── Utility: read exactly N bytes with a hard deadline ───────────────────────

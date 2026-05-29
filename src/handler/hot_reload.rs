@@ -193,8 +193,11 @@ pub fn build_watch_config(
 /// `extensions` when set).  On each debounced batch (200 ms quiet period),
 /// sends `()` on `reload_tx`.
 ///
-/// Runs until all SSE subscribers have disconnected (broadcast channel closed)
-/// or an unrecoverable watcher error occurs.
+/// Runs indefinitely even when there are no active SSE subscribers: send
+/// errors on `reload_tx` are intentionally ignored so that events are simply
+/// dropped when nobody is listening, and the watcher remains ready to deliver
+/// the next event when a subscriber reconnects.  The task only exits on an
+/// unrecoverable watcher error.
 pub async fn run_file_watcher(
     dirs: Vec<PathBuf>,
     extensions: Option<Vec<String>>,

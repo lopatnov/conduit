@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -13,6 +13,21 @@ use crate::config::schema::AcmeConfig;
 
 /// How many days before certificate expiry to trigger automatic renewal.
 const RENEWAL_THRESHOLD_DAYS: i64 = 30;
+
+// ── Per-port serialization lock ───────────────────────────────────────────────
+
+/// One `Mutex` per HTTP-01 challenge port, ensuring that concurrent
+/// `obtain_certificate` calls for different domains never race to bind the
+/// same port.
+static HTTP01_PORT_LOCKS: OnceLock<DashMap<u16, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
+
+fn http01_port_lock(port: u16) -> Arc<tokio::sync::Mutex<()>> {
+    HTTP01_PORT_LOCKS
+        .get_or_init(DashMap::new)
+        .entry(port)
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
 
 /// On-disk paths to a site's TLS certificate and private key obtained via ACME.
 pub struct AcmeCertPaths {
@@ -114,6 +129,11 @@ async fn obtain_certificate(
         .new_order(&NewOrder::new(&identifiers))
         .await
         .context("ACME new-order request failed")?;
+
+    // Acquire the per-port lock so concurrent ACME orders (multiple domains,
+    // or an issuance overlapping a renewal) never race to bind the same port.
+    let _port_lock = http01_port_lock(http_challenge_port);
+    let _port_guard = _port_lock.lock().await;
 
     // Bind the HTTP-01 challenge server port *before* spawning the background
     // task so that port-bind failures are reported here as ACME errors rather
@@ -297,12 +317,14 @@ async fn run_challenge_server(
         .route("/.well-known/acme-challenge/:token", get(challenge_handler))
         .with_state(challenges);
 
-    axum::serve(listener, app)
+    if let Err(e) = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             stop_rx.await.ok();
         })
         .await
-        .ok();
+    {
+        tracing::error!(error = %e, "ACME HTTP-01 challenge server accept loop failed");
+    }
 }
 
 /// Spawn a background task that renews the certificate for `domain` when it is

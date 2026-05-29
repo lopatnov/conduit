@@ -265,177 +265,208 @@ async fn shutdown_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
-    use crate::config::schema::{LoadBalanceStrategy, ProxyConfig, ProxyRouteTarget, ProxyTarget};
+    use crate::config::schema::ProxyConfig;
 
     let registry = &state.upstream_health;
     let config = state.config.load();
-
-    // Helper: look up health entry for a URL.
-    let health_of = |url: &str| -> Value {
-        match registry.statuses.get(url) {
-            Some(e) => json!({
-                "healthy":               e.healthy,
-                "latency_ms":            e.latency_ms,
-                "consecutive_failures":  e.consecutive_failures,
-                "consecutive_successes": e.consecutive_successes,
-            }),
-            // URL has no health-check probe configured — unknown status.
-            None => json!({
-                "healthy":               Value::Null,
-                "latency_ms":            Value::Null,
-                "consecutive_failures":  0,
-                "consecutive_successes": 0,
-            }),
-        }
-    };
-
-    // Build per-route view from config.
     let mut routes: Vec<Value> = Vec::new();
+
     for site in &config.sites {
-        let site_label = match (&site.host, site.port) {
-            (Some(h), Some(p)) => format!("{h}:{p}"),
-            (Some(h), None) => h.clone(),
-            (None, Some(p)) => format!("*:{p}"),
-            (None, None) => "*".to_string(),
-        };
+        let label = make_site_label(&site.host, site.port);
 
-        // Collect proxy targets from both top-level `proxy` and `routes` array.
-        // Each entry is (match_path, route_target).
-        let mut proxy_entries: Vec<(String, &ProxyRouteTarget)> = Vec::new();
-
-        if let Some(proxy_cfg) = &site.proxy {
-            match proxy_cfg {
-                ProxyConfig::Single(url) => {
-                    // Wrap the single URL as a Url variant and push directly.
-                    let mut h = health_of(url);
-                    h["url"] = json!(url);
-                    routes.push(json!({
-                        "site":     site_label.clone(),
-                        "path":     "/",
-                        "strategy": "round-robin",
-                        "targets":  [h],
-                    }));
-                }
-                ProxyConfig::Routes(route_map) => {
-                    for (path, rt) in route_map {
-                        proxy_entries.push((path.clone(), rt));
-                    }
-                }
-            }
-        }
-
-        // Also collect proxy targets from the `routes` array (Phase 3.6).
-        if let Some(route_list) = &site.routes {
-            for rc in route_list {
-                if let Some(rt) = &rc.proxy {
-                    let path = rc.r#match.path.clone().unwrap_or_else(|| "/**".to_string());
-                    proxy_entries.push((path, rt));
-                }
-            }
-        }
-
-        for (path, route_target) in &proxy_entries {
-            let (strategy_str, targets): (&str, Vec<Value>) = match route_target {
-                ProxyRouteTarget::Url(url) => {
-                    let mut h = health_of(url);
-                    h["url"] = json!(url);
-                    h["weight"] = json!(1u32);
-                    ("round-robin", vec![h])
-                }
-                ProxyRouteTarget::RoundRobin(urls) => {
-                    let tgts = urls
-                        .iter()
-                        .map(|url| {
-                            let mut h = health_of(url);
-                            h["url"] = json!(url);
-                            h["weight"] = json!(1u32);
-                            h
-                        })
-                        .collect();
-                    ("round-robin", tgts)
-                }
-                ProxyRouteTarget::Full(cfg) => {
-                    let strat = match cfg
-                        .strategy
-                        .as_ref()
-                        .unwrap_or(&LoadBalanceStrategy::RoundRobin)
-                    {
-                        LoadBalanceStrategy::RoundRobin => "round-robin",
-                        LoadBalanceStrategy::WeightedRoundRobin => "weighted-round-robin",
-                        LoadBalanceStrategy::Random => "random",
-                        LoadBalanceStrategy::LeastConn => "least-conn",
-                        LoadBalanceStrategy::LeastResponseTime => "least-response-time",
-                        LoadBalanceStrategy::IpHash => "ip-hash",
-                        LoadBalanceStrategy::ConsistentHash => "consistent-hash",
-                    };
-                    // When `groups` is configured, collect all targets across
-                    // every group so the admin view reflects the full pool.
-                    let tgts: Vec<Value> = if let Some(groups) = &cfg.groups {
-                        groups
-                            .iter()
-                            .flat_map(|g| {
-                                g.targets.iter().map(|t| {
-                                    let (url, weight) = match t {
-                                        ProxyTarget::Simple(u) => (u.as_str(), 1u32),
-                                        ProxyTarget::Weighted(w) => (w.url.as_str(), w.weight),
-                                    };
-                                    let mut h = health_of(url);
-                                    h["url"] = json!(url);
-                                    h["weight"] = json!(weight);
-                                    h["group"] = json!(&g.name);
-                                    h
-                                })
-                            })
-                            .collect()
-                    } else {
-                        cfg.targets
-                            .iter()
-                            .map(|t| {
-                                let (url, weight) = match t {
-                                    ProxyTarget::Simple(u) => (u.as_str(), 1u32),
-                                    ProxyTarget::Weighted(w) => (w.url.as_str(), w.weight),
-                                };
-                                let mut h = health_of(url);
-                                h["url"] = json!(url);
-                                h["weight"] = json!(weight);
-                                h
-                            })
-                            .collect()
-                    };
-                    (strat, tgts)
-                }
-            };
-
-            // Include any runtime overrides for this route.
-            let override_targets: Vec<Value> = registry
-                .get_override_targets(path)
-                .unwrap_or_default()
-                .iter()
-                .map(|(url, weight)| {
-                    let mut h = health_of(url);
-                    h["url"] = json!(url);
-                    h["weight"] = json!(weight);
-                    h["runtime"] = json!(true);
-                    h
-                })
-                .collect();
-
-            let all_targets: Vec<Value> = if override_targets.is_empty() {
-                targets
-            } else {
-                override_targets
-            };
-
+        // Single-target proxy shortcut — no route map, just one URL.
+        if let Some(ProxyConfig::Single(url)) = &site.proxy {
+            let target = url_health_entry(registry, url, 1, None);
             routes.push(json!({
-                "site":     site_label.clone(),
+                "site":     label.clone(),
+                "path":     "/",
+                "strategy": "round-robin",
+                "targets":  [target],
+            }));
+        }
+
+        // Multi-route entries from both the proxy map and the `routes` array.
+        for (path, rt) in collect_site_proxy_entries(site) {
+            let (strategy_str, targets) = format_proxy_route_targets(rt, registry);
+            let targets = resolve_runtime_targets(registry, &path, targets);
+            routes.push(json!({
+                "site":     label.clone(),
                 "path":     path,
                 "strategy": strategy_str,
-                "targets":  all_targets,
+                "targets":  targets,
             }));
         }
     }
 
-    // Backward-compatible flat list: all URLs with known health status.
+    let flat = build_flat_upstream_list(registry);
+    Json(json!({ "upstreams": flat, "routes": routes }))
+}
+
+// ── upstreams_handler helpers ─────────────────────────────────────────────────
+
+/// Build a JSON object that combines a target URL with its health-check status.
+fn url_health_entry(
+    registry: &health::UpstreamRegistry,
+    url: &str,
+    weight: u32,
+    group: Option<&str>,
+) -> Value {
+    let health = match registry.statuses.get(url) {
+        Some(e) => json!({
+            "healthy":               e.healthy,
+            "latency_ms":            e.latency_ms,
+            "consecutive_failures":  e.consecutive_failures,
+            "consecutive_successes": e.consecutive_successes,
+        }),
+        None => json!({
+            "healthy":               Value::Null,
+            "latency_ms":            Value::Null,
+            "consecutive_failures":  0,
+            "consecutive_successes": 0,
+        }),
+    };
+    let mut entry = json!({
+        "url":    url,
+        "weight": weight,
+    });
+    // Merge health fields into the entry object.
+    if let (Some(obj), Some(h_obj)) = (entry.as_object_mut(), health.as_object()) {
+        for (k, v) in h_obj {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    if let Some(g) = group {
+        entry["group"] = json!(g);
+    }
+    entry
+}
+
+/// Map a `LoadBalanceStrategy` to its JSON-API string form.
+fn strategy_label(s: &crate::config::schema::LoadBalanceStrategy) -> &'static str {
+    use crate::config::schema::LoadBalanceStrategy as S;
+    match s {
+        S::RoundRobin => "round-robin",
+        S::WeightedRoundRobin => "weighted-round-robin",
+        S::Random => "random",
+        S::LeastConn => "least-conn",
+        S::LeastResponseTime => "least-response-time",
+        S::IpHash => "ip-hash",
+        S::ConsistentHash => "consistent-hash",
+    }
+}
+
+/// Extract `(url, weight)` from a `ProxyTarget`.
+fn proxy_target_url_weight(
+    t: &crate::config::schema::ProxyTarget,
+) -> (&str, u32) {
+    use crate::config::schema::ProxyTarget;
+    match t {
+        ProxyTarget::Simple(u) => (u.as_str(), 1),
+        ProxyTarget::Weighted(w) => (w.url.as_str(), w.weight),
+    }
+}
+
+/// Convert a `ProxyRouteConfig`'s targets (flat or grouped) to JSON entries.
+fn format_full_config_targets(
+    cfg: &crate::config::schema::ProxyRouteConfig,
+    registry: &health::UpstreamRegistry,
+) -> Vec<Value> {
+    if let Some(groups) = &cfg.groups {
+        groups
+            .iter()
+            .flat_map(|g| {
+                g.targets.iter().map(|t| {
+                    let (url, w) = proxy_target_url_weight(t);
+                    url_health_entry(registry, url, w, Some(&g.name))
+                })
+            })
+            .collect()
+    } else {
+        cfg.targets
+            .iter()
+            .map(|t| {
+                let (url, w) = proxy_target_url_weight(t);
+                url_health_entry(registry, url, w, None)
+            })
+            .collect()
+    }
+}
+
+/// Convert a `ProxyRouteTarget` to `(strategy_label, target_list)`.
+fn format_proxy_route_targets<'a>(
+    rt: &'a crate::config::schema::ProxyRouteTarget,
+    registry: &health::UpstreamRegistry,
+) -> (&'static str, Vec<Value>) {
+    use crate::config::schema::{LoadBalanceStrategy, ProxyRouteTarget};
+    match rt {
+        ProxyRouteTarget::Url(url) => {
+            ("round-robin", vec![url_health_entry(registry, url, 1, None)])
+        }
+        ProxyRouteTarget::RoundRobin(urls) => {
+            let tgts = urls
+                .iter()
+                .map(|u| url_health_entry(registry, u, 1, None))
+                .collect();
+            ("round-robin", tgts)
+        }
+        ProxyRouteTarget::Full(cfg) => {
+            let strat = strategy_label(
+                cfg.strategy
+                    .as_ref()
+                    .unwrap_or(&LoadBalanceStrategy::RoundRobin),
+            );
+            (strat, format_full_config_targets(cfg, registry))
+        }
+    }
+}
+
+/// Collect `(path, route_target)` pairs from a site's proxy map and routes array.
+fn collect_site_proxy_entries(
+    site: &crate::config::schema::SiteConfig,
+) -> Vec<(String, &crate::config::schema::ProxyRouteTarget)> {
+    use crate::config::schema::ProxyConfig;
+    let mut entries = Vec::new();
+    if let Some(ProxyConfig::Routes(route_map)) = &site.proxy {
+        for (path, rt) in route_map {
+            entries.push((path.clone(), rt));
+        }
+    }
+    if let Some(route_list) = &site.routes {
+        for rc in route_list {
+            if let Some(rt) = &rc.proxy {
+                let path = rc.r#match.path.clone().unwrap_or_else(|| "/**".to_string());
+                entries.push((path, rt));
+            }
+        }
+    }
+    entries
+}
+
+/// Replace config targets with runtime overrides when present.
+fn resolve_runtime_targets(
+    registry: &health::UpstreamRegistry,
+    path: &str,
+    config_targets: Vec<Value>,
+) -> Vec<Value> {
+    let overrides: Vec<Value> = registry
+        .get_override_targets(path)
+        .unwrap_or_default()
+        .iter()
+        .map(|(url, weight)| {
+            let mut h = url_health_entry(registry, url, *weight, None);
+            h["runtime"] = json!(true);
+            h
+        })
+        .collect();
+    if overrides.is_empty() {
+        config_targets
+    } else {
+        overrides
+    }
+}
+
+/// Build the backward-compatible flat list of all known upstream URLs.
+fn build_flat_upstream_list(registry: &health::UpstreamRegistry) -> Vec<Value> {
     let mut flat: Vec<Value> = registry
         .statuses
         .iter()
@@ -450,8 +481,17 @@ async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         })
         .collect();
     flat.sort_by(|a, b| a["url"].as_str().cmp(&b["url"].as_str()));
+    flat
+}
 
-    Json(json!({ "upstreams": flat, "routes": routes }))
+/// Format a site's host+port as a human-readable label.
+fn make_site_label(host: &Option<String>, port: Option<u16>) -> String {
+    match (host, port) {
+        (Some(h), Some(p)) => format!("{h}:{p}"),
+        (Some(h), None) => h.clone(),
+        (None, Some(p)) => format!("*:{p}"),
+        (None, None) => "*".to_string(),
+    }
 }
 
 async fn upstreams_add_handler(

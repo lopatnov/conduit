@@ -359,76 +359,64 @@ fn probe_url(url: &str) -> (String, Option<u16>, Duration) {
     };
 
     if is_tls {
-        // Probe TCP connectivity only — no TLS stack in the CLI binary.
-        let addr_str = format!("{host}:{port}");
-        match addr_str.parse::<std::net::SocketAddr>() {
-            Ok(addr) => match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
-                Ok(_) => {
-                    return (
-                        "TCP open (HTTPS — HEAD skipped)".to_owned(),
-                        None,
-                        start.elapsed(),
-                    )
-                }
-                Err(e) => return (format!("unreachable: {e}"), None, start.elapsed()),
-            },
-            Err(_) => {
-                // host:port needs DNS resolution — resolve then connect with timeout.
-                let resolved = addr_str.to_socket_addrs().ok().and_then(|mut a| a.next());
-                match resolved {
-                    Some(sock) => match TcpStream::connect_timeout(&sock, Duration::from_secs(5)) {
-                        Ok(_) => {
-                            return (
-                                "TCP open (HTTPS — HEAD skipped)".to_owned(),
-                                None,
-                                start.elapsed(),
-                            )
-                        }
-                        Err(e) => return (format!("unreachable: {e}"), None, start.elapsed()),
-                    },
-                    None => {
-                        return (
-                            format!("unreachable: cannot resolve {addr_str}"),
-                            None,
-                            start.elapsed(),
-                        )
-                    }
-                }
-            }
-        }
+        return probe_tls_tcp(&host, port, start);
     }
 
     // Plain HTTP: send HEAD and read the status line.
-    let result = (|| -> anyhow::Result<u16> {
-        let addr_str = format!("{host}:{port}");
-        let sock_addr = addr_str
-            .to_socket_addrs()?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr_str}"))?;
-        let mut stream = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(10))?;
-        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-        write!(
-            stream,
-            "HEAD {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
-        )?;
-        stream.flush()?;
-        let mut response = String::new();
-        stream.read_to_string(&mut response)?;
-        // Status line: "HTTP/1.x NNN Reason"
-        let status = response
-            .lines()
-            .next()
-            .and_then(|line| line.split_whitespace().nth(1))
-            .and_then(|s| s.parse::<u16>().ok())
-            .ok_or_else(|| anyhow::anyhow!("no status code in response"))?;
-        Ok(status)
-    })();
-
+    let result = probe_http_head(&host, port, &path);
     let elapsed = start.elapsed();
     match result {
         Ok(status) => (format!("HTTP {status}"), Some(status), elapsed),
         Err(e) => (format!("error: {e}"), None, elapsed),
     }
+}
+
+/// Probe TLS upstream via TCP-only connectivity check (no TLS handshake in CLI).
+///
+/// Tries direct `SocketAddr` parse first, then falls back to DNS resolution.
+fn probe_tls_tcp(host: &str, port: u16, start: Instant) -> (String, Option<u16>, Duration) {
+    let addr_str = format!("{host}:{port}");
+
+    // Resolve the target: prefer a literal IP parse to avoid a DNS round-trip.
+    let sock_addr = if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
+        Some(addr)
+    } else {
+        addr_str.to_socket_addrs().ok().and_then(|mut a| a.next())
+    };
+
+    match sock_addr {
+        None => (
+            format!("unreachable: cannot resolve {addr_str}"),
+            None,
+            start.elapsed(),
+        ),
+        Some(addr) => match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
+            Ok(_) => ("TCP open (HTTPS — HEAD skipped)".to_owned(), None, start.elapsed()),
+            Err(e) => (format!("unreachable: {e}"), None, start.elapsed()),
+        },
+    }
+}
+
+/// Send an HTTP/1.1 HEAD request over a plain TCP stream and return the status code.
+fn probe_http_head(host: &str, port: u16, path: &str) -> anyhow::Result<u16> {
+    let addr_str = format!("{host}:{port}");
+    let sock_addr = addr_str
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr_str}"))?;
+    let mut stream = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(10))?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    write!(stream, "HEAD {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")?;
+    stream.flush()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    // Status line: "HTTP/1.x NNN Reason"
+    response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|s| s.parse::<u16>().ok())
+        .ok_or_else(|| anyhow::anyhow!("no status code in response"))
 }
 
 /// Parse an upstream URL into `(is_tls, host, port, path)`.

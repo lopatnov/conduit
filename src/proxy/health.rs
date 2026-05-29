@@ -241,14 +241,9 @@ pub(crate) fn apply_probe_result(
 /// the process exits.
 pub fn spawn_health_checks(registry: Arc<UpstreamRegistry>, config: &AppConfig) {
     for site in &config.sites {
-        let Some(proxy) = &site.proxy else {
+        let Some(ProxyConfig::Routes(routes)) = &site.proxy else {
             continue;
         };
-        let routes = match proxy {
-            ProxyConfig::Routes(r) => r,
-            ProxyConfig::Single(_) => continue,
-        };
-
         for route_target in routes.values() {
             let ProxyRouteTarget::Full(cfg) = route_target else {
                 continue;
@@ -256,59 +251,62 @@ pub fn spawn_health_checks(registry: Arc<UpstreamRegistry>, config: &AppConfig) 
             let Some(hc) = &cfg.health_check else {
                 continue;
             };
-
             let urls = upstream::target_urls(route_target);
             if urls.is_empty() {
                 continue;
             }
-
             let raw_path = hc.path.clone().unwrap_or_else(|| "/".to_string());
             let path = if raw_path.starts_with('/') {
                 raw_path
             } else {
                 format!("/{raw_path}")
             };
-            let interval_secs = hc.interval_secs.unwrap_or(10).max(1);
-            let unhealthy_threshold = hc.unhealthy_threshold.unwrap_or(3);
-            let healthy_threshold = hc.healthy_threshold.unwrap_or(1);
-            let reg = registry.clone();
-
-            tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
-                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-                loop {
-                    ticker.tick().await;
-                    for url in &urls {
-                        let Some(host_port) = upstream::url_to_host_port(url) else {
-                            continue;
-                        };
-                        let (ok, latency_ms) = probe_http(&host_port, &path).await;
-
-                        let mut entry = reg.statuses.entry(url.clone()).or_default();
-
-                        let was_healthy = entry.healthy;
-                        apply_probe_result(
-                            &mut entry,
-                            ok,
-                            latency_ms,
-                            healthy_threshold,
-                            unhealthy_threshold,
-                        );
-                        if ok && !was_healthy && entry.healthy {
-                            tracing::info!(url, "upstream recovered");
-                        } else if !ok && was_healthy && !entry.healthy {
-                            tracing::warn!(
-                                url,
-                                failures = entry.consecutive_failures,
-                                "upstream marked unhealthy"
-                            );
-                        }
-                    }
-                }
-            });
+            spawn_health_task(
+                registry.clone(),
+                urls,
+                path,
+                hc.interval_secs.unwrap_or(10).max(1),
+                hc.healthy_threshold.unwrap_or(1),
+                hc.unhealthy_threshold.unwrap_or(3),
+            );
         }
     }
+}
+
+/// Spawn a single background health-check task for a set of upstream URLs.
+fn spawn_health_task(
+    registry: Arc<UpstreamRegistry>,
+    urls: Vec<String>,
+    path: String,
+    interval_secs: u64,
+    healthy_threshold: u32,
+    unhealthy_threshold: u32,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            for url in &urls {
+                let Some(host_port) = upstream::url_to_host_port(url) else {
+                    continue;
+                };
+                let (ok, latency_ms) = probe_http(&host_port, &path).await;
+                let mut entry = registry.statuses.entry(url.clone()).or_default();
+                let was_healthy = entry.healthy;
+                apply_probe_result(&mut entry, ok, latency_ms, healthy_threshold, unhealthy_threshold);
+                if ok && !was_healthy && entry.healthy {
+                    tracing::info!(url, "upstream recovered");
+                } else if !ok && was_healthy && !entry.healthy {
+                    tracing::warn!(
+                        url,
+                        failures = entry.consecutive_failures,
+                        "upstream marked unhealthy"
+                    );
+                }
+            }
+        }
+    });
 }
 
 // ── HTTP health probe ─────────────────────────────────────────────────────────

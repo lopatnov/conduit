@@ -165,12 +165,20 @@ fn validate_rate_limit(
             "limit must be greater than 0",
         ));
     }
-    // Validate the store field: must be "memory" or a redis:// URL.
+    // Validate the store field: must be "memory", a redis:// URL (plaintext),
+    // or a rediss:// URL (TLS — requires Redis with in-transit encryption,
+    // e.g. AWS ElastiCache TLS, Azure Cache for Redis).
     if let Some(store) = &rate_limit.store {
-        if store != "memory" && !store.starts_with("redis://") {
+        let valid_store = store == "memory"
+            || store.starts_with("redis://")
+            || store.starts_with("rediss://");
+        if !valid_store {
             errors.push(ValidationError::new(
                 format!("{prefix}.rateLimit.store"),
-                format!("invalid store \"{store}\" — must be \"memory\" or a redis:// URL"),
+                format!(
+                    "invalid store \"{store}\" — must be \"memory\", \
+                     a redis:// URL (plaintext), or a rediss:// URL (TLS)"
+                ),
             ));
         }
     }
@@ -418,7 +426,6 @@ fn is_valid_upstream_url(url: &str) -> bool {
 }
 
 fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
-    // When `groups` is configured, `targets` may be empty.
     if cfg.targets.is_empty() && cfg.groups.is_none() {
         errors.push(ValidationError::new(
             format!("{prefix}.targets"),
@@ -426,46 +433,60 @@ fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<
         ));
     }
     if let Some(groups) = &cfg.groups {
-        for (i, group) in groups.iter().enumerate() {
-            if group.targets.is_empty() {
-                errors.push(ValidationError::new(
-                    format!("{prefix}.groups[{i}].targets"),
-                    "At least one target is required in each group",
-                ));
-            }
-            // Within a group, weighted-round-robin also requires weighted targets.
-            if group.strategy == Some(LoadBalanceStrategy::WeightedRoundRobin) {
-                let has_simple = group
-                    .targets
-                    .iter()
-                    .any(|t| matches!(t, ProxyTarget::Simple(_)));
-                if has_simple {
-                    errors.push(ValidationError::new(
-                        format!("{prefix}.groups[{i}].targets"),
-                        "Strategy 'weighted-round-robin' requires weighted targets: \
-                         { \"url\": \"...\", \"weight\": N }",
-                    ));
-                }
-            }
-        }
+        validate_groups_config(groups, prefix, errors);
     }
-
     if cfg.strategy == Some(LoadBalanceStrategy::WeightedRoundRobin) {
-        let has_simple = cfg
-            .targets
-            .iter()
-            .any(|t| matches!(t, ProxyTarget::Simple(_)));
-        if has_simple {
+        check_weighted_targets(&cfg.targets, &format!("{prefix}.targets"), errors);
+    }
+    validate_target_urls(&cfg.targets, prefix, errors);
+    if let Some(rules) = &cfg.rewrite {
+        validate_rewrite_rules(rules, prefix, errors);
+    }
+}
+
+/// Validate upstream groups: non-empty targets and WRR strategy requirements.
+fn validate_groups_config(
+    groups: &[crate::config::schema::UpstreamGroup],
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    for (i, group) in groups.iter().enumerate() {
+        if group.targets.is_empty() {
             errors.push(ValidationError::new(
-                format!("{prefix}.targets"),
-                "Strategy 'weighted-round-robin' requires weighted targets: \
-                 { \"url\": \"...\", \"weight\": N }",
+                format!("{prefix}.groups[{i}].targets"),
+                "At least one target is required in each group",
             ));
         }
+        if group.strategy == Some(LoadBalanceStrategy::WeightedRoundRobin) {
+            check_weighted_targets(
+                &group.targets,
+                &format!("{prefix}.groups[{i}].targets"),
+                errors,
+            );
+        }
     }
+}
 
-    // Validate target URLs.
-    for (i, target) in cfg.targets.iter().enumerate() {
+/// Emit an error when any target in `targets` is a `Simple` (unweighted) URL
+/// and the strategy is `weighted-round-robin`.
+fn check_weighted_targets(
+    targets: &[ProxyTarget],
+    field: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let has_simple = targets.iter().any(|t| matches!(t, ProxyTarget::Simple(_)));
+    if has_simple {
+        errors.push(ValidationError::new(
+            field.to_string(),
+            "Strategy 'weighted-round-robin' requires weighted targets: \
+             { \"url\": \"...\", \"weight\": N }",
+        ));
+    }
+}
+
+/// Validate that every target URL starts with `http://` or `https://`.
+fn validate_target_urls(targets: &[ProxyTarget], prefix: &str, errors: &mut Vec<ValidationError>) {
+    for (i, target) in targets.iter().enumerate() {
         let url = match target {
             ProxyTarget::Simple(u) => u.as_str(),
             ProxyTarget::Weighted(w) => w.url.as_str(),
@@ -476,12 +497,6 @@ fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<
                 format!("Invalid upstream URL '{url}' — must start with http:// or https://"),
             ));
         }
-    }
-
-    // Validate rewrite rule regexes at config-load time so bad patterns are
-    // caught by `conduit validate` rather than silently failing at request time.
-    if let Some(rules) = &cfg.rewrite {
-        validate_rewrite_rules(rules, prefix, errors);
     }
 }
 

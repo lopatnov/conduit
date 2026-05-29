@@ -1,5 +1,9 @@
 //! Redis-backed rate limiting with graceful fallback to in-process memory.
 //!
+//! Both `redis://` (plaintext) and `rediss://` (TLS) URLs are supported.
+//! Use `rediss://` for cloud-hosted Redis that requires in-transit encryption
+//! (AWS ElastiCache TLS, Azure Cache for Redis, Upstash, etc.).
+//!
 //! When Redis is unavailable (connection error, timeout), each check falls
 //! through to the same `DashMap<String, TokenBucket>` used by the pure-memory
 //! rate limiter.  This keeps the server operational even when Redis is down
@@ -99,8 +103,11 @@ impl RedisRateLimiter {
     }
 
     fn fallback_check(&self, client_key: &str, limit: u64, window_secs: u64) -> bool {
+        // Include limit and window_secs in the key so that post-reload config
+        // changes are picked up immediately rather than reusing a stale bucket.
+        let key = format!("{client_key}:{limit}:{window_secs}");
         self.fallback
-            .entry(client_key.to_owned())
+            .entry(key)
             .or_insert_with(|| TokenBucket::new(limit, window_secs))
             .try_consume()
     }
@@ -143,12 +150,14 @@ async fn redis_fixed_window_check(
     // Doing this after INCR guarantees the key always gets an expiry, even
     // if a previous window's key expired between two concurrent INCRs.
     if count == 1 {
-        redis::cmd("EXPIRE")
+        // Propagate EXPIRE errors: a missing TTL means the key persists beyond
+        // the window, allowing unlimited requests.  The caller's timeout/error
+        // handler will fall back to the in-memory limiter if this fails.
+        let _: () = redis::cmd("EXPIRE")
             .arg(redis_key)
             .arg(window_secs)
-            .query_async::<()>(conn)
-            .await
-            .ok(); // non-fatal: worst case the window outlives its deadline slightly
+            .query_async(conn)
+            .await?;
     }
 
     Ok(count <= limit)

@@ -73,7 +73,9 @@ mod tests {
 
     #[test]
     fn load_config_missing_file_returns_error() {
-        let result = load_config(std::path::Path::new("/nonexistent/__conduit_test__.json"));
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("__conduit_test_missing__.json"); // intentionally not created
+        let result = load_config(&missing);
         assert!(result.is_err(), "missing file must return an error");
     }
 

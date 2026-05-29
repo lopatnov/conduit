@@ -831,94 +831,8 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
-        let client_ip = session
-            .client_addr()
-            .and_then(|a| a.as_inet())
-            .map(|a| a.ip().to_string());
-
-        if let Some(ip) = client_ip {
-            let xff = match upstream_request
-                .headers
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-            {
-                Some(existing) => format!("{existing}, {ip}"),
-                None => ip,
-            };
-            upstream_request.insert_header("x-forwarded-for", xff)?;
-        }
-
-        let proto = {
-            // Determine the downstream protocol from the site's TLS configuration.
-            let config = self.state.config.load();
-            let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
-            if config
-                .sites
-                .get(site_idx)
-                .and_then(|s| s.tls.as_ref())
-                .is_some()
-            {
-                "https"
-            } else {
-                "http"
-            }
-        };
-        upstream_request.insert_header("x-forwarded-proto", proto)?;
-
-        if let Some(ctx_ref) = ctx.as_ref() {
-            match &ctx_ref.upstream {
-                UpstreamTarget::Proxy {
-                    strip_prefix,
-                    rewrite,
-                    ..
-                } => {
-                    let mut path = upstream_request.uri.path().to_owned();
-
-                    // 1. Strip prefix (if configured).
-                    if let Some(pfx) = strip_prefix {
-                        let stripped = path.strip_prefix(pfx.as_str()).unwrap_or("/");
-                        path = if stripped.is_empty() {
-                            "/".to_owned()
-                        } else {
-                            stripped.to_owned()
-                        };
-                    }
-
-                    // 2. Apply rewrite rules (first match wins).
-                    if let Some(rules) = rewrite {
-                        for rule in rules {
-                            match get_rewrite_regex(&rule.from) {
-                                Some(re) => {
-                                    if re.is_match(&path) {
-                                        path = re.replacen(&path, 1, rule.to.as_str()).into_owned();
-                                        break; // first match wins
-                                    }
-                                }
-                                None => {
-                                    tracing::warn!(
-                                        pattern = %rule.from,
-                                        "rewrite rule regex error: invalid pattern (skipped)"
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    // Commit the (possibly rewritten) path.
-                    if path != upstream_request.uri.path() {
-                        let new_uri = rebuild_uri(&upstream_request.uri, &path)?;
-                        upstream_request.set_uri(new_uri);
-                    }
-                }
-                UpstreamTarget::Upload { .. } => {
-                    // Tell the upload server which site's config to apply.
-                    upstream_request
-                        .insert_header("x-conduit-site-idx", ctx_ref.site_idx.to_string())?;
-                }
-                _ => {}
-            }
-        }
-
+        append_forwarded_headers(session, upstream_request, &self.state, ctx)?;
+        apply_upstream_path_transforms(upstream_request, ctx)?;
         Ok(())
     }
 
@@ -1390,6 +1304,107 @@ fn extract_host(session: &Session) -> String {
         .and_then(|v| v.to_str().ok())
         .map(|h| h.split(':').next().unwrap_or(h).to_owned())
         .unwrap_or_default()
+}
+
+/// Append `X-Forwarded-For` and `X-Forwarded-Proto` headers to the upstream request.
+fn append_forwarded_headers(
+    session: &Session,
+    upstream_request: &mut RequestHeader,
+    state: &AppState,
+    ctx: &Option<RequestCtx>,
+) -> Result<()> {
+    // X-Forwarded-For: chain or start a new entry.
+    if let Some(ip) = session
+        .client_addr()
+        .and_then(|a| a.as_inet())
+        .map(|a| a.ip().to_string())
+    {
+        let xff = match upstream_request
+            .headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+        {
+            Some(existing) => format!("{existing}, {ip}"),
+            None => ip,
+        };
+        upstream_request.insert_header("x-forwarded-for", xff)?;
+    }
+
+    // X-Forwarded-Proto: derive from whether the matched site has TLS.
+    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+    let proto = if state
+        .config
+        .load()
+        .sites
+        .get(site_idx)
+        .and_then(|s| s.tls.as_ref())
+        .is_some()
+    {
+        "https"
+    } else {
+        "http"
+    };
+    upstream_request.insert_header("x-forwarded-proto", proto)?;
+    Ok(())
+}
+
+/// Apply strip-prefix and path-rewrite transforms for proxy and upload targets.
+fn apply_upstream_path_transforms(
+    upstream_request: &mut RequestHeader,
+    ctx: &Option<RequestCtx>,
+) -> Result<()> {
+    let Some(ctx_ref) = ctx.as_ref() else {
+        return Ok(());
+    };
+    match &ctx_ref.upstream {
+        UpstreamTarget::Proxy {
+            strip_prefix,
+            rewrite,
+            ..
+        } => {
+            let mut path = upstream_request.uri.path().to_owned();
+
+            // 1. Strip prefix.
+            if let Some(pfx) = strip_prefix {
+                let stripped = path.strip_prefix(pfx.as_str()).unwrap_or("/");
+                path = if stripped.is_empty() {
+                    "/".to_owned()
+                } else {
+                    stripped.to_owned()
+                };
+            }
+
+            // 2. Apply rewrite rules (first match wins).
+            if let Some(rules) = rewrite {
+                for rule in rules {
+                    match get_rewrite_regex(&rule.from) {
+                        Some(re) if re.is_match(&path) => {
+                            path = re.replacen(&path, 1, rule.to.as_str()).into_owned();
+                            break;
+                        }
+                        None => {
+                            tracing::warn!(
+                                pattern = %rule.from,
+                                "rewrite rule regex error: invalid pattern (skipped)"
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            if path != upstream_request.uri.path() {
+                let new_uri = rebuild_uri(&upstream_request.uri, &path)?;
+                upstream_request.set_uri(new_uri);
+            }
+        }
+        UpstreamTarget::Upload { .. } => {
+            upstream_request
+                .insert_header("x-conduit-site-idx", ctx_ref.site_idx.to_string())?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Return a compiled [`regex::Regex`] for `pattern`, using a process-wide cache

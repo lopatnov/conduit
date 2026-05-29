@@ -83,9 +83,11 @@ base64    = "0.22"
 # Phase 4: Rhai scripting middleware
 rhai = { version = "1", features = ["sync"] }
 
-# Phase 4.2: Redis-backed rate limiting
-# TLS features disabled — Redis is typically on an internal network.
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
+# Phase 4.2: Redis-backed rate limiting.
+# tls-rustls enables rediss:// (TLS-encrypted) connections (e.g. AWS ElastiCache,
+# Azure Cache for Redis).  Redis is often on an internal network but cloud
+# deployments frequently require in-transit encryption.
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "tokio-rustls-comp"] }
 
 [dev-dependencies]
 reqwest     = { version = "0.13", default-features = false, features = ["http2", "rustls", "blocking", "json", "multipart"] }

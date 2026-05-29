@@ -40,7 +40,6 @@ async fn upload_handler(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
-    // Identify which site's upload config to use via the injected header.
     let site_idx: usize = headers
         .get(SITE_IDX_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -51,143 +50,66 @@ async fn upload_handler(
         let config = state.config.load();
         match config.sites.get(site_idx).and_then(|s| s.upload.as_ref()) {
             Some(c) => c.clone(),
-            None => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"error": "no upload config for this site"})),
-                )
-                    .into_response()
-            }
+            None => return err_response(StatusCode::NOT_FOUND, "no upload config for this site"),
         }
     };
 
-    // Ensure the upload directory exists.
     if let Err(e) = tokio::fs::create_dir_all(&cfg.dir).await {
-        return (
+        return err_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("could not create upload dir: {e}")})),
-        )
-            .into_response();
+            &format!("could not create upload dir: {e}"),
+        );
     }
 
     let field_name = cfg.field_name.as_deref().unwrap_or("file");
-    let mut uploaded = Vec::new();
+    let mut uploaded: Vec<serde_json::Value> = Vec::new();
     let mut total_bytes: u64 = 0;
 
     loop {
         let field = match multipart.next_field().await {
             Ok(Some(f)) => f,
             Ok(None) => break,
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": format!("multipart error: {e}")})),
-                )
-                    .into_response()
-            }
+            Err(e) => return err_response(StatusCode::BAD_REQUEST, &format!("multipart error: {e}")),
         };
 
-        // Only process fields matching the configured field name.
         if field.name().unwrap_or("") != field_name {
             continue;
         }
-
-        // Max-files guard.
-        if let Some(max) = cfg.max_files {
-            if uploaded.len() >= max {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": "too many files"})),
-                )
-                    .into_response();
-            }
+        if cfg.max_files.is_some_and(|max| uploaded.len() >= max) {
+            return err_response(StatusCode::BAD_REQUEST, "too many files");
         }
 
         let original_name = field.file_name().unwrap_or("upload").to_owned();
         let content_type_str = field.content_type().map(str::to_owned);
 
-        // MIME-type allowlist check.
-        // When an allowlist is configured, a missing Content-Type header is
-        // treated as a rejection: an unknown type cannot be verified against
-        // the allowlist, so we refuse the upload rather than silently bypass
-        // the check.
-        if let Some(allowed) = cfg.allowed_mime_types.as_ref() {
-            let ct = content_type_str.as_deref().unwrap_or("");
-            let ok = !ct.is_empty() && allowed.iter().any(|a| ct.starts_with(a.as_str()));
-            if !ok {
-                let msg = if ct.is_empty() {
-                    "missing Content-Type; upload rejected by mime-type allowlist".to_owned()
-                } else {
-                    format!("mime type not allowed: {ct}")
-                };
-                return (
-                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                    Json(json!({"error": msg})),
-                )
-                    .into_response();
-            }
+        if let Err(resp) = check_mime_type(content_type_str.as_deref(), cfg.allowed_mime_types.as_ref()) {
+            return resp;
         }
 
-        // Read the entire field into memory.
         let data = match field.bytes().await {
             Ok(b) => b,
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": format!("read error: {e}")})),
-                )
-                    .into_response()
-            }
+            Err(e) => return err_response(StatusCode::BAD_REQUEST, &format!("read error: {e}")),
         };
 
-        // Per-file size limit.
         let file_bytes = data.len() as u64;
-        if let Some(max) = cfg.max_file_size_bytes {
-            if file_bytes > max {
-                return (
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    Json(json!({"error": "file exceeds maxFileSizeBytes"})),
-                )
-                    .into_response();
-            }
+        if cfg.max_file_size_bytes.is_some_and(|max| file_bytes > max) {
+            return err_response(StatusCode::PAYLOAD_TOO_LARGE, "file exceeds maxFileSizeBytes");
         }
-
         total_bytes += file_bytes;
-
-        // Total upload size limit.
-        if let Some(max) = cfg.max_total_size_bytes {
-            if total_bytes > max {
-                return (
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    Json(json!({"error": "upload exceeds maxTotalSizeBytes"})),
-                )
-                    .into_response();
-            }
+        if cfg.max_total_size_bytes.is_some_and(|max| total_bytes > max) {
+            return err_response(StatusCode::PAYLOAD_TOO_LARGE, "upload exceeds maxTotalSizeBytes");
         }
 
-        // Infer MIME type from filename when the client did not provide one.
         let mime = content_type_str.unwrap_or_else(|| {
             mime_guess::from_path(&original_name)
                 .first_or_octet_stream()
                 .to_string()
         });
 
-        // Generate a UUID v4 filename, preserving the original extension.
-        let ext = Path::new(&original_name)
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| format!(".{e}"))
-            .unwrap_or_default();
-        let save_name = format!("{}{ext}", uuid::Uuid::new_v4());
-        let save_path = Path::new(&cfg.dir).join(&save_name);
-
-        if let Err(e) = tokio::fs::write(&save_path, &data).await {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("write error: {e}")})),
-            )
-                .into_response();
-        }
+        let save_name = match save_upload_file(&cfg.dir, &original_name, &data).await {
+            Ok(n) => n,
+            Err(resp) => return resp,
+        };
 
         uploaded.push(json!({
             "name":         save_name,
@@ -198,16 +120,59 @@ async fn upload_handler(
     }
 
     if uploaded.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "no files uploaded"})),
-        )
-            .into_response();
+        return err_response(StatusCode::BAD_REQUEST, "no files uploaded");
     }
 
-    Json(json!({
-        "status": "ok",
-        "files":  uploaded,
-    }))
-    .into_response()
+    Json(json!({ "status": "ok", "files": uploaded })).into_response()
+}
+
+// ── upload_handler helpers ────────────────────────────────────────────────────
+
+/// Build a JSON error response with the given status and message.
+fn err_response(status: StatusCode, message: &str) -> Response {
+    (status, Json(json!({"error": message}))).into_response()
+}
+
+/// Validate the uploaded field's Content-Type against the configured allowlist.
+///
+/// Returns `Err(Response)` with HTTP 415 when the type is absent or not in the
+/// list; returns `Ok(())` when no allowlist is configured or the type matches.
+fn check_mime_type(
+    content_type: Option<&str>,
+    allowed_mime_types: Option<&Vec<String>>,
+) -> Result<(), Response> {
+    let Some(allowed) = allowed_mime_types else {
+        return Ok(());
+    };
+    let ct = content_type.unwrap_or("");
+    let ok = !ct.is_empty() && allowed.iter().any(|a| ct.starts_with(a.as_str()));
+    if ok {
+        return Ok(());
+    }
+    // Missing Content-Type is treated as a rejection — an unknown type cannot
+    // be verified against the allowlist, so we refuse rather than bypass.
+    let msg = if ct.is_empty() {
+        "missing Content-Type; upload rejected by mime-type allowlist".to_owned()
+    } else {
+        format!("mime type not allowed: {ct}")
+    };
+    Err(err_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, &msg))
+}
+
+/// Write `data` to a new UUID-named file under `dir` and return the file name.
+async fn save_upload_file(dir: &str, original_name: &str, data: &[u8]) -> Result<String, Response> {
+    let ext = Path::new(original_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    let save_name = format!("{}{ext}", uuid::Uuid::new_v4());
+    let save_path = Path::new(dir).join(&save_name);
+    tokio::fs::write(&save_path, data).await.map_err(|e| {
+        err_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("write error: {e}"),
+        )
+    })?;
+    Ok(save_name)
 }
