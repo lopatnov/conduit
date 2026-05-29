@@ -1,7 +1,7 @@
 mod common;
 
-use std::io::Write as _;
 use serial_test::serial;
+use std::io::Write as _;
 use tempfile::TempDir;
 
 /// Generate a self-signed cert for localhost and return (TempDir, cert_path, key_path).

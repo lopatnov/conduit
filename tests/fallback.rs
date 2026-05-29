@@ -77,11 +77,7 @@ fn fallback_json_body_is_returned() {
 fn fallback_serves_file_with_200() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("index.html"), "<h1>SPA Shell</h1>").expect("write");
-    let file_path = dir
-        .path()
-        .join("index.html")
-        .to_string_lossy()
-        .into_owned();
+    let file_path = dir.path().join("index.html").to_string_lossy().into_owned();
     Box::leak(Box::new(dir));
 
     let srv = fallback_server(
@@ -116,7 +112,11 @@ fn no_fallback_config_returns_404() {
     );
 
     let resp = reqwest::blocking::get(srv.url("/no-such-path")).expect("GET");
-    assert_eq!(resp.status().as_u16(), 404, "default is 404 without fallback config");
+    assert_eq!(
+        resp.status().as_u16(),
+        404,
+        "default is 404 without fallback config"
+    );
 }
 
 // ── fallback: byAccept ────────────────────────────────────────────────────
@@ -126,11 +126,7 @@ fn no_fallback_config_returns_404() {
 fn fallback_by_accept_html_returns_spa() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("shell.html"), "<html>SPA</html>").expect("write");
-    let shell_path = dir
-        .path()
-        .join("shell.html")
-        .to_string_lossy()
-        .into_owned();
+    let shell_path = dir.path().join("shell.html").to_string_lossy().into_owned();
     Box::leak(Box::new(dir));
 
     let srv = fallback_server(

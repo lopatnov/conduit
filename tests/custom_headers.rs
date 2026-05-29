@@ -75,9 +75,7 @@ fn custom_header_present_on_health_response() {
     let resp = reqwest::blocking::get(srv.url("/__health__")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert_eq!(
-        resp.headers()
-            .get("x-node")
-            .and_then(|v| v.to_str().ok()),
+        resp.headers().get("x-node").and_then(|v| v.to_str().ok()),
         Some("node-1"),
         "custom header must also appear on /__health__"
     );

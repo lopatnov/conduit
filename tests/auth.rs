@@ -416,7 +416,11 @@ fn rate_limit_key_by_header_separate_clients_have_independent_buckets() {
             .header("X-Client-Id", "client-a")
             .send()
             .unwrap_or_else(|_| panic!("client-a request {i}"));
-        assert_ne!(r.status().as_u16(), 429, "client-a request {i} within limit");
+        assert_ne!(
+            r.status().as_u16(),
+            429,
+            "client-a request {i} within limit"
+        );
     }
     // Client A is now rate-limited.
     let r_a = plain_client()

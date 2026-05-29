@@ -229,9 +229,8 @@ fn fmt_prints_formatted_json_to_stdout() {
         "expected pretty-printed JSON: {stdout}"
     );
     // Should be valid JSON
-    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-        panic!("fmt stdout is not valid JSON: {e}\nOutput: {stdout}")
-    });
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("fmt stdout is not valid JSON: {e}\nOutput: {stdout}"));
     assert!(
         parsed.get("sites").is_some(),
         "formatted JSON must have 'sites' key"
@@ -264,8 +263,7 @@ fn fmt_write_overwrites_file() {
         "formatted file should not be shorter"
     );
     // Result is still valid JSON
-    serde_json::from_str::<serde_json::Value>(&after)
-        .expect("formatted file should be valid JSON");
+    serde_json::from_str::<serde_json::Value>(&after).expect("formatted file should be valid JSON");
 }
 
 #[test]
