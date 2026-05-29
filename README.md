@@ -327,6 +327,13 @@ Conduit automatically obtains and renews certificates. `conduit validate` report
 
 > Conduit uses **rustls** — not OpenSSL.
 
+> **Single certificate per port (rustls limitation):** When multiple HTTPS sites
+> share the same port, Conduit serves the *first* registered `tls.cert`/`tls.key`
+> for *all* hostnames on that port — the rustls backend does not perform
+> per-SNI certificate selection. To serve different certificates per hostname,
+> assign each site to a different port. This limitation does not affect ACME
+> sites that each have their own port.
+
 ---
 
 ### `http2`
