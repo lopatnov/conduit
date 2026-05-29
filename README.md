@@ -1285,6 +1285,74 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before
 
 ---
 
+## Built With
+
+### Core runtime
+
+![Rust](https://img.shields.io/badge/Rust-000000?style=flat&logo=rust&logoColor=white)
+![Cloudflare Pingora](https://img.shields.io/badge/Cloudflare_Pingora_0.8-F48120?style=flat&logo=cloudflare&logoColor=white)
+![Tokio](https://img.shields.io/badge/Tokio-000000?style=flat&logo=tokio&logoColor=white)
+![Axum](https://img.shields.io/badge/Axum_0.8-000000?style=flat)
+
+### TLS & certificates
+
+![rustls](https://img.shields.io/badge/rustls-5C5C5C?style=flat)
+![rcgen](https://img.shields.io/badge/rcgen-5C5C5C?style=flat)
+![instant-acme](https://img.shields.io/badge/instant--acme-5C5C5C?style=flat)
+
+### Configuration & parsing
+
+![serde](https://img.shields.io/badge/serde-5C5C5C?style=flat)
+![serde_json](https://img.shields.io/badge/serde__json-5C5C5C?style=flat)
+![indexmap](https://img.shields.io/badge/indexmap-5C5C5C?style=flat)
+![humantime](https://img.shields.io/badge/humantime-5C5C5C?style=flat)
+![serde_path_to_error](https://img.shields.io/badge/serde__path__to__error-5C5C5C?style=flat)
+
+### Performance & concurrency
+
+![arc-swap](https://img.shields.io/badge/arc--swap-5C5C5C?style=flat)
+![dashmap](https://img.shields.io/badge/dashmap-5C5C5C?style=flat)
+![async-compression](https://img.shields.io/badge/async--compression_(brotli_·_gzip_·_deflate)-5C5C5C?style=flat)
+
+### Middleware & scripting
+
+![Rhai](https://img.shields.io/badge/Rhai_scripting-5C5C5C?style=flat)
+![regex](https://img.shields.io/badge/regex-5C5C5C?style=flat)
+![Redis](https://img.shields.io/badge/Redis_(rate_limit_store)-DC382D?style=flat&logo=redis&logoColor=white)
+
+### File handling
+
+![notify](https://img.shields.io/badge/notify_(fs_watcher)-5C5C5C?style=flat)
+![multer](https://img.shields.io/badge/multer_(multipart)-5C5C5C?style=flat)
+![uuid](https://img.shields.io/badge/uuid_v4-5C5C5C?style=flat)
+![mime_guess](https://img.shields.io/badge/mime__guess-5C5C5C?style=flat)
+
+### CLI & UX
+
+![clap](https://img.shields.io/badge/clap_4_(derive)-5C5C5C?style=flat)
+![clap_complete](https://img.shields.io/badge/clap__complete_(bash_·_zsh_·_fish)-5C5C5C?style=flat)
+![clap_mangen](https://img.shields.io/badge/clap__mangen_(man_page)-5C5C5C?style=flat)
+![dialoguer](https://img.shields.io/badge/dialoguer_(init_wizard)-5C5C5C?style=flat)
+![indicatif](https://img.shields.io/badge/indicatif_(progress_bars)-5C5C5C?style=flat)
+
+### Observability
+
+![tracing](https://img.shields.io/badge/tracing_+_tracing--subscriber-5C5C5C?style=flat)
+![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?style=flat&logo=prometheus&logoColor=white)
+
+### Dev tools & CI
+
+![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?style=flat&logo=githubactions&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker_(musl_+_scratch)-2496ED?style=flat&logo=docker&logoColor=white)
+![cross](https://img.shields.io/badge/cross_(cross--compilation)-5C5C5C?style=flat)
+![reqwest](https://img.shields.io/badge/reqwest_(integration_tests)-5C5C5C?style=flat)
+![criterion](https://img.shields.io/badge/criterion_(benchmarks)-5C5C5C?style=flat)
+![serial_test](https://img.shields.io/badge/serial__test-5C5C5C?style=flat)
+![SonarCloud](https://img.shields.io/badge/SonarCloud-F3702A?style=flat&logo=sonarcloud&logoColor=white)
+![CodeRabbit](https://img.shields.io/badge/CodeRabbit-FF7A00?style=flat)
+
+---
+
 ## License
 
 [Apache 2.0](LICENSE) © 2024–2026 [Oleksandr Lopatnov](https://github.com/lopatnov)
