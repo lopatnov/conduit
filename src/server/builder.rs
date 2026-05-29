@@ -39,36 +39,104 @@ fn classify_ports(
     }
 
     for site in sites {
-        let port = site
-            .port
-            .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
-        let enable_h2 = site.http2.is_some();
-
-        if let Some(tls_cfg) = &site.tls {
-            if tls_cfg.acme.is_some() {
-                // Use the cert/key obtained by the ACME flow, if available.
-                if let Some((cert, key)) = acme_certs.get(&port) {
-                    port_tls
-                        .entry(port)
-                        .or_insert_with(|| (cert.clone(), key.clone(), enable_h2));
-                } else {
-                    // ACME failed — fall back to plain TCP so the port is reachable.
-                    port_plain.insert(port);
-                }
-            } else if let (Some(cert), Some(key)) = (&tls_cfg.cert, &tls_cfg.key) {
-                port_tls
-                    .entry(port)
-                    .or_insert_with(|| (cert.clone(), key.clone(), enable_h2));
-            } else {
-                // Incomplete TLS config (no cert/key and no ACME) → plain TCP.
-                port_plain.insert(port);
-            }
-        } else {
-            port_plain.insert(port);
-        }
+        classify_site_port(site, acme_certs, &mut port_tls, &mut port_plain);
     }
 
     (port_tls, port_plain)
+}
+
+/// Classify one site's port, inserting it into either `port_tls` or `port_plain`.
+fn classify_site_port(
+    site: &SiteConfig,
+    acme_certs: &HashMap<u16, (String, String)>,
+    port_tls: &mut TlsPortMap,
+    port_plain: &mut HashSet<u16>,
+) {
+    let port = site
+        .port
+        .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
+    let enable_h2 = site.http2.is_some();
+
+    let Some(tls_cfg) = &site.tls else {
+        port_plain.insert(port);
+        return;
+    };
+
+    if tls_cfg.acme.is_some() {
+        // Use the cert/key obtained by the ACME flow, if available.
+        if let Some((cert, key)) = acme_certs.get(&port) {
+            port_tls
+                .entry(port)
+                .or_insert_with(|| (cert.clone(), key.clone(), enable_h2));
+        } else {
+            // ACME failed — fall back to plain TCP so the port is reachable.
+            port_plain.insert(port);
+        }
+    } else if let (Some(cert), Some(key)) = (&tls_cfg.cert, &tls_cfg.key) {
+        port_tls
+            .entry(port)
+            .or_insert_with(|| (cert.clone(), key.clone(), enable_h2));
+    } else {
+        // Incomplete TLS config (no cert/key and no ACME) → plain TCP.
+        port_plain.insert(port);
+    }
+}
+
+/// Bind a loopback TCP listener for the upload server if any site has `upload` configured.
+///
+/// Uses `std::net::TcpListener` (synchronous) so it can run before the Pingora async runtime
+/// starts.  The listener is converted to Tokio inside `UploadService::start()`.
+///
+/// Returns `(addr, listener)` — both `None` when no site needs an upload server.
+fn bind_upload_listener_if_needed(
+    config: &AppConfig,
+) -> anyhow::Result<(Option<std::net::SocketAddr>, Option<std::net::TcpListener>)> {
+    if !config.sites.iter().any(|s| s.upload.is_some()) {
+        return Ok((None, None));
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| anyhow::anyhow!("failed to bind upload server: {e}"))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| anyhow::anyhow!("upload listener local_addr: {e}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| anyhow::anyhow!("upload listener set_nonblocking: {e}"))?;
+    Ok((Some(addr), Some(listener)))
+}
+
+/// Connect to Redis for rate limiting if any site has a `redis://` store configured.
+///
+/// A temporary single-threaded Tokio runtime is used for the async handshake so
+/// this can run from the synchronous `run_server`.  Connection failures are logged
+/// as warnings and the server falls back to the in-memory limiter.
+fn connect_redis_rate_limiter_if_configured(
+    config: &AppConfig,
+) -> anyhow::Result<Option<Arc<RedisRateLimiter>>> {
+    let url_opt = config.sites.iter().find_map(|s| {
+        s.rate_limit
+            .as_ref()
+            .and_then(|rl| rl.store.as_deref())
+            .filter(|s| s.starts_with("redis://"))
+            .map(str::to_owned)
+    });
+    let Some(ref url) = url_opt else {
+        return Ok(None);
+    };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| anyhow::anyhow!("cannot build tokio runtime for Redis: {e}"))?;
+    match rt.block_on(RedisRateLimiter::connect(url)) {
+        Ok(rrl) => {
+            tracing::info!("Redis rate limiter connected to {url}");
+            Ok(Some(Arc::new(rrl)))
+        }
+        Err(e) => {
+            tracing::warn!("Redis rate limiter unavailable ({url}): {e} — using memory fallback");
+            Ok(None)
+        }
+    }
 }
 
 pub fn run_server(config: AppConfig, config_path: PathBuf) -> anyhow::Result<()> {
@@ -86,57 +154,12 @@ pub fn run_server(config: AppConfig, config_path: PathBuf) -> anyhow::Result<()>
 
     // Bind the upload server listener before creating AppState so the router
     // can forward matching requests to the loopback address immediately.
-    // Uses a std::net::TcpListener (sync) here; converted to Tokio inside the
-    // UploadService::start() which runs on Pingora's async runtime.
-    let (upload_addr, upload_std_listener) = if config.sites.iter().any(|s| s.upload.is_some()) {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")
-            .map_err(|e| anyhow::anyhow!("failed to bind upload server: {e}"))?;
-        let addr = listener
-            .local_addr()
-            .map_err(|e| anyhow::anyhow!("upload listener local_addr: {e}"))?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|e| anyhow::anyhow!("upload listener set_nonblocking: {e}"))?;
-        (Some(addr), Some(listener))
-    } else {
-        (None, None)
-    };
+    let (upload_addr, upload_std_listener) = bind_upload_listener_if_needed(&config)?;
 
     // If any site uses a Redis-backed rate limiter, connect to Redis now.
     // Connection failures are logged as warnings; the server falls back to the
     // in-memory rate limiter rather than refusing to start.
-    let redis_rl = {
-        let url_opt = config.sites.iter().find_map(|s| {
-            s.rate_limit
-                .as_ref()
-                .and_then(|rl| rl.store.as_deref())
-                .filter(|s| s.starts_with("redis://"))
-                .map(str::to_owned)
-        });
-        if let Some(ref url) = url_opt {
-            // The ACME block below already spins up a Tokio runtime for async
-            // work.  Reuse the same approach: a temporary single-threaded
-            // runtime just for the Redis handshake.
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| anyhow::anyhow!("cannot build tokio runtime for Redis: {e}"))?;
-            match rt.block_on(RedisRateLimiter::connect(url)) {
-                Ok(rrl) => {
-                    tracing::info!("Redis rate limiter connected to {url}");
-                    Some(Arc::new(rrl))
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Redis rate limiter unavailable ({url}): {e} — using memory fallback"
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    };
+    let redis_rl = connect_redis_rate_limiter_if_configured(&config)?;
 
     // Create AppState early so acme_challenges can be shared with the ACME flow.
     let state = Arc::new(AppState::new_with_redis(

@@ -81,55 +81,10 @@ async fn upload_handler(
             return err_response(StatusCode::BAD_REQUEST, "too many files");
         }
 
-        let original_name = field.file_name().unwrap_or("upload").to_owned();
-        let content_type_str = field.content_type().map(str::to_owned);
-
-        if let Err(resp) =
-            check_mime_type(content_type_str.as_deref(), cfg.allowed_mime_types.as_ref())
-        {
-            return resp;
-        }
-
-        let data = match field.bytes().await {
-            Ok(b) => b,
-            Err(e) => return err_response(StatusCode::BAD_REQUEST, &format!("read error: {e}")),
-        };
-
-        let file_bytes = data.len() as u64;
-        if cfg.max_file_size_bytes.is_some_and(|max| file_bytes > max) {
-            return err_response(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "file exceeds maxFileSizeBytes",
-            );
-        }
-        total_bytes += file_bytes;
-        if cfg
-            .max_total_size_bytes
-            .is_some_and(|max| total_bytes > max)
-        {
-            return err_response(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "upload exceeds maxTotalSizeBytes",
-            );
-        }
-
-        let mime = content_type_str.unwrap_or_else(|| {
-            mime_guess::from_path(&original_name)
-                .first_or_octet_stream()
-                .to_string()
-        });
-
-        let save_name = match save_upload_file(&cfg.dir, &original_name, &data).await {
-            Ok(n) => n,
+        match process_upload_field(field, &cfg, &mut total_bytes).await {
+            Ok(entry) => uploaded.push(entry),
             Err(resp) => return resp,
-        };
-
-        uploaded.push(json!({
-            "name":         save_name,
-            "originalName": original_name,
-            "size":         file_bytes,
-            "mimeType":     mime,
-        }));
+        }
     }
 
     if uploaded.is_empty() {
@@ -137,6 +92,58 @@ async fn upload_handler(
     }
 
     Json(json!({ "status": "ok", "files": uploaded })).into_response()
+}
+
+/// Process a single multipart field: validate type, check sizes, write to disk.
+///
+/// Returns `Ok(json_entry)` on success or `Err(error_response)` on rejection.
+async fn process_upload_field(
+    field: axum::extract::multipart::Field<'_>,
+    cfg: &crate::config::schema::UploadConfig,
+    total_bytes: &mut u64,
+) -> Result<serde_json::Value, Response> {
+    let original_name = field.file_name().unwrap_or("upload").to_owned();
+    let content_type_str = field.content_type().map(str::to_owned);
+
+    check_mime_type(content_type_str.as_deref(), cfg.allowed_mime_types.as_ref())?;
+
+    let data = field
+        .bytes()
+        .await
+        .map_err(|e| err_response(StatusCode::BAD_REQUEST, &format!("read error: {e}")))?;
+
+    let file_bytes = data.len() as u64;
+    if cfg.max_file_size_bytes.is_some_and(|max| file_bytes > max) {
+        return Err(err_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "file exceeds maxFileSizeBytes",
+        ));
+    }
+    *total_bytes += file_bytes;
+    if cfg
+        .max_total_size_bytes
+        .is_some_and(|max| *total_bytes > max)
+    {
+        return Err(err_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "upload exceeds maxTotalSizeBytes",
+        ));
+    }
+
+    let mime = content_type_str.unwrap_or_else(|| {
+        mime_guess::from_path(&original_name)
+            .first_or_octet_stream()
+            .to_string()
+    });
+
+    let save_name = save_upload_file(&cfg.dir, &original_name, &data).await?;
+
+    Ok(json!({
+        "name":         save_name,
+        "originalName": original_name,
+        "size":         file_bytes,
+        "mimeType":     mime,
+    }))
 }
 
 // ── upload_handler helpers ────────────────────────────────────────────────────

@@ -67,38 +67,56 @@ fn route_matches(
             return false;
         }
     }
-
     // 2. Method.
     if let Some(methods) = &m.method {
         if !methods.iter().any(|m| m.eq_ignore_ascii_case(method)) {
             return false;
         }
     }
-
     // 3. Request headers.
-    if let Some(hdr_predicates) = &m.headers {
-        for (name, pattern) in hdr_predicates {
-            let value = req_headers
-                .get(name.as_str())
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            if !regex_match(pattern, value) {
-                return false;
-            }
+    if let Some(hdr) = &m.headers {
+        if !headers_match(hdr, req_headers) {
+            return false;
         }
     }
-
     // 4. Query parameters.
-    if let Some(query_predicates) = &m.query {
-        let qs = query.unwrap_or("");
-        for (param, pattern) in query_predicates {
-            let value = query_param_value(qs, param).unwrap_or("");
-            if !regex_match(pattern, value) {
-                return false;
-            }
+    if let Some(qry) = &m.query {
+        if !query_params_match(qry, query) {
+            return false;
         }
     }
+    true
+}
 
+/// Return `true` when every header predicate in `predicates` is satisfied.
+fn headers_match(
+    predicates: &indexmap::IndexMap<String, String>,
+    req_headers: &http::HeaderMap,
+) -> bool {
+    for (name, pattern) in predicates {
+        let value = req_headers
+            .get(name.as_str())
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !regex_match(pattern, value) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Return `true` when every query-parameter predicate in `predicates` is satisfied.
+fn query_params_match(
+    predicates: &indexmap::IndexMap<String, String>,
+    query: Option<&str>,
+) -> bool {
+    let qs = query.unwrap_or("");
+    for (param, pattern) in predicates {
+        let value = query_param_value(qs, param).unwrap_or("");
+        if !regex_match(pattern, value) {
+            return false;
+        }
+    }
     true
 }
 
@@ -161,166 +179,173 @@ fn proxy_target_to_result(
     upstream_health: &UpstreamRegistry,
 ) -> RouteResult {
     match target {
-        ProxyRouteTarget::Url(url) => {
-            let Some(upstream) = router::url_to_proxy_upstream(url, None) else {
-                return (
-                    UpstreamTarget::Local(LocalHandler::Fallback),
-                    None,
-                    None,
-                    None,
-                    false,
-                    None,
-                    None,
-                );
-            };
-            (upstream, None, None, None, false, None, None)
-        }
-        ProxyRouteTarget::RoundRobin(urls) => {
-            // Rotate using round-robin counter shared with the main router.
-            let idx = {
-                let key = urls.join(",");
-                let counter = counters.entry(key).or_insert_with(|| AtomicUsize::new(0));
-                counter.fetch_add(1, Ordering::Relaxed) % urls.len()
-            };
-            let url = &urls[idx];
-            let Some(upstream) = router::url_to_proxy_upstream(url, None) else {
-                return (
-                    UpstreamTarget::Local(LocalHandler::Fallback),
-                    None,
-                    None,
-                    None,
-                    false,
-                    None,
-                    None,
-                );
-            };
-            (upstream, None, None, None, false, None, None)
-        }
-        ProxyRouteTarget::Full(cfg) => {
-            let all_urls: Vec<String> = cfg
-                .targets
-                .iter()
-                .map(|t| match t {
-                    crate::config::schema::ProxyTarget::Simple(u) => u.clone(),
-                    crate::config::schema::ProxyTarget::Weighted(w) => w.url.clone(),
-                })
-                .collect();
-            let all_weighted: Vec<(String, u32)> = cfg
-                .targets
-                .iter()
-                .map(|t| match t {
-                    crate::config::schema::ProxyTarget::Simple(u) => (u.clone(), 1),
-                    crate::config::schema::ProxyTarget::Weighted(w) => (w.url.clone(), w.weight),
-                })
-                .collect();
+        ProxyRouteTarget::Url(url) => url_target_to_result(url),
+        ProxyRouteTarget::RoundRobin(urls) => round_robin_target_to_result(urls, counters),
+        ProxyRouteTarget::Full(cfg) => full_cfg_to_result(cfg, path, counters, upstream_health),
+    }
+}
 
-            // Filter to healthy upstreams; fail-open when all are down.
-            let healthy = upstream_health.filter_healthy(&all_urls);
-            let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
-            let weighted: Vec<(String, u32)> = all_weighted
-                .iter()
-                .filter(|(u, _)| urls.contains(u))
-                .cloned()
-                .collect();
+/// Handle the `Full` form of a proxy route target (strategy selection, health filtering, etc.).
+fn full_cfg_to_result(
+    cfg: &crate::config::schema::ProxyRouteConfig,
+    path: &str,
+    counters: &DashMap<String, AtomicUsize>,
+    upstream_health: &UpstreamRegistry,
+) -> RouteResult {
+    let all_urls: Vec<String> = cfg
+        .targets
+        .iter()
+        .map(|t| match t {
+            crate::config::schema::ProxyTarget::Simple(u) => u.clone(),
+            crate::config::schema::ProxyTarget::Weighted(w) => w.url.clone(),
+        })
+        .collect();
+    let all_weighted: Vec<(String, u32)> = cfg
+        .targets
+        .iter()
+        .map(|t| match t {
+            crate::config::schema::ProxyTarget::Simple(u) => (u.clone(), 1),
+            crate::config::schema::ProxyTarget::Weighted(w) => (w.url.clone(), w.weight),
+        })
+        .collect();
 
-            if urls.is_empty() {
-                return (
-                    UpstreamTarget::Local(LocalHandler::Fallback),
-                    None,
-                    None,
-                    None,
-                    false,
-                    None,
-                    None,
-                );
+    // Filter to healthy upstreams; fail-open when all are down.
+    let healthy = upstream_health.filter_healthy(&all_urls);
+    let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
+    let weighted: Vec<(String, u32)> = all_weighted
+        .iter()
+        .filter(|(u, _)| urls.contains(u))
+        .cloned()
+        .collect();
+
+    if urls.is_empty() {
+        return fallback_result();
+    }
+
+    // Use path as the hash input since client IP is not available at
+    // route-match time (the routes array doesn't carry it through).
+    let hash_val = upstream::fnv1a_hash(path);
+
+    // Pick URL using the configured strategy.
+    let strategy = cfg
+        .strategy
+        .as_ref()
+        .unwrap_or(&LoadBalanceStrategy::RoundRobin);
+    let route_key = path; // stable key for round-robin counters
+    let pick_result = pick_by_strategy(
+        strategy,
+        &urls,
+        &weighted,
+        hash_val,
+        route_key,
+        counters,
+        upstream_health,
+    );
+
+    let Some((chosen_url, is_least_conn)) = pick_result else {
+        return fallback_result();
+    };
+
+    let strip = cfg.strip_prefix.unwrap_or(false).then(|| path.to_string());
+
+    let upstream = match router::url_to_proxy_upstream(&chosen_url, strip) {
+        Some(u) => u,
+        None => {
+            if is_least_conn {
+                upstream_health.conn_dec(&chosen_url);
             }
+            return fallback_result();
+        }
+    };
 
-            // Use path as the hash input since client IP is not available at
-            // route-match time (the routes array doesn't carry it through).
-            let hash_val = upstream::fnv1a_hash(path);
+    let retry = cfg.retry.as_ref().map(|r| RetryState {
+        urls: all_urls.clone(),
+        attempt: 0,
+        max_attempts: r.attempts as usize,
+        conditions: r.conditions.clone(),
+        backoff_ms: r.backoff_ms,
+    });
 
-            // Pick URL using the configured strategy.
-            let strategy = cfg
-                .strategy
-                .as_ref()
-                .unwrap_or(&LoadBalanceStrategy::RoundRobin);
-            let route_key = path; // stable key for round-robin counters
-            let pick_result = match strategy {
-                LoadBalanceStrategy::Random => {
-                    upstream::pick_random(&urls, route_key, counters).map(|u| (u, false))
-                }
-                LoadBalanceStrategy::LeastConn => {
-                    upstream_health.pick_least_conn(&urls).map(|u| (u, true))
-                }
-                LoadBalanceStrategy::WeightedRoundRobin => {
-                    upstream::pick_weighted_round_robin(&weighted, route_key, counters)
-                        .map(|u| (u, false))
-                }
-                LoadBalanceStrategy::IpHash | LoadBalanceStrategy::ConsistentHash => {
-                    upstream::pick_by_hash(&urls, hash_val).map(|u| (u, false))
-                }
-                LoadBalanceStrategy::LeastResponseTime => {
-                    upstream::pick_least_response_time(&urls, upstream_health, route_key, counters)
-                        .map(|u| (u, false))
-                }
-                LoadBalanceStrategy::RoundRobin => {
-                    upstream::pick_round_robin(&urls, route_key, counters).map(|u| (u, false))
-                }
-            };
+    let upstream_url_for_lc = is_least_conn.then(|| chosen_url.clone());
 
-            let Some((chosen_url, is_least_conn)) = pick_result else {
-                return (
-                    UpstreamTarget::Local(LocalHandler::Fallback),
-                    None,
-                    None,
-                    None,
-                    false,
-                    None,
-                    None,
-                );
-            };
+    (
+        upstream,
+        retry,
+        cfg.timeout.clone(),
+        cfg.pool.clone(),
+        cfg.http2.unwrap_or(false),
+        upstream_url_for_lc,
+        cfg.cache.clone(),
+    )
+}
 
-            let strip = cfg.strip_prefix.unwrap_or(false).then(|| path.to_string());
-
-            let upstream = match router::url_to_proxy_upstream(&chosen_url, strip) {
-                Some(u) => u,
-                None => {
-                    if is_least_conn {
-                        upstream_health.conn_dec(&chosen_url);
-                    }
-                    return (
-                        UpstreamTarget::Local(LocalHandler::Fallback),
-                        None,
-                        None,
-                        None,
-                        false,
-                        None,
-                        None,
-                    );
-                }
-            };
-
-            let retry = cfg.retry.as_ref().map(|r| RetryState {
-                urls: all_urls.clone(),
-                attempt: 0,
-                max_attempts: r.attempts as usize,
-                conditions: r.conditions.clone(),
-                backoff_ms: r.backoff_ms,
-            });
-
-            let upstream_url_for_lc = is_least_conn.then(|| chosen_url.clone());
-
-            (
-                upstream,
-                retry,
-                cfg.timeout.clone(),
-                cfg.pool.clone(),
-                cfg.http2.unwrap_or(false),
-                upstream_url_for_lc,
-                cfg.cache.clone(),
-            )
+/// Select an upstream URL from `urls` using the given strategy.
+///
+/// Returns `Some((url, is_least_conn))` or `None` if no peer is available.
+fn pick_by_strategy(
+    strategy: &LoadBalanceStrategy,
+    urls: &[String],
+    weighted: &[(String, u32)],
+    hash_val: u64,
+    route_key: &str,
+    counters: &DashMap<String, AtomicUsize>,
+    upstream_health: &UpstreamRegistry,
+) -> Option<(String, bool)> {
+    match strategy {
+        LoadBalanceStrategy::Random => {
+            upstream::pick_random(urls, route_key, counters).map(|u| (u, false))
+        }
+        LoadBalanceStrategy::LeastConn => upstream_health.pick_least_conn(urls).map(|u| (u, true)),
+        LoadBalanceStrategy::WeightedRoundRobin => {
+            upstream::pick_weighted_round_robin(weighted, route_key, counters).map(|u| (u, false))
+        }
+        LoadBalanceStrategy::IpHash | LoadBalanceStrategy::ConsistentHash => {
+            upstream::pick_by_hash(urls, hash_val).map(|u| (u, false))
+        }
+        LoadBalanceStrategy::LeastResponseTime => {
+            upstream::pick_least_response_time(urls, upstream_health, route_key, counters)
+                .map(|u| (u, false))
+        }
+        LoadBalanceStrategy::RoundRobin => {
+            upstream::pick_round_robin(urls, route_key, counters).map(|u| (u, false))
         }
     }
+}
+
+/// Convert a single-URL `ProxyRouteTarget::Url` to a [`RouteResult`].
+fn url_target_to_result(url: &str) -> RouteResult {
+    match router::url_to_proxy_upstream(url, None) {
+        Some(upstream) => (upstream, None, None, None, false, None, None),
+        None => fallback_result(),
+    }
+}
+
+/// Rotate through `urls` round-robin and convert the chosen URL to a [`RouteResult`].
+fn round_robin_target_to_result(
+    urls: &[String],
+    counters: &DashMap<String, AtomicUsize>,
+) -> RouteResult {
+    let key = urls.join(",");
+    let counter = counters.entry(key).or_insert_with(|| AtomicUsize::new(0));
+    let idx = counter.fetch_add(1, Ordering::Relaxed) % urls.len();
+    match router::url_to_proxy_upstream(&urls[idx], None) {
+        Some(upstream) => (upstream, None, None, None, false, None, None),
+        None => fallback_result(),
+    }
+}
+
+/// Convenience: return the canonical "fall through to fallback" result.
+#[inline]
+fn fallback_result() -> RouteResult {
+    (
+        UpstreamTarget::Local(LocalHandler::Fallback),
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+    )
 }
 
 // ── Glob path matching ────────────────────────────────────────────────────────
@@ -343,33 +368,9 @@ fn glob_match_inner(pat: &[u8], s: &[u8]) -> bool {
         // Pattern exhausted but string still has characters.
         ([], _) => false,
         // `**` — try matching 0 or more characters (including `/`).
-        ([b'*', b'*', rest @ ..], _) => {
-            // `**` at the end of the pattern matches the rest of the string.
-            if rest.is_empty() {
-                return true;
-            }
-            // Otherwise try matching at each position in `s`.
-            for i in 0..=s.len() {
-                if glob_match_inner(rest, &s[i..]) {
-                    return true;
-                }
-            }
-            false
-        }
+        ([b'*', b'*', rest @ ..], _) => glob_double_star(rest, s),
         // `*` — match one or more characters within a single path segment (no `/`).
-        // Requires at least one character — use `**` to match zero or more.
-        ([b'*', rest @ ..], [_, ..]) => {
-            for i in 1..=s.len() {
-                // Don't let `*` cross a `/`.
-                if s[i - 1] == b'/' {
-                    break;
-                }
-                if glob_match_inner(rest, &s[i..]) {
-                    return true;
-                }
-            }
-            false
-        }
+        ([b'*', rest @ ..], [_, ..]) => glob_single_star(rest, s),
         // `*` against empty string — never matches.
         ([b'*', ..], []) => false,
         // `?` — match any single non-`/` character.
@@ -379,6 +380,35 @@ fn glob_match_inner(pat: &[u8], s: &[u8]) -> bool {
         ([pc, rest_p @ ..], [sc, rest_s @ ..]) if pc == sc => glob_match_inner(rest_p, rest_s),
         _ => false,
     }
+}
+
+/// `**` handler: matches zero or more characters including `/`.
+fn glob_double_star(rest: &[u8], s: &[u8]) -> bool {
+    // `**` at the end of the pattern matches everything.
+    if rest.is_empty() {
+        return true;
+    }
+    // Otherwise try matching at each position in `s`.
+    for i in 0..=s.len() {
+        if glob_match_inner(rest, &s[i..]) {
+            return true;
+        }
+    }
+    false
+}
+
+/// `*` handler: matches one or more characters within a single path segment (no `/`).
+fn glob_single_star(rest: &[u8], s: &[u8]) -> bool {
+    for i in 1..=s.len() {
+        // Don't let `*` cross a `/`.
+        if s[i - 1] == b'/' {
+            break;
+        }
+        if glob_match_inner(rest, &s[i..]) {
+            return true;
+        }
+    }
+    false
 }
 
 // ── Regex value matching ──────────────────────────────────────────────────────

@@ -488,25 +488,7 @@ impl ConduitProxy {
 
         // 4. Token-bucket rate limiting.
         if let Some(ref rl_cfg) = rate_limit_cfg {
-            // Determine whether to use Redis or the in-memory limiter.
-            let allowed = match rl_cfg
-                .store
-                .as_deref()
-                .filter(|s| s.starts_with("redis://"))
-            {
-                Some(_) => {
-                    // Use Redis if the rate limiter was initialised at startup.
-                    // Fall through to memory if it is absent (startup failure).
-                    if let Some(ref rrl) = self.state.redis_rate_limiter {
-                        let key = rate_limit::extract_client_key(rl_cfg, session);
-                        rrl.check(&key, rl_cfg.limit, rl_cfg.window_secs).await
-                    } else {
-                        // Redis connection failed at startup — use memory.
-                        rate_limit::check(rl_cfg, session, &self.state.rate_limiter)
-                    }
-                }
-                None => rate_limit::check(rl_cfg, session, &self.state.rate_limiter),
-            };
+            let allowed = self.rate_limit_allowed(rl_cfg, session).await;
             if !allowed {
                 response::write_response(
                     session,
@@ -543,6 +525,25 @@ impl ConduitProxy {
         }
 
         Ok(false)
+    }
+
+    /// Determine whether the request is allowed by the rate limiter.
+    ///
+    /// Uses Redis when configured and available; falls back to the in-memory
+    /// token-bucket limiter if the Redis connection was not established at startup.
+    async fn rate_limit_allowed(&self, rl_cfg: &RateLimitConfig, session: &mut Session) -> bool {
+        if rl_cfg
+            .store
+            .as_deref()
+            .is_some_and(|s| s.starts_with("redis://"))
+        {
+            if let Some(ref rrl) = self.state.redis_rate_limiter {
+                let key = rate_limit::extract_client_key(rl_cfg, session);
+                return rrl.check(&key, rl_cfg.limit, rl_cfg.window_secs).await;
+            }
+            // Redis unavailable at startup — fall through to memory.
+        }
+        rate_limit::check(rl_cfg, session, &self.state.rate_limiter)
     }
 
     /// Dispatch a request to the appropriate local handler.
@@ -1362,37 +1363,9 @@ fn apply_upstream_path_transforms(
             rewrite,
             ..
         } => {
-            let mut path = upstream_request.uri.path().to_owned();
-
-            // 1. Strip prefix.
-            if let Some(pfx) = strip_prefix {
-                let stripped = path.strip_prefix(pfx.as_str()).unwrap_or("/");
-                path = if stripped.is_empty() {
-                    "/".to_owned()
-                } else {
-                    stripped.to_owned()
-                };
-            }
-
-            // 2. Apply rewrite rules (first match wins).
-            if let Some(rules) = rewrite {
-                for rule in rules {
-                    match get_rewrite_regex(&rule.from) {
-                        Some(re) if re.is_match(&path) => {
-                            path = re.replacen(&path, 1, rule.to.as_str()).into_owned();
-                            break;
-                        }
-                        None => {
-                            tracing::warn!(
-                                pattern = %rule.from,
-                                "rewrite rule regex error: invalid pattern (skipped)"
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
+            let original = upstream_request.uri.path();
+            let path = apply_path_strip(original, strip_prefix.as_deref());
+            let path = apply_path_rewrites(&path, rewrite.as_deref());
             if path != upstream_request.uri.path() {
                 let new_uri = rebuild_uri(&upstream_request.uri, &path)?;
                 upstream_request.set_uri(new_uri);
@@ -1404,6 +1377,43 @@ fn apply_upstream_path_transforms(
         _ => {}
     }
     Ok(())
+}
+
+/// Strip `prefix` from `path`, returning `"/"` when stripping leaves an empty string.
+fn apply_path_strip(path: &str, prefix: Option<&str>) -> String {
+    let Some(pfx) = prefix else {
+        return path.to_owned();
+    };
+    let stripped = path.strip_prefix(pfx).unwrap_or("/");
+    if stripped.is_empty() {
+        "/".to_owned()
+    } else {
+        stripped.to_owned()
+    }
+}
+
+/// Apply the first matching rewrite rule to `path` and return the (possibly unchanged) result.
+fn apply_path_rewrites(path: &str, rules: Option<&[crate::config::schema::RewriteRule]>) -> String {
+    let Some(rules) = rules else {
+        return path.to_owned();
+    };
+    let mut out = path.to_owned();
+    for rule in rules {
+        match get_rewrite_regex(&rule.from) {
+            Some(re) if re.is_match(&out) => {
+                out = re.replacen(&out, 1, rule.to.as_str()).into_owned();
+                break;
+            }
+            None => {
+                tracing::warn!(
+                    pattern = %rule.from,
+                    "rewrite rule regex error: invalid pattern (skipped)"
+                );
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Return a compiled [`regex::Regex`] for `pattern`, using a process-wide cache

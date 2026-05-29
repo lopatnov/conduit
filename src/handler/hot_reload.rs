@@ -210,26 +210,7 @@ pub async fn run_file_watcher(
     let mut watcher =
         match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             let Ok(event) = res else { return };
-
-            use notify::EventKind::*;
-            if !matches!(event.kind, Modify(_) | Create(_) | Remove(_)) {
-                return;
-            }
-
-            // Extension allowlist filtering.
-            let passes = exts_clone.as_ref().is_none_or(|exts| {
-                event.paths.iter().any(|p| {
-                    p.extension()
-                        .and_then(|e| e.to_str())
-                        .map(|e| {
-                            exts.iter()
-                                .any(|x| x.trim_start_matches('.').eq_ignore_ascii_case(e))
-                        })
-                        .unwrap_or(false)
-                })
-            });
-
-            if passes {
+            if event_passes_filter(&event, exts_clone.as_deref()) {
                 let _ = event_tx.blocking_send(());
             }
         }) {
@@ -290,4 +271,27 @@ pub async fn run_file_watcher(
     }
 
     // `watcher` is dropped here, which stops the background notify thread.
+}
+
+/// Return `true` when the notify event should trigger a browser reload.
+///
+/// Accepts Modify, Create, and Remove events.  When `exts` is `Some`, the
+/// event's file paths must include at least one file whose extension is in
+/// the allowlist (case-insensitive, leading dot optional).
+fn event_passes_filter(event: &notify::Event, exts: Option<&[String]>) -> bool {
+    use notify::EventKind::*;
+    if !matches!(event.kind, Modify(_) | Create(_) | Remove(_)) {
+        return false;
+    }
+    exts.is_none_or(|exts| {
+        event.paths.iter().any(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| {
+                    exts.iter()
+                        .any(|x| x.trim_start_matches('.').eq_ignore_ascii_case(e))
+                })
+                .unwrap_or(false)
+        })
+    })
 }

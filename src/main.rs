@@ -279,32 +279,30 @@ fn cmd_probe(config_path: &str) {
 fn collect_upstream_urls(app: &AppConfig) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut urls = Vec::new();
-
-    let mut push = |url: String| {
-        if seen.insert(url.clone()) {
-            urls.push(url);
-        }
-    };
-
     for site in &app.sites {
-        // Top-level proxy field.
-        if let Some(proxy) = &site.proxy {
-            for url in extract_proxy_urls(proxy) {
-                push(url);
-            }
-        }
-        // routes array (Phase 3.6).
-        if let Some(routes) = &site.routes {
-            for route in routes {
-                if let Some(proxy_target) = &route.proxy {
-                    for url in extract_route_target_urls(proxy_target) {
-                        push(url);
-                    }
-                }
+        for url in site_upstream_urls(site) {
+            if seen.insert(url.clone()) {
+                urls.push(url);
             }
         }
     }
     urls
+}
+
+/// Return every upstream URL referenced by a single site's `proxy` and `routes`.
+fn site_upstream_urls(site: &crate::config::schema::SiteConfig) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(proxy) = &site.proxy {
+        out.extend(extract_proxy_urls(proxy));
+    }
+    if let Some(routes) = &site.routes {
+        for route in routes {
+            if let Some(proxy_target) = &route.proxy {
+                out.extend(extract_route_target_urls(proxy_target));
+            }
+        }
+    }
+    out
 }
 
 /// Flatten a `ProxyConfig` into a list of raw URL strings.
@@ -323,28 +321,26 @@ fn extract_route_target_urls(target: &ProxyRouteTarget) -> Vec<String> {
     match target {
         ProxyRouteTarget::Url(url) => vec![url.clone()],
         ProxyRouteTarget::RoundRobin(urls) => urls.clone(),
-        ProxyRouteTarget::Full(cfg) => {
-            let mut out: Vec<String> = cfg
-                .targets
-                .iter()
-                .map(|t| match t {
-                    ProxyTarget::Simple(url) => url.clone(),
-                    ProxyTarget::Weighted(w) => w.url.clone(),
-                })
-                .collect();
-            // Also collect URLs from groups.
-            if let Some(groups) = &cfg.groups {
-                for group in groups {
-                    for t in &group.targets {
-                        out.push(match t {
-                            ProxyTarget::Simple(url) => url.clone(),
-                            ProxyTarget::Weighted(w) => w.url.clone(),
-                        });
-                    }
-                }
-            }
-            out
+        ProxyRouteTarget::Full(cfg) => collect_full_target_urls(cfg),
+    }
+}
+
+/// Collect every URL from a `Full` proxy route config (targets + group targets).
+fn collect_full_target_urls(cfg: &crate::config::schema::ProxyRouteConfig) -> Vec<String> {
+    let mut out: Vec<String> = cfg.targets.iter().map(proxy_target_url).collect();
+    if let Some(groups) = &cfg.groups {
+        for group in groups {
+            out.extend(group.targets.iter().map(proxy_target_url));
         }
+    }
+    out
+}
+
+/// Extract the URL string from either form of `ProxyTarget`.
+fn proxy_target_url(t: &ProxyTarget) -> String {
+    match t {
+        ProxyTarget::Simple(url) => url.clone(),
+        ProxyTarget::Weighted(w) => w.url.clone(),
     }
 }
 
