@@ -62,8 +62,10 @@ cargo install lopatnov-conduit
 - [Configuration Recipes](#configuration-recipes)
 - [Admin API](#admin-api)
 - [Docker](#docker)
+- [Editor Integration (JSON Schema)](#editor-integration-json-schema)
 - [Benchmarks](#benchmarks)
 - [Contributing](#contributing)
+- [Built With](#built-with)
 - [License](#license)
 
 ---
@@ -244,9 +246,9 @@ conduit fmt --write [-c <file>] pretty-print config back to the file
 conduit reload [--admin ADDR]   hot-reload config without restarting
 conduit status [--admin ADDR]   show server uptime, version, inflight requests
 conduit upstreams [--admin ADDR]         list all upstream health and latency
-conduit upstreams add    --route PATH --target URL [--weight N]
-conduit upstreams remove --route PATH --target URL
-conduit upstreams weight --route PATH --target URL --weight N
+conduit upstreams add    --route PATH --target URL [--weight N] [--site LABEL]
+conduit upstreams remove --route PATH --target URL [--site LABEL]
+conduit upstreams weight --route PATH --target URL --weight N [--site LABEL]
 conduit shutdown [--admin ADDR] graceful shutdown
 ```
 
@@ -1167,27 +1169,37 @@ Runs on `127.0.0.1:2019` (loopback only — never exposed to the network).
 
 Dynamic upstream changes survive until `conduit reload` — which resets from the config file.
 
+**Request body fields for `/upstreams/add`, `/upstreams/remove`, `/upstreams/weight`:**
+
+| Field    | Required | Description                                                                              |
+| -------- | -------- | ---------------------------------------------------------------------------------------- |
+| `route`  | ✅        | Route path, e.g. `"/api"`                                                                |
+| `target` | ✅        | Full upstream URL, e.g. `"http://b3:4000"`                                               |
+| `weight` | add/weight | Target weight (default: 1 for add)                                                    |
+| `site`   | —        | Site label to scope the change, e.g. `"app.example.com:443"`. Omit to apply to all sites with this route. |
+
 ---
 
 ## Docker
 
-### Minimal image (FROM scratch)
+Official images are published to the **GitHub Container Registry** on every tagged release:
 
-```dockerfile
-FROM scratch
-COPY conduit-x86_64-unknown-linux-musl /conduit
-COPY conduit.json /conduit.json
-EXPOSE 8080
-ENTRYPOINT ["/conduit", "-c", "/conduit.json"]
+```bash
+docker pull ghcr.io/lopatnov/conduit:latest
+docker pull ghcr.io/lopatnov/conduit:0.3.0
 ```
 
-### Official image
+The image is built from [`contrib/Dockerfile`](contrib/Dockerfile) — a multi-stage build
+that compiles a fully-static musl binary and packages it into a `FROM scratch` image (~14 MB).
+It runs as UID 65534 (`nobody`) with no shell or OS userland.
+
+### Run
 
 ```bash
 docker run -p 8080:8080 \
-  -v $(pwd)/conduit.json:/conduit.json:ro \
+  -v $(pwd)/conduit.json:/etc/conduit/conduit.json:ro \
   -v $(pwd)/dist:/dist:ro \
-  lopatnov/conduit
+  ghcr.io/lopatnov/conduit
 ```
 
 ### docker-compose
@@ -1195,12 +1207,12 @@ docker run -p 8080:8080 \
 ```yaml
 services:
   conduit:
-    image: lopatnov/conduit:latest
+    image: ghcr.io/lopatnov/conduit:latest
     ports:
       - "443:443"
       - "80:80"
     volumes:
-      - ./conduit.json:/conduit.json:ro
+      - ./conduit.json:/etc/conduit/conduit.json:ro
       - ./dist:/dist:ro
       - ./certs:/certs
     environment:
@@ -1210,6 +1222,14 @@ services:
   api:
     image: my-api:latest
     expose: ["4000"]
+```
+
+### Build your own image
+
+```bash
+git clone https://github.com/lopatnov/conduit
+cd conduit
+docker build -f contrib/Dockerfile -t conduit:local .
 ```
 
 ---
