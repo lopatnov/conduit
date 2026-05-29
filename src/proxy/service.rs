@@ -1399,8 +1399,7 @@ fn apply_upstream_path_transforms(
             }
         }
         UpstreamTarget::Upload { .. } => {
-            upstream_request
-                .insert_header("x-conduit-site-idx", ctx_ref.site_idx.to_string())?;
+            upstream_request.insert_header("x-conduit-site-idx", ctx_ref.site_idx.to_string())?;
         }
         _ => {}
     }

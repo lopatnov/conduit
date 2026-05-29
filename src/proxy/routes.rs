@@ -1156,6 +1156,9 @@ mod tests {
             .get("http://")
             .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
             .unwrap_or(0);
-        assert_eq!(conn_count, 0, "conn counter must be zero after invalid-URL fallback");
+        assert_eq!(
+            conn_count, 0,
+            "conn counter must be zero after invalid-URL fallback"
+        );
     }
 }
