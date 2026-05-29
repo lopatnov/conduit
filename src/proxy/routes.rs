@@ -1013,7 +1013,7 @@ mod tests {
     }
 
     #[test]
-    fn route_to_result_full_proxy_all_unhealthy_gives_fallback() {
+    fn route_to_result_full_proxy_all_unhealthy_fails_open() {
         use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
         use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
         use crate::proxy::health::UpstreamEntry;
