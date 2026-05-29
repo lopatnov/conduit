@@ -1,6 +1,7 @@
 mod common;
 
 use common::{free_port, TestServer};
+use serial_test::serial;
 
 fn cors_server(cors: serde_json::Value) -> TestServer {
     let port = free_port();
@@ -22,6 +23,7 @@ fn cors_server(cors: serde_json::Value) -> TestServer {
 // ── Preflight tests ────────────────────────────────────────────────────────
 
 #[test]
+#[serial]
 fn preflight_cors_true_returns_204() {
     let srv = cors_server(serde_json::json!(true));
     let client = reqwest::blocking::Client::new();
@@ -35,6 +37,7 @@ fn preflight_cors_true_returns_204() {
 }
 
 #[test]
+#[serial]
 fn preflight_sets_allow_origin_wildcard() {
     let srv = cors_server(serde_json::json!(true));
     let client = reqwest::blocking::Client::new();
@@ -53,6 +56,7 @@ fn preflight_sets_allow_origin_wildcard() {
 }
 
 #[test]
+#[serial]
 fn preflight_with_specific_origin_echoes_origin() {
     let srv = cors_server(serde_json::json!({
         "origins": ["https://allowed.com"],
@@ -85,6 +89,7 @@ fn preflight_with_specific_origin_echoes_origin() {
 }
 
 #[test]
+#[serial]
 fn preflight_disallowed_origin_returns_204_no_acao() {
     // When the origin is not in the list, the server returns 204 but without
     // the Access-Control-Allow-Origin header — the browser will block it.
@@ -107,6 +112,7 @@ fn preflight_disallowed_origin_returns_204_no_acao() {
 }
 
 #[test]
+#[serial]
 fn preflight_max_age_header_present() {
     let srv = cors_server(serde_json::json!(true));
     let client = reqwest::blocking::Client::new();
@@ -125,6 +131,7 @@ fn preflight_max_age_header_present() {
 // ── Regular response tests ─────────────────────────────────────────────────
 
 #[test]
+#[serial]
 fn regular_get_has_acao_header_when_cors_enabled() {
     let port = free_port();
     let admin_port = free_port();
@@ -163,6 +170,7 @@ fn regular_get_has_acao_header_when_cors_enabled() {
 }
 
 #[test]
+#[serial]
 fn no_cors_header_when_cors_disabled() {
     let port = free_port();
     let admin_port = free_port();
