@@ -2,16 +2,17 @@
 
 [![npm version](https://img.shields.io/npm/v/@lopatnov/conduit.svg)](https://www.npmjs.com/package/@lopatnov/conduit)
 [![npm downloads](https://img.shields.io/npm/dt/@lopatnov/conduit.svg)](https://www.npmjs.com/package/@lopatnov/conduit)
+[![crates.io](https://img.shields.io/crates/v/lopatnov-conduit.svg)](https://crates.io/crates/lopatnov-conduit)
 [![GitHub stars](https://img.shields.io/github/stars/lopatnov/conduit)](https://github.com/lopatnov/conduit/stargazers)
 [![License](https://img.shields.io/github/license/lopatnov/conduit)](https://github.com/lopatnov/conduit/blob/main/LICENSE)
 [![GitHub](https://img.shields.io/badge/source-GitHub-181717.svg)](https://github.com/lopatnov/conduit)
 
-> **High-performance reverse proxy and static file server** — one JSON config, one binary,
+> **High-performance reverse proxy and static file server** — one config file, one binary,
 > zero runtime dependencies.
 
-Built on [Cloudflare Pingora](https://github.com/cloudflare/pingora). Routes ~1 trillion
-requests/day in production at Cloudflare. Distributed as a native Rust binary via npm for
-convenience.
+Built on [Cloudflare Pingora](https://github.com/cloudflare/pingora) — the same engine that
+routes ~1 trillion requests/day at Cloudflare. Distributed as a native Rust binary via npm
+for convenience.
 
 ---
 
@@ -41,7 +42,7 @@ conduit
 
 ## Minimal Config
 
-Create `conduit.json`:
+Create `conduit.json` (or `conduit.yaml`):
 
 ```json
 {
@@ -172,8 +173,8 @@ conduit
 ## CLI Reference
 
 ```text
-conduit                     start server (reads conduit.json)
-conduit -c <file>           use a specific config file
+conduit                     start server (reads conduit.json / conduit.yaml)
+conduit -c <file>           use a specific config file (.json or .yaml)
 conduit --version           print version
 
 conduit init                interactive setup wizard
@@ -184,7 +185,9 @@ conduit fmt [--write]       pretty-print config to stdout or file
 conduit reload              hot-reload config without restart
 conduit status              show uptime and inflight requests
 conduit upstreams           list upstream health and latency
-conduit upstreams add --route PATH --target URL
+conduit upstreams add  --route PATH --target URL [--weight N] [--site LABEL]
+conduit upstreams remove --route PATH --target URL [--site LABEL]
+conduit upstreams weight --route PATH --target URL --weight N [--site LABEL]
 conduit shutdown            graceful shutdown
 ```
 
@@ -216,6 +219,7 @@ conduit shutdown            graceful shutdown
 | **SPA fallback** | Per-Accept-type fallback rules |
 | **Structured logging** | `dev`, `combined`, `json`, `short`, `common` formats |
 | **Rhai scripting** | Inline middleware scripts for custom logic |
+| **YAML config** | `conduit.yaml` / `conduit.yml` as alternative to JSON |
 
 ---
 
@@ -242,7 +246,11 @@ cargo install lopatnov-conduit
 
 - 📦 [npm package](https://www.npmjs.com/package/@lopatnov/conduit)
 - 🦀 [crates.io package](https://crates.io/crates/lopatnov-conduit)
-- 📖 [Full documentation & source](https://github.com/lopatnov/conduit)
+- 🐳 [Docker image](https://github.com/lopatnov/conduit/pkgs/container/conduit) (`ghcr.io/lopatnov/conduit`)
+- 📖 [Full documentation](https://github.com/lopatnov/conduit)
+- ⚙️ [Configuration reference](https://github.com/lopatnov/conduit/blob/main/docs/configuration.md)
+- 🚀 [Deployment guide](https://github.com/lopatnov/conduit/blob/main/docs/deployment.md)
+- 📊 [Benchmarks](https://github.com/lopatnov/conduit/blob/main/docs/benchmarks.md)
 - 🐛 [Report a bug](https://github.com/lopatnov/conduit/issues)
 - 💬 [Discussions](https://github.com/lopatnov/conduit/discussions)
 

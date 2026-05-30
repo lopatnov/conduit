@@ -508,7 +508,7 @@ https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.js
 
 ## Benchmarks
 
-See [BENCHMARKS.md](BENCHMARKS.md) for methodology and results.
+See [docs/benchmarks.md](docs/benchmarks.md) for methodology and results.
 
 ---
 
