@@ -4,16 +4,59 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use async_compression::tokio::bufread::{BrotliEncoder, DeflateEncoder, GzipEncoder};
 use async_compression::Level;
+use async_trait::async_trait;
 use bytes::Bytes;
 use pingora_core::Result;
 use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 
-use crate::config::schema::StaticOptions;
+use crate::config::schema::{SiteConfig, StaticOptions};
 use crate::filter::compression::CompressOptions;
+use crate::handler::LocalHandlerImpl;
 use crate::proxy::ctx::AcceptEncoding;
 use crate::util::mime;
+
+/// Handler struct for static file responses.
+///
+/// Attempts to serve the file from `roots`; on a miss, delegates to the site's
+/// configured fallback (e.g. SPA index.html for HTML requests, 404 for others).
+pub struct StaticFileHandler {
+    pub roots: Vec<PathBuf>,
+    pub options: Arc<StaticOptions>,
+    pub strip_prefix: Option<String>,
+    pub extra_headers: Vec<(String, String)>,
+    pub compress_opts: Option<CompressOptions>,
+    pub accept_enc: AcceptEncoding,
+    /// Site config used to resolve the fallback when the file is not found.
+    pub fallback_site: Option<SiteConfig>,
+}
+
+#[async_trait]
+impl LocalHandlerImpl for StaticFileHandler {
+    async fn handle(&mut self, session: &mut Session) -> Result<()> {
+        let found = handle_static(
+            session,
+            &self.roots,
+            &self.options,
+            self.strip_prefix.as_deref(),
+            &self.extra_headers,
+            self.compress_opts.as_ref(),
+            &self.accept_enc,
+        )
+        .await?;
+
+        if !found {
+            crate::handler::fallback::handle_fallback(
+                session,
+                self.fallback_site.as_ref(),
+                &self.extra_headers,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+}
 
 /// Attempt to serve a static file.
 ///

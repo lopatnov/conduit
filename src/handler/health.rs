@@ -1,8 +1,10 @@
+use async_trait::async_trait;
 use bytes::Bytes;
 use pingora_core::Result;
 use pingora_proxy::Session;
 
 use crate::handler::response::write_response;
+use crate::handler::LocalHandlerImpl;
 
 static HEALTH_BODY: &[u8] = b"{\"status\":\"ok\"}";
 
@@ -54,6 +56,25 @@ pub async fn handle_health(
         extra,
     )
     .await
+}
+
+/// Handler struct for health-check responses.
+pub struct HealthHandler {
+    pub extra_headers: Vec<(String, String)>,
+    /// Pre-computed `(url, is_healthy)` pairs when `includeUpstreams` is set.
+    pub upstream_pairs: Vec<(String, bool)>,
+}
+
+#[async_trait]
+impl LocalHandlerImpl for HealthHandler {
+    async fn handle(&mut self, session: &mut Session) -> Result<()> {
+        let pairs_ref: Vec<(&str, bool)> = self
+            .upstream_pairs
+            .iter()
+            .map(|(u, h)| (u.as_str(), *h))
+            .collect();
+        handle_health(session, &pairs_ref, &self.extra_headers).await
+    }
 }
 
 #[cfg(test)]

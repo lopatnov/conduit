@@ -14,20 +14,16 @@ use pingora_proxy::Session;
 ///
 /// ## Adding a new handler
 ///
-/// 1. Create a module under `src/handler/` and write the core async function.
-/// 2. Expose a struct that implements `LocalHandlerImpl` — this allows the
-///    handler to be tested in isolation and called polymorphically.
+/// 1. Create a module under `src/handler/` with the core async function.
+/// 2. Add a struct that implements `LocalHandlerImpl` — holds all data the
+///    handler needs (extracted from `RequestCtx` and `AppState` at dispatch time).
 /// 3. Add a new variant to `LocalHandler` in `proxy/ctx.rs`.
 /// 4. Route to it from `proxy/router.rs`.
-/// 5. Dispatch it in `proxy/service.rs:dispatch_local()`.
+/// 5. Add a match arm to `ConduitProxy::build_handler` in `proxy/service.rs`.
 ///
-/// `LocalHandlerImpl` provides a stable interface for testing handlers
-/// independently of the full proxy pipeline. The runtime dispatch in
-/// `dispatch_local` currently goes through the `HandlerKind` match; a full
-/// registry migration is tracked in GitHub issue #14 (**note:** the actual
-/// issue # may differ — search for "handler registry" in the issue tracker).
+/// No other changes to `dispatch_local` are required.
 #[async_trait]
 pub trait LocalHandlerImpl: Send + Sync {
     /// Execute the handler, writing a complete response to `session`.
-    async fn handle(&self, session: &mut Session) -> Result<()>;
+    async fn handle(&mut self, session: &mut Session) -> Result<()>;
 }

@@ -1,11 +1,27 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use pingora_core::Result;
 use pingora_proxy::Session;
 
 use crate::handler::response;
+use crate::handler::LocalHandlerImpl;
+
+/// Handler struct for ACME HTTP-01 challenge responses.
+pub struct AcmeChallengeHandler {
+    pub token: String,
+    pub challenges: Arc<DashMap<String, String>>,
+    pub extra_headers: Vec<(String, String)>,
+}
+
+#[async_trait]
+impl LocalHandlerImpl for AcmeChallengeHandler {
+    async fn handle(&mut self, session: &mut Session) -> Result<()> {
+        handle_acme_challenge(session, &self.token, &self.challenges).await
+    }
+}
 
 /// Serve an ACME HTTP-01 challenge token response.
 ///

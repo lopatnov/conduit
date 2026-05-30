@@ -32,7 +32,7 @@ use crate::filter::{
 };
 use crate::handler::{
     acme_challenge as acme_handler, fallback, health, hot_reload as hot_reload_handler,
-    metrics as metrics_handler, response, static_files,
+    metrics as metrics_handler, response, static_files, LocalHandlerImpl,
 };
 use crate::proxy::cache as proxy_cache;
 use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
@@ -457,14 +457,17 @@ impl ConduitProxy {
     ///
     /// Returns `Ok(true)` for local handlers (response fully written) or
     /// `Ok(false)` for proxy/upload targets (Pingora continues the pipeline).
+    ///
+    /// Adding a new local handler: implement [`LocalHandlerImpl`] in its module,
+    /// then add one arm to [`Self::build_handler`] — this function stays unchanged.
     async fn dispatch_local(
         &self,
         session: &mut Session,
         ctx: &mut Option<RequestCtx>,
         handler_kind: HandlerKind,
     ) -> Result<bool> {
-        // Append X-Response-Time to extra_headers if configured for this site.
-        // Done once here so all local handler arms automatically include it.
+        // Inject X-Response-Time before building the handler so it is included
+        // in the extra_headers that every handler receives.
         if let Some(req_ctx) = ctx.as_mut() {
             let config = self.state.config.load();
             let site = config.sites.get(req_ctx.site_idx);
@@ -479,7 +482,32 @@ impl ConduitProxy {
             }
         }
 
-        match handler_kind {
+        let Some(mut handler) = self.build_handler(handler_kind, ctx) else {
+            return Ok(false); // HandlerKind::Proxy — let Pingora continue
+        };
+        handler.handle(session).await?;
+        self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+        Ok(true)
+    }
+
+    /// Build the concrete [`LocalHandlerImpl`] for `kind`, extracting all
+    /// required data from `ctx` and `self.state` up-front.
+    ///
+    /// Returns `None` for [`HandlerKind::Proxy`] (no local handling needed).
+    /// To add a new handler, add one arm here — `dispatch_local` is unchanged.
+    fn build_handler(
+        &self,
+        kind: HandlerKind,
+        ctx: &Option<RequestCtx>,
+    ) -> Option<Box<dyn LocalHandlerImpl>> {
+        let extra = ctx
+            .as_ref()
+            .map(|c| c.extra_headers.clone())
+            .unwrap_or_default();
+
+        match kind {
+            HandlerKind::Proxy => None,
+
             HandlerKind::AcmeChallenge => {
                 let token = if let Some(RequestCtx {
                     upstream: UpstreamTarget::Local(LocalHandler::AcmeChallenge { token }),
@@ -490,178 +518,140 @@ impl ConduitProxy {
                 } else {
                     unreachable!()
                 };
-                acme_handler::handle_acme_challenge(session, &token, &self.state.acme_challenges)
-                    .await?;
-                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                Ok(true)
+                Some(Box::new(acme_handler::AcmeChallengeHandler {
+                    token,
+                    challenges: self.state.acme_challenges.clone(),
+                    extra_headers: extra,
+                }))
             }
+
             HandlerKind::Health => {
-                let (extra, upstream_pairs) = {
-                    let req_ctx = ctx.as_ref().unwrap();
-                    let extra = req_ctx.extra_headers.clone();
-
-                    // Collect upstream statuses when healthCheck.includeUpstreams is set.
-                    let upstream_pairs: Vec<(String, bool)> = {
-                        let config = self.state.config.load();
-                        let site = config.sites.get(req_ctx.site_idx);
-                        let include = site
-                            .and_then(|s| s.health_check.as_ref())
-                            .and_then(|hc| match hc {
-                                HealthCheckConfig::Options(opts) => opts.include_upstreams,
-                                _ => None,
-                            })
-                            .unwrap_or(false);
-
-                        if include {
-                            use crate::proxy::upstream as us;
-                            if let Some(s) = site {
-                                let mut urls: Vec<String> = Vec::new();
-                                // Top-level proxy field.
-                                if let Some(proxy) = &s.proxy {
-                                    urls.extend(us::target_urls_from_proxy(proxy));
-                                }
-                                // routes array (Phase 3.6).
-                                if let Some(routes) = &s.routes {
-                                    for rc in routes {
-                                        if let Some(rt) = &rc.proxy {
-                                            urls.extend(us::target_urls(rt));
-                                        }
-                                    }
-                                }
-                                urls.into_iter()
-                                    .map(|url| {
-                                        let healthy = self.state.upstream_health.is_healthy(&url);
-                                        (url, healthy)
-                                    })
-                                    .collect()
-                            } else {
-                                vec![]
-                            }
-                        } else {
-                            vec![]
-                        }
-                    };
-                    (extra, upstream_pairs)
-                };
-
-                let pairs_ref: Vec<(&str, bool)> = upstream_pairs
-                    .iter()
-                    .map(|(u, h)| (u.as_str(), *h))
-                    .collect();
-                health::handle_health(session, &pairs_ref, &extra).await?;
-                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                Ok(true)
+                let upstream_pairs = self.collect_upstream_pairs(ctx);
+                Some(Box::new(health::HealthHandler {
+                    extra_headers: extra,
+                    upstream_pairs,
+                }))
             }
+
             HandlerKind::Metrics => {
-                let (token, extra) = if let Some(RequestCtx {
+                let token = if let Some(RequestCtx {
                     upstream: UpstreamTarget::Local(LocalHandler::Metrics { token }),
-                    extra_headers,
                     ..
                 }) = ctx.as_ref()
                 {
-                    (
-                        token.as_deref().map(str::to_owned),
-                        extra_headers.as_slice().to_vec(),
-                    )
+                    token.as_deref().map(str::to_owned)
                 } else {
                     unreachable!()
                 };
-                metrics_handler::handle_metrics(session, token.as_deref(), &extra).await?;
-                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                Ok(true)
+                Some(Box::new(metrics_handler::MetricsHandler {
+                    token,
+                    extra_headers: extra,
+                }))
             }
+
             HandlerKind::StaticFile => {
-                // Load compression options for this site before pattern-matching ctx.
-                let compress_opts = {
-                    let config = self.state.config.load();
-                    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
-                    config
-                        .sites
-                        .get(site_idx)
-                        .and_then(|s| s.compression.as_ref())
-                        .and_then(compression::effective)
-                };
+                let config = self.state.config.load();
+                let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                let compress_opts = config
+                    .sites
+                    .get(site_idx)
+                    .and_then(|s| s.compression.as_ref())
+                    .and_then(compression::effective);
+                let fallback_site = config.sites.get(site_idx).cloned();
                 let accept_enc = ctx
                     .as_ref()
                     .map(|c| c.accept_enc.clone())
                     .unwrap_or_default();
-
-                let (roots, options, strip_prefix, extra) = if let Some(RequestCtx {
+                let (roots, options, strip_prefix) = if let Some(RequestCtx {
                     upstream:
                         UpstreamTarget::Local(LocalHandler::StaticFile {
                             roots,
                             options,
                             strip_prefix,
                         }),
-                    extra_headers,
                     ..
                 }) = ctx.as_ref()
                 {
-                    (
-                        roots.clone(),
-                        options.clone(),
-                        strip_prefix.clone(),
-                        extra_headers.clone(),
-                    )
+                    (roots.clone(), options.clone(), strip_prefix.clone())
                 } else {
                     unreachable!()
                 };
-                let found = static_files::handle_static(
-                    session,
-                    &roots,
-                    &options,
-                    strip_prefix.as_deref(),
-                    &extra,
-                    compress_opts.as_ref(),
-                    &accept_enc,
-                )
-                .await?;
-
-                if !found {
-                    // File not found — delegate to the site's fallback handler
-                    // (e.g. SPA index.html for HTML requests, JSON 404 for API).
-                    let config = self.state.config.load();
-                    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
-                    let site = config.sites.get(site_idx);
-                    fallback::handle_fallback(session, site, &extra).await?;
-                }
-
-                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                Ok(true)
+                Some(Box::new(static_files::StaticFileHandler {
+                    roots,
+                    options,
+                    strip_prefix,
+                    extra_headers: extra,
+                    compress_opts,
+                    accept_enc,
+                    fallback_site,
+                }))
             }
+
             HandlerKind::Fallback => {
                 let config = self.state.config.load();
-                let (site_idx, extra) = ctx
-                    .as_ref()
-                    .map(|c| (c.site_idx, c.extra_headers.clone()))
-                    .unwrap_or((0, vec![]));
-                let site = config.sites.get(site_idx);
-                fallback::handle_fallback(session, site, &extra).await?;
-                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                Ok(true)
+                let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                let site = config.sites.get(site_idx).cloned();
+                Some(Box::new(fallback::FallbackHandler {
+                    site,
+                    extra_headers: extra,
+                }))
             }
-            HandlerKind::HotReloadJs => {
-                let extra = ctx
-                    .as_ref()
-                    .map(|c| c.extra_headers.clone())
-                    .unwrap_or_default();
-                hot_reload_handler::handle_client_js(session, &extra).await?;
-                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                Ok(true)
-            }
+
+            HandlerKind::HotReloadJs => Some(Box::new(hot_reload_handler::HotReloadJsHandler {
+                extra_headers: extra,
+            })),
+
             HandlerKind::HotReloadSse => {
-                let extra = ctx
-                    .as_ref()
-                    .map(|c| c.extra_headers.clone())
-                    .unwrap_or_default();
                 let rx = self.state.hot_reload_tx.subscribe();
-                // inflight is decremented after the SSE stream ends (inside handle_sse).
-                hot_reload_handler::handle_sse(session, rx, &extra).await?;
-                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                Ok(true)
+                Some(Box::new(hot_reload_handler::HotReloadSseHandler {
+                    extra_headers: extra,
+                    rx: Some(rx),
+                }))
             }
-            HandlerKind::Proxy => Ok(false),
         }
+    }
+
+    /// Collect `(url, is_healthy)` pairs for the health endpoint when
+    /// `healthCheck.includeUpstreams` is enabled.
+    fn collect_upstream_pairs(&self, ctx: &Option<RequestCtx>) -> Vec<(String, bool)> {
+        let req_ctx = match ctx.as_ref() {
+            Some(c) => c,
+            None => return vec![],
+        };
+        let config = self.state.config.load();
+        let site = match config.sites.get(req_ctx.site_idx) {
+            Some(s) => s,
+            None => return vec![],
+        };
+        let include = site
+            .health_check
+            .as_ref()
+            .and_then(|hc| match hc {
+                HealthCheckConfig::Options(opts) => opts.include_upstreams,
+                _ => None,
+            })
+            .unwrap_or(false);
+        if !include {
+            return vec![];
+        }
+        use crate::proxy::upstream as us;
+        let mut urls: Vec<String> = Vec::new();
+        if let Some(proxy) = &site.proxy {
+            urls.extend(us::target_urls_from_proxy(proxy));
+        }
+        if let Some(routes) = &site.routes {
+            for rc in routes {
+                if let Some(rt) = &rc.proxy {
+                    urls.extend(us::target_urls(rt));
+                }
+            }
+        }
+        urls.into_iter()
+            .map(|url| {
+                let healthy = self.state.upstream_health.is_healthy(&url);
+                (url, healthy)
+            })
+            .collect()
     }
 }
 

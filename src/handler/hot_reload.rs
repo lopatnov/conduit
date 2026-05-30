@@ -13,6 +13,42 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use async_trait::async_trait;
+use pingora_core::Result as PingoraResult;
+
+use crate::handler::LocalHandlerImpl;
+
+/// Handler struct for serving the hot-reload client JavaScript snippet.
+pub struct HotReloadJsHandler {
+    pub extra_headers: Vec<(String, String)>,
+}
+
+#[async_trait]
+impl LocalHandlerImpl for HotReloadJsHandler {
+    async fn handle(&mut self, session: &mut Session) -> PingoraResult<()> {
+        handle_client_js(session, &self.extra_headers).await
+    }
+}
+
+/// Handler struct for the Server-Sent Events hot-reload stream.
+pub struct HotReloadSseHandler {
+    pub extra_headers: Vec<(String, String)>,
+    /// Wrapped in `Option` so the receiver can be moved out on the first
+    /// (and only) call to `handle`.
+    pub rx: Option<broadcast::Receiver<()>>,
+}
+
+#[async_trait]
+impl LocalHandlerImpl for HotReloadSseHandler {
+    async fn handle(&mut self, session: &mut Session) -> PingoraResult<()> {
+        let rx = self
+            .rx
+            .take()
+            .expect("HotReloadSseHandler::handle called twice");
+        handle_sse(session, rx, &self.extra_headers).await
+    }
+}
+
 use bytes::Bytes;
 use notify::Watcher;
 use pingora_core::Result;

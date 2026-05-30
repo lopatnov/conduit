@@ -1,8 +1,24 @@
+use async_trait::async_trait;
 use bytes::Bytes;
 use pingora_core::Result;
 use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
 use prometheus::{Encoder, TextEncoder};
+
+use crate::handler::LocalHandlerImpl;
+
+/// Handler struct for Prometheus metrics responses.
+pub struct MetricsHandler {
+    pub token: Option<String>,
+    pub extra_headers: Vec<(String, String)>,
+}
+
+#[async_trait]
+impl LocalHandlerImpl for MetricsHandler {
+    async fn handle(&mut self, session: &mut Session) -> Result<()> {
+        handle_metrics(session, self.token.as_deref(), &self.extra_headers).await
+    }
+}
 
 /// Serve the Prometheus metrics endpoint.
 ///
