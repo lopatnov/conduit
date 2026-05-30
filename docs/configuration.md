@@ -642,7 +642,7 @@ Cache upstream responses in memory, Redis, or on disk.
 Default path: `/__health__`. Always returns `200 OK`:
 
 ```json
-{ "status": "ok", "uptime": 3600, "version": "0.3.0" }
+{ "status": "ok", "uptime": 3600, "version": "1.0.0" }
 ```
 
 Include upstream health:

@@ -1,6 +1,6 @@
 {
   "name": "@lopatnov/conduit",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "High-performance reverse proxy and static file server built on Cloudflare Pingora. One JSON config, one binary, no runtime dependencies. TLS, HTTP/2, load balancing, Prometheus metrics, hot reload.",
   "keywords": [
     "reverse-proxy",

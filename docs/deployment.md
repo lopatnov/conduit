@@ -94,7 +94,7 @@ Official images are published to the GitHub Container Registry on every release:
 
 ```bash
 docker pull ghcr.io/lopatnov/conduit:latest
-docker pull ghcr.io/lopatnov/conduit:0.3.0
+docker pull ghcr.io/lopatnov/conduit:1.0.0
 ```
 
 The image is built from a multi-stage Alpine → scratch pipeline (~14 MB), runs as
