@@ -7,8 +7,9 @@
 # used by CI builds so dependencies never require a newer rustc than available.
 FROM rust:alpine AS builder
 
-# musl-dev provides the C linker and libc headers needed for musl builds.
-RUN apk add --no-cache musl-dev
+# build-base provides gcc, g++, make and musl-dev — required by crates
+# that compile C/C++ code (e.g. libz-ng-sys, ring) during cargo build.
+RUN apk add --no-cache build-base
 
 WORKDIR /src
 COPY . .
