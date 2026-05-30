@@ -8,6 +8,7 @@ use clap::{CommandFactory, Parser};
 use clap_complete::Shell as ClapShell;
 use conduit::cli::args::{Cli, Command, Shell, UpstreamsCommand};
 use conduit::cli::init;
+use conduit::cli::CliCommand;
 use conduit::config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget, ProxyTarget};
 use conduit::config::{self, validate};
 use conduit::server::builder;
@@ -25,76 +26,202 @@ fn main() {
         .init();
 
     let cli = Cli::parse();
+    dispatch_command(cli);
+}
+
+/// Build the right [`CliCommand`] implementation from the parsed CLI and run it.
+///
+/// Adding a new command: add one arm here only — `main()` does not change.
+fn dispatch_command(cli: Cli) {
+    let config = resolve_config_path(&cli.config);
 
     match cli.command {
-        None => run_server(&cli.config),
-        Some(Command::Validate(_)) => cmd_validate(&cli.config),
-        Some(Command::Fmt(args)) => cmd_fmt(&cli.config, args.write),
-        Some(Command::Init(args)) => {
-            let output = args.output.as_deref().unwrap_or(&cli.config);
-            if let Err(e) = init::run_init(output) {
-                eprintln!("error: {e}");
-                process::exit(1);
-            }
+        None => ServeCmd {
+            config_path: config,
         }
-        Some(Command::Probe(_)) => cmd_probe(&cli.config),
+        .execute(),
+        Some(Command::Validate(_)) => ValidateCmd {
+            config_path: config,
+        }
+        .execute(),
+        Some(Command::Fmt(args)) => FmtCmd {
+            config_path: config,
+            write: args.write,
+        }
+        .execute(),
+        Some(Command::Init(args)) => {
+            let output = args.output.unwrap_or(config);
+            InitCmd { output }.execute();
+        }
+        Some(Command::Probe(_)) => ProbeCmd {
+            config_path: config,
+        }
+        .execute(),
         Some(Command::Reload(args)) => {
-            let addr = resolve_admin(args.admin.as_deref());
-            admin_post("reload", &addr);
+            ReloadCmd {
+                admin_addr: resolve_admin(args.admin.as_deref()),
+            }
+            .execute();
         }
         Some(Command::Status(args)) => {
-            let addr = resolve_admin(args.admin.as_deref());
-            admin_get("status", &addr);
+            StatusCmd {
+                admin_addr: resolve_admin(args.admin.as_deref()),
+            }
+            .execute();
         }
         Some(Command::Shutdown(args)) => {
-            let addr = resolve_admin(args.admin.as_deref());
-            admin_post("shutdown", &addr);
+            ShutdownCmd {
+                admin_addr: resolve_admin(args.admin.as_deref()),
+            }
+            .execute();
         }
-        Some(Command::Completions(args)) => {
-            let clap_shell = match args.shell {
-                Shell::Bash => ClapShell::Bash,
-                Shell::Zsh => ClapShell::Zsh,
-                Shell::Fish => ClapShell::Fish,
-                Shell::PowerShell => ClapShell::PowerShell,
-                Shell::Elvish => ClapShell::Elvish,
-            };
-            clap_complete::generate(
-                clap_shell,
-                &mut Cli::command(),
-                "conduit",
-                &mut std::io::stdout(),
-            );
-        }
-        Some(Command::Man) => {
-            let cmd = Cli::command();
-            let man = clap_mangen::Man::new(cmd);
-            man.render(&mut std::io::stdout()).unwrap_or_else(|e| {
-                eprintln!("error generating man page: {e}");
-                process::exit(1);
-            });
-        }
+        Some(Command::Completions(args)) => CompletionsCmd { shell: args.shell }.execute(),
+        Some(Command::Man) => ManCmd.execute(),
         Some(Command::Upstreams(args)) => {
-            let addr = resolve_admin(args.admin.as_deref());
-            match args.command {
-                None => admin_get("upstreams", &addr),
-                Some(UpstreamsCommand::Add(a)) => {
-                    let body = upstream_json(
-                        &a.route,
-                        &a.target,
-                        Some(a.weight.unwrap_or(1)),
-                        a.site.as_deref(),
-                    );
-                    admin_post_json("upstreams/add", &addr, &body);
-                }
-                Some(UpstreamsCommand::Remove(r)) => {
-                    let body = upstream_json(&r.route, &r.target, None, r.site.as_deref());
-                    admin_post_json("upstreams/remove", &addr, &body);
-                }
-                Some(UpstreamsCommand::Weight(w)) => {
-                    let body =
-                        upstream_json(&w.route, &w.target, Some(w.weight), w.site.as_deref());
-                    admin_post_json("upstreams/weight", &addr, &body);
-                }
+            UpstreamsCmd {
+                admin_addr: resolve_admin(args.admin.as_deref()),
+                subcommand: args.command,
+            }
+            .execute();
+        }
+    }
+}
+
+// ── Command structs ────────────────────────────────────────────────────────────
+
+struct ServeCmd {
+    config_path: String,
+}
+impl CliCommand for ServeCmd {
+    fn execute(self) {
+        run_server(&self.config_path);
+    }
+}
+
+struct ValidateCmd {
+    config_path: String,
+}
+impl CliCommand for ValidateCmd {
+    fn execute(self) {
+        cmd_validate(&self.config_path);
+    }
+}
+
+struct FmtCmd {
+    config_path: String,
+    write: bool,
+}
+impl CliCommand for FmtCmd {
+    fn execute(self) {
+        cmd_fmt(&self.config_path, self.write);
+    }
+}
+
+struct InitCmd {
+    output: String,
+}
+impl CliCommand for InitCmd {
+    fn execute(self) {
+        if let Err(e) = init::run_init(&self.output) {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+struct ProbeCmd {
+    config_path: String,
+}
+impl CliCommand for ProbeCmd {
+    fn execute(self) {
+        cmd_probe(&self.config_path);
+    }
+}
+
+struct ReloadCmd {
+    admin_addr: String,
+}
+impl CliCommand for ReloadCmd {
+    fn execute(self) {
+        admin_post("reload", &self.admin_addr);
+    }
+}
+
+struct StatusCmd {
+    admin_addr: String,
+}
+impl CliCommand for StatusCmd {
+    fn execute(self) {
+        admin_get("status", &self.admin_addr);
+    }
+}
+
+struct ShutdownCmd {
+    admin_addr: String,
+}
+impl CliCommand for ShutdownCmd {
+    fn execute(self) {
+        admin_post("shutdown", &self.admin_addr);
+    }
+}
+
+struct CompletionsCmd {
+    shell: Shell,
+}
+impl CliCommand for CompletionsCmd {
+    fn execute(self) {
+        let clap_shell = match self.shell {
+            Shell::Bash => ClapShell::Bash,
+            Shell::Zsh => ClapShell::Zsh,
+            Shell::Fish => ClapShell::Fish,
+            Shell::PowerShell => ClapShell::PowerShell,
+            Shell::Elvish => ClapShell::Elvish,
+        };
+        clap_complete::generate(
+            clap_shell,
+            &mut Cli::command(),
+            "conduit",
+            &mut std::io::stdout(),
+        );
+    }
+}
+
+struct ManCmd;
+impl CliCommand for ManCmd {
+    fn execute(self) {
+        let cmd = Cli::command();
+        let man = clap_mangen::Man::new(cmd);
+        man.render(&mut std::io::stdout()).unwrap_or_else(|e| {
+            eprintln!("error generating man page: {e}");
+            process::exit(1);
+        });
+    }
+}
+
+struct UpstreamsCmd {
+    admin_addr: String,
+    subcommand: Option<UpstreamsCommand>,
+}
+impl CliCommand for UpstreamsCmd {
+    fn execute(self) {
+        match self.subcommand {
+            None => admin_get("upstreams", &self.admin_addr),
+            Some(UpstreamsCommand::Add(a)) => {
+                let body = upstream_json(
+                    &a.route,
+                    &a.target,
+                    Some(a.weight.unwrap_or(1)),
+                    a.site.as_deref(),
+                );
+                admin_post_json("upstreams/add", &self.admin_addr, &body);
+            }
+            Some(UpstreamsCommand::Remove(r)) => {
+                let body = upstream_json(&r.route, &r.target, None, r.site.as_deref());
+                admin_post_json("upstreams/remove", &self.admin_addr, &body);
+            }
+            Some(UpstreamsCommand::Weight(w)) => {
+                let body = upstream_json(&w.route, &w.target, Some(w.weight), w.site.as_deref());
+                admin_post_json("upstreams/weight", &self.admin_addr, &body);
             }
         }
     }
@@ -143,7 +270,6 @@ fn resolve_config_path(config_arg: &str) -> String {
 // ── Server ─────────────────────────────────────────────────────────────────
 
 fn run_server(config_path: &str) {
-    let config_path = resolve_config_path(config_path);
     let path = Path::new(&config_path);
     let cfg = match config::load_config(path) {
         Ok(c) => c,
@@ -168,7 +294,6 @@ fn run_server(config_path: &str) {
 // ── validate ───────────────────────────────────────────────────────────────
 
 fn cmd_validate(config_path: &str) {
-    let config_path = resolve_config_path(config_path);
     let path = Path::new(&config_path);
     let app = match config::load_config(path) {
         Ok(cfg) => cfg,
@@ -222,7 +347,6 @@ fn cmd_validate(config_path: &str) {
 // ── fmt ────────────────────────────────────────────────────────────────────
 
 fn cmd_fmt(config_path: &str, write: bool) {
-    let config_path = resolve_config_path(config_path);
     let path = Path::new(&config_path);
     let app = match config::load_config(path) {
         Ok(cfg) => cfg,
