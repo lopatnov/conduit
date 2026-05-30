@@ -579,6 +579,10 @@ struct HashCtx<'a> {
 /// Returns `(url, retry_state, is_least_conn)`.  `is_least_conn` is `true`
 /// when the inflight counter on `upstream_health` has already been incremented
 /// so the caller knows to store the URL for later decrement.
+///
+/// Strategy dispatch is delegated to [`crate::proxy::strategy`] — to add a new
+/// load-balancing strategy, implement [`crate::proxy::strategy::LoadBalancingStrategy`]
+/// there and map it in `strategy::from_config`. This function does not need to change.
 fn pick_url_by_strategy(
     urls: Vec<String>,
     route_key: &str,
@@ -594,33 +598,17 @@ fn pick_url_by_strategy(
         return Some((url, Some(state), false));
     }
 
-    match strategy.unwrap_or(&LoadBalanceStrategy::RoundRobin) {
-        LoadBalanceStrategy::Random => {
-            let url = upstream::pick_random(&urls, route_key, counters)?;
-            Some((url, None, false))
-        }
-        LoadBalanceStrategy::LeastConn => {
-            let url = upstream_health.pick_least_conn(&urls)?;
-            Some((url, None, true))
-        }
-        LoadBalanceStrategy::WeightedRoundRobin => {
-            let url = upstream::pick_weighted_round_robin(hash_ctx.weighted, route_key, counters)?;
-            Some((url, None, false))
-        }
-        LoadBalanceStrategy::IpHash | LoadBalanceStrategy::ConsistentHash => {
-            let url = upstream::pick_by_hash(&urls, hash_ctx.hash_val)?;
-            Some((url, None, false))
-        }
-        LoadBalanceStrategy::LeastResponseTime => {
-            let url =
-                upstream::pick_least_response_time(&urls, upstream_health, route_key, counters)?;
-            Some((url, None, false))
-        }
-        LoadBalanceStrategy::RoundRobin => {
-            let url = upstream::pick_round_robin(&urls, route_key, counters)?;
-            Some((url, None, false))
-        }
-    }
+    let s =
+        crate::proxy::strategy::from_config(strategy.unwrap_or(&LoadBalanceStrategy::RoundRobin));
+    let (url, is_least_conn) = s.pick(
+        &urls,
+        hash_ctx.weighted,
+        route_key,
+        hash_ctx.hash_val,
+        counters,
+        upstream_health,
+    )?;
+    Some((url, None, is_least_conn))
 }
 
 /// Convert a target URL + optional strip prefix into an `UpstreamTarget::Proxy`.
