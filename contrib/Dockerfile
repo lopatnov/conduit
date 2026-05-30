@@ -8,8 +8,7 @@
 FROM rust:1.87-alpine3.21 AS builder
 
 # musl-dev provides the C linker and libc headers needed for musl builds.
-# Version is tied to the pinned Alpine 3.21 release above.
-RUN apk add --no-cache musl-dev=1.2.5-r0
+RUN apk add --no-cache musl-dev
 
 WORKDIR /src
 COPY . .
