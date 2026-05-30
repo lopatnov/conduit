@@ -3,9 +3,9 @@
 # then package into a minimal scratch image.
 
 # ── Stage 1: build ────────────────────────────────────────────────────────────
-# Pin to a specific Rust/Alpine version for reproducible builds.
-# Update this tag when upgrading the toolchain.
-FROM rust:1.87-alpine3.21 AS builder
+# Use the latest stable Rust on Alpine — keeps in sync with the toolchain
+# used by CI builds so dependencies never require a newer rustc than available.
+FROM rust:alpine AS builder
 
 # musl-dev provides the C linker and libc headers needed for musl builds.
 RUN apk add --no-cache musl-dev
