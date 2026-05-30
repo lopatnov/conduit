@@ -82,7 +82,7 @@ jobs:
       # Install cross for cross-compilation targets
       - name: Install cross
         if: matrix.use_cross
-        uses: taiki-e/install-action@d9be7d8cda89035c9c843f78bd44d4f72d8403d4  # v2.79.7
+        uses: taiki-e/install-action@50b4a718b59c718df4ef27a3b445f86cd57b9f00  # v2.80.0
         with:
           tool: cross
 
@@ -219,7 +219,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
@@ -228,14 +228,14 @@ jobs:
             type=raw,value=latest
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: contrib/Dockerfile
@@ -254,14 +254,14 @@ jobs:
 
     steps:
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Scan image
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ needs.docker.outputs.version }}
           format: table
