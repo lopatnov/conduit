@@ -350,6 +350,39 @@ mod tests {
         assert!(std::ptr::eq(s1 as *const _, s2 as *const _));
     }
 
+    // ── cache_lock ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cache_lock_returns_static_reference() {
+        let l1 = cache_lock();
+        let l2 = cache_lock();
+        // Both calls must return the same singleton address.
+        assert!(std::ptr::eq(
+            l1 as *const CacheKeyLockImpl,
+            l2 as *const CacheKeyLockImpl
+        ));
+    }
+
+    #[test]
+    fn cache_lock_first_caller_gets_write_permit() {
+        use pingora_cache::lock::Locked;
+        // Build a key distinct enough to not conflict with other tests.
+        let key = build_cache_key(
+            "lock-test.example",
+            "https",
+            "/test-write-permit",
+            None,
+            None,
+            None,
+        );
+        let lock = cache_lock();
+        let locked = lock.lock(&key, false);
+        assert!(
+            locked.is_write(),
+            "first locker must receive a write permit"
+        );
+    }
+
     // ── response_cacheable ────────────────────────────────────────────────────
 
     fn resp(status: u16) -> ResponseHeader {
