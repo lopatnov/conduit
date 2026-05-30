@@ -318,6 +318,15 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
+      # setup-node writes _authToken=${NODE_AUTH_TOKEN} to .npmrc.
+      # As long as any _authToken entry is present, npm will try token auth
+      # and skip the OIDC Trusted Publisher exchange — even when the token
+      # is empty or a GITHUB_TOKEN that npm doesn't accept.
+      # Removing it forces npm to use OIDC for both authentication and
+      # provenance signing (requires id-token: write, which is set above).
+      - name: Remove token entry so OIDC Trusted Publisher takes over
+        run: npm config delete //registry.npmjs.org/:_authToken
+
       - name: Publish to npmjs.com
         working-directory: npm
         run: npm publish --access public --provenance
