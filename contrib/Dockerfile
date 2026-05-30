@@ -7,9 +7,11 @@
 # used by CI builds so dependencies never require a newer rustc than available.
 FROM rust:alpine AS builder
 
-# build-base provides gcc, g++, make and musl-dev — required by crates
-# that compile C/C++ code (e.g. libz-ng-sys, ring) during cargo build.
-RUN apk add --no-cache build-base
+# build-base  — gcc, g++, make, musl-dev
+# cmake        — required by libz-ng-sys (builds zlib-ng from source)
+# perl         — required by some OpenSSL/ring build scripts
+# linux-headers — kernel headers for musl target
+RUN apk add --no-cache build-base cmake perl linux-headers
 
 WORKDIR /src
 COPY . .
