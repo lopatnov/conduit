@@ -819,7 +819,12 @@ impl ProxyHttp for ConduitProxy {
             return Ok(());
         }
 
-        session.cache.enable(storage, None, None, None, None);
+        // Pass the cache-key lock to prevent thundering herd on cache miss:
+        // only one request fetches from upstream; concurrent requests wait for
+        // the cached response instead of all hitting the upstream at once.
+        session
+            .cache
+            .enable(storage, None, None, Some(proxy_cache::cache_lock()), None);
         Ok(())
     }
 

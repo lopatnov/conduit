@@ -9,6 +9,7 @@
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
+use pingora_cache::lock::{CacheKeyLockImpl, CacheLock};
 use pingora_cache::{CacheKey, CacheMeta, MemCache, NoCacheReason, RespCacheable};
 use pingora_http::ResponseHeader;
 
@@ -26,6 +27,25 @@ static MEM_CACHE: OnceLock<MemCache> = OnceLock::new();
 /// Return a `'static` reference to the shared in-memory storage backend.
 pub fn cache_storage() -> &'static MemCache {
     MEM_CACHE.get_or_init(MemCache::new)
+}
+
+// ── Cache lock (thundering herd prevention) ───────────────────────────────────
+
+/// Global cache-key lock manager — prevents thundering herd on cache miss.
+///
+/// When multiple concurrent requests arrive for the same uncached key, only
+/// the first one (the *writer*) fetches from upstream.  All others receive a
+/// [`Locked::Read`] handle and wait until the writer finishes and stores the
+/// response.  They then serve the cached copy without hitting the upstream at
+/// all.
+///
+/// Timeout of 10 s means a reader waits at most 10 s for the writer before
+/// giving up and making its own upstream request.
+static CACHE_LOCK: OnceLock<CacheLock> = OnceLock::new();
+
+/// Return a `'static` reference to the shared [`CacheKeyLockImpl`].
+pub fn cache_lock() -> &'static CacheKeyLockImpl {
+    CACHE_LOCK.get_or_init(|| CacheLock::new(Duration::from_secs(10)))
 }
 
 // ── Cache key ─────────────────────────────────────────────────────────────────
