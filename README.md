@@ -34,34 +34,10 @@ cargo install lopatnov-conduit
 - [Building from Source](#building-from-source)
 - [CLI Commands](#cli-commands)
 - [Configuration](#configuration)
-  - [port / host](#port--host)
-  - [tls](#tls)
-  - [http2](#http2)
-  - [logging](#logging)
-  - [compression](#compression)
-  - [responseTime](#responsetime)
-  - [securityHeaders](#securityheaders)
-  - [cors](#cors)
-  - [ipFilter](#ipfilter)
-  - [limits](#limits)
-  - [rateLimit](#ratelimit)
-  - [basicAuth](#basicauth)
-  - [apiKey](#apikey)
-  - [redirects](#redirects)
-  - [static / staticOptions](#static--staticoptions)
-  - [proxy](#proxy)
-  - [routes (advanced routing)](#routes-advanced-routing)
-  - [Load balancing](#load-balancing)
-  - [Proxy cache](#proxy-cache)
-  - [healthCheck](#healthcheck)
-  - [upload](#upload)
-  - [hotReload](#hotreload)
-  - [metrics](#metrics)
-  - [fallback](#fallback)
-  - [Multi-site (global + sites)](#multi-site-global--sites)
 - [Configuration Recipes](#configuration-recipes)
 - [Admin API](#admin-api)
 - [Docker](#docker)
+- [Deployment](docs/deployment.md) ↗
 - [Editor Integration (JSON Schema)](#editor-integration-json-schema)
 - [Benchmarks](#benchmarks)
 - [Contributing](#contributing)
@@ -275,7 +251,12 @@ conduit completions powershell >> $PROFILE
 All options are optional unless noted. Fields accept environment variable references —
 `"$VAR"` is replaced with the value of `VAR` at startup.
 
-Conduit reads `conduit.json` by default. Pass `-c path/to/file.json` to use another file.
+Conduit reads `conduit.json` (or `conduit.yaml` / `conduit.yml`) by default.
+Pass `-c path/to/file` to use another file.
+
+For the full configuration reference see **[docs/configuration.md](docs/configuration.md)**.
+
+Below is a summary of all available options with brief descriptions.
 
 ---
 

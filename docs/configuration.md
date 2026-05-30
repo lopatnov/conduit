@@ -1,0 +1,799 @@
+# Configuration Reference
+
+All options are optional unless noted. Fields accept environment variable references —
+`"$VAR"` is replaced with the value of `VAR` at startup.
+
+Conduit reads `conduit.json` by default. Pass `-c path/to/file.json` to use another file.
+YAML is also supported: `-c conduit.yaml` or `-c conduit.yml`.
+
+---
+
+## Table of Contents
+
+- [`port` / `host`](#port--host)
+- [`tls`](#tls)
+- [`http2`](#http2)
+- [`logging`](#logging)
+- [`compression`](#compression)
+- [`responseTime`](#responsetime)
+- [`securityHeaders`](#securityheaders)
+- [`cors`](#cors)
+- [`ipFilter`](#ipfilter)
+- [`limits`](#limits)
+- [`rateLimit`](#ratelimit)
+- [`basicAuth`](#basicauth)
+- [`apiKey`](#apikey)
+- [`redirects`](#redirects)
+- [`static` / `staticOptions`](#static--staticoptions)
+- [`proxy`](#proxy)
+- [`routes` (advanced routing)](#routes-advanced-routing)
+- [Load balancing](#load-balancing)
+- [Proxy cache](#proxy-cache)
+- [`healthCheck`](#healthcheck)
+- [`upload`](#upload)
+- [`hotReload`](#hotreload)
+- [`metrics`](#metrics)
+- [`fallback`](#fallback)
+- [Multi-site (`global` + `sites`)](#multi-site-global--sites)
+
+---
+
+### `port` / `host`
+
+```json
+{ "port": 8080 }
+```
+
+```json
+{ "host": "app.example.com", "port": 443 }
+```
+
+`host` is used for virtual hosting — only requests matching the `Host` header are handled
+by this site. Omit `host` to match any hostname (catch-all).
+
+Default port: `3000`.
+
+---
+
+### `tls`
+
+**Manual certificates:**
+
+```json
+{
+  "port": 443,
+  "tls": {
+    "cert": "./certs/cert.pem",
+    "key": "./certs/key.pem",
+    "httpRedirectPort": 80
+  }
+}
+```
+
+**Auto-TLS via Let's Encrypt** (no cert/key needed):
+
+```json
+{
+  "port": 443,
+  "tls": {
+    "acme": {
+      "email": "admin@example.com",
+      "storage": "./certs",
+      "challenge": "http-01"
+    }
+  }
+}
+```
+
+Conduit automatically obtains and renews certificates. `conduit validate` reports expiry status.
+
+> Conduit uses **rustls** — not OpenSSL.
+
+> **Single certificate per port (rustls limitation):** When multiple HTTPS sites
+> share the same port, Conduit serves the *first* registered `tls.cert`/`tls.key`
+> for *all* hostnames on that port — the rustls backend does not perform
+> per-SNI certificate selection. To serve different certificates per hostname,
+> assign each site to a different port. This limitation does not affect ACME
+> sites that each have their own port.
+
+---
+
+### `http2`
+
+```json
+{
+  "port": 443,
+  "tls": { "cert": "./certs/cert.pem", "key": "./certs/key.pem" },
+  "http2": true
+}
+```
+
+| Field                  | Default | Description                         |
+| ---------------------- | ------- | ----------------------------------- |
+| `maxConcurrentStreams` | `100`   | Max parallel streams per connection |
+| `initialWindowSize`    | `65535` | Flow control window (bytes)         |
+
+---
+
+### `logging`
+
+Accepts `false`, `true`, a format string, or an object.
+
+```json
+{ "logging": "dev" }
+```
+
+```json
+{ "logging": { "format": "combined", "file": "./logs/access.log" } }
+```
+
+| Format     | Description                                             |
+| ---------- | ------------------------------------------------------- |
+| `dev`      | Colorized, short — for development                      |
+| `combined` | Apache Combined Log Format — for production             |
+| `common`   | Apache Common Log Format                                |
+| `short`    | Short, without timestamps                               |
+| `json`     | Structured JSON — for log aggregation (ELK, Loki, etc.) |
+
+---
+
+### `compression`
+
+Accepts `false`, `true`, or an object.
+
+```json
+{ "compression": true }
+```
+
+```json
+{
+  "compression": {
+    "algorithms": ["br", "gzip"],
+    "level": 6,
+    "minBytes": 1024
+  }
+}
+```
+
+Conduit negotiates the best algorithm based on the client's `Accept-Encoding` header.
+Brotli is preferred over gzip when the client supports both.
+
+---
+
+### `responseTime`
+
+Adds `X-Response-Time: 1.23ms` to every response.
+
+```json
+{ "responseTime": true }
+```
+
+```json
+{ "responseTime": { "digits": 3 } }
+```
+
+---
+
+### `securityHeaders`
+
+```json
+{ "securityHeaders": true }
+```
+
+Headers added with `true`:
+
+| Header                   | Value                             |
+| ------------------------ | --------------------------------- |
+| `X-Content-Type-Options` | `nosniff`                         |
+| `X-Frame-Options`        | `SAMEORIGIN`                      |
+| `Referrer-Policy`        | `strict-origin-when-cross-origin` |
+| `X-XSS-Protection`       | `1; mode=block`                   |
+
+Object form for HSTS and CSP:
+
+```json
+{
+  "securityHeaders": {
+    "contentSecurityPolicy": "default-src 'self'; img-src *",
+    "hsts": "max-age=31536000; includeSubDomains",
+    "frameOptions": "DENY"
+  }
+}
+```
+
+---
+
+### `cors`
+
+Accepts `false`, `true`, or an object.
+
+```json
+{ "cors": true }
+```
+
+For production, restrict to specific origins:
+
+```json
+{
+  "cors": {
+    "origins": ["https://app.example.com"],
+    "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    "allowedHeaders": ["Content-Type", "Authorization"],
+    "credentials": true,
+    "maxAgeSecs": 86400
+  }
+}
+```
+
+CORS preflight (`OPTIONS`) requests bypass auth and rate limiting — browsers send them without
+credentials.
+
+---
+
+### `ipFilter`
+
+Applied before auth and rate limiting.
+
+**Whitelist** — allow only these IPs/ranges:
+
+```json
+{ "ipFilter": { "allow": ["10.0.0.0/8", "192.168.0.0/16"] } }
+```
+
+**Blacklist** — block specific IPs:
+
+```json
+{ "ipFilter": { "deny": ["1.2.3.4", "5.6.7.0/24"] } }
+```
+
+**Behind another proxy:**
+
+```json
+{ "ipFilter": { "deny": ["1.2.3.4"], "trustProxy": true } }
+```
+
+Blocked requests receive `403 Forbidden`. IPv4, IPv6, and IPv4-mapped IPv6 are all supported.
+
+---
+
+### `limits`
+
+```json
+{
+  "limits": {
+    "maxBodyBytes": 1048576,
+    "maxHeaderBytes": 8192,
+    "timeoutSecs": 30
+  }
+}
+```
+
+| Field            | Description                  | Status code                           |
+| ---------------- | ---------------------------- | ------------------------------------- |
+| `maxBodyBytes`   | Max request body size        | `413 Request Entity Too Large`        |
+| `maxHeaderBytes` | Max total header size        | `431 Request Header Fields Too Large` |
+| `timeoutSecs`    | Per-request timeout fallback | applied to all proxy peer timeouts    |
+
+---
+
+### `rateLimit`
+
+Token-bucket rate limiter.
+
+```json
+{
+  "rateLimit": {
+    "windowSecs": 60,
+    "limit": 100
+  }
+}
+```
+
+**Key by a header** (API key, user ID, etc.):
+
+```json
+{
+  "rateLimit": {
+    "windowSecs": 60,
+    "limit": 1000,
+    "keyBy": "header:X-API-Key"
+  }
+}
+```
+
+**Redis-backed** — shared across multiple Conduit instances:
+
+```json
+{
+  "rateLimit": {
+    "windowSecs": 60,
+    "limit": 100,
+    "store": "redis://localhost:6379"
+  }
+}
+```
+
+Falls back to in-memory if Redis is unavailable.
+
+| Field        | Default          | Description                                |
+| ------------ | ---------------- | ------------------------------------------ |
+| `windowSecs` | required         | Time window in seconds                     |
+| `limit`      | required         | Max requests per window                    |
+| `algorithm`  | `"token-bucket"` | Rate limit algorithm                       |
+| `keyBy`      | `"ip"`           | `"ip"` or `"header:X-Name"`                |
+| `skipPaths`  | `[]`             | Paths exempt from limiting (glob patterns) |
+| `store`      | `"memory"`       | `"memory"` or `"redis://..."`              |
+
+---
+
+### `basicAuth`
+
+```json
+{
+  "basicAuth": {
+    "users": { "alice": "secret123", "bob": "$BOB_PASSWORD" },
+    "challenge": true,
+    "realm": "My App",
+    "skipPaths": ["/__health__", "/public/**"]
+  }
+}
+```
+
+Use `$VAR` references to avoid storing passwords in the config file.
+
+---
+
+### `apiKey`
+
+```json
+{
+  "apiKey": {
+    "keys": ["$API_KEY_1", "$API_KEY_2"],
+    "header": "X-API-Key",
+    "skipPaths": ["/__health__", "/public/**"]
+  }
+}
+```
+
+---
+
+### `redirects`
+
+First matching rule wins. Supports `:param` captures and query string preservation.
+
+```json
+{
+  "redirects": [
+    { "from": "/old-page", "to": "/new-page", "status": 301 },
+    { "from": "/blog/:slug", "to": "/posts/:slug", "status": 308 },
+    { "from": "/docs", "to": "https://docs.example.com", "status": 302 }
+  ]
+}
+```
+
+| Status | Meaning                               |
+| ------ | ------------------------------------- |
+| `301`  | Moved Permanently                     |
+| `302`  | Found — temporary redirect            |
+| `307`  | Temporary Redirect (method preserved) |
+| `308`  | Permanent Redirect (method preserved) |
+
+---
+
+### `static` / `staticOptions`
+
+**Simple:**
+
+```json
+{ "static": "./dist" }
+```
+
+**Multiple directories** — searched in order:
+
+```json
+{ "static": ["./dist", "./public"] }
+```
+
+**Map URL prefixes to directories:**
+
+```json
+{ "static": { "/": "./dist", "/assets": "./assets" } }
+```
+
+**Options:**
+
+```json
+{
+  "static": "./dist",
+  "staticOptions": {
+    "etag": true,
+    "lastModified": true,
+    "maxAge": "7d",
+    "index": ["index.html"],
+    "dotFiles": "ignore",
+    "preCompressed": true
+  }
+}
+```
+
+`preCompressed: true` serves `.br` / `.gz` variants directly without re-compressing on the fly.
+
+| Field           | Default          | Description                                      |
+| --------------- | ---------------- | ------------------------------------------------ |
+| `etag`          | `true`           | Generate ETag headers (enables 304 Not Modified) |
+| `lastModified`  | `true`           | Set Last-Modified header                         |
+| `maxAge`        | `"0"`            | Cache-Control max-age (`"1h"`, `"7d"`, `"1y"`)   |
+| `index`         | `["index.html"]` | Directory index filenames                        |
+| `dotFiles`      | `"ignore"`       | `"ignore"` \| `"allow"` \| `"deny"`              |
+| `preCompressed` | `false`          | Serve `.br`/`.gz` sidecar files                  |
+
+---
+
+### `proxy`
+
+**Simple — proxy everything:**
+
+```json
+{ "proxy": "http://localhost:4000" }
+```
+
+**Route-based:**
+
+```json
+{
+  "proxy": {
+    "/api": "http://api-server:4000",
+    "/images": "http://image-server:5000"
+  }
+}
+```
+
+**Round-robin across multiple backends:**
+
+```json
+{
+  "proxy": {
+    "/api": ["http://b1:4000", "http://b2:4000", "http://b3:4000"]
+  }
+}
+```
+
+**Full form — with all options:**
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://b1:4000", "http://b2:4000"],
+      "strategy": "least-conn",
+      "stripPrefix": true,
+      "http2": false,
+      "timeout": { "connectMs": 2000, "readMs": 30000 },
+      "healthCheck": { "path": "/health", "intervalSecs": 10 },
+      "retry": { "attempts": 3, "conditions": ["connection_error", "5xx"] },
+      "cache": { "store": "memory", "ttlSecs": 300 }
+    }
+  }
+}
+```
+
+**`stripPrefix`** — `GET /api/users` is forwarded as `GET /users` to the backend.
+
+**Path rewrite** — regex-based, first match wins, applied after `stripPrefix`:
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://backend:4000"],
+      "rewrite": [{ "from": "^/v[0-9]+/(.+)$", "to": "/$1" }]
+    }
+  }
+}
+```
+
+**Upstream groups** — two-level load balancing:
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "groups": [
+        {
+          "name": "us-east",
+          "targets": ["http://us1:4000", "http://us2:4000"],
+          "strategy": "least-conn"
+        },
+        {
+          "name": "eu-west",
+          "targets": ["http://eu1:4000", "http://eu2:4000"],
+          "strategy": "least-conn"
+        }
+      ],
+      "groupStrategy": "ip-hash"
+    }
+  }
+}
+```
+
+**Retry conditions:**
+
+| Condition          | Description                     |
+| ------------------ | ------------------------------- |
+| `connection_error` | Upstream is down or unreachable |
+| `5xx`              | Upstream returns a 5xx response |
+| `timeout`          | Read or write timeout           |
+
+---
+
+### `routes` (advanced routing)
+
+Explicit route table evaluated in order; first match wins.
+
+```json
+{
+  "routes": [
+    {
+      "match": {
+        "path": "/api/**",
+        "method": ["POST", "PUT", "PATCH", "DELETE"]
+      },
+      "proxy": {
+        "targets": ["http://write-backend:4000"],
+        "strategy": "least-conn"
+      }
+    },
+    {
+      "match": { "path": "/api/**" },
+      "proxy": "http://read-backend:4000"
+    },
+    {
+      "match": { "path": "/public/**" },
+      "static": "./public"
+    }
+  ]
+}
+```
+
+**Match criteria** (all present fields must match):
+
+| Field     | Type                 | Description                                              |
+| --------- | -------------------- | -------------------------------------------------------- |
+| `path`    | glob string          | `*` — one segment, `**` — any depth. Default: match all. |
+| `method`  | `string[]`           | HTTP methods (case-insensitive). Default: match all.     |
+| `headers` | `{ name: pattern }`  | Header values (exact string or regex).                   |
+| `query`   | `{ param: pattern }` | Query param values (exact or regex).                     |
+
+Backward compatibility: top-level `proxy` and `static` are automatically converted to routes.
+
+---
+
+### Load balancing
+
+Controlled by the `strategy` field inside a `proxy` route.
+
+| Strategy             | Value                  | Description                                                |
+| -------------------- | ---------------------- | ---------------------------------------------------------- |
+| Round-robin          | `round-robin`          | Default. Rotate evenly across all healthy backends.        |
+| Weighted round-robin | `weighted-round-robin` | Respects the `weight` field.                               |
+| Random               | `random`               | Pick a backend at random each request.                     |
+| Least connections    | `least-conn`           | Send to the backend with the fewest active connections.    |
+| Least response time  | `least-response-time`  | Send to the backend with the lowest recent latency.        |
+| IP hash              | `ip-hash`              | Sticky sessions — same client IP always hits same backend. |
+| Consistent hash      | `consistent-hash`      | Ketama ring — minimal reshuffling when backends change.    |
+
+**Weighted round-robin** requires explicit weights:
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "targets": [
+        { "url": "http://powerful:4000", "weight": 3 },
+        { "url": "http://normal:4000", "weight": 1 }
+      ],
+      "strategy": "weighted-round-robin"
+    }
+  }
+}
+```
+
+`hashKey` for `ip-hash` / `consistent-hash`: `"ip"` (default), `"url"`, or `"header:X-My-Key"`.
+
+---
+
+### Proxy cache
+
+Cache upstream responses in memory, Redis, or on disk.
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://backend:4000"],
+      "cache": {
+        "store": "memory",
+        "maxSizeMb": 256,
+        "ttlSecs": 300,
+        "varyHeaders": ["Accept-Language"],
+        "skipPaths": ["/api/auth/**", "/api/user/**"],
+        "skipIfCookie": true,
+        "methods": ["GET", "HEAD"]
+      }
+    }
+  }
+}
+```
+
+| `store` value    | Description                          |
+| ---------------- | ------------------------------------ |
+| `"memory"`       | In-process LRU — fastest, non-shared |
+| `"redis://..."`  | Redis — shared across instances      |
+| `"disk:./cache"` | Local filesystem — survives restarts |
+
+---
+
+### `healthCheck`
+
+```json
+{ "healthCheck": true }
+```
+
+Default path: `/__health__`. Always returns `200 OK`:
+
+```json
+{ "status": "ok", "uptime": 3600, "version": "0.3.0" }
+```
+
+Include upstream health:
+
+```json
+{ "healthCheck": { "path": "/health", "includeUpstreams": true } }
+```
+
+The health endpoint **bypasses auth, rate limiting, and IP filtering**.
+
+---
+
+### `upload`
+
+Accept `multipart/form-data` file uploads.
+
+```json
+{
+  "upload": {
+    "path": "/upload",
+    "dir": "./uploads",
+    "maxFileSizeBytes": 10485760,
+    "maxTotalSizeBytes": 52428800,
+    "maxFiles": 5,
+    "allowedMimeTypes": ["image/jpeg", "image/png", "application/pdf"]
+  }
+}
+```
+
+Uploaded files are saved with UUID-based names and the original extension.
+
+---
+
+### `hotReload`
+
+Browser hot reload via SSE — useful for frontend development.
+
+```json
+{ "hotReload": true }
+```
+
+```json
+{
+  "hotReload": {
+    "extensions": [".html", ".css", ".js", ".ts"],
+    "path": "/__hot-reload__"
+  }
+}
+```
+
+Add to your HTML to auto-reload when files change:
+
+```html
+<script src="/__hot-reload__/client.js"></script>
+```
+
+---
+
+### `metrics`
+
+Prometheus metrics endpoint.
+
+```json
+{ "metrics": { "path": "/__metrics__", "token": "$METRICS_TOKEN" } }
+```
+
+Metrics exposed:
+
+| Metric                             | Type      | Description                      |
+| ---------------------------------- | --------- | -------------------------------- |
+| `conduit_requests_total`           | counter   | Total requests, by method/status |
+| `conduit_request_duration_seconds` | histogram | Request latency                  |
+| `conduit_cache_hits_total`         | counter   | Proxy cache hits                 |
+| `conduit_cache_misses_total`       | counter   | Proxy cache misses               |
+
+---
+
+### `fallback`
+
+Return a response when nothing else matched.
+
+**SPA fallback:**
+
+```json
+{ "fallback": { "status": 200, "file": "./dist/index.html" } }
+```
+
+**Content-type aware:**
+
+```json
+{
+  "fallback": {
+    "byAccept": {
+      "html": { "status": 200, "file": "./dist/index.html" },
+      "json": { "status": 404, "body": { "error": "Not Found" } },
+      "*": { "status": 200, "file": "./dist/index.html" }
+    }
+  }
+}
+```
+
+---
+
+### Multi-site (`global` + `sites`)
+
+Run multiple virtual hosts from one Conduit process.
+
+```json
+{
+  "global": {
+    "workers": 4,
+    "shutdownTimeoutSecs": 30,
+    "admin": { "bind": "127.0.0.1:2019" }
+  },
+  "sites": [
+    {
+      "host": "app.example.com",
+      "port": 443,
+      "tls": { "cert": "$CERT", "key": "$KEY", "httpRedirectPort": 80 },
+      "static": "./dist",
+      "proxy": { "/api": "http://api:4000" }
+    },
+    {
+      "host": "admin.example.com",
+      "port": 443,
+      "tls": { "cert": "$CERT", "key": "$KEY" },
+      "basicAuth": { "users": { "admin": "$ADMIN_PASS" }, "challenge": true },
+      "static": "./admin-ui"
+    },
+    {
+      "host": "*",
+      "port": 443,
+      "tls": { "cert": "$CERT", "key": "$KEY" },
+      "fallback": { "status": 404, "body": "Unknown host" }
+    }
+  ]
+}
+```
+
+**Config forms** — three equivalent ways:
+
+```jsonc
+// Single site (most common)
+{ "port": 3000, "static": "./dist" }
+
+// Array of sites
+[
+  { "host": "a.com", "port": 443 },
+  { "host": "b.com", "port": 443 }
+]
+
+// Full form with global settings
+{ "global": { "workers": 4 }, "sites": [...] }
+```

@@ -116,10 +116,35 @@ fn upstream_json(route: &str, target: &str, weight: Option<u32>, site: Option<&s
     obj.to_string()
 }
 
+// ── Config path resolution ─────────────────────────────────────────────────
+
+/// Resolve the config path, trying YAML alternatives when the default JSON
+/// path does not exist.
+///
+/// Priority: explicit path → conduit.json → conduit.yaml → conduit.yml.
+/// Only applies when the user did not pass `-c` explicitly (i.e. the value
+/// is still the default "conduit.json" and that file is absent).
+fn resolve_config_path(config_arg: &str) -> String {
+    let path = Path::new(config_arg);
+    if path.exists() {
+        return config_arg.to_owned();
+    }
+    // Only auto-probe alternatives when the argument is the default value.
+    if config_arg == "conduit.json" {
+        for alt in &["conduit.yaml", "conduit.yml"] {
+            if Path::new(alt).exists() {
+                return (*alt).to_owned();
+            }
+        }
+    }
+    config_arg.to_owned()
+}
+
 // ── Server ─────────────────────────────────────────────────────────────────
 
 fn run_server(config_path: &str) {
-    let path = Path::new(config_path);
+    let config_path = resolve_config_path(config_path);
+    let path = Path::new(&config_path);
     let cfg = match config::load_config(path) {
         Ok(c) => c,
         Err(e) => {
@@ -143,7 +168,8 @@ fn run_server(config_path: &str) {
 // ── validate ───────────────────────────────────────────────────────────────
 
 fn cmd_validate(config_path: &str) {
-    let path = Path::new(config_path);
+    let config_path = resolve_config_path(config_path);
+    let path = Path::new(&config_path);
     let app = match config::load_config(path) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -196,7 +222,8 @@ fn cmd_validate(config_path: &str) {
 // ── fmt ────────────────────────────────────────────────────────────────────
 
 fn cmd_fmt(config_path: &str, write: bool) {
-    let path = Path::new(config_path);
+    let config_path = resolve_config_path(config_path);
+    let path = Path::new(&config_path);
     let app = match config::load_config(path) {
         Ok(cfg) => cfg,
         Err(e) => {

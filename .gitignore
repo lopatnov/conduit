@@ -36,3 +36,4 @@ target
 # Local runtime artefacts
 /*.log
 /.mcp.json
+/.env

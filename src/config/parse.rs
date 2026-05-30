@@ -12,10 +12,21 @@ struct VersionProbe {
 }
 
 /// Load and parse a config file from disk, performing env interpolation first.
+///
+/// Both JSON (`.json`) and YAML (`.yaml` / `.yml`) are supported.
+/// The format is determined by the file extension; JSON is the default.
 pub fn load_config(path: &Path) -> Result<AppConfig> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("Cannot read config file: {}", path.display()))?;
-    from_str(&raw).with_context(|| format!("Cannot parse config file: {}", path.display()))
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("json");
+    match ext {
+        "yaml" | "yml" => {
+            from_yaml(&raw).with_context(|| format!("Cannot parse config file: {}", path.display()))
+        }
+        _ => {
+            from_str(&raw).with_context(|| format!("Cannot parse config file: {}", path.display()))
+        }
+    }
 }
 
 /// Parse a config JSON string, performing env interpolation first.
@@ -23,6 +34,31 @@ pub fn from_str(text: &str) -> Result<AppConfig> {
     let text = crate::config::env::interpolate(text);
 
     let probe: VersionProbe = serde_json::from_str(&text).unwrap_or_default();
+    check_version(probe)?;
+
+    let jd = &mut serde_json::Deserializer::from_str(&text);
+    let file: ConfigFile = serde_path_to_error::deserialize(jd)
+        .map_err(|e| anyhow::anyhow!("Config parse error at '{}': {}", e.path(), e.inner()))?;
+
+    Ok(normalize(file))
+}
+
+/// Parse a config YAML string, performing env interpolation first.
+pub fn from_yaml(text: &str) -> Result<AppConfig> {
+    let text = crate::config::env::interpolate(text);
+
+    let probe: VersionProbe = serde_yaml::from_str(&text).unwrap_or_default();
+    check_version(probe)?;
+
+    let de = serde_yaml::Deserializer::from_str(&text);
+    let file: ConfigFile = serde_path_to_error::deserialize(de)
+        .map_err(|e| anyhow::anyhow!("Config parse error at '{}': {}", e.path(), e.inner()))?;
+
+    Ok(normalize(file))
+}
+
+/// Reject configs whose `version` field is newer than what this binary supports.
+fn check_version(probe: VersionProbe) -> Result<()> {
     if let Some(v) = probe.version {
         if v > CONFIG_VERSION {
             anyhow::bail!(
@@ -33,12 +69,7 @@ pub fn from_str(text: &str) -> Result<AppConfig> {
             );
         }
     }
-
-    let jd = &mut serde_json::Deserializer::from_str(&text);
-    let file: ConfigFile = serde_path_to_error::deserialize(jd)
-        .map_err(|e| anyhow::anyhow!("Config parse error at '{}': {}", e.path(), e.inner()))?;
-
-    Ok(normalize(file))
+    Ok(())
 }
 
 /// Normalize all ConfigFile variants into a canonical AppConfig.
@@ -64,7 +95,7 @@ mod tests {
     // ── load_config ───────────────────────────────────────────────────────────
 
     #[test]
-    fn load_config_parses_valid_file() {
+    fn load_config_parses_valid_json_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("conduit.json");
         std::fs::write(&path, r#"{"port": 8080}"#).unwrap();
@@ -72,14 +103,69 @@ mod tests {
     }
 
     #[test]
-    fn load_config_missing_file_returns_error() {
+    fn load_config_parses_valid_yaml_file() {
         let dir = tempfile::tempdir().unwrap();
-        let missing = dir.path().join("__conduit_test_missing__.json"); // intentionally not created
-        let result = load_config(&missing);
-        assert!(result.is_err(), "missing file must return an error");
+        let path = dir.path().join("conduit.yaml");
+        std::fs::write(&path, "port: 8080\n").unwrap();
+        assert!(load_config(&path).is_ok());
     }
 
-    // ── from_str ──────────────────────────────────────────────────────────────
+    #[test]
+    fn load_config_parses_yml_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conduit.yml");
+        std::fs::write(&path, "port: 3000\n").unwrap();
+        let cfg = load_config(&path).expect("should parse .yml");
+        assert_eq!(cfg.sites[0].port, Some(3000));
+    }
+
+    #[test]
+    fn load_config_missing_file_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("__conduit_test_missing__.json");
+        assert!(load_config(&missing).is_err());
+    }
+
+    // ── from_yaml ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn yaml_single_site_form() {
+        let cfg = from_yaml("port: 8080\n").expect("parse");
+        assert_eq!(cfg.sites[0].port, Some(8080));
+    }
+
+    #[test]
+    fn yaml_sites_array_form() {
+        let yaml = "- port: 8080\n- port: 8081\n";
+        let cfg = from_yaml(yaml).expect("parse");
+        assert_eq!(cfg.sites.len(), 2);
+        assert_eq!(cfg.sites[0].port, Some(8080));
+        assert_eq!(cfg.sites[1].port, Some(8081));
+    }
+
+    #[test]
+    fn yaml_full_form_with_global() {
+        let yaml = "global:\n  workers: 4\nsites:\n  - port: 9000\n";
+        let cfg = from_yaml(yaml).expect("parse");
+        assert_eq!(cfg.sites[0].port, Some(9000));
+        assert!(cfg.global.is_some());
+    }
+
+    #[test]
+    fn yaml_invalid_port_type_returns_error() {
+        let result = from_yaml("port: \"not-a-number\"\n");
+        assert!(result.is_err(), "invalid port type must fail");
+    }
+
+    #[test]
+    fn yaml_unsupported_version_returns_error() {
+        let result = from_yaml("version: 999\nport: 8080\n");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("999") || msg.contains("version") || msg.contains("upgrade"));
+    }
+
+    // ── from_str (JSON) ───────────────────────────────────────────────────────
 
     #[test]
     fn unsupported_version_returns_error() {

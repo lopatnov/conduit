@@ -27,6 +27,7 @@ pingora-cache          = { version = "0.8", features = ["rustls"] }
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
 serde_json          = "1"
+serde_yaml          = "0.9"
 serde_path_to_error = "0.1"
 indexmap            = { version = "2", features = ["serde"] }
 humantime           = "2"
