@@ -20,6 +20,10 @@ use crate::config::schema::{
     ApiKeyConfig, AppConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig, HealthCheckConfig,
     IpFilterConfig, LimitsConfig, MiddlewareEntry, ProxyTimeout, RateLimitConfig,
 };
+use crate::filter::chain::{
+    ApiKeyGuard, BasicAuthGuard, CorsPreflight, FilterChain, FilterContext, HealthBypass, IpGuard,
+    LimitsGuard, RateLimitGuard, RedirectGuard, ScriptGuard,
+};
 use crate::filter::rate_limit::RateLimiter;
 use crate::filter::rate_limit_redis::RedisRateLimiter;
 use crate::filter::{
@@ -361,191 +365,94 @@ impl ConduitProxy {
     /// Returns `Ok(true)` when a filter has already written a response and
     /// decremented the inflight counter (caller must return `Ok(true)` too).
     /// Returns `Ok(false)` to continue to the dispatcher.
+    /// Run the guard filter chain for this request.
+    ///
+    /// Builds a [`FilterChain`] from the pre-computed [`GuardCtx`] and runs it.
+    /// Each filter is independent — adding a new guard means implementing
+    /// [`crate::filter::chain::RequestFilter`] and pushing it into the chain here,
+    /// with no other changes required in this file.
+    ///
+    /// Returns `Ok(true)` when a filter wrote a rejection response (Pingora
+    /// should stop the pipeline), `Ok(false)` to continue with normal dispatch.
     async fn run_guard_filters(&self, session: &mut Session, guards: GuardCtx) -> Result<bool> {
-        // 1. IP filter — applied to every request, including health and metrics.
-        if let Some(ref cfg) = guards.ip_cfg {
-            if !ip_filter::is_allowed(cfg, session) {
-                response::write_response(
-                    session,
-                    403,
-                    "text/plain",
-                    Bytes::from_static(b"Forbidden"),
-                    &guards.extra_headers,
-                )
-                .await?;
-                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(true);
-            }
-        }
-
-        // 2. CORS preflight — before auth; browsers send OPTIONS without credentials.
-        if guards.is_preflight {
-            if let Some(ref cfg) = guards.cors_cfg {
-                let origin = guards.origin.as_deref().unwrap_or("");
-                cors::handle_preflight(session, cfg, origin, &guards.sec_only).await?;
-                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(true);
-            }
-        }
-
-        // Health, ACME challenge, and hot-reload endpoints bypass all remaining filters.
-        if matches!(
+        let is_bypass = matches!(
             guards.handler_kind,
             HandlerKind::Health
                 | HandlerKind::AcmeChallenge
                 | HandlerKind::HotReloadSse
                 | HandlerKind::HotReloadJs
-        ) {
-            return Ok(false);
+        );
+
+        // Build the chain.  Filters run in the order they are pushed.
+        let mut chain = FilterChain::new();
+
+        // 1. IP filter — runs for every request, including health/ACME.
+        if let Some(cfg) = guards.ip_cfg {
+            chain = chain.push(IpGuard { cfg });
         }
 
-        // 3–5. Size limits, rate limiting, and authentication.
-        if self
-            .check_non_health_guards(
-                session,
-                &guards.limits_cfg,
-                &guards.rate_limit_cfg,
-                &guards.basic_auth_cfg,
-                &guards.api_key_cfg,
-                &guards.extra_headers,
-            )
-            .await?
-        {
-            return Ok(true);
+        // 2. CORS preflight — runs before auth; browsers send OPTIONS without credentials.
+        if let Some(cfg) = guards.cors_cfg {
+            chain = chain.push(CorsPreflight {
+                cfg,
+                is_preflight: guards.is_preflight,
+                origin: guards.origin,
+                sec_headers: guards.sec_only,
+            });
         }
 
-        // 6. Redirects.
-        if let Some((location, status)) = guards.redirect_result {
-            response::write_redirect(session, status, &location, &guards.extra_headers).await?;
-            self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-            return Ok(true);
+        // 3. Health / ACME / hot-reload bypass — skips all remaining guards.
+        chain = chain.push(HealthBypass { bypass: is_bypass });
+
+        // 4. Request size / header limits.
+        if let Some(cfg) = guards.limits_cfg {
+            chain = chain.push(LimitsGuard { cfg });
         }
 
-        // 7. Rhai script middleware — type: "script" entries from site.middleware.
-        for entry in &guards.middleware {
-            if entry.r#type != "script" {
-                continue;
-            }
-            let Some(ref script_path) = entry.path else {
-                continue;
-            };
-            match script::run_script(
-                script_path,
-                &guards.script_path,
-                &guards.script_method,
-                &guards.script_query,
-                guards.script_headers.clone(),
-            ) {
-                script::ScriptOutcome::Continue => {}
-                script::ScriptOutcome::Abort {
-                    status,
-                    body,
-                    extra_headers,
-                } => {
-                    // Merge the script's extra headers with the standard extra
-                    // headers (CORS, security, custom) so both sets are sent.
-                    let mut all_headers = guards.extra_headers.clone();
-                    all_headers.extend(extra_headers);
-                    response::write_response(
-                        session,
-                        status,
-                        "text/plain",
-                        Bytes::from(body),
-                        &all_headers,
-                    )
-                    .await?;
-                    self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                    return Ok(true);
-                }
-            }
+        // 5. Token-bucket rate limiting.
+        if let Some(cfg) = guards.rate_limit_cfg {
+            chain = chain.push(RateLimitGuard { cfg });
         }
 
-        Ok(false)
-    }
-
-    /// Check size limits, rate limiting, and authentication for non-health requests.
-    ///
-    /// Returns `Ok(true)` when the request was rejected (response written,
-    /// inflight decremented).
-    async fn check_non_health_guards(
-        &self,
-        session: &mut Session,
-        limits_cfg: &Option<LimitsConfig>,
-        rate_limit_cfg: &Option<RateLimitConfig>,
-        basic_auth_cfg: &Option<BasicAuthConfig>,
-        api_key_cfg: &Option<ApiKeyConfig>,
-        extra_headers: &[(String, String)],
-    ) -> Result<bool> {
-        // 3. Request size / header limits.
-        if let Some(ref cfg) = limits_cfg {
-            if let Some((status, body)) = limits_rejection(limits::check(cfg, session)) {
-                response::write_response(session, status, "text/plain", body, extra_headers)
-                    .await?;
-                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(true);
-            }
+        // 6a. Basic Auth.
+        if let Some(cfg) = guards.basic_auth_cfg {
+            chain = chain.push(BasicAuthGuard { cfg });
         }
 
-        // 4. Token-bucket rate limiting.
-        if let Some(ref rl_cfg) = rate_limit_cfg {
-            let allowed = self.rate_limit_allowed(rl_cfg, session).await;
-            if !allowed {
-                response::write_response(
-                    session,
-                    429,
-                    "text/plain",
-                    Bytes::from_static(b"Too Many Requests"),
-                    extra_headers,
-                )
-                .await?;
-                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(true);
-            }
+        // 6b. API-key Auth.
+        if let Some(cfg) = guards.api_key_cfg {
+            chain = chain.push(ApiKeyGuard { cfg });
         }
 
-        // 5a. Basic Auth.
-        if let Some(ref auth_cfg) = basic_auth_cfg {
-            if let auth::BasicAuthResult::Denied { challenge, realm } =
-                auth::check_basic_auth(auth_cfg, session)
-            {
-                let www_auth = challenge.then(|| format!("Basic realm=\"{realm}\""));
-                response::write_denied(session, www_auth.as_deref(), extra_headers).await?;
-                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(true);
-            }
-        }
+        // 7. Redirects.
+        chain = chain.push(RedirectGuard {
+            result: guards.redirect_result,
+        });
 
-        // 5b. API key auth.
-        if let Some(ref key_cfg) = api_key_cfg {
-            if !auth::check_api_key(key_cfg, session) {
-                response::write_denied(session, None, extra_headers).await?;
-                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(true);
-            }
-        }
+        // 8. Rhai script middleware.
+        chain = chain.push(ScriptGuard {
+            middleware: guards.middleware,
+            script_path: guards.script_path,
+            script_method: guards.script_method,
+            script_query: guards.script_query,
+            script_headers: guards.script_headers,
+        });
 
-        Ok(false)
+        let mut ctx = FilterContext {
+            session,
+            extra_headers: &guards.extra_headers,
+            inflight: &self.state.inflight,
+            rate_limiter: &self.state.rate_limiter,
+            redis_rate_limiter: self.state.redis_rate_limiter.as_ref(),
+        };
+
+        chain.run(&mut ctx).await
     }
 
     /// Determine whether the request is allowed by the rate limiter.
     ///
     /// Uses Redis when configured and available; falls back to the in-memory
     /// token-bucket limiter if the Redis connection was not established at startup.
-    async fn rate_limit_allowed(&self, rl_cfg: &RateLimitConfig, session: &mut Session) -> bool {
-        if rl_cfg
-            .store
-            .as_deref()
-            .is_some_and(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
-        {
-            if let Some(ref rrl) = self.state.redis_rate_limiter {
-                let key = rate_limit::extract_client_key(rl_cfg, session);
-                return rrl.check(&key, rl_cfg.limit, rl_cfg.window_secs).await;
-            }
-            // Redis unavailable at startup — fall through to memory.
-        }
-        rate_limit::check(rl_cfg, session, &self.state.rate_limiter)
-    }
-
     /// Dispatch a request to the appropriate local handler.
     ///
     /// Returns `Ok(true)` for local handlers (response fully written) or
@@ -1280,20 +1187,6 @@ fn handler_kind_of(upstream: &UpstreamTarget) -> HandlerKind {
         UpstreamTarget::Local(LocalHandler::HotReloadJs) => HandlerKind::HotReloadJs,
         UpstreamTarget::Local(_) => HandlerKind::Fallback,
         _ => HandlerKind::Proxy,
-    }
-}
-
-/// Map a `limits::CheckResult` to the HTTP rejection status + body, or `None`
-/// when the request is within the configured limits.
-fn limits_rejection(result: limits::CheckResult) -> Option<(u16, Bytes)> {
-    match result {
-        limits::CheckResult::BodyTooLarge => {
-            Some((413, Bytes::from_static(b"Request Entity Too Large")))
-        }
-        limits::CheckResult::HeaderTooLarge => {
-            Some((431, Bytes::from_static(b"Request Header Fields Too Large")))
-        }
-        limits::CheckResult::Ok => None,
     }
 }
 
