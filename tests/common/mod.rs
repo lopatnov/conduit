@@ -1,4 +1,5 @@
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::Duration;
 
@@ -7,6 +8,8 @@ pub struct TestServer {
     child: Child,
     pub port: u16,
     pub admin_port: u16,
+    /// Path to the config file — used by `rewrite_config` + `reload`.
+    pub cfg_path: PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -43,6 +46,7 @@ impl TestServer {
             child,
             port,
             admin_port,
+            cfg_path: cfg_path.clone(),
             _dir: dir,
         };
         server.wait_ready();
@@ -109,6 +113,24 @@ impl TestServer {
     pub fn admin_url(&self, path: &str) -> String {
         format!("http://127.0.0.1:{}{path}", self.admin_port)
     }
+
+    /// Overwrite the config file on disk with a new JSON value.
+    ///
+    /// Call [`Self::reload`] afterwards to apply the change.
+    pub fn rewrite_config(&self, config: serde_json::Value) {
+        std::fs::write(&self.cfg_path, config.to_string()).expect("rewrite config");
+    }
+
+    /// POST to `POST /reload` and return the parsed JSON response.
+    pub fn reload(&self) -> serde_json::Value {
+        let client = reqwest::blocking::Client::new();
+        client
+            .post(self.admin_url("/reload"))
+            .send()
+            .expect("POST /reload")
+            .json()
+            .expect("JSON response from /reload")
+    }
 }
 
 impl Drop for TestServer {
@@ -149,11 +171,25 @@ fn probe_admin(url: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Bind to port 0, get the OS-assigned port, then release the socket.
+/// Return a free TCP port on 127.0.0.1.
+///
+/// Uses ports in the range 10000–19999, which is below the Linux/macOS OS
+/// ephemeral port range (32768+).  Picking from the ephemeral range meant
+/// that the OS could assign the same port to an outgoing connection in the
+/// narrow window between `free_port()` releasing the socket and the Conduit
+/// server binding it, causing flaky "Address already in use" failures.
+///
+/// An atomic counter gives each call within the same process a different
+/// starting point, further reducing intra-binary conflicts.
 pub fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("bind port 0")
-        .local_addr()
-        .expect("local_addr")
-        .port()
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static NEXT: AtomicU16 = AtomicU16::new(10000);
+    loop {
+        // Wrap monotonically within 10000–19999.
+        let p = NEXT.fetch_add(1, Ordering::Relaxed) % 10000 + 10000;
+        if TcpListener::bind(format!("127.0.0.1:{p}")).is_ok() {
+            return p;
+        }
+        // Port in use — skip it and try the next one.
+    }
 }

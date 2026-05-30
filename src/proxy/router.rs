@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -6,7 +7,7 @@ use dashmap::DashMap;
 
 use crate::config::schema::{
     AppConfig, CacheConfig, ConnectionPoolConfig, LoadBalanceStrategy, ProxyConfig,
-    ProxyRouteTarget, ProxyTimeout, RetryConfig, SiteConfig, StaticConfig,
+    ProxyRouteTarget, ProxyTimeout, RetryConfig, SiteConfig, StaticConfig, UpstreamGroup,
 };
 use crate::proxy::ctx::{LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
@@ -15,7 +16,7 @@ use crate::proxy::upstream;
 /// Resolved routing result: all per-route data needed to populate `RequestCtx`.
 ///
 /// Fields: (upstream, retry, timeout, pool, http2, upstream_url_for_least_conn, cache_cfg)
-type RouteResult = (
+pub type RouteResultAlias = (
     UpstreamTarget,
     Option<RetryState>,
     Option<ProxyTimeout>,
@@ -25,15 +26,23 @@ type RouteResult = (
     Option<CacheConfig>, // per-route cache config, if caching is enabled
 );
 
+type RouteResult = RouteResultAlias;
+
+#[allow(clippy::too_many_arguments)]
 pub fn route_request(
     config: &AppConfig,
     host: &str,
     path: &str,
+    method: &str,
+    req_headers: &http::HeaderMap,
+    query: Option<&str>,
     client_ip: &str,
+    server_port: u16,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
+    upload_addr: Option<SocketAddr>,
 ) -> RequestCtx {
-    let site_idx = find_site_idx(config, host).unwrap_or(0);
+    let site_idx = find_site_idx(config, host, server_port).unwrap_or(0);
     let site = config.sites.get(site_idx);
 
     let (
@@ -44,7 +53,22 @@ pub fn route_request(
         proxy_http2,
         proxy_upstream_url,
         proxy_cache_cfg,
-    ) = if is_health_path(site, path) {
+    ) = if let Some(token) = acme_challenge_token(path) {
+        // ACME HTTP-01 challenge — served before any site-level routing so that
+        // the challenge is available even on sites that redirect or auth-protect
+        // everything.
+        (
+            UpstreamTarget::Local(LocalHandler::AcmeChallenge {
+                token: token.to_owned(),
+            }),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+    } else if is_health_path(site, path) {
         (
             UpstreamTarget::Local(LocalHandler::Health),
             None,
@@ -64,8 +88,38 @@ pub fn route_request(
             None,
             None,
         )
+    } else if is_hot_reload_js_path(site, path) {
+        (
+            UpstreamTarget::Local(LocalHandler::HotReloadJs),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+    } else if is_hot_reload_sse_path(site, path) {
+        (
+            UpstreamTarget::Local(LocalHandler::HotReloadSse),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
     } else if let Some(site) = site {
-        route_site(site, path, client_ip, counters, upstream_health)
+        route_site(
+            site,
+            path,
+            method,
+            req_headers,
+            query,
+            client_ip,
+            counters,
+            upstream_health,
+            upload_addr,
+        )
     } else {
         (
             UpstreamTarget::Local(LocalHandler::Fallback),
@@ -90,21 +144,100 @@ pub fn route_request(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn route_site(
     site: &SiteConfig,
     path: &str,
+    method: &str,
+    req_headers: &http::HeaderMap,
+    query: Option<&str>,
     client_ip: &str,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
+    upload_addr: Option<SocketAddr>,
 ) -> RouteResult {
-    // Proxy routes take priority over static files.
+    let site_label = crate::proxy::health::site_label(&site.host, site.port);
+
+    if let Some(result) = match_upload_route(site, path, upload_addr) {
+        return result;
+    }
+    if let Some(result) = match_routes_array(
+        site,
+        path,
+        method,
+        req_headers,
+        query,
+        counters,
+        upstream_health,
+    ) {
+        return result;
+    }
     if let Some(proxy_cfg) = &site.proxy {
-        if let Some(result) = resolve_proxy(proxy_cfg, path, client_ip, counters, upstream_health) {
+        if let Some(result) = resolve_proxy(
+            proxy_cfg,
+            path,
+            client_ip,
+            counters,
+            upstream_health,
+            &site_label,
+        ) {
             return result;
         }
     }
+    match_static_or_fallback(site, path)
+}
 
-    // Static files (only reached if no proxy route matched).
+/// Check whether the request targets the configured upload prefix.
+///
+/// Upload path takes priority — it is a precise prefix configured by the
+/// operator and must not be shadowed by a catch-all proxy route.
+fn match_upload_route(
+    site: &SiteConfig,
+    path: &str,
+    upload_addr: Option<SocketAddr>,
+) -> Option<RouteResult> {
+    let (upload_cfg, addr) = site.upload.as_ref().zip(upload_addr)?;
+    let upload_prefix = upload_cfg.path.trim_end_matches('/');
+    let matches = path == upload_prefix || path.starts_with(&format!("{upload_prefix}/"));
+    matches.then_some((
+        UpstreamTarget::Upload { addr },
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+    ))
+}
+
+/// Match against the `routes` array (evaluated before legacy `proxy`/`static`).
+///
+/// Each `RouteConfig` has a `MatchConfig` (path glob, method, headers, query)
+/// plus an action (proxy or static).  First match wins.
+#[allow(clippy::too_many_arguments)]
+fn match_routes_array(
+    site: &SiteConfig,
+    path: &str,
+    method: &str,
+    req_headers: &http::HeaderMap,
+    query: Option<&str>,
+    counters: &DashMap<String, AtomicUsize>,
+    upstream_health: &UpstreamRegistry,
+) -> Option<RouteResult> {
+    crate::proxy::routes::match_routes(
+        site.routes.as_ref()?,
+        path,
+        method,
+        req_headers,
+        query,
+        counters,
+        upstream_health,
+        site.static_options.as_ref(),
+    )
+}
+
+/// Serve static files when configured, or fall through to the global fallback handler.
+fn match_static_or_fallback(site: &SiteConfig, path: &str) -> RouteResult {
     if let Some(static_cfg) = &site.static_files {
         let options = Arc::new(site.static_options.clone().unwrap_or_default());
         let (roots, strip_prefix) = resolve_static_roots(static_cfg, path);
@@ -124,7 +257,6 @@ fn route_site(
             );
         }
     }
-
     (
         UpstreamTarget::Local(LocalHandler::Fallback),
         None,
@@ -142,6 +274,7 @@ fn resolve_proxy(
     client_ip: &str,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
+    site_label: &str,
 ) -> Option<RouteResult> {
     match config {
         ProxyConfig::Single(url) => Some((
@@ -156,10 +289,34 @@ fn resolve_proxy(
         ProxyConfig::Routes(routes) => {
             let (route_key, route_target) = find_route(routes, path)?;
 
+            // ── Two-level (grouped) routing ───────────────────────────────────
+            // When the route config has `groups`, bypass flat-target logic and
+            // resolve via pick_group → pick_within_group.
+            if let ProxyRouteTarget::Full(cfg) = route_target {
+                if let Some(groups) = &cfg.groups {
+                    return resolve_grouped(
+                        cfg.group_strategy.as_ref(),
+                        groups,
+                        cfg.hash_key.as_deref().unwrap_or("ip"),
+                        route_key,
+                        path,
+                        client_ip,
+                        counters,
+                        upstream_health,
+                        cfg.strip_prefix.unwrap_or(false),
+                        cfg.timeout.clone(),
+                        cfg.pool.clone(),
+                        cfg.http2.unwrap_or(false),
+                        cfg.cache.clone(),
+                        cfg.rewrite.clone(),
+                    );
+                }
+            }
+
             // ── Runtime override check ────────────────────────────────────────
             // When the operator has issued `conduit upstreams add/remove/weight`,
             // those targets replace the config-file targets for this route.
-            let runtime_targets = upstream_health.get_override_targets(route_key);
+            let runtime_targets = upstream_health.get_override_targets(site_label, route_key);
             let (all_urls, all_weighted_base): (Vec<String>, Vec<(String, u32)>) =
                 if let Some(ref ov) = runtime_targets {
                     let urls = ov.iter().map(|(u, _)| u.clone()).collect();
@@ -171,19 +328,28 @@ fn resolve_proxy(
                     )
                 };
 
-            let (retry_cfg, proxy_timeout, proxy_pool, strategy, proxy_http2, hash_key, cache_cfg) =
-                match route_target {
-                    ProxyRouteTarget::Full(cfg) => (
-                        cfg.retry.as_ref(),
-                        cfg.timeout.clone(),
-                        cfg.pool.clone(),
-                        cfg.strategy.as_ref(),
-                        cfg.http2.unwrap_or(false),
-                        cfg.hash_key.as_deref().unwrap_or("ip"),
-                        cfg.cache.clone(),
-                    ),
-                    _ => (None, None, None, None, false, "ip", None),
-                };
+            let (
+                retry_cfg,
+                proxy_timeout,
+                proxy_pool,
+                strategy,
+                proxy_http2,
+                hash_key,
+                cache_cfg,
+                rewrite_rules,
+            ) = match route_target {
+                ProxyRouteTarget::Full(cfg) => (
+                    cfg.retry.as_ref(),
+                    cfg.timeout.clone(),
+                    cfg.pool.clone(),
+                    cfg.strategy.as_ref(),
+                    cfg.http2.unwrap_or(false),
+                    cfg.hash_key.as_deref().unwrap_or("ip"),
+                    cfg.cache.clone(),
+                    cfg.rewrite.clone(),
+                ),
+                _ => (None, None, None, None, false, "ip", None, None),
+            };
 
             // Filter to healthy upstreams; if all are down keep all (fail-open).
             let healthy = upstream_health.filter_healthy(&all_urls);
@@ -229,7 +395,20 @@ fn resolve_proxy(
             // If least-conn already incremented the inflight counter we must
             // release it here — the logging() hook won't run on this request.
             let upstream = match url_to_proxy_upstream(&chosen_url, strip) {
-                Some(u) => u,
+                Some(UpstreamTarget::Proxy {
+                    addr,
+                    tls,
+                    sni,
+                    strip_prefix,
+                    ..
+                }) => UpstreamTarget::Proxy {
+                    addr,
+                    tls,
+                    sni,
+                    strip_prefix,
+                    rewrite: rewrite_rules,
+                },
+                Some(other) => other,
                 None => {
                     if is_least_conn {
                         upstream_health.conn_dec(&chosen_url);
@@ -251,6 +430,139 @@ fn resolve_proxy(
             ))
         }
     }
+}
+
+/// Two-level load balancing: pick a group via `group_strategy`, then pick a
+/// target within the group using each group's own `strategy`.
+///
+/// Group selection keys:
+/// - `hash_key = "ip"` → hash client IP across groups (sticky per client)
+/// - `hash_key = "url"` → hash request path across groups
+/// - Other strategies (round-robin, random, least-conn, …) work as usual.
+#[allow(clippy::too_many_arguments)]
+fn resolve_grouped(
+    group_strategy: Option<&LoadBalanceStrategy>,
+    groups: &[UpstreamGroup],
+    hash_key: &str,
+    route_key: &str,
+    path: &str,
+    client_ip: &str,
+    counters: &DashMap<String, AtomicUsize>,
+    upstream_health: &UpstreamRegistry,
+    strip_prefix_flag: bool,
+    proxy_timeout: Option<crate::config::schema::ProxyTimeout>,
+    proxy_pool: Option<crate::config::schema::ConnectionPoolConfig>,
+    proxy_http2: bool,
+    cache_cfg: Option<crate::config::schema::CacheConfig>,
+    rewrite_rules: Option<Vec<crate::config::schema::RewriteRule>>,
+) -> Option<RouteResult> {
+    if groups.is_empty() {
+        return None;
+    }
+
+    // Outer pick: choose which group handles this request.
+    let group_key = format!("{route_key}__group");
+    let hash_input = if hash_key == "url" || client_ip.is_empty() {
+        path
+    } else {
+        client_ip
+    };
+    let hash_val = upstream::fnv1a_hash(hash_input);
+
+    let group_names: Vec<String> = groups.iter().map(|g| g.name.clone()).collect();
+    let picked_name = {
+        let ctx = HashCtx {
+            weighted: &[],
+            hash_val,
+        };
+        pick_url_by_strategy(
+            group_names.clone(),
+            &group_key,
+            counters,
+            None,
+            group_strategy,
+            upstream_health,
+            &ctx,
+        )
+        .map(|(name, _, _)| name)?
+    };
+
+    let group = groups.iter().find(|g| g.name == picked_name)?;
+
+    // Inner pick: choose a target within the selected group.
+    let all_urls: Vec<String> = group
+        .targets
+        .iter()
+        .map(|t| match t {
+            crate::config::schema::ProxyTarget::Simple(u) => u.clone(),
+            crate::config::schema::ProxyTarget::Weighted(w) => w.url.clone(),
+        })
+        .collect();
+    let weighted: Vec<(String, u32)> = group
+        .targets
+        .iter()
+        .map(|t| match t {
+            crate::config::schema::ProxyTarget::Simple(u) => (u.clone(), 1u32),
+            crate::config::schema::ProxyTarget::Weighted(w) => (w.url.clone(), w.weight),
+        })
+        .collect();
+
+    let healthy = upstream_health.filter_healthy(&all_urls);
+    let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
+    let weighted_healthy: Vec<(String, u32)> = weighted
+        .into_iter()
+        .filter(|(u, _)| urls.contains(u))
+        .collect();
+
+    let inner_key = format!("{route_key}__group__{}", group.name);
+    let inner_ctx = HashCtx {
+        weighted: &weighted_healthy,
+        hash_val,
+    };
+    let (chosen_url, retry_state, is_least_conn) = pick_url_by_strategy(
+        urls,
+        &inner_key,
+        counters,
+        None,
+        group.strategy.as_ref(),
+        upstream_health,
+        &inner_ctx,
+    )?;
+
+    let strip = strip_prefix_flag.then(|| route_key.trim_end_matches('/').to_string());
+    let upstream = match url_to_proxy_upstream(&chosen_url, strip) {
+        Some(UpstreamTarget::Proxy {
+            addr,
+            tls,
+            sni,
+            strip_prefix,
+            ..
+        }) => UpstreamTarget::Proxy {
+            addr,
+            tls,
+            sni,
+            strip_prefix,
+            rewrite: rewrite_rules,
+        },
+        Some(other) => other,
+        None => {
+            if is_least_conn {
+                upstream_health.conn_dec(&chosen_url);
+            }
+            return None;
+        }
+    };
+
+    let proxy_upstream_url = is_least_conn.then(|| chosen_url.clone());
+    Some((
+        upstream,
+        retry_state,
+        proxy_timeout,
+        proxy_pool,
+        proxy_http2,
+        proxy_upstream_url,
+        cache_cfg,
+    ))
 }
 
 /// Extra context required by hash-based and weighted strategies.
@@ -312,7 +624,7 @@ fn pick_url_by_strategy(
 }
 
 /// Convert a target URL + optional strip prefix into an `UpstreamTarget::Proxy`.
-fn url_to_proxy_upstream(url: &str, strip_prefix: Option<String>) -> Option<UpstreamTarget> {
+pub fn url_to_proxy_upstream(url: &str, strip_prefix: Option<String>) -> Option<UpstreamTarget> {
     let addr = upstream::url_to_host_port(url)?;
     let tls = upstream::url_is_tls(url);
     let sni = if tls {
@@ -325,6 +637,7 @@ fn url_to_proxy_upstream(url: &str, strip_prefix: Option<String>) -> Option<Upst
         tls,
         sni,
         strip_prefix,
+        rewrite: None,
     })
 }
 
@@ -383,7 +696,7 @@ fn find_route<'a>(
     best
 }
 
-fn resolve_static_roots(cfg: &StaticConfig, path: &str) -> (Vec<PathBuf>, Option<String>) {
+pub fn resolve_static_roots(cfg: &StaticConfig, path: &str) -> (Vec<PathBuf>, Option<String>) {
     match cfg {
         StaticConfig::Single(s) => (vec![PathBuf::from(s)], None),
         StaticConfig::Multi(v) => (v.iter().map(PathBuf::from).collect(), None),
@@ -446,21 +759,90 @@ fn is_health_path(site: Option<&SiteConfig>, path: &str) -> bool {
     bare == default_path
 }
 
-fn find_site_idx(config: &AppConfig, host: &str) -> Option<usize> {
+/// Returns `true` when the path targets the SSE hot-reload endpoint
+/// (`/__hot-reload__`) and the site has `hotReload` enabled.
+fn is_hot_reload_sse_path(site: Option<&SiteConfig>, path: &str) -> bool {
+    use crate::config::schema::HotReloadConfig;
+    let Some(site) = site else { return false };
+    let Some(hr) = &site.hot_reload else {
+        return false;
+    };
+    if matches!(hr, HotReloadConfig::Enabled(false)) {
+        return false;
+    }
+    let bare = path.split('?').next().unwrap_or(path);
+    bare == "/__hot-reload__"
+}
+
+/// Returns `true` when the path targets the hot-reload client JS file
+/// (`/__hot-reload__/client.js`) and the site has `hotReload` enabled.
+fn is_hot_reload_js_path(site: Option<&SiteConfig>, path: &str) -> bool {
+    use crate::config::schema::HotReloadConfig;
+    let Some(site) = site else { return false };
+    let Some(hr) = &site.hot_reload else {
+        return false;
+    };
+    if matches!(hr, HotReloadConfig::Enabled(false)) {
+        return false;
+    }
+    let bare = path.split('?').next().unwrap_or(path);
+    bare == "/__hot-reload__/client.js"
+}
+
+/// If `path` starts with the ACME HTTP-01 challenge prefix, return the token
+/// portion.  E.g. `/.well-known/acme-challenge/abc123` → `Some("abc123")`.
+fn acme_challenge_token(path: &str) -> Option<&str> {
+    path.strip_prefix("/.well-known/acme-challenge/")
+}
+
+fn find_site_idx(config: &AppConfig, host: &str, server_port: u16) -> Option<usize> {
     if config.sites.is_empty() {
         return None;
     }
-    for (i, site) in config.sites.iter().enumerate() {
-        if site.host.as_deref() == Some(host) {
-            return Some(i);
-        }
+    // 1st pass: sites with an explicit matching host.
+    if let Some(idx) = find_host_match(&config.sites, host, server_port) {
+        return Some(idx);
     }
-    for (i, site) in config.sites.iter().enumerate() {
-        if matches!(site.host.as_deref(), None | Some("*")) {
-            return Some(i);
-        }
+    // 2nd pass: catch-all sites (no host configured, or host == "*").
+    if let Some(idx) = find_wildcard_match(&config.sites, server_port) {
+        return Some(idx);
     }
     Some(0)
+}
+
+/// Find the first site whose `host` equals `host`, preferring an exact port match.
+fn find_host_match(
+    sites: &[crate::config::schema::SiteConfig],
+    host: &str,
+    server_port: u16,
+) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for (i, site) in sites.iter().enumerate() {
+        if site.host.as_deref() == Some(host) {
+            if site.port == Some(server_port) {
+                return Some(i); // exact host+port match
+            }
+            best.get_or_insert(i);
+        }
+    }
+    best
+}
+
+/// Find the first catch-all site (no host or `host == "*"`), preferring port match.
+fn find_wildcard_match(
+    sites: &[crate::config::schema::SiteConfig],
+    server_port: u16,
+) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for (i, site) in sites.iter().enumerate() {
+        if matches!(site.host.as_deref(), None | Some("*")) {
+            if site.port == Some(server_port) {
+                return Some(i);
+            }
+            best.get_or_insert(i);
+        }
+    }
+    best
 }
 
 #[cfg(test)]
@@ -623,7 +1005,7 @@ mod tests {
 
     #[test]
     fn site_idx_empty_config_returns_none() {
-        assert!(find_site_idx(&AppConfig::default(), "example.com").is_none());
+        assert!(find_site_idx(&AppConfig::default(), "example.com", 80).is_none());
     }
 
     #[test]
@@ -641,7 +1023,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert_eq!(find_site_idx(&config, "example.com"), Some(1));
+        assert_eq!(find_site_idx(&config, "example.com", 80), Some(1));
     }
 
     #[test]
@@ -659,7 +1041,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert_eq!(find_site_idx(&config, "other.com"), Some(1));
+        assert_eq!(find_site_idx(&config, "other.com", 80), Some(1));
     }
 
     // ── pick_with_retry ───────────────────────────────────────────────────────
@@ -908,6 +1290,7 @@ mod tests {
                 tls,
                 sni,
                 strip_prefix,
+                ..
             } => {
                 assert_eq!(addr, "backend:4000");
                 assert!(!tls);
@@ -1006,9 +1389,14 @@ mod tests {
             &config,
             "localhost",
             "/__health__",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
             "127.0.0.1",
+            80,
             &counters,
             &reg,
+            None,
         );
         assert!(matches!(
             ctx.upstream,
@@ -1032,9 +1420,14 @@ mod tests {
             &config,
             "localhost",
             "/index.html",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
             "127.0.0.1",
+            80,
             &counters,
             &reg,
+            None,
         );
         assert!(matches!(
             ctx.upstream,
@@ -1058,9 +1451,14 @@ mod tests {
             &config,
             "localhost",
             "/api/data",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
             "127.0.0.1",
+            80,
             &counters,
             &reg,
+            None,
         );
         assert!(matches!(ctx.upstream, UpstreamTarget::Proxy { .. }));
     }
@@ -1070,7 +1468,19 @@ mod tests {
         let config = AppConfig::default();
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
-        let ctx = route_request(&config, "localhost", "/", "127.0.0.1", &counters, &reg);
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
         assert!(matches!(
             ctx.upstream,
             UpstreamTarget::Local(LocalHandler::Fallback)
@@ -1096,9 +1506,14 @@ mod tests {
             &config,
             "localhost",
             "/__metrics__",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
             "127.0.0.1",
+            80,
             &counters,
             &reg,
+            None,
         );
         assert!(matches!(
             ctx.upstream,
@@ -1140,8 +1555,32 @@ mod tests {
 
         // Two different paths with empty client_ip should potentially land on
         // different upstreams (demonstrating that path is used, not a fixed "").
-        let ctx_a = route_request(&config, "localhost", "/page-a", "", &counters, &reg);
-        let ctx_b = route_request(&config, "localhost", "/page-b", "", &counters, &reg);
+        let ctx_a = route_request(
+            &config,
+            "localhost",
+            "/page-a",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        let ctx_b = route_request(
+            &config,
+            "localhost",
+            "/page-b",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
         // Both should be routed to a Proxy target (not fallback).
         assert!(
             matches!(ctx_a.upstream, UpstreamTarget::Proxy { .. }),
@@ -1176,7 +1615,19 @@ mod tests {
         let reg = UpstreamRegistry::new();
 
         // Without an override → config target is used.
-        let ctx = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg);
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "1.2.3.4",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
         let addr_config = match &ctx.upstream {
             UpstreamTarget::Proxy { addr, .. } => addr.clone(),
             other => panic!("expected Proxy, got {other:?}"),
@@ -1187,9 +1638,21 @@ mod tests {
         );
 
         // Apply an override.
-        reg.add_upstream("/", "http://override-target:9000", 1);
+        reg.add_upstream("*", "/", "http://override-target:9000", 1);
 
-        let ctx2 = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg);
+        let ctx2 = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "1.2.3.4",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
         let addr_override = match &ctx2.upstream {
             UpstreamTarget::Proxy { addr, .. } => addr.clone(),
             other => panic!("expected Proxy, got {other:?}"),
@@ -1223,10 +1686,22 @@ mod tests {
         let reg = UpstreamRegistry::new();
 
         // Create an override, then remove the only entry → empty list.
-        reg.add_upstream("/", "http://temp:4000", 1);
-        reg.remove_upstream("/", "http://temp:4000");
+        reg.add_upstream("*", "/", "http://temp:4000", 1);
+        reg.remove_upstream("*", "/", "http://temp:4000");
 
-        let ctx = route_request(&config, "localhost", "/", "1.2.3.4", &counters, &reg);
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "1.2.3.4",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
         // Empty override list → no URL → falls through to Fallback (not Proxy).
         assert!(
             matches!(ctx.upstream, UpstreamTarget::Local(LocalHandler::Fallback)),

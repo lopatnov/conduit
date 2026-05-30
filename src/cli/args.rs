@@ -1,7 +1,16 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "conduit", about = "High-performance reverse proxy", version)]
+#[command(
+    name = "conduit",
+    about = "High-performance reverse proxy and static file server",
+    long_about = "High-performance reverse proxy and static file server built on Cloudflare Pingora.\n\
+                  \n\
+                  Created by Oleksandr Lopatnov\n\
+                  \u{2022} GitHub:   https://github.com/lopatnov\n\
+                  \u{2022} LinkedIn: https://linkedin.com/in/lopatnov",
+    version
+)]
 pub struct Cli {
     /// Config file path
     #[arg(
@@ -35,6 +44,10 @@ pub enum Command {
     Shutdown(AdminArgs),
     /// Manage upstream targets at runtime
     Upstreams(UpstreamsArgs),
+    /// Print shell completions to stdout
+    Completions(CompletionsArgs),
+    /// Generate man page to stdout
+    Man,
 }
 
 #[derive(Args)]
@@ -84,6 +97,22 @@ pub enum UpstreamsCommand {
     Weight(UpstreamWeightArgs),
 }
 
+/// Shell for which to generate completions.
+#[derive(ValueEnum, Clone, Debug)]
+pub enum Shell {
+    Bash,
+    Zsh,
+    Fish,
+    PowerShell,
+    Elvish,
+}
+
+#[derive(Args)]
+pub struct CompletionsArgs {
+    /// Target shell
+    pub shell: Shell,
+}
+
 #[derive(Args)]
 pub struct UpstreamAddArgs {
     /// Proxy route path (e.g. /api)
@@ -95,6 +124,10 @@ pub struct UpstreamAddArgs {
     /// Weight (for weighted-round-robin)
     #[arg(long)]
     pub weight: Option<u32>,
+    /// Limit the override to a specific site label (e.g. app.example.com:443).
+    /// When omitted the override applies to every site that serves this route.
+    #[arg(long)]
+    pub site: Option<String>,
 }
 
 #[derive(Args)]
@@ -103,6 +136,10 @@ pub struct UpstreamRemoveArgs {
     pub route: String,
     #[arg(long)]
     pub target: String,
+    /// Limit the removal to a specific site label.
+    /// When omitted the wildcard override (all sites) is targeted.
+    #[arg(long)]
+    pub site: Option<String>,
 }
 
 #[derive(Args)]
@@ -113,4 +150,8 @@ pub struct UpstreamWeightArgs {
     pub target: String,
     #[arg(long)]
     pub weight: u32,
+    /// Limit the weight change to a specific site label.
+    /// When omitted the wildcard override (all sites) is targeted.
+    #[arg(long)]
+    pub site: Option<String>,
 }

@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::config::schema::{CacheConfig, ConnectionPoolConfig, ProxyTimeout, StaticOptions};
+use crate::config::schema::{
+    CacheConfig, ConnectionPoolConfig, ProxyTimeout, RewriteRule, StaticOptions,
+};
 
 #[derive(Debug)]
 pub struct RequestCtx {
@@ -106,6 +108,8 @@ pub enum UpstreamTarget {
         tls: bool,
         sni: String,
         strip_prefix: Option<String>,
+        /// Path rewrite rules applied before forwarding — first matching rule wins.
+        rewrite: Option<Vec<RewriteRule>>,
     },
     Upload {
         addr: SocketAddr,
@@ -124,6 +128,17 @@ pub enum LocalHandler {
         options: Arc<StaticOptions>,
         strip_prefix: Option<String>,
     },
+    /// HTTP-01 ACME challenge response — served at
+    /// `/.well-known/acme-challenge/{token}`.
+    AcmeChallenge {
+        token: String,
+    },
+    /// Server-Sent Events stream at `/__hot-reload__`.
+    /// Clients subscribe and receive a `data: reload` event on file change.
+    HotReloadSse,
+    /// Client-side JavaScript served at `/__hot-reload__/client.js`.
+    /// Connects to the SSE stream and reloads the page on events.
+    HotReloadJs,
 }
 
 #[derive(Debug, Default, Clone)]

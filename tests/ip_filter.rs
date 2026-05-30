@@ -123,3 +123,72 @@ fn limits_health_exempt_from_body_limit() {
     let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
     assert_eq!(resp.status(), 200);
 }
+
+// ── trustProxy: X-Forwarded-For ──────────────────────────────────────────
+
+#[test]
+#[serial]
+fn trust_proxy_xff_blocked_ip_returns_403() {
+    // When trustProxy: true, the IP filter checks X-Forwarded-For instead of
+    // the direct connection IP (127.0.0.1).  Block the spoofed IP "1.2.3.4".
+    let server = server_with_ip_filter(serde_json::json!({
+        "deny": ["1.2.3.4"],
+        "trustProxy": true
+    }));
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .get(server.url("/"))
+        .header("X-Forwarded-For", "1.2.3.4")
+        .send()
+        .expect("GET");
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "XFF IP 1.2.3.4 should be denied when trustProxy: true"
+    );
+}
+
+#[test]
+#[serial]
+fn trust_proxy_xff_allowed_ip_passes() {
+    // 127.0.0.1 is the direct connection IP. Deny it but allow 10.0.0.1 via XFF.
+    let server = server_with_ip_filter(serde_json::json!({
+        "allow": ["10.0.0.0/8"],
+        "deny":  ["0.0.0.0/0"],
+        "trustProxy": true
+    }));
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .get(server.url("/__health__"))
+        .header("X-Forwarded-For", "10.1.2.3")
+        .send()
+        .expect("GET");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "XFF IP 10.1.2.3 should pass the allow-list when trustProxy: true"
+    );
+}
+
+#[test]
+#[serial]
+fn trust_proxy_false_uses_direct_ip_not_xff() {
+    // When trustProxy is NOT set (default false), X-Forwarded-For is ignored
+    // and the real connection IP (127.0.0.1) is used for filtering.
+    let server = server_with_ip_filter(serde_json::json!({
+        "deny": ["1.2.3.4"]
+        // trustProxy not set → false
+    }));
+    let client = reqwest::blocking::Client::new();
+    // Even though XFF says 1.2.3.4, the real IP is 127.0.0.1 → should pass.
+    let resp = client
+        .get(server.url("/__health__"))
+        .header("X-Forwarded-For", "1.2.3.4")
+        .send()
+        .expect("GET");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "without trustProxy, XFF should be ignored and 127.0.0.1 passes the deny:1.2.3.4 rule"
+    );
+}

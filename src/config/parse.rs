@@ -61,6 +61,26 @@ mod tests {
     use super::*;
     use crate::config::schema::SiteConfig;
 
+    // ── load_config ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn load_config_parses_valid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conduit.json");
+        std::fs::write(&path, r#"{"port": 8080}"#).unwrap();
+        assert!(load_config(&path).is_ok());
+    }
+
+    #[test]
+    fn load_config_missing_file_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("__conduit_test_missing__.json"); // intentionally not created
+        let result = load_config(&missing);
+        assert!(result.is_err(), "missing file must return an error");
+    }
+
+    // ── from_str ──────────────────────────────────────────────────────────────
+
     #[test]
     fn unsupported_version_returns_error() {
         let result = from_str(r#"{"version": 999, "port": 8080}"#);

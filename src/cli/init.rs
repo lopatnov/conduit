@@ -20,7 +20,7 @@ fn ask_tls_config() -> anyhow::Result<Option<Value>> {
     let tls_options = ["Manual certificate files", "Auto (Let's Encrypt / ACME)"];
     let tls_choice = Select::new()
         .with_prompt("TLS mode")
-        .items(&tls_options)
+        .items(tls_options)
         .default(0)
         .interact()?;
 
@@ -117,7 +117,7 @@ pub fn run_init(output_path: &str) -> anyhow::Result<()> {
     ];
     let log_choice = Select::new()
         .with_prompt("Log format")
-        .items(&log_formats)
+        .items(log_formats)
         .default(0)
         .interact()?;
 

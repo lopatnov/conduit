@@ -1,0 +1,48 @@
+[
+  {
+    "port": 8080,
+    "routes": [
+      {
+        "match": { "path": "/api/v2/**" },
+        "proxy": {
+          "targets": ["http://v2-api:5000"],
+          "strategy": "round-robin"
+        }
+      },
+      {
+        "match": {
+          "path": "/api/**",
+          "method": ["POST", "PUT", "PATCH", "DELETE"]
+        },
+        "proxy": {
+          "targets": ["http://write-api:4001", "http://write-api:4002"],
+          "strategy": "least-conn"
+        }
+      },
+      {
+        "match": { "path": "/api/**" },
+        "proxy": {
+          "targets": ["http://read-api:4000", "http://read-api:4001"],
+          "strategy": "round-robin"
+        }
+      },
+      {
+        "match": { "path": "/**" },
+        "static": "./dist"
+      }
+    ],
+    "fallback": {
+      "status": 200,
+      "file": "./dist/index.html"
+    }
+  },
+  {
+    "host": "localhost",
+    "port": 9090,
+    "ipFilter": {
+      "allow": ["127.0.0.1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+      "deny": ["0.0.0.0/0"]
+    },
+    "proxy": "http://admin-service:6000"
+  }
+]

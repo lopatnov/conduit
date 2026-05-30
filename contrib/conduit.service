@@ -1,0 +1,30 @@
+[Unit]
+Description=Conduit reverse proxy and static file server
+Documentation=https://github.com/lopatnov/conduit
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=conduit
+Group=conduit
+WorkingDirectory=/etc/conduit
+ExecStart=/usr/local/bin/conduit -c /etc/conduit/conduit.json
+ExecReload=/usr/local/bin/conduit reload
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/log/conduit /var/cache/conduit
+
+# Environment
+Environment=RUST_LOG=info
+EnvironmentFile=-/etc/conduit/conduit.env
+
+[Install]
+WantedBy=multi-user.target

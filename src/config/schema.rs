@@ -115,7 +115,11 @@ pub struct SiteConfig {
     pub metrics: Option<MetricsConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback: Option<FallbackConfig>,
-    // Phase 3.5: pub routes: Option<Vec<RouteConfig>>,
+    /// Phase 3.6: advanced per-site routing rules.  Routes are matched in
+    /// declaration order; the first match wins.  When present, routes are
+    /// evaluated before the top-level `proxy` / `static` shorthand.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routes: Option<Vec<RouteConfig>>,
     // Phase 5 (optional): pub cgi: Option<CgiConfig>,
 }
 
@@ -327,6 +331,13 @@ pub struct RateLimitConfig {
     pub key_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_paths: Option<Vec<String>>,
+    /// Backend store for the rate limiter.
+    ///
+    /// - `"memory"` (default) — in-process `DashMap<String, TokenBucket>`.
+    /// - `"redis://host:port"` — Redis-backed, with automatic failover to the
+    ///   in-memory bucket when Redis is unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -456,6 +467,7 @@ pub enum ProxyRouteTarget {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyRouteConfig {
+    #[serde(default)]
     pub targets: Vec<ProxyTarget>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strategy: Option<LoadBalanceStrategy>,
@@ -476,6 +488,46 @@ pub struct ProxyRouteConfig {
     pub cache: Option<CacheConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryConfig>,
+    /// Path rewrite rules applied in order before forwarding to upstream.
+    /// Each rule is a regex `from` pattern and a replacement `to` string.
+    /// Capture groups (`$1`, `$2`, …) are supported in `to`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rewrite: Option<Vec<RewriteRule>>,
+    /// Two-level load balancing: outer strategy picks a group, inner strategy
+    /// picks within the group.  Mutually exclusive with `targets` — if
+    /// `groups` is set, `targets` is ignored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<UpstreamGroup>>,
+    /// Outer strategy used to pick which group services a request.
+    /// Defaults to `round-robin` when `groups` is present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_strategy: Option<LoadBalanceStrategy>,
+}
+
+/// A named group of upstream targets with its own balancing strategy.
+/// Used together with `ProxyRouteConfig.groups` + `group_strategy`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamGroup {
+    pub name: String,
+    pub targets: Vec<ProxyTarget>,
+    /// Intra-group strategy. Defaults to `round-robin`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<LoadBalanceStrategy>,
+}
+
+/// A single path rewrite rule: the first match in `rewrite` that matches the
+/// request path is applied; subsequent rules are not checked.
+///
+/// ```json
+/// { "from": "^/old/(.+)$", "to": "/new/$1" }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RewriteRule {
+    /// Regex pattern to match against the request path.
+    pub from: String,
+    /// Replacement string — capture groups `$1` … `$N` are expanded.
+    pub to: String,
 }
 
 /// `"http://b1:4000"` | `{ "url": "http://b1:4000", "weight": 3 }`
@@ -633,4 +685,53 @@ pub struct FallbackRule {
     pub file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<IndexMap<String, String>>,
+}
+
+// ── Routes (Phase 3.6) ─────────────────────────────────────────────────────
+
+/// A single named routing rule.
+///
+/// `match` describes when the rule applies; the first of `proxy` / `static`
+/// that is set describes what to do.  Routes are evaluated in declaration
+/// order before the top-level `proxy` / `static` shorthand.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RouteConfig {
+    /// Match criteria (path glob, method, headers).
+    pub r#match: MatchConfig,
+    /// Proxy this request to an upstream when the match succeeds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<ProxyRouteTarget>,
+    /// Serve static files from this path when the match succeeds.
+    #[serde(rename = "static", skip_serializing_if = "Option::is_none")]
+    pub static_files: Option<StaticConfig>,
+}
+
+/// Criteria that must all be satisfied for a [`RouteConfig`] to fire.
+///
+/// All fields are optional; an absent field matches anything.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchConfig {
+    /// Glob-style path pattern.
+    ///
+    /// `*` matches any character sequence within a single path segment.
+    /// `**` matches any character sequence including `/` (i.e. any sub-path).
+    ///
+    /// Examples: `/api/**`, `/blog/*`, `/health`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// HTTP methods that must match (case-insensitive).
+    ///
+    /// Examples: `["GET"]`, `["POST", "PUT", "PATCH"]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<Vec<String>>,
+    /// Request header values that must be present and match (exact string or regex).
+    ///
+    /// All entries must match simultaneously.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<IndexMap<String, String>>,
+    /// Query parameter values that must be present and match (exact string or regex).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<IndexMap<String, String>>,
 }

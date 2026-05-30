@@ -3,7 +3,8 @@
     "host": "app.example.com",
     "port": 443,
     "tls": {
-      "acme": { "email": "admin@example.com" },
+      "cert": "$WILDCARD_CERT_PATH",
+      "key": "$WILDCARD_KEY_PATH",
       "httpRedirectPort": 80
     },
     "compression": true,
@@ -24,7 +25,10 @@
   {
     "host": "admin.example.com",
     "port": 443,
-    "tls": { "cert": "$CERT_PATH", "key": "$KEY_PATH" },
+    "tls": {
+      "cert": "$WILDCARD_CERT_PATH",
+      "key": "$WILDCARD_KEY_PATH"
+    },
     "basicAuth": {
       "users": { "admin": "$ADMIN_PASSWORD" },
       "challenge": true,
@@ -35,7 +39,10 @@
   {
     "host": "*",
     "port": 443,
-    "tls": { "cert": "$CERT_PATH", "key": "$KEY_PATH" },
+    "tls": {
+      "cert": "$WILDCARD_CERT_PATH",
+      "key": "$WILDCARD_KEY_PATH"
+    },
     "fallback": { "status": 404, "body": { "error": "Unknown host" } }
   }
 ]

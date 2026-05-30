@@ -384,3 +384,110 @@ fn basic_auth_and_rate_limit_combined() {
         .expect("rate-limited request");
     assert_eq!(r_limited.status().as_u16(), 429);
 }
+
+// ── Rate limit keyBy: "header:..." ───────────────────────────────────────
+
+#[test]
+fn rate_limit_key_by_header_separate_clients_have_independent_buckets() {
+    // Use keyBy: "header:X-Client-Id" so each unique header value gets its own
+    // token bucket, regardless of IP.
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "rateLimit": {
+                    "windowSecs": 3600,
+                    "limit": 2,
+                    "keyBy": "header:X-Client-Id"
+                }
+            }]
+        }),
+    );
+
+    // Client A: exhaust its 2-request bucket.
+    for i in 0..2 {
+        let r = plain_client()
+            .get(srv.url("/"))
+            .header("X-Client-Id", "client-a")
+            .send()
+            .unwrap_or_else(|_| panic!("client-a request {i}"));
+        assert_ne!(
+            r.status().as_u16(),
+            429,
+            "client-a request {i} within limit"
+        );
+    }
+    // Client A is now rate-limited.
+    let r_a = plain_client()
+        .get(srv.url("/"))
+        .header("X-Client-Id", "client-a")
+        .send()
+        .expect("client-a over limit");
+    assert_eq!(r_a.status().as_u16(), 429, "client-a must be rate-limited");
+
+    // Client B has its OWN bucket — must still be allowed.
+    let r_b = plain_client()
+        .get(srv.url("/"))
+        .header("X-Client-Id", "client-b")
+        .send()
+        .expect("client-b first request");
+    assert_ne!(
+        r_b.status().as_u16(),
+        429,
+        "client-b should not be affected by client-a's limit"
+    );
+}
+
+#[test]
+fn rate_limit_key_by_header_missing_header_falls_back_to_shared_bucket() {
+    // When keyBy names a header that is absent, the rate limiter must not crash
+    // and must still enforce the limit (requests without the header share a
+    // fallback bucket, so they are subject to the same window limit).
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "rateLimit": {
+                    "windowSecs": 3600,
+                    "limit": 3,
+                    "keyBy": "header:X-Missing-Header"
+                }
+            }]
+        }),
+    );
+
+    // First 3 requests: must not 500 (server is alive) and not 429 yet.
+    for i in 0..3 {
+        let resp = plain_client()
+            .get(srv.url("/"))
+            .send()
+            .unwrap_or_else(|_| panic!("request {i} failed to send"));
+        let status = resp.status().as_u16();
+        assert_ne!(
+            status, 500,
+            "request {i}: missing key header must not cause 500"
+        );
+        assert_ne!(status, 429, "request {i}: should be within the limit");
+    }
+
+    // 4th request must be rate-limited — the fallback bucket is exhausted.
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .send()
+        .expect("4th request");
+    assert_eq!(
+        resp.status().as_u16(),
+        429,
+        "4th request must be rate-limited when missing-header bucket is exhausted"
+    );
+}

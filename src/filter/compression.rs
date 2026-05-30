@@ -173,6 +173,121 @@ mod tests {
         assert_eq!(best_encoding(&opts, &accept, 2000), Some("br"));
     }
 
+    #[test]
+    fn effective_options_with_custom_settings() {
+        // Options branch with explicit (non-empty) algorithm list.
+        let cfg = CompressionConfig::Options(CompressionOptions {
+            algorithms: Some(vec!["gzip".to_owned()]),
+            level: Some(9),
+            min_bytes: Some(512),
+        });
+        let opts = effective(&cfg).unwrap();
+        assert_eq!(opts.algorithms, vec!["gzip"]);
+        assert_eq!(opts.level, 9);
+        assert_eq!(opts.min_bytes, 512);
+    }
+
+    #[test]
+    fn effective_options_defaults_when_fields_none() {
+        // Options branch with all fields None → falls back to defaults.
+        let cfg = CompressionConfig::Options(CompressionOptions {
+            algorithms: None,
+            level: None,
+            min_bytes: None,
+        });
+        let opts = effective(&cfg).unwrap();
+        assert!(!opts.algorithms.is_empty());
+        assert_eq!(opts.level, 6);
+        assert_eq!(opts.min_bytes, 1024);
+    }
+
+    #[test]
+    fn best_encoding_falls_back_to_gzip_when_brotli_not_accepted() {
+        let opts = CompressOptions {
+            algorithms: vec!["br".to_owned(), "gzip".to_owned()],
+            level: 6,
+            min_bytes: 0,
+        };
+        // brotli NOT accepted — should fall back to gzip.
+        let accept = AcceptEncoding {
+            brotli: false,
+            gzip: true,
+            deflate: false,
+        };
+        assert_eq!(best_encoding(&opts, &accept, 2000), Some("gzip"));
+    }
+
+    #[test]
+    fn best_encoding_picks_deflate() {
+        let opts = CompressOptions {
+            algorithms: vec!["deflate".to_owned()],
+            level: 6,
+            min_bytes: 0,
+        };
+        let accept = AcceptEncoding {
+            brotli: false,
+            gzip: false,
+            deflate: true,
+        };
+        assert_eq!(best_encoding(&opts, &accept, 100), Some("deflate"));
+    }
+
+    #[test]
+    fn best_encoding_returns_none_when_no_algorithm_matches() {
+        let opts = CompressOptions {
+            algorithms: vec!["br".to_owned(), "gzip".to_owned()],
+            level: 6,
+            min_bytes: 0,
+        };
+        // Client accepts nothing.
+        let accept = AcceptEncoding {
+            brotli: false,
+            gzip: false,
+            deflate: false,
+        };
+        assert!(best_encoding(&opts, &accept, 5000).is_none());
+    }
+
+    #[tokio::test]
+    async fn compress_brotli_roundtrip() {
+        use async_compression::tokio::bufread::BrotliDecoder;
+
+        let original = Bytes::from("hello world ".repeat(100));
+        let compressed = compress_bytes(original.clone(), "br", 4).await;
+        assert!(
+            compressed.len() < original.len(),
+            "brotli should compress repetitive data: compressed={} original={}",
+            compressed.len(),
+            original.len()
+        );
+
+        let mut dec =
+            BrotliDecoder::new(tokio::io::BufReader::new(std::io::Cursor::new(compressed)));
+        let mut decoded = Vec::new();
+        dec.read_to_end(&mut decoded).await.unwrap();
+        assert_eq!(decoded, original.as_ref());
+    }
+
+    #[tokio::test]
+    async fn compress_deflate_compresses_data() {
+        let original = Bytes::from("deflate me ".repeat(100));
+        let compressed = compress_bytes(original.clone(), "deflate", 6).await;
+        assert!(
+            compressed.len() < original.len(),
+            "deflate should compress repetitive data"
+        );
+    }
+
+    #[tokio::test]
+    async fn compress_unknown_encoding_returns_original() {
+        let original = Bytes::from("hello");
+        let result = compress_bytes(original.clone(), "unknown-codec", 6).await;
+        assert_eq!(
+            result, original,
+            "unknown encoding must return data unchanged"
+        );
+    }
+
     #[tokio::test]
     async fn compress_gzip_roundtrip() {
         use async_compression::tokio::bufread::GzipDecoder;

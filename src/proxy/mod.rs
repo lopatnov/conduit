@@ -1,6 +1,9 @@
 pub mod cache;
+pub mod cache_disk;
+pub mod cache_redis;
 pub mod ctx;
 pub mod health;
 pub mod router;
+pub mod routes;
 pub mod service;
 pub mod upstream;

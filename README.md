@@ -2,17 +2,25 @@
 
 [![CI](https://github.com/lopatnov/conduit/actions/workflows/ci.yml/badge.svg)](https://github.com/lopatnov/conduit/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/lopatnov-conduit.svg)](https://crates.io/crates/lopatnov-conduit)
-[![npm](https://img.shields.io/npm/v/@lopatnov/conduit.svg)](https://www.npmjs.com/package/@lopatnov/conduit)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![crates.io downloads](https://img.shields.io/crates/d/lopatnov-conduit.svg)](https://crates.io/crates/lopatnov-conduit)
+[![npm version](https://img.shields.io/npm/v/@lopatnov/conduit.svg)](https://www.npmjs.com/package/@lopatnov/conduit)
+[![npm downloads](https://img.shields.io/npm/dt/@lopatnov/conduit.svg)](https://www.npmjs.com/package/@lopatnov/conduit)
+[![GitHub stars](https://img.shields.io/github/stars/lopatnov/conduit)](https://github.com/lopatnov/conduit/stargazers)
+[![GitHub issues](https://img.shields.io/github/issues/lopatnov/conduit)](https://github.com/lopatnov/conduit/issues)
+[![License](https://img.shields.io/github/license/lopatnov/conduit)](LICENSE)
 
 **High-performance reverse proxy and static file server** built on [Cloudflare Pingora](https://github.com/cloudflare/pingora).
 
-- One JSON file describes your entire server — no DSL, no YAML, no Caddyfile
-- Serves static files, proxies to backends, terminates TLS, and load-balances — all in one binary
-- Drop-in replacement for `express-reverse-proxy` with a fraction of the memory and latency
+Serves static files, proxies to backends, terminates TLS, and load-balances — configured with a
+single JSON file and packaged as a **single binary with no runtime dependencies**.
 
 ```bash
-npx @lopatnov/conduit        # run without installing
+# Try immediately — no installation needed
+npx @lopatnov/conduit init   # interactive setup wizard
+npx @lopatnov/conduit        # start the server
+
+# Or install globally
+npm install -g @lopatnov/conduit
 cargo install lopatnov-conduit
 ```
 
@@ -21,6 +29,7 @@ cargo install lopatnov-conduit
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Live Demo](#live-demo)
 - [Installation](#installation)
 - [Building from Source](#building-from-source)
 - [CLI Commands](#cli-commands)
@@ -28,6 +37,9 @@ cargo install lopatnov-conduit
   - [port / host](#port--host)
   - [tls](#tls)
   - [http2](#http2)
+  - [logging](#logging)
+  - [compression](#compression)
+  - [responseTime](#responsetime)
   - [securityHeaders](#securityheaders)
   - [cors](#cors)
   - [ipFilter](#ipfilter)
@@ -38,15 +50,22 @@ cargo install lopatnov-conduit
   - [redirects](#redirects)
   - [static / staticOptions](#static--staticoptions)
   - [proxy](#proxy)
+  - [routes (advanced routing)](#routes-advanced-routing)
+  - [Load balancing](#load-balancing)
+  - [Proxy cache](#proxy-cache)
   - [healthCheck](#healthcheck)
+  - [upload](#upload)
+  - [hotReload](#hotreload)
   - [metrics](#metrics)
   - [fallback](#fallback)
   - [Multi-site (global + sites)](#multi-site-global--sites)
 - [Configuration Recipes](#configuration-recipes)
 - [Admin API](#admin-api)
 - [Docker](#docker)
+- [Editor Integration (JSON Schema)](#editor-integration-json-schema)
 - [Benchmarks](#benchmarks)
 - [Contributing](#contributing)
+- [Built With](#built-with)
 - [License](#license)
 
 ---
@@ -82,30 +101,60 @@ GET /api/users   → proxied to http://localhost:4000/api/users
 
 ---
 
+## Live Demo
+
+The repository includes a self-contained demo with **two virtual sites running from a single
+Conduit process**, a round-robin load balancer across two API backends, proxy caching, Basic Auth,
+and more — just like [express-reverse-proxy's demo](https://github.com/lopatnov/express-reverse-proxy)
+runs on multiple ports, but here everything shares one binary.
+
+```bash
+# Terminal 1 — two mock API instances (ports 4000 and 4001)
+node demo/api/server.js
+
+# Terminal 2 — Conduit: two virtual sites from one process
+conduit -c demo/conduit.json
+```
+
+| URL                                            | Description                                                  |
+| ---------------------------------------------- | ------------------------------------------------------------ |
+| [http://localhost:8080](http://localhost:8080) | Public app — proxy, cache, compression, rate limiting        |
+| [http://localhost:8081](http://localhost:8081) | Admin panel — protected with Basic Auth (`admin / demo1234`) |
+
+**VS Code users:** run the _"Demo: Start (Conduit + API)"_ task (`Terminal → Run Task…`)
+to launch both processes at once.
+
+See [`demo/README.md`](demo/README.md) for full details.
+
+---
+
 ## Installation
 
-### npx — no install required
+### Option 1 — npx (no installation, always latest)
 
 ```bash
 npx @lopatnov/conduit
-npx @lopatnov/conduit -c my-config.json
+npx @lopatnov/conduit init
 npx @lopatnov/conduit validate
 ```
 
-### npm — global install
+### Option 2 — npm global install
+
+Install once, run anywhere as `conduit`:
 
 ```bash
 npm install -g @lopatnov/conduit
 conduit
+conduit validate
 ```
 
-### Cargo
+### Option 3 — Cargo
 
 ```bash
 cargo install lopatnov-conduit
 ```
 
-### Pre-built binaries
+### Option 4 — Pre-built binaries
 
 Download from [GitHub Releases](https://github.com/lopatnov/conduit/releases):
 
@@ -155,36 +204,22 @@ cargo build --release
 
 ### Cross-compilation
 
-Cross-compilation lets you build a Linux binary on Windows, or a musl binary for Docker.
-It uses [cross](https://github.com/cross-rs/cross), which requires Docker.
+Requires [cross](https://github.com/cross-rs/cross) and Docker:
 
 ```bash
-# Install cross
 cargo install cross
-
-# Make sure Docker is running, then:
 
 # Linux musl — smallest binary, runs in Docker FROM scratch
 cross build --release --target x86_64-unknown-linux-musl
 
 # Linux ARM64 — for Raspberry Pi, AWS Graviton, etc.
 cross build --release --target aarch64-unknown-linux-gnu
-
-# Windows from Linux/macOS
-cross build --release --target x86_64-pc-windows-msvc
 ```
 
-> **macOS targets** (`x86_64-apple-darwin`, `aarch64-apple-darwin`) can only be compiled
-> on macOS — cross-compiling from Linux/Windows to macOS requires
-> [osxcross](https://github.com/tpoechtrager/osxcross) and Apple SDK licensing is complex.
-> The [release workflow](.github/workflows/release.yml) handles macOS targets
-> using GitHub-hosted macOS runners.
-
-Output binary location: `target/<target>/release/conduit` (or `.exe` on Windows).
+> macOS targets can only be built on macOS. The [release workflow](.github/workflows/release.yml)
+> handles them using GitHub-hosted runners.
 
 ### Release profile
-
-The `Cargo.toml` release profile is set for maximum performance and minimum binary size:
 
 ```toml
 [profile.release]
@@ -208,8 +243,22 @@ conduit probe [-c <file>]       HEAD to every upstream, show latency table
 conduit fmt [-c <file>]         pretty-print config to stdout
 conduit fmt --write [-c <file>] pretty-print config back to the file
 
-conduit status                  show server uptime, version, inflight requests
-conduit shutdown                graceful shutdown (waits for inflight requests)
+conduit reload [--admin ADDR]   hot-reload config without restarting
+conduit status [--admin ADDR]   show server uptime, version, inflight requests
+conduit upstreams [--admin ADDR]         list all upstream health and latency
+conduit upstreams add    --route PATH --target URL [--weight N] [--site LABEL]
+conduit upstreams remove --route PATH --target URL [--site LABEL]
+conduit upstreams weight --route PATH --target URL --weight N [--site LABEL]
+conduit shutdown [--admin ADDR] graceful shutdown
+```
+
+### Shell completions
+
+```bash
+conduit completions bash   >> ~/.bashrc
+conduit completions zsh    >> ~/.zshrc
+conduit completions fish   >> ~/.config/fish/completions/conduit.fish
+conduit completions powershell >> $PROFILE
 ```
 
 ### Environment variables
@@ -223,16 +272,14 @@ conduit shutdown                graceful shutdown (waits for inflight requests)
 
 ## Configuration
 
-All options are optional unless noted. Fields accept environment variable references
-(`"$VAR"` is replaced with the value of `VAR` at startup).
+All options are optional unless noted. Fields accept environment variable references —
+`"$VAR"` is replaced with the value of `VAR` at startup.
 
 Conduit reads `conduit.json` by default. Pass `-c path/to/file.json` to use another file.
 
 ---
 
 ### `port` / `host`
-
-Which port and hostname to listen on.
 
 ```json
 { "port": 8080 }
@@ -242,8 +289,8 @@ Which port and hostname to listen on.
 { "host": "app.example.com", "port": 443 }
 ```
 
-`host` is used for virtual hosting — only requests with a matching `Host` header are
-handled by this site. Omit `host` to match any hostname (catch-all).
+`host` is used for virtual hosting — only requests matching the `Host` header are handled
+by this site. Omit `host` to match any hostname (catch-all).
 
 Default port: `3000`.
 
@@ -251,19 +298,7 @@ Default port: `3000`.
 
 ### `tls`
 
-Terminate HTTPS. Supply PEM certificate and key files:
-
-```json
-{
-  "port": 443,
-  "tls": {
-    "cert": "./certs/cert.pem",
-    "key": "./certs/key.pem"
-  }
-}
-```
-
-**Redirect plain HTTP to HTTPS** — add `httpRedirectPort`:
+**Manual certificates:**
 
 ```json
 {
@@ -276,29 +311,42 @@ Terminate HTTPS. Supply PEM certificate and key files:
 }
 ```
 
-Requests to port 80 are permanently redirected to `https://` on port 443.
+**Auto-TLS via Let's Encrypt** (no cert/key needed):
 
-> Conduit uses **rustls** — not OpenSSL. TLS version strings use rustls format
-> (`"TLSv1.3"`), not OpenSSL format (`"TLSv1.3"` is the same, but cipher names differ).
+```json
+{
+  "port": 443,
+  "tls": {
+    "acme": {
+      "email": "admin@example.com",
+      "storage": "./certs",
+      "challenge": "http-01"
+    }
+  }
+}
+```
+
+Conduit automatically obtains and renews certificates. `conduit validate` reports expiry status.
+
+> Conduit uses **rustls** — not OpenSSL.
+
+> **Single certificate per port (rustls limitation):** When multiple HTTPS sites
+> share the same port, Conduit serves the *first* registered `tls.cert`/`tls.key`
+> for *all* hostnames on that port — the rustls backend does not perform
+> per-SNI certificate selection. To serve different certificates per hostname,
+> assign each site to a different port. This limitation does not affect ACME
+> sites that each have their own port.
 
 ---
 
 ### `http2`
 
-Enable HTTP/2. Requires TLS (browsers only negotiate H2 over HTTPS).
-
 ```json
 {
   "port": 443,
   "tls": { "cert": "./certs/cert.pem", "key": "./certs/key.pem" },
-  "http2": { "maxConcurrentStreams": 250 }
+  "http2": true
 }
-```
-
-With `"http2": true` the defaults are used:
-
-```json
-{ "http2": true }
 ```
 
 | Field                  | Default | Description                         |
@@ -308,9 +356,66 @@ With `"http2": true` the defaults are used:
 
 ---
 
-### `securityHeaders`
+### `logging`
 
-Add a standard set of security headers to every response. Accepts `false`, `true`, or an object.
+Accepts `false`, `true`, a format string, or an object.
+
+```json
+{ "logging": "dev" }
+```
+
+```json
+{ "logging": { "format": "combined", "file": "./logs/access.log" } }
+```
+
+| Format     | Description                                             |
+| ---------- | ------------------------------------------------------- |
+| `dev`      | Colorized, short — for development                      |
+| `combined` | Apache Combined Log Format — for production             |
+| `common`   | Apache Common Log Format                                |
+| `short`    | Short, without timestamps                               |
+| `json`     | Structured JSON — for log aggregation (ELK, Loki, etc.) |
+
+---
+
+### `compression`
+
+Accepts `false`, `true`, or an object.
+
+```json
+{ "compression": true }
+```
+
+```json
+{
+  "compression": {
+    "algorithms": ["br", "gzip"],
+    "level": 6,
+    "minBytes": 1024
+  }
+}
+```
+
+Conduit negotiates the best algorithm based on the client's `Accept-Encoding` header.
+Brotli is preferred over gzip when the client supports both.
+
+---
+
+### `responseTime`
+
+Adds `X-Response-Time: 1.23ms` to every response.
+
+```json
+{ "responseTime": true }
+```
+
+```json
+{ "responseTime": { "digits": 3 } }
+```
+
+---
+
+### `securityHeaders`
 
 ```json
 { "securityHeaders": true }
@@ -325,15 +430,14 @@ Headers added with `true`:
 | `Referrer-Policy`        | `strict-origin-when-cross-origin` |
 | `X-XSS-Protection`       | `1; mode=block`                   |
 
-Fine-tune with the object form:
+Object form for HSTS and CSP:
 
 ```json
 {
   "securityHeaders": {
     "contentSecurityPolicy": "default-src 'self'; img-src *",
     "hsts": "max-age=31536000; includeSubDomains",
-    "frameOptions": "DENY",
-    "referrerPolicy": "no-referrer"
+    "frameOptions": "DENY"
   }
 }
 ```
@@ -342,20 +446,18 @@ Fine-tune with the object form:
 
 ### `cors`
 
-Handle CORS preflight requests and add `Access-Control-*` headers. Accepts `false`, `true`,
-or an object.
+Accepts `false`, `true`, or an object.
 
 ```json
 { "cors": true }
 ```
 
-`true` allows any origin with `Access-Control-Allow-Origin: *`. For production, restrict
-to specific origins:
+For production, restrict to specific origins:
 
 ```json
 {
   "cors": {
-    "origins": ["https://app.example.com", "https://www.example.com"],
+    "origins": ["https://app.example.com"],
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     "allowedHeaders": ["Content-Type", "Authorization"],
     "credentials": true,
@@ -364,82 +466,60 @@ to specific origins:
 }
 ```
 
-| Field            | Default | Description                             |
-| ---------------- | ------- | --------------------------------------- |
-| `origins`        | any     | Allowed origins; echoes origin when set |
-| `methods`        | all     | Allowed methods                         |
-| `allowedHeaders` | all     | Allowed request headers                 |
-| `credentials`    | `false` | Allow cookies / auth headers            |
-| `maxAgeSecs`     | `86400` | How long to cache preflight response    |
-
-CORS preflight (`OPTIONS`) requests bypass auth and rate limiting — browsers send them
-without credentials.
+CORS preflight (`OPTIONS`) requests bypass auth and rate limiting — browsers send them without
+credentials.
 
 ---
 
 ### `ipFilter`
 
-Allow or deny requests by IP address. Applied before auth and rate limiting.
+Applied before auth and rate limiting.
 
-**Whitelist** — allow only specific IPs/ranges, block everything else:
-
-```json
-{
-  "ipFilter": {
-    "allow": ["10.0.0.0/8", "192.168.0.0/16", "203.0.113.5"]
-  }
-}
-```
-
-**Blacklist** — block specific IPs, allow everything else:
+**Whitelist** — allow only these IPs/ranges:
 
 ```json
-{
-  "ipFilter": {
-    "deny": ["1.2.3.4", "5.6.7.0/24"]
-  }
-}
+{ "ipFilter": { "allow": ["10.0.0.0/8", "192.168.0.0/16"] } }
 ```
 
-**Behind another proxy** — read IP from `X-Forwarded-For`:
+**Blacklist** — block specific IPs:
 
 ```json
-{
-  "ipFilter": {
-    "deny": ["1.2.3.4"],
-    "trustProxy": true
-  }
-}
+{ "ipFilter": { "deny": ["1.2.3.4", "5.6.7.0/24"] } }
 ```
 
-Blocked requests receive `403 Forbidden`. Health and metrics endpoints are not affected.
-IPv4, IPv6, and IPv4-mapped IPv6 addresses (`::ffff:1.2.3.4`) are all supported.
+**Behind another proxy:**
+
+```json
+{ "ipFilter": { "deny": ["1.2.3.4"], "trustProxy": true } }
+```
+
+Blocked requests receive `403 Forbidden`. IPv4, IPv6, and IPv4-mapped IPv6 are all supported.
 
 ---
 
 ### `limits`
 
-Reject oversized requests before they reach the proxy or handlers.
-
 ```json
 {
   "limits": {
     "maxBodyBytes": 1048576,
-    "maxHeaderBytes": 8192
+    "maxHeaderBytes": 8192,
+    "timeoutSecs": 30
   }
 }
 ```
 
-| Field            | Description           | Status code                           |
-| ---------------- | --------------------- | ------------------------------------- |
-| `maxBodyBytes`   | Max request body size | `413 Request Entity Too Large`        |
-| `maxHeaderBytes` | Max total header size | `431 Request Header Fields Too Large` |
+| Field            | Description                  | Status code                           |
+| ---------------- | ---------------------------- | ------------------------------------- |
+| `maxBodyBytes`   | Max request body size        | `413 Request Entity Too Large`        |
+| `maxHeaderBytes` | Max total header size        | `431 Request Header Fields Too Large` |
+| `timeoutSecs`    | Per-request timeout fallback | applied to all proxy peer timeouts    |
 
 ---
 
 ### `rateLimit`
 
-Token-bucket rate limiter. Keyed by client IP by default.
+Token-bucket rate limiter.
 
 ```json
 {
@@ -450,9 +530,7 @@ Token-bucket rate limiter. Keyed by client IP by default.
 }
 ```
 
-Clients exceeding the limit receive `429 Too Many Requests`.
-
-**Key by a header** — useful for API keys:
+**Key by a header** (API key, user ID, etc.):
 
 ```json
 {
@@ -464,17 +542,19 @@ Clients exceeding the limit receive `429 Too Many Requests`.
 }
 ```
 
-**Exclude paths** from rate limiting:
+**Redis-backed** — shared across multiple Conduit instances:
 
 ```json
 {
   "rateLimit": {
     "windowSecs": 60,
     "limit": 100,
-    "skipPaths": ["/__health__", "/__metrics__", "/public/**"]
+    "store": "redis://localhost:6379"
   }
 }
 ```
+
+Falls back to in-memory if Redis is unavailable.
 
 | Field        | Default          | Description                                |
 | ------------ | ---------------- | ------------------------------------------ |
@@ -483,76 +563,34 @@ Clients exceeding the limit receive `429 Too Many Requests`.
 | `algorithm`  | `"token-bucket"` | Rate limit algorithm                       |
 | `keyBy`      | `"ip"`           | `"ip"` or `"header:X-Name"`                |
 | `skipPaths`  | `[]`             | Paths exempt from limiting (glob patterns) |
+| `store`      | `"memory"`       | `"memory"` or `"redis://..."`              |
 
 ---
 
 ### `basicAuth`
 
-Require HTTP Basic Authentication.
-
 ```json
 {
   "basicAuth": {
-    "users": {
-      "alice": "secret123",
-      "bob": "$BOB_PASSWORD"
-    }
-  }
-}
-```
-
-**Use a `$VAR` reference** to avoid storing passwords in the config file.
-Conduit resolves environment variables at startup.
-
-Show a browser login dialog:
-
-```json
-{
-  "basicAuth": {
-    "users": { "admin": "$ADMIN_PASSWORD" },
+    "users": { "alice": "secret123", "bob": "$BOB_PASSWORD" },
     "challenge": true,
-    "realm": "Admin Area"
-  }
-}
-```
-
-Skip auth for public paths:
-
-```json
-{
-  "basicAuth": {
-    "users": { "admin": "$ADMIN_PASSWORD" },
+    "realm": "My App",
     "skipPaths": ["/__health__", "/public/**"]
   }
 }
 ```
 
-Health (`/__health__`) and metrics (`/__metrics__`) endpoints always bypass auth.
+Use `$VAR` references to avoid storing passwords in the config file.
 
 ---
 
 ### `apiKey`
 
-Require an API key passed in a request header.
-
 ```json
 {
   "apiKey": {
     "keys": ["$API_KEY_1", "$API_KEY_2"],
-    "header": "X-API-Key"
-  }
-}
-```
-
-Requests with a missing or incorrect key receive `401 Unauthorized`.
-
-Skip auth for specific paths:
-
-```json
-{
-  "apiKey": {
-    "keys": ["$API_KEY"],
-    "header": "Authorization",
+    "header": "X-API-Key",
     "skipPaths": ["/__health__", "/public/**"]
   }
 }
@@ -562,7 +600,7 @@ Skip auth for specific paths:
 
 ### `redirects`
 
-Redirect paths with 3xx responses. First matching rule wins.
+First matching rule wins. Supports `:param` captures and query string preservation.
 
 ```json
 {
@@ -574,11 +612,9 @@ Redirect paths with 3xx responses. First matching rule wins.
 }
 ```
 
-`:param` captures a path segment and substitutes it in `to`.
-
 | Status | Meaning                               |
 | ------ | ------------------------------------- |
-| `301`  | Moved Permanently (GET stays GET)     |
+| `301`  | Moved Permanently                     |
 | `302`  | Found — temporary redirect            |
 | `307`  | Temporary Redirect (method preserved) |
 | `308`  | Permanent Redirect (method preserved) |
@@ -587,9 +623,7 @@ Redirect paths with 3xx responses. First matching rule wins.
 
 ### `static` / `staticOptions`
 
-Serve files from a directory.
-
-**Simple** — serve everything from one directory:
+**Simple:**
 
 ```json
 { "static": "./dist" }
@@ -601,18 +635,13 @@ Serve files from a directory.
 { "static": ["./dist", "./public"] }
 ```
 
-**Map URL prefixes to directories**:
+**Map URL prefixes to directories:**
 
 ```json
-{
-  "static": {
-    "/": "./dist",
-    "/assets": "./assets"
-  }
-}
+{ "static": { "/": "./dist", "/assets": "./assets" } }
 ```
 
-**Static options:**
+**Options:**
 
 ```json
 {
@@ -622,32 +651,34 @@ Serve files from a directory.
     "lastModified": true,
     "maxAge": "7d",
     "index": ["index.html"],
-    "dotFiles": "ignore"
+    "dotFiles": "ignore",
+    "preCompressed": true
   }
 }
 ```
 
-| Field          | Default          | Description                                      |
-| -------------- | ---------------- | ------------------------------------------------ |
-| `etag`         | `true`           | Generate ETag headers (enables 304 Not Modified) |
-| `lastModified` | `true`           | Set Last-Modified header                         |
-| `maxAge`       | `"0"`            | Cache-Control max-age (`"1h"`, `"7d"`, `"1y"`)   |
-| `index`        | `["index.html"]` | Directory index filenames                        |
-| `dotFiles`     | `"ignore"`       | `"ignore"` \| `"allow"` \| `"deny"`              |
+`preCompressed: true` serves `.br` / `.gz` variants directly without re-compressing on the fly.
+
+| Field           | Default          | Description                                      |
+| --------------- | ---------------- | ------------------------------------------------ |
+| `etag`          | `true`           | Generate ETag headers (enables 304 Not Modified) |
+| `lastModified`  | `true`           | Set Last-Modified header                         |
+| `maxAge`        | `"0"`            | Cache-Control max-age (`"1h"`, `"7d"`, `"1y"`)   |
+| `index`         | `["index.html"]` | Directory index filenames                        |
+| `dotFiles`      | `"ignore"`       | `"ignore"` \| `"allow"` \| `"deny"`              |
+| `preCompressed` | `false`          | Serve `.br`/`.gz` sidecar files                  |
 
 ---
 
 ### `proxy`
 
-Proxy requests to one or more backends.
-
-**Simple** — proxy everything to one backend:
+**Simple — proxy everything:**
 
 ```json
 { "proxy": "http://localhost:4000" }
 ```
 
-**Route-based** — match URL prefix, proxy to backend:
+**Route-based:**
 
 ```json
 {
@@ -658,7 +689,7 @@ Proxy requests to one or more backends.
 }
 ```
 
-**Round-robin across multiple backends**:
+**Round-robin across multiple backends:**
 
 ```json
 {
@@ -668,78 +699,256 @@ Proxy requests to one or more backends.
 }
 ```
 
-**Full form** — with `stripPrefix` and retries:
+**Full form — with all options:**
 
 ```json
 {
   "proxy": {
     "/api": {
       "targets": ["http://b1:4000", "http://b2:4000"],
+      "strategy": "least-conn",
       "stripPrefix": true,
-      "retry": {
-        "attempts": 3,
-        "conditions": ["connection_error", "5xx"],
-        "backoffMs": 100
+      "http2": false,
+      "timeout": { "connectMs": 2000, "readMs": 30000 },
+      "healthCheck": { "path": "/health", "intervalSecs": 10 },
+      "retry": { "attempts": 3, "conditions": ["connection_error", "5xx"] },
+      "cache": { "store": "memory", "ttlSecs": 300 }
+    }
+  }
+}
+```
+
+**`stripPrefix`** — `GET /api/users` is forwarded as `GET /users` to the backend.
+
+**Path rewrite** — regex-based, first match wins, applied after `stripPrefix`:
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://backend:4000"],
+      "rewrite": [{ "from": "^/v[0-9]+/(.+)$", "to": "/$1" }]
+    }
+  }
+}
+```
+
+**Upstream groups** — two-level load balancing:
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "groups": [
+        {
+          "name": "us-east",
+          "targets": ["http://us1:4000", "http://us2:4000"],
+          "strategy": "least-conn"
+        },
+        {
+          "name": "eu-west",
+          "targets": ["http://eu1:4000", "http://eu2:4000"],
+          "strategy": "least-conn"
+        }
+      ],
+      "groupStrategy": "ip-hash"
+    }
+  }
+}
+```
+
+**Retry conditions:**
+
+| Condition          | Description                     |
+| ------------------ | ------------------------------- |
+| `connection_error` | Upstream is down or unreachable |
+| `5xx`              | Upstream returns a 5xx response |
+| `timeout`          | Read or write timeout           |
+
+---
+
+### `routes` (advanced routing)
+
+Explicit route table evaluated in order; first match wins.
+
+```json
+{
+  "routes": [
+    {
+      "match": {
+        "path": "/api/**",
+        "method": ["POST", "PUT", "PATCH", "DELETE"]
+      },
+      "proxy": {
+        "targets": ["http://write-backend:4000"],
+        "strategy": "least-conn"
+      }
+    },
+    {
+      "match": { "path": "/api/**" },
+      "proxy": "http://read-backend:4000"
+    },
+    {
+      "match": { "path": "/public/**" },
+      "static": "./public"
+    }
+  ]
+}
+```
+
+**Match criteria** (all present fields must match):
+
+| Field     | Type                 | Description                                              |
+| --------- | -------------------- | -------------------------------------------------------- |
+| `path`    | glob string          | `*` — one segment, `**` — any depth. Default: match all. |
+| `method`  | `string[]`           | HTTP methods (case-insensitive). Default: match all.     |
+| `headers` | `{ name: pattern }`  | Header values (exact string or regex).                   |
+| `query`   | `{ param: pattern }` | Query param values (exact or regex).                     |
+
+Backward compatibility: top-level `proxy` and `static` are automatically converted to routes.
+
+---
+
+### Load balancing
+
+Controlled by the `strategy` field inside a `proxy` route.
+
+| Strategy             | Value                  | Description                                                |
+| -------------------- | ---------------------- | ---------------------------------------------------------- |
+| Round-robin          | `round-robin`          | Default. Rotate evenly across all healthy backends.        |
+| Weighted round-robin | `weighted-round-robin` | Respects the `weight` field.                               |
+| Random               | `random`               | Pick a backend at random each request.                     |
+| Least connections    | `least-conn`           | Send to the backend with the fewest active connections.    |
+| Least response time  | `least-response-time`  | Send to the backend with the lowest recent latency.        |
+| IP hash              | `ip-hash`              | Sticky sessions — same client IP always hits same backend. |
+| Consistent hash      | `consistent-hash`      | Ketama ring — minimal reshuffling when backends change.    |
+
+**Weighted round-robin** requires explicit weights:
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "targets": [
+        { "url": "http://powerful:4000", "weight": 3 },
+        { "url": "http://normal:4000", "weight": 1 }
+      ],
+      "strategy": "weighted-round-robin"
+    }
+  }
+}
+```
+
+`hashKey` for `ip-hash` / `consistent-hash`: `"ip"` (default), `"url"`, or `"header:X-My-Key"`.
+
+---
+
+### Proxy cache
+
+Cache upstream responses in memory, Redis, or on disk.
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://backend:4000"],
+      "cache": {
+        "store": "memory",
+        "maxSizeMb": 256,
+        "ttlSecs": 300,
+        "varyHeaders": ["Accept-Language"],
+        "skipPaths": ["/api/auth/**", "/api/user/**"],
+        "skipIfCookie": true,
+        "methods": ["GET", "HEAD"]
       }
     }
   }
 }
 ```
 
-**`stripPrefix`** — remove the route prefix before forwarding:
-
-`GET /api/users` → forwarded as `GET /users` to the backend.
-
-**Retry conditions:**
-
-| Condition          | Description                     |
-| ------------------ | ------------------------------- |
-| `connection_error` | Retry when the upstream is down |
-| `5xx`              | Retry when upstream returns 5xx |
-| `timeout`          | Retry on read/write timeout     |
+| `store` value    | Description                          |
+| ---------------- | ------------------------------------ |
+| `"memory"`       | In-process LRU — fastest, non-shared |
+| `"redis://..."`  | Redis — shared across instances      |
+| `"disk:./cache"` | Local filesystem — survives restarts |
 
 ---
 
 ### `healthCheck`
 
-Expose a health check endpoint.
-
 ```json
 { "healthCheck": true }
 ```
 
-Default path: `/__health__`. Always returns `200 OK` with a JSON body:
+Default path: `/__health__`. Always returns `200 OK`:
 
 ```json
-{ "status": "ok", "uptime": 3600, "version": "0.2.0" }
+{ "status": "ok", "uptime": 3600, "version": "0.3.0" }
 ```
 
-Custom path:
+Include upstream health:
 
 ```json
-{ "healthCheck": { "path": "/health" } }
+{ "healthCheck": { "path": "/health", "includeUpstreams": true } }
 ```
 
-The health endpoint **bypasses auth, rate limiting, and IP filtering** — it is always
-reachable for load balancer probes.
+The health endpoint **bypasses auth, rate limiting, and IP filtering**.
+
+---
+
+### `upload`
+
+Accept `multipart/form-data` file uploads.
+
+```json
+{
+  "upload": {
+    "path": "/upload",
+    "dir": "./uploads",
+    "maxFileSizeBytes": 10485760,
+    "maxTotalSizeBytes": 52428800,
+    "maxFiles": 5,
+    "allowedMimeTypes": ["image/jpeg", "image/png", "application/pdf"]
+  }
+}
+```
+
+Uploaded files are saved with UUID-based names and the original extension.
+
+---
+
+### `hotReload`
+
+Browser hot reload via SSE — useful for frontend development.
+
+```json
+{ "hotReload": true }
+```
+
+```json
+{
+  "hotReload": {
+    "extensions": [".html", ".css", ".js", ".ts"],
+    "path": "/__hot-reload__"
+  }
+}
+```
+
+Add to your HTML to auto-reload when files change:
+
+```html
+<script src="/__hot-reload__/client.js"></script>
+```
 
 ---
 
 ### `metrics`
 
-Expose a [Prometheus](https://prometheus.io) metrics endpoint.
-
-```json
-{ "metrics": { "path": "/__metrics__" } }
-```
-
-Secure it with a Bearer token:
+Prometheus metrics endpoint.
 
 ```json
 { "metrics": { "path": "/__metrics__", "token": "$METRICS_TOKEN" } }
 ```
-
-Requests without `Authorization: Bearer <token>` receive `401 Unauthorized`.
 
 Metrics exposed:
 
@@ -747,26 +956,22 @@ Metrics exposed:
 | ---------------------------------- | --------- | -------------------------------- |
 | `conduit_requests_total`           | counter   | Total requests, by method/status |
 | `conduit_request_duration_seconds` | histogram | Request latency                  |
+| `conduit_cache_hits_total`         | counter   | Proxy cache hits                 |
+| `conduit_cache_misses_total`       | counter   | Proxy cache misses               |
 
 ---
 
 ### `fallback`
 
-Return a response when nothing else matched — useful for SPAs.
+Return a response when nothing else matched.
 
-**SPA fallback** — serve `index.html` for all unknown paths:
+**SPA fallback:**
 
 ```json
 { "fallback": { "status": 200, "file": "./dist/index.html" } }
 ```
 
-**JSON 404** — return a JSON error body:
-
-```json
-{ "fallback": { "status": 404, "body": { "error": "Not Found" } } }
-```
-
-**Content-type aware** — serve HTML for browsers, JSON for API clients:
+**Content-type aware:**
 
 ```json
 {
@@ -776,18 +981,6 @@ Return a response when nothing else matched — useful for SPAs.
       "json": { "status": 404, "body": { "error": "Not Found" } },
       "*": { "status": 200, "file": "./dist/index.html" }
     }
-  }
-}
-```
-
-Extra headers on the fallback response:
-
-```json
-{
-  "fallback": {
-    "status": 200,
-    "file": "./dist/index.html",
-    "headers": { "Cache-Control": "no-store" }
   }
 }
 ```
@@ -830,12 +1023,9 @@ Run multiple virtual hosts from one Conduit process.
 }
 ```
 
-Requests are matched by `Host` header. The catch-all `"*"` site handles anything
-that doesn't match a named host. Sites are evaluated in order.
+**Config forms** — three equivalent ways:
 
-**Config forms** — three equivalent ways to write a config:
-
-```json
+```jsonc
 // Single site (most common)
 { "port": 3000, "static": "./dist" }
 
@@ -862,17 +1052,18 @@ that doesn't match a named host. Sites are evaluated in order.
   "tls": { "cert": "$CERT", "key": "$KEY", "httpRedirectPort": 80 },
   "http2": true,
   "securityHeaders": true,
-  "cors": {
-    "origins": ["https://app.example.com"],
-    "credentials": true
-  },
+  "cors": { "origins": ["https://app.example.com"], "credentials": true },
+  "logging": { "format": "json", "file": "/var/log/conduit/access.log" },
   "static": "./dist",
-  "staticOptions": { "maxAge": "7d" },
+  "staticOptions": { "maxAge": "7d", "preCompressed": true },
   "proxy": {
     "/api": {
       "targets": ["http://api1:4000", "http://api2:4000"],
+      "strategy": "least-conn",
       "stripPrefix": true,
-      "retry": { "attempts": 3, "conditions": ["connection_error", "5xx"] }
+      "retry": { "attempts": 3, "conditions": ["connection_error", "5xx"] },
+      "healthCheck": { "path": "/health", "intervalSecs": 10 },
+      "cache": { "store": "memory", "ttlSecs": 60, "skipIfCookie": true }
     }
   },
   "rateLimit": { "windowSecs": 60, "limit": 300, "skipPaths": ["/__health__"] },
@@ -881,21 +1072,37 @@ that doesn't match a named host. Sites are evaluated in order.
   "fallback": {
     "byAccept": {
       "html": { "status": 200, "file": "./dist/index.html" },
-      "json": { "status": 404, "body": { "error": "Not Found" } },
-      "*": { "status": 200, "file": "./dist/index.html" }
+      "json": { "status": 404, "body": { "error": "Not Found" } }
     }
   }
 }
 ```
 
-### Frontend development
+### Production with Auto-TLS (Let's Encrypt)
+
+```json
+{
+  "port": 443,
+  "tls": { "acme": { "email": "admin@example.com" } },
+  "compression": true,
+  "securityHeaders": true,
+  "static": "./dist",
+  "proxy": {
+    "/api": { "targets": ["http://api:4000"], "strategy": "least-conn" }
+  },
+  "healthCheck": true
+}
+```
+
+### Frontend development with hot reload
 
 ```json
 {
   "port": 3000,
+  "logging": "dev",
   "cors": true,
+  "hotReload": true,
   "static": "./src",
-  "staticOptions": { "etag": false, "lastModified": false },
   "proxy": { "/api": "http://localhost:4000" },
   "fallback": { "status": 200, "file": "./src/index.html" }
 }
@@ -917,21 +1124,26 @@ that doesn't match a named host. Sites are evaluated in order.
 }
 ```
 
-### TLS + HTTP/2 site
+### Weighted load balancing + IP hash
 
 ```json
 {
   "port": 443,
-  "tls": {
-    "cert": "./certs/cert.pem",
-    "key": "./certs/key.pem",
-    "httpRedirectPort": 80
-  },
-  "http2": true,
-  "securityHeaders": true,
-  "static": "./dist",
-  "staticOptions": { "maxAge": "1d" },
-  "healthCheck": true
+  "tls": { "cert": "$CERT", "key": "$KEY" },
+  "proxy": {
+    "/api": {
+      "targets": [
+        { "url": "http://powerful:4000", "weight": 3 },
+        { "url": "http://normal:4000", "weight": 1 }
+      ],
+      "strategy": "weighted-round-robin"
+    },
+    "/auth": {
+      "targets": ["http://auth1:5000", "http://auth2:5000"],
+      "strategy": "ip-hash",
+      "hashKey": "ip"
+    }
+  }
 }
 ```
 
@@ -939,52 +1151,55 @@ that doesn't match a named host. Sites are evaluated in order.
 
 ## Admin API
 
-The Admin API runs on `127.0.0.1:2019` (loopback only, never exposed to the network).
-Change the address in the `global` config:
+Runs on `127.0.0.1:2019` (loopback only — never exposed to the network).
 
 ```json
 { "global": { "admin": { "bind": "127.0.0.1:2019" } } }
 ```
 
-Or override for a single command:
+| Endpoint            | Method | Description                               |
+| ------------------- | ------ | ----------------------------------------- |
+| `/status`           | GET    | Server version, uptime, inflight requests |
+| `/reload`           | POST   | Hot-reload config from disk               |
+| `/shutdown`         | POST   | Graceful shutdown                         |
+| `/upstreams`        | GET    | Health, latency, and weights per backend  |
+| `/upstreams/add`    | POST   | Add an upstream (in memory only)          |
+| `/upstreams/remove` | POST   | Remove an upstream                        |
+| `/upstreams/weight` | POST   | Change a backend's weight (WRR only)      |
 
-```bash
-conduit status --admin 127.0.0.1:2019
-```
+Dynamic upstream changes survive until `conduit reload` — which resets from the config file.
 
-| Endpoint    | Method | Description                               |
-| ----------- | ------ | ----------------------------------------- |
-| `/status`   | GET    | Server version, uptime, inflight requests |
-| `/shutdown` | POST   | Graceful shutdown                         |
+**Request body fields for `/upstreams/add`, `/upstreams/remove`, `/upstreams/weight`:**
+
+| Field    | Required | Description                                                                              |
+| -------- | -------- | ---------------------------------------------------------------------------------------- |
+| `route`  | ✅        | Route path, e.g. `"/api"`                                                                |
+| `target` | ✅        | Full upstream URL, e.g. `"http://b3:4000"`                                               |
+| `weight` | add/weight | Target weight (default: 1 for add)                                                    |
+| `site`   | —        | Site label to scope the change, e.g. `"app.example.com:443"`. Omit to apply to all sites with this route. |
 
 ---
 
 ## Docker
 
-### Minimal image (FROM scratch)
-
-```dockerfile
-FROM scratch
-COPY conduit-x86_64-unknown-linux-musl /conduit
-COPY conduit.json /conduit.json
-EXPOSE 8080
-ENTRYPOINT ["/conduit", "-c", "/conduit.json"]
-```
-
-Build the musl binary locally or download it from GitHub Releases, then:
+Official images are published to the **GitHub Container Registry** on every tagged release:
 
 ```bash
-docker build -t my-conduit .
-docker run -p 8080:8080 my-conduit
+docker pull ghcr.io/lopatnov/conduit:latest
+docker pull ghcr.io/lopatnov/conduit:0.3.0
 ```
 
-### Official image
+The image is built from [`contrib/Dockerfile`](contrib/Dockerfile) — a multi-stage build
+that compiles a fully-static musl binary and packages it into a `FROM scratch` image (~14 MB).
+It runs as UID 65534 (`nobody`) with no shell or OS userland.
+
+### Run
 
 ```bash
 docker run -p 8080:8080 \
-  -v $(pwd)/conduit.json:/conduit.json:ro \
+  -v $(pwd)/conduit.json:/etc/conduit/conduit.json:ro \
   -v $(pwd)/dist:/dist:ro \
-  lopatnov/conduit
+  ghcr.io/lopatnov/conduit
 ```
 
 ### docker-compose
@@ -992,12 +1207,12 @@ docker run -p 8080:8080 \
 ```yaml
 services:
   conduit:
-    image: lopatnov/conduit:latest
+    image: ghcr.io/lopatnov/conduit:latest
     ports:
       - "443:443"
       - "80:80"
     volumes:
-      - ./conduit.json:/conduit.json:ro
+      - ./conduit.json:/etc/conduit/conduit.json:ro
       - ./dist:/dist:ro
       - ./certs:/certs
     environment:
@@ -1009,22 +1224,156 @@ services:
     expose: ["4000"]
 ```
 
+### Build your own image
+
+```bash
+git clone https://github.com/lopatnov/conduit
+cd conduit
+docker build -f contrib/Dockerfile -t conduit:local .
+```
+
+---
+
+## Editor Integration (JSON Schema)
+
+Conduit ships a [JSON Schema](schema/conduit.schema.json) that enables autocompletion,
+hover documentation, and inline validation in any JSON-aware editor.
+
+### VS Code — automatic (recommended)
+
+Add one line to your `conduit.json`:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json",
+  "port": 3000
+}
+```
+
+VS Code picks up `$schema` automatically — no extension needed.
+
+### VS Code — workspace-wide
+
+Add to `.vscode/settings.json` to enable validation for **all** `conduit*.json` files in
+the workspace without adding `$schema` to every file:
+
+```json
+{
+  "json.schemas": [
+    {
+      "fileMatch": ["conduit.json", "conduit.*.json"],
+      "url": "https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json"
+    }
+  ]
+}
+```
+
+### IntelliJ / WebStorm
+
+**Settings → Languages & Frameworks → Schemas and DTDs → JSON Schema Mappings**
+
+| Field             | Value                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------ |
+| Schema URL        | `https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json` |
+| Schema version    | JSON Schema version 2020-12                                                          |
+| File path pattern | `conduit*.json`                                                                      |
+
+### Any other editor
+
+Use the schema URL directly — most modern editors that support JSON Schema accept a `$schema`
+property or a manual mapping:
+
+```text
+https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json
+```
+
 ---
 
 ## Benchmarks
 
-See [BENCHMARKS.md](BENCHMARKS.md).
+See [BENCHMARKS.md](BENCHMARKS.md) for methodology and results.
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
-Report bugs: [GitHub Issues](https://github.com/lopatnov/conduit/issues)
+- **Bug reports** → [GitHub Issues](https://github.com/lopatnov/conduit/issues)
+- **Security vulnerabilities** → [GitHub Security Advisories](https://github.com/lopatnov/conduit/security/advisories) (do not use public issues)
+- **Questions & ideas** → [GitHub Discussions](https://github.com/lopatnov/conduit/discussions)
+- **Found it useful?** — a ⭐ on GitHub helps others discover the project
+
+---
+
+## Built With
+
+### Core runtime
+
+![Rust](https://img.shields.io/badge/Rust-000000?style=flat&logo=rust&logoColor=white)
+![Cloudflare Pingora](https://img.shields.io/badge/Cloudflare_Pingora_0.8-F48120?style=flat&logo=cloudflare&logoColor=white)
+![Tokio](https://img.shields.io/badge/Tokio-000000?style=flat&logo=tokio&logoColor=white)
+![Axum](https://img.shields.io/badge/Axum_0.8-000000?style=flat)
+
+### TLS & certificates
+
+![rustls](https://img.shields.io/badge/rustls-5C5C5C?style=flat)
+![rcgen](https://img.shields.io/badge/rcgen-5C5C5C?style=flat)
+![instant-acme](https://img.shields.io/badge/instant--acme-5C5C5C?style=flat)
+
+### Configuration & parsing
+
+![serde](https://img.shields.io/badge/serde-5C5C5C?style=flat)
+![serde_json](https://img.shields.io/badge/serde__json-5C5C5C?style=flat)
+![indexmap](https://img.shields.io/badge/indexmap-5C5C5C?style=flat)
+![humantime](https://img.shields.io/badge/humantime-5C5C5C?style=flat)
+![serde_path_to_error](https://img.shields.io/badge/serde__path__to__error-5C5C5C?style=flat)
+
+### Performance & concurrency
+
+![arc-swap](https://img.shields.io/badge/arc--swap-5C5C5C?style=flat)
+![dashmap](https://img.shields.io/badge/dashmap-5C5C5C?style=flat)
+![async-compression](https://img.shields.io/badge/async--compression_(brotli_·_gzip_·_deflate)-5C5C5C?style=flat)
+
+### Middleware & scripting
+
+![Rhai](https://img.shields.io/badge/Rhai_scripting-5C5C5C?style=flat)
+![regex](https://img.shields.io/badge/regex-5C5C5C?style=flat)
+![Redis](https://img.shields.io/badge/Redis_(rate_limit_store)-DC382D?style=flat&logo=redis&logoColor=white)
+
+### File handling
+
+![notify](https://img.shields.io/badge/notify_(fs_watcher)-5C5C5C?style=flat)
+![multer](https://img.shields.io/badge/multer_(multipart)-5C5C5C?style=flat)
+![uuid](https://img.shields.io/badge/uuid_v4-5C5C5C?style=flat)
+![mime_guess](https://img.shields.io/badge/mime__guess-5C5C5C?style=flat)
+
+### CLI & UX
+
+![clap](https://img.shields.io/badge/clap_4_(derive)-5C5C5C?style=flat)
+![clap_complete](https://img.shields.io/badge/clap__complete_(bash_·_zsh_·_fish)-5C5C5C?style=flat)
+![clap_mangen](https://img.shields.io/badge/clap__mangen_(man_page)-5C5C5C?style=flat)
+![dialoguer](https://img.shields.io/badge/dialoguer_(init_wizard)-5C5C5C?style=flat)
+![indicatif](https://img.shields.io/badge/indicatif_(progress_bars)-5C5C5C?style=flat)
+
+### Observability
+
+![tracing](https://img.shields.io/badge/tracing_+_tracing--subscriber-5C5C5C?style=flat)
+![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?style=flat&logo=prometheus&logoColor=white)
+
+### Dev tools & CI
+
+![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?style=flat&logo=githubactions&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker_(musl_+_scratch)-2496ED?style=flat&logo=docker&logoColor=white)
+![cross](https://img.shields.io/badge/cross_(cross--compilation)-5C5C5C?style=flat)
+![reqwest](https://img.shields.io/badge/reqwest_(integration_tests)-5C5C5C?style=flat)
+![criterion](https://img.shields.io/badge/criterion_(benchmarks)-5C5C5C?style=flat)
+![serial_test](https://img.shields.io/badge/serial__test-5C5C5C?style=flat)
+![SonarCloud](https://img.shields.io/badge/SonarCloud-F3702A?style=flat&logo=sonarcloud&logoColor=white)
+![CodeRabbit](https://img.shields.io/badge/CodeRabbit-FF7A00?style=flat)
 
 ---
 
 ## License
 
-[Apache 2.0](LICENSE) © [lopatnov](https://github.com/lopatnov)
+[Apache 2.0](LICENSE) © 2024–2026 [Oleksandr Lopatnov](https://github.com/lopatnov)

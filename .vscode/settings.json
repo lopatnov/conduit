@@ -1,0 +1,15 @@
+{
+  // Associate the Conduit JSON schema with conduit config files so VS Code
+  // provides autocompletion, hover docs, and validation automatically.
+  "json.schemas": [
+    {
+      "fileMatch": [
+        "conduit.json",
+        "conduit.*.json",
+        "**/conduit.json",
+        "**/conduit.*.json"
+      ],
+      "url": "https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json"
+    }
+  ]
+}

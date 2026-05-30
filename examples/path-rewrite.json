@@ -1,0 +1,13 @@
+{
+  "port": 8080,
+  "proxy": {
+    "/api": {
+      "targets": ["http://backend:4000"],
+      "stripPrefix": true,
+      "rewrite": [
+        { "from": "^/v[0-9]+/(.+)$", "to": "/$1" },
+        { "from": "^/users/([0-9]+)$", "to": "/members/$1" }
+      ]
+    }
+  }
+}

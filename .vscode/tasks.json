@@ -1,17 +1,152 @@
 {
-	"version": "2.0.0",
-	"tasks": [
-		{
-            "label": "cargo build",
-            "type": "shell",
-            "command": "cargo",
-            "args": [
-                "build"
-            ],
-            "problemMatcher": "$rustc",
-            "presentation": {
-                "reveal": "always"
-            }
+  "version": "2.0.0",
+  "tasks": [
+    // ── Demo ────────────────────────────────────────────────────────────────
+    {
+      "label": "Demo: Start (Conduit + API)",
+      "dependsOn": ["Demo: API Server", "Demo: Conduit Server"],
+      "dependsOrder": "parallel",
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Demo: API Server",
+      "type": "shell",
+      "command": "node demo/api/server.js",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "group": "demo"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "demo-api",
+        "pattern": {
+          "regexp": "^(NOMATCH)$",
+          "message": 1
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "\\[demo-api\\]",
+          "endsPattern": "Instance :4001 ready"
         }
-	]
+      }
+    },
+    {
+      "label": "Demo: Conduit Server",
+      "type": "shell",
+      "command": "cargo run --release -- -c demo/conduit.json",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "group": "demo"
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    // Pre-launch helper used by "Demo: Debug Conduit" launch config.
+    // Single shell command: build first (blocking), then start the API server.
+    // VS Code watches the output of this single task for the readiness signal,
+    // then unblocks the debugger. A compound dependsOn task has no output of
+    // its own, so problemMatcher can never fire on it — hence the && approach.
+    {
+      "label": "Demo: Build + API Server",
+      "type": "shell",
+      "command": "cargo build && node demo/api/server.js",
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "demo-api",
+        "pattern": {
+          "regexp": "^(NOMATCH)$",
+          "message": 1
+        },
+        "background": {
+          "activeOnStart": false,
+          "beginsPattern": "\\[demo-api\\]",
+          "endsPattern": "Instance :4001 ready"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "group": "demo"
+      }
+    },
+
+    // ── Build ────────────────────────────────────────────────────────────────
+    {
+      "label": "cargo build",
+      "type": "shell",
+      "command": "cargo build",
+      "problemMatcher": "$rustc",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": { "reveal": "always" }
+    },
+    {
+      "label": "cargo build --release",
+      "type": "shell",
+      "command": "cargo build --release",
+      "problemMatcher": "$rustc",
+      "presentation": { "reveal": "always" }
+    },
+    // ── Test ─────────────────────────────────────────────────────────────────
+    {
+      "label": "cargo test",
+      "type": "shell",
+      "command": "cargo test",
+      "problemMatcher": "$rustc",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "presentation": { "reveal": "always" }
+    },
+    // ── Demo tests ───────────────────────────────────────────────────────────
+    {
+      "label": "Demo: Install test deps",
+      "type": "shell",
+      "command": "npm install",
+      "options": { "cwd": "${workspaceFolder}/demo" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "new" }
+    },
+    {
+      "label": "Demo: Playwright tests",
+      "type": "shell",
+      "command": "npx playwright test",
+      "options": { "cwd": "${workspaceFolder}/demo" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "new" },
+      "group": { "kind": "test", "isDefault": false }
+    },
+    {
+      "label": "Demo: Playwright tests (UI mode)",
+      "type": "shell",
+      "command": "npx playwright test --ui",
+      "options": { "cwd": "${workspaceFolder}/demo" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "new" }
+    },
+
+    // ── Conduit CLI ──────────────────────────────────────────────────────────
+    {
+      "label": "conduit: validate demo config",
+      "type": "shell",
+      "command": "cargo run -- validate -c demo/conduit.json",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always" }
+    }
+  ]
 }

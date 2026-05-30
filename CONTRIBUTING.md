@@ -48,45 +48,52 @@ src/
 ├── config/
 │   ├── schema.rs        all config types (serde)
 │   ├── parse.rs         load_config(), from_str(), normalize()
-│   ├── validate.rs      semantic validation
+│   ├── validate.rs      semantic validation + TLS cert expiry
 │   ├── env.rs           $VAR interpolation
 │   └── defaults.rs      Default impls
 ├── server/
 │   ├── builder.rs       Pingora bootstrap
 │   ├── tls.rs           TLS settings (rustls)
+│   ├── acme.rs          Auto-TLS via instant-acme (Let's Encrypt)
 │   ├── redirect.rs      HTTP→HTTPS redirect proxy
 │   └── shutdown.rs      graceful shutdown
 ├── proxy/
 │   ├── service.rs       ConduitProxy (ProxyHttp impl)
-│   ├── router.rs        host + path routing
-│   ├── ctx.rs           RequestCtx, UpstreamTarget
-│   ├── upstream.rs      load balancer, URL parsing
-│   └── cache.rs         ConduitCacheKey
+│   ├── router.rs        host + path routing, route table
+│   ├── routes.rs        RouteConfig / MatchConfig (glob, method, header, query)
+│   ├── ctx.rs           RequestCtx, UpstreamTarget, GuardCtx
+│   ├── upstream.rs      load balancer, URL parsing, health registry
+│   ├── health.rs        background health checks, UpstreamRegistry
+│   ├── cache.rs         build_cache_key(), in-memory storage singleton
+│   ├── cache_redis.rs   Redis-backed pingora-cache Storage impl
+│   └── cache_disk.rs    Disk-backed pingora-cache Storage impl
 ├── handler/
 │   ├── response.rs      write_local_response() helper
-│   ├── static_files.rs  ETag, Range, Cache-Control
-│   ├── health.rs        /__health__
+│   ├── static_files.rs  ETag, Range, Cache-Control, streaming compression
+│   ├── health.rs        /__health__ with optional upstream status
 │   ├── metrics.rs       /__metrics__ (Prometheus)
-│   ├── hot_reload.rs    SSE hot reload
-│   └── fallback.rs      fallback responses
+│   ├── hot_reload.rs    SSE browser hot reload + notify watcher
+│   └── fallback.rs      fallback responses (byAccept, file, body)
 ├── filter/
-│   ├── auth.rs          Basic Auth, API key
-│   ├── compression.rs   gzip / brotli
-│   ├── cors.rs          CORS + preflight
+│   ├── auth.rs          Basic Auth, API key, skip-paths
+│   ├── compression.rs   gzip / brotli negotiation + streaming
+│   ├── cors.rs          CORS + preflight (bypasses auth)
 │   ├── headers.rs       custom response headers
-│   ├── ip_filter.rs     CIDR allow/deny
-│   ├── limits.rs        body/header size limits
-│   ├── logging.rs       access log
-│   ├── rate_limit.rs    token bucket
-│   ├── redirects.rs     path redirects
-│   ├── response_time.rs X-Response-Time
-│   └── security_headers.rs  HSTS, CSP, etc.
+│   ├── ip_filter.rs     CIDR allow/deny, X-Forwarded-For
+│   ├── limits.rs        maxBodyBytes (413), maxHeaderBytes (431)
+│   ├── logging.rs       5 log formats, atomic file switching
+│   ├── rate_limit.rs    token-bucket, in-memory or Redis
+│   ├── rate_limit_redis.rs  Redis fixed-window counter with fallback
+│   ├── redirects.rs     path redirects with :param captures
+│   ├── response_time.rs X-Response-Time header
+│   ├── script.rs        Rhai scripting middleware (Phase 4)
+│   └── security_headers.rs  HSTS, CSP, X-Frame-Options, etc.
 ├── admin/
-│   └── api.rs           Admin API (Axum)
+│   └── api.rs           Admin API (Axum) — status, reload, upstream management
 ├── upload/
-│   └── server.rs        upload server (Axum loopback)
+│   └── server.rs        upload server (Axum loopback, port 0)
 └── util/
-    ├── log_writer.rs    atomic log file writer
+    ├── log_writer.rs    atomic log file writer (Arc<Mutex<Inner>>)
     ├── mime.rs          Content-Type detection
     ├── path.rs          path utilities
     └── net.rs           network utilities

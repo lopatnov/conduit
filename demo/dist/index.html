@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Conduit — Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:       #0f1117;
+      --surface:  #1a1d27;
+      --border:   #2a2d3a;
+      --accent:   #6366f1;
+      --accent2:  #818cf8;
+      --green:    #22c55e;
+      --red:      #ef4444;
+      --yellow:   #eab308;
+      --text:     #e2e8f0;
+      --muted:    #94a3b8;
+      --code-bg:  #0d1117;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg); color: var(--text); min-height: 100vh; }
+
+    header { background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    header h1 { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.02em; }
+    header h1 span { color: var(--accent2); }
+    .header-right { margin-left: auto; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+    .header-right a { font-size: 0.8rem; color: var(--muted); border: 1px solid var(--border);
+      padding: 0.25rem 0.65rem; border-radius: 0.35rem; text-decoration: none; }
+    .header-right a:hover { color: var(--text); border-color: var(--accent2); }
+
+    .badge { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.2rem 0.6rem;
+      border-radius: 9999px; font-size: 0.75rem; font-weight: 600;
+      background: color-mix(in srgb, var(--accent) 15%, transparent);
+      color: var(--accent2); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
+
+    main { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+
+    h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: 0.75rem; }
+    h3 { font-size: 0.8rem; font-weight: 600; color: var(--muted); text-transform: uppercase;
+      letter-spacing: 0.06em; margin-bottom: 0.5rem; }
+
+    .grid   { display: grid; gap: 1.25rem; }
+    .grid-2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+
+    .card { background: var(--surface); border: 1px solid var(--border);
+      border-radius: 0.75rem; padding: 1.25rem; }
+    .card-header { display: flex; align-items: flex-start;
+      justify-content: space-between; margin-bottom: 0.9rem; }
+
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 6px;
+      background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    button { background: var(--accent); color: #fff; border: none; border-radius: 0.4rem;
+      padding: 0.4rem 0.85rem; font-size: 0.82rem; font-weight: 500; cursor: pointer;
+      transition: opacity 0.15s; }
+    button:hover { opacity: 0.85; }
+    button.sm { padding: 0.3rem 0.65rem; font-size: 0.78rem; }
+    button.outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+
+    pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 0.5rem;
+      padding: 0.75rem 1rem; font-family: 'Fira Code', 'Cascadia Code', Consolas, monospace;
+      font-size: 0.78rem; overflow-x: auto; color: #c9d1d9; max-height: 220px;
+      overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+
+    .feature-list { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1.25rem; }
+    .feature-pill { padding: 0.2rem 0.6rem; border-radius: 9999px; font-size: 0.72rem;
+      font-weight: 500; background: var(--code-bg); border: 1px solid var(--border); color: var(--muted); }
+    .feature-pill.active { background: color-mix(in srgb, var(--green) 10%, transparent);
+      border-color: color-mix(in srgb, var(--green) 25%, transparent); color: var(--green); }
+
+    .stat-row { display: flex; justify-content: space-between; align-items: center;
+      padding: 0.32rem 0; border-bottom: 1px solid var(--border); font-size: 0.82rem; }
+    .stat-row:last-child { border-bottom: none; }
+    .stat-row .label { color: var(--muted); }
+    .stat-row .value { font-family: monospace; }
+    .stat-row .value.ok  { color: var(--green); }
+    .stat-row .value.warn{ color: var(--yellow); }
+    .stat-row .value.err { color: var(--red); }
+
+    input[type="text"], select { background: var(--code-bg); border: 1px solid var(--border);
+      border-radius: 0.4rem; color: var(--text); padding: 0.4rem 0.7rem; font-size: 0.82rem;
+      width: 100%; margin-bottom: 0.5rem; }
+    .row { display: flex; gap: 0.5rem; align-items: flex-end; }
+    .row input { flex: 1; margin-bottom: 0; }
+
+    .section { margin-bottom: 2rem; }
+
+    a { color: var(--accent2); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .info-strip { background: color-mix(in srgb, var(--accent) 8%, transparent);
+      border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+      border-radius: 0.5rem; padding: 0.75rem 1rem; font-size: 0.83rem; color: var(--muted);
+      margin-bottom: 1.5rem; }
+    .info-strip strong { color: var(--text); }
+
+    .roundrobin-bar { display: flex; gap: 0.35rem; margin-bottom: 0.6rem; }
+    .rr-item { flex: 1; height: 28px; border-radius: 0.35rem; display: flex;
+      align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 600;
+      transition: all 0.3s; background: var(--code-bg); border: 1px solid var(--border); color: var(--muted); }
+    .rr-item.active { background: color-mix(in srgb, var(--green) 15%, transparent);
+      border-color: var(--green); color: var(--green); }
+
+    .tab-bar { display: flex; gap: 0.25rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border); }
+    .tab { padding: 0.4rem 0.85rem; border: none; background: transparent; color: var(--muted);
+      cursor: pointer; font-size: 0.82rem; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+    .tab.active { color: var(--accent2); border-bottom-color: var(--accent2); }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+
+    .section-title { font-size: 0.95rem; font-weight: 700; color: var(--text);
+      margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+    .section-title span { color: var(--muted); font-weight: 400; font-size: 0.82rem; margin-left: 0.5rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>⚡ <span>Conduit</span> Demo</h1>
+    <span class="badge">v0.3.0</span>
+    <div class="header-right">
+      <a href="http://localhost:8081" target="_blank">🔒 Admin Panel (port 8081)</a>
+      <a href="/__health__" target="_blank">/__health__</a>
+      <a href="/__metrics__" target="_blank">/__metrics__</a>
+      <a href="https://github.com/lopatnov/conduit" target="_blank">GitHub</a>
+    </div>
+  </header>
+
+  <main>
+    <div class="info-strip">
+      <strong>Two sites, one process.</strong>
+      This page runs on <strong>port 8080</strong> (public site).
+      <a href="http://localhost:8081" target="_blank">Port 8081</a> is a separate virtual site
+      protected by Basic Auth — both share the same Conduit process configured in
+      <code>demo/conduit.json</code>.
+      The API proxy round-robins across two backend instances on ports 4000 and 4001.
+    </div>
+
+    <div class="section">
+      <div class="feature-list">
+        <span class="feature-pill active">Static files</span>
+        <span class="feature-pill active">Reverse proxy</span>
+        <span class="feature-pill active">Round-robin LB</span>
+        <span class="feature-pill active">Proxy cache</span>
+        <span class="feature-pill active">Compression (br/gzip)</span>
+        <span class="feature-pill active">CORS</span>
+        <span class="feature-pill active">Security headers</span>
+        <span class="feature-pill active">Rate limiting</span>
+        <span class="feature-pill active">X-Response-Time</span>
+        <span class="feature-pill active">Health check</span>
+        <span class="feature-pill active">Prometheus metrics</span>
+        <span class="feature-pill active">Redirects</span>
+        <span class="feature-pill active">SPA fallback</span>
+        <span class="feature-pill active">Virtual hosting</span>
+        <span class="feature-pill active">Basic Auth (port 8081)</span>
+        <span class="feature-pill active">Retry on error</span>
+      </div>
+    </div>
+
+    <!-- Tab Navigation -->
+    <div class="tab-bar">
+      <button class="tab active" onclick="showTab('tab-proxy')">Proxy &amp; Load Balancing</button>
+      <button class="tab" onclick="showTab('tab-features')">Features</button>
+      <button class="tab" onclick="showTab('tab-multisite')">Multi-site</button>
+      <button class="tab" onclick="showTab('tab-config')">Config</button>
+    </div>
+
+    <!-- Tab 1: Proxy & Load Balancing -->
+    <div id="tab-proxy" class="tab-pane active">
+      <div class="section-title">Proxy &amp; Round-Robin Load Balancing
+        <span>two backends on :4000 and :4001</span>
+      </div>
+
+      <div class="grid grid-2">
+
+        <!-- Round-robin visualizer -->
+        <div class="card" style="grid-column: 1 / -1;">
+          <div class="card-header">
+            <div>
+              <h2>Load Balancer — Round-Robin</h2>
+              <h3>GET /api/users · /api/products → :4000 and :4001</h3>
+            </div>
+          </div>
+          <div class="roundrobin-bar">
+            <div class="rr-item" id="rr-4000">:4000</div>
+            <div class="rr-item" id="rr-4001">:4001</div>
+          </div>
+          <p style="font-size:0.78rem;color:var(--muted);margin-bottom:0.75rem">
+            The <code>servedBy</code> field shows which instance handled the request.
+            Click the button several times to watch Conduit alternate between the two backends.
+          </p>
+          <pre id="lb-output">Click to fetch...</pre>
+          <br />
+          <button onclick="fetchLb()">GET /api/users (round-robin)</button>
+        </div>
+
+        <!-- Proxy: Products API -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>Products API</h2>
+              <h3>GET /api/products → :4000/:4001</h3>
+            </div>
+          </div>
+          <pre id="products-output">Click to fetch...</pre>
+          <br />
+          <button onclick="fetchApi('/api/products', 'products-output')">Fetch Products</button>
+        </div>
+
+        <!-- Proxy headers -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>Proxy Headers</h2>
+              <h3>GET /api/info → shows X-Forwarded-* and X-Site</h3>
+            </div>
+          </div>
+          <pre id="info-output">Click to see headers injected by Conduit...</pre>
+          <br />
+          <button onclick="fetchApi('/api/info', 'info-output')">Show Proxy Headers</button>
+        </div>
+
+        <!-- Echo POST -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>POST Echo</h2>
+              <h3>POST /api/echo → :4000/:4001</h3>
+            </div>
+          </div>
+          <input type="text" id="echo-input" value='{"hello":"conduit"}' placeholder="JSON body" />
+          <pre id="echo-output">Enter JSON above and send...</pre>
+          <br />
+          <button onclick="sendEcho()">Send POST</button>
+        </div>
+
+        <!-- Proxy cache demo -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>Proxy Cache (TTL 10 s)</h2>
+              <h3>GET /api/users — cached in memory</h3>
+            </div>
+          </div>
+          <p style="font-size:0.78rem;color:var(--muted);margin-bottom:0.75rem">
+            First request hits the upstream; subsequent requests within 10 s are served
+            from Conduit's in-memory cache. Watch the <code>servedBy</code> port stay the same
+            across rapid refreshes.
+          </p>
+          <pre id="cache-output">Click to fetch...</pre>
+          <div id="cache-timing" style="font-size:0.72rem;color:var(--muted);margin-top:0.4rem"></div>
+          <br />
+          <div style="display:flex;gap:0.5rem">
+            <button onclick="fetchCached()">Fetch (cached)</button>
+            <button class="outline sm" onclick="document.getElementById('cache-output').textContent='—'; document.getElementById('cache-timing').textContent=''">Clear</button>
+          </div>
+        </div>
+
+        <!-- Custom request -->
+        <div class="card">
+          <div class="card-header"><h2>Custom Request</h2></div>
+          <div class="row">
+            <select id="method" style="flex:0.6">
+              <option>GET</option><option>POST</option>
+            </select>
+            <input type="text" id="custom-url" value="/api/health" style="flex:3" />
+            <button onclick="sendCustom()">Send</button>
+          </div>
+          <pre id="custom-output" style="margin-top:0.5rem">—</pre>
+          <div id="response-time" style="font-size:0.72rem;color:var(--muted);margin-top:0.4rem"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Tab 2: Features -->
+    <div id="tab-features" class="tab-pane">
+      <div class="section-title">Security, Compression &amp; Observability</div>
+      <div class="grid grid-2">
+
+        <!-- Health check -->
+        <div class="card">
+          <div class="card-header">
+            <div><h2>Health Check</h2><h3>GET /__health__</h3></div>
+            <div class="status-dot" id="health-dot"></div>
+          </div>
+          <div id="health-stats"></div>
+          <br />
+          <button onclick="fetchHealth()">Refresh</button>
+        </div>
+
+        <!-- Security headers -->
+        <div class="card">
+          <div class="card-header">
+            <div><h2>Security Headers</h2><h3>inspect on any response</h3></div>
+          </div>
+          <div id="sec-headers">
+            <p style="font-size:0.82rem;color:var(--muted)">Click to inspect the security headers
+            Conduit adds to every response.</p>
+          </div>
+          <br />
+          <button onclick="inspectSecurityHeaders()">Check Headers</button>
+        </div>
+
+        <!-- Rate limiting -->
+        <div class="card">
+          <div class="card-header">
+            <div><h2>Rate Limiting</h2><h3>300 req / 60 s per IP</h3></div>
+          </div>
+          <p style="font-size:0.78rem;color:var(--muted);margin-bottom:0.75rem">
+            The public site limits 300 requests per 60 seconds. Health and metrics endpoints are
+            exempt. Exceeding the limit returns <code>429 Too Many Requests</code>.
+          </p>
+          <div class="stat-row"><span class="label">Window</span><span class="value ok">60 s</span></div>
+          <div class="stat-row"><span class="label">Limit</span><span class="value ok">300 req</span></div>
+          <div class="stat-row"><span class="label">Key</span><span class="value ok">IP address</span></div>
+          <div class="stat-row"><span class="label">Exempt</span><span class="value ok">/__health__, /__metrics__</span></div>
+        </div>
+
+        <!-- Compression -->
+        <div class="card">
+          <div class="card-header">
+            <div><h2>Compression</h2><h3>brotli / gzip — auto-negotiated</h3></div>
+          </div>
+          <pre id="compress-output">Click to check...</pre>
+          <br />
+          <button onclick="checkCompression()">Check Content-Encoding</button>
+        </div>
+
+        <!-- Redirects -->
+        <div class="card">
+          <div class="card-header">
+            <div><h2>Redirects</h2><h3>301 /old-page → / · 302 /docs/:page → /</h3></div>
+          </div>
+          <p style="font-size:0.78rem;color:var(--muted);margin-bottom:0.75rem">
+            Configured in <code>demo/conduit.json</code>. Try visiting
+            <a href="/old-page" target="_blank">/old-page</a> or
+            <a href="/docs/getting-started" target="_blank">/docs/getting-started</a>.
+          </p>
+          <pre id="redirect-output">Click to test...</pre>
+          <br />
+          <button onclick="testRedirect()">Test /old-page redirect</button>
+        </div>
+
+        <!-- Prometheus metrics -->
+        <div class="card">
+          <div class="card-header">
+            <div><h2>Prometheus Metrics</h2><h3>GET /__metrics__</h3></div>
+          </div>
+          <pre id="metrics-output">Click to fetch...</pre>
+          <br />
+          <button onclick="fetchMetrics()">Fetch Metrics</button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Tab 3: Multi-site -->
+    <div id="tab-multisite" class="tab-pane">
+      <div class="section-title">Virtual Hosting — Two Sites in One Process</div>
+
+      <div class="grid grid-2">
+        <div class="card">
+          <h2>Site 1 — Public App <span style="color:var(--green)">(you are here)</span></h2>
+          <div class="stat-row"><span class="label">Port</span><span class="value ok">8080</span></div>
+          <div class="stat-row"><span class="label">Auth</span><span class="value">none (public)</span></div>
+          <div class="stat-row"><span class="label">Static</span><span class="value ok">./demo/dist</span></div>
+          <div class="stat-row"><span class="label">Proxy</span><span class="value ok">/api → :4000 + :4001 (round-robin)</span></div>
+          <div class="stat-row"><span class="label">Cache</span><span class="value ok">memory, TTL 10 s</span></div>
+          <div class="stat-row"><span class="label">Rate limit</span><span class="value ok">300 req / 60 s</span></div>
+          <div class="stat-row"><span class="label">Compression</span><span class="value ok">br + gzip</span></div>
+          <div class="stat-row"><span class="label">Health</span>
+            <span class="value"><a href="/__health__" target="_blank">/__health__</a></span></div>
+          <div class="stat-row"><span class="label">Metrics</span>
+            <span class="value"><a href="/__metrics__" target="_blank">/__metrics__</a></span></div>
+        </div>
+
+        <div class="card">
+          <h2>Site 2 — Admin Panel</h2>
+          <div class="stat-row"><span class="label">Port</span><span class="value warn">8081</span></div>
+          <div class="stat-row"><span class="label">Auth</span><span class="value warn">Basic Auth (admin / demo1234)</span></div>
+          <div class="stat-row"><span class="label">Static</span><span class="value ok">./demo/admin</span></div>
+          <div class="stat-row"><span class="label">Proxy</span><span class="value ok">/api → :4000 only</span></div>
+          <div class="stat-row"><span class="label">Health</span>
+            <span class="value"><a href="http://localhost:8081/__health__" target="_blank">/__health__</a></span></div>
+          <br />
+          <a href="http://localhost:8081" target="_blank">
+            <button style="width:100%">Open Admin Panel →</button>
+          </a>
+          <p style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem">
+            Your browser will show a login dialog. Use <code>admin / demo1234</code>.
+          </p>
+        </div>
+
+        <div class="card" style="grid-column: 1 / -1;">
+          <h2>Admin API</h2>
+          <p style="font-size:0.82rem;color:var(--muted);margin-bottom:1rem">
+            Conduit's management API runs on <code>127.0.0.1:2019</code> (loopback only).
+            Use the CLI to inspect and control the running process:
+          </p>
+          <pre style="max-height:none">conduit status          # uptime, version, inflight requests
+conduit upstreams       # health and latency of all backends
+conduit upstreams add --route /api --target http://localhost:4002
+                        # add a third backend — no restart needed
+conduit reload          # reload config from disk — no restart
+conduit shutdown        # graceful shutdown</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 4: Config -->
+    <div id="tab-config" class="tab-pane">
+      <div class="section-title">Active Configuration
+        <span>demo/conduit.json — two-site setup</span>
+      </div>
+      <div class="card">
+        <div class="stat-row"><span class="label">Config form</span><span class="value ok">global + sites array</span></div>
+        <div class="stat-row"><span class="label">Workers</span><span class="value ok">2</span></div>
+        <div class="stat-row"><span class="label">Admin API</span><span class="value ok">127.0.0.1:2019</span></div>
+        <div class="stat-row"><span class="label">Site 1 port</span><span class="value ok">8080</span></div>
+        <div class="stat-row"><span class="label">Site 2 port</span><span class="value ok">8081</span></div>
+        <div class="stat-row"><span class="label">LB strategy</span><span class="value ok">round-robin (site 1)</span></div>
+        <div class="stat-row"><span class="label">Cache store</span><span class="value ok">memory, TTL 10 s</span></div>
+        <div class="stat-row"><span class="label">Retry</span><span class="value ok">2 attempts on connection_error</span></div>
+      </div>
+      <br />
+      <div class="card">
+        <pre id="config-output">Loading config overview...</pre>
+        <br />
+        <button onclick="fetchConfig()">Refresh from /__health__</button>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    // ── Tab switching ─────────────────────────────────────────────────────────
+    function showTab(id) {
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.getElementById(id).classList.add('active');
+      event.target.classList.add('active');
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    async function fetchApi(url, outputId) {
+      const el = document.getElementById(outputId);
+      el.textContent = 'Loading...';
+      try {
+        const t0 = performance.now();
+        const res = await fetch(url);
+        const ms = (performance.now() - t0).toFixed(1);
+        const data = await res.json();
+        el.textContent = `// ${res.status} ${res.statusText} — ${ms} ms\n` +
+          JSON.stringify(data, null, 2);
+      } catch (e) { el.textContent = `Error: ${e.message}`; }
+    }
+
+    // ── Load balancer visualizer ──────────────────────────────────────────────
+    async function fetchLb() {
+      const el = document.getElementById('lb-output');
+      el.textContent = 'Loading...';
+      try {
+        const res = await fetch('/api/users');
+        const data = await res.json();
+        const port = data.servedBy;
+        el.textContent = `// servedBy: ${port}\n` + JSON.stringify(data, null, 2);
+        // highlight the active backend
+        document.querySelectorAll('.rr-item').forEach(item => {
+          item.classList.toggle('active', item.textContent.includes(String(port)));
+        });
+      } catch (e) { el.textContent = `Error: ${e.message}`; }
+    }
+
+    // ── Echo POST ─────────────────────────────────────────────────────────────
+    async function sendEcho() {
+      const body = document.getElementById('echo-input').value;
+      const el = document.getElementById('echo-output');
+      el.textContent = 'Loading...';
+      try {
+        const res = await fetch('/api/echo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+        });
+        el.textContent = JSON.stringify(await res.json(), null, 2);
+      } catch (e) { el.textContent = `Error: ${e.message}`; }
+    }
+
+    // ── Proxy cache demo ──────────────────────────────────────────────────────
+    async function fetchCached() {
+      const el = document.getElementById('cache-output');
+      const timing = document.getElementById('cache-timing');
+      el.textContent = 'Loading...';
+      try {
+        const t0 = performance.now();
+        const res = await fetch('/api/users');
+        const ms = (performance.now() - t0).toFixed(1);
+        const data = await res.json();
+        el.textContent = `// servedBy: ${data.servedBy} — round-trip: ${ms} ms\n` +
+          JSON.stringify(data, null, 2);
+        timing.textContent = `Cache: responses within 10 s show the same servedBy port. After 10 s TTL expires, Conduit re-fetches.`;
+      } catch (e) { el.textContent = `Error: ${e.message}`; }
+    }
+
+    // ── Custom request ────────────────────────────────────────────────────────
+    async function sendCustom() {
+      const method = document.getElementById('method').value;
+      const url = document.getElementById('custom-url').value;
+      const el = document.getElementById('custom-output');
+      const timing = document.getElementById('response-time');
+      el.textContent = 'Loading...'; timing.textContent = '';
+      const t0 = performance.now();
+      try {
+        const res = await fetch(url, { method });
+        const ms = (performance.now() - t0).toFixed(1);
+        const ct = res.headers.get('content-type') || '';
+        const body = ct.includes('application/json')
+          ? JSON.stringify(await res.json(), null, 2)
+          : await res.text();
+        const xrt = res.headers.get('x-response-time') || '—';
+        el.textContent = `// ${res.status} ${res.statusText}\n${body}`;
+        timing.textContent = `Round-trip: ${ms} ms  |  X-Response-Time: ${xrt}`;
+      } catch (e) { el.textContent = `Error: ${e.message}`; }
+    }
+
+    // ── Health check ──────────────────────────────────────────────────────────
+    async function fetchHealth() {
+      const dot = document.getElementById('health-dot');
+      const stats = document.getElementById('health-stats');
+      try {
+        const res = await fetch('/__health__');
+        const data = await res.json();
+        const ok = data.status === 'ok';
+        dot.style.background = ok ? 'var(--green)' : 'var(--red)';
+        dot.style.boxShadow = `0 0 6px ${ok ? 'var(--green)' : 'var(--red)'}`;
+        stats.innerHTML = Object.entries(data).map(([k, v]) =>
+          `<div class="stat-row"><span class="label">${k}</span>` +
+          `<span class="value ok">${typeof v === 'object' ? JSON.stringify(v) : v}</span></div>`
+        ).join('');
+      } catch (e) {
+        dot.style.background = 'var(--red)';
+        document.getElementById('health-stats').innerHTML =
+          `<div class="stat-row"><span class="label">error</span><span class="value err">${e.message}</span></div>`;
+      }
+    }
+
+    // ── Security headers ──────────────────────────────────────────────────────
+    async function inspectSecurityHeaders() {
+      const el = document.getElementById('sec-headers');
+      try {
+        const res = await fetch('/__health__');
+        const secHeaders = [
+          'x-content-type-options', 'x-frame-options', 'referrer-policy',
+          'x-xss-protection', 'strict-transport-security', 'content-security-policy',
+          'x-powered-by', 'x-site',
+        ];
+        el.innerHTML = secHeaders.map(h => {
+          const val = res.headers.get(h);
+          return `<div class="stat-row">
+            <span class="label">${h}</span>
+            <span class="value ${val ? 'ok' : 'warn'}">${val || '(not set)'}</span>
+          </div>`;
+        }).join('');
+      } catch (e) {
+        el.innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
+      }
+    }
+
+    // ── Compression ───────────────────────────────────────────────────────────
+    async function checkCompression() {
+      const el = document.getElementById('compress-output');
+      try {
+        const res = await fetch('/api/users', {
+          headers: { 'Accept-Encoding': 'br, gzip, deflate' },
+        });
+        const encoding = res.headers.get('content-encoding') || '(none — already decoded by browser)';
+        const vary = res.headers.get('vary') || '—';
+        el.textContent =
+          `Content-Encoding: ${encoding}\nVary: ${vary}\n\n` +
+          `Note: browsers decode compressed responses automatically.\n` +
+          `Use curl to see the raw encoding:\n\n` +
+          `curl -H "Accept-Encoding: br" -v http://localhost:8080/api/users 2>&1 | grep -i encoding`;
+      } catch (e) { el.textContent = `Error: ${e.message}`; }
+    }
+
+    // ── Redirect test ─────────────────────────────────────────────────────────
+    async function testRedirect() {
+      const el = document.getElementById('redirect-output');
+      el.textContent = 'Testing /old-page redirect (no-follow)...';
+      try {
+        const res = await fetch('/old-page', { redirect: 'manual' });
+        el.textContent =
+          `Status: ${res.status} ${res.type === 'opaqueredirect' ? '(redirected — browser followed)' : ''}\n` +
+          `Location: ${res.headers.get('location') || '(browser already followed the redirect)'}\n\n` +
+          `Use curl to see the raw redirect:\n\ncurl -v http://localhost:8080/old-page 2>&1 | head -20`;
+      } catch (e) { el.textContent = `Error: ${e.message}`; }
+    }
+
+    // ── Prometheus metrics ────────────────────────────────────────────────────
+    async function fetchMetrics() {
+      const el = document.getElementById('metrics-output');
+      el.textContent = 'Loading...';
+      try {
+        const res = await fetch('/__metrics__');
+        const text = await res.text();
+        // Show first 30 lines
+        el.textContent = text.split('\n').slice(0, 30).join('\n') +
+          '\n... (truncated — click /__metrics__ for full output)';
+      } catch (e) { el.textContent = `Error: ${e.message}`; }
+    }
+
+    // ── Config tab ────────────────────────────────────────────────────────────
+    async function fetchConfig() {
+      const el = document.getElementById('config-output');
+      try {
+        const res = await fetch('/__health__');
+        const data = await res.json();
+        el.textContent = JSON.stringify({
+          configFile: 'demo/conduit.json',
+          form: 'global + sites array',
+          sites: [
+            { port: 8080, role: 'public', proxy: 'round-robin :4000 + :4001', cache: 'memory TTL 10s' },
+            { port: 8081, role: 'admin', auth: 'Basic Auth', proxy: ':4000 only' },
+          ],
+          health: data,
+        }, null, 2);
+      } catch (e) { el.textContent = `Error: ${e.message}`; }
+    }
+
+    // ── Init ──────────────────────────────────────────────────────────────────
+    fetchHealth();
+    fetchConfig();
+  </script>
+</body>
+</html>

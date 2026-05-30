@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1
+# Multi-stage build: compile with musl for a fully-static binary,
+# then package into a minimal scratch image.
+
+# ── Stage 1: build ────────────────────────────────────────────────────────────
+# Pin to a specific Rust/Alpine version for reproducible builds.
+# Update this tag when upgrading the toolchain.
+FROM rust:1.87-alpine3.21 AS builder
+
+# musl-dev provides the C linker and libc headers needed for musl builds.
+# Version is tied to the pinned Alpine 3.21 release above.
+RUN apk add --no-cache musl-dev=1.2.5-r0
+
+WORKDIR /src
+COPY . .
+
+RUN cargo build --release --target x86_64-unknown-linux-musl
+
+# ── Stage 2: runtime ──────────────────────────────────────────────────────────
+FROM scratch
+
+# Copy the static binary.
+COPY --from=builder /src/target/x86_64-unknown-linux-musl/release/conduit /conduit
+
+# Expose the default proxy port.
+EXPOSE 8080
+
+# Default config path inside the container.
+ENV CONDUIT_CONFIG=/etc/conduit/conduit.json
+
+# Run as an unprivileged user (scratch has no /etc/passwd, so use a numeric UID).
+# UID 65534 is the conventional "nobody" UID on Linux.
+USER 65534:65534
+
+ENTRYPOINT ["/conduit"]
+CMD ["-c", "/etc/conduit/conduit.json"]

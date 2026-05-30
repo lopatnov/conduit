@@ -77,6 +77,30 @@ impl Default for UpstreamRegistry {
     }
 }
 
+// ── Override key helpers ──────────────────────────────────────────────────────
+
+/// Build the DashMap key for a runtime override entry.
+///
+/// Format: `"{site}\0{route}"`.  The null byte is a safe separator because
+/// neither host labels nor URL paths can contain `\0`.
+/// Site `"*"` is the wildcard — applies to every site that serves the route.
+fn override_key(site: &str, route: &str) -> String {
+    format!("{site}\0{route}")
+}
+
+/// Format a site's host+port as the canonical site label used in override keys.
+///
+/// Mirrors the display logic in the admin API so that labels are consistent
+/// across the router, the registry, and the CLI.
+pub fn site_label(host: &Option<String>, port: Option<u16>) -> String {
+    match (host, port) {
+        (Some(h), Some(p)) => format!("{h}:{p}"),
+        (Some(h), None) => h.clone(),
+        (None, Some(p)) => format!("*:{p}"),
+        (None, None) => "*".to_string(),
+    }
+}
+
 impl UpstreamRegistry {
     pub fn new() -> Self {
         Self {
@@ -149,18 +173,38 @@ impl UpstreamRegistry {
 
     // ── Runtime upstream overrides (Phase 2.5c) ───────────────────────────────
 
-    /// Return the runtime override target list for `route`, or `None` when no
-    /// override has been applied (caller should fall back to the config).
-    pub fn get_override_targets(&self, route: &str) -> Option<Vec<(String, u32)>> {
-        self.overrides.get(route).map(|e| e.value().clone())
+    /// Return the runtime override target list for `(site_label, route)`.
+    ///
+    /// Lookup order:
+    /// 1. Site-specific key — `"{site_label}\0{route}"` (set via `--site` flag).
+    /// 2. Wildcard key — `"*\0{route}"` (set when no `--site` is specified).
+    /// 3. `None` — fall back to the config-file targets.
+    pub fn get_override_targets(
+        &self,
+        site_label: &str,
+        route: &str,
+    ) -> Option<Vec<(String, u32)>> {
+        // Site-specific takes precedence.
+        let specific = override_key(site_label, route);
+        if let Some(v) = self.overrides.get(&specific) {
+            return Some(v.value().clone());
+        }
+        // Wildcard — applies to all sites.
+        self.overrides
+            .get(&override_key("*", route))
+            .map(|e| e.value().clone())
     }
 
-    /// Add `url` with `weight` to the runtime override list for `route`.
+    /// Add `url` with `weight` to the runtime override list for `(site, route)`.
     ///
-    /// If `url` is already present its weight is updated.  If no override list
-    /// exists yet it is created, seeded with the provided URL.
-    pub fn add_upstream(&self, route: &str, url: &str, weight: u32) {
-        let mut entry = self.overrides.entry(route.to_owned()).or_default();
+    /// `site` is either a site label (e.g. `"app.example.com:443"`) for a
+    /// site-specific override, or `"*"` to apply the override to every site
+    /// that serves this route (wildcard, backward-compatible default).
+    ///
+    /// If `url` is already present its weight is updated.
+    pub fn add_upstream(&self, site: &str, route: &str, url: &str, weight: u32) {
+        let key = override_key(site, route);
+        let mut entry = self.overrides.entry(key).or_default();
         if let Some(existing) = entry.iter_mut().find(|(u, _)| u == url) {
             existing.1 = weight;
         } else {
@@ -168,12 +212,12 @@ impl UpstreamRegistry {
         }
     }
 
-    /// Remove `url` from the runtime override list for `route`.
+    /// Remove `url` from the runtime override list for `(site, route)`.
     ///
-    /// Returns `true` if the URL was found and removed.  Leaves the (possibly
-    /// empty) override list in place so subsequent adds work correctly.
-    pub fn remove_upstream(&self, route: &str, url: &str) -> bool {
-        if let Some(mut entry) = self.overrides.get_mut(route) {
+    /// Returns `true` if the URL was found and removed.
+    pub fn remove_upstream(&self, site: &str, route: &str, url: &str) -> bool {
+        let key = override_key(site, route);
+        if let Some(mut entry) = self.overrides.get_mut(&key) {
             let before = entry.len();
             entry.retain(|(u, _)| u != url);
             return entry.len() < before;
@@ -181,12 +225,12 @@ impl UpstreamRegistry {
         false
     }
 
-    /// Update the weight of `url` within the runtime override list for `route`.
+    /// Update the weight of `url` within the runtime override list for `(site, route)`.
     ///
-    /// Returns `true` when the URL was found and its weight updated, `false`
-    /// when either `route` has no override list or `url` is not in it.
-    pub fn set_weight(&self, route: &str, url: &str, weight: u32) -> bool {
-        if let Some(mut entry) = self.overrides.get_mut(route) {
+    /// Returns `true` when the URL was found and its weight updated.
+    pub fn set_weight(&self, site: &str, route: &str, url: &str, weight: u32) -> bool {
+        let key = override_key(site, route);
+        if let Some(mut entry) = self.overrides.get_mut(&key) {
             if let Some(existing) = entry.iter_mut().find(|(u, _)| u == url) {
                 existing.1 = weight;
                 return true;
@@ -241,14 +285,9 @@ pub(crate) fn apply_probe_result(
 /// the process exits.
 pub fn spawn_health_checks(registry: Arc<UpstreamRegistry>, config: &AppConfig) {
     for site in &config.sites {
-        let Some(proxy) = &site.proxy else {
+        let Some(ProxyConfig::Routes(routes)) = &site.proxy else {
             continue;
         };
-        let routes = match proxy {
-            ProxyConfig::Routes(r) => r,
-            ProxyConfig::Single(_) => continue,
-        };
-
         for route_target in routes.values() {
             let ProxyRouteTarget::Full(cfg) = route_target else {
                 continue;
@@ -256,59 +295,68 @@ pub fn spawn_health_checks(registry: Arc<UpstreamRegistry>, config: &AppConfig) 
             let Some(hc) = &cfg.health_check else {
                 continue;
             };
-
             let urls = upstream::target_urls(route_target);
             if urls.is_empty() {
                 continue;
             }
-
             let raw_path = hc.path.clone().unwrap_or_else(|| "/".to_string());
             let path = if raw_path.starts_with('/') {
                 raw_path
             } else {
                 format!("/{raw_path}")
             };
-            let interval_secs = hc.interval_secs.unwrap_or(10).max(1);
-            let unhealthy_threshold = hc.unhealthy_threshold.unwrap_or(3);
-            let healthy_threshold = hc.healthy_threshold.unwrap_or(1);
-            let reg = registry.clone();
-
-            tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
-                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-                loop {
-                    ticker.tick().await;
-                    for url in &urls {
-                        let Some(host_port) = upstream::url_to_host_port(url) else {
-                            continue;
-                        };
-                        let (ok, latency_ms) = probe_http(&host_port, &path).await;
-
-                        let mut entry = reg.statuses.entry(url.clone()).or_default();
-
-                        let was_healthy = entry.healthy;
-                        apply_probe_result(
-                            &mut entry,
-                            ok,
-                            latency_ms,
-                            healthy_threshold,
-                            unhealthy_threshold,
-                        );
-                        if ok && !was_healthy && entry.healthy {
-                            tracing::info!(url, "upstream recovered");
-                        } else if !ok && was_healthy && !entry.healthy {
-                            tracing::warn!(
-                                url,
-                                failures = entry.consecutive_failures,
-                                "upstream marked unhealthy"
-                            );
-                        }
-                    }
-                }
-            });
+            spawn_health_task(
+                registry.clone(),
+                urls,
+                path,
+                hc.interval_secs.unwrap_or(10).max(1),
+                hc.healthy_threshold.unwrap_or(1),
+                hc.unhealthy_threshold.unwrap_or(3),
+            );
         }
     }
+}
+
+/// Spawn a single background health-check task for a set of upstream URLs.
+fn spawn_health_task(
+    registry: Arc<UpstreamRegistry>,
+    urls: Vec<String>,
+    path: String,
+    interval_secs: u64,
+    healthy_threshold: u32,
+    unhealthy_threshold: u32,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            for url in &urls {
+                let Some(host_port) = upstream::url_to_host_port(url) else {
+                    continue;
+                };
+                let (ok, latency_ms) = probe_http(&host_port, &path).await;
+                let mut entry = registry.statuses.entry(url.clone()).or_default();
+                let was_healthy = entry.healthy;
+                apply_probe_result(
+                    &mut entry,
+                    ok,
+                    latency_ms,
+                    healthy_threshold,
+                    unhealthy_threshold,
+                );
+                if ok && !was_healthy && entry.healthy {
+                    tracing::info!(url, "upstream recovered");
+                } else if !ok && was_healthy && !entry.healthy {
+                    tracing::warn!(
+                        url,
+                        failures = entry.consecutive_failures,
+                        "upstream marked unhealthy"
+                    );
+                }
+            }
+        }
+    });
 }
 
 // ── HTTP health probe ─────────────────────────────────────────────────────────
@@ -573,20 +621,20 @@ mod tests {
         let reg = UpstreamRegistry::new();
 
         // No override yet → None
-        assert!(reg.get_override_targets("/api").is_none());
+        assert!(reg.get_override_targets("*", "/api").is_none());
 
-        reg.add_upstream("/api", "http://a:4000", 1);
-        let ov = reg.get_override_targets("/api").unwrap();
+        reg.add_upstream("*", "/api", "http://a:4000", 1);
+        let ov = reg.get_override_targets("*", "/api").unwrap();
         assert_eq!(ov, vec![("http://a:4000".to_string(), 1)]);
 
         // Add a second target.
-        reg.add_upstream("/api", "http://b:4000", 2);
-        let ov = reg.get_override_targets("/api").unwrap();
+        reg.add_upstream("*", "/api", "http://b:4000", 2);
+        let ov = reg.get_override_targets("*", "/api").unwrap();
         assert_eq!(ov.len(), 2);
 
         // Update weight of existing target.
-        reg.add_upstream("/api", "http://a:4000", 5);
-        let ov = reg.get_override_targets("/api").unwrap();
+        reg.add_upstream("*", "/api", "http://a:4000", 5);
+        let ov = reg.get_override_targets("*", "/api").unwrap();
         let a_weight = ov
             .iter()
             .find(|(u, _)| u == "http://a:4000")
@@ -598,13 +646,13 @@ mod tests {
     #[test]
     fn remove_upstream_returns_true_when_found() {
         let reg = UpstreamRegistry::new();
-        reg.add_upstream("/api", "http://a:4000", 1);
-        reg.add_upstream("/api", "http://b:4000", 1);
+        reg.add_upstream("*", "/api", "http://a:4000", 1);
+        reg.add_upstream("*", "/api", "http://b:4000", 1);
 
-        let removed = reg.remove_upstream("/api", "http://a:4000");
+        let removed = reg.remove_upstream("*", "/api", "http://a:4000");
         assert!(removed, "remove should return true when URL was present");
 
-        let ov = reg.get_override_targets("/api").unwrap();
+        let ov = reg.get_override_targets("*", "/api").unwrap();
         assert_eq!(ov.len(), 1);
         assert_eq!(ov[0].0, "http://b:4000");
     }
@@ -613,21 +661,21 @@ mod tests {
     fn remove_upstream_returns_false_when_missing() {
         let reg = UpstreamRegistry::new();
         // No override list at all.
-        assert!(!reg.remove_upstream("/api", "http://x:4000"));
+        assert!(!reg.remove_upstream("*", "/api", "http://x:4000"));
 
         // Override list exists but URL not in it.
-        reg.add_upstream("/api", "http://a:4000", 1);
-        assert!(!reg.remove_upstream("/api", "http://x:4000"));
+        reg.add_upstream("*", "/api", "http://a:4000", 1);
+        assert!(!reg.remove_upstream("*", "/api", "http://x:4000"));
     }
 
     #[test]
     fn remove_all_leaves_empty_override_list() {
         let reg = UpstreamRegistry::new();
-        reg.add_upstream("/", "http://a:4000", 1);
-        reg.remove_upstream("/", "http://a:4000");
+        reg.add_upstream("*", "/", "http://a:4000", 1);
+        reg.remove_upstream("*", "/", "http://a:4000");
 
         // Key must still exist (empty list) so callers know there IS an override.
-        let ov = reg.get_override_targets("/");
+        let ov = reg.get_override_targets("*", "/");
         assert!(ov.is_some(), "empty override list must still be present");
         assert!(ov.unwrap().is_empty());
     }
@@ -635,12 +683,12 @@ mod tests {
     #[test]
     fn set_weight_updates_existing_target() {
         let reg = UpstreamRegistry::new();
-        reg.add_upstream("/api", "http://a:4000", 1);
+        reg.add_upstream("*", "/api", "http://a:4000", 1);
 
-        let updated = reg.set_weight("/api", "http://a:4000", 10);
+        let updated = reg.set_weight("*", "/api", "http://a:4000", 10);
         assert!(updated, "set_weight must return true for known URL");
 
-        let ov = reg.get_override_targets("/api").unwrap();
+        let ov = reg.get_override_targets("*", "/api").unwrap();
         assert_eq!(ov[0].1, 10);
     }
 
@@ -648,22 +696,22 @@ mod tests {
     fn set_weight_returns_false_when_not_found() {
         let reg = UpstreamRegistry::new();
         // Route not in overrides at all.
-        assert!(!reg.set_weight("/api", "http://a:4000", 5));
+        assert!(!reg.set_weight("*", "/api", "http://a:4000", 5));
 
         // Route exists but URL not in it.
-        reg.add_upstream("/api", "http://b:4000", 1);
-        assert!(!reg.set_weight("/api", "http://a:4000", 5));
+        reg.add_upstream("*", "/api", "http://b:4000", 1);
+        assert!(!reg.set_weight("*", "/api", "http://a:4000", 5));
     }
 
     #[test]
     fn clear_overrides_removes_all_routes() {
         let reg = UpstreamRegistry::new();
-        reg.add_upstream("/api", "http://a:4000", 1);
-        reg.add_upstream("/web", "http://b:4000", 1);
+        reg.add_upstream("*", "/api", "http://a:4000", 1);
+        reg.add_upstream("*", "/web", "http://b:4000", 1);
         assert_eq!(reg.overrides.len(), 2);
 
         reg.clear_overrides();
         assert!(reg.overrides.is_empty());
-        assert!(reg.get_override_targets("/api").is_none());
+        assert!(reg.get_override_targets("*", "/api").is_none());
     }
 }

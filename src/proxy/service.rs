@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -7,6 +8,7 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
+use pingora_cache::storage::Storage as CacheStorage;
 use pingora_cache::{CacheKey, NoCacheReason, RespCacheable};
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
@@ -16,17 +18,22 @@ use prometheus::{CounterVec, HistogramVec};
 
 use crate::config::schema::{
     ApiKeyConfig, AppConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig, HealthCheckConfig,
-    IpFilterConfig, LimitsConfig, ProxyTimeout, RateLimitConfig,
+    IpFilterConfig, LimitsConfig, MiddlewareEntry, ProxyTimeout, RateLimitConfig,
 };
 use crate::filter::rate_limit::RateLimiter;
+use crate::filter::rate_limit_redis::RedisRateLimiter;
 use crate::filter::{
     auth, compression, cors, ip_filter, limits, logging, rate_limit, redirects, response_time,
-    security_headers,
+    script, security_headers,
 };
-use crate::handler::{fallback, health, metrics as metrics_handler, response, static_files};
+use crate::handler::{
+    acme_challenge as acme_handler, fallback, health, hot_reload as hot_reload_handler,
+    metrics as metrics_handler, response, static_files,
+};
 use crate::proxy::cache as proxy_cache;
 use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
+use crate::proxy::{cache_disk, cache_redis};
 use crate::proxy::{router, upstream};
 use crate::util::log_writer::LogWriter;
 
@@ -102,10 +109,41 @@ pub struct AppState {
     pub log_writer: Arc<LogWriter>,
     /// Per-upstream health state and least-conn inflight counts.
     pub upstream_health: Arc<UpstreamRegistry>,
+    /// Path to the config file — used by `POST /reload` to re-read and hot-swap.
+    pub config_path: PathBuf,
+    /// Active ACME HTTP-01 challenge tokens: `token → key_authorization`.
+    ///
+    /// Populated by the ACME flow during certificate procurement/renewal;
+    /// served to the CA via the `/.well-known/acme-challenge/{token}` handler.
+    pub acme_challenges: Arc<DashMap<String, String>>,
+    /// Loopback address of the Axum upload server, or `None` when no site
+    /// has an `upload` block.  Populated before Pingora starts so the router
+    /// can forward matching requests without a config look-up.
+    pub upload_addr: Option<SocketAddr>,
+    /// Broadcast channel for hot-reload browser signals.
+    ///
+    /// When the file watcher detects a change in a watched directory, it sends
+    /// `()` on this channel.  All active SSE connections (`/__hot-reload__`)
+    /// subscribe and forward a `data: reload` event to the browser.
+    pub hot_reload_tx: tokio::sync::broadcast::Sender<()>,
+    /// Redis-backed rate limiter, instantiated when any site configures
+    /// `rateLimit.store: "redis://..."`.  `None` when no site uses Redis
+    /// rate limiting.
+    pub redis_rate_limiter: Option<Arc<RedisRateLimiter>>,
 }
 
 impl AppState {
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: AppConfig, config_path: PathBuf, upload_addr: Option<SocketAddr>) -> Self {
+        Self::new_with_redis(config, config_path, upload_addr, None)
+    }
+
+    pub fn new_with_redis(
+        config: AppConfig,
+        config_path: PathBuf,
+        upload_addr: Option<SocketAddr>,
+        redis_rate_limiter: Option<Arc<RedisRateLimiter>>,
+    ) -> Self {
+        let (hot_reload_tx, _) = tokio::sync::broadcast::channel(16);
         Self {
             config: Arc::new(ArcSwap::new(Arc::new(config))),
             inflight: Arc::new(AtomicUsize::new(0)),
@@ -114,6 +152,11 @@ impl AppState {
             metrics: ConduitMetrics::global(),
             log_writer: Arc::new(LogWriter::new()),
             upstream_health: Arc::new(UpstreamRegistry::new()),
+            config_path,
+            acme_challenges: Arc::new(DashMap::new()),
+            upload_addr,
+            hot_reload_tx,
+            redis_rate_limiter,
         }
     }
 }
@@ -147,6 +190,12 @@ impl ConduitProxy {
             cors_cfg,
             security_cfg,
             redirect_result,
+            custom_headers,
+            middleware,
+            script_method,
+            script_path_str,
+            script_query,
+            script_headers,
         ) = {
             let config = self.state.config.load();
             let host = extract_host(session);
@@ -164,13 +213,45 @@ impl ConduitProxy {
                 .map(|a| a.ip().to_string())
                 .unwrap_or_default();
 
+            let method = session.req_header().method.as_str().to_owned();
+            let query = session.req_header().uri.query().map(str::to_owned);
+
+            // Collect request headers for Rhai scripts (lower-cased keys).
+            let req_headers_for_script: std::collections::HashMap<String, String> = session
+                .req_header()
+                .headers
+                .iter()
+                .filter_map(|(k, v)| {
+                    v.to_str()
+                        .ok()
+                        .map(|vs| (k.as_str().to_ascii_lowercase(), vs.to_owned()))
+                })
+                .collect();
+
+            // Extract the local port so that port-differentiated virtual hosts
+            // (e.g. port 8080 public site vs. port 8081 admin site) are routed
+            // to the correct SiteConfig even when no explicit `host` is set.
+            // Pingora's SocketAddr wraps std::net::SocketAddr; use as_inet() to
+            // reach the standard type and its .port() method.
+            let server_port: u16 = session
+                .as_ref()
+                .server_addr()
+                .and_then(|a| a.as_inet())
+                .map(|a| a.port())
+                .unwrap_or(80);
+
             let req_ctx = router::route_request(
                 &config,
                 &host,
                 &path,
+                &method,
+                &session.req_header().headers,
+                query.as_deref(),
                 &client_ip,
+                server_port,
                 &self.state.round_robin,
                 &self.state.upstream_health,
+                self.state.upload_addr,
             );
             let site = config.sites.get(req_ctx.site_idx);
 
@@ -184,6 +265,16 @@ impl ConduitProxy {
             let redirect_result = site
                 .and_then(|s| s.redirects.as_deref())
                 .and_then(|rules| redirects::apply_redirects(rules, &path_and_query));
+            // Custom response headers defined in site.headers — applied to every response.
+            let custom_headers: Vec<(String, String)> = site
+                .and_then(|s| s.headers.as_ref())
+                .map(|h| h.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default();
+            // Middleware chain entries for this site.
+            let middleware: Vec<MiddlewareEntry> = site
+                .and_then(|s| s.middleware.as_ref())
+                .cloned()
+                .unwrap_or_default();
 
             (
                 req_ctx,
@@ -195,6 +286,12 @@ impl ConduitProxy {
                 cors_cfg,
                 security_cfg,
                 redirect_result,
+                custom_headers,
+                middleware,
+                method,
+                path,
+                query.unwrap_or_default(),
+                req_headers_for_script,
             )
         };
 
@@ -214,7 +311,7 @@ impl ConduitProxy {
             .map(security_headers::header_entries)
             .unwrap_or_default();
 
-        // ── Build planned response headers (CORS + security) ──────────────────
+        // ── Build planned response headers (CORS + security + custom) ────────
         // These are injected into every response written for this request.
         {
             let cors_hdrs = cors_cfg
@@ -224,12 +321,13 @@ impl ConduitProxy {
             req_ctx.extra_headers = cors_hdrs
                 .into_iter()
                 .chain(sec_only.iter().cloned())
+                .chain(custom_headers)
                 .collect();
         }
 
         let handler_kind = handler_kind_of(&req_ctx.upstream);
 
-        // ── Guard filters (ip, cors, limits, auth, redirects) ─────────────────
+        // ── Guard filters (ip, cors, limits, auth, redirects, scripts) ──────────
         let guards = GuardCtx {
             ip_cfg,
             limits_cfg,
@@ -238,11 +336,16 @@ impl ConduitProxy {
             api_key_cfg,
             cors_cfg,
             redirect_result,
+            middleware,
             handler_kind: handler_kind.clone(),
             is_preflight: is_cors_preflight,
             sec_only,
             origin: request_origin,
             extra_headers: req_ctx.extra_headers.clone(),
+            script_method,
+            script_path: script_path_str,
+            script_query,
+            script_headers,
         };
         if self.run_guard_filters(session, guards).await? {
             return Ok(true);
@@ -285,8 +388,14 @@ impl ConduitProxy {
             }
         }
 
-        // Health endpoint bypasses all remaining filters.
-        if matches!(guards.handler_kind, HandlerKind::Health) {
+        // Health, ACME challenge, and hot-reload endpoints bypass all remaining filters.
+        if matches!(
+            guards.handler_kind,
+            HandlerKind::Health
+                | HandlerKind::AcmeChallenge
+                | HandlerKind::HotReloadSse
+                | HandlerKind::HotReloadJs
+        ) {
             return Ok(false);
         }
 
@@ -310,6 +419,45 @@ impl ConduitProxy {
             response::write_redirect(session, status, &location, &guards.extra_headers).await?;
             self.state.inflight.fetch_sub(1, Ordering::Relaxed);
             return Ok(true);
+        }
+
+        // 7. Rhai script middleware — type: "script" entries from site.middleware.
+        for entry in &guards.middleware {
+            if entry.r#type != "script" {
+                continue;
+            }
+            let Some(ref script_path) = entry.path else {
+                continue;
+            };
+            match script::run_script(
+                script_path,
+                &guards.script_path,
+                &guards.script_method,
+                &guards.script_query,
+                guards.script_headers.clone(),
+            ) {
+                script::ScriptOutcome::Continue => {}
+                script::ScriptOutcome::Abort {
+                    status,
+                    body,
+                    extra_headers,
+                } => {
+                    // Merge the script's extra headers with the standard extra
+                    // headers (CORS, security, custom) so both sets are sent.
+                    let mut all_headers = guards.extra_headers.clone();
+                    all_headers.extend(extra_headers);
+                    response::write_response(
+                        session,
+                        status,
+                        "text/plain",
+                        Bytes::from(body),
+                        &all_headers,
+                    )
+                    .await?;
+                    self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                    return Ok(true);
+                }
+            }
         }
 
         Ok(false)
@@ -340,7 +488,8 @@ impl ConduitProxy {
 
         // 4. Token-bucket rate limiting.
         if let Some(ref rl_cfg) = rate_limit_cfg {
-            if !rate_limit::check(rl_cfg, session, &self.state.rate_limiter) {
+            let allowed = self.rate_limit_allowed(rl_cfg, session).await;
+            if !allowed {
                 response::write_response(
                     session,
                     429,
@@ -378,6 +527,25 @@ impl ConduitProxy {
         Ok(false)
     }
 
+    /// Determine whether the request is allowed by the rate limiter.
+    ///
+    /// Uses Redis when configured and available; falls back to the in-memory
+    /// token-bucket limiter if the Redis connection was not established at startup.
+    async fn rate_limit_allowed(&self, rl_cfg: &RateLimitConfig, session: &mut Session) -> bool {
+        if rl_cfg
+            .store
+            .as_deref()
+            .is_some_and(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
+        {
+            if let Some(ref rrl) = self.state.redis_rate_limiter {
+                let key = rate_limit::extract_client_key(rl_cfg, session);
+                return rrl.check(&key, rl_cfg.limit, rl_cfg.window_secs).await;
+            }
+            // Redis unavailable at startup — fall through to memory.
+        }
+        rate_limit::check(rl_cfg, session, &self.state.rate_limiter)
+    }
+
     /// Dispatch a request to the appropriate local handler.
     ///
     /// Returns `Ok(true)` for local handlers (response fully written) or
@@ -405,6 +573,21 @@ impl ConduitProxy {
         }
 
         match handler_kind {
+            HandlerKind::AcmeChallenge => {
+                let token = if let Some(RequestCtx {
+                    upstream: UpstreamTarget::Local(LocalHandler::AcmeChallenge { token }),
+                    ..
+                }) = ctx.as_ref()
+                {
+                    token.clone()
+                } else {
+                    unreachable!()
+                };
+                acme_handler::handle_acme_challenge(session, &token, &self.state.acme_challenges)
+                    .await?;
+                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                Ok(true)
+            }
             HandlerKind::Health => {
                 let (extra, upstream_pairs) = {
                     let req_ctx = ctx.as_ref().unwrap();
@@ -424,18 +607,29 @@ impl ConduitProxy {
 
                         if include {
                             use crate::proxy::upstream as us;
-                            site.and_then(|s| s.proxy.as_ref())
-                                .map(|proxy| {
-                                    us::target_urls_from_proxy(proxy)
-                                        .into_iter()
-                                        .map(|url| {
-                                            let healthy =
-                                                self.state.upstream_health.is_healthy(&url);
-                                            (url, healthy)
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default()
+                            if let Some(s) = site {
+                                let mut urls: Vec<String> = Vec::new();
+                                // Top-level proxy field.
+                                if let Some(proxy) = &s.proxy {
+                                    urls.extend(us::target_urls_from_proxy(proxy));
+                                }
+                                // routes array (Phase 3.6).
+                                if let Some(routes) = &s.routes {
+                                    for rc in routes {
+                                        if let Some(rt) = &rc.proxy {
+                                            urls.extend(us::target_urls(rt));
+                                        }
+                                    }
+                                }
+                                urls.into_iter()
+                                    .map(|url| {
+                                        let healthy = self.state.upstream_health.is_healthy(&url);
+                                        (url, healthy)
+                                    })
+                                    .collect()
+                            } else {
+                                vec![]
+                            }
                         } else {
                             vec![]
                         }
@@ -505,7 +699,7 @@ impl ConduitProxy {
                 } else {
                     unreachable!()
                 };
-                static_files::handle_static(
+                let found = static_files::handle_static(
                     session,
                     &roots,
                     &options,
@@ -515,6 +709,16 @@ impl ConduitProxy {
                     &accept_enc,
                 )
                 .await?;
+
+                if !found {
+                    // File not found — delegate to the site's fallback handler
+                    // (e.g. SPA index.html for HTML requests, JSON 404 for API).
+                    let config = self.state.config.load();
+                    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                    let site = config.sites.get(site_idx);
+                    fallback::handle_fallback(session, site, &extra).await?;
+                }
+
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
                 Ok(true)
             }
@@ -526,6 +730,26 @@ impl ConduitProxy {
                     .unwrap_or((0, vec![]));
                 let site = config.sites.get(site_idx);
                 fallback::handle_fallback(session, site, &extra).await?;
+                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                Ok(true)
+            }
+            HandlerKind::HotReloadJs => {
+                let extra = ctx
+                    .as_ref()
+                    .map(|c| c.extra_headers.clone())
+                    .unwrap_or_default();
+                hot_reload_handler::handle_client_js(session, &extra).await?;
+                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                Ok(true)
+            }
+            HandlerKind::HotReloadSse => {
+                let extra = ctx
+                    .as_ref()
+                    .map(|c| c.extra_headers.clone())
+                    .unwrap_or_default();
+                let rx = self.state.hot_reload_tx.subscribe();
+                // inflight is decremented after the SSE stream ends (inside handle_sse).
+                hot_reload_handler::handle_sse(session, rx, &extra).await?;
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
                 Ok(true)
             }
@@ -580,10 +804,20 @@ impl ProxyHttp for ConduitProxy {
             peer.options.alpn = pingora_core::upstreams::peer::ALPN::H2H1;
         }
 
+        // Derive fallback timeout from `limits.timeoutSecs` on the matched site.
+        let limits_timeout_secs = {
+            let cfg = self.state.config.load();
+            cfg.sites
+                .get(req_ctx.site_idx)
+                .and_then(|s| s.limits.as_ref())
+                .and_then(|l| l.timeout_secs)
+        };
+
         apply_peer_options(
             &mut peer,
             req_ctx.proxy_timeout.as_ref(),
             req_ctx.proxy_pool.as_ref(),
+            limits_timeout_secs,
         );
 
         Ok(Box::new(peer))
@@ -598,56 +832,8 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
-        let client_ip = session
-            .client_addr()
-            .and_then(|a| a.as_inet())
-            .map(|a| a.ip().to_string());
-
-        if let Some(ip) = client_ip {
-            let xff = match upstream_request
-                .headers
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-            {
-                Some(existing) => format!("{existing}, {ip}"),
-                None => ip,
-            };
-            upstream_request.insert_header("x-forwarded-for", xff)?;
-        }
-
-        let proto = {
-            // Determine the downstream protocol from the site's TLS configuration.
-            let config = self.state.config.load();
-            let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
-            if config
-                .sites
-                .get(site_idx)
-                .and_then(|s| s.tls.as_ref())
-                .is_some()
-            {
-                "https"
-            } else {
-                "http"
-            }
-        };
-        upstream_request.insert_header("x-forwarded-proto", proto)?;
-
-        if let Some(ctx_ref) = ctx.as_ref() {
-            if let UpstreamTarget::Proxy {
-                strip_prefix: Some(pfx),
-                ..
-            } = &ctx_ref.upstream
-            {
-                let old_path = upstream_request.uri.path().to_owned();
-                let new_path = old_path.strip_prefix(pfx.as_str()).unwrap_or("/");
-                let new_path = if new_path.is_empty() { "/" } else { new_path };
-                if new_path != old_path {
-                    let new_uri = rebuild_uri(&upstream_request.uri, new_path)?;
-                    upstream_request.set_uri(new_uri);
-                }
-            }
-        }
-
+        append_forwarded_headers(session, upstream_request, &self.state, ctx)?;
+        apply_upstream_path_transforms(upstream_request, ctx)?;
         Ok(())
     }
 
@@ -708,14 +894,24 @@ impl ProxyHttp for ConduitProxy {
             return Ok(());
         };
 
-        // Only "memory" store is supported in Phase 2.6.
-        if cfg.store != "memory" {
+        // Select storage backend based on store string.
+        let storage: &'static (dyn CacheStorage + Sync) = if cfg.store == "memory" {
+            proxy_cache::cache_storage()
+        } else if let Some(url) = cfg
+            .store
+            .strip_prefix("redis://")
+            .map(|_| cfg.store.as_str())
+        {
+            cache_redis::get_or_create(url)
+        } else if let Some(dir) = cfg.store.strip_prefix("disk:") {
+            cache_disk::get_or_create(dir)
+        } else {
             tracing::warn!(
                 store = %cfg.store,
                 "unsupported cache store — caching disabled for this route"
             );
             return Ok(());
-        }
+        };
 
         // Check request-side policy (method, cookies, skip-paths).
         let method = session.req_header().method.as_str();
@@ -726,9 +922,7 @@ impl ProxyHttp for ConduitProxy {
             return Ok(());
         }
 
-        session
-            .cache
-            .enable(proxy_cache::cache_storage(), None, None, None, None);
+        session.cache.enable(storage, None, None, None, None);
         Ok(())
     }
 
@@ -762,7 +956,26 @@ impl ProxyHttp for ConduitProxy {
         let path = uri.path();
         let query = uri.query().filter(|q| !q.is_empty());
 
-        Ok(proxy_cache::build_cache_key(host, scheme, path, query))
+        // Vary-based cache key differentiation: include the specified request
+        // header values so that different representations are stored separately.
+        let vary_headers = {
+            let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+            let config = self.state.config.load();
+            config.sites.get(site_idx).and_then(|_s| {
+                ctx.as_ref()
+                    .and_then(|c| c.proxy_cache_cfg.as_ref())
+                    .and_then(|cc| cc.vary_headers.clone())
+            })
+        };
+
+        Ok(proxy_cache::build_cache_key(
+            host,
+            scheme,
+            path,
+            query,
+            vary_headers.as_deref(),
+            Some(&session.req_header().headers),
+        ))
     }
 
     /// Decide whether an upstream response is cacheable.
@@ -968,7 +1181,8 @@ fn resolve_peer_addr(req_ctx: &mut RequestCtx) -> pingora_core::Result<(String, 
     } else {
         match &req_ctx.upstream {
             UpstreamTarget::Proxy { addr, tls, sni, .. } => Ok((addr.clone(), *tls, sni.clone())),
-            _ => Err(pingora_core::Error::explain(
+            UpstreamTarget::Upload { addr } => Ok((addr.to_string(), false, String::new())),
+            UpstreamTarget::Local(_) => Err(pingora_core::Error::explain(
                 pingora_core::ErrorType::InternalError,
                 "upstream_peer called for local handler",
             )),
@@ -976,23 +1190,41 @@ fn resolve_peer_addr(req_ctx: &mut RequestCtx) -> pingora_core::Result<(String, 
     }
 }
 
-/// Apply per-route timeout and connection-pool settings to an `HttpPeer`.
+/// Apply per-route timeout, connection-pool settings, and global limits to an
+/// `HttpPeer`.
+///
+/// Priority (highest → lowest):
+/// 1. `proxy.*.timeout.*` — per-route fine-grained timeouts
+/// 2. `limits.timeoutSecs` — site-wide fallback timeout
+///
+/// `limits.timeout_secs` is applied to all three timeout fields only when
+/// the corresponding per-route field is absent.
 fn apply_peer_options(
     peer: &mut HttpPeer,
     timeout: Option<&ProxyTimeout>,
     pool: Option<&ConnectionPoolConfig>,
+    limits_timeout_secs: Option<u64>,
 ) {
-    if let Some(t) = timeout {
-        if let Some(ms) = t.connect_ms {
-            peer.options.connection_timeout = Some(Duration::from_millis(ms));
-        }
-        if let Some(ms) = t.read_ms {
-            peer.options.read_timeout = Some(Duration::from_millis(ms));
-        }
-        if let Some(ms) = t.send_ms {
-            peer.options.write_timeout = Some(Duration::from_millis(ms));
-        }
-    }
+    let fallback_ms = limits_timeout_secs.map(|s| s.saturating_mul(1000));
+
+    // connection_timeout
+    peer.options.connection_timeout = timeout
+        .and_then(|t| t.connect_ms)
+        .or(fallback_ms)
+        .map(Duration::from_millis);
+
+    // read_timeout
+    peer.options.read_timeout = timeout
+        .and_then(|t| t.read_ms)
+        .or(fallback_ms)
+        .map(Duration::from_millis);
+
+    // write_timeout
+    peer.options.write_timeout = timeout
+        .and_then(|t| t.send_ms)
+        .or(fallback_ms)
+        .map(Duration::from_millis);
+
     if let Some(p) = pool {
         if let Some(secs) = p.idle_timeout_secs {
             peer.options.idle_timeout = Some(Duration::from_secs(secs));
@@ -1003,9 +1235,12 @@ fn apply_peer_options(
 #[derive(Clone)]
 enum HandlerKind {
     Health,
+    AcmeChallenge,
     Metrics,
     StaticFile,
     Fallback,
+    HotReloadSse,
+    HotReloadJs,
     Proxy,
 }
 
@@ -1019,19 +1254,30 @@ struct GuardCtx {
     api_key_cfg: Option<ApiKeyConfig>,
     cors_cfg: Option<CorsConfig>,
     redirect_result: Option<(String, u16)>,
+    /// Middleware chain entries — Rhai `type: "script"` entries are executed
+    /// after the built-in filters and redirects.
+    middleware: Vec<MiddlewareEntry>,
     handler_kind: HandlerKind,
     is_preflight: bool,
     sec_only: Vec<(String, String)>,
     origin: Option<String>,
     extra_headers: Vec<(String, String)>,
+    /// Request info forwarded to Rhai scripts (method, path, query, headers).
+    script_method: String,
+    script_path: String,
+    script_query: String,
+    script_headers: std::collections::HashMap<String, String>,
 }
 
 /// Classify a request's upstream target into a `HandlerKind` for filter routing.
 fn handler_kind_of(upstream: &UpstreamTarget) -> HandlerKind {
     match upstream {
         UpstreamTarget::Local(LocalHandler::Health) => HandlerKind::Health,
+        UpstreamTarget::Local(LocalHandler::AcmeChallenge { .. }) => HandlerKind::AcmeChallenge,
         UpstreamTarget::Local(LocalHandler::Metrics { .. }) => HandlerKind::Metrics,
         UpstreamTarget::Local(LocalHandler::StaticFile { .. }) => HandlerKind::StaticFile,
+        UpstreamTarget::Local(LocalHandler::HotReloadSse) => HandlerKind::HotReloadSse,
+        UpstreamTarget::Local(LocalHandler::HotReloadJs) => HandlerKind::HotReloadJs,
         UpstreamTarget::Local(_) => HandlerKind::Fallback,
         _ => HandlerKind::Proxy,
     }
@@ -1059,6 +1305,132 @@ fn extract_host(session: &Session) -> String {
         .and_then(|v| v.to_str().ok())
         .map(|h| h.split(':').next().unwrap_or(h).to_owned())
         .unwrap_or_default()
+}
+
+/// Append `X-Forwarded-For` and `X-Forwarded-Proto` headers to the upstream request.
+fn append_forwarded_headers(
+    session: &Session,
+    upstream_request: &mut RequestHeader,
+    state: &AppState,
+    ctx: &Option<RequestCtx>,
+) -> Result<()> {
+    // X-Forwarded-For: chain or start a new entry.
+    if let Some(ip) = session
+        .client_addr()
+        .and_then(|a| a.as_inet())
+        .map(|a| a.ip().to_string())
+    {
+        let xff = match upstream_request
+            .headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+        {
+            Some(existing) => format!("{existing}, {ip}"),
+            None => ip,
+        };
+        upstream_request.insert_header("x-forwarded-for", xff)?;
+    }
+
+    // X-Forwarded-Proto: derive from whether the matched site has TLS.
+    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+    let proto = if state
+        .config
+        .load()
+        .sites
+        .get(site_idx)
+        .and_then(|s| s.tls.as_ref())
+        .is_some()
+    {
+        "https"
+    } else {
+        "http"
+    };
+    upstream_request.insert_header("x-forwarded-proto", proto)?;
+    Ok(())
+}
+
+/// Apply strip-prefix and path-rewrite transforms for proxy and upload targets.
+fn apply_upstream_path_transforms(
+    upstream_request: &mut RequestHeader,
+    ctx: &Option<RequestCtx>,
+) -> Result<()> {
+    let Some(ctx_ref) = ctx.as_ref() else {
+        return Ok(());
+    };
+    match &ctx_ref.upstream {
+        UpstreamTarget::Proxy {
+            strip_prefix,
+            rewrite,
+            ..
+        } => {
+            let original = upstream_request.uri.path();
+            let path = apply_path_strip(original, strip_prefix.as_deref());
+            let path = apply_path_rewrites(&path, rewrite.as_deref());
+            if path != upstream_request.uri.path() {
+                let new_uri = rebuild_uri(&upstream_request.uri, &path)?;
+                upstream_request.set_uri(new_uri);
+            }
+        }
+        UpstreamTarget::Upload { .. } => {
+            upstream_request.insert_header("x-conduit-site-idx", ctx_ref.site_idx.to_string())?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Strip `prefix` from `path`, returning `"/"` when stripping leaves an empty string.
+fn apply_path_strip(path: &str, prefix: Option<&str>) -> String {
+    let Some(pfx) = prefix else {
+        return path.to_owned();
+    };
+    let stripped = path.strip_prefix(pfx).unwrap_or("/");
+    if stripped.is_empty() {
+        "/".to_owned()
+    } else {
+        stripped.to_owned()
+    }
+}
+
+/// Apply the first matching rewrite rule to `path` and return the (possibly unchanged) result.
+fn apply_path_rewrites(path: &str, rules: Option<&[crate::config::schema::RewriteRule]>) -> String {
+    let Some(rules) = rules else {
+        return path.to_owned();
+    };
+    let mut out = path.to_owned();
+    for rule in rules {
+        match get_rewrite_regex(&rule.from) {
+            Some(re) if re.is_match(&out) => {
+                out = re.replacen(&out, 1, rule.to.as_str()).into_owned();
+                break;
+            }
+            None => {
+                tracing::warn!(
+                    pattern = %rule.from,
+                    "rewrite rule regex error: invalid pattern (skipped)"
+                );
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Return a compiled [`regex::Regex`] for `pattern`, using a process-wide cache
+/// to avoid recompiling the same pattern on every request.
+///
+/// Rewrite patterns are plain (un-anchored) regexes so that `replacen` can
+/// match anywhere in the path.  Invalid patterns are not stored; the caller
+/// should log the error and skip the rule.
+fn get_rewrite_regex(pattern: &str) -> Option<regex::Regex> {
+    static CACHE: OnceLock<DashMap<String, regex::Regex>> = OnceLock::new();
+    let cache = CACHE.get_or_init(DashMap::new);
+    if let Some(re) = cache.get(pattern) {
+        return Some(re.clone());
+    }
+    let re = regex::Regex::new(pattern).ok()?;
+    cache.insert(pattern.to_owned(), re.clone());
+    Some(re)
 }
 
 fn rebuild_uri(original: &http::Uri, new_path: &str) -> Result<http::Uri> {

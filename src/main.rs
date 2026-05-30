@@ -4,8 +4,9 @@ use std::path::Path;
 use std::process;
 use std::time::{Duration, Instant};
 
-use clap::Parser;
-use conduit::cli::args::{Cli, Command, UpstreamsCommand};
+use clap::{CommandFactory, Parser};
+use clap_complete::Shell as ClapShell;
+use conduit::cli::args::{Cli, Command, Shell, UpstreamsCommand};
 use conduit::cli::init;
 use conduit::config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget, ProxyTarget};
 use conduit::config::{self, validate};
@@ -13,6 +14,16 @@ use conduit::server::builder;
 use indicatif::{ProgressBar, ProgressStyle};
 
 fn main() {
+    // Initialise tracing with an env-filter so that RUST_LOG controls output.
+    // Defaults to "warn" when RUST_LOG is unset; set RUST_LOG=conduit=info
+    // (or =debug) for verbose output.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .init();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -39,40 +50,70 @@ fn main() {
             let addr = resolve_admin(args.admin.as_deref());
             admin_post("shutdown", &addr);
         }
+        Some(Command::Completions(args)) => {
+            let clap_shell = match args.shell {
+                Shell::Bash => ClapShell::Bash,
+                Shell::Zsh => ClapShell::Zsh,
+                Shell::Fish => ClapShell::Fish,
+                Shell::PowerShell => ClapShell::PowerShell,
+                Shell::Elvish => ClapShell::Elvish,
+            };
+            clap_complete::generate(
+                clap_shell,
+                &mut Cli::command(),
+                "conduit",
+                &mut std::io::stdout(),
+            );
+        }
+        Some(Command::Man) => {
+            let cmd = Cli::command();
+            let man = clap_mangen::Man::new(cmd);
+            man.render(&mut std::io::stdout()).unwrap_or_else(|e| {
+                eprintln!("error generating man page: {e}");
+                process::exit(1);
+            });
+        }
         Some(Command::Upstreams(args)) => {
             let addr = resolve_admin(args.admin.as_deref());
             match args.command {
                 None => admin_get("upstreams", &addr),
                 Some(UpstreamsCommand::Add(a)) => {
-                    let weight = a.weight.unwrap_or(1);
-                    let body = format!(
-                        r#"{{"route":{},"target":{},"weight":{}}}"#,
-                        serde_json::to_string(&a.route).unwrap(),
-                        serde_json::to_string(&a.target).unwrap(),
-                        weight
+                    let body = upstream_json(
+                        &a.route,
+                        &a.target,
+                        Some(a.weight.unwrap_or(1)),
+                        a.site.as_deref(),
                     );
                     admin_post_json("upstreams/add", &addr, &body);
                 }
                 Some(UpstreamsCommand::Remove(r)) => {
-                    let body = format!(
-                        r#"{{"route":{},"target":{}}}"#,
-                        serde_json::to_string(&r.route).unwrap(),
-                        serde_json::to_string(&r.target).unwrap(),
-                    );
+                    let body = upstream_json(&r.route, &r.target, None, r.site.as_deref());
                     admin_post_json("upstreams/remove", &addr, &body);
                 }
                 Some(UpstreamsCommand::Weight(w)) => {
-                    let body = format!(
-                        r#"{{"route":{},"target":{},"weight":{}}}"#,
-                        serde_json::to_string(&w.route).unwrap(),
-                        serde_json::to_string(&w.target).unwrap(),
-                        w.weight
-                    );
+                    let body =
+                        upstream_json(&w.route, &w.target, Some(w.weight), w.site.as_deref());
                     admin_post_json("upstreams/weight", &addr, &body);
                 }
             }
         }
     }
+}
+
+// ── Upstream command helpers ───────────────────────────────────────────────
+
+/// Build the JSON body for `/upstreams/add`, `/remove`, and `/weight`.
+///
+/// Extracted to keep `main()` cognitive complexity within the allowed limit.
+fn upstream_json(route: &str, target: &str, weight: Option<u32>, site: Option<&str>) -> String {
+    let mut obj = serde_json::json!({ "route": route, "target": target });
+    if let Some(w) = weight {
+        obj["weight"] = serde_json::json!(w);
+    }
+    if let Some(s) = site {
+        obj["site"] = serde_json::json!(s);
+    }
+    obj.to_string()
 }
 
 // ── Server ─────────────────────────────────────────────────────────────────
@@ -93,7 +134,7 @@ fn run_server(config_path: &str) {
         }
         process::exit(1);
     }
-    if let Err(e) = builder::run_server(cfg) {
+    if let Err(e) = builder::run_server(cfg, path.to_path_buf()) {
         eprintln!("server error: {e}");
         process::exit(1);
     }
@@ -112,11 +153,42 @@ fn cmd_validate(config_path: &str) {
     };
     let errors = validate::validate(&app);
     if errors.is_empty() {
-        println!("Config is valid.");
+        let site_count = app.sites.len();
+        let route_count: usize = app
+            .sites
+            .iter()
+            .map(|s| {
+                use crate::config::schema::ProxyConfig;
+                let proxy_routes = match &s.proxy {
+                    Some(ProxyConfig::Single(_)) => 1,
+                    Some(ProxyConfig::Routes(r)) => r.len(),
+                    None => 0,
+                };
+                let explicit_routes = s.routes.as_ref().map(|r| r.len()).unwrap_or(0);
+                proxy_routes + explicit_routes
+            })
+            .sum();
+        if route_count > 0 {
+            println!(
+                "Config is valid — {site_count} site{}, {route_count} route{}.",
+                if site_count == 1 { "" } else { "s" },
+                if route_count == 1 { "" } else { "s" },
+            );
+        } else {
+            println!(
+                "Config is valid — {site_count} site{}.",
+                if site_count == 1 { "" } else { "s" },
+            );
+        }
     } else {
+        let error_count = errors.len();
         for e in &errors {
             eprintln!("error at {}: {}", e.path, e.message);
         }
+        eprintln!(
+            "\n{error_count} error{} found.",
+            if error_count == 1 { "" } else { "s" }
+        );
         process::exit(1);
     }
 }
@@ -214,10 +286,8 @@ fn cmd_probe(config_path: &str) {
 fn collect_upstream_urls(app: &AppConfig) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut urls = Vec::new();
-
     for site in &app.sites {
-        let Some(proxy) = &site.proxy else { continue };
-        for url in extract_proxy_urls(proxy) {
+        for url in site_upstream_urls(site) {
             if seen.insert(url.clone()) {
                 urls.push(url);
             }
@@ -226,28 +296,58 @@ fn collect_upstream_urls(app: &AppConfig) -> Vec<String> {
     urls
 }
 
+/// Return every upstream URL referenced by a single site's `proxy` and `routes`.
+fn site_upstream_urls(site: &crate::config::schema::SiteConfig) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(proxy) = &site.proxy {
+        out.extend(extract_proxy_urls(proxy));
+    }
+    if let Some(routes) = &site.routes {
+        for route in routes {
+            if let Some(proxy_target) = &route.proxy {
+                out.extend(extract_route_target_urls(proxy_target));
+            }
+        }
+    }
+    out
+}
+
 /// Flatten a `ProxyConfig` into a list of raw URL strings.
 fn extract_proxy_urls(proxy: &ProxyConfig) -> Vec<String> {
     match proxy {
         ProxyConfig::Single(url) => vec![url.clone()],
-        ProxyConfig::Routes(routes) => {
-            let mut out = Vec::new();
-            for target in routes.values() {
-                match target {
-                    ProxyRouteTarget::Url(url) => out.push(url.clone()),
-                    ProxyRouteTarget::RoundRobin(urls) => out.extend(urls.iter().cloned()),
-                    ProxyRouteTarget::Full(cfg) => {
-                        for t in &cfg.targets {
-                            out.push(match t {
-                                ProxyTarget::Simple(url) => url.clone(),
-                                ProxyTarget::Weighted(w) => w.url.clone(),
-                            });
-                        }
-                    }
-                }
-            }
-            out
+        ProxyConfig::Routes(routes) => routes
+            .values()
+            .flat_map(extract_route_target_urls)
+            .collect(),
+    }
+}
+
+/// Flatten a `ProxyRouteTarget` into raw URL strings.
+fn extract_route_target_urls(target: &ProxyRouteTarget) -> Vec<String> {
+    match target {
+        ProxyRouteTarget::Url(url) => vec![url.clone()],
+        ProxyRouteTarget::RoundRobin(urls) => urls.clone(),
+        ProxyRouteTarget::Full(cfg) => collect_full_target_urls(cfg),
+    }
+}
+
+/// Collect every URL from a `Full` proxy route config (targets + group targets).
+fn collect_full_target_urls(cfg: &crate::config::schema::ProxyRouteConfig) -> Vec<String> {
+    let mut out: Vec<String> = cfg.targets.iter().map(proxy_target_url).collect();
+    if let Some(groups) = &cfg.groups {
+        for group in groups {
+            out.extend(group.targets.iter().map(proxy_target_url));
         }
+    }
+    out
+}
+
+/// Extract the URL string from either form of `ProxyTarget`.
+fn proxy_target_url(t: &ProxyTarget) -> String {
+    match t {
+        ProxyTarget::Simple(url) => url.clone(),
+        ProxyTarget::Weighted(w) => w.url.clone(),
     }
 }
 
@@ -262,76 +362,79 @@ fn probe_url(url: &str) -> (String, Option<u16>, Duration) {
     };
 
     if is_tls {
-        // Probe TCP connectivity only — no TLS stack in the CLI binary.
-        let addr_str = format!("{host}:{port}");
-        match addr_str.parse::<std::net::SocketAddr>() {
-            Ok(addr) => match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
-                Ok(_) => {
-                    return (
-                        "TCP open (HTTPS — HEAD skipped)".to_owned(),
-                        None,
-                        start.elapsed(),
-                    )
-                }
-                Err(e) => return (format!("unreachable: {e}"), None, start.elapsed()),
-            },
-            Err(_) => {
-                // host:port needs DNS resolution — resolve then connect with timeout.
-                let resolved = addr_str.to_socket_addrs().ok().and_then(|mut a| a.next());
-                match resolved {
-                    Some(sock) => match TcpStream::connect_timeout(&sock, Duration::from_secs(5)) {
-                        Ok(_) => {
-                            return (
-                                "TCP open (HTTPS — HEAD skipped)".to_owned(),
-                                None,
-                                start.elapsed(),
-                            )
-                        }
-                        Err(e) => return (format!("unreachable: {e}"), None, start.elapsed()),
-                    },
-                    None => {
-                        return (
-                            format!("unreachable: cannot resolve {addr_str}"),
-                            None,
-                            start.elapsed(),
-                        )
-                    }
-                }
-            }
-        }
+        return probe_tls_tcp(&host, port, start);
     }
 
     // Plain HTTP: send HEAD and read the status line.
-    let result = (|| -> anyhow::Result<u16> {
-        let addr_str = format!("{host}:{port}");
-        let sock_addr = addr_str
-            .to_socket_addrs()?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr_str}"))?;
-        let mut stream = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(10))?;
-        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-        write!(
-            stream,
-            "HEAD {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
-        )?;
-        stream.flush()?;
-        let mut response = String::new();
-        stream.read_to_string(&mut response)?;
-        // Status line: "HTTP/1.x NNN Reason"
-        let status = response
-            .lines()
-            .next()
-            .and_then(|line| line.split_whitespace().nth(1))
-            .and_then(|s| s.parse::<u16>().ok())
-            .ok_or_else(|| anyhow::anyhow!("no status code in response"))?;
-        Ok(status)
-    })();
-
+    let result = probe_http_head(&host, port, &path);
     let elapsed = start.elapsed();
     match result {
         Ok(status) => (format!("HTTP {status}"), Some(status), elapsed),
         Err(e) => (format!("error: {e}"), None, elapsed),
     }
+}
+
+/// Probe TLS upstream via TCP-only connectivity check (no TLS handshake in CLI).
+///
+/// Tries direct `SocketAddr` parse first, then falls back to DNS resolution.
+fn probe_tls_tcp(host: &str, port: u16, start: Instant) -> (String, Option<u16>, Duration) {
+    // Use the (host, port) overload so IPv6 literals like "::1" are handled
+    // correctly — formatting as "{host}:{port}" produces "::1:4000" which
+    // to_socket_addrs / SocketAddr::parse cannot parse.
+    let addr_display = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let sock_addr = (host, port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut a| a.next());
+
+    match sock_addr {
+        None => (
+            format!("unreachable: cannot resolve {addr_display}"),
+            None,
+            start.elapsed(),
+        ),
+        Some(addr) => match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
+            Ok(_) => (
+                "TCP open (HTTPS — HEAD skipped)".to_owned(),
+                None,
+                start.elapsed(),
+            ),
+            Err(e) => (format!("unreachable: {e}"), None, start.elapsed()),
+        },
+    }
+}
+
+/// Send an HTTP/1.1 HEAD request over a plain TCP stream and return the status code.
+fn probe_http_head(host: &str, port: u16, path: &str) -> anyhow::Result<u16> {
+    let addr_display = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let sock_addr = (host, port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr_display}"))?;
+    let mut stream = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(10))?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    write!(
+        stream,
+        "HEAD {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    )?;
+    stream.flush()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    // Status line: "HTTP/1.x NNN Reason"
+    response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|s| s.parse::<u16>().ok())
+        .ok_or_else(|| anyhow::anyhow!("no status code in response"))
 }
 
 /// Parse an upstream URL into `(is_tls, host, port, path)`.

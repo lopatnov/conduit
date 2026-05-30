@@ -1,32 +1,65 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+        // ── Demo ──────────────────────────────────────────────────────────────
+        // Press F5 to build Conduit (debug), start the mock API, then attach
+        // the debugger to Conduit running against demo/conduit.json.
+        // The mock API server (ports 4000 + 4001) is launched as a background
+        // task before Conduit starts.
         {
-            "name": "Rust Debug (rustc)",
+            "name": "Demo: Debug Conduit",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${fileDirname}/${fileBasenameNoExtension}.exe",
-            "args": [],
+            "program": "${workspaceFolder}/target/debug/conduit.exe",
+            "args": ["-c", "demo/conduit.json"],
             "stopAtEntry": false,
-            "cwd": "${fileDirname}",
-            "environment": [],
-            "console": "externalTerminal",
-            "preLaunchTask": "rustc build"
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                { "name": "RUST_LOG", "value": "debug" }
+            ],
+            "console": "integratedTerminal",
+            // Builds Conduit then starts the mock API server (ports 4000+4001)
+            // before the debugger attaches. Both steps run sequentially.
+            "preLaunchTask": "Demo: Build + API Server"
         },
+
+        // ── Conduit with custom config ─────────────────────────────────────
         {
-            "name": "Rust (Windows Debugger)",
+            "name": "Conduit: Run (debug build)",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/main.exe",
-            "args": [],
+            "program": "${workspaceFolder}/target/debug/conduit.exe",
+            "args": ["-c", "${input:configFile}"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                { "name": "RUST_LOG", "value": "debug" }
+            ],
+            "console": "integratedTerminal",
+            "preLaunchTask": "cargo build"
+        },
+
+        // ── Validate config ────────────────────────────────────────────────
+        {
+            "name": "Conduit: Validate demo config",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/debug/conduit.exe",
+            "args": ["validate", "-c", "demo/conduit.json"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
-            "console": "externalTerminal",
-            "preLaunchTask": "rustc build"
+            "console": "integratedTerminal",
+            "preLaunchTask": "cargo build"
+        }
+    ],
+
+    "inputs": [
+        {
+            "id": "configFile",
+            "type": "promptString",
+            "description": "Path to conduit.json",
+            "default": "demo/conduit.json"
         }
     ]
 }

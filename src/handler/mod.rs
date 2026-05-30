@@ -1,5 +1,7 @@
+pub mod acme_challenge;
 pub mod fallback;
 pub mod health;
+pub mod hot_reload;
 pub mod metrics;
 pub mod response;
 pub mod static_files;
