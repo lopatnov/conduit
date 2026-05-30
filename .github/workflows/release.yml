@@ -320,8 +320,6 @@ jobs:
 
       - name: Publish to npmjs.com
         working-directory: npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
 
       # ── 4b. Publish to GitHub Packages ─────────────────────────────────
