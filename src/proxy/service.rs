@@ -881,6 +881,27 @@ impl ProxyHttp for ConduitProxy {
             peer.options.alpn = pingora_core::upstreams::peer::ALPN::H2H1;
         }
 
+        // Apply upstream TLS settings (cert verification, custom server name).
+        if let UpstreamTarget::Proxy {
+            ref upstream_tls,
+            ref sni,
+            ..
+        } = req_ctx.upstream
+        {
+            if let Some(tls_cfg) = upstream_tls {
+                if let Some(verify) = tls_cfg.verify {
+                    peer.options.verify_cert = verify;
+                    peer.options.verify_hostname = verify;
+                }
+                if let Some(ref server_name) = tls_cfg.server_name {
+                    peer.options.alternative_cn = Some(server_name.clone());
+                }
+            }
+            // Always set the SNI for TLS connections (already done by HttpPeer::new
+            // but explicit here for clarity).
+            let _ = sni; // sni already used in HttpPeer::new above
+        }
+
         // Derive fallback timeout from `limits.timeoutSecs` on the matched site.
         let limits_timeout_secs = {
             let cfg = self.state.config.load();

@@ -342,6 +342,7 @@ fn resolve_proxy(
                 cache_cfg,
                 rewrite_rules,
                 mirror_url,
+                upstream_tls,
             ) = match route_target {
                 ProxyRouteTarget::Full(cfg) => (
                     cfg.retry.as_ref(),
@@ -353,8 +354,9 @@ fn resolve_proxy(
                     cfg.cache.clone(),
                     cfg.rewrite.clone(),
                     cfg.mirror.clone(),
+                    cfg.upstream_tls.clone(),
                 ),
-                _ => (None, None, None, None, false, "ip", None, None, None),
+                _ => (None, None, None, None, false, "ip", None, None, None, None),
             };
 
             // Failover: when a backup URL is configured and all primary upstreams
@@ -455,6 +457,7 @@ fn resolve_proxy(
                     strip_prefix,
                     rewrite: rewrite_rules,
                     mirror_url: mirror_url.clone(),
+                    upstream_tls: upstream_tls.clone(),
                 },
                 Some(other) => other,
                 None => {
@@ -592,6 +595,7 @@ fn resolve_grouped(
             strip_prefix,
             rewrite: rewrite_rules,
             mirror_url: None, // groups don't support mirror in V1
+            upstream_tls: None,
         },
         Some(other) => other,
         None => {
@@ -676,6 +680,7 @@ pub fn url_to_proxy_upstream(url: &str, strip_prefix: Option<String>) -> Option<
         strip_prefix,
         rewrite: None,
         mirror_url: None,
+        upstream_tls: None,
     })
 }
 

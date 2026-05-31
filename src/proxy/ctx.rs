@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use crate::config::schema::{
     CacheConfig, ConnectionPoolConfig, HeaderTransformConfig, ProxyTimeout, RewriteRule,
-    StaticOptions,
+    StaticOptions, UpstreamTlsConfig as UpstreamTlsCfg,
 };
 
 #[derive(Debug)]
@@ -137,6 +137,8 @@ pub enum UpstreamTarget {
         /// Optional traffic mirror URL.  When `Some`, `upstream_request_filter`
         /// fires a fire-and-forget copy of the request to this backend.
         mirror_url: Option<String>,
+        /// Per-route upstream TLS settings (cert verification, custom SNI).
+        upstream_tls: Option<UpstreamTlsCfg>,
     },
     Upload {
         addr: SocketAddr,

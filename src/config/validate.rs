@@ -511,6 +511,14 @@ fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<
             ));
         }
     }
+    if let Some(tls) = &cfg.upstream_tls {
+        // Warn if verify: false is set (not an error, just a potential misconfiguration).
+        if tls.verify == Some(false) {
+            tracing::debug!(
+                "{prefix}.upstreamTls.verify is false — upstream certificate will not be verified"
+            );
+        }
+    }
 }
 
 /// Validate upstream groups: non-empty targets and WRR strategy requirements.

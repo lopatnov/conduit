@@ -719,6 +719,18 @@ pub struct ProxyRouteConfig {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mirror: Option<String>,
+    /// Upstream TLS settings — applied when targets use `https://` scheme.
+    ///
+    /// By default Pingora verifies the upstream certificate using the system
+    /// CA store.  Use `verify: false` for internal services with self-signed
+    /// certificates.
+    ///
+    /// ```json
+    /// { "targets": ["https://backend:4443"],
+    ///   "upstreamTls": { "verify": false } }
+    /// ```
+    #[serde(rename = "upstreamTls", skip_serializing_if = "Option::is_none")]
+    pub upstream_tls: Option<UpstreamTlsConfig>,
     /// Per-route rate limiting.  Evaluated **after** the site-level `rateLimit`
     /// (both limits must pass for the request to proceed).
     ///
@@ -739,6 +751,27 @@ pub struct ProxyRouteConfig {
 pub struct StickyConfig {
     /// Name of the cookie to use as the session affinity key.
     pub cookie: String,
+}
+
+/// Upstream TLS configuration (used with `https://` proxy targets).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamTlsConfig {
+    /// Whether to verify the upstream certificate against the system CA store.
+    ///
+    /// Defaults to `true` (Pingora's default).  Set to `false` for internal
+    /// services that use self-signed certificates.  **Only disable in
+    /// trusted internal networks** — disabling verification exposes you to
+    /// man-in-the-middle attacks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify: Option<bool>,
+    /// Override the hostname used for certificate verification.
+    ///
+    /// When absent, the SNI hostname (derived from the target URL) is used.
+    /// Useful when the upstream presents a certificate for a different hostname
+    /// than its DNS name.
+    #[serde(rename = "serverName", skip_serializing_if = "Option::is_none")]
+    pub server_name: Option<String>,
 }
 
 /// A named group of upstream targets with its own balancing strategy.
