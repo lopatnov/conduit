@@ -351,6 +351,7 @@ mod tests {
             IpHash,
             ConsistentHash,
             LeastResponseTime,
+            P2c,
         ] {
             let strategy = from_config(s);
             let u = urls(2);
@@ -358,6 +359,36 @@ mod tests {
             let weighted = vec![("http://b0:4000".to_owned(), 1u32)];
             let _ = strategy.pick(&u, &weighted, "key", 0, &counters(), &registry());
         }
+    }
+
+    #[test]
+    fn p2c_selects_from_candidate_list() {
+        let u = urls(4);
+        let reg = registry();
+        let (picked, lc) = P2C.pick(&u, &[], "r", 0, &counters(), &reg).unwrap();
+        assert!(u.contains(&picked), "P2C must pick from the candidate list");
+        assert!(!lc, "P2C does not use the inflight counter");
+    }
+
+    #[test]
+    fn p2c_single_url_returns_it() {
+        let u = vec!["http://only:4000".to_owned()];
+        let (picked, _) = P2C.pick(&u, &[], "r", 0, &counters(), &registry()).unwrap();
+        assert_eq!(picked, "http://only:4000");
+    }
+
+    #[test]
+    fn p2c_distributes_across_backends() {
+        let u = urls(4);
+        let reg = registry();
+        let c = counters();
+        let picks: std::collections::HashSet<String> = (0..40)
+            .filter_map(|_| P2C.pick(&u, &[], "r", 0, &c, &reg).map(|(url, _)| url))
+            .collect();
+        assert!(
+            picks.len() > 1,
+            "P2C should hit more than one backend over 40 picks"
+        );
     }
 
     #[test]
