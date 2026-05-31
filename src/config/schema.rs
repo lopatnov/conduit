@@ -263,6 +263,17 @@ pub struct LoggingOptions {
     pub format: Option<LogFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
+    /// Paths to exclude from access logs.
+    ///
+    /// Requests whose path matches any entry are silently skipped — useful to
+    /// suppress noisy health-check and metrics traffic from access logs.
+    /// Supports exact paths and `/**` glob suffixes.
+    ///
+    /// ```json
+    /// { "format": "json", "skipPaths": ["/__health__", "/__metrics__"] }
+    /// ```
+    #[serde(rename = "skipPaths", skip_serializing_if = "Option::is_none")]
+    pub skip_paths: Option<Vec<String>>,
 }
 
 // ── Compression ────────────────────────────────────────────────────────────

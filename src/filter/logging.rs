@@ -29,15 +29,24 @@ pub fn write_access_log(
 ) {
     let logging_cfg = site_config.and_then(|s| s.logging.as_ref());
 
-    let (format, file_path) = match logging_cfg {
+    let (format, file_path, skip_paths) = match logging_cfg {
         None | Some(LoggingConfig::Enabled(false)) => return,
-        Some(LoggingConfig::Enabled(true)) => (&LogFormat::Combined, None),
-        Some(LoggingConfig::Format(f)) => (f, None),
+        Some(LoggingConfig::Enabled(true)) => (&LogFormat::Combined, None, None),
+        Some(LoggingConfig::Format(f)) => (f, None, None),
         Some(LoggingConfig::Options(opts)) => {
             let fmt = opts.format.as_ref().unwrap_or(&LogFormat::Combined);
-            (fmt, opts.file.as_deref())
+            (fmt, opts.file.as_deref(), opts.skip_paths.as_deref())
         }
     };
+
+    // Skip logging for paths that match the skipPaths list.
+    if let Some(skip) = skip_paths {
+        let path = session.req_header().uri.path();
+        use crate::filter::auth::is_path_skipped;
+        if is_path_skipped(Some(skip), path) {
+            return;
+        }
+    }
 
     // Lazily switch the writer to the configured file when needed.
     // The switch is idempotent — LogWriter compares the path and skips re-opens.

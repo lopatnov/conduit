@@ -118,6 +118,33 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
     if let Some(jwt) = &site.jwt_auth {
         validate_jwt_auth(jwt, &format!("{prefix}.jwtAuth"), errors);
     }
+    if let Some(fa) = &site.forward_auth {
+        validate_forward_auth(fa, &format!("{prefix}.forwardAuth"), errors);
+    }
+}
+
+fn validate_forward_auth(
+    cfg: &crate::config::schema::ForwardAuthConfig,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    if cfg.url.is_empty() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.url"),
+            "forwardAuth.url must not be empty",
+        ));
+    } else if !cfg.url.starts_with("http://") && !cfg.url.starts_with("https://") {
+        errors.push(ValidationError::new(
+            format!("{prefix}.url"),
+            "forwardAuth.url must be an http:// or https:// URL",
+        ));
+    }
+    if let Some(0) = cfg.timeout_ms {
+        errors.push(ValidationError::new(
+            format!("{prefix}.timeoutMs"),
+            "forwardAuth.timeoutMs must be > 0",
+        ));
+    }
 }
 
 fn validate_jwt_auth(
@@ -475,6 +502,14 @@ fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<
     validate_target_urls(&cfg.targets, prefix, errors);
     if let Some(rules) = &cfg.rewrite {
         validate_rewrite_rules(rules, prefix, errors);
+    }
+    if let Some(mirror) = &cfg.mirror {
+        if !mirror.starts_with("http://") && !mirror.starts_with("https://") {
+            errors.push(ValidationError::new(
+                format!("{prefix}.mirror"),
+                "mirror URL must be http:// or https://",
+            ));
+        }
     }
 }
 

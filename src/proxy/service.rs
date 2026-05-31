@@ -1597,6 +1597,17 @@ fn append_forwarded_headers(
         "http"
     };
     upstream_request.insert_header("x-forwarded-proto", proto)?;
+
+    // X-Forwarded-Host: original Host header so the upstream can reconstruct URLs.
+    if let Some(host) = session
+        .req_header()
+        .headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+    {
+        upstream_request.insert_header("x-forwarded-host", host)?;
+    }
+
     Ok(())
 }
 
