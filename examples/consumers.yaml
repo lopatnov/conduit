@@ -57,6 +57,24 @@ consumers:
       headers:
         X-Internal: "true"
 
+    # ── JWT service — identified by Bearer token (V2) ─────────────────────────
+    # This consumer presents a JWT signed with a shared HS256 secret.
+    # Useful for service-to-service auth where each service has its own key.
+    - username: data-pipeline
+      jwt:
+        secret: "$DATA_PIPELINE_JWT_SECRET"
+        issuer: "https://auth.internal"   # optional: restrict to specific issuer
+      headers:
+        X-Service-Name: "data-pipeline"
+
+    # ── JWT consumer via JWKS (RS256 / ES256) ─────────────────────────────────
+    # Identity provider issues tokens; Conduit validates against public keys.
+    # Works with Auth0, Google, AWS Cognito, Keycloak, etc.
+    # - username: partner-app
+    #   jwt:
+    #     jwksUrl: "https://partner.example.com/.well-known/jwks.json"
+    #     audience: ["my-api"]
+
     # ── Read-only client: no rate limit, no custom headers ────────────────────
     - username: readonly-client
       apiKey: "$READONLY_KEY"

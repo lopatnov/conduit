@@ -557,6 +557,24 @@ pub struct Consumer {
     /// the username matches `Consumer.username` and the password matches this.
     #[serde(rename = "basicAuth", skip_serializing_if = "Option::is_none")]
     pub basic_auth: Option<ConsumerBasicAuth>,
+    /// JWT bearer-token credential (V2).
+    ///
+    /// The consumer is identified when the request carries a valid
+    /// `Authorization: Bearer <token>` whose signature and claims are accepted
+    /// by the configured secret / JWKS endpoint.
+    ///
+    /// Unlike `jwtAuth` at site level, this credential is checked
+    /// independently inside `ConsumersGuard` — no separate `jwtAuth` block is
+    /// required.
+    ///
+    /// ```yaml
+    /// - username: service-a
+    ///   jwt:
+    ///     secret: "$SERVICE_A_SECRET"
+    ///     issuer:  "https://auth.example.com"
+    /// ```
+    #[serde(rename = "jwt", skip_serializing_if = "Option::is_none")]
+    pub jwt: Option<ConsumerJwtConfig>,
     /// Per-consumer rate limit, evaluated after identification.
     /// Independent of the site-level `rateLimit`.
     /// Key: `"consumer:{username}"` (global across all IPs for this consumer).
@@ -574,6 +592,28 @@ pub struct Consumer {
 #[serde(rename_all = "camelCase")]
 pub struct ConsumerBasicAuth {
     pub password: String,
+}
+
+/// JWT credential for a `Consumer`.
+///
+/// A simplified subset of [`JwtAuthConfig`] without `skip_paths` or
+/// `jwks_refresh_secs` — those concerns belong to the site-level JWT guard,
+/// not to the per-consumer credential.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsumerJwtConfig {
+    /// HMAC-SHA256 secret for HS256 tokens.  Mutually exclusive with `jwks_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Remote JWKS URL for RS256 / ES256 tokens.  Mutually exclusive with `secret`.
+    #[serde(rename = "jwksUrl", skip_serializing_if = "Option::is_none")]
+    pub jwks_url: Option<String>,
+    /// Expected `aud` claim values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audience: Option<Vec<String>>,
+    /// Expected `iss` claim value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
 }
 
 // ── JWT auth ───────────────────────────────────────────────────────────────

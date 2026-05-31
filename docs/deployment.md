@@ -53,8 +53,8 @@ implement them.
   "port": 8080,
   "rateLimit": { "windowSecs": 60, "limit": 500, "keyBy": "ip" },
   "proxy": {
-    "/users":   "http://users-svc:4001",
-    "/orders":  "http://orders-svc:4002",
+    "/users": "http://users-svc:4001",
+    "/orders": "http://orders-svc:4002",
     "/catalog": ["http://catalog1:4003", "http://catalog2:4003"]
   },
   "healthCheck": true,
@@ -212,7 +212,7 @@ spec:
           configMap:
             name: conduit-config
         - name: static-files
-          emptyDir: {}   # populated by an init container
+          emptyDir: {} # populated by an init container
 ```
 
 ### As a DaemonSet (node-level proxy)
@@ -266,17 +266,17 @@ conduit reload --admin <pod-ip>:2019
 
 ### Compared to nginx-ingress
 
-| Feature | nginx-ingress | Conduit |
-|---|---|---|
-| TLS termination | ✅ | ✅ |
-| Path-based routing | ✅ | ✅ |
-| Load balancing | ✅ | ✅ (7 strategies) |
-| Rate limiting | via annotations | ✅ native |
-| Auth (Basic/API key) | via annotations | ✅ native |
-| Prometheus metrics | via exporter | ✅ native |
-| Config format | YAML annotations | JSON / YAML |
-| k8s-native CRDs | ✅ | ❌ |
-| Automatic cert discovery | ✅ cert-manager | ✅ ACME built-in |
+| Feature                  | nginx-ingress    | Conduit           |
+| ------------------------ | ---------------- | ----------------- |
+| TLS termination          | ✅               | ✅                |
+| Path-based routing       | ✅               | ✅                |
+| Load balancing           | ✅               | ✅ (7 strategies) |
+| Rate limiting            | via annotations  | ✅ native         |
+| Auth (Basic/API key)     | via annotations  | ✅ native         |
+| Prometheus metrics       | via exporter     | ✅ native         |
+| Config format            | YAML annotations | JSON / YAML       |
+| k8s-native CRDs          | ✅               | ❌                |
+| Automatic cert discovery | ✅ cert-manager  | ✅ ACME built-in  |
 
 Conduit is a good fit when you want a **simple, self-contained proxy** without the
 complexity of Kubernetes Ingress controllers. For large clusters with many services

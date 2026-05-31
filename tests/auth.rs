@@ -901,3 +901,154 @@ fn consumers_per_consumer_rate_limit() {
         "3rd request must hit per-consumer rate limit"
     );
 }
+
+// ── Consumer JWT V2 tests ─────────────────────────────────────────────────────
+
+fn server_with_jwt_consumer(secret: &str) -> common::TestServer {
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "healthCheck": true,
+                "consumers": {
+                    "consumers": [
+                        {
+                            "username": "jwt-service",
+                            "jwt": { "secret": secret }
+                        }
+                    ],
+                    "skipPaths": ["/__health__"]
+                }
+            }]
+        }),
+    )
+}
+
+#[test]
+fn consumers_jwt_hs256_correct_passes() {
+    let secret = "consumers-jwt-test-secret";
+    let srv = server_with_jwt_consumer(secret);
+    let token = make_jwt(secret, 3600);
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .expect("GET /");
+    // No upstream → 404, but NOT 401
+    assert_ne!(
+        resp.status().as_u16(),
+        401,
+        "valid JWT consumer token must be accepted"
+    );
+}
+
+#[test]
+fn consumers_jwt_hs256_wrong_secret_returns_401() {
+    let srv = server_with_jwt_consumer("correct-secret");
+    let token = make_jwt("wrong-secret", 3600);
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .expect("GET /");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "JWT signed with wrong secret must be rejected"
+    );
+}
+
+#[test]
+fn consumers_jwt_expired_returns_401() {
+    let secret = "expired-test-secret";
+    let srv = server_with_jwt_consumer(secret);
+    // Expire 120 s in the past — beyond jsonwebtoken's default 60 s leeway
+    let token = make_jwt(secret, -120);
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .expect("GET /");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "expired JWT consumer token must be rejected"
+    );
+}
+
+#[test]
+fn consumers_jwt_x_consumer_id_injected() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let captured = Arc::new(Mutex::new(String::new()));
+    let cap_clone = captured.clone();
+    let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in upstream.incoming() {
+            let Ok(mut s) = stream else { break };
+            let cap = cap_clone.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                *cap.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+            });
+        }
+    });
+
+    let secret = "jwt-id-inject-secret";
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": format!("http://{upstream_addr}"),
+                "consumers": {
+                    "consumers": [
+                        { "username": "jwt-client", "jwt": { "secret": secret } }
+                    ]
+                }
+            }]
+        }),
+    );
+
+    let token = make_jwt(secret, 3600);
+    plain_client()
+        .get(srv.url("/"))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .expect("GET /");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let req_text = captured.lock().unwrap().clone();
+    assert!(
+        req_text
+            .to_ascii_lowercase()
+            .contains("x-consumer-id: jwt-client"),
+        "X-Consumer-ID header must be injected for JWT consumer; got:\n{req_text}"
+    );
+}
+
+#[test]
+fn consumers_jwt_no_bearer_returns_401() {
+    let srv = server_with_jwt_consumer("some-secret");
+    // No Authorization header at all
+    let resp = plain_client().get(srv.url("/")).send().expect("GET /");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "request without Bearer token must be rejected by JWT consumer"
+    );
+}

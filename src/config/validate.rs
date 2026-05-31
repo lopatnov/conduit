@@ -140,11 +140,35 @@ fn validate_consumers(
                 "consumer username must not be empty",
             ));
         }
-        if c.api_key.is_none() && c.basic_auth.is_none() {
+        if c.api_key.is_none() && c.basic_auth.is_none() && c.jwt.is_none() {
             errors.push(ValidationError::new(
                 entry_prefix.clone(),
-                "consumer requires at least one credential: apiKey or basicAuth",
+                "consumer requires at least one credential: apiKey, basicAuth, or jwt",
             ));
+        }
+        if let Some(ref jwt_cfg) = c.jwt {
+            let has_secret = jwt_cfg.secret.is_some();
+            let has_jwks = jwt_cfg.jwks_url.is_some();
+            if !has_secret && !has_jwks {
+                errors.push(ValidationError::new(
+                    format!("{entry_prefix}.jwt"),
+                    "consumer jwt requires either \"secret\" (HS256) or \"jwksUrl\" (RS256/ES256)",
+                ));
+            }
+            if has_secret && has_jwks {
+                errors.push(ValidationError::new(
+                    format!("{entry_prefix}.jwt"),
+                    "consumer jwt.secret and jwt.jwksUrl are mutually exclusive",
+                ));
+            }
+            if let Some(url) = &jwt_cfg.jwks_url {
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    errors.push(ValidationError::new(
+                        format!("{entry_prefix}.jwt.jwksUrl"),
+                        "consumer jwt.jwksUrl must be an http:// or https:// URL",
+                    ));
+                }
+            }
         }
         if !seen_usernames.insert(c.username.clone()) {
             errors.push(ValidationError::new(

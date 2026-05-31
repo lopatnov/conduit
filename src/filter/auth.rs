@@ -1,7 +1,10 @@
 use base64::Engine as _;
 use pingora_proxy::Session;
 
-use crate::config::schema::{ApiKeyConfig, BasicAuthConfig, Consumer, ConsumersConfig};
+use crate::config::schema::{
+    ApiKeyConfig, BasicAuthConfig, Consumer, ConsumersConfig, JwtAuthConfig,
+};
+use crate::filter::jwt;
 
 /// Result of a Basic Auth credential check.
 pub enum BasicAuthResult {
@@ -282,6 +285,30 @@ pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Opt
         // ── Basic Auth check ──────────────────────────────────────────────
         if let Some(ref basic) = consumer.basic_auth {
             if check_consumer_basic(&consumer.username, &basic.password, session) {
+                return Some(consumer);
+            }
+        }
+
+        // ── JWT check (V2) ────────────────────────────────────────────────
+        // Validate Bearer token against this consumer's JWT credential.
+        // ConsumersGuard calls check_jwt() independently — does NOT require
+        // the site-level JwtGuard to run first.
+        if let Some(ref consumer_jwt) = consumer.jwt {
+            let jwt_cfg = JwtAuthConfig {
+                secret: consumer_jwt.secret.clone(),
+                jwks_url: consumer_jwt.jwks_url.clone(),
+                jwks_refresh_secs: None, // use JWKS default TTL (3600 s)
+                audience: consumer_jwt.audience.clone(),
+                issuer: consumer_jwt.issuer.clone(),
+                skip_paths: None, // skip_paths handled at ConsumersConfig level
+            };
+            let auth_hdr = session
+                .req_header()
+                .headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok());
+            // Pass "" as path — skip_paths: None means the check is never skipped.
+            if let jwt::JwtCheckResult::Allowed = jwt::check_jwt(&jwt_cfg, "", auth_hdr) {
                 return Some(consumer);
             }
         }

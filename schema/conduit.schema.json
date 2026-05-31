@@ -608,8 +608,19 @@
           "properties": { "password": { "type": "string" } },
           "description": "Basic Auth credential. Username comes from Consumer.username."
         },
+        "jwt": { "$ref": "#/$defs/ConsumerJwtConfig", "description": "JWT Bearer token credential (V2). Consumer is identified when the token validates." },
         "rateLimit": { "$ref": "#/$defs/RateLimitConfigInline", "description": "Per-consumer rate limit (independent of site-level rateLimit)." },
         "headers":   { "type": "object", "additionalProperties": { "type": "string" }, "description": "Additional headers injected into the upstream request for this consumer." }
+      }
+    },
+    "ConsumerJwtConfig": {
+      "type": "object",
+      "description": "JWT credential for a consumer. Requires either secret (HS256) or jwksUrl (RS256/ES256).",
+      "properties": {
+        "secret":   { "type": "string", "description": "HS256 shared secret." },
+        "jwksUrl":  { "type": "string", "format": "uri", "description": "Remote JWKS URL for RS256/ES256 tokens." },
+        "audience": { "type": "array", "items": { "type": "string" } },
+        "issuer":   { "type": "string" }
       }
     },
     "RateLimitConfigInline": {
