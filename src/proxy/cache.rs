@@ -365,22 +365,27 @@ mod tests {
 
     #[test]
     fn cache_lock_first_caller_gets_write_permit() {
-        use pingora_cache::lock::Locked;
-        // Build a key distinct enough to not conflict with other tests.
-        let key = build_cache_key(
-            "lock-test.example",
-            "https",
-            "/test-write-permit",
-            None,
-            None,
-            None,
+        use pingora_cache::lock::{LockStatus, Locked};
+        // Use a unique key per test run (timestamp-based) to avoid dangling
+        // lock state from previous runs in the same process (singleton cache).
+        let unique = format!(
+            "/test-write-permit-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos()
         );
+        let key = build_cache_key("lock-test.example", "https", &unique, None, None, None);
         let lock = cache_lock();
         let locked = lock.lock(&key, false);
         assert!(
             locked.is_write(),
             "first locker must receive a write permit"
         );
+        // Release the permit so subsequent test runs don't see a dangling lock.
+        if let Locked::Write(permit) = locked {
+            lock.release(&key, permit, LockStatus::Done);
+        }
     }
 
     // ── response_cacheable ────────────────────────────────────────────────────

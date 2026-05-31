@@ -125,12 +125,15 @@ fn validate_middleware(
     for (i, entry) in entries.iter().enumerate() {
         let entry_prefix = format!("{prefix}.middleware[{i}]");
         match entry.r#type.as_str() {
-            "script" => {
-                // A script entry must supply the `path` field.
+            // Both script and wasm require a `path` field.
+            "script" | "wasm" => {
                 if entry.path.is_none() {
                     errors.push(ValidationError::new(
                         format!("{entry_prefix}.path"),
-                        "middleware type \"script\" requires a \"path\" field",
+                        format!(
+                            "middleware type {:?} requires a \"path\" field",
+                            entry.r#type
+                        ),
                     ));
                 }
             }

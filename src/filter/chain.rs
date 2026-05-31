@@ -281,51 +281,132 @@ impl RequestFilter for RedirectGuard {
     }
 }
 
-/// Runs Rhai script middleware entries (`type: "script"` in `site.middleware`).
-pub struct ScriptGuard {
+/// Executes all middleware entries in the order they appear in `site.middleware`.
+///
+/// Dispatches by `entry.r#type`:
+/// - `"script"` → Rhai scripting (always available)
+/// - `"wasm"`   → WASM plugin (requires `--features wasm`; skipped with a warning if disabled)
+/// - other      → skipped (unknown types are rejected at config validation time)
+///
+/// This struct replaces the former `ScriptGuard` so that Rhai and WASM entries
+/// interleave freely in the declared order.
+pub struct MiddlewareGuard {
     pub middleware: Vec<MiddlewareEntry>,
-    pub script_path: String,
-    pub script_method: String,
-    pub script_query: String,
-    pub script_headers: std::collections::HashMap<String, String>,
+    /// Request path forwarded to scripts/plugins.
+    pub req_path: String,
+    pub method: String,
+    pub query: String,
+    /// Lower-cased header map forwarded to scripts/plugins.
+    pub headers: std::collections::HashMap<String, String>,
+    /// Remote client IP (used by WASM plugins).
+    pub client_ip: String,
 }
 
+/// Backward-compatible type alias — existing code that names `ScriptGuard`
+/// still compiles.  New code should use `MiddlewareGuard` directly.
+pub type ScriptGuard = MiddlewareGuard;
+
 #[async_trait]
-impl RequestFilter for ScriptGuard {
+impl RequestFilter for MiddlewareGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
         for entry in &self.middleware {
-            if entry.r#type != "script" {
-                continue;
-            }
-            let Some(ref script_path) = entry.path else {
-                continue;
-            };
-            match script::run_script(
-                script_path,
-                &self.script_path,
-                &self.script_method,
-                &self.script_query,
-                self.script_headers.clone(),
-            ) {
-                script::ScriptOutcome::Continue => {}
-                script::ScriptOutcome::Abort {
-                    status,
-                    body,
-                    extra_headers,
-                } => {
-                    let mut all_headers = ctx.extra_headers.to_vec();
-                    all_headers.extend(extra_headers);
-                    response::write_response(
-                        ctx.session,
-                        status,
-                        "text/plain",
-                        Bytes::from(body),
-                        &all_headers,
-                    )
-                    .await?;
-                    ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                    return Ok(FilterOutcome::Handled);
+            match entry.r#type.as_str() {
+                // ── Rhai scripting ────────────────────────────────────────────
+                "script" => {
+                    let Some(ref path) = entry.path else { continue };
+                    match script::run_script(
+                        path,
+                        &self.req_path,
+                        &self.method,
+                        &self.query,
+                        self.headers.clone(),
+                    ) {
+                        script::ScriptOutcome::Continue => {}
+                        script::ScriptOutcome::Abort {
+                            status,
+                            body,
+                            extra_headers,
+                        } => {
+                            let mut all = ctx.extra_headers.to_vec();
+                            all.extend(extra_headers);
+                            response::write_response(
+                                ctx.session,
+                                status,
+                                "text/plain",
+                                Bytes::from(body),
+                                &all,
+                            )
+                            .await?;
+                            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+                            return Ok(FilterOutcome::Handled);
+                        }
+                    }
                 }
+
+                // ── WASM plugins ──────────────────────────────────────────────
+                #[cfg(feature = "wasm")]
+                "wasm" => {
+                    let Some(ref path) = entry.path else { continue };
+                    let plugin_config = entry
+                        .config
+                        .as_ref()
+                        .and_then(|v| serde_json::to_vec(v).ok())
+                        .unwrap_or_default();
+
+                    let request = crate::filter::wasm::WasmRequest {
+                        method: self.method.clone(),
+                        path: self.req_path.clone(),
+                        query: self.query.clone(),
+                        client_ip: self.client_ip.clone(),
+                        headers: self.headers.clone(),
+                        plugin_config,
+                    };
+
+                    match crate::filter::wasm::run_wasm(request, path) {
+                        crate::filter::wasm::WasmOutcome::Continue {
+                            added_headers,
+                            removed_headers,
+                        } => {
+                            // Apply requested header mutations to the session.
+                            for (name, val) in added_headers {
+                                let _ = ctx.session.req_header_mut().insert_header(name, val);
+                            }
+                            for name in removed_headers {
+                                ctx.session.req_header_mut().remove_header(&name);
+                            }
+                        }
+                        crate::filter::wasm::WasmOutcome::Abort {
+                            status,
+                            body,
+                            headers,
+                        } => {
+                            let mut all = ctx.extra_headers.to_vec();
+                            all.extend(headers);
+                            response::write_response(
+                                ctx.session,
+                                status,
+                                "application/octet-stream",
+                                body,
+                                &all,
+                            )
+                            .await?;
+                            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+                            return Ok(FilterOutcome::Handled);
+                        }
+                    }
+                }
+
+                // ── Feature disabled: warn and skip ───────────────────────────
+                #[cfg(not(feature = "wasm"))]
+                "wasm" => {
+                    tracing::warn!(
+                        path = entry.path.as_deref().unwrap_or("<none>"),
+                        "WASM middleware entry ignored — rebuild with --features wasm"
+                    );
+                }
+
+                // ── Unknown types (rejected at validation time) ────────────────
+                _ => {}
             }
         }
         Ok(FilterOutcome::Continue)

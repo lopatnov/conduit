@@ -12,3 +12,5 @@ pub mod redirects;
 pub mod response_time;
 pub mod script;
 pub mod security_headers;
+#[cfg(feature = "wasm")]
+pub mod wasm;

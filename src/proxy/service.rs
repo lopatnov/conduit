@@ -22,7 +22,7 @@ use crate::config::schema::{
 };
 use crate::filter::chain::{
     ApiKeyGuard, BasicAuthGuard, CorsPreflight, FilterChain, FilterContext, HealthBypass, IpGuard,
-    LimitsGuard, RateLimitGuard, RedirectGuard, ScriptGuard,
+    LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard,
 };
 use crate::filter::rate_limit::RateLimiter;
 use crate::filter::rate_limit_redis::RedisRateLimiter;
@@ -200,6 +200,7 @@ impl ConduitProxy {
             script_path_str,
             script_query,
             script_headers,
+            extracted_client_ip,
         ) = {
             let config = self.state.config.load();
             let host = extract_host(session);
@@ -296,6 +297,7 @@ impl ConduitProxy {
                 path,
                 query.unwrap_or_default(),
                 req_headers_for_script,
+                client_ip,
             )
         };
 
@@ -350,6 +352,7 @@ impl ConduitProxy {
             script_path: script_path_str,
             script_query,
             script_headers,
+            client_ip: extracted_client_ip,
         };
         if self.run_guard_filters(session, guards).await? {
             return Ok(true);
@@ -429,13 +432,14 @@ impl ConduitProxy {
             result: guards.redirect_result,
         });
 
-        // 8. Rhai script middleware.
-        chain = chain.push(ScriptGuard {
+        // 8. Middleware pipeline: Rhai scripts + WASM plugins in declared order.
+        chain = chain.push(MiddlewareGuard {
             middleware: guards.middleware,
-            script_path: guards.script_path,
-            script_method: guards.script_method,
-            script_query: guards.script_query,
-            script_headers: guards.script_headers,
+            req_path: guards.script_path,
+            method: guards.script_method,
+            query: guards.script_query,
+            headers: guards.script_headers,
+            client_ip: guards.client_ip,
         });
 
         let mut ctx = FilterContext {
@@ -1164,11 +1168,13 @@ struct GuardCtx {
     sec_only: Vec<(String, String)>,
     origin: Option<String>,
     extra_headers: Vec<(String, String)>,
-    /// Request info forwarded to Rhai scripts (method, path, query, headers).
+    /// Request info forwarded to Rhai scripts and WASM plugins.
     script_method: String,
     script_path: String,
     script_query: String,
     script_headers: std::collections::HashMap<String, String>,
+    /// Remote client IP — used by WASM plugins.
+    client_ip: String,
 }
 
 /// Classify a request's upstream target into a `HandlerKind` for filter routing.
