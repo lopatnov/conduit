@@ -671,3 +671,233 @@ fn per_route_rate_limit_exceeded_returns_429() {
         "3rd request must be rate-limited (per-route limit=2)"
     );
 }
+
+// ── Consumer model tests ──────────────────────────────────────────────────────
+
+fn server_with_consumers() -> common::TestServer {
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "healthCheck": true,
+                "consumers": {
+                    "consumers": [
+                        {
+                            "username": "alice",
+                            "apiKey": "key-alice-secret",
+                            "headers": { "X-Tier": "free" }
+                        },
+                        {
+                            "username": "bob",
+                            "apiKey": "key-bob-secret",
+                            "rateLimit": { "windowSecs": 3600, "limit": 2 }
+                        },
+                        {
+                            "username": "carol",
+                            "basicAuth": { "password": "carol-pass" }
+                        }
+                    ],
+                    "skipPaths": ["/__health__"]
+                }
+            }]
+        }),
+    )
+}
+
+#[test]
+fn consumers_no_credentials_returns_401() {
+    let srv = server_with_consumers();
+    let resp = plain_client().get(srv.url("/")).send().expect("GET /");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "request without credentials must be rejected"
+    );
+}
+
+#[test]
+fn consumers_wrong_api_key_returns_401() {
+    let srv = server_with_consumers();
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("x-api-key", "wrong-key")
+        .send()
+        .expect("GET /");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "wrong API key must be rejected"
+    );
+}
+
+#[test]
+fn consumers_correct_api_key_passes() {
+    let srv = server_with_consumers();
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("x-api-key", "key-alice-secret")
+        .send()
+        .expect("GET /");
+    // No upstream → 404, but NOT 401
+    assert_ne!(
+        resp.status().as_u16(),
+        401,
+        "valid API key must be accepted"
+    );
+}
+
+#[test]
+fn consumers_x_consumer_id_injected() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let captured = Arc::new(Mutex::new(String::new()));
+    let cap_clone = captured.clone();
+    let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in upstream.incoming() {
+            let Ok(mut s) = stream else { break };
+            let cap = cap_clone.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                *cap.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+            });
+        }
+    });
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": format!("http://{upstream_addr}"),
+                "consumers": {
+                    "consumers": [
+                        { "username": "alice", "apiKey": "key-alice" }
+                    ]
+                }
+            }]
+        }),
+    );
+
+    plain_client()
+        .get(srv.url("/"))
+        .header("x-api-key", "key-alice")
+        .send()
+        .expect("GET /");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let req_text = captured.lock().unwrap().clone();
+    assert!(
+        req_text
+            .to_ascii_lowercase()
+            .contains("x-consumer-id: alice"),
+        "X-Consumer-ID header must be injected into upstream request; got:\n{req_text}"
+    );
+}
+
+#[test]
+fn consumers_basic_auth_passes() {
+    let srv = server_with_consumers();
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("authorization", basic_header("carol", "carol-pass"))
+        .send()
+        .expect("GET /");
+    assert_ne!(
+        resp.status().as_u16(),
+        401,
+        "valid Basic Auth consumer must be accepted"
+    );
+}
+
+#[test]
+fn consumers_wrong_basic_password_returns_401() {
+    let srv = server_with_consumers();
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("authorization", basic_header("carol", "wrong-password"))
+        .send()
+        .expect("GET /");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "wrong Basic Auth password must be rejected"
+    );
+}
+
+#[test]
+fn consumers_skip_path_bypasses_auth() {
+    let srv = server_with_consumers();
+    let resp = plain_client()
+        .get(srv.url("/__health__"))
+        .send()
+        .expect("health");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "skip path must bypass consumers auth"
+    );
+}
+
+#[test]
+fn consumers_per_consumer_rate_limit() {
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "consumers": {
+                    "consumers": [{
+                        "username": "limited",
+                        "apiKey": "limited-key",
+                        "rateLimit": { "windowSecs": 3600, "limit": 2 }
+                    }]
+                }
+            }]
+        }),
+    );
+
+    // Two requests within limit — should pass (404 = no upstream, not 429 or 401)
+    for _ in 0..2 {
+        let resp = plain_client()
+            .get(srv.url("/"))
+            .header("x-api-key", "limited-key")
+            .send()
+            .expect("GET /");
+        assert_ne!(
+            resp.status().as_u16(),
+            429,
+            "within-limit requests must not be rate-limited"
+        );
+    }
+
+    // Third request — must be rate-limited
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("x-api-key", "limited-key")
+        .send()
+        .expect("GET /");
+    assert_eq!(
+        resp.status().as_u16(),
+        429,
+        "3rd request must hit per-consumer rate limit"
+    );
+}

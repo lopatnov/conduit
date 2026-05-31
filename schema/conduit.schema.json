@@ -167,6 +167,7 @@
           }
         },
         "fallback": { "$ref": "#/$defs/FallbackConfig" },
+        "consumers": { "$ref": "#/$defs/ConsumersConfig" },
         "outlierDetection": { "$ref": "#/$defs/OutlierDetectionConfig" },
         "maskErrors": { "type": "boolean", "description": "Replace upstream 5xx bodies with a generic JSON error." },
         "faultInjection": { "$ref": "#/$defs/FaultInjectionConfig" },
@@ -582,6 +583,41 @@
       "properties": {
         "setHeaders":    { "type": "object", "additionalProperties": { "type": "string" } },
         "removeHeaders": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "ConsumersConfig": {
+      "type": "object",
+      "description": "Named-consumer authentication model. Each consumer has its own credentials and per-consumer policies.",
+      "properties": {
+        "consumers":    { "type": "array", "items": { "$ref": "#/$defs/Consumer" }, "description": "List of named consumers (evaluated in order; first match wins)." },
+        "idHeader":     { "type": "string", "default": "x-consumer-id", "description": "Header injected with the consumer's username into the upstream request." },
+        "apiKeyHeader": { "type": "string", "default": "x-api-key", "description": "Request header that carries the API key." },
+        "skipPaths":    { "type": "array", "items": { "type": "string" }, "description": "Paths that bypass consumers auth." }
+      }
+    },
+    "Consumer": {
+      "type": "object",
+      "required": ["username"],
+      "description": "A named API client with credentials and per-consumer policies.",
+      "properties": {
+        "username":  { "type": "string", "description": "Unique consumer name. Injected as X-Consumer-ID into the upstream request." },
+        "apiKey":    { "type": "string", "description": "API key credential." },
+        "basicAuth": {
+          "type": "object",
+          "required": ["password"],
+          "properties": { "password": { "type": "string" } },
+          "description": "Basic Auth credential. Username comes from Consumer.username."
+        },
+        "rateLimit": { "$ref": "#/$defs/RateLimitConfigInline", "description": "Per-consumer rate limit (independent of site-level rateLimit)." },
+        "headers":   { "type": "object", "additionalProperties": { "type": "string" }, "description": "Additional headers injected into the upstream request for this consumer." }
+      }
+    },
+    "RateLimitConfigInline": {
+      "type": "object",
+      "required": ["windowSecs", "limit"],
+      "properties": {
+        "windowSecs": { "type": "integer", "minimum": 1 },
+        "limit":      { "type": "integer", "minimum": 1 }
       }
     }
   }

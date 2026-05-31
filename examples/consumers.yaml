@@ -1,0 +1,70 @@
+# ── Consumer model — named API clients with per-consumer policies ─────────────
+#
+# The consumer model lets you define named clients (Alice, Bob, service-a)
+# each with their own credentials and rate limits.  After identification:
+#   • The consumer's username is injected as X-Consumer-ID into the upstream
+#   • Per-consumer custom headers are added (e.g. X-Tier: premium)
+#   • Per-consumer rate limit is enforced independently of the site-level limit
+#
+# Supported credential types (V1):
+#   apiKey     — value in the x-api-key header (or custom apiKeyHeader)
+#   basicAuth  — Authorization: Basic base64(username:password)
+#
+# Requests that don't match any consumer receive 401 Unauthorized.
+#
+# Run: conduit -c examples/consumers.yaml
+
+port: 8080
+
+consumers:
+  # The header to inject the consumer's username into (default: x-consumer-id).
+  # Your upstream can use this to identify who made the request.
+  idHeader: "X-Consumer-ID"
+
+  # Header name to read API keys from (default: x-api-key).
+  # apiKeyHeader: "X-API-Key"
+
+  # Paths that bypass consumer auth (health checks, public docs, etc.)
+  skipPaths:
+    - /__health__
+    - /public/**
+
+  consumers:
+    # ── Free tier: Alice ───────────────────────────────────────────────────────
+    - username: alice
+      apiKey: "$ALICE_API_KEY"   # store secrets in env vars
+      rateLimit:
+        windowSecs: 60
+        limit: 100              # 100 requests per minute
+      headers:
+        X-Tier: free            # upstream can adjust behaviour per tier
+
+    # ── Premium tier: Bob ──────────────────────────────────────────────────────
+    - username: bob
+      apiKey: "$BOB_API_KEY"
+      rateLimit:
+        windowSecs: 60
+        limit: 10000            # premium = 10k rpm
+      headers:
+        X-Tier: premium
+        X-SLA: "99.9"
+
+    # ── Internal service using Basic Auth ─────────────────────────────────────
+    - username: billing-service
+      basicAuth:
+        password: "$BILLING_SERVICE_PASSWORD"
+      # No rate limit for internal services — trusted caller
+      headers:
+        X-Internal: "true"
+
+    # ── Read-only client: no rate limit, no custom headers ────────────────────
+    - username: readonly-client
+      apiKey: "$READONLY_KEY"
+
+proxy:
+  /api: "http://backend:4000"
+
+healthCheck: true
+logging:
+  format: json
+  skipPaths: [/__health__]

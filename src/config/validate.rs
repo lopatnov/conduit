@@ -121,6 +121,46 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
     if let Some(fa) = &site.forward_auth {
         validate_forward_auth(fa, &format!("{prefix}.forwardAuth"), errors);
     }
+    if let Some(c) = &site.consumers {
+        validate_consumers(c, &format!("{prefix}.consumers"), errors);
+    }
+}
+
+fn validate_consumers(
+    cfg: &crate::config::schema::ConsumersConfig,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let mut seen_usernames = std::collections::HashSet::new();
+    for (i, c) in cfg.consumers.iter().enumerate() {
+        let entry_prefix = format!("{prefix}.consumers[{i}]");
+        if c.username.is_empty() {
+            errors.push(ValidationError::new(
+                format!("{entry_prefix}.username"),
+                "consumer username must not be empty",
+            ));
+        }
+        if c.api_key.is_none() && c.basic_auth.is_none() {
+            errors.push(ValidationError::new(
+                entry_prefix.clone(),
+                "consumer requires at least one credential: apiKey or basicAuth",
+            ));
+        }
+        if !seen_usernames.insert(c.username.clone()) {
+            errors.push(ValidationError::new(
+                format!("{entry_prefix}.username"),
+                format!("consumer username {:?} is duplicated", c.username),
+            ));
+        }
+        if let Some(ref ba) = c.basic_auth {
+            if ba.password.is_empty() {
+                errors.push(ValidationError::new(
+                    format!("{entry_prefix}.basicAuth.password"),
+                    "consumer basicAuth.password must not be empty",
+                ));
+            }
+        }
+    }
 }
 
 fn validate_forward_auth(

@@ -1,7 +1,7 @@
 use base64::Engine as _;
 use pingora_proxy::Session;
 
-use crate::config::schema::{ApiKeyConfig, BasicAuthConfig};
+use crate::config::schema::{ApiKeyConfig, BasicAuthConfig, Consumer, ConsumersConfig};
 
 /// Result of a Basic Auth credential check.
 pub enum BasicAuthResult {
@@ -246,4 +246,76 @@ mod tests {
         assert!(!is_path_skipped(Some(&paths), "/private"));
         assert!(!is_path_skipped(Some(&paths), "/__health__/sub"));
     }
+}
+
+// ── Consumer model ─────────────────────────────────────────────────────────
+
+/// Attempt to identify the request's consumer from the configured list.
+///
+/// Evaluation order: consumers are checked in declaration order; the **first
+/// matching** consumer wins.  A consumer can use one of two credential types:
+///
+/// - **API key** — value in the `apiKeyHeader` request header (default:
+///   `x-api-key`).  Constant-time comparison (`==`) is used.
+/// - **Basic Auth** — `Authorization: Basic <base64(username:password)>` where
+///   the username must equal `consumer.username`.
+///
+/// Returns `None` when no consumer matches (caller should return 401).
+pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Option<&'a Consumer> {
+    let api_key_header = cfg.api_key_header.as_deref().unwrap_or("x-api-key");
+
+    for consumer in &cfg.consumers {
+        // ── API key check ─────────────────────────────────────────────────
+        if let Some(ref expected_key) = consumer.api_key {
+            if let Some(provided) = session
+                .req_header()
+                .headers
+                .get(api_key_header)
+                .and_then(|v| v.to_str().ok())
+            {
+                if provided == expected_key.as_str() {
+                    return Some(consumer);
+                }
+            }
+        }
+
+        // ── Basic Auth check ──────────────────────────────────────────────
+        if let Some(ref basic) = consumer.basic_auth {
+            if check_consumer_basic(&consumer.username, &basic.password, session) {
+                return Some(consumer);
+            }
+        }
+    }
+    None
+}
+
+/// Validate `Authorization: Basic <b64>` against a consumer's username and password.
+fn check_consumer_basic(username: &str, password: &str, session: &Session) -> bool {
+    let auth_header = session
+        .req_header()
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let encoded = auth_header.strip_prefix("Basic ").unwrap_or("").trim();
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok();
+    let decoded = match decoded {
+        Some(d) => d,
+        None => return false,
+    };
+    let decoded_str = match std::str::from_utf8(&decoded) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    // Format: "username:password" — split only on the first colon.
+    let (provided_user, provided_pass) = match decoded_str.split_once(':') {
+        Some(pair) => pair,
+        None => return false,
+    };
+
+    provided_user == username && provided_pass == password
 }

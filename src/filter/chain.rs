@@ -22,8 +22,9 @@ use pingora_core::Result;
 use pingora_proxy::Session;
 
 use crate::config::schema::{
-    ApiKeyConfig, BasicAuthConfig, CorsConfig, FaultInjectionConfig, ForwardAuthConfig,
-    IpFilterConfig, JwtAuthConfig, LimitsConfig, MiddlewareEntry, RateLimitConfig,
+    ApiKeyConfig, BasicAuthConfig, ConsumersConfig, CorsConfig, FaultInjectionConfig,
+    ForwardAuthConfig, IpFilterConfig, JwtAuthConfig, LimitsConfig, MiddlewareEntry,
+    RateLimitConfig,
 };
 use crate::filter::rate_limit::RateLimiter;
 use crate::filter::rate_limit_redis::RedisRateLimiter;
@@ -279,6 +280,89 @@ impl RequestFilter for RateLimitGuard {
             ctx.inflight.fetch_sub(1, Ordering::Relaxed);
             return Ok(FilterOutcome::Handled);
         }
+        Ok(FilterOutcome::Continue)
+    }
+}
+
+/// Consumer-model authentication guard.
+///
+/// Identifies the caller by checking configured consumers' credentials
+/// (API key or Basic Auth) in declaration order.  On success:
+///   - Injects `X-Consumer-ID: <username>` (or the configured `idHeader`)
+///   - Applies per-consumer rate limit using the shared limiter
+///   - Injects any per-consumer custom headers
+///
+/// Returns 401 when no consumer matches.
+pub struct ConsumersGuard {
+    pub cfg: ConsumersConfig,
+    pub path: String,
+}
+
+#[async_trait]
+impl RequestFilter for ConsumersGuard {
+    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
+        // Skip configured paths (health, public assets, etc.)
+        if let Some(skip) = &self.cfg.skip_paths {
+            if auth::is_path_skipped(Some(skip.as_slice()), &self.path) {
+                return Ok(FilterOutcome::Continue);
+            }
+        }
+
+        // Identify consumer from credentials in the request.
+        let consumer = auth::identify_consumer(&self.cfg, ctx.session);
+        let Some(consumer) = consumer else {
+            response::write_denied(ctx.session, None, ctx.extra_headers).await?;
+            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+            return Ok(FilterOutcome::Handled);
+        };
+
+        // Per-consumer rate limit — key: "consumer:{username}" (global per consumer).
+        if let Some(rl_cfg) = &consumer.rate_limit {
+            let key = format!("consumer:{}", consumer.username);
+            let allowed = ctx
+                .rate_limiter
+                .entry(key)
+                .or_insert_with(|| {
+                    crate::filter::rate_limit::TokenBucket::new(rl_cfg.limit, rl_cfg.window_secs)
+                })
+                .try_consume();
+            if !allowed {
+                response::write_response(
+                    ctx.session,
+                    429,
+                    "text/plain",
+                    bytes::Bytes::from_static(b"Too Many Requests"),
+                    ctx.extra_headers,
+                )
+                .await?;
+                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+                return Ok(FilterOutcome::Handled);
+            }
+        }
+
+        // Inject X-Consumer-ID (or custom idHeader) so upstream knows who's calling.
+        // Use owned Strings to satisfy insert_header's lifetime requirements.
+        let id_header = self
+            .cfg
+            .id_header
+            .clone()
+            .unwrap_or_else(|| "x-consumer-id".to_owned());
+        let consumer_name = consumer.username.clone();
+        let _ = ctx
+            .session
+            .req_header_mut()
+            .insert_header(id_header, consumer_name);
+
+        // Inject per-consumer custom headers (e.g. X-Tier: premium).
+        if let Some(ref custom) = consumer.headers {
+            // Collect to owned Vec<(String,String)> to avoid lifetime issues.
+            let pairs: Vec<(String, String)> =
+                custom.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            for (k, v) in pairs {
+                let _ = ctx.session.req_header_mut().insert_header(k, v);
+            }
+        }
+
         Ok(FilterOutcome::Continue)
     }
 }

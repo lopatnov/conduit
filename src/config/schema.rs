@@ -138,6 +138,24 @@ pub struct SiteConfig {
     pub basic_auth: Option<BasicAuthConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<ApiKeyConfig>,
+    /// Named-consumer authentication model.
+    ///
+    /// Each consumer has its own credentials (API key or Basic Auth) and
+    /// per-consumer policies (rate limit, upstream header injection).
+    /// After identification the consumer's username is injected as
+    /// `X-Consumer-ID` into the upstream request.
+    ///
+    /// ```yaml
+    /// consumers:
+    ///   consumers:
+    ///     - username: alice
+    ///       apiKey: "key-alice"
+    ///       rateLimit: { windowSecs: 60, limit: 100 }
+    ///     - username: bob
+    ///       basicAuth: { password: "hunter2" }
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consumers: Option<ConsumersConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip_filter: Option<IpFilterConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -489,6 +507,73 @@ pub struct ApiKeyConfig {
     pub header: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_paths: Option<Vec<String>>,
+}
+
+// ── Consumer model ─────────────────────────────────────────────────────────
+
+/// Named-consumer authentication: credentials and per-consumer policies stored
+/// per-consumer rather than per-route.
+///
+/// When a request matches a consumer's credentials:
+/// 1. The consumer's username is injected as `X-Consumer-ID` (or `idHeader`)
+///    into the upstream request.
+/// 2. Any per-consumer `headers` are also injected.
+/// 3. Per-consumer `rateLimit` is applied (independent of the site rate limit).
+///
+/// Requests that don't match any consumer receive 401 Unauthorized.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsumersConfig {
+    /// The list of named consumers (evaluated in order; first match wins).
+    #[serde(default)]
+    pub consumers: Vec<Consumer>,
+    /// Header name used to inject the consumer's username into the upstream
+    /// request.  Defaults to `"x-consumer-id"`.
+    #[serde(rename = "idHeader", skip_serializing_if = "Option::is_none")]
+    pub id_header: Option<String>,
+    /// Header name used to read the API key from the request.
+    /// Defaults to `"x-api-key"`.  Only relevant for consumers that use
+    /// `apiKey` credentials.
+    #[serde(rename = "apiKeyHeader", skip_serializing_if = "Option::is_none")]
+    pub api_key_header: Option<String>,
+    /// Paths that bypass consumers authentication entirely.
+    /// Same glob syntax as `basicAuth.skipPaths`.
+    #[serde(rename = "skipPaths", skip_serializing_if = "Option::is_none")]
+    pub skip_paths: Option<Vec<String>>,
+}
+
+/// A single named API consumer — a client with its own credentials and limits.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Consumer {
+    /// Unique name injected as `X-Consumer-ID` after identification.
+    pub username: String,
+    /// API key credential.  The consumer is identified when the request
+    /// carries this value in the `apiKeyHeader` (default: `x-api-key`).
+    #[serde(rename = "apiKey", skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// HTTP Basic Auth credential.  The consumer is identified when the
+    /// request carries `Authorization: Basic <base64(username:password)>` where
+    /// the username matches `Consumer.username` and the password matches this.
+    #[serde(rename = "basicAuth", skip_serializing_if = "Option::is_none")]
+    pub basic_auth: Option<ConsumerBasicAuth>,
+    /// Per-consumer rate limit, evaluated after identification.
+    /// Independent of the site-level `rateLimit`.
+    /// Key: `"consumer:{username}"` (global across all IPs for this consumer).
+    #[serde(rename = "rateLimit", skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<RateLimitConfig>,
+    /// Additional request headers to inject into the upstream request for this
+    /// consumer (e.g., `X-Tier: premium`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<IndexMap<String, String>>,
+}
+
+/// Basic Auth password for a `Consumer`.  The username comes from
+/// `Consumer.username`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsumerBasicAuth {
+    pub password: String,
 }
 
 // ── JWT auth ───────────────────────────────────────────────────────────────

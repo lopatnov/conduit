@@ -17,13 +17,13 @@ use pingora_proxy::{ProxyHttp, Session};
 use prometheus::{CounterVec, HistogramVec};
 
 use crate::config::schema::{
-    ApiKeyConfig, AppConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig, ForwardAuthConfig,
-    HealthCheckConfig, IpFilterConfig, LimitsConfig, MiddlewareEntry, ProxyTimeout,
-    RateLimitConfig,
+    ApiKeyConfig, AppConfig, BasicAuthConfig, ConnectionPoolConfig, ConsumersConfig, CorsConfig,
+    ForwardAuthConfig, HealthCheckConfig, IpFilterConfig, LimitsConfig, MiddlewareEntry,
+    ProxyTimeout, RateLimitConfig,
 };
 use crate::filter::chain::{
-    ApiKeyGuard, BasicAuthGuard, CorsPreflight, FaultInjectionGuard, FilterChain, FilterContext,
-    ForwardAuthGuard, HealthBypass, IpGuard, JwtGuard, LimitsGuard, MiddlewareGuard,
+    ApiKeyGuard, BasicAuthGuard, ConsumersGuard, CorsPreflight, FaultInjectionGuard, FilterChain,
+    FilterContext, ForwardAuthGuard, HealthBypass, IpGuard, JwtGuard, LimitsGuard, MiddlewareGuard,
     RateLimitGuard, RedirectGuard, XRequestIdGuard,
 };
 use crate::filter::rate_limit::{self, RateLimiter};
@@ -307,6 +307,7 @@ impl ConduitProxy {
             fault_injection_cfg,
             jwt_auth_cfg,
             forward_auth_cfg,
+            consumers_cfg,
             site_label,
         ) = {
             let config = self.state.config.load();
@@ -417,6 +418,7 @@ impl ConduitProxy {
                 site.and_then(|s| s.fault_injection.clone()),
                 site.and_then(|s| s.jwt_auth.clone()),
                 site.and_then(|s| s.forward_auth.clone()),
+                site.and_then(|s| s.consumers.clone()),
                 site_label,
             )
         };
@@ -476,6 +478,7 @@ impl ConduitProxy {
             fault_injection_cfg,
             jwt_auth_cfg: jwt_auth_cfg.clone(), // clone — jwt_cfg needed below for claim extraction
             forward_auth_cfg,
+            consumers_cfg,
             site_label,
         };
         if self.run_guard_filters(session, guards).await? {
@@ -611,6 +614,14 @@ impl ConduitProxy {
             chain = chain.push(RateLimitGuard {
                 cfg,
                 site_label: guards.site_label.clone(),
+            });
+        }
+
+        // 6. Consumer model auth (identifies consumer, injects X-Consumer-ID).
+        if let Some(cfg) = guards.consumers_cfg {
+            chain = chain.push(ConsumersGuard {
+                cfg,
+                path: guards.script_path.clone(),
             });
         }
 
@@ -1634,6 +1645,8 @@ struct GuardCtx {
     jwt_auth_cfg: Option<crate::config::schema::JwtAuthConfig>,
     /// Forward-auth config — validated in step 6d.
     forward_auth_cfg: Option<ForwardAuthConfig>,
+    /// Consumer model auth config — validated in step 6 (before basicAuth).
+    consumers_cfg: Option<ConsumersConfig>,
     /// Site label for Prometheus metrics (`host:port` or `"*"`).
     site_label: String,
 }
