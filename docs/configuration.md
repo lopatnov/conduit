@@ -575,13 +575,47 @@ Controlled by the `strategy` field inside a `proxy` route.
 
 | Strategy             | Value                  | Description                                                |
 | -------------------- | ---------------------- | ---------------------------------------------------------- |
-| Round-robin          | `round-robin`          | Default. Rotate evenly across all healthy backends.        |
-| Weighted round-robin | `weighted-round-robin` | Respects the `weight` field.                               |
-| Random               | `random`               | Pick a backend at random each request.                     |
-| Least connections    | `least-conn`           | Send to the backend with the fewest active connections.    |
-| Least response time  | `least-response-time`  | Send to the backend with the lowest recent latency.        |
-| IP hash              | `ip-hash`              | Sticky sessions — same client IP always hits same backend. |
-| Consistent hash      | `consistent-hash`      | Ketama ring — minimal reshuffling when backends change.    |
+| Round-robin          | `round-robin`          | Default. Rotate evenly across all healthy backends.                  |
+| Weighted round-robin | `weighted-round-robin` | Respects the `weight` field.                                         |
+| Random               | `random`               | Pick a backend at random each request.                               |
+| Least connections    | `least-conn`           | Send to the backend with the fewest active connections.              |
+| Least response time  | `least-response-time`  | Send to the backend with the lowest recent latency.                  |
+| IP hash              | `ip-hash`              | Sticky sessions — same client IP always hits same backend.           |
+| Consistent hash      | `consistent-hash`      | Ketama ring — minimal reshuffling when backends change.              |
+| P2C                  | `p2c`                  | Power of Two Choices — sample 2 random backends, pick less-loaded. Better tail latency than least-conn at scale. |
+
+**Sticky sessions via cookie** — route by cookie value instead of IP:
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://b1:4000", "http://b2:4000"],
+      "sticky": { "cookie": "srv_id" }
+    }
+  }
+}
+```
+
+The cookie value is used as a consistent-hash key — the same cookie always maps
+to the same backend.  The server-side `Set-Cookie` is the responsibility of the
+upstream application.
+
+**Failover (primary + backup)**:
+
+```json
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://primary:4000"],
+      "backup": "http://fallback:4000",
+      "healthCheck": { "path": "/health", "intervalSecs": 10 }
+    }
+  }
+}
+```
+
+When all primary `targets` are unhealthy, traffic is routed to `backup`.
 
 **Weighted round-robin** requires explicit weights:
 
@@ -772,6 +806,33 @@ traps log a warning and let the request pass through.
 | `type` | ✅ | `"script"` or `"wasm"` |
 | `path` | ✅ | Path to `.rhai` script or `.wasm` binary |
 | `config` | — | JSON object forwarded to WASM plugins as bytes |
+
+---
+
+### `faultInjection`
+
+Inject artificial errors or delays for chaos engineering and resilience testing.
+**Should not be used in production.**
+
+```json
+{
+  "faultInjection": {
+    "abort": { "percent": 5, "status": 503, "body": "Injected fault" },
+    "delay": { "percent": 10, "ms": 500 }
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `abort.percent` | Percentage of requests to abort (0–100) |
+| `abort.status` | HTTP status code to return (default: 503) |
+| `abort.body` | Response body text (default: `"Fault injected"`) |
+| `delay.percent` | Percentage of requests to delay (0–100) |
+| `delay.ms` | Delay in milliseconds |
+
+Aborts are evaluated before delays — a request can only be aborted or delayed,
+not both.
 
 ---
 
