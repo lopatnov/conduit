@@ -27,7 +27,8 @@
         "admin": {
           "type": "object",
           "properties": {
-            "bind": { "type": "string", "examples": ["127.0.0.1:2019"] }
+            "bind":  { "type": "string", "examples": ["127.0.0.1:2019"] },
+            "token": { "type": "string", "description": "Bearer token for Admin API auth. When set, all requests must include Authorization: Bearer <token>." }
           }
         }
       }
@@ -155,6 +156,13 @@
           }
         },
         "fallback": { "$ref": "#/$defs/FallbackConfig" },
+        "outlierDetection": { "$ref": "#/$defs/OutlierDetectionConfig" },
+        "maskErrors": { "type": "boolean", "description": "Replace upstream 5xx bodies with a generic JSON error." },
+        "faultInjection": { "$ref": "#/$defs/FaultInjectionConfig" },
+        "jwtAuth": { "$ref": "#/$defs/JwtAuthConfig" },
+        "forwardAuth": { "$ref": "#/$defs/ForwardAuthConfig" },
+        "requestTransform": { "$ref": "#/$defs/HeaderTransformConfig" },
+        "responseTransform": { "$ref": "#/$defs/HeaderTransformConfig" },
         "middleware": {
           "type": "array",
           "description": "Ordered middleware chain executed after built-in filters.",
@@ -209,8 +217,9 @@
         {
           "type": "object",
           "properties": {
-            "format": { "type": "string", "enum": ["dev", "json", "combined", "common", "short"] },
-            "file":   { "type": "string" }
+            "format":    { "type": "string", "enum": ["dev", "json", "combined", "common", "short"] },
+            "file":      { "type": "string" },
+            "skipPaths": { "type": "array", "items": { "type": "string" }, "description": "Paths to suppress from access logs." }
           }
         }
       ]
@@ -352,9 +361,10 @@
           "type": "object",
           "required": ["attempts", "conditions"],
           "properties": {
-            "attempts":   { "type": "integer", "minimum": 1 },
-            "conditions": { "type": "array", "items": { "type": "string", "enum": ["connection_error", "5xx", "timeout"] } },
-            "backoffMs":  { "type": "integer", "minimum": 0 }
+            "attempts":       { "type": "integer", "minimum": 1 },
+            "conditions":     { "type": "array", "items": { "type": "string", "enum": ["connection_error", "5xx", "timeout"] } },
+            "backoffMs":      { "type": "integer", "minimum": 0 },
+            "budgetPercent":  { "type": "number", "minimum": 0, "maximum": 100, "description": "Retry budget: max % of active requests that may be retries." }
           }
         },
         "healthCheck": {
@@ -363,8 +373,29 @@
             "path":               { "type": "string" },
             "intervalSecs":       { "type": "integer", "minimum": 1 },
             "unhealthyThreshold": { "type": "integer", "minimum": 1 },
-            "healthyThreshold":   { "type": "integer", "minimum": 1 }
+            "healthyThreshold":   { "type": "integer", "minimum": 1 },
+            "slowStartSecs":      { "type": "integer", "minimum": 0, "description": "Slow-start ramp-up window in seconds after recovery." },
+            "maxConnectionsPerUpstream": { "type": "integer", "minimum": 1, "description": "Circuit breaker: max concurrent connections per upstream. Returns 503 when all upstreams are at this limit." }
           }
+        },
+        "mirror": { "type": "string", "format": "uri", "description": "Fire-and-forget mirror URL. V1: headers only." },
+        "upstreamTls": {
+          "type": "object",
+          "properties": {
+            "verify":     { "type": "boolean", "description": "Verify upstream TLS certificate (default true)." },
+            "serverName": { "type": "string", "description": "Override SNI hostname for cert verification." }
+          }
+        },
+        "rateLimit": {
+          "type": "object",
+          "required": ["windowSecs", "limit"],
+          "properties": {
+            "windowSecs": { "type": "integer", "minimum": 1 },
+            "limit":      { "type": "integer", "minimum": 1 },
+            "keyBy":      { "type": "string" },
+            "skipPaths":  { "type": "array", "items": { "type": "string" } }
+          },
+          "description": "Per-route rate limit (in addition to site-level rateLimit)."
         },
         "cache": {
           "type": "object",
@@ -477,6 +508,69 @@
           "additionalProperties": { "type": "string" },
           "description": "Query parameter values that must be present and match (exact or regex)."
         }
+      }
+    },
+    "OutlierDetectionConfig": {
+      "type": "object",
+      "description": "Passive health checking via consecutive 5xx tracking.",
+      "properties": {
+        "consecutive5xx":       { "type": "integer", "minimum": 1, "default": 5, "description": "Consecutive 5xx responses before ejection." },
+        "baseEjectionTimeSecs": { "type": "integer", "minimum": 1, "default": 30 },
+        "maxEjectionTimeSecs":  { "type": "integer", "minimum": 1, "default": 300 },
+        "maxEjectionPercent":   { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 }
+      }
+    },
+    "FaultInjectionConfig": {
+      "type": "object",
+      "description": "Inject artificial faults for chaos testing. Not for production.",
+      "properties": {
+        "abort": {
+          "type": "object",
+          "properties": {
+            "percent": { "type": "number", "minimum": 0, "maximum": 100 },
+            "status":  { "type": "integer", "minimum": 100, "maximum": 999 },
+            "body":    { "type": "string" }
+          }
+        },
+        "delay": {
+          "type": "object",
+          "properties": {
+            "percent":   { "type": "number", "minimum": 0, "maximum": 100 },
+            "durationMs":{ "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "JwtAuthConfig": {
+      "type": "object",
+      "description": "JWT bearer-token authentication. Requires either secret (HS256) or jwksUrl (RS256/ES256).",
+      "properties": {
+        "secret":          { "type": "string", "description": "HMAC-SHA256 secret for HS256 tokens." },
+        "jwksUrl":         { "type": "string", "format": "uri", "description": "Remote JWKS URL for RS256/ES256 tokens." },
+        "jwksRefreshSecs": { "type": "integer", "minimum": 60, "default": 3600 },
+        "audience":        { "type": "array", "items": { "type": "string" } },
+        "issuer":          { "type": "string" },
+        "skipPaths":       { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "ForwardAuthConfig": {
+      "type": "object",
+      "required": ["url"],
+      "description": "Delegate auth to an external service. 2xx=allow, 4xx/5xx=deny, unreachable=fail closed.",
+      "properties": {
+        "url":             { "type": "string", "format": "uri" },
+        "requestHeaders":  { "type": "array", "items": { "type": "string" }, "description": "Request headers to forward to auth service." },
+        "responseHeaders": { "type": "array", "items": { "type": "string" }, "description": "Auth service response headers to inject into upstream request." },
+        "timeoutMs":       { "type": "integer", "minimum": 1, "default": 5000 },
+        "skipPaths":       { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "HeaderTransformConfig": {
+      "type": "object",
+      "description": "Static header injection/removal applied to every upstream request or response.",
+      "properties": {
+        "setHeaders":    { "type": "object", "additionalProperties": { "type": "string" } },
+        "removeHeaders": { "type": "array", "items": { "type": "string" } }
       }
     }
   }
