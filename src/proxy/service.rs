@@ -1008,6 +1008,21 @@ impl ProxyHttp for ConduitProxy {
         Ok(())
     }
 
+    /// Phase-ordered response pipeline.
+    ///
+    /// Builds a [`ResponseFilterChain`] for this request and runs it against
+    /// the upstream response headers.  The chain encapsulates all header-level
+    /// concerns in six discrete phases:
+    ///
+    /// 1. CRLF injection protection
+    /// 2. Inject CORS + security + custom site headers
+    /// 3. Apply `responseTransform` (set / remove headers)
+    /// 4. Inject `X-Response-Time`
+    /// 5. Trigger Pingora retry on 5xx (when `retry.conditions` includes "5xx")
+    /// 6. Set `mask_upstream_body` flag on 5xx (when `maskErrors: true`)
+    ///
+    /// Adding a new response-side behaviour: implement `ResponseFilter` +
+    /// push into `ResponseFilterChain::build()` — no other changes required.
     async fn upstream_response_filter(
         &self,
         _session: &mut Session,
@@ -1017,76 +1032,34 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
-        if let Some(req_ctx) = ctx.as_ref() {
-            // CRLF injection protection: remove any response headers from upstream
-            // whose values contain CR (\r) or LF (\n) — these could be used to
-            // inject arbitrary headers into the client response.
-            let crlf_names: Vec<http::header::HeaderName> = upstream_response
-                .headers
-                .iter()
-                .filter_map(|(name, value)| {
-                    if value.as_bytes().iter().any(|&b| b == b'\r' || b == b'\n') {
-                        Some(name.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            for name in crlf_names {
-                upstream_response.headers.remove(&name);
-            }
+        use crate::filter::response_chain::{ResponseFilterChain, ResponseFilterOutcome};
 
-            // Inject CORS + security headers into proxy responses.
-            for (name, value) in &req_ctx.extra_headers {
-                upstream_response.insert_header(name.clone(), value.clone())?;
-            }
+        let req_ctx = match ctx.as_ref() {
+            Some(c) => c,
+            None => return Ok(()),
+        };
 
-            // Response header transformation (static set/remove from site config).
-            if let Some(transform) = &req_ctx.response_transform {
-                apply_header_transform_response(upstream_response, transform)?;
-            }
+        let config = self.state.config.load();
+        let chain = ResponseFilterChain::build(req_ctx, &config);
 
-            // X-Response-Time for proxy responses.
-            {
-                let config = self.state.config.load();
-                let site = config.sites.get(req_ctx.site_idx);
-                let rt_cfg = site.and_then(|s| s.response_time.as_ref());
-                if response_time::is_enabled(rt_cfg) {
-                    let digits = response_time::decimal_digits(rt_cfg);
-                    let elapsed = req_ctx.start_time.elapsed();
-                    let value = response_time::format_elapsed(elapsed, digits);
-                    upstream_response.insert_header("x-response-time", value)?;
-                }
-            }
+        match chain.run(upstream_response, req_ctx)? {
+            ResponseFilterOutcome::Continue => {}
 
-            // 5xx retry logic.
-            if let Some(retry) = &req_ctx.retry {
+            ResponseFilterOutcome::RetryUpstream => {
                 let status = upstream_response.status.as_u16();
-                if status >= 500 && retry.has_attempts_left() && retry.has_condition("5xx") {
-                    return Err(pingora_core::Error::explain(
-                        pingora_core::ErrorType::Custom("5xx_retry"),
-                        format!("upstream returned HTTP {status}; will retry"),
-                    ));
-                }
+                return Err(pingora_core::Error::explain(
+                    pingora_core::ErrorType::Custom("5xx_retry"),
+                    format!("upstream returned HTTP {status}; will retry"),
+                ));
             }
 
-            // Error masking: set flag so body filter can replace the response.
-            let status = upstream_response.status.as_u16();
-            if status >= 500 {
-                let config = self.state.config.load();
-                let site = config.sites.get(req_ctx.site_idx);
-                let mask = site.and_then(|s| s.mask_errors).unwrap_or(false);
-                if mask {
-                    if let Some(req_ctx_mut) = ctx.as_mut() {
-                        req_ctx_mut.mask_upstream_body = true;
-                        // Replace Content-Type and Content-Length for the masked body.
-                        let body_len =
-                            b"{\"error\":\"Internal Server Error\",\"status\":500}".len();
-                        upstream_response.insert_header("content-type", "application/json")?;
-                        upstream_response.insert_header("content-length", body_len.to_string())?;
-                        // Override status with 500 for consistent error response.
-                        upstream_response.set_status(500)?;
-                    }
+            ResponseFilterOutcome::MaskBody => {
+                if let Some(req_ctx_mut) = ctx.as_mut() {
+                    req_ctx_mut.mask_upstream_body = true;
+                    let body_len = b"{\"error\":\"Internal Server Error\",\"status\":500}".len();
+                    upstream_response.insert_header("content-type", "application/json")?;
+                    upstream_response.insert_header("content-length", body_len.to_string())?;
+                    upstream_response.set_status(500)?;
                 }
             }
         }
@@ -1868,27 +1841,6 @@ pub(crate) fn expand_jwt_templates(
         }
     })
     .into_owned()
-}
-
-/// Apply a `HeaderTransformConfig` to an upstream *response* header map.
-///
-/// Called from `upstream_response_filter` to inject / remove headers before
-/// the response is returned to the client.
-fn apply_header_transform_response(
-    resp: &mut ResponseHeader,
-    transform: &crate::config::schema::HeaderTransformConfig,
-) -> pingora_core::Result<()> {
-    if let Some(remove) = &transform.remove_headers {
-        for name in remove {
-            resp.headers.remove(name.as_str());
-        }
-    }
-    if let Some(set) = &transform.set_headers {
-        for (name, value) in set {
-            resp.insert_header(name.clone(), value.clone())?;
-        }
-    }
-    Ok(())
 }
 
 /// Fire-and-forget a copy of the current request to a mirror backend.

@@ -10,6 +10,7 @@ pub mod logging;
 pub mod rate_limit;
 pub mod rate_limit_redis;
 pub mod redirects;
+pub mod response_chain;
 pub mod response_time;
 pub mod script;
 pub mod security_headers;
