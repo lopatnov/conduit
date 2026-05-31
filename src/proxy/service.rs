@@ -17,13 +17,14 @@ use pingora_proxy::{ProxyHttp, Session};
 use prometheus::{CounterVec, HistogramVec};
 
 use crate::config::schema::{
-    ApiKeyConfig, AppConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig, HealthCheckConfig,
-    IpFilterConfig, LimitsConfig, MiddlewareEntry, ProxyTimeout, RateLimitConfig,
+    ApiKeyConfig, AppConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig, ForwardAuthConfig,
+    HealthCheckConfig, IpFilterConfig, LimitsConfig, MiddlewareEntry, ProxyTimeout,
+    RateLimitConfig,
 };
 use crate::filter::chain::{
     ApiKeyGuard, BasicAuthGuard, CorsPreflight, FaultInjectionGuard, FilterChain, FilterContext,
-    HealthBypass, IpGuard, JwtGuard, LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard,
-    XRequestIdGuard,
+    ForwardAuthGuard, HealthBypass, IpGuard, JwtGuard, LimitsGuard, MiddlewareGuard,
+    RateLimitGuard, RedirectGuard, XRequestIdGuard,
 };
 use crate::filter::rate_limit::RateLimiter;
 use crate::filter::rate_limit_redis::RedisRateLimiter;
@@ -236,6 +237,7 @@ impl ConduitProxy {
             extracted_client_ip,
             fault_injection_cfg,
             jwt_auth_cfg,
+            forward_auth_cfg,
         ) = {
             let config = self.state.config.load();
             let host = extract_host(session);
@@ -335,6 +337,7 @@ impl ConduitProxy {
                 client_ip,
                 site.and_then(|s| s.fault_injection.clone()),
                 site.and_then(|s| s.jwt_auth.clone()),
+                site.and_then(|s| s.forward_auth.clone()),
             )
         };
 
@@ -392,6 +395,7 @@ impl ConduitProxy {
             client_ip: extracted_client_ip,
             fault_injection_cfg,
             jwt_auth_cfg,
+            forward_auth_cfg,
         };
         if self.run_guard_filters(session, guards).await? {
             return Ok(true);
@@ -473,6 +477,14 @@ impl ConduitProxy {
         // 6c. JWT Bearer-token Auth.
         if let Some(cfg) = guards.jwt_auth_cfg {
             chain = chain.push(JwtGuard {
+                cfg,
+                path: guards.script_path.clone(),
+            });
+        }
+
+        // 6d. Forward Auth — delegate to external auth service.
+        if let Some(cfg) = guards.forward_auth_cfg {
+            chain = chain.push(ForwardAuthGuard {
                 cfg,
                 path: guards.script_path.clone(),
             });
@@ -792,6 +804,17 @@ impl ProxyHttp for ConduitProxy {
         append_forwarded_headers(session, upstream_request, &self.state, ctx)?;
         apply_upstream_path_transforms(upstream_request, ctx)?;
 
+        // Request header transformation (static set/remove from site config).
+        {
+            let config = self.state.config.load();
+            if let Some(req_ctx) = ctx.as_ref() {
+                let site = config.sites.get(req_ctx.site_idx);
+                if let Some(transform) = site.and_then(|s| s.request_transform.as_ref()) {
+                    apply_header_transform_request(upstream_request, transform)?;
+                }
+            }
+        }
+
         // Traffic mirroring: fire-and-forget copy to the mirror backend.
         if let Some(req_ctx) = ctx.as_ref() {
             if let UpstreamTarget::Proxy {
@@ -837,6 +860,11 @@ impl ProxyHttp for ConduitProxy {
             // Inject CORS + security headers into proxy responses.
             for (name, value) in &req_ctx.extra_headers {
                 upstream_response.insert_header(name.clone(), value.clone())?;
+            }
+
+            // Response header transformation (static set/remove from site config).
+            if let Some(transform) = &req_ctx.response_transform {
+                apply_header_transform_response(upstream_response, transform)?;
             }
 
             // X-Response-Time for proxy responses.
@@ -1360,6 +1388,8 @@ struct GuardCtx {
     fault_injection_cfg: Option<crate::config::schema::FaultInjectionConfig>,
     /// JWT auth config — validated in step 6c.
     jwt_auth_cfg: Option<crate::config::schema::JwtAuthConfig>,
+    /// Forward-auth config — validated in step 6d.
+    forward_auth_cfg: Option<ForwardAuthConfig>,
 }
 
 /// Classify a request's upstream target into a `HandlerKind` for filter routing.
@@ -1493,6 +1523,48 @@ fn apply_path_rewrites(path: &str, rules: Option<&[crate::config::schema::Rewrit
         }
     }
     out
+}
+
+/// Apply a `HeaderTransformConfig` to an upstream *request* header map.
+///
+/// Called from `upstream_request_filter` to inject / remove headers before
+/// the request is forwarded to the upstream backend.
+fn apply_header_transform_request(
+    req: &mut RequestHeader,
+    transform: &crate::config::schema::HeaderTransformConfig,
+) -> pingora_core::Result<()> {
+    if let Some(remove) = &transform.remove_headers {
+        for name in remove {
+            req.headers.remove(name.as_str());
+        }
+    }
+    if let Some(set) = &transform.set_headers {
+        for (name, value) in set {
+            req.insert_header(name.clone(), value.clone())?;
+        }
+    }
+    Ok(())
+}
+
+/// Apply a `HeaderTransformConfig` to an upstream *response* header map.
+///
+/// Called from `upstream_response_filter` to inject / remove headers before
+/// the response is returned to the client.
+fn apply_header_transform_response(
+    resp: &mut ResponseHeader,
+    transform: &crate::config::schema::HeaderTransformConfig,
+) -> pingora_core::Result<()> {
+    if let Some(remove) = &transform.remove_headers {
+        for name in remove {
+            resp.headers.remove(name.as_str());
+        }
+    }
+    if let Some(set) = &transform.set_headers {
+        for (name, value) in set {
+            resp.insert_header(name.clone(), value.clone())?;
+        }
+    }
+    Ok(())
 }
 
 /// Fire-and-forget a copy of the current request to a mirror backend.

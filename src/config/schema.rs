@@ -157,6 +157,38 @@ pub struct SiteConfig {
     /// ```
     #[serde(rename = "jwtAuth", skip_serializing_if = "Option::is_none")]
     pub jwt_auth: Option<JwtAuthConfig>,
+    /// Forward Auth — delegate authentication to an external HTTP service.
+    ///
+    /// Every request is forwarded to the auth service before reaching the upstream.
+    /// If the auth service returns 2xx, the request proceeds and any configured
+    /// `responseHeaders` from the auth response are injected into the upstream
+    /// request (e.g. `X-User-ID`, `X-Role`).
+    /// If the auth service returns 4xx or 5xx, that status is returned directly
+    /// to the client.
+    ///
+    /// ```json
+    /// { "forwardAuth": { "url": "http://auth:9000/verify",
+    ///                    "requestHeaders": ["Authorization", "Cookie"],
+    ///                    "responseHeaders": ["X-User-ID", "X-Role"] } }
+    /// ```
+    #[serde(rename = "forwardAuth", skip_serializing_if = "Option::is_none")]
+    pub forward_auth: Option<ForwardAuthConfig>,
+    /// Static header injection / removal applied to every upstream request.
+    ///
+    /// ```json
+    /// { "requestTransform": { "setHeaders": { "X-Service": "my-api" },
+    ///                         "removeHeaders": ["X-Internal-Token"] } }
+    /// ```
+    #[serde(rename = "requestTransform", skip_serializing_if = "Option::is_none")]
+    pub request_transform: Option<HeaderTransformConfig>,
+    /// Static header injection / removal applied to every upstream response.
+    ///
+    /// ```json
+    /// { "responseTransform": { "setHeaders": { "X-Served-By": "conduit" },
+    ///                          "removeHeaders": ["X-Powered-By"] } }
+    /// ```
+    #[serde(rename = "responseTransform", skip_serializing_if = "Option::is_none")]
+    pub response_transform: Option<HeaderTransformConfig>,
     // Phase 5 (optional): pub cgi: Option<CgiConfig>,
 }
 
@@ -429,6 +461,56 @@ pub struct JwtAuthConfig {
     /// Paths that bypass JWT validation (same glob syntax as `basicAuth.skipPaths`).
     #[serde(rename = "skipPaths", skip_serializing_if = "Option::is_none")]
     pub skip_paths: Option<Vec<String>>,
+}
+
+// ── Forward Auth ──────────────────────────────────────────────────────────
+
+/// External authentication service integration.
+///
+/// The request is forwarded to the auth URL before reaching the upstream.
+/// The auth service communicates its decision via HTTP status:
+/// - 2xx → allow; copy `responseHeaders` to upstream request
+/// - 4xx / 5xx → deny; return the auth service's status to the client
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardAuthConfig {
+    /// URL of the authentication/authorization service.
+    pub url: String,
+    /// Request headers to forward to the auth service.
+    ///
+    /// When absent or empty, only `X-Forwarded-For`, `X-Forwarded-Method`,
+    /// and `X-Forwarded-Uri` are sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_headers: Option<Vec<String>>,
+    /// Auth service response headers to inject into the upstream request.
+    ///
+    /// For example: `["X-User-ID", "X-Role"]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_headers: Option<Vec<String>>,
+    /// Maximum time to wait for the auth service in milliseconds.
+    /// Default: 5000 ms.
+    #[serde(rename = "timeoutMs", skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// Paths that bypass forward-auth entirely (same glob syntax as `skipPaths`).
+    #[serde(rename = "skipPaths", skip_serializing_if = "Option::is_none")]
+    pub skip_paths: Option<Vec<String>>,
+}
+
+// ── Header transform ───────────────────────────────────────────────────────
+
+/// Static header injection / removal for requests or responses.
+///
+/// Applied unconditionally to every request (request transform) or every
+/// upstream response (response transform) for the site.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HeaderTransformConfig {
+    /// Headers to add or overwrite.  The value is the literal string to set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub set_headers: Option<IndexMap<String, String>>,
+    /// Header names to remove.  Case-insensitive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remove_headers: Option<Vec<String>>,
 }
 
 // ── IP filter ──────────────────────────────────────────────────────────────

@@ -22,8 +22,8 @@ use pingora_core::Result;
 use pingora_proxy::Session;
 
 use crate::config::schema::{
-    ApiKeyConfig, BasicAuthConfig, CorsConfig, FaultInjectionConfig, IpFilterConfig, JwtAuthConfig,
-    LimitsConfig, MiddlewareEntry, RateLimitConfig,
+    ApiKeyConfig, BasicAuthConfig, CorsConfig, FaultInjectionConfig, ForwardAuthConfig,
+    IpFilterConfig, JwtAuthConfig, LimitsConfig, MiddlewareEntry, RateLimitConfig,
 };
 use crate::filter::rate_limit::RateLimiter;
 use crate::filter::rate_limit_redis::RedisRateLimiter;
@@ -340,6 +340,137 @@ impl RequestFilter for JwtGuard {
                 ctx.inflight.fetch_sub(1, Ordering::Relaxed);
                 Ok(FilterOutcome::Handled)
             }
+        }
+    }
+}
+
+/// Forward Auth guard — delegates authentication/authorization to an external service.
+///
+/// Sends the incoming request (filtered headers) to the configured auth URL.
+/// - **2xx** → auth passed; headers listed in `responseHeaders` are injected
+///   into the upstream request so the upstream receives user identity/role info.
+/// - **4xx / 5xx** → auth denied; the auth service status is returned to the
+///   client immediately.
+///
+/// Uses a process-wide `reqwest::Client` with a connection pool so that
+/// hot-path requests don't pay TCP setup overhead.
+pub struct ForwardAuthGuard {
+    pub cfg: ForwardAuthConfig,
+    pub path: String,
+}
+
+/// Process-wide reqwest client for forward-auth and JWKS fetching.
+fn forward_auth_client() -> &'static reqwest::Client {
+    use std::sync::OnceLock;
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_default()
+    })
+}
+
+#[async_trait]
+impl RequestFilter for ForwardAuthGuard {
+    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
+        use crate::filter::auth::is_path_skipped;
+
+        // Bypass for configured skip paths.
+        if let Some(skip) = &self.cfg.skip_paths {
+            if is_path_skipped(Some(skip.as_slice()), &self.path) {
+                return Ok(FilterOutcome::Continue);
+            }
+        }
+
+        let auth_url = &self.cfg.url;
+        let timeout_ms = self.cfg.timeout_ms.unwrap_or(5000);
+        let client = forward_auth_client();
+
+        // Build the subrequest: only forward allowed headers.
+        let method = ctx.session.req_header().method.as_str();
+        let uri = ctx
+            .session
+            .req_header()
+            .uri
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or("/");
+        let client_ip = ctx
+            .session
+            .client_addr()
+            .and_then(|a| a.as_inet())
+            .map(|a| a.ip().to_string())
+            .unwrap_or_default();
+
+        let mut req = client
+            .get(auth_url)
+            .timeout(std::time::Duration::from_millis(timeout_ms))
+            .header("X-Forwarded-Method", method)
+            .header("X-Forwarded-Uri", uri)
+            .header("X-Forwarded-For", &client_ip);
+
+        // Forward specific request headers if configured.
+        if let Some(fwd_hdrs) = &self.cfg.request_headers {
+            for name in fwd_hdrs {
+                if let Some(val) = ctx.session.req_header().headers.get(name.as_str()) {
+                    if let Ok(v) = val.to_str() {
+                        req = req.header(name.as_str(), v);
+                    }
+                }
+            }
+        }
+
+        // Make the subrequest.
+        let auth_resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(url = %auth_url, error = %e, "forward-auth service unreachable");
+                // Fail closed: treat unreachable auth service as 401.
+                response::write_denied(ctx.session, None, ctx.extra_headers).await?;
+                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+                return Ok(FilterOutcome::Handled);
+            }
+        };
+
+        let status = auth_resp.status();
+        if status.is_success() {
+            // Inject auth service response headers into the upstream request.
+            if let Some(copy_hdrs) = &self.cfg.response_headers {
+                // Collect into owned (name, value) pairs to avoid lifetime issues.
+                let to_inject: Vec<(String, String)> = copy_hdrs
+                    .iter()
+                    .filter_map(|name| {
+                        auth_resp
+                            .headers()
+                            .get(name.as_str())
+                            .and_then(|val| val.to_str().ok())
+                            .map(|v| (name.clone(), v.to_owned()))
+                    })
+                    .collect();
+                for (name, value) in to_inject {
+                    let _ = ctx.session.req_header_mut().insert_header(name, value);
+                }
+            }
+            Ok(FilterOutcome::Continue)
+        } else {
+            // Return the auth service's status to the client.
+            let status_code = status.as_u16();
+            let body = bytes::Bytes::from_static(if status_code == 403 {
+                b"Forbidden"
+            } else {
+                b"Unauthorized"
+            });
+            response::write_response(
+                ctx.session,
+                status_code,
+                "text/plain",
+                body,
+                ctx.extra_headers,
+            )
+            .await?;
+            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+            Ok(FilterOutcome::Handled)
         }
     }
 }

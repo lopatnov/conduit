@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::config::schema::{
-    CacheConfig, ConnectionPoolConfig, ProxyTimeout, RewriteRule, StaticOptions,
+    CacheConfig, ConnectionPoolConfig, HeaderTransformConfig, ProxyTimeout, RewriteRule,
+    StaticOptions,
 };
 
 #[derive(Debug)]
@@ -41,6 +42,9 @@ pub struct RequestCtx {
     /// `upstream_response_body_filter` hook replaces the body with a generic
     /// JSON error so internal stack traces don't leak to clients.
     pub mask_upstream_body: bool,
+    /// Static header transform applied to every upstream response.
+    /// Populated from `SiteConfig.response_transform`.
+    pub response_transform: Option<HeaderTransformConfig>,
 }
 
 impl RequestCtx {
@@ -55,6 +59,7 @@ impl RequestCtx {
         proxy_http2: bool,
         proxy_upstream_url: Option<String>,
         proxy_cache_cfg: Option<CacheConfig>,
+        response_transform: Option<HeaderTransformConfig>,
     ) -> Self {
         Self {
             site_idx,
@@ -69,6 +74,7 @@ impl RequestCtx {
             proxy_upstream_url,
             proxy_cache_cfg,
             mask_upstream_body: false,
+            response_transform,
         }
     }
 }

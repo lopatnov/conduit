@@ -132,6 +132,7 @@ pub fn route_request(
         )
     };
 
+    let response_transform = site.and_then(|s| s.response_transform.clone());
     RequestCtx::new(
         site_idx,
         upstream,
@@ -141,6 +142,7 @@ pub fn route_request(
         proxy_http2,
         proxy_upstream_url,
         proxy_cache_cfg,
+        response_transform,
     )
 }
 
