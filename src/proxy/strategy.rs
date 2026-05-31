@@ -158,6 +158,65 @@ impl LoadBalancingStrategy for LeastResponseTime {
     }
 }
 
+/// Power of Two Choices (P2C): sample 2 random backends and forward to the
+/// less-loaded one.
+///
+/// Achieves O(log log n) maximum load with O(1) selection — significantly
+/// better tail latency than random and competitive with `least-conn` at scale.
+/// Reference: linkerd2-proxy `linkerd/pool/p2c/src/lib.rs`.
+pub struct P2cChoice;
+
+impl LoadBalancingStrategy for P2cChoice {
+    fn pick(
+        &self,
+        urls: &[String],
+        _weighted: &[(String, u32)],
+        route_key: &str,
+        _hash_val: u64,
+        counters: &DashMap<String, AtomicUsize>,
+        health: &UpstreamRegistry,
+    ) -> Option<(String, bool)> {
+        match urls.len() {
+            0 => None,
+            1 => {
+                // Trivial case: only one choice.
+                upstream::pick_round_robin(urls, route_key, counters).map(|u| (u, false))
+            }
+            len => {
+                // Sample two distinct random indices.
+                let (a, b) = gen_pair(len);
+                let load_a = health.conn_load(&urls[a]);
+                let load_b = health.conn_load(&urls[b]);
+                // Pick the less loaded; break ties in favour of `a`.
+                let chosen = if load_a <= load_b { &urls[a] } else { &urls[b] };
+                Some((chosen.clone(), false))
+            }
+        }
+    }
+}
+
+/// Generate two distinct random indices in `[0, len)` using a fast XorShift.
+fn gen_pair(len: usize) -> (usize, usize) {
+    // Use thread-local fast RNG rather than an allocating SmallRng.
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Simple splitmix64 seeded from time — good enough for load balancing.
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64;
+    let mut x = seed
+        .wrapping_mul(0x9e3779b97f4a7c15)
+        .wrapping_add(0x6c62272e07bb0142);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+    x ^= x >> 31;
+
+    let a = (x % len as u64) as usize;
+    let b = ((x >> 32) % (len as u64 - 1)) as usize;
+    let b = if b >= a { b + 1 } else { b };
+    (a, b)
+}
+
 // ── Static singletons (zero allocation on hot path) ───────────────────────────
 
 static ROUND_ROBIN: RoundRobin = RoundRobin;
@@ -166,6 +225,7 @@ static LEAST_CONN: LeastConn = LeastConn;
 static WEIGHTED_RR: WeightedRoundRobin = WeightedRoundRobin;
 static HASH_BASED: HashBased = HashBased;
 static LEAST_RT: LeastResponseTime = LeastResponseTime;
+static P2C: P2cChoice = P2cChoice;
 
 /// Return the `'static` strategy that corresponds to the config enum variant.
 pub fn from_config(s: &LoadBalanceStrategy) -> &'static dyn LoadBalancingStrategy {
@@ -176,6 +236,7 @@ pub fn from_config(s: &LoadBalanceStrategy) -> &'static dyn LoadBalancingStrateg
         LoadBalanceStrategy::WeightedRoundRobin => &WEIGHTED_RR,
         LoadBalanceStrategy::IpHash | LoadBalanceStrategy::ConsistentHash => &HASH_BASED,
         LoadBalanceStrategy::LeastResponseTime => &LEAST_RT,
+        LoadBalanceStrategy::P2c => &P2C,
     }
 }
 

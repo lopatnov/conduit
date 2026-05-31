@@ -356,6 +356,7 @@ fn strategy_label(s: &crate::config::schema::LoadBalanceStrategy) -> &'static st
         S::LeastResponseTime => "least-response-time",
         S::IpHash => "ip-hash",
         S::ConsistentHash => "consistent-hash",
+        S::P2c => "p2c",
     }
 }
 

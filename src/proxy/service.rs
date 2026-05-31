@@ -21,8 +21,9 @@ use crate::config::schema::{
     IpFilterConfig, LimitsConfig, MiddlewareEntry, ProxyTimeout, RateLimitConfig,
 };
 use crate::filter::chain::{
-    ApiKeyGuard, BasicAuthGuard, CorsPreflight, FilterChain, FilterContext, HealthBypass, IpGuard,
-    LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard,
+    ApiKeyGuard, BasicAuthGuard, CorsPreflight, FaultInjectionGuard, FilterChain, FilterContext,
+    HealthBypass, IpGuard, LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard,
+    XRequestIdGuard,
 };
 use crate::filter::rate_limit::RateLimiter;
 use crate::filter::rate_limit_redis::RedisRateLimiter;
@@ -201,6 +202,7 @@ impl ConduitProxy {
             script_query,
             script_headers,
             extracted_client_ip,
+            fault_injection_cfg,
         ) = {
             let config = self.state.config.load();
             let host = extract_host(session);
@@ -298,6 +300,7 @@ impl ConduitProxy {
                 query.unwrap_or_default(),
                 req_headers_for_script,
                 client_ip,
+                site.and_then(|s| s.fault_injection.clone()),
             )
         };
 
@@ -353,6 +356,7 @@ impl ConduitProxy {
             script_query,
             script_headers,
             client_ip: extracted_client_ip,
+            fault_injection_cfg,
         };
         if self.run_guard_filters(session, guards).await? {
             return Ok(true);
@@ -388,6 +392,10 @@ impl ConduitProxy {
 
         // Build the chain.  Filters run in the order they are pushed.
         let mut chain = FilterChain::new();
+
+        // 0. X-Request-ID — inject before any other processing so the ID is
+        //    available to upstream and all downstream filters.
+        chain = chain.push(XRequestIdGuard);
 
         // 1. IP filter — runs for every request, including health/ACME.
         if let Some(cfg) = guards.ip_cfg {
@@ -432,7 +440,12 @@ impl ConduitProxy {
             result: guards.redirect_result,
         });
 
-        // 8. Middleware pipeline: Rhai scripts + WASM plugins in declared order.
+        // 8. Fault injection (chaos testing — disabled in production).
+        if let Some(cfg) = guards.fault_injection_cfg {
+            chain = chain.push(FaultInjectionGuard { cfg });
+        }
+
+        // 9. Middleware pipeline: Rhai scripts + WASM plugins in declared order.
         chain = chain.push(MiddlewareGuard {
             middleware: guards.middleware,
             req_path: guards.script_path,
@@ -748,6 +761,24 @@ impl ProxyHttp for ConduitProxy {
         Self::CTX: Send + Sync,
     {
         if let Some(req_ctx) = ctx.as_ref() {
+            // CRLF injection protection: remove any response headers from upstream
+            // whose values contain CR (\r) or LF (\n) — these could be used to
+            // inject arbitrary headers into the client response.
+            let crlf_names: Vec<http::header::HeaderName> = upstream_response
+                .headers
+                .iter()
+                .filter_map(|(name, value)| {
+                    if value.as_bytes().iter().any(|&b| b == b'\r' || b == b'\n') {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for name in crlf_names {
+                upstream_response.headers.remove(&name);
+            }
+
             // Inject CORS + security headers into proxy responses.
             for (name, value) in &req_ctx.extra_headers {
                 upstream_response.insert_header(name.clone(), value.clone())?;
@@ -1175,6 +1206,8 @@ struct GuardCtx {
     script_headers: std::collections::HashMap<String, String>,
     /// Remote client IP — used by WASM plugins.
     client_ip: String,
+    /// Fault injection config (chaos testing).
+    fault_injection_cfg: Option<crate::config::schema::FaultInjectionConfig>,
 }
 
 /// Classify a request's upstream target into a `HandlerKind` for filter routing.

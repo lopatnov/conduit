@@ -309,6 +309,15 @@ fn pick_by_strategy(
         LoadBalanceStrategy::RoundRobin => {
             upstream::pick_round_robin(urls, route_key, counters).map(|u| (u, false))
         }
+        LoadBalanceStrategy::P2c => crate::proxy::strategy::from_config(&LoadBalanceStrategy::P2c)
+            .pick(
+                urls,
+                weighted,
+                route_key,
+                hash_val,
+                counters,
+                upstream_health,
+            ),
     }
 }
 

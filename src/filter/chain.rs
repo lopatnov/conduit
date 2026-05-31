@@ -22,13 +22,14 @@ use pingora_core::Result;
 use pingora_proxy::Session;
 
 use crate::config::schema::{
-    ApiKeyConfig, BasicAuthConfig, CorsConfig, IpFilterConfig, LimitsConfig, MiddlewareEntry,
-    RateLimitConfig,
+    ApiKeyConfig, BasicAuthConfig, CorsConfig, FaultInjectionConfig, IpFilterConfig, LimitsConfig,
+    MiddlewareEntry, RateLimitConfig,
 };
 use crate::filter::rate_limit::RateLimiter;
 use crate::filter::rate_limit_redis::RedisRateLimiter;
 use crate::filter::{auth, cors, ip_filter, limits, rate_limit, script};
 use crate::handler::response;
+use uuid::Uuid;
 
 // ── Outcome ───────────────────────────────────────────────────────────────────
 
@@ -109,6 +110,34 @@ impl FilterChain {
 }
 
 // ── Concrete guards ───────────────────────────────────────────────────────────
+
+/// Ensures every request carries an `X-Request-ID` header.
+///
+/// If the client already sends the header, its value is forwarded unchanged so
+/// that distributed tracing IDs flow through the proxy.  When the header is
+/// absent a new UUID v4 is generated and injected before the request reaches
+/// upstream.  The ID is also stored as a request attribute so access-log
+/// formatters and downstream handlers can include it.
+pub struct XRequestIdGuard;
+
+#[async_trait]
+impl RequestFilter for XRequestIdGuard {
+    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
+        let has = ctx
+            .session
+            .req_header()
+            .headers
+            .contains_key("x-request-id");
+        if !has {
+            let id = Uuid::new_v4().to_string();
+            let _ = ctx
+                .session
+                .req_header_mut()
+                .insert_header("x-request-id", &id);
+        }
+        Ok(FilterOutcome::Continue)
+    }
+}
 
 /// Rejects requests whose client IP is not in the allow-list / is in the deny-list.
 pub struct IpGuard {
@@ -259,6 +288,63 @@ impl RequestFilter for ApiKeyGuard {
             ctx.inflight.fetch_sub(1, Ordering::Relaxed);
             return Ok(FilterOutcome::Handled);
         }
+        Ok(FilterOutcome::Continue)
+    }
+}
+
+/// Injects artificial faults (aborts or delays) for chaos-engineering and
+/// testing retry/circuit-breaker behaviour.
+///
+/// **Should not be used in production.**  Use it in staging or test
+/// environments to validate that your clients handle upstream failures
+/// gracefully.
+pub struct FaultInjectionGuard {
+    pub cfg: FaultInjectionConfig,
+}
+
+#[async_trait]
+impl RequestFilter for FaultInjectionGuard {
+    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
+        // Use a simple pseudo-random roll based on the current time nanoseconds.
+        // Good enough for percentage-based fault injection; not cryptographically
+        // random, but that's not required here.
+        let roll: f64 = {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let ns = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos() as f64;
+            (ns % 10_000.0) / 100.0 // 0.0 – 99.99
+        };
+
+        // Abort injection — checked first.
+        if let Some(ref abort) = self.cfg.abort {
+            if roll < abort.percent {
+                let status = abort.status.unwrap_or(503).max(100).min(999);
+                let body = abort
+                    .body
+                    .clone()
+                    .unwrap_or_else(|| "Fault injected".to_owned());
+                response::write_response(
+                    ctx.session,
+                    status,
+                    "text/plain",
+                    Bytes::from(body),
+                    ctx.extra_headers,
+                )
+                .await?;
+                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+                return Ok(FilterOutcome::Handled);
+            }
+        }
+
+        // Delay injection.
+        if let Some(ref delay) = self.cfg.delay {
+            if roll < delay.percent {
+                tokio::time::sleep(std::time::Duration::from_millis(delay.ms)).await;
+            }
+        }
+
         Ok(FilterOutcome::Continue)
     }
 }
