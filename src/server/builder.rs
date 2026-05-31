@@ -144,6 +144,13 @@ pub fn run_server(config: AppConfig, config_path: PathBuf) -> anyhow::Result<()>
     // This is a no-op if another provider was already installed (e.g., in tests).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        config = %config_path.display(),
+        sites = config.sites.len(),
+        "conduit starting"
+    );
+
     let admin_bind = config
         .global
         .as_ref()

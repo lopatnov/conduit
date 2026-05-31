@@ -36,6 +36,18 @@ YAML is also supported: `-c conduit.yaml` or `-c conduit.yml`.
 - [`metrics`](#metrics)
 - [`fallback`](#fallback)
 - [Multi-site (`global` + `sites`)](#multi-site-global--sites)
+- [`jwtAuth`](#jwtauth) — JWT bearer-token validation
+- [`forwardAuth`](#forwardauth) — external auth service
+- [`requestTransform` / `responseTransform`](#requesttransform--responsetransform)
+- [`maskErrors`](#maskerrors) — hide upstream 5xx details
+- [`outlierDetection`](#outlierdetection) — passive health via 5xx tracking
+- [`proxy.*.retry.budgetPercent`](#proxyretrybudgetpercent)
+- [`proxy.*.mirror`](#proxymirror) — shadow traffic
+- [`proxy.*.rateLimit`](#proxyratelimit-per-route) — per-route rate limiting
+- [`proxy.*.upstreamTls`](#proxyupstreamtls) — upstream TLS verification
+- [`global.admin.token`](#globaladmintoken) — Admin API auth
+- [`logging.skipPaths`](#loggingskippaths)
+- [Prometheus Metrics](#prometheus-metrics)
 
 ---
 
@@ -932,3 +944,240 @@ Run multiple virtual hosts from one Conduit process.
 // Full form with global settings
 { "global": { "workers": 4 }, "sites": [...] }
 ```
+
+---
+
+### `jwtAuth`
+
+JWT bearer-token authentication. Validates `Authorization: Bearer <token>` on every
+request unless the path is in `skipPaths`.
+
+```jsonc
+{
+  // HS256 with a shared secret
+  "jwtAuth": { "secret": "$JWT_SECRET" }
+
+  // RS256/ES256 via JWKS endpoint (e.g. Auth0, Google, AWS Cognito)
+  "jwtAuth": {
+    "jwksUrl": "https://accounts.example.com/.well-known/jwks.json",
+    "jwksRefreshSecs": 3600,      // re-fetch interval (default 3600)
+    "audience": ["my-app"],
+    "issuer": "https://accounts.example.com",
+    "skipPaths": ["/__health__", "/public/**"]
+  }
+}
+```
+
+---
+
+### `forwardAuth`
+
+Delegate authentication to an external HTTP service.
+
+```jsonc
+{
+  "forwardAuth": {
+    "url": "http://auth-service:9000/verify",
+    // Headers to forward from the original request to the auth service:
+    "requestHeaders": ["Authorization", "Cookie", "X-Tenant-ID"],
+    // Headers to copy from the auth service response to the upstream request:
+    "responseHeaders": ["X-User-ID", "X-Role", "X-Scope"],
+    "timeoutMs": 5000,
+    "skipPaths": ["/__health__"]
+  }
+}
+```
+
+The auth service decision:
+- **2xx** → request allowed; `responseHeaders` are injected into the upstream request.
+- **4xx / 5xx** → that status is returned to the client.
+- **Unreachable** → 401 (fail closed).
+
+---
+
+### `requestTransform` / `responseTransform`
+
+Inject or remove headers from every upstream request or response.
+
+```jsonc
+{
+  "requestTransform": {
+    "setHeaders": { "X-Service-Name": "my-api", "X-Env": "production" },
+    "removeHeaders": ["X-Internal-Token", "X-Debug"]
+  },
+  "responseTransform": {
+    "setHeaders": { "X-Served-By": "conduit", "Cache-Control": "no-store" },
+    "removeHeaders": ["X-Powered-By", "Server"]
+  }
+}
+```
+
+---
+
+### `maskErrors`
+
+Replace upstream 5xx response bodies with a generic JSON error to prevent
+internal details from leaking to clients.
+
+```jsonc
+{ "maskErrors": true }
+// → {"error":"Internal Server Error","status":500}
+```
+
+Set to `false` in development to see the actual upstream error body.
+
+---
+
+### `outlierDetection`
+
+Passive health checking via consecutive 5xx tracking. Temporarily ejects
+misbehaving upstreams from the pool without requiring an active probe.
+
+```jsonc
+{
+  "outlierDetection": {
+    "consecutive5xx": 5,            // eject after 5 consecutive 5xx
+    "baseEjectionTimeSecs": 30,     // first ejection = 30s
+    "maxEjectionTimeSecs": 300,     // max ejection = 5 min
+    "maxEjectionPercent": 10        // never eject > 10% of the cluster
+  }
+}
+```
+
+Ejection duration uses exponential backoff: `base × 2^ejection_count`.
+
+---
+
+### `proxy.*.retry.budgetPercent`
+
+Limits the number of in-flight retries to prevent retry storms.
+
+```jsonc
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://b1:4000", "http://b2:4000"],
+      "retry": {
+        "attempts": 3,
+        "conditions": ["connection_error", "5xx"],
+        "budgetPercent": 20   // at most 20% of active requests may be retries
+      }
+    }
+  }
+}
+```
+
+---
+
+### `proxy.*.mirror`
+
+Fire-and-forget traffic mirroring to a secondary backend (shadow / dark launch).
+
+```jsonc
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://primary:4000"],
+      "mirror": "http://shadow:4000"
+    }
+  }
+}
+```
+
+V1: only headers + method + path are mirrored (no body). Body mirroring deferred to V2.
+
+---
+
+### `proxy.*.rateLimit` (per-route)
+
+Rate-limit individual proxy routes independently of the site-level `rateLimit`.
+
+```jsonc
+{
+  "proxy": {
+    "/api/heavy": {
+      "targets": ["http://backend:4000"],
+      "rateLimit": { "windowSecs": 60, "limit": 5, "keyBy": "ip" }
+    }
+  }
+}
+```
+
+Site-level and per-route rate limits are evaluated independently (both must pass).
+
+---
+
+### `proxy.*.upstreamTls`
+
+Control TLS certificate verification for `https://` upstream targets.
+
+```jsonc
+{
+  "proxy": {
+    "/api": {
+      "targets": ["https://internal-service:4443"],
+      "upstreamTls": {
+        "verify": false,            // skip cert verification (self-signed certs)
+        "serverName": "my-service"  // custom CN for cert verification
+      }
+    }
+  }
+}
+```
+
+By default Pingora verifies upstream certificates using the system CA store.
+Only set `verify: false` in trusted internal networks.
+
+---
+
+### `global.admin.token`
+
+Protect the Admin API with a bearer token.
+
+```jsonc
+{
+  "global": {
+    "admin": {
+      "bind": "127.0.0.1:2019",
+      "token": "$ADMIN_TOKEN"
+    }
+  }
+}
+```
+
+All Admin API requests must include `Authorization: Bearer <token>`.
+When absent, no authentication is enforced (backward-compatible).
+
+---
+
+### `logging.skipPaths`
+
+Suppress specific paths from access logs (e.g. noisy health checks).
+
+```jsonc
+{
+  "logging": {
+    "format": "json",
+    "file": "./logs/access.log",
+    "skipPaths": ["/__health__", "/__metrics__", "/favicon.ico"]
+  }
+}
+```
+
+---
+
+## Prometheus Metrics
+
+Conduit exposes the following metrics at the `/__metrics__` endpoint (or
+configured `metrics.path`):
+
+| Metric | Type | Description |
+|---|---|---|
+| `conduit_requests_total{method, status}` | Counter | All HTTP requests |
+| `conduit_request_duration_seconds{method, status}` | Histogram | Request duration |
+| `conduit_active_connections` | Gauge | Current in-flight requests |
+| `conduit_upstream_errors_total{route, status}` | Counter | Upstream 5xx responses |
+| `conduit_retry_attempts_total{route, condition}` | Counter | Retry attempts |
+| `conduit_rate_limit_rejected_total{site}` | Counter | Rate-limited requests (429) |
+| `conduit_cache_hits_total{route}` | Counter | Proxy cache hits |
+| `conduit_cache_misses_total{route}` | Counter | Proxy cache misses |
