@@ -47,6 +47,8 @@ YAML is also supported: `-c conduit.yaml` or `-c conduit.yml`.
 - [`proxy.*.upstreamTls`](#proxyupstreamtls) — upstream TLS verification
 - [`global.admin.token`](#globaladmintoken) — Admin API auth
 - [`logging.skipPaths`](#loggingskippaths)
+- [`healthCheck.maxConnectionsPerUpstream`](#healthcheckmaxconnectionsperupstream) — circuit breaker
+- [Header Transform V2 — JWT templates](#header-transform-v2--jwt-templates)
 - [Prometheus Metrics](#prometheus-metrics)
 
 ---
@@ -1163,6 +1165,62 @@ Suppress specific paths from access logs (e.g. noisy health checks).
   }
 }
 ```
+
+---
+
+### `healthCheck.maxConnectionsPerUpstream`
+
+Circuit breaker: limit concurrent in-flight connections per upstream.  When
+**all** healthy upstreams reach this limit Conduit returns `503 Service
+Unavailable` immediately without contacting any backend.
+
+```jsonc
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://backend-a:4000", "http://backend-b:4000"],
+      "healthCheck": {
+        "maxConnectionsPerUpstream": 50
+      }
+    }
+  }
+}
+```
+
+**Behaviour:**
+- Conduit tracks in-flight connections with an atomic counter per upstream URL.
+- Works for all load-balancing strategies (not just `least-conn`).
+- When one upstream is at the limit but others are below it, normal routing
+  continues — only requests that would exceed ALL available upstreams get 503.
+- The 503 response body is:
+  `{"error":"Service Unavailable","status":503,"reason":"upstream_overloaded"}`
+
+---
+
+### Header Transform V2 — JWT templates
+
+`requestTransform.setHeaders` values support `{{ jwt.<claim> }}` substitution
+when `jwtAuth` is also configured.  The claims are decoded from the validated
+token and substituted before the request is forwarded upstream.
+
+```jsonc
+{
+  "jwtAuth":  { "secret": "$JWT_SECRET" },
+  "requestTransform": {
+    "setHeaders": {
+      "X-User-ID":    "{{ jwt.sub }}",
+      "X-User-Email": "{{ jwt.email }}",
+      "X-Role":       "{{ jwt.role }}"
+    }
+  }
+}
+```
+
+**Notes:**
+- Unknown claims resolve to an empty string.
+- Non-string claim values (numbers, arrays) are JSON-serialized.
+- Template expansion only runs when `jwtAuth` is configured and the token is valid.
+- `responseTransform` does NOT support templates (no JWT context at response time).
 
 ---
 
