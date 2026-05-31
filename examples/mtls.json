@@ -1,0 +1,25 @@
+{
+  "global": { "admin": { "bind": "127.0.0.1:2019" } },
+  "sites": [
+    {
+      "port": 443,
+      "host": "api.example.com",
+      "tls": {
+        "cert": "/etc/tls/server.crt",
+        "key":  "/etc/tls/server.key",
+        "httpRedirectPort": 80,
+        "clientAuth": {
+          "ca":       "/etc/tls/client-ca.crt",
+          "optional": false
+        }
+      },
+      "proxy": {
+        "/api": {
+          "targets": ["http://backend:4000"],
+          "stripPrefix": true
+        }
+      },
+      "healthCheck": true
+    }
+  ]
+}

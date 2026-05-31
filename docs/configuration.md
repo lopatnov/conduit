@@ -50,6 +50,9 @@ YAML is also supported: `-c conduit.yaml` or `-c conduit.yml`.
 - [`healthCheck.maxConnectionsPerUpstream`](#healthcheckmaxconnectionsperupstream) — circuit breaker
 - [Header Transform V2 — JWT templates](#header-transform-v2--jwt-templates)
 - [`global.otlp`](#globalotlp) — OpenTelemetry OTLP tracing
+- [`tls.clientAuth`](#tlsclientauth--mtls-client-certificate-authentication) — mTLS
+- [`cache.staleWhileRevalidateSecs`](#cachestalewhilerevalidatesecs--stale-while-revalidate-rfc-5861)
+- [`limits.maxBodyBufferBytes`](#limitsmaxbodybufferbytes--request-body-buffering-for-retry)
 - [Prometheus Metrics](#prometheus-metrics)
 
 ---
@@ -1260,6 +1263,103 @@ field is still accepted but silently ignored.
 5xx responses are marked as errors in the trace (`span.status = ERROR`).
 
 **Build:** `cargo build --release --features otlp`
+
+---
+
+### `tls.clientAuth` — mTLS client certificate authentication
+
+Require every TLS client to present a certificate signed by the configured CA.
+Clients without a valid certificate are rejected at the TLS handshake.
+
+**YAML:**
+```yaml
+tls:
+  cert: ./server.crt
+  key:  ./server.key
+  clientAuth:
+    ca: ./ca.crt        # PEM CA file
+    optional: false     # true = allow connections without cert
+```
+
+**JSON:**
+```json
+{
+  "tls": {
+    "cert": "./server.crt",
+    "key":  "./server.key",
+    "clientAuth": {
+      "ca":       "./ca.crt",
+      "optional": false
+    }
+  }
+}
+```
+
+See `examples/mtls.yaml` / `examples/mtls.json`.
+
+---
+
+### `cache.staleWhileRevalidateSecs` — Stale-while-revalidate (RFC 5861)
+
+Serve stale cached content immediately while refreshing in the background.
+Zero perceived latency; the next request gets the fresh copy.
+
+**YAML:**
+```yaml
+cache:
+  store: memory
+  ttlSecs: 60
+  staleWhileRevalidateSecs: 300   # serve stale up to 5 min after TTL expires
+  staleIfErrorSecs: 600           # serve stale when upstream fails
+```
+
+**JSON:**
+```json
+{
+  "cache": {
+    "store": "memory",
+    "ttlSecs": 60,
+    "staleWhileRevalidateSecs": 300,
+    "staleIfErrorSecs": 600
+  }
+}
+```
+
+See `examples/stale-while-revalidate.yaml` / `examples/stale-while-revalidate.json`.
+
+---
+
+### `limits.maxBodyBufferBytes` — Request body buffering for retry
+
+Buffer the request body in memory so it can be replayed on retry attempts.
+When the body exceeds the limit, retries still happen but without body replay
+(safe for GET/HEAD which rarely have a body).
+
+**YAML:**
+```yaml
+limits:
+  maxBodyBufferBytes: 1048576   # 1 MiB default; set 0 to disable
+
+proxy:
+  /api:
+    targets: ["http://backend:4000"]
+    retry:
+      attempts: 3
+      conditions: ["connection_error", "5xx"]
+```
+
+**JSON:**
+```json
+{
+  "limits": { "maxBodyBufferBytes": 1048576 },
+  "proxy": {
+    "/api": {
+      "targets": ["http://backend:4000"],
+      "retry": { "attempts": 3, "conditions": ["connection_error", "5xx"] }
+    }
+  }
+}
+```
 
 ---
 
