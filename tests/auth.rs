@@ -604,3 +604,70 @@ fn jwt_www_authenticate_header_on_401() {
         "WWW-Authenticate should contain 'Bearer'"
     );
 }
+
+// ── Per-route rate limit tests ────────────────────────────────────────────────
+
+fn server_with_per_route_rate_limit() -> common::TestServer {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in upstream.incoming() {
+            let Ok(mut s) = stream else { break };
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+        }
+    });
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": {
+                    "/api": {
+                        "targets": [ format!("http://{upstream_addr}") ],
+                        "rateLimit": { "windowSecs": 3600, "limit": 2, "keyBy": "ip" }
+                    }
+                }
+            }]
+        }),
+    )
+}
+
+#[test]
+fn per_route_rate_limit_within_limit_passes() {
+    let srv = server_with_per_route_rate_limit();
+    for _ in 0..2 {
+        let resp = plain_client()
+            .get(srv.url("/api/data"))
+            .send()
+            .expect("GET /api/data");
+        assert_eq!(resp.status().as_u16(), 200, "first 2 requests should pass");
+    }
+}
+
+#[test]
+fn per_route_rate_limit_exceeded_returns_429() {
+    let srv = server_with_per_route_rate_limit();
+    // Exhaust the limit (2 requests).
+    plain_client().get(srv.url("/api/x")).send().ok();
+    plain_client().get(srv.url("/api/x")).send().ok();
+    // Third request must be rate-limited.
+    let resp = plain_client()
+        .get(srv.url("/api/x"))
+        .send()
+        .expect("GET /api/x");
+    assert_eq!(
+        resp.status().as_u16(),
+        429,
+        "3rd request must be rate-limited (per-route limit=2)"
+    );
+}

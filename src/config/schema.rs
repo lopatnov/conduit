@@ -694,6 +694,18 @@ pub struct ProxyRouteConfig {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mirror: Option<String>,
+    /// Per-route rate limiting.  Evaluated **after** the site-level `rateLimit`
+    /// (both limits must pass for the request to proceed).
+    ///
+    /// The rate-limit key is prefixed with the route path so buckets do not
+    /// clash across different routes on the same site.
+    ///
+    /// ```json
+    /// { "targets": ["http://api:4000"],
+    ///   "rateLimit": { "windowSecs": 60, "limit": 10, "keyBy": "ip" } }
+    /// ```
+    #[serde(rename = "rateLimit", skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<RateLimitConfig>,
 }
 
 /// Configuration for cookie-based sticky sessions.

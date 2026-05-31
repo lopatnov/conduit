@@ -752,6 +752,31 @@ fn find_route<'a>(
     best
 }
 
+/// Find the per-route rate-limit config for the given request path.
+///
+/// Returns `(RateLimitConfig, route_key)` when the matched proxy route has a
+/// `rateLimit` block.  The `route_key` is prepended to the bucket key so that
+/// per-route buckets don't clash with site-level buckets.
+///
+/// Returns `None` when:
+/// - The site has no `proxy` config
+/// - The matched route has no `rateLimit` block
+/// - The route is not a `Full(ProxyRouteConfig)` variant
+pub fn find_route_rate_limit(
+    site: &SiteConfig,
+    path: &str,
+) -> Option<(crate::config::schema::RateLimitConfig, String)> {
+    use crate::config::schema::ProxyConfig;
+    if let Some(ProxyConfig::Routes(routes)) = &site.proxy {
+        if let Some((route_key, ProxyRouteTarget::Full(cfg))) = find_route(routes, path) {
+            if let Some(rl) = &cfg.rate_limit {
+                return Some((rl.clone(), route_key.to_owned()));
+            }
+        }
+    }
+    None
+}
+
 pub fn resolve_static_roots(cfg: &StaticConfig, path: &str) -> (Vec<PathBuf>, Option<String>) {
     match cfg {
         StaticConfig::Single(s) => (vec![PathBuf::from(s)], None),

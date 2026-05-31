@@ -26,9 +26,10 @@ use crate::filter::chain::{
     ForwardAuthGuard, HealthBypass, IpGuard, JwtGuard, LimitsGuard, MiddlewareGuard,
     RateLimitGuard, RedirectGuard, XRequestIdGuard,
 };
-use crate::filter::rate_limit::RateLimiter;
+use crate::filter::rate_limit::{self, RateLimiter};
 use crate::filter::rate_limit_redis::RedisRateLimiter;
 use crate::filter::{compression, cors, logging, redirects, response_time, security_headers};
+use crate::handler::response;
 use crate::handler::{
     acme_challenge as acme_handler, fallback, health, hot_reload as hot_reload_handler,
     metrics as metrics_handler, static_files, LocalHandlerImpl,
@@ -460,6 +461,49 @@ impl ConduitProxy {
         };
         if self.run_guard_filters(session, guards).await? {
             return Ok(true);
+        }
+
+        // ── Per-route rate limiting (applied after site-level guard chain) ──────
+        // Checked here — after routing — so we know which route was matched.
+        {
+            let config = self.state.config.load();
+            let path = session.req_header().uri.path().to_owned();
+            if let Some(site) = config.sites.get(req_ctx.site_idx) {
+                if let Some((rl_cfg, route_key)) = router::find_route_rate_limit(site, &path) {
+                    let key = format!(
+                        "route:{route_key}:{}",
+                        rate_limit::extract_client_key(&rl_cfg, session)
+                    );
+                    let allowed = {
+                        self.state
+                            .rate_limiter
+                            .entry(key)
+                            .or_insert_with(|| {
+                                rate_limit::TokenBucket::new(rl_cfg.limit, rl_cfg.window_secs)
+                            })
+                            .try_consume()
+                    };
+                    if !allowed {
+                        let extra = req_ctx.extra_headers.clone();
+                        self.state
+                            .metrics
+                            .rate_limit_rejected_total
+                            .with_label_values(&[&format!("route:{}", &route_key)])
+                            .inc();
+                        response::write_response(
+                            session,
+                            429,
+                            "text/plain",
+                            bytes::Bytes::from_static(b"Too Many Requests"),
+                            &extra,
+                        )
+                        .await?;
+                        self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                        self.state.metrics.active_connections.dec();
+                        return Ok(true);
+                    }
+                }
+            }
         }
 
         // ── Dispatch ──────────────────────────────────────────────────────────
