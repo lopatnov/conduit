@@ -455,7 +455,7 @@ impl ConduitProxy {
             script_headers,
             client_ip: extracted_client_ip,
             fault_injection_cfg,
-            jwt_auth_cfg,
+            jwt_auth_cfg: jwt_auth_cfg.clone(), // clone — jwt_cfg needed below for claim extraction
             forward_auth_cfg,
             site_label,
         };
@@ -502,6 +502,23 @@ impl ConduitProxy {
                         self.state.metrics.active_connections.dec();
                         return Ok(true);
                     }
+                }
+            }
+        }
+
+        // ── JWT claims extraction for header template substitution ─────────────
+        // Guards have passed — JWT is valid if jwtAuth is configured.  Decode
+        // claims a second time (fast, no remote I/O) so requestTransform values
+        // can reference `{{ jwt.sub }}`, `{{ jwt.email }}`, etc.
+        if let Some(ref jwt_cfg) = jwt_auth_cfg {
+            if let Some(auth_hdr) = session
+                .req_header()
+                .headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+            {
+                if let Some(token) = auth_hdr.strip_prefix("Bearer ").map(str::trim) {
+                    req_ctx.jwt_claims = crate::filter::jwt::extract_claims(token, jwt_cfg);
                 }
             }
         }
@@ -937,13 +954,17 @@ impl ProxyHttp for ConduitProxy {
         append_forwarded_headers(session, upstream_request, &self.state, ctx)?;
         apply_upstream_path_transforms(upstream_request, ctx)?;
 
-        // Request header transformation (static set/remove from site config).
+        // Request header transformation with optional JWT template substitution.
         {
             let config = self.state.config.load();
             if let Some(req_ctx) = ctx.as_ref() {
                 let site = config.sites.get(req_ctx.site_idx);
                 if let Some(transform) = site.and_then(|s| s.request_transform.as_ref()) {
-                    apply_header_transform_request(upstream_request, transform)?;
+                    apply_header_transform_request_with_claims(
+                        upstream_request,
+                        transform,
+                        &req_ctx.jwt_claims,
+                    )?;
                 }
             }
         }
@@ -1731,13 +1752,18 @@ fn apply_path_rewrites(path: &str, rules: Option<&[crate::config::schema::Rewrit
     out
 }
 
-/// Apply a `HeaderTransformConfig` to an upstream *request* header map.
+/// Apply request header transform with optional JWT template substitution.
 ///
-/// Called from `upstream_request_filter` to inject / remove headers before
-/// the request is forwarded to the upstream backend.
-fn apply_header_transform_request(
+/// Supports `{{ jwt.<claim> }}` syntax in header values — replaced with the
+/// corresponding claim from the decoded JWT payload.  Unknown claims resolve
+/// to an empty string.  Static values (no `{{`) are passed through unchanged.
+///
+/// Called from `upstream_request_filter` after claims are extracted by
+/// `do_request_filter`.
+fn apply_header_transform_request_with_claims(
     req: &mut RequestHeader,
     transform: &crate::config::schema::HeaderTransformConfig,
+    jwt_claims: &Option<std::collections::HashMap<String, serde_json::Value>>,
 ) -> pingora_core::Result<()> {
     if let Some(remove) = &transform.remove_headers {
         for name in remove {
@@ -1746,10 +1772,44 @@ fn apply_header_transform_request(
     }
     if let Some(set) = &transform.set_headers {
         for (name, value) in set {
-            req.insert_header(name.clone(), value.clone())?;
+            let resolved = if value.contains("{{") {
+                expand_jwt_templates(value, jwt_claims)
+            } else {
+                value.clone()
+            };
+            req.insert_header(name.clone(), resolved)?;
         }
     }
     Ok(())
+}
+
+/// Expand `{{ jwt.<claim> }}` templates in a string.
+///
+/// Replaces all occurrences of `{{ jwt.CLAIM }}` with the corresponding value
+/// from the JWT payload.  Unknown claims are replaced with an empty string.
+/// Non-string claim values are JSON-serialized (e.g. numbers, arrays).
+/// Expand `{{ jwt.<claim> }}` templates — exposed for unit tests via `pub(crate)`.
+pub(crate) fn expand_jwt_templates(
+    template: &str,
+    claims: &Option<std::collections::HashMap<String, serde_json::Value>>,
+) -> String {
+    static JWT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = JWT_RE.get_or_init(|| {
+        regex::Regex::new(r"\{\{\s*jwt\.(\w+)\s*\}\}").expect("jwt template regex")
+    });
+
+    re.replace_all(template, |caps: &regex::Captures<'_>| {
+        let claim_name = &caps[1];
+        match claims {
+            Some(map) => match map.get(claim_name) {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(v) => v.to_string(),
+                None => String::new(),
+            },
+            None => String::new(),
+        }
+    })
+    .into_owned()
 }
 
 /// Apply a `HeaderTransformConfig` to an upstream *response* header map.

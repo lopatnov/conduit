@@ -45,6 +45,11 @@ pub struct RequestCtx {
     /// Static header transform applied to every upstream response.
     /// Populated from `SiteConfig.response_transform`.
     pub response_transform: Option<HeaderTransformConfig>,
+    /// JWT claims extracted by `JwtGuard` — available for template substitution
+    /// in `requestTransform.setHeaders` values using `{{ jwt.<claim> }}` syntax.
+    ///
+    /// Only populated when `jwtAuth` is configured and a valid token is present.
+    pub jwt_claims: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 impl RequestCtx {
@@ -75,6 +80,7 @@ impl RequestCtx {
             proxy_cache_cfg,
             mask_upstream_body: false,
             response_transform,
+            jwt_claims: None,
         }
     }
 }

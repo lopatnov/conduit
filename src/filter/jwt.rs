@@ -238,6 +238,38 @@ pub fn check_jwt(cfg: &JwtAuthConfig, path: &str, auth_header: Option<&str>) -> 
     }
 }
 
+/// Extract the JWT payload claims as a key→value map.
+///
+/// Returns `None` when the token is invalid or the claims can't be parsed.
+/// Only call this after [`check_jwt`] has already validated the token
+/// (fast second decode — no remote I/O).
+pub fn extract_claims(
+    token: &str,
+    cfg: &JwtAuthConfig,
+) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+    // Decode without validation (already validated by check_jwt earlier).
+    let mut v = jsonwebtoken::Validation::new(Algorithm::HS256);
+    v.insecure_disable_signature_validation();
+    v.validate_exp = false;
+    v.validate_aud = false;
+
+    // Try all the same key paths as validate_token but skip sig check.
+    let data = if let Some(secret) = &cfg.secret {
+        let key = DecodingKey::from_secret(secret.as_bytes());
+        decode::<serde_json::Value>(token, &key, &v).ok()
+    } else {
+        // For JWKS — use insecure decode (sig already validated).
+        let key = DecodingKey::from_secret(b"");
+        decode::<serde_json::Value>(token, &key, &v).ok()
+    }?;
+
+    if let serde_json::Value::Object(map) = data.claims {
+        Some(map.into_iter().collect())
+    } else {
+        None
+    }
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn extract_bearer(auth_header: Option<&str>) -> Option<&str> {
@@ -466,5 +498,54 @@ mod tests {
             check_jwt(&cfg, "/api", Some(&format!("Bearer {token}"))),
             JwtCheckResult::Denied { .. }
         ));
+    }
+
+    // ── extract_claims / template substitution ────────────────────────────────
+
+    #[test]
+    fn extract_claims_returns_sub() {
+        let secret = "claim-test-secret";
+        let token = make_hs256_token(
+            secret,
+            json!({ "sub": "user42", "email": "u@example.com", "exp": exp_future() }),
+        );
+        let cfg = JwtAuthConfig {
+            secret: Some(secret.into()),
+            ..Default::default()
+        };
+        let claims = extract_claims(&token, &cfg).expect("claims should be extracted");
+        assert_eq!(
+            claims.get("sub").and_then(|v| v.as_str()),
+            Some("user42"),
+            "sub claim must be extractable"
+        );
+        assert_eq!(
+            claims.get("email").and_then(|v| v.as_str()),
+            Some("u@example.com")
+        );
+    }
+
+    #[test]
+    fn expand_jwt_templates_sub() {
+        use crate::proxy::service::expand_jwt_templates;
+        let mut claims = std::collections::HashMap::new();
+        claims.insert("sub".to_string(), serde_json::json!("alice"));
+        claims.insert("role".to_string(), serde_json::json!("admin"));
+
+        assert_eq!(
+            expand_jwt_templates("{{ jwt.sub }}", &Some(claims.clone())),
+            "alice"
+        );
+        assert_eq!(
+            expand_jwt_templates(
+                "user={{ jwt.sub }},role={{ jwt.role }}",
+                &Some(claims.clone())
+            ),
+            "user=alice,role=admin"
+        );
+        // Unknown claim → empty string.
+        assert_eq!(expand_jwt_templates("{{ jwt.unknown }}", &Some(claims)), "");
+        // No claims → empty string.
+        assert_eq!(expand_jwt_templates("{{ jwt.sub }}", &None), "");
     }
 }
