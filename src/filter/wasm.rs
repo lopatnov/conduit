@@ -1,32 +1,53 @@
 //! WASM plugin middleware (feature = "wasm").
 //!
 //! Plugins are compiled `.wasm` binaries that export a single `on_request`
-//! function.  The host exposes a small set of `conduit_*` functions for
-//! reading the request and writing a rejection response.
+//! function.  The host exposes a set of `conduit_*` functions for reading the
+//! request, inspecting headers, and writing a rejection/redirect response.
 //!
-//! ## Plugin ABI
+//! ## Plugin ABI (17 host functions)
 //!
 //! **Imports** (namespace `"conduit"`):
 //!
+//! ### Request read
 //! | Function | Description |
 //! |---|---|
-//! | `conduit_get_method(buf, buf_len) -> i32` | Write HTTP method; returns bytes written |
-//! | `conduit_get_path(buf, buf_len) -> i32` | Request path |
-//! | `conduit_get_query(buf, buf_len) -> i32` | Query string (empty if none) |
-//! | `conduit_get_client_ip(buf, buf_len) -> i32` | Remote IP |
-//! | `conduit_get_header(name, nlen, buf, buf_len) -> i32` | Header value; -1 if absent |
+//! | `conduit_get_method(buf, buf_len) -> i32` | HTTP method; returns bytes written |
+//! | `conduit_get_path(buf, buf_len) -> i32` | Request path (without query) |
+//! | `conduit_get_query(buf, buf_len) -> i32` | Raw query string (empty if none) |
+//! | `conduit_get_uri(buf, buf_len) -> i32` | Full URI: path + "?" + query |
+//! | `conduit_get_client_ip(buf, buf_len) -> i32` | Remote IP address |
+//! | `conduit_get_request_id(buf, buf_len) -> i32` | X-Request-ID header value |
+//! | `conduit_get_header(name, nlen, buf, buf_len) -> i32` | Named header value; -1 if absent |
+//! | `conduit_get_header_count() -> i32` | Number of request headers |
+//! | `conduit_get_header_names(buf, buf_len) -> i32` | Newline-separated header names |
+//! | `conduit_get_plugin_config(buf, buf_len) -> i32` | JSON from `MiddlewareEntry.config` |
+//!
+//! ### Request mutation
+//! | Function | Description |
+//! |---|---|
 //! | `conduit_set_request_header(name, nlen, val, vlen)` | Add/overwrite request header |
 //! | `conduit_remove_request_header(name, nlen)` | Remove a request header |
-//! | `conduit_set_response_status(status)` | Abort response status |
-//! | `conduit_set_response_header(name, nlen, val, vlen)` | Abort response header |
-//! | `conduit_set_response_body(body, body_len)` | Abort response body |
-//! | `conduit_get_plugin_config(buf, buf_len) -> i32` | JSON from `MiddlewareEntry.config` |
+//!
+//! ### Response control (abort path)
+//! | Function | Description |
+//! |---|---|
+//! | `conduit_set_response_status(status)` | Abort with HTTP status code |
+//! | `conduit_set_response_header(name, nlen, val, vlen)` | Add header to abort response |
+//! | `conduit_set_response_body(body, body_len)` | Set body of abort response |
+//! | `conduit_abort_with_redirect(url, url_len)` | Abort with 302 Location redirect |
+//!
+//! ### Logging
+//! | Function | Description |
+//! |---|---|
 //! | `conduit_log(level, msg, msg_len)` | 0=trace 1=debug 2=info 3=warn 4=error |
 //!
 //! **Export** (required):
 //! ```text
 //! on_request() -> i32    // 0 = Continue, 1 = Abort
 //! ```
+//!
+//! **Memory**: plugins must export `"memory"`. All data passes through WASM
+//! linear memory; the host never retains pointers after the call.
 //!
 //! **Error handling**: any error (missing file, compile, link, trap) is logged
 //! as a warning and the request passes through (fail-open, same as Rhai).
@@ -75,6 +96,10 @@ pub struct WasmRequest {
     pub client_ip: String,
     /// Lower-cased request headers.
     pub headers: HashMap<String, String>,
+    /// Header names in insertion order (for `conduit_get_header_names`).
+    pub header_names: Vec<String>,
+    /// X-Request-ID value (may be empty when not set by XRequestIdGuard yet).
+    pub request_id: String,
     /// JSON bytes from `MiddlewareEntry.config` (empty when not configured).
     pub plugin_config: Vec<u8>,
 }
@@ -284,6 +309,68 @@ fn register_host_functions(linker: &mut Linker<WasmState>) -> anyhow::Result<()>
         },
     )?;
 
+    // ── New in V2: additional read + control functions ─────────────────────────
+
+    // conduit_get_uri — full URI (path + optional "?query")
+    linker.func_wrap(
+        "conduit",
+        "conduit_get_uri",
+        |mut c: Caller<'_, WasmState>, buf: i32, buf_len: i32| -> i32 {
+            let uri = {
+                let req = &c.data().request;
+                if req.query.is_empty() {
+                    req.path.clone()
+                } else {
+                    format!("{}?{}", req.path, req.query)
+                }
+            };
+            mem_write(&mut c, uri.as_bytes(), buf, buf_len)
+        },
+    )?;
+
+    // conduit_get_request_id — X-Request-ID value (empty string if absent)
+    linker.func_wrap(
+        "conduit",
+        "conduit_get_request_id",
+        |mut c: Caller<'_, WasmState>, buf: i32, buf_len: i32| -> i32 {
+            let id = c.data().request.request_id.clone();
+            mem_write(&mut c, id.as_bytes(), buf, buf_len)
+        },
+    )?;
+
+    // conduit_get_header_count — number of request headers
+    linker.func_wrap(
+        "conduit",
+        "conduit_get_header_count",
+        |c: Caller<'_, WasmState>| -> i32 { c.data().request.headers.len() as i32 },
+    )?;
+
+    // conduit_get_header_names — all header names as newline-separated UTF-8.
+    // Order matches insertion order recorded in WasmRequest.header_names.
+    // Returns total bytes written (may be truncated at buf_len).
+    linker.func_wrap(
+        "conduit",
+        "conduit_get_header_names",
+        |mut c: Caller<'_, WasmState>, buf: i32, buf_len: i32| -> i32 {
+            let names = c.data().request.header_names.join("\n");
+            mem_write(&mut c, names.as_bytes(), buf, buf_len)
+        },
+    )?;
+
+    // conduit_abort_with_redirect — convenience: abort with 302 + Location header.
+    // The plugin must still call on_request() → 1 to trigger the abort path.
+    linker.func_wrap(
+        "conduit",
+        "conduit_abort_with_redirect",
+        |mut c: Caller<'_, WasmState>, url_ptr: i32, url_len: i32| {
+            let url = mem_read_str(&mut c, url_ptr, url_len);
+            let state = c.data_mut();
+            state.response_status = 302;
+            state.response_headers.push(("location".to_owned(), url));
+            state.response_body = b"Redirecting...".to_vec();
+        },
+    )?;
+
     Ok(())
 }
 
@@ -352,6 +439,8 @@ mod tests {
             query: String::new(),
             client_ip: "127.0.0.1".into(),
             headers: HashMap::new(),
+            header_names: Vec::new(),
+            request_id: String::new(),
             plugin_config: Vec::new(),
         }
     }
@@ -531,6 +620,174 @@ mod tests {
         // Without config → 400.
         match run_wasm(req(), &p) {
             WasmOutcome::Abort { status, .. } => assert_eq!(status, 400),
+            _ => panic!("expected Abort"),
+        }
+    }
+
+    // ── V2: new host functions ────────────────────────────────────────────────
+
+    #[test]
+    fn get_uri_path_only() {
+        // Plugin reads the full URI via conduit_get_uri and echos it back in X-Path.
+        // WAT: allocate a fixed buffer, call conduit_get_uri, set the result as a
+        // request header, then continue.
+        const WAT: &str = r#"(module
+            (import "conduit" "conduit_get_uri" (func $uri (param i32 i32) (result i32)))
+            (import "conduit" "conduit_set_request_header"
+                (func $srhdr (param i32 i32 i32 i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 0) "x-uri")
+            (func (export "on_request") (result i32)
+                (local $n i32)
+                ;; get_uri into [64, 256)
+                (local.set $n (call $uri (i32.const 64) (i32.const 256)))
+                ;; set_request_header "x-uri" = result
+                (call $srhdr
+                    (i32.const 0) (i32.const 5)    ;; name = "x-uri"
+                    (i32.const 64) (local.get $n))  ;; value = uri bytes
+                i32.const 0)
+        )"#;
+        let mut r = req();
+        r.path = "/api/v1".into();
+        r.query = String::new();
+        let (_f, path) = compile_wat(WAT);
+        let outcome = run_wasm(r, &path);
+        match outcome {
+            WasmOutcome::Continue { added_headers, .. } => {
+                let uri_hdr = added_headers.iter().find(|(k, _)| k == "x-uri");
+                assert_eq!(uri_hdr.map(|(_, v)| v.as_str()), Some("/api/v1"));
+            }
+            _ => panic!("expected Continue"),
+        }
+    }
+
+    #[test]
+    fn get_uri_with_query() {
+        const WAT: &str = r#"(module
+            (import "conduit" "conduit_get_uri" (func $uri (param i32 i32) (result i32)))
+            (import "conduit" "conduit_set_request_header"
+                (func $srhdr (param i32 i32 i32 i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 0) "x-uri")
+            (func (export "on_request") (result i32)
+                (local $n i32)
+                (local.set $n (call $uri (i32.const 64) (i32.const 256)))
+                (call $srhdr (i32.const 0) (i32.const 5) (i32.const 64) (local.get $n))
+                i32.const 0)
+        )"#;
+        let mut r = req();
+        r.path = "/search".into();
+        r.query = "q=hello&lang=en".into();
+        let (_f, path) = compile_wat(WAT);
+        let outcome = run_wasm(r, &path);
+        match outcome {
+            WasmOutcome::Continue { added_headers, .. } => {
+                let uri_hdr = added_headers.iter().find(|(k, _)| k == "x-uri");
+                assert_eq!(
+                    uri_hdr.map(|(_, v)| v.as_str()),
+                    Some("/search?q=hello&lang=en")
+                );
+            }
+            _ => panic!("expected Continue"),
+        }
+    }
+
+    #[test]
+    fn get_header_count_returns_correct_number() {
+        // Plugin stores the header count (as ASCII digit) into a request header.
+        // 3 headers → stores "3" in x-count header, then continues.
+        const WAT: &str = r#"(module
+            (import "conduit" "conduit_get_header_count" (func $cnt (result i32)))
+            (import "conduit" "conduit_set_request_header"
+                (func $srhdr (param i32 i32 i32 i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 0) "x-count")   ;; name at 0, len 7
+            ;; buf for the ascii digit at offset 32
+            (func (export "on_request") (result i32)
+                (local $n i32)
+                (local.set $n (call $cnt))
+                ;; write ASCII digit (count + '0' = count + 48) into buf[32]
+                (i32.store8 (i32.const 32)
+                    (i32.add (local.get $n) (i32.const 48)))
+                (call $srhdr
+                    (i32.const 0) (i32.const 7)   ;; "x-count"
+                    (i32.const 32) (i32.const 1))  ;; single ASCII digit
+                i32.const 0)
+        )"#;
+        let mut r = req();
+        r.headers
+            .insert("content-type".into(), "application/json".into());
+        r.headers
+            .insert("authorization".into(), "Bearer token".into());
+        r.headers.insert("x-custom".into(), "value".into());
+        let (_f, path) = compile_wat(WAT);
+        let outcome = run_wasm(r, &path);
+        match outcome {
+            WasmOutcome::Continue { added_headers, .. } => {
+                let hdr = added_headers.iter().find(|(k, _)| k == "x-count");
+                assert_eq!(
+                    hdr.map(|(_, v)| v.as_str()),
+                    Some("3"),
+                    "header count should be 3"
+                );
+            }
+            _ => panic!("expected Continue"),
+        }
+    }
+
+    #[test]
+    fn get_request_id_returns_value() {
+        const WAT: &str = r#"(module
+            (import "conduit" "conduit_get_request_id"
+                (func $rid (param i32 i32) (result i32)))
+            (import "conduit" "conduit_set_request_header"
+                (func $srhdr (param i32 i32 i32 i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 0) "x-got-id")
+            (func (export "on_request") (result i32)
+                (local $n i32)
+                (local.set $n (call $rid (i32.const 64) (i32.const 256)))
+                (call $srhdr (i32.const 0) (i32.const 8) (i32.const 64) (local.get $n))
+                i32.const 0)
+        )"#;
+        let mut r = req();
+        r.request_id = "test-uuid-1234".into();
+        let (_f, path) = compile_wat(WAT);
+        let outcome = run_wasm(r, &path);
+        match outcome {
+            WasmOutcome::Continue { added_headers, .. } => {
+                let hdr = added_headers.iter().find(|(k, _)| k == "x-got-id");
+                assert_eq!(hdr.map(|(_, v)| v.as_str()), Some("test-uuid-1234"));
+            }
+            _ => panic!("expected Continue"),
+        }
+    }
+
+    #[test]
+    fn abort_with_redirect_sets_location() {
+        const WAT: &str = r#"(module
+            (import "conduit" "conduit_abort_with_redirect"
+                (func $redir (param i32 i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 0) "https://example.com/new")
+            (func (export "on_request") (result i32)
+                (call $redir (i32.const 0) (i32.const 23))
+                i32.const 1)
+        )"#;
+        let (_f, path) = compile_wat(WAT);
+        let outcome = run_wasm(req(), &path);
+        match outcome {
+            WasmOutcome::Abort {
+                status, headers, ..
+            } => {
+                assert_eq!(status, 302, "redirect must be 302");
+                let loc = headers.iter().find(|(k, _)| k == "location");
+                assert_eq!(
+                    loc.map(|(_, v)| v.as_str()),
+                    Some("https://example.com/new"),
+                    "Location header must be set"
+                );
+            }
             _ => panic!("expected Abort"),
         }
     }

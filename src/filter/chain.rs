@@ -714,12 +714,26 @@ impl RequestFilter for MiddlewareGuard {
                         .and_then(|v| serde_json::to_vec(v).ok())
                         .unwrap_or_default();
 
+                    // Build sorted header names list for conduit_get_header_names.
+                    let header_names: Vec<String> = self.headers.keys().cloned().collect();
+                    // Extract X-Request-ID (injected by XRequestIdGuard earlier).
+                    let request_id = ctx
+                        .session
+                        .req_header()
+                        .headers
+                        .get("x-request-id")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_owned();
+
                     let request = crate::filter::wasm::WasmRequest {
                         method: self.method.clone(),
                         path: self.req_path.clone(),
                         query: self.query.clone(),
                         client_ip: self.client_ip.clone(),
                         headers: self.headers.clone(),
+                        header_names,
+                        request_id,
                         plugin_config,
                     };
 
