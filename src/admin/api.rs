@@ -6,7 +6,6 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
-use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use pingora_core::server::ShutdownWatch;

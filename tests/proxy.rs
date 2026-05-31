@@ -406,3 +406,152 @@ fn proxy_retry_on_5xx_falls_through_to_working_upstream() {
         "good upstream should be hit after 5xx retry"
     );
 }
+
+// ── maskErrors ────────────────────────────────────────────────────────────────
+
+#[test]
+#[serial]
+fn mask_errors_replaces_5xx_body() {
+    // Upstream returns 500 with a revealing error body.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { break };
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let _ = s.write_all(
+                b"HTTP/1.1 500 Internal Server Error\r\n\
+                  Content-Type: text/plain\r\n\
+                  Content-Length: 34\r\n\r\n\
+                  secret stack trace line 42 foo bar",
+            );
+        }
+    });
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": format!("http://{upstream_addr}"),
+                "maskErrors": true
+            }]
+        }),
+    );
+    let resp = reqwest::blocking::get(srv.url("/")).expect("GET /");
+    assert_eq!(resp.status().as_u16(), 500);
+    let body = resp.text().unwrap();
+    // Real error body must be replaced by generic JSON.
+    assert!(
+        !body.contains("secret"),
+        "stack trace must not leak: {body}"
+    );
+    assert!(
+        body.contains("Internal Server Error"),
+        "generic error must be present: {body}"
+    );
+}
+
+// ── requestTransform ──────────────────────────────────────────────────────────
+
+#[test]
+#[serial]
+fn request_transform_injects_header() {
+    use std::sync::{Arc, Mutex};
+
+    let captured_headers = Arc::new(Mutex::new(String::new()));
+    let captured_clone = captured_headers.clone();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { break };
+            let mut buf = [0u8; 4096];
+            let n = s.read(&mut buf).unwrap_or(0);
+            let request_text = String::from_utf8_lossy(&buf[..n]).to_string();
+            *captured_clone.lock().unwrap() = request_text;
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+        }
+    });
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": format!("http://{upstream_addr}"),
+                "requestTransform": {
+                    "setHeaders": { "X-Test-Inject": "injected-value" }
+                }
+            }]
+        }),
+    );
+
+    reqwest::blocking::get(srv.url("/")).expect("GET /");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let captured = captured_headers.lock().unwrap().clone();
+    assert!(
+        captured
+            .to_ascii_lowercase()
+            .contains("x-test-inject: injected-value"),
+        "requestTransform.setHeaders must inject header into upstream request: {captured}"
+    );
+}
+
+// ── X-Forwarded-Host ──────────────────────────────────────────────────────────
+
+#[test]
+#[serial]
+fn x_forwarded_host_injected() {
+    use std::sync::{Arc, Mutex};
+
+    let captured_headers = Arc::new(Mutex::new(String::new()));
+    let captured_clone = captured_headers.clone();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { break };
+            let mut buf = [0u8; 4096];
+            let n = s.read(&mut buf).unwrap_or(0);
+            let request_text = String::from_utf8_lossy(&buf[..n]).to_string();
+            *captured_clone.lock().unwrap() = request_text;
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+        }
+    });
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": format!("http://{upstream_addr}")
+            }]
+        }),
+    );
+
+    reqwest::blocking::get(srv.url("/")).expect("GET /");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let captured = captured_headers.lock().unwrap().clone();
+    assert!(
+        captured.to_ascii_lowercase().contains("x-forwarded-host:"),
+        "X-Forwarded-Host must be injected into upstream request: {captured}"
+    );
+}
