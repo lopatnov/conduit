@@ -49,6 +49,20 @@ pub struct GlobalConfig {
 pub struct AdminConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bind: Option<String>,
+    /// Optional token for Admin API authentication.
+    ///
+    /// When set, every Admin API request must include
+    /// `Authorization: Bearer <token>`.  Requests without the correct
+    /// token receive `401 Unauthorized`.
+    ///
+    /// Useful in cloud/Kubernetes environments where the admin API is
+    /// exposed beyond loopback (not recommended — prefer loopback + VPN).
+    ///
+    /// ```json
+    /// { "admin": { "bind": "0.0.0.0:2019", "token": "$ADMIN_TOKEN" } }
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 // ── Site config ────────────────────────────────────────────────────────────

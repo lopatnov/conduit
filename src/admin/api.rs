@@ -2,7 +2,12 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use axum::body::Body;
 use axum::extract::State;
+use axum::http::Request;
+use axum::http::StatusCode;
+use axum::middleware::Next;
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use pingora_core::server::ShutdownWatch;
@@ -98,15 +103,58 @@ impl BackgroundService for AdminApiService {
 }
 
 fn build_router(state: Arc<AppState>) -> Router {
-    Router::new()
+    // Build the protected routes first.
+    let protected = Router::new()
         .route("/status", get(status_handler))
         .route("/reload", post(reload_handler))
         .route("/shutdown", post(shutdown_handler))
         .route("/upstreams", get(upstreams_handler))
         .route("/upstreams/add", post(upstreams_add_handler))
         .route("/upstreams/remove", post(upstreams_remove_handler))
-        .route("/upstreams/weight", post(upstreams_weight_handler))
-        .with_state(state)
+        .route("/upstreams/weight", post(upstreams_weight_handler));
+
+    // Wrap with bearer-token auth middleware if a token is configured.
+    let token: Option<String> = state
+        .config
+        .load()
+        .global
+        .as_ref()
+        .and_then(|g| g.admin.as_ref())
+        .and_then(|a| a.token.clone());
+
+    if let Some(required_token) = token {
+        protected
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::new(required_token),
+                bearer_auth_middleware,
+            ))
+            .with_state(state)
+    } else {
+        protected.with_state(state)
+    }
+}
+
+/// Axum middleware that checks `Authorization: Bearer <token>`.
+///
+/// Rejects with `401 Unauthorized` when the token is absent or incorrect.
+async fn bearer_auth_middleware(
+    State(required_token): State<Arc<String>>,
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let auth = request
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let provided = auth.strip_prefix("Bearer ").map(str::trim).unwrap_or("");
+
+    if provided == required_token.as_str() {
+        Ok(next.run(request).await)
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
 }
 
 async fn status_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
