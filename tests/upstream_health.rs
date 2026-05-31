@@ -349,3 +349,125 @@ fn upstream_marked_unhealthy_after_threshold_failures() {
         "should have at least 1 consecutive failure"
     );
 }
+
+// ── Circuit Breaker: maxConnectionsPerUpstream ────────────────────────────────
+
+/// Upstream that holds connections open until signalled (simulates long requests).
+struct SlowUpstream {
+    port: u16,
+}
+
+impl SlowUpstream {
+    fn start(hold_ms: u64) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { break };
+                let hold = hold_ms;
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let _ = s.read(&mut buf);
+                    std::thread::sleep(Duration::from_millis(hold));
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+                });
+            }
+        });
+        SlowUpstream { port }
+    }
+
+    fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+}
+
+#[test]
+fn circuit_breaker_limits_connections() {
+    // Upstream holds each connection for 3 seconds.
+    let slow = SlowUpstream::start(3000);
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let _srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": {
+                    "/": {
+                        "targets": [ slow.url() ],
+                        "healthCheck": { "maxConnectionsPerUpstream": 1 }
+                    }
+                }
+            }]
+        }),
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    // Fire the first request in the background — it will hold the connection.
+    let url = format!("http://127.0.0.1:{port}/");
+    let url2 = url.clone();
+    std::thread::spawn(move || {
+        let _ = client.get(&url2).send();
+    });
+
+    // Give the first request time to be in-flight.
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Second request should hit the circuit breaker → 503.
+    let client2 = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let resp = client2.get(&url).send().expect("GET /");
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "circuit breaker should return 503 when upstream is at max connections"
+    );
+}
+
+#[test]
+fn circuit_breaker_allows_when_under_limit() {
+    // Upstream responds immediately.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { break };
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+            });
+        }
+    });
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": {
+                    "/": {
+                        "targets": [ format!("http://127.0.0.1:{upstream_port}") ],
+                        "healthCheck": { "maxConnectionsPerUpstream": 10 }
+                    }
+                }
+            }]
+        }),
+    );
+    // Single request well under the limit — should succeed.
+    let resp = reqwest::blocking::get(srv.url("/")).expect("GET /");
+    assert_eq!(resp.status().as_u16(), 200, "under limit: should succeed");
+}

@@ -168,6 +168,12 @@ pub enum LocalHandler {
     /// Client-side JavaScript served at `/__hot-reload__/client.js`.
     /// Connects to the SSE stream and reloads the page on events.
     HotReloadJs,
+    /// All upstream connections for this route are at the configured
+    /// `maxConnectionsPerUpstream` limit — circuit open.
+    ///
+    /// The handler returns `503 Service Unavailable` immediately without
+    /// forwarding the request to any upstream.
+    Overloaded,
 }
 
 #[derive(Debug, Default, Clone)]

@@ -788,6 +788,10 @@ impl ConduitProxy {
                     rx: Some(rx),
                 }))
             }
+
+            HandlerKind::Overloaded => Some(Box::new(OverloadedHandler {
+                extra_headers: extra,
+            })),
         }
     }
 
@@ -1508,6 +1512,30 @@ fn apply_peer_options(
     }
 }
 
+// ── Circuit Breaker handler ───────────────────────────────────────────────────
+
+/// Returns `503 Service Unavailable` when all upstreams for the matched route
+/// are at the configured `maxConnectionsPerUpstream` limit.
+struct OverloadedHandler {
+    extra_headers: Vec<(String, String)>,
+}
+
+#[async_trait]
+impl LocalHandlerImpl for OverloadedHandler {
+    async fn handle(&mut self, session: &mut Session) -> pingora_core::Result<()> {
+        response::write_response(
+            session,
+            503,
+            "application/json",
+            bytes::Bytes::from_static(
+                b"{\"error\":\"Service Unavailable\",\"status\":503,\"reason\":\"upstream_overloaded\"}",
+            ),
+            &self.extra_headers,
+        )
+        .await
+    }
+}
+
 #[derive(Clone)]
 enum HandlerKind {
     Health,
@@ -1518,6 +1546,9 @@ enum HandlerKind {
     HotReloadSse,
     HotReloadJs,
     Proxy,
+    /// All upstream connections are at the configured max limit — circuit open.
+    /// Returns 503 Service Unavailable without contacting any upstream.
+    Overloaded,
 }
 
 /// All per-request guard data bundled into one value to keep `run_guard_filters`
@@ -1564,6 +1595,7 @@ fn handler_kind_of(upstream: &UpstreamTarget) -> HandlerKind {
         UpstreamTarget::Local(LocalHandler::StaticFile { .. }) => HandlerKind::StaticFile,
         UpstreamTarget::Local(LocalHandler::HotReloadSse) => HandlerKind::HotReloadSse,
         UpstreamTarget::Local(LocalHandler::HotReloadJs) => HandlerKind::HotReloadJs,
+        UpstreamTarget::Local(LocalHandler::Overloaded) => HandlerKind::Overloaded,
         UpstreamTarget::Local(_) => HandlerKind::Fallback,
         _ => HandlerKind::Proxy,
     }

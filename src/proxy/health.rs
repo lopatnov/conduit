@@ -292,6 +292,58 @@ impl UpstreamRegistry {
         Some(chosen)
     }
 
+    /// Atomically increment the inflight count for `url` **only if** the current
+    /// count is strictly less than `max`.
+    ///
+    /// Returns `true` when the slot was acquired, `false` when the upstream is
+    /// already at or over the limit (no increment performed).
+    pub fn conn_inc_if_below(&self, url: &str, max: u64) -> bool {
+        use std::sync::atomic::Ordering::{Relaxed, SeqCst};
+        let counter = self
+            .conn_count
+            .entry(url.to_owned())
+            .or_insert_with(|| AtomicUsize::new(0));
+        // Spin CAS: try to increment only while value < max.
+        loop {
+            let current = counter.load(Relaxed);
+            if current >= max as usize {
+                return false;
+            }
+            if counter
+                .compare_exchange(current, current + 1, SeqCst, Relaxed)
+                .is_ok()
+            {
+                return true;
+            }
+        }
+    }
+
+    /// Like [`pick_least_conn`] but respects a per-upstream connection limit.
+    ///
+    /// Picks the URL with the lowest load that is **below `max_conns`** and
+    /// increments its counter.  Returns `None` when ALL URLs are at or above
+    /// `max_conns` (circuit breaker: caller should return 503).
+    pub fn pick_least_conn_with_max(&self, urls: &[String], max_conns: u64) -> Option<String> {
+        // Find the candidate: minimum load among URLs below max.
+        let chosen = urls
+            .iter()
+            .filter(|url| self.conn_load(url) < max_conns as usize)
+            .min_by_key(|url| self.conn_load(url))?
+            .clone();
+        // Atomically acquire the slot — may fail if a concurrent request raced us.
+        if self.conn_inc_if_below(&chosen, max_conns) {
+            Some(chosen)
+        } else {
+            // Race: the slot filled up; retry with remaining candidates.
+            let remaining: Vec<String> = urls
+                .iter()
+                .filter(|u| u.as_str() != chosen.as_str())
+                .cloned()
+                .collect();
+            self.pick_least_conn_with_max(&remaining, max_conns)
+        }
+    }
+
     // ── Health helpers ────────────────────────────────────────────────────────
 
     /// Return `true` if `url` is currently considered healthy.

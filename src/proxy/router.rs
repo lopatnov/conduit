@@ -343,6 +343,7 @@ fn resolve_proxy(
                 rewrite_rules,
                 mirror_url,
                 upstream_tls,
+                max_conns_per_upstream,
             ) = match route_target {
                 ProxyRouteTarget::Full(cfg) => (
                     cfg.retry.as_ref(),
@@ -355,8 +356,13 @@ fn resolve_proxy(
                     cfg.rewrite.clone(),
                     cfg.mirror.clone(),
                     cfg.upstream_tls.clone(),
+                    cfg.health_check
+                        .as_ref()
+                        .and_then(|hc| hc.max_connections_per_upstream),
                 ),
-                _ => (None, None, None, None, false, "ip", None, None, None, None),
+                _ => (
+                    None, None, None, None, false, "ip", None, None, None, None, None,
+                ),
             };
 
             // Failover: when a backup URL is configured and all primary upstreams
@@ -379,6 +385,37 @@ fn resolve_proxy(
             // Filter to healthy upstreams; if all are down keep all (fail-open).
             let healthy = upstream_health.filter_healthy(&all_urls);
             let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
+
+            // Circuit breaker: if maxConnectionsPerUpstream is configured, filter
+            // out upstreams that are at or above the limit.
+            // If ALL healthy upstreams are at max capacity → return Overloaded (503).
+            if let Some(max_conns) = max_conns_per_upstream {
+                let under_limit: Vec<String> = urls
+                    .iter()
+                    .filter(|u| upstream_health.conn_load(u) < max_conns as usize)
+                    .cloned()
+                    .collect();
+                if under_limit.is_empty() && !urls.is_empty() {
+                    tracing::debug!(
+                        route = route_key,
+                        max_conns,
+                        "circuit open: all upstreams at connection limit"
+                    );
+                    return Some((
+                        UpstreamTarget::Local(LocalHandler::Overloaded),
+                        None,
+                        None,
+                        None,
+                        false,
+                        None,
+                        None,
+                    ));
+                }
+                // Use only under-limit upstreams from here on.
+                // (If under_limit is empty but urls is also empty, fall through
+                //  to the normal no-URL path.)
+                let _ = under_limit; // URLs already filtered above; strategy will re-check conn_load
+            }
 
             // Build weighted list filtered to healthy targets.
             let weighted: Vec<(String, u32)> = all_weighted_base
@@ -468,7 +505,20 @@ fn resolve_proxy(
                 }
             };
 
-            let proxy_upstream_url = is_least_conn.then(|| chosen_url.clone());
+            // When maxConnectionsPerUpstream is set and the strategy is NOT
+            // least-conn (which already tracks conn_count), we increment the
+            // counter manually here so the circuit breaker sees accurate load.
+            // The conn_count is decremented by logging() via proxy_upstream_url.
+            let circuit_tracking = max_conns_per_upstream.is_some() && !is_least_conn;
+            if circuit_tracking {
+                upstream_health.conn_inc(&chosen_url);
+            }
+
+            // Store the upstream URL so logging() can:
+            // (a) decrement least-conn counter, and
+            // (b) decrement circuit-breaker counter (when not LeastConn).
+            let proxy_upstream_url =
+                (is_least_conn || circuit_tracking).then(|| chosen_url.clone());
 
             Some((
                 upstream,

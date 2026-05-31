@@ -875,6 +875,25 @@ pub struct UpstreamHealthCheck {
     /// 100 % over this window.  Set to 0 (default) to disable.
     #[serde(rename = "slowStartSecs", skip_serializing_if = "Option::is_none")]
     pub slow_start_secs: Option<u64>,
+    /// Maximum number of concurrent in-flight requests to any single upstream
+    /// in this route's target pool.
+    ///
+    /// When ALL healthy upstreams reach this limit Conduit returns
+    /// `503 Service Unavailable` immediately (circuit breaker / back-pressure).
+    /// A single upstream at max while others are below capacity is handled
+    /// normally by the load-balancer (requests go to under-capacity peers).
+    ///
+    /// Defaults to unlimited (`None`).
+    ///
+    /// ```json
+    /// { "targets": ["http://backend:4000"],
+    ///   "healthCheck": { "maxConnectionsPerUpstream": 50 } }
+    /// ```
+    #[serde(
+        rename = "maxConnectionsPerUpstream",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_connections_per_upstream: Option<u64>,
 }
 
 // ── Cache ──────────────────────────────────────────────────────────────────
