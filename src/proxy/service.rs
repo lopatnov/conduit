@@ -329,18 +329,6 @@ impl ConduitProxy {
             let method = session.req_header().method.as_str().to_owned();
             let query = session.req_header().uri.query().map(str::to_owned);
 
-            // Collect request headers for Rhai scripts (lower-cased keys).
-            let req_headers_for_script: std::collections::HashMap<String, String> = session
-                .req_header()
-                .headers
-                .iter()
-                .filter_map(|(k, v)| {
-                    v.to_str()
-                        .ok()
-                        .map(|vs| (k.as_str().to_ascii_lowercase(), vs.to_owned()))
-                })
-                .collect();
-
             // Extract the local port so that port-differentiated virtual hosts
             // (e.g. port 8080 public site vs. port 8081 admin site) are routed
             // to the correct SiteConfig even when no explicit `host` is set.
@@ -388,6 +376,25 @@ impl ConduitProxy {
                 .and_then(|s| s.middleware.as_ref())
                 .cloned()
                 .unwrap_or_default();
+            // Collect request headers for Rhai scripts / WASM plugins (lower-cased keys).
+            // Built lazily: only when at least one middleware entry is configured.
+            // On the hot path (no middleware) this avoids O(n_headers) allocations
+            // that would otherwise happen on every single request.
+            let req_headers_for_script: std::collections::HashMap<String, String> =
+                if middleware.is_empty() {
+                    Default::default()
+                } else {
+                    session
+                        .req_header()
+                        .headers
+                        .iter()
+                        .filter_map(|(k, v)| {
+                            v.to_str()
+                                .ok()
+                                .map(|vs| (k.as_str().to_ascii_lowercase(), vs.to_owned()))
+                        })
+                        .collect()
+                };
             // Site label for Prometheus metrics.
             let site_label: String = match site {
                 Some(s) => {

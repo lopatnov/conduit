@@ -124,6 +124,9 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
     if let Some(c) = &site.consumers {
         validate_consumers(c, &format!("{prefix}.consumers"), errors);
     }
+    if let Some(ref limits) = site.limits {
+        validate_limits(limits, &format!("{prefix}.limits"), errors);
+    }
 }
 
 fn validate_consumers(
@@ -238,6 +241,31 @@ fn validate_forward_auth(
         errors.push(ValidationError::new(
             format!("{prefix}.timeoutMs"),
             "forwardAuth.timeoutMs must be > 0",
+        ));
+    }
+}
+
+fn validate_limits(
+    cfg: &crate::config::schema::LimitsConfig,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    if cfg.max_inflight_requests == Some(0) {
+        errors.push(ValidationError::new(
+            format!("{prefix}.maxInflightRequests"),
+            "limits.maxInflightRequests must be >= 1 (set to null/omit to disable)",
+        ));
+    }
+    if cfg.max_body_bytes == Some(0) {
+        errors.push(ValidationError::new(
+            format!("{prefix}.maxBodyBytes"),
+            "limits.maxBodyBytes must be >= 1 (set to null/omit to disable)",
+        ));
+    }
+    if cfg.timeout_secs == Some(0) {
+        errors.push(ValidationError::new(
+            format!("{prefix}.timeoutSecs"),
+            "limits.timeoutSecs must be >= 1 (set to null/omit to disable)",
         ));
     }
 }

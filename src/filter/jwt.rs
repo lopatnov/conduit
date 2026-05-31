@@ -238,11 +238,55 @@ pub fn check_jwt(cfg: &JwtAuthConfig, path: &str, auth_header: Option<&str>) -> 
     }
 }
 
+/// Validate the JWT **and** return the decoded claims in a single pass.
+///
+/// Equivalent to calling [`check_jwt`] followed by [`extract_claims`] but
+/// avoids the second base64-decode + JSON-parse that the two-step pattern
+/// requires.  Returns `(Allowed, Some(claims))` on success or
+/// `(Denied, None)` on failure.
+///
+/// Used by `do_request_filter` when both validation AND claim extraction are
+/// needed (e.g. for `requestTransform.setHeaders: { "X-User": "{{ jwt.sub }}" }`).
+pub fn check_jwt_extracting(
+    cfg: &JwtAuthConfig,
+    path: &str,
+    auth_header: Option<&str>,
+) -> (
+    JwtCheckResult,
+    Option<std::collections::HashMap<String, serde_json::Value>>,
+) {
+    use crate::filter::auth::is_path_skipped;
+    if let Some(skip) = &cfg.skip_paths {
+        if is_path_skipped(Some(skip.as_slice()), path) {
+            return (JwtCheckResult::Allowed, None);
+        }
+    }
+    let raw_token = match extract_bearer(auth_header) {
+        Some(t) => t,
+        None => {
+            return (
+                JwtCheckResult::Denied {
+                    reason: "missing or malformed Bearer token",
+                },
+                None,
+            )
+        }
+    };
+    match validate_token(cfg, raw_token) {
+        Ok(()) => {
+            let claims = extract_claims(raw_token, cfg);
+            (JwtCheckResult::Allowed, claims)
+        }
+        Err(reason) => (JwtCheckResult::Denied { reason }, None),
+    }
+}
+
 /// Extract the JWT payload claims as a key→value map.
 ///
 /// Returns `None` when the token is invalid or the claims can't be parsed.
 /// Only call this after [`check_jwt`] has already validated the token
 /// (fast second decode — no remote I/O).
+/// Prefer [`check_jwt_extracting`] when both validation and claims are needed.
 pub fn extract_claims(
     token: &str,
     cfg: &JwtAuthConfig,

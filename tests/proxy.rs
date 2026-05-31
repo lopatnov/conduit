@@ -555,3 +555,123 @@ fn x_forwarded_host_injected() {
         "X-Forwarded-Host must be injected into upstream request: {captured}"
     );
 }
+
+// ── Traffic mirroring ─────────────────────────────────────────────────────────
+
+#[test]
+#[serial]
+fn mirror_fires_request_to_shadow_backend() {
+    use std::sync::{Arc, Mutex};
+
+    // Primary upstream responds immediately.
+    let primary = MockUpstream::start("primary-ok");
+
+    // Shadow backend — tracks whether it received a request.
+    let shadow_hit = Arc::new(Mutex::new(false));
+    let shadow_hit_clone = shadow_hit.clone();
+    let shadow = TcpListener::bind("127.0.0.1:0").unwrap();
+    let shadow_addr = shadow.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in shadow.incoming() {
+            let Ok(mut s) = stream else { break };
+            let hit = shadow_hit_clone.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                *hit.lock().unwrap() = true;
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+            });
+        }
+    });
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": {
+                    "/": {
+                        "targets": [ primary.url() ],
+                        "mirror": format!("http://{shadow_addr}")
+                    }
+                }
+            }]
+        }),
+    );
+
+    // Fire a request to the primary.
+    let resp = reqwest::blocking::get(srv.url("/")).expect("GET /");
+    assert_eq!(resp.status().as_u16(), 200, "primary must respond with 200");
+    assert_eq!(
+        resp.text().unwrap(),
+        "primary-ok",
+        "primary body should be returned"
+    );
+
+    // Give the fire-and-forget mirror task time to complete.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        *shadow_hit.lock().unwrap(),
+        "mirror backend must have received a request"
+    );
+}
+
+// ── Sticky sessions ───────────────────────────────────────────────────────────
+
+#[test]
+#[serial]
+fn sticky_cookie_routes_same_client_to_same_backend() {
+    let upstream_a = MockUpstream::start("server-a");
+    let upstream_b = MockUpstream::start("server-b");
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": {
+                    "/": {
+                        "targets": [ upstream_a.url(), upstream_b.url() ],
+                        "sticky": { "cookie": "srv_id" },
+                        "strategy": "consistent-hash"
+                    }
+                }
+            }]
+        }),
+    );
+
+    let client = reqwest::blocking::Client::builder().build().unwrap();
+
+    // Send 10 requests with the same cookie value — all must hit the same backend.
+    let mut hits_a = 0usize;
+    let mut hits_b = 0usize;
+    for _ in 0..10 {
+        let resp = client
+            .get(srv.url("/"))
+            .header("cookie", "srv_id=sticky-key-abc")
+            .send()
+            .expect("GET /");
+        assert_eq!(resp.status().as_u16(), 200);
+        let body = resp.text().unwrap();
+        if body == "server-a" {
+            hits_a += 1;
+        } else {
+            hits_b += 1;
+        }
+    }
+
+    let all_same = hits_a == 10 || hits_b == 10;
+    assert!(
+        all_same,
+        "sticky sessions: all 10 requests with same cookie should hit the same backend \
+         (got {hits_a}×A + {hits_b}×B)"
+    );
+}
