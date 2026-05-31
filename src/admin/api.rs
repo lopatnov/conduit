@@ -158,9 +158,43 @@ async fn bearer_auth_middleware(
 }
 
 async fn status_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let config = state.config.load();
+    let site_count = config.sites.len();
+    // Count total configured upstreams (across all proxy routes).
+    let upstream_count: usize = config
+        .sites
+        .iter()
+        .filter_map(|s| s.proxy.as_ref())
+        .map(|p| match p {
+            crate::config::schema::ProxyConfig::Single(_) => 1,
+            crate::config::schema::ProxyConfig::Routes(routes) => routes
+                .values()
+                .map(|target| match target {
+                    crate::config::schema::ProxyRouteTarget::Url(_) => 1,
+                    crate::config::schema::ProxyRouteTarget::RoundRobin(v) => v.len(),
+                    crate::config::schema::ProxyRouteTarget::Full(cfg) => cfg.targets.len(),
+                })
+                .sum(),
+        })
+        .sum();
+
+    let healthy_upstreams = state
+        .upstream_health
+        .statuses
+        .iter()
+        .filter(|e| e.healthy)
+        .count();
+    let total_upstreams = state.upstream_health.statuses.len();
+
     Json(json!({
         "status": "running",
         "inflight": state.inflight.load(Ordering::Relaxed),
+        "retry_inflight": state.retry_inflight.load(Ordering::Relaxed),
+        "sites": site_count,
+        "configured_upstreams": upstream_count,
+        "healthy_upstreams": healthy_upstreams,
+        "total_probed_upstreams": total_upstreams,
+        "config_path": state.config_path.display().to_string(),
     }))
 }
 
