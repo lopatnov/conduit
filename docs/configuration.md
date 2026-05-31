@@ -32,6 +32,7 @@ YAML is also supported: `-c conduit.yaml` or `-c conduit.yml`.
 - [`healthCheck`](#healthcheck)
 - [`upload`](#upload)
 - [`hotReload`](#hotreload)
+- [`middleware`](#middleware)
 - [`metrics`](#metrics)
 - [`fallback`](#fallback)
 - [Multi-site (`global` + `sites`)](#multi-site-global--sites)
@@ -698,6 +699,79 @@ Add to your HTML to auto-reload when files change:
 ```html
 <script src="/__hot-reload__/client.js"></script>
 ```
+
+---
+
+### `middleware`
+
+Custom request pipeline — executed after built-in guards (IP filter, rate limit, auth)
+and before routing. Entries run in declared order; both Rhai scripts and WASM plugins
+can be mixed freely.
+
+```json
+{
+  "middleware": [
+    { "type": "script", "path": "./scripts/custom-auth.rhai" },
+    { "type": "wasm",   "path": "./plugins/jwt-validator.wasm" },
+    { "type": "wasm",   "path": "./plugins/geo-block.wasm", "config": { "allow": ["EU"] } }
+  ]
+}
+```
+
+**`type: "script"` — Rhai scripting**
+
+Scripts receive a `request` object (`.method`, `.path`, `.query`, `.header(name)`)
+and a `response` object (`.status`, `.body`, `.header(name, value)`).
+Return `false` to reject the request:
+
+```rhai
+// Require Authorization header
+if request.header("Authorization") == "" {
+    response.status = 401;
+    response.header("WWW-Authenticate", "Bearer");
+    false   // reject
+} else {
+    true    // continue
+}
+```
+
+**`type: "wasm"` — WASM plugin** *(requires `--features wasm`)*
+
+Plugins can be written in any language that compiles to WASM (Rust, Go, C,
+AssemblyScript, …).  The plugin imports functions from the `"conduit"` namespace
+and exports `on_request() -> i32` (0 = Continue, 1 = Abort).
+
+```rust
+// Minimal Rust plugin (compile with target = wasm32-unknown-unknown)
+extern {
+    fn conduit_get_header(name: *const u8, nlen: usize, buf: *mut u8, blen: usize) -> isize;
+    fn conduit_set_response_status(status: i32);
+}
+
+#[no_mangle]
+pub fn on_request() -> i32 {
+    let name = b"x-api-key";
+    let mut buf = [0u8; 256];
+    let n = unsafe { conduit_get_header(name.as_ptr(), name.len(), buf.as_mut_ptr(), buf.len()) };
+    if n < 0 {
+        unsafe { conduit_set_response_status(401) };
+        return 1; // Abort
+    }
+    0 // Continue
+}
+```
+
+The optional `config` field is forwarded to the plugin as JSON bytes via
+`conduit_get_plugin_config(buf, buf_len) -> i32`.
+
+Both middleware types are **fail-open**: compile errors, missing files, and runtime
+traps log a warning and let the request pass through.
+
+| Field  | Required | Description |
+|--------|----------|-------------|
+| `type` | ✅ | `"script"` or `"wasm"` |
+| `path` | ✅ | Path to `.rhai` script or `.wasm` binary |
+| `config` | — | JSON object forwarded to WASM plugins as bytes |
 
 ---
 

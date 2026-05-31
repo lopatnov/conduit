@@ -555,6 +555,7 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before
 ### Middleware & scripting
 
 ![Rhai](https://img.shields.io/badge/Rhai_scripting-5C5C5C?style=flat)
+![Wasmtime](https://img.shields.io/badge/Wasmtime_(WASM_plugins)-5C5C5C?style=flat)
 ![regex](https://img.shields.io/badge/regex-5C5C5C?style=flat)
 ![Redis](https://img.shields.io/badge/Redis_(rate_limit_store)-DC382D?style=flat&logo=redis&logoColor=white)
 
