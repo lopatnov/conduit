@@ -86,3 +86,39 @@ healthCheck: true
 logging:
   format: json
   skipPaths: [/__health__]
+
+# ── Alternative: sharedJwt (V3) ───────────────────────────────────────────────
+#
+# Instead of per-consumer JWT keys, define ONE JWKS endpoint for all consumers.
+# Each consumer is identified by matching the JWT `sub` claim to consumer.username.
+#
+# This is the Auth0 / Cognito / Keycloak / Google pattern:
+#   • The identity provider issues tokens where sub = user's unique ID
+#   • Conduit consumers are the allowed user IDs with per-user rate limits
+#
+# To use this pattern instead of the V1/V2 example above, replace the
+# consumers block with:
+#
+# consumers:
+#   sharedJwt:
+#     jwksUrl: "https://YOUR_DOMAIN.auth0.com/.well-known/jwks.json"
+#     audience: ["https://api.example.com"]
+#     issuer:   "https://YOUR_DOMAIN.auth0.com"
+#     usernameClaim: "sub"   # default — matches consumer.username
+#
+#   skipPaths: ["/__health__"]
+#
+#   consumers:
+#     - username: "auth0|alice123"      # jwt.sub must equal this exactly
+#       rateLimit: { windowSecs: 60, limit: 100 }
+#       headers: { X-User: alice }
+#
+#     - username: "auth0|bob456"
+#       rateLimit: { windowSecs: 60, limit: 10000 }
+#       headers: { X-Tier: premium }
+#
+#     # Consumers without per-consumer credentials are valid when sharedJwt is set
+#     - username: "auth0|readonly789"
+#
+# Note: when sharedJwt is set, consumers listed here don't need apiKey/basicAuth/jwt
+# credentials — they're identified purely by the sharedJwt sub claim.

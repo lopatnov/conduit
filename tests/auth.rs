@@ -1052,3 +1052,142 @@ fn consumers_jwt_no_bearer_returns_401() {
         "request without Bearer token must be rejected by JWT consumer"
     );
 }
+
+// ── Consumer sharedJwt V3 tests ───────────────────────────────────────────────
+
+fn server_with_shared_jwt(secret: &str) -> common::TestServer {
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "healthCheck": true,
+                "consumers": {
+                    // Shared JWKS: one secret for all consumers (V3)
+                    "sharedJwt": {
+                        "secret": secret
+                        // usernameClaim defaults to "sub"
+                    },
+                    "skipPaths": ["/__health__"],
+                    // Consumers are identified by jwt.sub == username
+                    "consumers": [
+                        {
+                            "username": "alice-sub",
+                            "rateLimit": { "windowSecs": 3600, "limit": 5 }
+                        },
+                        {
+                            "username": "bob-sub",
+                            "headers": { "X-Tier": "premium" }
+                        }
+                    ]
+                }
+            }]
+        }),
+    )
+}
+
+#[test]
+fn consumers_shared_jwt_identifies_by_sub() {
+    let secret = "shared-jwt-test-secret";
+    let srv = server_with_shared_jwt(secret);
+    // Token with sub = "alice-sub" — should match alice-sub consumer
+    let token = make_jwt(secret, 3600); // sub = "testuser" in make_jwt default
+                                        // We need a token with sub = "alice-sub" — use custom claims
+    use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let exp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + 3600;
+    let claims = json!({ "sub": "alice-sub", "exp": exp });
+    let key = jsonwebtoken::EncodingKey::from_secret(secret.as_bytes());
+    let token_alice = jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+        &claims,
+        &key,
+    )
+    .unwrap();
+
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("authorization", format!("Bearer {token_alice}"))
+        .send()
+        .expect("GET /");
+    // No upstream → 404, but NOT 401
+    assert_ne!(
+        resp.status().as_u16(),
+        401,
+        "token with sub=alice-sub should be accepted by sharedJwt"
+    );
+    // Also verify: unrelated token with correct secret should not match if sub unknown
+    let _ = token; // suppress unused warning
+}
+
+#[test]
+fn consumers_shared_jwt_unknown_sub_returns_401() {
+    let secret = "shared-jwt-test-secret";
+    let srv = server_with_shared_jwt(secret);
+    // Token is valid (correct signature) but sub doesn't match any consumer username
+    use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let exp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + 3600;
+    let claims = json!({ "sub": "nobody-knows-me", "exp": exp });
+    let key = jsonwebtoken::EncodingKey::from_secret(secret.as_bytes());
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+        &claims,
+        &key,
+    )
+    .unwrap();
+
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .expect("GET /");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "valid JWT but unknown sub must return 401 (no matching consumer)"
+    );
+}
+
+#[test]
+fn consumers_shared_jwt_wrong_secret_returns_401() {
+    let srv = server_with_shared_jwt("correct-shared-secret");
+    // Token signed with the WRONG secret
+    let bad_token = make_jwt("wrong-secret", 3600);
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("authorization", format!("Bearer {bad_token}"))
+        .send()
+        .expect("GET /");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "JWT signed with wrong shared secret must be rejected"
+    );
+}
+
+#[test]
+fn consumers_shared_jwt_skip_path_bypasses() {
+    let srv = server_with_shared_jwt("any-secret");
+    let resp = plain_client()
+        .get(srv.url("/__health__"))
+        .send()
+        .expect("health");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "skipPaths must bypass sharedJwt auth"
+    );
+}

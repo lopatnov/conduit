@@ -267,6 +267,45 @@ mod tests {
 pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Option<&'a Consumer> {
     let api_key_header = cfg.api_key_header.as_deref().unwrap_or("x-api-key");
 
+    // ── V3: Shared JWT — validate once, identify by claim value ───────────────
+    // Checked BEFORE per-consumer credentials so a single JWKS fetch handles all.
+    if let Some(ref shared) = cfg.shared_jwt {
+        let jwt_cfg = JwtAuthConfig {
+            secret: shared.secret.clone(),
+            jwks_url: shared.jwks_url.clone(),
+            jwks_refresh_secs: None, // use default TTL (3600 s)
+            audience: shared.audience.clone(),
+            issuer: shared.issuer.clone(),
+            skip_paths: None, // skip_paths handled at ConsumersConfig level
+        };
+        let auth_hdr = session
+            .req_header()
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok());
+
+        if let jwt::JwtCheckResult::Allowed = jwt::check_jwt(&jwt_cfg, "", auth_hdr) {
+            // Token is valid — extract the username claim and look up consumer.
+            if let Some(token) = auth_hdr
+                .and_then(|h| h.strip_prefix("Bearer "))
+                .map(str::trim)
+            {
+                if let Some(claims) = jwt::extract_claims(token, &jwt_cfg) {
+                    let claim_key = shared.username_claim.as_deref().unwrap_or("sub");
+                    if let Some(serde_json::Value::String(sub)) = claims.get(claim_key) {
+                        let sub = sub.clone();
+                        if let Some(consumer) = cfg.consumers.iter().find(|c| c.username == sub) {
+                            return Some(consumer);
+                        }
+                        // Token valid but no consumer with this sub → no match.
+                        // Fall through to per-consumer credential checks below
+                        // so a consumer that also has api_key/basicAuth can still match.
+                    }
+                }
+            }
+        }
+    }
+
     for consumer in &cfg.consumers {
         // ── API key check ─────────────────────────────────────────────────
         if let Some(ref expected_key) = consumer.api_key {

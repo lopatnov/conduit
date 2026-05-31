@@ -131,6 +131,33 @@ fn validate_consumers(
     prefix: &str,
     errors: &mut Vec<ValidationError>,
 ) {
+    // Validate sharedJwt config if present.
+    if let Some(ref sj) = cfg.shared_jwt {
+        let sj_prefix = format!("{prefix}.sharedJwt");
+        let has_secret = sj.secret.is_some();
+        let has_jwks = sj.jwks_url.is_some();
+        if !has_secret && !has_jwks {
+            errors.push(ValidationError::new(
+                sj_prefix.clone(),
+                "consumers.sharedJwt requires either \"secret\" (HS256) or \"jwksUrl\" (RS256/ES256)",
+            ));
+        }
+        if has_secret && has_jwks {
+            errors.push(ValidationError::new(
+                sj_prefix.clone(),
+                "consumers.sharedJwt.secret and sharedJwt.jwksUrl are mutually exclusive",
+            ));
+        }
+        if let Some(url) = &sj.jwks_url {
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                errors.push(ValidationError::new(
+                    format!("{sj_prefix}.jwksUrl"),
+                    "consumers.sharedJwt.jwksUrl must be an http:// or https:// URL",
+                ));
+            }
+        }
+    }
+
     let mut seen_usernames = std::collections::HashSet::new();
     for (i, c) in cfg.consumers.iter().enumerate() {
         let entry_prefix = format!("{prefix}.consumers[{i}]");
@@ -140,10 +167,14 @@ fn validate_consumers(
                 "consumer username must not be empty",
             ));
         }
-        if c.api_key.is_none() && c.basic_auth.is_none() && c.jwt.is_none() {
+        // When sharedJwt is configured at the ConsumersConfig level, individual
+        // consumers don't need their own credentials — they're identified by the
+        // sharedJwt sub claim.  A credential is only required when sharedJwt is absent.
+        let has_shared_jwt = cfg.shared_jwt.is_some();
+        if !has_shared_jwt && c.api_key.is_none() && c.basic_auth.is_none() && c.jwt.is_none() {
             errors.push(ValidationError::new(
                 entry_prefix.clone(),
-                "consumer requires at least one credential: apiKey, basicAuth, or jwt",
+                "consumer requires at least one credential: apiKey, basicAuth, jwt (or configure consumers.sharedJwt)",
             ));
         }
         if let Some(ref jwt_cfg) = c.jwt {

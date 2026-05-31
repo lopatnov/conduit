@@ -540,6 +540,59 @@ pub struct ConsumersConfig {
     /// Same glob syntax as `basicAuth.skipPaths`.
     #[serde(rename = "skipPaths", skip_serializing_if = "Option::is_none")]
     pub skip_paths: Option<Vec<String>>,
+    /// Shared JWT configuration for V3 consumer identification.
+    ///
+    /// When set, the Bearer token is validated once against the shared
+    /// JWKS / secret, and the consumer is identified by matching the
+    /// configured `usernameClaim` (default: `"sub"`) against
+    /// `consumer.username`.
+    ///
+    /// This is the canonical Auth0 / Cognito / Keycloak pattern: the identity
+    /// provider issues tokens with `sub = user-id`, and consumers are the list
+    /// of allowed user IDs with per-user policies.
+    ///
+    /// Checked **before** per-consumer credentials (api_key / basicAuth / jwt).
+    ///
+    /// ```yaml
+    /// consumers:
+    ///   sharedJwt:
+    ///     jwksUrl: "https://auth0.example.com/.well-known/jwks.json"
+    ///     audience: ["my-api"]
+    ///     issuer:   "https://auth0.example.com"
+    ///   consumers:
+    ///     - username: user-abc   # identified when jwt.sub == "user-abc"
+    /// ```
+    #[serde(rename = "sharedJwt", skip_serializing_if = "Option::is_none")]
+    pub shared_jwt: Option<ConsumersSharedJwtConfig>,
+}
+
+/// Shared JWT configuration for V3 consumer identification.
+///
+/// All consumers in the list share one JWKS endpoint (or HS256 secret).
+/// After token validation the `usernameClaim` value is matched against
+/// `consumer.username` to determine which consumer made the request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsumersSharedJwtConfig {
+    /// Remote JWKS URL for RS256 / ES256 tokens.  Mutually exclusive with `secret`.
+    #[serde(rename = "jwksUrl", skip_serializing_if = "Option::is_none")]
+    pub jwks_url: Option<String>,
+    /// HS256 shared secret.  Mutually exclusive with `jwks_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Expected `aud` claim values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audience: Option<Vec<String>>,
+    /// Expected `iss` claim value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    /// JWT claim whose value is matched against `consumer.username`.
+    ///
+    /// Defaults to `"sub"` (the standard subject claim).  Use a different
+    /// claim name when the identity provider stores the user identifier
+    /// in a non-standard field (e.g., `"email"`, `"preferred_username"`).
+    #[serde(rename = "usernameClaim", skip_serializing_if = "Option::is_none")]
+    pub username_claim: Option<String>,
 }
 
 /// A single named API consumer — a client with its own credentials and limits.

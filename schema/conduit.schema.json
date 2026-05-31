@@ -592,7 +592,19 @@
         "consumers":    { "type": "array", "items": { "$ref": "#/$defs/Consumer" }, "description": "List of named consumers (evaluated in order; first match wins)." },
         "idHeader":     { "type": "string", "default": "x-consumer-id", "description": "Header injected with the consumer's username into the upstream request." },
         "apiKeyHeader": { "type": "string", "default": "x-api-key", "description": "Request header that carries the API key." },
-        "skipPaths":    { "type": "array", "items": { "type": "string" }, "description": "Paths that bypass consumers auth." }
+        "skipPaths":    { "type": "array", "items": { "type": "string" }, "description": "Paths that bypass consumers auth." },
+        "sharedJwt":    { "$ref": "#/$defs/ConsumersSharedJwtConfig", "description": "V3: shared JWKS for all consumers. Identifies consumer by matching jwt.sub (or usernameClaim) to consumer.username." }
+      }
+    },
+    "ConsumersSharedJwtConfig": {
+      "type": "object",
+      "description": "Shared JWT config (V3): one JWKS/secret for all consumers. Consumer is identified by matching usernameClaim (default: sub) to consumer.username.",
+      "properties": {
+        "jwksUrl":       { "type": "string", "format": "uri", "description": "Remote JWKS URL for RS256/ES256 tokens." },
+        "secret":        { "type": "string", "description": "HS256 shared secret. Mutually exclusive with jwksUrl." },
+        "audience":      { "type": "array", "items": { "type": "string" } },
+        "issuer":        { "type": "string" },
+        "usernameClaim": { "type": "string", "default": "sub", "description": "JWT claim matched against consumer.username. Default: \"sub\"." }
       }
     },
     "Consumer": {
