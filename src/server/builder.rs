@@ -17,7 +17,16 @@ use crate::server::{acme as acme_util, tls as tls_util};
 use crate::upload::UploadService;
 
 /// Maps a TCP port to `(cert_path, key_path, h2_enabled)` for TLS-enabled ports.
-type TlsPortMap = HashMap<u16, (String, String, bool)>;
+/// (cert_path, key_path, http2_enabled, optional_client_auth)
+type TlsPortMap = HashMap<
+    u16,
+    (
+        String,
+        String,
+        bool,
+        Option<crate::config::schema::TlsClientAuth>,
+    ),
+>;
 
 /// Classify each site's port into either a TLS entry (cert, key, h2-enabled)
 /// or a plain-TCP entry.
@@ -62,12 +71,13 @@ fn classify_site_port(
         return;
     };
 
+    let client_auth = tls_cfg.client_auth.clone();
     if tls_cfg.acme.is_some() {
         // Use the cert/key obtained by the ACME flow, if available.
         if let Some((cert, key)) = acme_certs.get(&port) {
             port_tls
                 .entry(port)
-                .or_insert_with(|| (cert.clone(), key.clone(), enable_h2));
+                .or_insert_with(|| (cert.clone(), key.clone(), enable_h2, client_auth));
         } else {
             // ACME failed — fall back to plain TCP so the port is reachable.
             port_plain.insert(port);
@@ -75,7 +85,7 @@ fn classify_site_port(
     } else if let (Some(cert), Some(key)) = (&tls_cfg.cert, &tls_cfg.key) {
         port_tls
             .entry(port)
-            .or_insert_with(|| (cert.clone(), key.clone(), enable_h2));
+            .or_insert_with(|| (cert.clone(), key.clone(), enable_h2, client_auth));
     } else {
         // Incomplete TLS config (no cert/key and no ACME) → plain TCP.
         port_plain.insert(port);
@@ -209,10 +219,14 @@ pub fn run_server(config: AppConfig, config_path: PathBuf) -> anyhow::Result<()>
     let (port_tls, port_plain) = classify_ports(&config.sites, &acme_certs);
 
     // Add TLS listeners.
-    for (port, (cert, key, enable_h2)) in &port_tls {
+    for (port, (cert, key, enable_h2, client_auth)) in &port_tls {
         let addr = format!("0.0.0.0:{port}");
-        let settings = tls_util::make_tls_settings(cert, key, *enable_h2)
-            .map_err(|e| anyhow::anyhow!("TLS setup failed for port {port}: {e}"))?;
+        let settings = if let Some(ref ca_cfg) = client_auth {
+            tls_util::make_tls_settings_with_client_auth(cert, key, *enable_h2, ca_cfg)
+        } else {
+            tls_util::make_tls_settings(cert, key, *enable_h2)
+        }
+        .map_err(|e| anyhow::anyhow!("TLS setup failed for port {port}: {e}"))?;
         proxy_service.add_tls_with_settings(&addr, None, settings);
     }
 

@@ -135,6 +135,10 @@ pub fn should_cache_request(cfg: &CacheConfig, method: &str, has_cookie: bool, p
 ///
 /// Only `200 OK` responses with a non-zero `ttl_secs` are admitted.
 /// Everything else returns [`RespCacheable::Uncacheable`].
+///
+/// When `staleWhileRevalidateSecs` or `staleIfErrorSecs` are configured
+/// (or present in the upstream `Cache-Control` response header), Pingora's
+/// stale-while-revalidate / stale-if-error logic is activated automatically.
 pub fn response_cacheable(cfg: &CacheConfig, resp: &ResponseHeader) -> RespCacheable {
     // Only cache successful responses.
     if resp.status.as_u16() != 200 {
@@ -146,10 +150,38 @@ pub fn response_cacheable(cfg: &CacheConfig, resp: &ResponseHeader) -> RespCache
         return RespCacheable::Uncacheable(NoCacheReason::OriginNotCache);
     }
 
+    // Prefer explicit config values; fall back to upstream Cache-Control header.
+    let swr = cfg
+        .stale_while_revalidate_secs
+        .unwrap_or_else(|| parse_cc_directive(resp, "stale-while-revalidate"));
+    let sie = cfg
+        .stale_if_error_secs
+        .unwrap_or_else(|| parse_cc_directive(resp, "stale-if-error"));
+
     let now = SystemTime::now();
     let fresh_until = now + Duration::from_secs(ttl_secs);
-    let meta = CacheMeta::new(fresh_until, now, 0, 0, resp.clone());
+    let meta = CacheMeta::new(fresh_until, now, swr, sie, resp.clone());
     RespCacheable::Cacheable(meta)
+}
+
+/// Parse a `Cache-Control` directive value like `stale-while-revalidate=300`.
+/// Returns 0 when absent or unparseable.
+fn parse_cc_directive(resp: &ResponseHeader, directive: &str) -> u32 {
+    let cc = resp
+        .headers
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    for part in cc.split(',') {
+        let part = part.trim();
+        if let Some(val) = part.strip_prefix(directive) {
+            let val = val.trim_start_matches('=').trim();
+            if let Ok(n) = val.parse::<u32>() {
+                return n;
+            }
+        }
+    }
+    0
 }
 
 // ── Path matching ─────────────────────────────────────────────────────────────
@@ -178,6 +210,8 @@ mod tests {
             store: "memory".into(),
             max_size_mb: None,
             ttl_secs: Some(ttl_secs),
+            stale_while_revalidate_secs: None,
+            stale_if_error_secs: None,
             vary_headers: None,
             skip_paths: None,
             skip_if_cookie: None,

@@ -57,6 +57,16 @@ pub struct RequestCtx {
     /// configured.  Otherwise `None` (zero overhead).
     #[cfg(feature = "otlp")]
     pub otel_span: Option<opentelemetry::global::BoxedSpan>,
+    /// Buffered request body chunks for retry replay (linkerd ReplayBody pattern).
+    ///
+    /// Populated incrementally by `request_body_filter` when the route has
+    /// `retry` configured.  Cloning `Bytes` is cheap (reference-counted), so
+    /// accumulation cost is minimal.  Empty when buffering is not needed.
+    pub body_buffer: Vec<bytes::Bytes>,
+    /// `true` when the accumulated body exceeded `limits.maxBodyBufferBytes`
+    /// (default 1 MiB).  Retries are still attempted but without body replay —
+    /// only safe for idempotent methods (GET/HEAD) in that case.
+    pub body_too_large: bool,
 }
 
 impl RequestCtx {
@@ -87,6 +97,8 @@ impl RequestCtx {
             proxy_cache_cfg,
             mask_upstream_body: false,
             response_transform,
+            body_buffer: Vec::new(),
+            body_too_large: false,
             jwt_claims: None,
             #[cfg(feature = "otlp")]
             otel_span: None,

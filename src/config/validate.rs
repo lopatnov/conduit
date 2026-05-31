@@ -487,6 +487,23 @@ fn validate_tls(tls: &TlsConfig, prefix: &str, errors: &mut Vec<ValidationError>
         ));
     }
 
+    // mTLS client auth — ca path must be non-empty; file existence checked at startup.
+    if let Some(ref ca) = tls.client_auth {
+        if ca.ca.is_empty() {
+            errors.push(ValidationError::new(
+                format!("{prefix}.clientAuth.ca"),
+                "tls.clientAuth.ca must be a path to a PEM CA file",
+            ));
+        }
+        // clientAuth requires cert+key (or acme) to make sense.
+        if !has_cert && !has_acme {
+            errors.push(ValidationError::new(
+                format!("{prefix}.clientAuth"),
+                "tls.clientAuth requires tls.cert+tls.key or tls.acme to be configured",
+            ));
+        }
+    }
+
     // Cert expiry check — only for manual certificates (ACME manages renewal itself).
     if !has_acme {
         if let Some(ref cert_path) = tls.cert {

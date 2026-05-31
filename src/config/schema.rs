@@ -279,6 +279,35 @@ pub struct TlsConfig {
     // Auto-TLS via Let's Encrypt (Phase 3.1)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acme: Option<AcmeConfig>,
+    /// Mutual TLS — require and verify client certificates.
+    ///
+    /// When set, every TLS connection must present a certificate signed by
+    /// the configured CA.  Clients without a valid certificate are rejected
+    /// at the TLS handshake (before any HTTP processing).
+    ///
+    /// ```yaml
+    /// tls:
+    ///   cert: ./server.crt
+    ///   key:  ./server.key
+    ///   clientAuth:
+    ///     ca: ./ca.crt       # PEM file containing the CA that signs client certs
+    ///     optional: false    # true = request cert but don't require it
+    /// ```
+    #[serde(rename = "clientAuth", skip_serializing_if = "Option::is_none")]
+    pub client_auth: Option<TlsClientAuth>,
+}
+
+/// mTLS client certificate verification configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TlsClientAuth {
+    /// Path to the CA certificate file (PEM format) used to verify client certs.
+    pub ca: String,
+    /// When `true`, client certificates are requested but not required
+    /// (equivalent to nginx `ssl_verify_client optional`).
+    /// When `false` (default), clients without a valid cert are rejected.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -783,6 +812,16 @@ pub struct LimitsConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub max_inflight_requests: Option<u64>,
+    /// Maximum request body size to buffer for retry replay (bytes).
+    ///
+    /// When a route has `retry` configured, Conduit buffers the request body
+    /// up to this limit so it can be replayed on a retry attempt.  If the
+    /// body exceeds this limit, retries are still attempted but without body
+    /// replay (safe only for GET/HEAD which have no body in practice).
+    ///
+    /// Defaults to 1 MiB (1_048_576 bytes).  Set to 0 to disable buffering.
+    #[serde(rename = "maxBodyBufferBytes", skip_serializing_if = "Option::is_none")]
+    pub max_body_buffer_bytes: Option<u64>,
 }
 
 // ── Redirects ──────────────────────────────────────────────────────────────
@@ -1120,6 +1159,33 @@ pub struct CacheConfig {
     pub max_size_mb: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl_secs: Option<u64>,
+    /// Serve stale content while revalidating in the background (RFC 5861).
+    ///
+    /// When set, a cache entry that has expired within the stale window is
+    /// returned immediately to the client while Pingora fetches a fresh copy
+    /// asynchronously.  The next request after revalidation completes gets
+    /// the fresh copy.  Zero perceived latency for the overwhelming majority
+    /// of requests.
+    ///
+    /// ```yaml
+    /// cache:
+    ///   store: memory
+    ///   ttlSecs: 60
+    ///   staleWhileRevalidateSecs: 300  # serve stale for up to 5 min after TTL expires
+    /// ```
+    #[serde(
+        rename = "staleWhileRevalidateSecs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stale_while_revalidate_secs: Option<u32>,
+    /// Serve stale content when the upstream returns an error (RFC 5861
+    /// `stale-if-error`).
+    ///
+    /// When upstream is unreachable or returns 5xx, Conduit serves the most
+    /// recently cached copy for up to `staleIfErrorSecs` seconds instead of
+    /// forwarding the error to the client.
+    #[serde(rename = "staleIfErrorSecs", skip_serializing_if = "Option::is_none")]
+    pub stale_if_error_secs: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vary_headers: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]

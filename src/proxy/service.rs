@@ -985,6 +985,66 @@ impl ProxyHttp for ConduitProxy {
         Ok(Box::new(peer))
     }
 
+    /// Buffer request body chunks for retry replay (stale-if-error pattern).
+    ///
+    /// Only buffers when:
+    ///   1. The route has `retry` configured.
+    ///   2. The body is within `limits.maxBodyBufferBytes` (default 1 MiB).
+    ///   3. `body_too_large` flag is not already set.
+    ///
+    /// Uses the linkerd2-proxy ReplayBody pattern: accumulate `Bytes` chunks
+    /// (cheap reference-counted clones) into `RequestCtx.body_buffer`.  On
+    /// overflow the buffer is discarded and `body_too_large` is set — retries
+    /// still happen but without body replay.
+    async fn request_body_filter(
+        &self,
+        _session: &mut Session,
+        body: &mut Option<bytes::Bytes>,
+        _end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> pingora_core::Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        let Some(req_ctx) = ctx.as_mut() else {
+            return Ok(());
+        };
+        // Only buffer when retry is configured (otherwise wasteful).
+        if req_ctx.retry.is_none() {
+            return Ok(());
+        }
+        if req_ctx.body_too_large {
+            return Ok(());
+        }
+
+        if let Some(chunk) = body.as_ref() {
+            let max_bytes = {
+                let config = self.state.config.load();
+                config
+                    .sites
+                    .get(req_ctx.site_idx)
+                    .and_then(|s| s.limits.as_ref())
+                    .and_then(|l| l.max_body_buffer_bytes)
+                    .unwrap_or(1_048_576) // default 1 MiB
+            };
+            let current_size: usize = req_ctx.body_buffer.iter().map(|b| b.len()).sum();
+            if current_size + chunk.len() > max_bytes as usize {
+                // Discard buffer — linkerd pattern: clear on overflow.
+                req_ctx.body_buffer.clear();
+                req_ctx.body_too_large = true;
+                tracing::debug!(
+                    size = current_size + chunk.len(),
+                    max = max_bytes,
+                    "request body exceeded buffer limit — retry will not replay body"
+                );
+            } else {
+                // Cheap clone: Bytes is reference-counted.
+                req_ctx.body_buffer.push(chunk.clone());
+            }
+        }
+        Ok(())
+    }
+
     async fn upstream_request_filter(
         &self,
         session: &mut Session,
@@ -1160,6 +1220,39 @@ impl ProxyHttp for ConduitProxy {
             .cache
             .enable(storage, None, None, Some(proxy_cache::cache_lock()), None);
         Ok(())
+    }
+
+    /// Stale-while-revalidate / stale-if-error policy.
+    ///
+    /// - When `error` is `None` Pingora is asking whether to serve a stale
+    ///   response while background revalidation runs (SWR).  We return `true`
+    ///   when the route's `staleWhileRevalidateSecs` is non-zero — Pingora has
+    ///   already checked the stale window via `CacheMeta.serve_stale_while_revalidate()`.
+    ///
+    /// - When `error` is `Some(_)` Pingora is asking whether to serve stale on
+    ///   upstream error (stale-if-error).  We return `true` when
+    ///   `staleIfErrorSecs` is non-zero and the error comes from upstream.
+    fn should_serve_stale(
+        &self,
+        _session: &mut Session,
+        ctx: &mut Self::CTX,
+        error: Option<&pingora_core::Error>,
+    ) -> bool {
+        let Some(req_ctx) = ctx.as_ref() else {
+            return false;
+        };
+        let Some(ref cfg) = req_ctx.proxy_cache_cfg else {
+            return false;
+        };
+        match error {
+            // SWR: serve stale while revalidating if window is configured.
+            None => cfg.stale_while_revalidate_secs.unwrap_or(0) > 0,
+            // Stale-if-error: serve stale on upstream failure.
+            Some(e) => {
+                cfg.stale_if_error_secs.unwrap_or(0) > 0
+                    && e.esource() == &pingora_core::ErrorSource::Upstream
+            }
+        }
     }
 
     /// Build a deterministic cache key: namespace = Host header, primary = scheme:path[?query].
