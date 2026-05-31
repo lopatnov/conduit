@@ -807,6 +807,26 @@ impl ProxyHttp for ConduitProxy {
                     ));
                 }
             }
+
+            // Error masking: set flag so body filter can replace the response.
+            let status = upstream_response.status.as_u16();
+            if status >= 500 {
+                let config = self.state.config.load();
+                let site = config.sites.get(req_ctx.site_idx);
+                let mask = site.and_then(|s| s.mask_errors).unwrap_or(false);
+                if mask {
+                    if let Some(req_ctx_mut) = ctx.as_mut() {
+                        req_ctx_mut.mask_upstream_body = true;
+                        // Replace Content-Type and Content-Length for the masked body.
+                        let body_len =
+                            b"{\"error\":\"Internal Server Error\",\"status\":500}".len();
+                        upstream_response.insert_header("content-type", "application/json")?;
+                        upstream_response.insert_header("content-length", body_len.to_string())?;
+                        // Override status with 500 for consistent error response.
+                        upstream_response.set_status(500)?;
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -815,6 +835,32 @@ impl ProxyHttp for ConduitProxy {
     ///
     /// Called by Pingora after `request_filter`; only reached for upstream-bound
     /// requests (local handlers return `Ok(true)` in `request_filter`).
+    /// When `maskErrors` is enabled for the site and the upstream returned a 5xx
+    /// status, replace every body chunk with a generic JSON error so that
+    /// internal details never reach the client.
+    fn upstream_response_body_filter(
+        &self,
+        _session: &mut Session,
+        body: &mut Option<Bytes>,
+        end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> Result<Option<std::time::Duration>> {
+        if let Some(req_ctx) = ctx.as_ref() {
+            if req_ctx.mask_upstream_body {
+                if end_of_stream {
+                    // Replace the entire (or last) body chunk with a generic error.
+                    *body = Some(Bytes::from_static(
+                        b"{\"error\":\"Internal Server Error\",\"status\":500}",
+                    ));
+                } else {
+                    // Discard intermediate chunks — only send the replacement on eos.
+                    *body = None;
+                }
+            }
+        }
+        Ok(None)
+    }
+
     fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<()>
     where
         Self::CTX: Send + Sync,
@@ -1016,6 +1062,29 @@ impl ProxyHttp for ConduitProxy {
                 // For least-conn routes, release the per-upstream slot.
                 if let Some(ref url) = req_ctx.proxy_upstream_url {
                     self.state.upstream_health.conn_dec(url);
+
+                    // Update Peak EWMA latency and passive health tracking.
+                    let elapsed_us = req_ctx.start_time.elapsed().as_micros() as u64;
+                    let status = session
+                        .response_written()
+                        .map(|h| h.status.as_u16())
+                        .unwrap_or(0);
+                    crate::proxy::health::record_request_latency(
+                        &self.state.upstream_health,
+                        url,
+                        elapsed_us,
+                        status,
+                    );
+
+                    // Outlier Detection: eject upstream after threshold 5xx responses.
+                    {
+                        let config = self.state.config.load();
+                        let site = config.sites.get(req_ctx.site_idx);
+                        let od_cfg = site.and_then(|s| s.outlier_detection.as_ref());
+                        if let Some(od) = od_cfg {
+                            crate::proxy::health::maybe_eject(&self.state.upstream_health, url, od);
+                        }
+                    }
                 }
             }
         }
@@ -1029,7 +1098,22 @@ impl ProxyHttp for ConduitProxy {
             let config = self.state.config.load();
             let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
             let site = config.sites.get(site_idx);
-            logging::write_access_log(session, start_time, site, &self.state.log_writer);
+            let request_id = session
+                .req_header()
+                .headers
+                .get("x-request-id")
+                .and_then(|v| v.to_str().ok());
+            let upstream_addr = ctx.as_ref().and_then(|c| c.proxy_upstream_url.as_deref());
+            logging::write_access_log(
+                session,
+                start_time,
+                site,
+                &self.state.log_writer,
+                &logging::AccessLogContext {
+                    request_id,
+                    upstream_addr,
+                },
+            );
         }
 
         // Record Prometheus metrics.

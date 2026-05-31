@@ -42,22 +42,135 @@ pub struct UpstreamEntry {
     /// Used by slow-start: during the ramp-up window, the upstream's effective
     /// weight is scaled from 0 to 100 % proportionally to elapsed time.
     pub recovery_time_secs: Option<u64>,
+    /// Peak Exponentially-Weighted Moving Average latency in microseconds.
+    ///
+    /// Updated on every completed proxy request.  Uses decay factor α = 0.1
+    /// (roughly 10-sample half-life) — the same approach as linkerd's `PeakEwma`.
+    /// Used by `LeastResponseTime` to select the fastest currently-available backend.
+    pub ewma_latency_us: f64,
+    /// Consecutive 5xx responses from actual proxy traffic (passive health check).
+    /// Resets to 0 on any non-5xx response.
+    pub consecutive_5xx: u32,
+    /// Unix timestamp (secs) until which this upstream is temporarily ejected.
+    /// `None` = not ejected.  Set by Outlier Detection.
+    pub ejected_until_secs: Option<u64>,
+    /// Number of times this upstream has been ejected.  Used for backoff:
+    /// ejection duration = `base_time × 2^ejection_count`.
+    pub ejection_count: u32,
 }
 
 impl Default for UpstreamEntry {
     fn default() -> Self {
         Self {
-            healthy: true, // optimistic: assume healthy until a probe says otherwise
+            healthy: true,
             consecutive_failures: 0,
             consecutive_successes: 0,
             latency_ms: None,
             recovery_time_secs: None,
+            ewma_latency_us: 1_000_000.0, // default: 1 second (conservative)
+            consecutive_5xx: 0,
+            ejected_until_secs: None,
+            ejection_count: 0,
         }
+    }
+}
+
+/// Update the Peak EWMA latency for `url` after completing a proxy request.
+///
+/// `elapsed_us` is the end-to-end request latency in microseconds.
+/// Uses decay factor α = 0.1 (approximately 10-sample window).
+pub fn record_request_latency(
+    registry: &UpstreamRegistry,
+    url: &str,
+    elapsed_us: u64,
+    status: u16,
+) {
+    let mut entry = registry
+        .statuses
+        .entry(url.to_owned())
+        .or_insert_with(UpstreamEntry::default);
+
+    // Peak EWMA: α * new + (1-α) * old, but keep the peak in a window
+    const ALPHA: f64 = 0.1;
+    entry.ewma_latency_us = ALPHA * elapsed_us as f64 + (1.0 - ALPHA) * entry.ewma_latency_us;
+
+    // Passive health: track consecutive 5xx responses.
+    if status >= 500 {
+        entry.consecutive_5xx = entry.consecutive_5xx.saturating_add(1);
+    } else {
+        entry.consecutive_5xx = 0;
     }
 }
 
 /// Compute the slow-start traffic fraction for an upstream.
 ///
+/// Check whether `url` should be ejected based on its consecutive 5xx count.
+///
+/// If the threshold is reached the upstream is ejected for
+/// `base_time × 2^ejection_count` seconds, capped at `max_ejection_time_secs`.
+/// At most `max_ejection_percent` % of the tracked upstreams may be ejected at once.
+pub fn maybe_eject(
+    registry: &UpstreamRegistry,
+    url: &str,
+    cfg: &crate::config::schema::OutlierDetectionConfig,
+) {
+    let threshold = cfg.consecutive_5xx.unwrap_or(5);
+    let base_secs = cfg.base_ejection_time_secs.unwrap_or(30);
+    let max_secs = cfg.max_ejection_time_secs.unwrap_or(300);
+    let max_pct = cfg.max_ejection_percent.unwrap_or(10) as usize;
+
+    let should_eject = registry
+        .statuses
+        .get(url)
+        .is_some_and(|e| e.consecutive_5xx >= threshold && e.ejected_until_secs.is_none());
+
+    if !should_eject {
+        return;
+    }
+
+    // Count currently-ejected upstreams to enforce max_ejection_percent.
+    let total = registry.statuses.len().max(1);
+    let max_ejected = (total * max_pct / 100).max(1);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let currently_ejected = registry
+        .statuses
+        .iter()
+        .filter(|e| e.ejected_until_secs.is_some_and(|u| u > now))
+        .count();
+    if currently_ejected >= max_ejected {
+        tracing::debug!(
+            url,
+            "outlier ejection skipped: max_ejection_percent reached"
+        );
+        return;
+    }
+
+    // Compute backoff duration.
+    let count = registry
+        .statuses
+        .get(url)
+        .map(|e| e.ejection_count)
+        .unwrap_or(0);
+    let duration = (base_secs * (1u64 << count.min(10))).min(max_secs);
+    let until = now + duration;
+
+    registry.statuses.entry(url.to_owned()).and_modify(|e| {
+        e.ejected_until_secs = Some(until);
+        e.ejection_count = e.ejection_count.saturating_add(1);
+        e.consecutive_5xx = 0;
+    });
+
+    tracing::warn!(
+        url,
+        ejected_for_secs = duration,
+        count,
+        "upstream ejected by outlier detection"
+    );
+}
+
 /// Returns a value in `[0.0, 1.0]`:
 /// - `1.0` when slow-start is disabled or the ramp window has elapsed.
 /// - A value proportional to `elapsed / window_secs` during ramp-up.
@@ -189,7 +302,23 @@ impl UpstreamRegistry {
     /// Defaults to `true` when the URL has not been seen by a probe yet
     /// (optimistic assumption so traffic flows before the first check).
     pub fn is_healthy(&self, url: &str) -> bool {
-        self.statuses.get(url).map(|e| e.healthy).unwrap_or(true)
+        let Some(entry) = self.statuses.get(url) else {
+            return true; // optimistic: not yet seen
+        };
+        if !entry.healthy {
+            return false;
+        }
+        // Check outlier-detection ejection.
+        if let Some(until) = entry.ejected_until_secs {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if now < until {
+                return false; // still ejected
+            }
+        }
+        true
     }
 
     /// Filter `urls` to only healthy ones.
@@ -473,6 +602,7 @@ mod tests {
             consecutive_successes: 0,
             latency_ms: None,
             recovery_time_secs: None,
+            ..Default::default()
         };
         apply_probe_result(&mut e, true, 10, 2, 3);
         assert!(!e.healthy, "one success is not enough (threshold = 2)");
@@ -508,10 +638,80 @@ mod tests {
             consecutive_successes: 0,
             latency_ms: None,
             recovery_time_secs: None,
+            ..Default::default()
         };
         apply_probe_result(&mut e, true, 5, 1, 3);
         assert_eq!(e.consecutive_failures, 0);
         assert!(e.healthy);
+    }
+
+    // ── Peak EWMA + Outlier Detection ────────────────────────────────────────
+
+    #[test]
+    fn ewma_latency_updates_toward_sample() {
+        let reg = UpstreamRegistry::new();
+        // Insert with default (1_000_000 µs = 1s).
+        record_request_latency(&reg, "http://u:4000", 100_000, 200); // 100 ms
+        let v = reg.statuses.get("http://u:4000").unwrap().ewma_latency_us;
+        // After one sample: 0.1 * 100_000 + 0.9 * 1_000_000 = 910_000
+        assert!((v - 910_000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn consecutive_5xx_increments_on_error() {
+        let reg = UpstreamRegistry::new();
+        record_request_latency(&reg, "http://u:4000", 10_000, 503);
+        record_request_latency(&reg, "http://u:4000", 10_000, 503);
+        let c5 = reg.statuses.get("http://u:4000").unwrap().consecutive_5xx;
+        assert_eq!(c5, 2);
+    }
+
+    #[test]
+    fn consecutive_5xx_resets_on_success() {
+        let reg = UpstreamRegistry::new();
+        record_request_latency(&reg, "http://u:4000", 10_000, 503);
+        record_request_latency(&reg, "http://u:4000", 10_000, 200);
+        let c5 = reg.statuses.get("http://u:4000").unwrap().consecutive_5xx;
+        assert_eq!(c5, 0);
+    }
+
+    #[test]
+    fn outlier_ejection_after_threshold() {
+        use crate::config::schema::OutlierDetectionConfig;
+        let reg = UpstreamRegistry::new();
+        // Drive consecutive_5xx to threshold.
+        for _ in 0..5 {
+            record_request_latency(&reg, "http://u:4000", 10_000, 503);
+        }
+        let cfg = OutlierDetectionConfig {
+            consecutive_5xx: Some(5),
+            base_ejection_time_secs: Some(30),
+            max_ejection_time_secs: Some(300),
+            max_ejection_percent: Some(100),
+        };
+        maybe_eject(&reg, "http://u:4000", &cfg);
+        assert!(
+            !reg.is_healthy("http://u:4000"),
+            "must be ejected after 5 consecutive 5xx"
+        );
+    }
+
+    #[test]
+    fn outlier_no_ejection_below_threshold() {
+        use crate::config::schema::OutlierDetectionConfig;
+        let reg = UpstreamRegistry::new();
+        record_request_latency(&reg, "http://u:4000", 10_000, 503);
+        let cfg = OutlierDetectionConfig {
+            consecutive_5xx: Some(5),
+            base_ejection_time_secs: Some(30),
+            max_ejection_time_secs: Some(300),
+            max_ejection_percent: Some(100),
+        };
+        maybe_eject(&reg, "http://u:4000", &cfg);
+        assert!(
+            reg.is_healthy("http://u:4000"),
+            "one 5xx must not trigger ejection"
+        );
     }
 
     // ── probe_http ────────────────────────────────────────────────────────────

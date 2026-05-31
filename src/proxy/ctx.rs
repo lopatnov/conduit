@@ -36,6 +36,11 @@ pub struct RequestCtx {
     /// `None` means the route has no cache config and caching is disabled for
     /// this request.
     pub proxy_cache_cfg: Option<CacheConfig>,
+    /// Set to `true` by `upstream_response_filter` when the upstream returns a
+    /// 5xx status and the site has `maskErrors: true`.  The
+    /// `upstream_response_body_filter` hook replaces the body with a generic
+    /// JSON error so internal stack traces don't leak to clients.
+    pub mask_upstream_body: bool,
 }
 
 impl RequestCtx {
@@ -62,6 +67,7 @@ impl RequestCtx {
             proxy_http2,
             proxy_upstream_url,
             proxy_cache_cfg,
+            mask_upstream_body: false,
         }
     }
 }

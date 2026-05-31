@@ -9,6 +9,14 @@ use crate::util::log_writer::LogWriter;
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
+/// Extra context for structured access logs — filled in by the logging() hook.
+pub struct AccessLogContext<'a> {
+    /// Value of the `X-Request-ID` header (generated or forwarded by XRequestIdGuard).
+    pub request_id: Option<&'a str>,
+    /// Selected upstream URL for proxy requests (`None` for local handlers).
+    pub upstream_addr: Option<&'a str>,
+}
+
 /// Format and write a single access-log line for the completed request.
 ///
 /// Does nothing when logging is not configured or is explicitly disabled.
@@ -17,6 +25,7 @@ pub fn write_access_log(
     start_time: Instant,
     site_config: Option<&SiteConfig>,
     log_writer: &LogWriter,
+    extra: &AccessLogContext<'_>,
 ) {
     let logging_cfg = site_config.and_then(|s| s.logging.as_ref());
 
@@ -44,13 +53,18 @@ pub fn write_access_log(
         _ => {}
     }
 
-    let line = format_line(session, start_time, format);
+    let line = format_line(session, start_time, format, extra);
     log_writer.write_line(&line);
 }
 
 // ── Formatting ─────────────────────────────────────────────────────────────
 
-fn format_line(session: &Session, start_time: Instant, format: &LogFormat) -> String {
+fn format_line(
+    session: &Session,
+    start_time: Instant,
+    format: &LogFormat,
+    extra: &AccessLogContext<'_>,
+) -> String {
     let method = session.req_header().method.as_str();
     let path = session
         .req_header()
@@ -107,14 +121,11 @@ fn format_line(session: &Session, start_time: Instant, format: &LogFormat) -> St
         }
         LogFormat::Json => {
             let t = iso8601_now();
-            // Parse body_bytes: "-" (no Content-Length) → null; a valid
-            // number → JSON integer. Use serde_json for all string fields so
-            // that paths containing `"` or `\` don't produce invalid JSON.
             let bytes: JsonValue = body_bytes
                 .parse::<u64>()
                 .map(JsonValue::from)
                 .unwrap_or(JsonValue::Null);
-            serde_json::json!({
+            let mut obj = serde_json::json!({
                 "time":        t,
                 "method":      method,
                 "path":        path,
@@ -122,8 +133,14 @@ fn format_line(session: &Session, start_time: Instant, format: &LogFormat) -> St
                 "bytes":       bytes,
                 "duration_ms": elapsed_ms as u64,
                 "ip":          client_ip,
-            })
-            .to_string()
+            });
+            if let Some(rid) = extra.request_id {
+                obj["request_id"] = JsonValue::String(rid.to_owned());
+            }
+            if let Some(addr) = extra.upstream_addr {
+                obj["upstream"] = JsonValue::String(addr.to_owned());
+            }
+            obj.to_string()
         }
     }
 }

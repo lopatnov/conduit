@@ -120,6 +120,27 @@ pub struct SiteConfig {
     /// evaluated before the top-level `proxy` / `static` shorthand.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub routes: Option<Vec<RouteConfig>>,
+    /// Passive health checking via outlier detection.
+    ///
+    /// Tracks consecutive 5xx responses from real traffic (not health probes)
+    /// and temporarily ejects misbehaving upstreams from the pool.
+    ///
+    /// ```json
+    /// { "outlierDetection": { "consecutive5xx": 5, "baseEjectionTimeSecs": 30 } }
+    /// ```
+    #[serde(rename = "outlierDetection", skip_serializing_if = "Option::is_none")]
+    pub outlier_detection: Option<OutlierDetectionConfig>,
+    /// Replace upstream 5xx response bodies with a generic JSON error.
+    ///
+    /// Prevents internal stack traces and service details from leaking to
+    /// clients.  Set to `false` in development environments where you need to
+    /// see the real upstream error body.
+    ///
+    /// ```json
+    /// { "maskErrors": true }
+    /// ```
+    #[serde(rename = "maskErrors", skip_serializing_if = "Option::is_none")]
+    pub mask_errors: Option<bool>,
     /// Fault injection for testing — inject artificial errors or delays.
     /// Should NOT be enabled in production.
     #[serde(rename = "faultInjection", skip_serializing_if = "Option::is_none")]
@@ -832,4 +853,27 @@ pub struct FaultDelay {
     pub percent: f64,
     /// Delay in milliseconds.
     pub ms: u64,
+}
+
+/// Passive health checking via Outlier Detection.
+///
+/// Ejects upstreams that return consecutive 5xx responses from real proxy
+/// traffic.  Ejection duration grows exponentially with each ejection cycle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlierDetectionConfig {
+    /// Number of consecutive 5xx responses that trigger ejection (default: 5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consecutive_5xx: Option<u32>,
+    /// Base ejection duration in seconds (default: 30).
+    /// Actual duration = base × 2^ejection_count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_ejection_time_secs: Option<u64>,
+    /// Maximum ejection duration in seconds (default: 300 = 5 min).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_ejection_time_secs: Option<u64>,
+    /// Maximum fraction of upstreams that may be ejected simultaneously (0–100, default: 10).
+    /// Prevents all upstreams from being ejected at once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_ejection_percent: Option<u8>,
 }
