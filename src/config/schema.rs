@@ -390,6 +390,14 @@ pub struct LimitsConfig {
     pub max_header_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// Maximum concurrent requests to this site.  When the number of in-flight
+    /// requests reaches this limit, new requests receive `503 Service Unavailable`
+    /// immediately rather than queuing.  Defaults to unlimited.
+    #[serde(
+        rename = "maxInflightRequests",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_inflight_requests: Option<u64>,
 }
 
 // ── Redirects ──────────────────────────────────────────────────────────────
@@ -497,6 +505,15 @@ pub struct ProxyRouteConfig {
     /// Capture groups (`$1`, `$2`, …) are supported in `to`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rewrite: Option<Vec<RewriteRule>>,
+    /// Explicit backup (failover) upstream.  Used when all primary `targets`
+    /// are unhealthy or when a primary returns a 5xx / connection error and
+    /// the retry conditions include `"5xx"` / `"connection_error"`.
+    ///
+    /// ```json
+    /// { "targets": ["http://primary:4000"], "backup": "http://fallback:4000" }
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup: Option<String>,
     /// Two-level load balancing: outer strategy picks a group, inner strategy
     /// picks within the group.  Mutually exclusive with `targets` — if
     /// `groups` is set, `targets` is ignored.
@@ -506,6 +523,23 @@ pub struct ProxyRouteConfig {
     /// Defaults to `round-robin` when `groups` is present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_strategy: Option<LoadBalanceStrategy>,
+    /// Sticky session via cookie.  When set, the named cookie value is used
+    /// as the hash key — the same client always hits the same backend for the
+    /// lifetime of the cookie.
+    ///
+    /// ```json
+    /// { "sticky": { "cookie": "srv_id" } }
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sticky: Option<StickyConfig>,
+}
+
+/// Configuration for cookie-based sticky sessions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StickyConfig {
+    /// Name of the cookie to use as the session affinity key.
+    pub cookie: String,
 }
 
 /// A named group of upstream targets with its own balancing strategy.
@@ -575,6 +609,12 @@ pub struct ProxyTimeout {
     pub send_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub read_ms: Option<u64>,
+    /// Per-attempt timeout in milliseconds.  When set, each retry attempt gets
+    /// its own independent timeout rather than sharing the remaining total
+    /// timeout.  Useful for capping latency on individual attempts while still
+    /// allowing multiple retries.
+    #[serde(rename = "perTryMs", skip_serializing_if = "Option::is_none")]
+    pub per_try_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -598,6 +638,11 @@ pub struct UpstreamHealthCheck {
     pub unhealthy_threshold: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub healthy_threshold: Option<u32>,
+    /// Slow-start ramp-up window in seconds.  After an upstream recovers from
+    /// an unhealthy state, its effective weight is increased linearly from 0 to
+    /// 100 % over this window.  Set to 0 (default) to disable.
+    #[serde(rename = "slowStartSecs", skip_serializing_if = "Option::is_none")]
+    pub slow_start_secs: Option<u64>,
 }
 
 // ── Cache ──────────────────────────────────────────────────────────────────

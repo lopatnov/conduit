@@ -177,6 +177,7 @@ fn route_site(
             proxy_cfg,
             path,
             client_ip,
+            req_headers,
             counters,
             upstream_health,
             &site_label,
@@ -272,6 +273,7 @@ fn resolve_proxy(
     config: &ProxyConfig,
     path: &str,
     client_ip: &str,
+    req_headers: &http::HeaderMap,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
     site_label: &str,
@@ -351,6 +353,23 @@ fn resolve_proxy(
                 _ => (None, None, None, None, false, "ip", None, None),
             };
 
+            // Failover: when a backup URL is configured and all primary upstreams
+            // are unhealthy, route to the backup instead.
+            let backup_url: Option<String> = if let ProxyRouteTarget::Full(cfg) = route_target {
+                cfg.backup.clone()
+            } else {
+                None
+            };
+            let all_unhealthy =
+                !all_urls.is_empty() && all_urls.iter().all(|u| !upstream_health.is_healthy(u));
+            if all_unhealthy {
+                if let Some(ref backup) = backup_url {
+                    tracing::info!(backup = %backup, "all primary upstreams unhealthy — routing to backup");
+                    return url_to_proxy_upstream(backup, None)
+                        .map(|upstream| (upstream, None, None, None, false, None, None));
+                }
+            }
+
             // Filter to healthy upstreams; if all are down keep all (fail-open).
             let healthy = upstream_health.filter_healthy(&all_urls);
             let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
@@ -361,14 +380,38 @@ fn resolve_proxy(
                 .filter(|(url, _)| urls.contains(url))
                 .collect();
 
-            // Compute hash value for ip-hash and consistent-hash strategies.
-            // Fall back to path when the client IP is unavailable so that the
-            // load is still distributed rather than all landing on one bucket.
-            let hash_input = if hash_key == "url" || client_ip.is_empty() {
+            // Sticky sessions: if configured, extract the cookie value and use
+            // it as the hash input — the same cookie value always maps to the
+            // same upstream bucket (consistent hashing).
+            let sticky_override: Option<String> = if let ProxyRouteTarget::Full(cfg) = route_target
+            {
+                cfg.sticky
+                    .as_ref()
+                    .and_then(|s| extract_cookie(req_headers, &s.cookie))
+            } else {
+                None
+            };
+
+            // Compute hash value for ip-hash, consistent-hash, and sticky.
+            // Priority: sticky cookie > hash_key config > client IP.
+            let hash_input: &str = if let Some(ref cookie_val) = sticky_override {
+                cookie_val.as_str()
+            } else if hash_key == "url" || client_ip.is_empty() {
                 path
             } else {
                 client_ip
             };
+
+            // When sticky is active, override strategy to consistent-hash so
+            // the cookie value is always used for backend selection.
+            let effective_strategy: Option<LoadBalanceStrategy>;
+            let strategy = if sticky_override.is_some() {
+                effective_strategy = Some(LoadBalanceStrategy::ConsistentHash);
+                effective_strategy.as_ref()
+            } else {
+                strategy
+            };
+
             let hash_val = upstream::fnv1a_hash(hash_input);
 
             let hash_ctx = HashCtx {
@@ -659,6 +702,22 @@ fn pick_with_retry(
         backoff_ms: retry.backoff_ms,
     };
     Some((first, state))
+}
+
+/// Extract the value of a named cookie from the `Cookie` request header.
+///
+/// Returns `None` when the cookie is absent or the header cannot be parsed.
+fn extract_cookie(headers: &http::HeaderMap, name: &str) -> Option<String> {
+    let cookie_hdr = headers.get("cookie")?.to_str().ok()?;
+    for pair in cookie_hdr.split(';') {
+        let pair = pair.trim();
+        if let Some((k, v)) = pair.split_once('=') {
+            if k.trim() == name {
+                return Some(v.trim().to_owned());
+            }
+        }
+    }
+    None
 }
 
 fn find_route<'a>(

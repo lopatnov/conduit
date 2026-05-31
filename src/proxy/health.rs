@@ -35,6 +35,13 @@ pub struct UpstreamEntry {
     pub consecutive_successes: u32,
     /// Round-trip latency of the most recent successful probe, in milliseconds.
     pub latency_ms: Option<u64>,
+    /// Timestamp (seconds since UNIX epoch) when this upstream was last marked
+    /// healthy after recovering from an unhealthy state.  `None` means the
+    /// upstream has been healthy since it was first seen.
+    ///
+    /// Used by slow-start: during the ramp-up window, the upstream's effective
+    /// weight is scaled from 0 to 100 % proportionally to elapsed time.
+    pub recovery_time_secs: Option<u64>,
 }
 
 impl Default for UpstreamEntry {
@@ -44,7 +51,34 @@ impl Default for UpstreamEntry {
             consecutive_failures: 0,
             consecutive_successes: 0,
             latency_ms: None,
+            recovery_time_secs: None,
         }
+    }
+}
+
+/// Compute the slow-start traffic fraction for an upstream.
+///
+/// Returns a value in `[0.0, 1.0]`:
+/// - `1.0` when slow-start is disabled or the ramp window has elapsed.
+/// - A value proportional to `elapsed / window_secs` during ramp-up.
+///
+/// Callers should multiply their selection probability by this value.
+pub fn slow_start_fraction(entry: &UpstreamEntry, window_secs: u64) -> f64 {
+    if window_secs == 0 {
+        return 1.0;
+    }
+    let Some(recovery) = entry.recovery_time_secs else {
+        return 1.0; // no recovery time recorded → fully ramped
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let elapsed = now.saturating_sub(recovery);
+    if elapsed >= window_secs {
+        1.0
+    } else {
+        elapsed as f64 / window_secs as f64
     }
 }
 
@@ -346,6 +380,12 @@ fn spawn_health_task(
                     unhealthy_threshold,
                 );
                 if ok && !was_healthy && entry.healthy {
+                    // Record recovery time for slow-start weight ramping.
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    entry.recovery_time_secs = Some(now);
                     tracing::info!(url, "upstream recovered");
                 } else if !ok && was_healthy && !entry.healthy {
                     tracing::warn!(
@@ -432,6 +472,7 @@ mod tests {
             consecutive_failures: 5,
             consecutive_successes: 0,
             latency_ms: None,
+            recovery_time_secs: None,
         };
         apply_probe_result(&mut e, true, 10, 2, 3);
         assert!(!e.healthy, "one success is not enough (threshold = 2)");
@@ -466,6 +507,7 @@ mod tests {
             consecutive_failures: 2,
             consecutive_successes: 0,
             latency_ms: None,
+            recovery_time_secs: None,
         };
         apply_probe_result(&mut e, true, 5, 1, 3);
         assert_eq!(e.consecutive_failures, 0);

@@ -214,6 +214,26 @@ pub struct LimitsGuard {
 #[async_trait]
 impl RequestFilter for LimitsGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
+        // Inflight request cap — checked before body/header limits so the
+        // rejection cost is minimal when the server is under heavy load.
+        if let Some(max) = self.cfg.max_inflight_requests {
+            // The inflight counter was already incremented at the start of
+            // request_filter, so the current value includes this request.
+            let current = ctx.inflight.load(Ordering::Relaxed) as u64;
+            if current > max {
+                response::write_response(
+                    ctx.session,
+                    503,
+                    "text/plain",
+                    Bytes::from_static(b"Service Unavailable (too many concurrent requests)"),
+                    ctx.extra_headers,
+                )
+                .await?;
+                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+                return Ok(FilterOutcome::Handled);
+            }
+        }
+
         if let Some((status, body)) = limits_rejection(limits::check(&self.cfg, ctx.session)) {
             response::write_response(ctx.session, status, "text/plain", body, ctx.extra_headers)
                 .await?;
