@@ -1,0 +1,172 @@
+# ── API Gateway — Authentication, Rate Limiting, Transforms ──────────────────
+#
+# Full API gateway configuration showcasing Phase 4 features:
+#   • JWT bearer-token validation (JWKS from Auth0 / Cognito / Google)
+#   • Per-route rate limiting to protect expensive endpoints
+#   • Request header injection from JWT claims ({{ jwt.sub }})
+#   • Response header cleanup (remove internal headers before client sees them)
+#   • Traffic mirroring to a shadow environment for testing new versions
+#   • Circuit breaker (max connections per upstream)
+#   • Service failover when all primary upstreams go unhealthy
+#
+# Requires: --features otlp  (for the OTLP tracing section)
+# Run: conduit -c examples/api-gateway.yaml
+
+global:
+  admin:
+    bind: "127.0.0.1:2019"
+    # Protect the Admin API with a bearer token.
+    # Set via environment variable: ADMIN_TOKEN=... conduit start
+    token: "$ADMIN_TOKEN"
+
+  # OpenTelemetry OTLP — send traces to Grafana Tempo.
+  # Requires: cargo build --features otlp
+  otlp:
+    endpoint: "http://tempo:4317"
+    serviceName: "api-gateway"
+    sampleRate: 0.1    # sample 10 % of traffic in production
+
+sites:
+  - port: 443
+    host: api.example.com
+
+    tls:
+      cert: "/etc/tls/api.crt"
+      key:  "/etc/tls/api.key"
+      # Redirect http:// to https:// automatically.
+      httpRedirectPort: 80
+
+    # ── Security headers ──────────────────────────────────────────────────────
+    securityHeaders:
+      hsts: "max-age=31536000; includeSubDomains"
+      contentSecurityPolicy: "default-src 'none'"
+      frameOptions: DENY
+      referrerPolicy: "no-referrer"
+
+    # ── JWT authentication ────────────────────────────────────────────────────
+    # Validates Authorization: Bearer <token> on every request.
+    # Uses RS256 / ES256 public keys from the JWKS endpoint.
+    # Health check and public docs bypass JWT validation.
+    jwtAuth:
+      jwksUrl: "https://auth.example.com/.well-known/jwks.json"
+      jwksRefreshSecs: 3600       # re-fetch keys once per hour
+      audience: ["api.example.com"]
+      issuer: "https://auth.example.com"
+      skipPaths:
+        - /__health__
+        - /docs/**
+        - /v1/public/**
+
+    # ── Rate limiting ─────────────────────────────────────────────────────────
+    # Site-level: 1 000 req/min per IP (burst protection).
+    rateLimit:
+      windowSecs: 60
+      limit: 1000
+      keyBy: ip
+      skipPaths: [/__health__]
+
+    # ── Request transformation ────────────────────────────────────────────────
+    # Inject JWT claims as headers so upstreams don't need to re-validate.
+    # {{ jwt.sub }} is replaced with the "sub" claim from the validated token.
+    requestTransform:
+      setHeaders:
+        X-User-ID:    "{{ jwt.sub }}"     # user identifier
+        X-User-Email: "{{ jwt.email }}"   # email claim (if present)
+        X-Tenant-ID:  "{{ jwt.tid }}"     # custom tenant claim
+      removeHeaders:
+        - Authorization     # don't forward the raw JWT to the upstream
+
+    # ── Response transformation ───────────────────────────────────────────────
+    # Strip implementation details from responses before they reach clients.
+    responseTransform:
+      removeHeaders:
+        - X-Powered-By
+        - Server
+        - X-AspNet-Version
+      setHeaders:
+        X-Served-By: "conduit"
+
+    # ── Structured access logs ────────────────────────────────────────────────
+    logging:
+      format: json
+      skipPaths: [/__health__, /__metrics__]
+
+    proxy:
+      # ── User service ────────────────────────────────────────────────────────
+      /v1/users:
+        targets:
+          - "http://user-svc-1:8080"
+          - "http://user-svc-2:8080"
+        strategy: round-robin
+        stripPrefix: true
+        # Per-route rate limit: stricter limit on write operations.
+        rateLimit:
+          windowSecs: 60
+          limit: 100
+          keyBy: header:X-User-ID   # limit per authenticated user, not IP
+        healthCheck:
+          path: /healthz
+          intervalSecs: 10
+          unhealthyThreshold: 3
+          # Circuit breaker: refuse new connections when upstream is swamped.
+          maxConnectionsPerUpstream: 50
+        # Failover to a read replica if both primaries are unhealthy.
+        backup: "http://user-svc-read-replica:8080"
+        retry:
+          attempts: 2
+          conditions: [connection_error, "5xx"]
+          backoffMs: 50
+          budgetPercent: 20   # max 20% of active requests may be retries
+
+      # ── Payment service (high-security) ─────────────────────────────────────
+      /v1/payments:
+        targets:
+          - "https://payment-svc:8443"
+        strategy: round-robin
+        stripPrefix: true
+        # Verify the payment service TLS certificate.
+        upstreamTls:
+          verify: true
+          serverName: payment-svc.internal
+        # Strict per-route limit: only 10 payment attempts per minute per user.
+        rateLimit:
+          windowSecs: 60
+          limit: 10
+          keyBy: header:X-User-ID
+        healthCheck:
+          maxConnectionsPerUpstream: 20
+
+      # ── Search service (with shadow testing) ─────────────────────────────────
+      /v1/search:
+        targets:
+          - "http://search-v1:9000"
+        # Mirror 100% of search traffic to the new v2 service (fire-and-forget).
+        # The v2 response is discarded; clients only see the v1 response.
+        mirror: "http://search-v2:9001"
+        strategy: round-robin
+        stripPrefix: true
+
+      # ── Public health / docs ──────────────────────────────────────────────
+      /__health__: "http://health-aggregator:7000"
+      /docs:
+        targets: ["http://docs-server:3000"]
+        cache:
+          store: memory
+          ttlSecs: 3600   # cache docs pages for 1 hour
+
+    # ── Metrics endpoint ──────────────────────────────────────────────────────
+    metrics:
+      path: /__metrics__
+      token: "$METRICS_TOKEN"
+
+    # ── Replace upstream 5xx bodies with generic JSON ─────────────────────────
+    # Prevents internal stack traces from leaking to API consumers.
+    maskErrors: true
+
+    # ── Outlier detection ─────────────────────────────────────────────────────
+    # Passively track bad upstreams; eject after 5 consecutive 5xx responses.
+    outlierDetection:
+      consecutive5xx: 5
+      baseEjectionTimeSecs: 30
+      maxEjectionTimeSecs: 300
+      maxEjectionPercent: 50    # allow ejecting up to half the cluster

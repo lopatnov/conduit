@@ -1,0 +1,33 @@
+# ── Redis-backed rate limiting ────────────────────────────────────────────────
+#
+# Uses Redis as the rate-limiter state store instead of the default in-process
+# DashMap.  This enables consistent rate limits across multiple Conduit
+# instances (e.g., when running behind a load balancer or in Kubernetes).
+#
+# Behaviour:
+#   • Limit: 100 requests per IP per 60 seconds
+#   • Falls back to in-memory if Redis is unavailable (no hard failure)
+#   • Health / metrics paths are excluded from rate limiting
+#
+# Run: conduit -c examples/redis-rate-limit.yaml
+
+port: 8080
+
+proxy: "http://localhost:4000"
+
+rateLimit:
+  windowSecs: 60    # sliding window length in seconds
+  limit: 100        # max requests per key within the window
+  keyBy: ip         # use client IP as the rate-limit bucket key
+                    # alternatives: "header:X-User-ID" or "header:X-API-Key"
+
+  # Use Redis as the shared state store.
+  # All Conduit instances that share this Redis URL share rate-limit buckets.
+  # Supports: redis://, redis://user:pass@host:port, rediss:// (TLS)
+  store: "redis://127.0.0.1:6379"
+
+  # These paths are never rate-limited — container probes and metric scrapers
+  # should not consume rate-limit budget.
+  skipPaths:
+    - /__health__
+    - /__metrics__

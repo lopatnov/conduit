@@ -1,0 +1,41 @@
+# ── Two-level load balancing (upstream groups) ────────────────────────────────
+#
+# Outer strategy selects a group (region); inner strategy balances within it.
+#
+#   Client → Conduit → ip-hash → us-east group → least-conn → us-east-1
+#                                                            → us-east-2
+#
+#             same IP always hits the same region (sticky geo routing)
+#
+# Use cases:
+#   • Geo-affinity routing (same client always hits the nearest region)
+#   • Blue/green deployments (group = version, weight controls rollout)
+#   • Tenant isolation (group per customer, inner LB within tenant nodes)
+#
+# Run: conduit -c examples/upstream-groups.yaml
+
+port: 8080
+
+proxy:
+  /api:
+    # Two server groups — one per region.
+    groups:
+      - name: us-east
+        targets:
+          - "http://us-east-1:4000"
+          - "http://us-east-2:4000"
+        # Within the group: use least-conn to spread load.
+        strategy: least-conn
+
+      - name: eu-west
+        targets:
+          - "http://eu-west-1:4000"
+          - "http://eu-west-2:4000"
+        strategy: least-conn
+
+    # Outer strategy: ip-hash ensures the same client IP always
+    # lands in the same group (regional stickiness).
+    # Alternatives: round-robin (alternate groups), random, weighted-round-robin
+    groupStrategy: ip-hash
+
+healthCheck: true

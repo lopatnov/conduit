@@ -1,0 +1,117 @@
+# ── Security-Hardened Production Config ─────────────────────────────────────
+#
+# Defence-in-depth configuration demonstrating all security features:
+#   • HTTPS with modern TLS (1.2+, strong ciphers)
+#   • Security response headers (HSTS, CSP, X-Frame-Options, …)
+#   • CORS locked to known origins
+#   • IP allowlist (internal networks only)
+#   • Rate limiting per IP to prevent brute-force and DDoS
+#   • Basic Auth on the admin UI
+#   • API key authentication on the API
+#   • Error masking (hide stack traces from clients)
+#   • Admin API protected by bearer token
+#   • Upstream TLS verification (mutual trust)
+#
+# Run: conduit -c examples/security-hardened.yaml
+
+global:
+  admin:
+    bind: "127.0.0.1:2019"   # loopback-only (do not expose to network)
+    token: "$ADMIN_TOKEN"     # require Bearer token for all Admin API calls
+
+sites:
+  - port: 443
+    host: secure.example.com
+
+    # ── TLS ───────────────────────────────────────────────────────────────────
+    tls:
+      cert: /etc/tls/server.crt
+      key:  /etc/tls/server.key
+      # Redirect plain HTTP to HTTPS.
+      httpRedirectPort: 80
+      # Only TLS 1.2 and 1.3 (rustls cipher string format, not OpenSSL).
+      versions: ["TLSv1.2", "TLSv1.3"]
+
+    # ── Security headers ──────────────────────────────────────────────────────
+    securityHeaders:
+      hsts: "max-age=63072000; includeSubDomains; preload"
+      contentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+      frameOptions: DENY
+      referrerPolicy: "strict-origin-when-cross-origin"
+
+    # ── CORS ──────────────────────────────────────────────────────────────────
+    # Restrict cross-origin requests to known frontend origins.
+    cors:
+      origins: ["https://app.example.com", "https://admin.example.com"]
+      credentials: true
+      methods: [GET, POST, PUT, DELETE, OPTIONS]
+      headers: [Authorization, Content-Type, X-Request-ID]
+
+    # ── IP filter ─────────────────────────────────────────────────────────────
+    # Allow only internal and office networks; deny everything else.
+    # This is evaluated BEFORE authentication — unreachable IPs get 403 immediately.
+    ipFilter:
+      allow:
+        - "10.0.0.0/8"      # internal VPC
+        - "172.16.0.0/12"   # Docker / Kubernetes pod CIDR
+        - "203.0.113.0/24"  # office network (replace with yours)
+
+    # ── Rate limiting ─────────────────────────────────────────────────────────
+    rateLimit:
+      windowSecs: 60
+      limit: 200              # 200 req/min per IP (adjust to your traffic profile)
+      keyBy: ip
+      skipPaths: [/__health__]
+
+    # ── API key auth ──────────────────────────────────────────────────────────
+    # All /api/* requests must include X-API-Key: <key>
+    apiKey:
+      keys:
+        - "$API_KEY_PRIMARY"
+        - "$API_KEY_SECONDARY"   # rotate without downtime
+      header: X-API-Key
+      skipPaths:
+        - /__health__
+        - /public/**
+
+    # ── Error masking ─────────────────────────────────────────────────────────
+    # Replace upstream 5xx responses with a generic JSON error body.
+    # Prevents internal stack traces, DB errors, service names from leaking.
+    maskErrors: true
+
+    proxy:
+      /api:
+        targets:
+          - "https://api-internal:8443"   # HTTPS upstream
+        stripPrefix: true
+        # Verify the upstream TLS certificate against the system CA store.
+        # Set verify: false only for internal services with self-signed certs.
+        upstreamTls:
+          verify: true
+          serverName: api-internal.svc.cluster.local
+
+      /admin:
+        targets: ["http://admin-ui:3000"]
+        stripPrefix: true
+
+    # ── Admin panel: extra Basic Auth layer ───────────────────────────────────
+    # The /admin route is also protected by the site-level apiKey above.
+    # Add Basic Auth as a second factor for the admin panel.
+    # (In routes array this would be per-route; here it's site-wide.)
+
+    healthCheck: true
+    metrics:
+      path: /__metrics__
+      token: "$METRICS_TOKEN"
+
+    # ── Request/response transforms ───────────────────────────────────────────
+    requestTransform:
+      # Remove any headers clients might try to inject.
+      removeHeaders:
+        - X-Real-IP      # set by Conduit itself via X-Forwarded-For
+        - X-Admin-User   # must only come from trusted internal services
+
+    responseTransform:
+      removeHeaders:
+        - Server          # hide "nginx/1.18" or similar
+        - X-Powered-By    # hide "PHP/8.2" etc.

@@ -1,174 +1,239 @@
 # Configuration Examples
 
-Each file is a ready-to-run Conduit configuration. Copy one that matches your use case
-and adapt it, or use `conduit init` to generate one interactively.
+Each file is a ready-to-run Conduit configuration. YAML files include inline
+comments explaining every option — start there if you're new to Conduit.
+JSON files are equivalent but without comments.
 
 ```bash
-conduit -c examples/minimal.json
-conduit validate -c examples/spa-with-api.json
+# Run with a specific config
+conduit -c examples/minimal.yaml
+
+# Validate before applying
+conduit validate -c examples/api-gateway.yaml
+
+# Or generate a config interactively
+conduit init
 ```
 
 ---
 
-## Examples
+## Quick start
 
-### [minimal.json](minimal.json)
-
-The smallest useful config: serve static files from `./dist` and proxy `/api` to a
-local backend on port 4000.
-
-**Key features:** `static`, `proxy` (single upstream)
-
----
-
-### [spa-with-api.json](spa-with-api.json)
-
-Production Single-Page Application with an API backend behind a load balancer.
-Serves pre-compressed static assets with a long cache TTL, proxies `/api` across two
-backends with least-connection balancing and a 60-second in-memory cache, and uses a
-content-negotiation fallback so browsers get `index.html` while API clients get a
-JSON 404.
-
-**Key features:** `compression`, `staticOptions.preCompressed`, `proxy.strategy: least-conn`,
-`cache`, `fallback.byAccept`, `healthCheck`, `metrics`
-
----
-
-### [tls-h2.json](tls-h2.json)
-
-HTTPS with manual certificates and HTTP/2 enabled. Redirects plain HTTP (port 80) to
-HTTPS automatically. Demonstrates TLS configuration, H2 stream limits, security
-headers, and static asset caching.
-
-**Key features:** `tls.cert/key`, `tls.httpRedirectPort`, `http2`, `securityHeaders`,
-`staticOptions.maxAge`
+| Goal                                  | Example                                |
+| ------------------------------------- | -------------------------------------- |
+| Serve files + proxy locally           | `minimal.yaml`                         |
+| React / Vue / Angular SPA             | `spa-with-api.yaml`                    |
+| HTTPS with certificates               | `tls-h2.yaml` or `tls-acme.yaml`       |
+| Auto-TLS via Let's Encrypt            | `tls-acme.yaml`                        |
+| Multiple backends, load balancing     | `load-balanced.yaml`                   |
+| Multiple apps on one server           | `multi-site.yaml`                      |
+| Local dev with hot reload             | `dev-hot-reload.yaml`                  |
+| JWT / external auth                   | `jwt-auth.yaml` or `forward-auth.yaml` |
+| Full API gateway                      | `api-gateway.yaml`                     |
+| Resilience (circuit breaker, retries) | `circuit-breaker.yaml`                 |
+| Metrics + tracing                     | `observability.yaml`                   |
+| Security hardening                    | `security-hardened.yaml`               |
+| Response cache                        | `with-cache.yaml`                      |
+| URL rewriting                         | `path-rewrite.yaml`                    |
+| Custom Rhai middleware                | `rhai-middleware.yaml`                 |
+| Redis rate limiting                   | `redis-rate-limit.yaml`                |
 
 ---
 
-### [tls-acme.json](tls-acme.json)
+## Core examples
 
-Auto-TLS via Let's Encrypt — no manual certificate management. Conduit obtains and
-renews certificates automatically using ACME HTTP-01 challenge. Includes dual API
-backends with health checks and Prometheus metrics.
+### [minimal.yaml](minimal.yaml) / [minimal.json](minimal.json)
 
-**Key features:** `tls.acme`, `proxy.healthCheck`, `compression`, `metrics`, `logging: json`
+The smallest useful config: serve static files from `./dist` and proxy `/api`
+to a backend on port 4000.
 
----
-
-### [load-balanced.json](load-balanced.json)
-
-Multi-strategy load balancing across three route groups on the same port:
-
-| Route | Strategy | Purpose |
-|---|---|---|
-| `/api` | Weighted round-robin (3:1) | Route more traffic to the powerful server |
-| `/auth` | IP-hash | Sticky sessions — same client always hits same backend |
-| `/search` | Least connections | Spread search queries to the least-busy server |
-
-Includes upstream health checks, automatic retry on `connection_error` and `5xx`, and
-a Prometheus metrics endpoint.
-
-**Key features:** `weighted-round-robin`, `ip-hash`, `least-conn`, `retry`, `healthCheck`
+**Features:** `static`, `proxy` (single upstream)
 
 ---
 
-### [multi-site.json](multi-site.json)
+### [spa-with-api.yaml](spa-with-api.yaml) / [spa-with-api.json](spa-with-api.json)
 
-Three virtual hosts from a single Conduit process using the `sites` array format:
+Production Single-Page Application: pre-compressed static assets, API proxy
+with least-connection balancing and a 5-minute cache, JSON / HTML fallback.
 
-- `app.example.com:443` — SPA with API proxy and two backends
-- `admin.example.com:443` — Admin panel protected with Basic Auth
-- `*:443` — Catch-all that returns 404 for unknown hostnames
-
-**Key features:** virtual hosting, `basicAuth`, `tls`, `fallback`
+**Features:** `compression`, `staticOptions.preCompressed`, `proxy.cache`,
+`fallback.byAccept`, `logging.skipPaths`
 
 ---
 
-### [with-cache.json](with-cache.json)
+### [tls-h2.yaml](tls-h2.yaml) / [tls-h2.json](tls-h2.json)
 
-In-memory proxy cache with fine-grained control: 256 MB limit, 5-minute TTL, vary on
-`Accept-Language` and `Accept-Encoding`, skip cache for auth paths and cookie-bearing
-requests, cache only GET and HEAD.
+HTTPS with manual certificates, HTTP/2, automatic HTTP→HTTPS redirect,
+security headers, and long-TTL static asset caching.
 
-**Key features:** `cache.store: memory`, `cache.varyHeaders`, `cache.skipIfCookie`,
-`cache.skipPaths`
+**Features:** `tls.cert/key`, `tls.httpRedirectPort`, `http2`, `securityHeaders`
 
 ---
 
-### [dev-hot-reload.json](dev-hot-reload.json)
+### [tls-acme.yaml](tls-acme.yaml) / [tls-acme.json](tls-acme.json)
 
-Development server with browser hot reload. When HTML, CSS, JS, TS, or JSON files
-change on disk, connected browsers automatically refresh — no build tool needed.
-CORS is open and logging is in `dev` format (colorized, short).
+Auto-TLS via Let's Encrypt — no manual certificate management.
 
-**Key features:** `hotReload`, `cors: true`, `logging: dev`, `fallback` (SPA)
+**Features:** `tls.acme`, `proxy.healthCheck`
 
 ---
 
-### [routes.json](routes.json)
+### [load-balanced.yaml](load-balanced.yaml) / [load-balanced.json](load-balanced.json)
 
-Advanced routing with the `routes` array: match on path glob, HTTP method, and query
-parameters. Separate read and write backends for the API, dedicated server for v2
-traffic, IP filter on the admin port.
+Multi-strategy load balancing: weighted round-robin, IP-hash, and
+least-connections across three route groups.
 
-**Key features:** `routes[].match.method`, `routes[].match.path`, `ipFilter`
-
----
-
-### [path-rewrite.json](path-rewrite.json)
-
-Regex-based URL rewriting applied after `stripPrefix`. Strip version prefixes
-(`/v1/`, `/v2/`) and remap legacy paths (`/users/*` → `/members/*`) before the
-request reaches the upstream.
-
-**Key features:** `proxy.rewrite`, regex capture groups (`$1`)
+**Features:** `weighted-round-robin`, `ip-hash`, `least-conn`, `retry`
 
 ---
 
-### [upstream-groups.json](upstream-groups.json)
+### [multi-site.yaml](multi-site.yaml) / [multi-site.json](multi-site.json)
 
-Two-level load balancing: an outer strategy selects a server group (by IP hash, so
-the same client always hits the same region), and an inner strategy spreads load
-within that group (least connections).
+Three virtual hosts from one process: public app with JWT auth, admin panel
+with Basic Auth, and a catch-all 404.
 
-| Outer (group selection) | Inner (within group) |
-|---|---|
-| `ip-hash` across `us-east` / `eu-west` | `least-conn` within each region |
-
-**Key features:** `proxy.groups`, `groupStrategy`, nested load balancing
+**Features:** virtual hosting, `jwtAuth`, `basicAuth`, `tls`, `fallback`
 
 ---
 
-### [redis-rate-limit.json](redis-rate-limit.json)
+### [dev-hot-reload.yaml](dev-hot-reload.yaml) / [dev-hot-reload.json](dev-hot-reload.json)
 
-Rate limiting backed by Redis instead of the default in-memory store. Enables
-consistent rate limiting across multiple Conduit instances (e.g., behind a load
-balancer). Falls back to in-memory if Redis is unavailable.
+Development server with browser hot reload, open CORS, and SPA fallback.
 
-**Key features:** `rateLimit.store: redis://`, `rateLimit.keyBy: ip`, `skipPaths`
+**Features:** `hotReload`, `cors: true`, `logging: dev`, `fallback`
 
 ---
 
-### [rhai-middleware.json](rhai-middleware.json)
+### [with-cache.yaml](with-cache.yaml) / [with-cache.json](with-cache.json)
 
-Custom request middleware written in [Rhai](https://rhai.rs/) script. The script
-runs in the filter pipeline — it can read request headers, set response headers, or
-reject requests entirely.  Two bundled scripts in `scripts/` demonstrate API-key
-enforcement and custom auth logic.
+In-memory proxy cache with TTL, Vary headers, and cookie / path exclusions.
 
-**Key features:** `middleware[].type: script`, `middleware[].path`, Rhai scripting
+**Features:** `cache.store: memory`, `cache.varyHeaders`, `cache.skipIfCookie`
 
 ---
 
-## Choosing a starting point
+## Authentication examples
 
-| I want to… | Start with |
-|---|---|
-| Quickly serve files + proxy | `minimal.json` |
-| Deploy a React/Vue/Angular app | `spa-with-api.json` |
-| Add HTTPS to an existing server | `tls-h2.json` or `tls-acme.json` |
-| Scale across multiple servers | `load-balanced.json` |
-| Run multiple apps on one machine | `multi-site.json` |
-| Speed up a slow API with caching | `with-cache.json` |
-| Work on a frontend locally | `dev-hot-reload.json` |
-| Add custom auth or request logic | `rhai-middleware.json` |
+### [jwt-auth.yaml](jwt-auth.yaml) ✨ NEW
+
+JWT bearer-token validation. Supports JWKS endpoints (Auth0, AWS Cognito,
+Keycloak, Google) and HS256 shared secrets. Injects JWT claims as upstream
+headers using `{{ jwt.sub }}` template syntax.
+
+**Features:** `jwtAuth`, `requestTransform`, `{{ jwt.<claim> }}` templates
+
+---
+
+### [forward-auth.yaml](forward-auth.yaml) ✨ NEW
+
+Delegate auth to an external HTTP service (oauth2-proxy, Ory Oathkeeper,
+custom auth middleware). The auth service's response headers are injected
+into the upstream request.
+
+**Features:** `forwardAuth`, `responseHeaders` injection, `skipPaths`
+
+---
+
+## Resilience examples
+
+### [circuit-breaker.yaml](circuit-breaker.yaml) ✨ NEW
+
+Circuit breaker, retry budget, service failover, and outlier detection — all
+working together to keep the service stable under load and failures.
+
+**Features:** `healthCheck.maxConnectionsPerUpstream`, `retry.budgetPercent`,
+`backup` (failover), `outlierDetection`, `maskErrors`
+
+---
+
+## Observability examples
+
+### [observability.yaml](observability.yaml) ✨ NEW
+
+Full observability stack: Prometheus metrics, OpenTelemetry OTLP tracing
+(Grafana Tempo / Jaeger), structured JSON access logs, and health endpoints.
+
+**Features:** `global.otlp` (requires `--features otlp`), `metrics`,
+`logging.format: json`, `logging.skipPaths`, `outlierDetection`
+
+---
+
+## Security examples
+
+### [security-hardened.yaml](security-hardened.yaml) ✨ NEW
+
+Defence-in-depth configuration: TLS hardening, security headers, CORS policy,
+IP allowlist, rate limiting, API key auth, error masking, admin auth, and
+upstream TLS verification.
+
+**Features:** `securityHeaders`, `cors.origins`, `ipFilter`, `rateLimit`,
+`apiKey`, `maskErrors`, `global.admin.token`, `upstreamTls`
+
+---
+
+## Advanced routing examples
+
+### [routes.yaml](routes.yaml) / [routes.json](routes.json)
+
+Advanced routing with the `routes` array: match on path glob, HTTP method,
+query parameters, and request headers.
+
+**Features:** `routes[].match.method`, `routes[].match.path`, `ipFilter`
+
+---
+
+### [path-rewrite.yaml](path-rewrite.yaml) / [path-rewrite.json](path-rewrite.json)
+
+Regex-based URL rewriting: strip version prefixes and remap legacy paths.
+
+**Features:** `proxy.rewrite`, regex capture groups (`$1`)
+
+---
+
+### [upstream-groups.yaml](upstream-groups.yaml) / [upstream-groups.json](upstream-groups.json)
+
+Two-level load balancing: outer strategy selects a region group, inner
+strategy spreads load within the group.
+
+**Features:** `proxy.groups`, `groupStrategy`
+
+---
+
+## Middleware examples
+
+### [rhai-middleware.yaml](rhai-middleware.yaml) / [rhai-middleware.json](rhai-middleware.json)
+
+Custom request middleware in Rhai script: read headers, inject values, or
+reject requests.
+
+**Features:** `middleware[].type: script`, Rhai scripting
+
+---
+
+### [redis-rate-limit.yaml](redis-rate-limit.yaml) / [redis-rate-limit.json](redis-rate-limit.json)
+
+Rate limiting backed by Redis for consistent limits across multiple Conduit
+instances.
+
+**Features:** `rateLimit.store: redis://`, multi-instance rate limiting
+
+---
+
+## YAML vs JSON
+
+Both formats are fully supported. YAML is recommended for new configs:
+
+- **Comments** — document every decision directly in the file
+- **Multi-line strings** — cleaner CSP / header values
+- **Less noise** — no quotes, commas, or brackets required
+
+```bash
+# YAML (recommended for new configs)
+conduit -c conduit.yaml
+
+# JSON (compatible with all JSON tooling)
+conduit -c conduit.json
+```
+
+Environment variable substitution works the same in both formats:
+`"$MY_VAR"` or `"${MY_VAR}"` is replaced at startup.

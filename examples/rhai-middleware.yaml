@@ -1,0 +1,42 @@
+# ── Rhai scripting middleware ─────────────────────────────────────────────────
+#
+# Execute custom Rhai scripts in the request pipeline.
+# Scripts can:
+#   • Read request headers, method, path, client IP
+#   • Modify request headers before forwarding to upstream
+#   • Reject requests (return 401, 403, etc.) with a custom body
+#   • Log to the Conduit tracing output
+#
+# Scripts run AFTER built-in guards (IP filter, rate limit, auth) and
+# BEFORE the request reaches the upstream.
+#
+# Multiple scripts run in declared order.
+# See: https://rhai.rs/ for the scripting language reference.
+#
+# Run: conduit -c examples/rhai-middleware.yaml
+
+port: 8080
+
+proxy: "http://localhost:4000"
+
+middleware:
+  # Script 1: enforce a custom API-key header using Rhai logic.
+  # The script reads X-API-Key and rejects requests with invalid keys.
+  - type: script
+    path: ./scripts/require-api-key.rhai
+
+  # Script 2 (optional): inject request-tracing headers.
+  # Uncomment to add a custom correlation ID if X-Request-ID is absent.
+  # - type: script
+  #   path: ./scripts/inject-correlation-id.rhai
+
+# ── Example script content ────────────────────────────────────────────────────
+# Save as ./scripts/require-api-key.rhai:
+#
+#   let key = get_header("x-api-key");
+#   if key == "" || key != env_var("VALID_API_KEY") {
+#       set_response_status(401);
+#       set_response_body("{\"error\":\"invalid api key\"}");
+#       return ABORT;
+#   }
+#   CONTINUE

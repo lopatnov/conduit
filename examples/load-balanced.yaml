@@ -1,0 +1,61 @@
+# ── Load-balanced API gateway ────────────────────────────────────────────────
+#
+# Multi-strategy load balancing across three route groups:
+#   /api    → weighted round-robin (3:1), health checks, retries
+#   /auth   → IP-hash (sticky — same client hits same backend)
+#   /search → least-connections (spread load to least-busy server)
+#
+# Run: conduit -c examples/load-balanced.yaml
+
+port: 8080
+
+# Combined log format with client IP, method, status, latency.
+logging: combined
+
+proxy:
+  /api:
+    # Weighted round-robin: "powerful" server gets 3× more traffic.
+    targets:
+      - url: "http://powerful:4000"
+        weight: 3
+      - url: "http://normal:4000"
+        weight: 1
+    strategy: weighted-round-robin
+    # Strip /api prefix before forwarding: /api/users → /users
+    stripPrefix: true
+    # Active health checks: probe every 10 s; mark unhealthy after 2 failures.
+    healthCheck:
+      path: /health
+      intervalSecs: 10
+      unhealthyThreshold: 2
+      healthyThreshold: 1
+    # Retry on connection errors and 5xx responses with 100 ms back-off.
+    retry:
+      attempts: 2
+      conditions: [connection_error, "5xx"]
+      backoffMs: 100
+
+  /auth:
+    targets:
+      - "http://auth1:5000"
+      - "http://auth2:5000"
+    # IP-hash ensures the same client always reaches the same auth backend.
+    # This preserves in-memory session state across requests.
+    strategy: ip-hash
+    hashKey: ip
+
+  /search:
+    targets:
+      - "http://search1:6000"
+      - "http://search2:6000"
+      - "http://search3:6000"
+    # Least-connections: each new request goes to the backend with fewest
+    # active connections — naturally handles variable response times.
+    strategy: least-conn
+
+# Expose /__health__ for container readiness/liveness probes.
+healthCheck: true
+
+# Prometheus metrics at /__metrics__ for Grafana / Alertmanager.
+metrics:
+  path: /__metrics__

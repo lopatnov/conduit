@@ -1,0 +1,51 @@
+# ── HTTPS + HTTP/2 with manual certificates ──────────────────────────────────
+#
+# Production HTTPS configuration with:
+#   • Manual TLS certificate (from Let's Encrypt, DigiCert, etc.)
+#   • HTTP/2 with configurable stream limits
+#   • Automatic HTTP→HTTPS redirect
+#   • Security headers (HSTS, CSP, X-Frame-Options)
+#   • Static asset serving with long-TTL cache headers
+#
+# For auto-TLS via Let's Encrypt, see tls-acme.yaml instead.
+# Run: conduit -c examples/tls-h2.yaml
+
+port: 443
+
+tls:
+  cert: /etc/tls/server.crt   # PEM-encoded certificate chain
+  key:  /etc/tls/server.key   # PEM-encoded private key
+  # Automatically redirect http://example.com → https://example.com.
+  # Conduit listens on port 80 for redirects only.
+  httpRedirectPort: 80
+
+# Enable HTTP/2 (ALPN negotiation).  H2 is used for HTTPS connections;
+# plain HTTP connections always use HTTP/1.1.
+http2:
+  maxConcurrentStreams: 100   # per-connection stream limit (default: 100)
+
+# Harden all responses with security headers.
+securityHeaders:
+  hsts: "max-age=63072000; includeSubDomains; preload"   # 2 years
+  contentSecurityPolicy: "default-src 'self'"
+  frameOptions: DENY
+  referrerPolicy: "strict-origin-when-cross-origin"
+
+# Serve static assets with a 1-year cache TTL.
+# Assumes filename-hashed assets from Vite / Webpack / Parcel.
+static: ./dist
+staticOptions:
+  maxAge: "1y"          # Cache-Control: max-age=31536000, immutable
+  etag: true            # Enable conditional GET (304 Not Modified)
+  preCompressed: true   # Serve .br and .gz variants if available
+
+proxy:
+  /api:
+    targets: ["http://backend:4000"]
+    stripPrefix: true
+    # Use HTTP/2 between Conduit and the backend (if the backend supports it).
+    http2: true
+
+healthCheck: true
+logging:
+  format: combined
