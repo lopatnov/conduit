@@ -12,7 +12,6 @@ use conduit::cli::CliCommand;
 use conduit::config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget, ProxyTarget};
 use conduit::config::{self, validate};
 use conduit::server::builder;
-use indicatif::{ProgressBar, ProgressStyle};
 
 fn main() {
     // Initialise tracing with an env-filter so that RUST_LOG controls output.
@@ -391,42 +390,67 @@ fn cmd_probe(config_path: &str) {
         return;
     }
 
-    println!("Probing {} upstream(s)...\n", urls.len());
+    println!("Probing {} upstream(s) in parallel...\n", urls.len());
 
-    let pb = ProgressBar::new(urls.len() as u64);
-    pb.set_style(
-        ProgressStyle::with_template("{bar:40.cyan/blue} {pos}/{len} {msg}")
-            .unwrap_or_else(|_| ProgressStyle::default_bar()),
-    );
+    // Probe all upstreams in parallel — each gets its own thread.
+    let handles: Vec<_> = urls
+        .iter()
+        .map(|url| {
+            let url_owned = url.clone();
+            std::thread::spawn(move || {
+                let (status_str, status_code, elapsed) = probe_url(&url_owned);
+                (url_owned, status_str, status_code, elapsed)
+            })
+        })
+        .collect();
 
-    let mut results: Vec<(String, String, Option<u16>, Duration)> = Vec::new();
+    // Collect results in original order.
+    let mut results: Vec<(String, String, Option<u16>, Duration)> =
+        handles.into_iter().filter_map(|h| h.join().ok()).collect();
 
-    for url in &urls {
-        pb.set_message(url.clone());
-        let (status_str, status_code, elapsed) = probe_url(url);
-        results.push((url.clone(), status_str, status_code, elapsed));
-        pb.inc(1);
-    }
-    pb.finish_and_clear();
+    // Sort: failures first (so they're easy to spot), then by URL.
+    results.sort_by_key(|(url, _, code, _)| {
+        let is_ok = code.is_some_and(|s| s < 500);
+        (!is_ok, url.clone())
+    });
 
     // Print aligned results table.
-    let url_width = results.iter().map(|(u, ..)| u.len()).max().unwrap_or(10);
-    let status_width = results.iter().map(|(_, s, ..)| s.len()).max().unwrap_or(10);
+    let url_width = results
+        .iter()
+        .map(|(u, ..)| u.len())
+        .max()
+        .unwrap_or(10)
+        .max(3);
+    let status_width = results
+        .iter()
+        .map(|(_, s, ..)| s.len())
+        .max()
+        .unwrap_or(10)
+        .max(6);
 
     println!(
         "{:<url_width$}  {:<status_width$}  Latency",
         "URL", "Status"
     );
-    println!("{}", "-".repeat(url_width + status_width + 12));
+    println!("{}", "─".repeat(url_width + status_width + 12));
 
     let mut any_error = false;
     for (url, status_str, status_code, elapsed) in &results {
         let ms = elapsed.as_millis();
-        println!("{url:<url_width$}  {status_str:<status_width$}  {ms} ms");
-        if status_code.is_none() || status_code.is_some_and(|s| s >= 500) {
+        let is_ok = status_code.is_some_and(|s| s < 500);
+        let indicator = if is_ok { "✓" } else { "✗" };
+        println!("{indicator} {url:<url_width$}  {status_str:<status_width$}  {ms} ms");
+        if !is_ok {
             any_error = true;
         }
     }
+
+    println!();
+    let ok_count = results
+        .iter()
+        .filter(|(.., code, _)| code.is_some_and(|s| s < 500))
+        .count();
+    println!("{ok_count}/{} upstreams healthy", results.len());
 
     if any_error {
         process::exit(1);
