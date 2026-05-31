@@ -51,6 +51,23 @@ pub struct ConduitMetrics {
     pub cache_hits_total: CounterVec,
     /// Incremented for every proxy cache miss (phase = Miss or Expired).
     pub cache_misses_total: CounterVec,
+    /// Gauge: number of HTTP requests currently being processed.
+    ///
+    /// Tracks inflight requests using Prometheus rather than a plain AtomicUsize so
+    /// the value is visible in the `/metrics` endpoint alongside other counters.
+    pub active_connections: prometheus::Gauge,
+    /// Incremented every time an upstream returns a 5xx status.
+    ///
+    /// Labels: `route` (matched route prefix), `status` (e.g. "500").
+    pub upstream_errors_total: CounterVec,
+    /// Incremented on every retry attempt triggered by `retry.conditions`.
+    ///
+    /// Labels: `route`, `condition` ("5xx" | "connection_error" | "timeout").
+    pub retry_attempts_total: CounterVec,
+    /// Incremented when a request is rejected by the rate limiter (429).
+    ///
+    /// Labels: `site` (host:port or "*").
+    pub rate_limit_rejected_total: CounterVec,
 }
 
 impl ConduitMetrics {
@@ -86,11 +103,42 @@ impl ConduitMetrics {
                 )
                 .expect("register conduit_cache_misses_total");
 
+                let active_connections = prometheus::register_gauge!(
+                    "conduit_active_connections",
+                    "Number of HTTP requests currently being processed"
+                )
+                .expect("register conduit_active_connections");
+
+                let upstream_errors_total = prometheus::register_counter_vec!(
+                    "conduit_upstream_errors_total",
+                    "Number of upstream 5xx responses",
+                    &["route", "status"]
+                )
+                .expect("register conduit_upstream_errors_total");
+
+                let retry_attempts_total = prometheus::register_counter_vec!(
+                    "conduit_retry_attempts_total",
+                    "Number of upstream retry attempts",
+                    &["route", "condition"]
+                )
+                .expect("register conduit_retry_attempts_total");
+
+                let rate_limit_rejected_total = prometheus::register_counter_vec!(
+                    "conduit_rate_limit_rejected_total",
+                    "Number of requests rejected by rate limiting (429)",
+                    &["site"]
+                )
+                .expect("register conduit_rate_limit_rejected_total");
+
                 Arc::new(Self {
                     requests_total,
                     request_duration_seconds,
                     cache_hits_total,
                     cache_misses_total,
+                    active_connections,
+                    upstream_errors_total,
+                    retry_attempts_total,
+                    rate_limit_rejected_total,
                 })
             })
             .clone()
@@ -212,6 +260,7 @@ impl ConduitProxy {
         ctx: &mut Option<RequestCtx>,
     ) -> Result<bool> {
         self.state.inflight.fetch_add(1, Ordering::Relaxed);
+        self.state.metrics.active_connections.inc();
 
         // ── Gather request metadata before borrowing the config ───────────────
         let request_origin = cors::request_origin(session);
@@ -238,6 +287,7 @@ impl ConduitProxy {
             fault_injection_cfg,
             jwt_auth_cfg,
             forward_auth_cfg,
+            site_label,
         ) = {
             let config = self.state.config.load();
             let host = extract_host(session);
@@ -317,6 +367,15 @@ impl ConduitProxy {
                 .and_then(|s| s.middleware.as_ref())
                 .cloned()
                 .unwrap_or_default();
+            // Site label for Prometheus metrics.
+            let site_label: String = match site {
+                Some(s) => {
+                    let host = s.host.as_deref().unwrap_or("*");
+                    let port = s.port.unwrap_or(80);
+                    format!("{host}:{port}")
+                }
+                None => "*".to_owned(),
+            };
 
             (
                 req_ctx,
@@ -338,6 +397,7 @@ impl ConduitProxy {
                 site.and_then(|s| s.fault_injection.clone()),
                 site.and_then(|s| s.jwt_auth.clone()),
                 site.and_then(|s| s.forward_auth.clone()),
+                site_label,
             )
         };
 
@@ -396,6 +456,7 @@ impl ConduitProxy {
             fault_injection_cfg,
             jwt_auth_cfg,
             forward_auth_cfg,
+            site_label,
         };
         if self.run_guard_filters(session, guards).await? {
             return Ok(true);
@@ -461,7 +522,10 @@ impl ConduitProxy {
 
         // 5. Token-bucket rate limiting.
         if let Some(cfg) = guards.rate_limit_cfg {
-            chain = chain.push(RateLimitGuard { cfg });
+            chain = chain.push(RateLimitGuard {
+                cfg,
+                site_label: guards.site_label.clone(),
+            });
         }
 
         // 6a. Basic Auth.
@@ -1075,7 +1139,8 @@ impl ProxyHttp for ConduitProxy {
         mut e: Box<pingora_core::Error>,
     ) -> Box<pingora_core::Error> {
         use pingora_core::ErrorType::*;
-
+        // Note: _session is deliberately unused for path-based metrics here;
+        // we avoid accessing it to prevent borrow issues with `ctx`.
         if let Some(req_ctx) = ctx.as_mut() {
             if let Some(retry) = &mut req_ctx.retry {
                 if retry.has_attempts_left() {
@@ -1089,11 +1154,21 @@ impl ProxyHttp for ConduitProxy {
                             | SocketError
                     );
                     let is_timeout = matches!(e.etype(), ConnectTimedout);
+                    let condition = if is_conn_err {
+                        "connection_error"
+                    } else {
+                        "timeout"
+                    };
                     if ((is_conn_err && retry.has_condition("connection_error"))
                         || (is_timeout && retry.has_condition("timeout")))
                         && self.retry_budget_allows(retry)
                     {
                         e.set_retry(true);
+                        self.state
+                            .metrics
+                            .retry_attempts_total
+                            .with_label_values(&["<connect>", condition])
+                            .inc();
                     }
                 }
             }
@@ -1120,11 +1195,18 @@ impl ProxyHttp for ConduitProxy {
                 if retry.has_attempts_left() {
                     let is_timeout = matches!(e.etype(), ReadTimedout | WriteTimedout);
                     let is_5xx_retry = matches!(e.etype(), Custom("5xx_retry"));
+                    let condition = if is_timeout { "timeout" } else { "5xx" };
                     if ((is_timeout && retry.has_condition("timeout"))
                         || (is_5xx_retry && retry.has_condition("5xx")))
                         && self.retry_budget_allows(retry)
                     {
                         e.set_retry(true);
+                        let route = session.req_header().uri.path().to_owned();
+                        self.state
+                            .metrics
+                            .retry_attempts_total
+                            .with_label_values(&[&route, condition])
+                            .inc();
                     }
                 }
             }
@@ -1141,6 +1223,7 @@ impl ProxyHttp for ConduitProxy {
         Self::CTX: Send + Sync,
     {
         // Decrement inflight for proxy requests (local handlers decrement inline).
+        self.state.metrics.active_connections.dec();
         if let Some(req_ctx) = ctx.as_ref() {
             if !matches!(req_ctx.upstream, UpstreamTarget::Local(_)) {
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
@@ -1231,6 +1314,19 @@ impl ProxyHttp for ConduitProxy {
             .request_duration_seconds
             .with_label_values(&[&method, &status])
             .observe(elapsed);
+
+        // Upstream error counter (5xx status codes from upstream).
+        {
+            let status_u16 = status.parse::<u16>().unwrap_or(0);
+            if status_u16 >= 500 {
+                let route = session.req_header().uri.path().to_owned();
+                self.state
+                    .metrics
+                    .upstream_errors_total
+                    .with_label_values(&[&route, &status])
+                    .inc();
+            }
+        }
 
         // Cache hit / miss counters (only for proxy requests with caching enabled).
         if ctx
@@ -1390,6 +1486,8 @@ struct GuardCtx {
     jwt_auth_cfg: Option<crate::config::schema::JwtAuthConfig>,
     /// Forward-auth config — validated in step 6d.
     forward_auth_cfg: Option<ForwardAuthConfig>,
+    /// Site label for Prometheus metrics (`host:port` or `"*"`).
+    site_label: String,
 }
 
 /// Classify a request's upstream target into a `HandlerKind` for filter routing.

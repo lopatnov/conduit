@@ -247,6 +247,9 @@ impl RequestFilter for LimitsGuard {
 /// Token-bucket rate limiter; falls back to in-memory when Redis is unavailable.
 pub struct RateLimitGuard {
     pub cfg: RateLimitConfig,
+    /// Label used for `conduit_rate_limit_rejected_total{site=…}`.
+    /// Typically `"host:port"` or `"*"` for catch-all sites.
+    pub site_label: String,
 }
 
 #[async_trait]
@@ -260,6 +263,11 @@ impl RequestFilter for RateLimitGuard {
         )
         .await;
         if !allowed {
+            // Increment the rate-limit rejection counter.
+            crate::proxy::service::ConduitMetrics::global()
+                .rate_limit_rejected_total
+                .with_label_values(&[&self.site_label])
+                .inc();
             response::write_response(
                 ctx.session,
                 429,
