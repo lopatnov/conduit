@@ -143,32 +143,18 @@ fn route_to_result(
         let options = Arc::new(static_options.cloned().unwrap_or_default());
         let (roots, strip_prefix) = router::resolve_static_roots(static_cfg, path);
         if !roots.is_empty() {
-            return (
-                UpstreamTarget::Local(LocalHandler::StaticFile {
+            return router::RouteResolution::local(UpstreamTarget::Local(
+                LocalHandler::StaticFile {
                     roots,
                     options,
                     strip_prefix,
-                }),
-                None,
-                None,
-                None,
-                false,
-                None,
-                None,
-            );
+                },
+            ));
         }
     }
 
     // No action configured — fall through to fallback.
-    (
-        UpstreamTarget::Local(LocalHandler::Fallback),
-        None,
-        None,
-        None,
-        false,
-        None,
-        None,
-    )
+    fallback_result()
 }
 
 /// Convert a [`ProxyRouteTarget`] to a [`RouteResult`].
@@ -270,15 +256,15 @@ fn full_cfg_to_result(
 
     let upstream_url_for_lc = is_least_conn.then(|| chosen_url.clone());
 
-    (
+    router::RouteResolution {
         upstream,
         retry,
-        cfg.timeout.clone(),
-        cfg.pool.clone(),
-        cfg.http2.unwrap_or(false),
-        upstream_url_for_lc,
-        cfg.cache.clone(),
-    )
+        proxy_timeout: cfg.timeout.clone(),
+        proxy_pool: cfg.pool.clone(),
+        proxy_http2: cfg.http2.unwrap_or(false),
+        proxy_upstream_url: upstream_url_for_lc,
+        proxy_cache_cfg: cfg.cache.clone(),
+    }
 }
 
 /// Select an upstream URL from `urls` using the given strategy.
@@ -326,7 +312,7 @@ fn pick_by_strategy(
 /// Convert a single-URL `ProxyRouteTarget::Url` to a [`RouteResult`].
 fn url_target_to_result(url: &str) -> RouteResult {
     match router::url_to_proxy_upstream(url, None) {
-        Some(upstream) => (upstream, None, None, None, false, None, None),
+        Some(upstream) => router::RouteResolution::local(upstream),
         None => fallback_result(),
     }
 }
@@ -340,7 +326,7 @@ fn round_robin_target_to_result(
     let counter = counters.entry(key).or_insert_with(|| AtomicUsize::new(0));
     let idx = counter.fetch_add(1, Ordering::Relaxed) % urls.len();
     match router::url_to_proxy_upstream(&urls[idx], None) {
-        Some(upstream) => (upstream, None, None, None, false, None, None),
+        Some(upstream) => router::RouteResolution::local(upstream),
         None => fallback_result(),
     }
 }
@@ -348,15 +334,7 @@ fn round_robin_target_to_result(
 /// Convenience: return the canonical "fall through to fallback" result.
 #[inline]
 fn fallback_result() -> RouteResult {
-    (
-        UpstreamTarget::Local(LocalHandler::Fallback),
-        None,
-        None,
-        None,
-        false,
-        None,
-        None,
-    )
+    router::RouteResolution::local(UpstreamTarget::Local(LocalHandler::Fallback))
 }
 
 // ── Glob path matching ────────────────────────────────────────────────────────
@@ -783,7 +761,7 @@ mod tests {
             None,
         );
         assert!(result.is_some());
-        let (target, ..) = result.unwrap();
+        let target = result.unwrap().upstream;
         // First route should win — addr must contain port 4000.
         if let UpstreamTarget::Proxy { addr, .. } = target {
             assert!(addr.contains("4000"), "expected first:4000, got {addr}");
@@ -805,7 +783,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -821,7 +799,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(
             target,
             UpstreamTarget::Local(LocalHandler::Fallback)
@@ -842,7 +820,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -861,8 +839,8 @@ mod tests {
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
 
-        let (t1, ..) = route_to_result(&route, "/api", &counters, &registry, None);
-        let (t2, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let t1 = route_to_result(&route, "/api", &counters, &registry, None).upstream;
+        let t2 = route_to_result(&route, "/api", &counters, &registry, None).upstream;
 
         // Round-robin must select different upstreams on consecutive calls.
         let a1 = match t1 {
@@ -887,7 +865,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(
             target,
             UpstreamTarget::Local(LocalHandler::Fallback)
@@ -912,7 +890,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -931,7 +909,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -950,7 +928,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -970,7 +948,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api/users", &counters, &registry, None);
+        let target = route_to_result(&route, "/api/users", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -1000,7 +978,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -1019,7 +997,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api/items/42", &counters, &registry, None);
+        let target = route_to_result(&route, "/api/items/42", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -1049,7 +1027,7 @@ mod tests {
             static_files: None,
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         // Fail-open: when all upstreams are unhealthy the router falls back to
         // the full (unhealthy) pool rather than refusing traffic.
         assert!(
@@ -1082,7 +1060,9 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, retry, ..) = route_to_result(&route, "/api/users", &counters, &registry, None);
+        let _res = route_to_result(&route, "/api/users", &counters, &registry, None);
+        let target = _res.upstream;
+        let retry = _res.retry;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
         assert!(retry.is_some(), "expected retry state to be populated");
     }
@@ -1105,7 +1085,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -1120,7 +1100,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/", &counters, &registry, None);
+        let target = route_to_result(&route, "/", &counters, &registry, None).upstream;
         assert!(matches!(
             target,
             UpstreamTarget::Local(LocalHandler::StaticFile { .. })
@@ -1139,7 +1119,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(
             target,
             UpstreamTarget::Local(LocalHandler::Fallback)
@@ -1162,7 +1142,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(
             target,
             UpstreamTarget::Local(LocalHandler::Fallback)
@@ -1186,7 +1166,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(
             target,
             UpstreamTarget::Local(LocalHandler::Fallback)

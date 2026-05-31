@@ -15,18 +15,47 @@ use crate::proxy::upstream;
 
 /// Resolved routing result: all per-route data needed to populate `RequestCtx`.
 ///
-/// Fields: (upstream, retry, timeout, pool, http2, upstream_url_for_least_conn, cache_cfg)
-pub type RouteResultAlias = (
-    UpstreamTarget,
-    Option<RetryState>,
-    Option<ProxyTimeout>,
-    Option<ConnectionPoolConfig>,
-    bool,                // proxy_http2
-    Option<String>,      // upstream URL selected (for least-conn decrement)
-    Option<CacheConfig>, // per-route cache config, if caching is enabled
-);
+/// Replaces the previous 7-element positional tuple.  Named fields make it
+/// safe to add new fields (no silent positional-shift bugs) and dramatically
+/// improve readability at call sites.
+#[derive(Debug)]
+pub struct RouteResolution {
+    pub upstream: UpstreamTarget,
+    /// Retry state (URLs + attempt counter) when `retry` is configured.
+    pub retry: Option<RetryState>,
+    /// Per-route connection timeouts.
+    pub proxy_timeout: Option<ProxyTimeout>,
+    /// Per-route connection-pool settings.
+    pub proxy_pool: Option<ConnectionPoolConfig>,
+    /// Negotiate HTTP/2 with the upstream when `true`.
+    pub proxy_http2: bool,
+    /// Selected upstream URL — `Some` for least-conn / circuit-breaker routes
+    /// so `logging()` can decrement the per-upstream counter after the response.
+    pub proxy_upstream_url: Option<String>,
+    /// Per-route cache config, if caching is enabled.
+    pub proxy_cache_cfg: Option<CacheConfig>,
+}
 
-type RouteResult = RouteResultAlias;
+impl RouteResolution {
+    /// Convenience constructor for local-handler routes that don't need
+    /// any proxy-specific fields.
+    pub fn local(upstream: UpstreamTarget) -> Self {
+        Self {
+            upstream,
+            retry: None,
+            proxy_timeout: None,
+            proxy_pool: None,
+            proxy_http2: false,
+            proxy_upstream_url: None,
+            proxy_cache_cfg: None,
+        }
+    }
+}
+
+/// Backward-compatible type alias used in `src/proxy/routes.rs`.
+pub type RouteResultAlias = RouteResolution;
+
+type RouteResult = RouteResolution;
 
 #[allow(clippy::too_many_arguments)]
 pub fn route_request(
@@ -45,69 +74,18 @@ pub fn route_request(
     let site_idx = find_site_idx(config, host, server_port).unwrap_or(0);
     let site = config.sites.get(site_idx);
 
-    let (
-        upstream,
-        retry,
-        proxy_timeout,
-        proxy_pool,
-        proxy_http2,
-        proxy_upstream_url,
-        proxy_cache_cfg,
-    ) = if let Some(token) = acme_challenge_token(path) {
-        // ACME HTTP-01 challenge — served before any site-level routing so that
-        // the challenge is available even on sites that redirect or auth-protect
-        // everything.
-        (
-            UpstreamTarget::Local(LocalHandler::AcmeChallenge {
-                token: token.to_owned(),
-            }),
-            None,
-            None,
-            None,
-            false,
-            None,
-            None,
-        )
+    let res: RouteResolution = if let Some(token) = acme_challenge_token(path) {
+        RouteResolution::local(UpstreamTarget::Local(LocalHandler::AcmeChallenge {
+            token: token.to_owned(),
+        }))
     } else if is_health_path(site, path) {
-        (
-            UpstreamTarget::Local(LocalHandler::Health),
-            None,
-            None,
-            None,
-            false,
-            None,
-            None,
-        )
+        RouteResolution::local(UpstreamTarget::Local(LocalHandler::Health))
     } else if let Some(token) = metrics_token(site, path) {
-        (
-            UpstreamTarget::Local(LocalHandler::Metrics { token }),
-            None,
-            None,
-            None,
-            false,
-            None,
-            None,
-        )
+        RouteResolution::local(UpstreamTarget::Local(LocalHandler::Metrics { token }))
     } else if is_hot_reload_js_path(site, path) {
-        (
-            UpstreamTarget::Local(LocalHandler::HotReloadJs),
-            None,
-            None,
-            None,
-            false,
-            None,
-            None,
-        )
+        RouteResolution::local(UpstreamTarget::Local(LocalHandler::HotReloadJs))
     } else if is_hot_reload_sse_path(site, path) {
-        (
-            UpstreamTarget::Local(LocalHandler::HotReloadSse),
-            None,
-            None,
-            None,
-            false,
-            None,
-            None,
-        )
+        RouteResolution::local(UpstreamTarget::Local(LocalHandler::HotReloadSse))
     } else if let Some(site) = site {
         route_site(
             site,
@@ -121,27 +99,19 @@ pub fn route_request(
             upload_addr,
         )
     } else {
-        (
-            UpstreamTarget::Local(LocalHandler::Fallback),
-            None,
-            None,
-            None,
-            false,
-            None,
-            None,
-        )
+        RouteResolution::local(UpstreamTarget::Local(LocalHandler::Fallback))
     };
 
     let response_transform = site.and_then(|s| s.response_transform.clone());
     RequestCtx::new(
         site_idx,
-        upstream,
-        retry,
-        proxy_timeout,
-        proxy_pool,
-        proxy_http2,
-        proxy_upstream_url,
-        proxy_cache_cfg,
+        res.upstream,
+        res.retry,
+        res.proxy_timeout,
+        res.proxy_pool,
+        res.proxy_http2,
+        res.proxy_upstream_url,
+        res.proxy_cache_cfg,
         response_transform,
     )
 }
@@ -202,15 +172,7 @@ fn match_upload_route(
     let (upload_cfg, addr) = site.upload.as_ref().zip(upload_addr)?;
     let upload_prefix = upload_cfg.path.trim_end_matches('/');
     let matches = path == upload_prefix || path.starts_with(&format!("{upload_prefix}/"));
-    matches.then_some((
-        UpstreamTarget::Upload { addr },
-        None,
-        None,
-        None,
-        false,
-        None,
-        None,
-    ))
+    matches.then_some(RouteResolution::local(UpstreamTarget::Upload { addr }))
 }
 
 /// Match against the `routes` array (evaluated before legacy `proxy`/`static`).
@@ -245,30 +207,14 @@ fn match_static_or_fallback(site: &SiteConfig, path: &str) -> RouteResult {
         let options = Arc::new(site.static_options.clone().unwrap_or_default());
         let (roots, strip_prefix) = resolve_static_roots(static_cfg, path);
         if !roots.is_empty() {
-            return (
-                UpstreamTarget::Local(LocalHandler::StaticFile {
-                    roots,
-                    options,
-                    strip_prefix,
-                }),
-                None,
-                None,
-                None,
-                false,
-                None,
-                None,
-            );
+            return RouteResolution::local(UpstreamTarget::Local(LocalHandler::StaticFile {
+                roots,
+                options,
+                strip_prefix,
+            }));
         }
     }
-    (
-        UpstreamTarget::Local(LocalHandler::Fallback),
-        None,
-        None,
-        None,
-        false,
-        None,
-        None,
-    )
+    RouteResolution::local(UpstreamTarget::Local(LocalHandler::Fallback))
 }
 
 fn resolve_proxy(
@@ -281,15 +227,7 @@ fn resolve_proxy(
     site_label: &str,
 ) -> Option<RouteResult> {
     match config {
-        ProxyConfig::Single(url) => Some((
-            url_to_proxy_upstream(url, None)?,
-            None,
-            None,
-            None,
-            false,
-            None,
-            None,
-        )),
+        ProxyConfig::Single(url) => Some(RouteResolution::local(url_to_proxy_upstream(url, None)?)),
         ProxyConfig::Routes(routes) => {
             let (route_key, route_target) = find_route(routes, path)?;
 
@@ -377,8 +315,7 @@ fn resolve_proxy(
             if all_unhealthy {
                 if let Some(ref backup) = backup_url {
                     tracing::info!(backup = %backup, "all primary upstreams unhealthy — routing to backup");
-                    return url_to_proxy_upstream(backup, None)
-                        .map(|upstream| (upstream, None, None, None, false, None, None));
+                    return url_to_proxy_upstream(backup, None).map(RouteResolution::local);
                 }
             }
 
@@ -401,15 +338,9 @@ fn resolve_proxy(
                         max_conns,
                         "circuit open: all upstreams at connection limit"
                     );
-                    return Some((
-                        UpstreamTarget::Local(LocalHandler::Overloaded),
-                        None,
-                        None,
-                        None,
-                        false,
-                        None,
-                        None,
-                    ));
+                    return Some(RouteResolution::local(UpstreamTarget::Local(
+                        LocalHandler::Overloaded,
+                    )));
                 }
                 // Use only under-limit upstreams from here on.
                 // (If under_limit is empty but urls is also empty, fall through
@@ -520,15 +451,15 @@ fn resolve_proxy(
             let proxy_upstream_url =
                 (is_least_conn || circuit_tracking).then(|| chosen_url.clone());
 
-            Some((
+            Some(RouteResolution {
                 upstream,
-                retry_state,
+                retry: retry_state,
                 proxy_timeout,
                 proxy_pool,
                 proxy_http2,
                 proxy_upstream_url,
-                cache_cfg,
-            ))
+                proxy_cache_cfg: cache_cfg,
+            })
         }
     }
 }
@@ -657,15 +588,15 @@ fn resolve_grouped(
     };
 
     let proxy_upstream_url = is_least_conn.then(|| chosen_url.clone());
-    Some((
+    Some(RouteResolution {
         upstream,
-        retry_state,
+        retry: retry_state,
         proxy_timeout,
         proxy_pool,
         proxy_http2,
         proxy_upstream_url,
-        cache_cfg,
-    ))
+        proxy_cache_cfg: cache_cfg,
+    })
 }
 
 /// Extra context required by hash-based and weighted strategies.

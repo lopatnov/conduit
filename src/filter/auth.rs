@@ -6,6 +6,26 @@ use crate::config::schema::{
 };
 use crate::filter::jwt;
 
+/// Build a [`JwtAuthConfig`] from raw credential parts.
+///
+/// Used by both the V2 per-consumer JWT check and the V3 sharedJwt check to
+/// avoid duplicating the struct literal in two places.
+fn build_jwt_auth_cfg(
+    secret: Option<String>,
+    jwks_url: Option<String>,
+    audience: Option<Vec<String>>,
+    issuer: Option<String>,
+) -> JwtAuthConfig {
+    JwtAuthConfig {
+        secret,
+        jwks_url,
+        jwks_refresh_secs: None, // use JWKS default TTL (3600 s)
+        audience,
+        issuer,
+        skip_paths: None, // skip_paths handled at ConsumersConfig level
+    }
+}
+
 /// Result of a Basic Auth credential check.
 pub enum BasicAuthResult {
     Allowed,
@@ -270,14 +290,12 @@ pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Opt
     // ── V3: Shared JWT — validate once, identify by claim value ───────────────
     // Checked BEFORE per-consumer credentials so a single JWKS fetch handles all.
     if let Some(ref shared) = cfg.shared_jwt {
-        let jwt_cfg = JwtAuthConfig {
-            secret: shared.secret.clone(),
-            jwks_url: shared.jwks_url.clone(),
-            jwks_refresh_secs: None, // use default TTL (3600 s)
-            audience: shared.audience.clone(),
-            issuer: shared.issuer.clone(),
-            skip_paths: None, // skip_paths handled at ConsumersConfig level
-        };
+        let jwt_cfg = build_jwt_auth_cfg(
+            shared.secret.clone(),
+            shared.jwks_url.clone(),
+            shared.audience.clone(),
+            shared.issuer.clone(),
+        );
         let auth_hdr = session
             .req_header()
             .headers
@@ -333,14 +351,12 @@ pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Opt
         // ConsumersGuard calls check_jwt() independently — does NOT require
         // the site-level JwtGuard to run first.
         if let Some(ref consumer_jwt) = consumer.jwt {
-            let jwt_cfg = JwtAuthConfig {
-                secret: consumer_jwt.secret.clone(),
-                jwks_url: consumer_jwt.jwks_url.clone(),
-                jwks_refresh_secs: None, // use JWKS default TTL (3600 s)
-                audience: consumer_jwt.audience.clone(),
-                issuer: consumer_jwt.issuer.clone(),
-                skip_paths: None, // skip_paths handled at ConsumersConfig level
-            };
+            let jwt_cfg = build_jwt_auth_cfg(
+                consumer_jwt.secret.clone(),
+                consumer_jwt.jwks_url.clone(),
+                consumer_jwt.audience.clone(),
+                consumer_jwt.issuer.clone(),
+            );
             let auth_hdr = session
                 .req_header()
                 .headers
