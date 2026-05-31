@@ -975,3 +975,54 @@ fn mirror_url_parses() {
         panic!("expected Routes proxy");
     }
 }
+
+#[test]
+fn otlp_config_parses() {
+    let cfg = conduit::config::from_str(
+        r#"{
+        "global": {
+            "otlp": {
+                "endpoint": "http://tempo:4317",
+                "serviceName": "my-gateway",
+                "sampleRate": 0.5,
+                "timeoutMs": 3000
+            }
+        },
+        "sites": [{ "port": 8080 }]
+    }"#,
+    )
+    .expect("parse");
+    let otlp = cfg
+        .global
+        .as_ref()
+        .unwrap()
+        .otlp
+        .as_ref()
+        .expect("otlp should be present");
+    assert_eq!(otlp.endpoint, "http://tempo:4317");
+    assert_eq!(otlp.service_name.as_deref(), Some("my-gateway"));
+    assert_eq!(otlp.sample_rate, Some(0.5));
+    assert_eq!(otlp.timeout_ms, Some(3000));
+}
+
+#[test]
+fn otlp_minimal_parses() {
+    // Only endpoint is required.
+    let cfg = conduit::config::from_str(
+        r#"{
+        "global": { "otlp": { "endpoint": "http://otel:4317" } },
+        "sites": [{ "port": 8080 }]
+    }"#,
+    )
+    .expect("parse");
+    let otlp = cfg
+        .global
+        .as_ref()
+        .unwrap()
+        .otlp
+        .as_ref()
+        .expect("otlp should be present");
+    assert_eq!(otlp.endpoint, "http://otel:4317");
+    assert!(otlp.service_name.is_none());
+    assert!(otlp.sample_rate.is_none());
+}

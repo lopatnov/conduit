@@ -110,12 +110,24 @@ futures     = { version = "0.3", optional = true }
 # Cranelift JIT: fast compilation; no WASI by default (sandboxed).
 wasmtime = { version = "30", features = ["cranelift"], optional = true }
 
+# --- OpenTelemetry OTLP tracing (optional feature) ---
+# Enable with: cargo build --features otlp
+# Exports distributed traces to any OTLP-compatible backend:
+# Grafana Tempo, Jaeger, Honeycomb, OpenTelemetry Collector, etc.
+# Uses gRPC (tonic) transport; adds ~4 MB to binary.
+opentelemetry     = { version = "0.27", optional = true }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"], optional = true }
+
 [features]
 # Enable Kubernetes CRD watching support.
 # The v1_30 feature selects the minimum k8s API version (1.30).
 kubernetes = ["kube", "k8s-openapi/v1_30", "schemars", "futures"]
 # Enable WASM plugin middleware (type: "wasm" in middleware array).
 wasm = ["wasmtime"]
+# Enable OpenTelemetry OTLP distributed tracing.
+# Config: global.otlp.endpoint = "http://otel-collector:4317"
+otlp = ["opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp"]
 
 [dev-dependencies]
 reqwest     = { version = "0.13", default-features = false, features = ["http2", "rustls", "blocking", "json", "multipart"] }

@@ -151,6 +151,14 @@ pub fn run_server(config: AppConfig, config_path: PathBuf) -> anyhow::Result<()>
         "conduit starting"
     );
 
+    // Initialise OpenTelemetry OTLP tracing if configured.
+    // The function is a no-op when the `otlp` feature is disabled.
+    if let Some(otlp_cfg) = config.global.as_ref().and_then(|g| g.otlp.as_ref()) {
+        if let Err(e) = crate::server::otel::init_tracer(otlp_cfg) {
+            tracing::warn!(error = %e, "failed to initialise OTLP tracing — continuing without traces");
+        }
+    }
+
     let admin_bind = config
         .global
         .as_ref()

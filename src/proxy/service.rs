@@ -263,6 +263,25 @@ impl ConduitProxy {
         self.state.inflight.fetch_add(1, Ordering::Relaxed);
         self.state.metrics.active_connections.inc();
 
+        // ── OpenTelemetry: start span for this request ────────────────────────
+        // The span is stored in RequestCtx and ended in logging() after the
+        // response is sent.  When otlp feature is disabled this block compiles
+        // to nothing.
+        #[cfg(feature = "otlp")]
+        let otel_span_start = {
+            use opentelemetry::global;
+            use opentelemetry::trace::{SpanKind, Tracer};
+            let method = session.req_header().method.as_str().to_owned();
+            let path = session.req_header().uri.path().to_owned();
+            let name = format!("{method} {path}");
+            let tracer = global::tracer("conduit");
+            let span = tracer
+                .span_builder(name)
+                .with_kind(SpanKind::Server)
+                .start(&tracer);
+            Some(span)
+        };
+
         // ── Gather request metadata before borrowing the config ───────────────
         let request_origin = cors::request_origin(session);
         let is_cors_preflight = cors::is_preflight(session);
@@ -521,6 +540,12 @@ impl ConduitProxy {
                     req_ctx.jwt_claims = crate::filter::jwt::extract_claims(token, jwt_cfg);
                 }
             }
+        }
+
+        // ── Attach OTel span to request context ───────────────────────────────
+        #[cfg(feature = "otlp")]
+        {
+            req_ctx.otel_span = otel_span_start;
         }
 
         // ── Dispatch ──────────────────────────────────────────────────────────
@@ -1442,6 +1467,39 @@ impl ProxyHttp for ConduitProxy {
                         .inc();
                 }
                 _ => {}
+            }
+        }
+
+        // ── OpenTelemetry: finish span with all request attributes ────────────
+        #[cfg(feature = "otlp")]
+        if let Some(req_ctx) = ctx.as_mut() {
+            if let Some(mut span) = req_ctx.otel_span.take() {
+                use opentelemetry::{trace::Span, KeyValue};
+                let status_u16 = status.parse::<u16>().unwrap_or(0);
+                span.set_attribute(KeyValue::new("http.method", method.clone()));
+                span.set_attribute(KeyValue::new(
+                    "http.path",
+                    session.req_header().uri.path().to_owned(),
+                ));
+                span.set_attribute(KeyValue::new("http.status_code", status_u16 as i64));
+                span.set_attribute(KeyValue::new("http.duration_ms", (elapsed * 1000.0) as i64));
+                if let Some(ref url) = req_ctx.proxy_upstream_url {
+                    span.set_attribute(KeyValue::new("upstream.url", url.clone()));
+                }
+                // Attach the X-Request-ID so the trace is correlatable with logs.
+                if let Some(rid) = session
+                    .req_header()
+                    .headers
+                    .get("x-request-id")
+                    .and_then(|v| v.to_str().ok())
+                {
+                    span.set_attribute(KeyValue::new("request.id", rid.to_owned()));
+                }
+                // Mark 5xx as errors in the trace.
+                if status_u16 >= 500 {
+                    span.set_status(opentelemetry::trace::Status::error("upstream returned 5xx"));
+                }
+                span.end();
             }
         }
     }

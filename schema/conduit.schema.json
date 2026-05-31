@@ -30,6 +30,17 @@
             "bind":  { "type": "string", "examples": ["127.0.0.1:2019"] },
             "token": { "type": "string", "description": "Bearer token for Admin API auth. When set, all requests must include Authorization: Bearer <token>." }
           }
+        },
+        "otlp": {
+          "type": "object",
+          "required": ["endpoint"],
+          "description": "OpenTelemetry OTLP tracing. Requires --features otlp.",
+          "properties": {
+            "endpoint":    { "type": "string", "format": "uri", "examples": ["http://localhost:4317", "https://api.honeycomb.io:443"] },
+            "serviceName": { "type": "string", "default": "conduit" },
+            "sampleRate":  { "type": "number", "minimum": 0, "maximum": 1, "default": 1.0 },
+            "timeoutMs":   { "type": "integer", "minimum": 1, "default": 5000 }
+          }
         }
       }
     },

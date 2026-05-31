@@ -50,6 +50,13 @@ pub struct RequestCtx {
     ///
     /// Only populated when `jwtAuth` is configured and a valid token is present.
     pub jwt_claims: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// Active OpenTelemetry span for this request.
+    ///
+    /// Created at the start of `do_request_filter` and ended in `logging()`.
+    /// Only populated when the `otlp` feature is enabled AND `global.otlp` is
+    /// configured.  Otherwise `None` (zero overhead).
+    #[cfg(feature = "otlp")]
+    pub otel_span: Option<opentelemetry::global::BoxedSpan>,
 }
 
 impl RequestCtx {
@@ -81,6 +88,8 @@ impl RequestCtx {
             mask_upstream_body: false,
             response_transform,
             jwt_claims: None,
+            #[cfg(feature = "otlp")]
+            otel_span: None,
         }
     }
 }

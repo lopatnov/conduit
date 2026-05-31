@@ -1,0 +1,100 @@
+//! OpenTelemetry OTLP initialisation (compiled only with `--features otlp`).
+//!
+//! Call [`init_tracer`] once at server startup to install the global tracer
+//! provider.  All spans created via `opentelemetry::global::tracer("conduit")`
+//! after this point are batched and exported to the configured OTLP endpoint.
+//!
+//! Call [`shutdown_tracer`] during graceful shutdown to flush in-flight spans.
+
+/// No-op stubs when the `otlp` feature is disabled — zero overhead.
+#[cfg(not(feature = "otlp"))]
+pub fn init_tracer(_cfg: &crate::config::schema::OtlpConfig) -> anyhow::Result<()> {
+    tracing::debug!("OpenTelemetry OTLP disabled (compile with --features otlp to enable)");
+    Ok(())
+}
+
+#[cfg(not(feature = "otlp"))]
+pub fn shutdown_tracer() {}
+
+#[cfg(feature = "otlp")]
+pub use otlp_impl::{init_tracer, shutdown_tracer};
+
+// ── Implementation ────────────────────────────────────────────────────────────
+
+#[cfg(feature = "otlp")]
+mod otlp_impl {
+    use std::time::Duration;
+
+    use opentelemetry::global;
+    use opentelemetry::KeyValue;
+    use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+    use opentelemetry_sdk::{
+        runtime,
+        trace::{RandomIdGenerator, Sampler, TracerProvider},
+        Resource,
+    };
+
+    use crate::config::schema::OtlpConfig;
+
+    /// Initialise and install the global OTLP tracer provider.
+    pub fn init_tracer(cfg: &OtlpConfig) -> anyhow::Result<()> {
+        let service_name = cfg.service_name.as_deref().unwrap_or("conduit").to_owned();
+        let timeout = Duration::from_millis(cfg.timeout_ms.unwrap_or(5_000));
+        let sample_rate = cfg.sample_rate.unwrap_or(1.0).clamp(0.0, 1.0);
+
+        let resource = Resource::new(vec![
+            KeyValue::new("service.name", service_name),
+            KeyValue::new("telemetry.sdk.language", "rust"),
+        ]);
+
+        // Build OTLP gRPC exporter (opentelemetry-otlp 0.27 API).
+        let exporter = SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(&cfg.endpoint)
+            .with_timeout(timeout)
+            .build()
+            .map_err(|e| anyhow::anyhow!("OTLP exporter: {e}"))?;
+
+        // `with_sampler` is generic over T: ShouldSample, so each Sampler
+        // variant is a different concrete type — we can't store them in a Box.
+        // Build three separate provider instances and pick one.
+        fn base(
+            exporter: opentelemetry_otlp::SpanExporter,
+            resource: Resource,
+        ) -> opentelemetry_sdk::trace::Builder {
+            TracerProvider::builder()
+                .with_batch_exporter(exporter, runtime::Tokio)
+                .with_id_generator(RandomIdGenerator::default())
+                .with_max_events_per_span(64)
+                .with_max_attributes_per_span(32)
+                .with_resource(resource)
+        }
+
+        let provider = if (sample_rate - 1.0).abs() < f64::EPSILON {
+            base(exporter, resource)
+                .with_sampler(Sampler::AlwaysOn)
+                .build()
+        } else if sample_rate == 0.0 {
+            base(exporter, resource)
+                .with_sampler(Sampler::AlwaysOff)
+                .build()
+        } else {
+            base(exporter, resource)
+                .with_sampler(Sampler::TraceIdRatioBased(sample_rate))
+                .build()
+        };
+
+        global::set_tracer_provider(provider);
+        tracing::info!(
+            endpoint = %cfg.endpoint,
+            sample_rate,
+            "OpenTelemetry OTLP tracing enabled"
+        );
+        Ok(())
+    }
+
+    /// Flush buffered spans and shut down the tracer provider.
+    pub fn shutdown_tracer() {
+        global::shutdown_tracer_provider();
+    }
+}

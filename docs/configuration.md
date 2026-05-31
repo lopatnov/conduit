@@ -49,6 +49,7 @@ YAML is also supported: `-c conduit.yaml` or `-c conduit.yml`.
 - [`logging.skipPaths`](#loggingskippaths)
 - [`healthCheck.maxConnectionsPerUpstream`](#healthcheckmaxconnectionsperupstream) — circuit breaker
 - [Header Transform V2 — JWT templates](#header-transform-v2--jwt-templates)
+- [`global.otlp`](#globalotlp) — OpenTelemetry OTLP tracing
 - [Prometheus Metrics](#prometheus-metrics)
 
 ---
@@ -1221,6 +1222,44 @@ token and substituted before the request is forwarded upstream.
 - Non-string claim values (numbers, arrays) are JSON-serialized.
 - Template expansion only runs when `jwtAuth` is configured and the token is valid.
 - `responseTransform` does NOT support templates (no JWT context at response time).
+
+---
+
+### `global.otlp`
+
+Export distributed traces to any OTLP-compatible backend.  Requires
+`--features otlp` at compile time.  When the feature is disabled the config
+field is still accepted but silently ignored.
+
+```jsonc
+{
+  "global": {
+    "otlp": {
+      "endpoint":    "http://otel-collector:4317",  // required
+      "serviceName": "conduit-gateway",              // default: "conduit"
+      "sampleRate":  1.0,                            // 0.0–1.0, default: 1.0
+      "timeoutMs":   5000                            // default: 5000
+    }
+  }
+}
+```
+
+**Supported backends:**
+| Backend | Endpoint |
+|---------|----------|
+| Grafana Tempo | `http://tempo:4317` |
+| Jaeger (OTLP receiver) | `http://jaeger:4317` |
+| OpenTelemetry Collector | `http://otel-collector:4317` |
+| Honeycomb | `https://api.honeycomb.io:443` |
+
+**Trace attributes per span:**
+- `http.method`, `http.path`, `http.status_code`, `http.duration_ms`
+- `upstream.url` — selected upstream backend URL
+- `request.id` — value of the `X-Request-ID` header
+
+5xx responses are marked as errors in the trace (`span.status = ERROR`).
+
+**Build:** `cargo build --release --features otlp`
 
 ---
 
