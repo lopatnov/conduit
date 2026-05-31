@@ -166,8 +166,10 @@ fn probe_proxy(http: &str, https: &str, insecure: &reqwest::blocking::Client) ->
 
 /// Poll the admin `/status` endpoint once.  Returns `true` on a 2xx response.
 fn probe_admin(url: &str) -> bool {
+    // Accept both 200 (no auth) and 401 (auth required) as "admin is ready".
+    // 401 means the admin server is up and responding, it just requires a token.
     reqwest::blocking::get(url)
-        .map(|r| r.status().is_success())
+        .map(|r| r.status().is_success() || r.status().as_u16() == 401)
         .unwrap_or(false)
 }
 

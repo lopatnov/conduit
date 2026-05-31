@@ -4,8 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::Request;
-use axum::http::StatusCode;
+use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -123,37 +122,30 @@ fn build_router(state: Arc<AppState>) -> Router {
         .and_then(|a| a.token.clone());
 
     if let Some(required_token) = token {
+        // Use a closure that captures the token string so we avoid Axum state
+        // type conflicts (the router state is Arc<AppState>, not Arc<String>).
         protected
-            .layer(axum::middleware::from_fn_with_state(
-                Arc::new(required_token),
-                bearer_auth_middleware,
+            .layer(axum::middleware::from_fn(
+                move |request: Request<Body>, next: Next| {
+                    let token = required_token.clone();
+                    async move {
+                        let auth = request
+                            .headers()
+                            .get("authorization")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("");
+                        let provided = auth.strip_prefix("Bearer ").map(str::trim).unwrap_or("");
+                        if provided == token.as_str() {
+                            Ok(next.run(request).await)
+                        } else {
+                            Err(StatusCode::UNAUTHORIZED)
+                        }
+                    }
+                },
             ))
             .with_state(state)
     } else {
         protected.with_state(state)
-    }
-}
-
-/// Axum middleware that checks `Authorization: Bearer <token>`.
-///
-/// Rejects with `401 Unauthorized` when the token is absent or incorrect.
-async fn bearer_auth_middleware(
-    State(required_token): State<Arc<String>>,
-    request: Request<Body>,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    let auth = request
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    let provided = auth.strip_prefix("Bearer ").map(str::trim).unwrap_or("");
-
-    if provided == required_token.as_str() {
-        Ok(next.run(request).await)
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
     }
 }
 
