@@ -145,6 +145,18 @@ pub struct SiteConfig {
     /// Should NOT be enabled in production.
     #[serde(rename = "faultInjection", skip_serializing_if = "Option::is_none")]
     pub fault_injection: Option<FaultInjectionConfig>,
+    /// JWT bearer-token authentication.
+    ///
+    /// Validates the `Authorization: Bearer <token>` header on every request
+    /// (unless the path is in `skipPaths`).  The token is verified against a
+    /// static secret (HS256) or a remote JWKS endpoint (RS256/ES256).
+    ///
+    /// ```json
+    /// { "jwtAuth": { "jwksUrl": "https://accounts.example.com/.well-known/jwks.json",
+    ///                "audience": ["my-app"], "issuer": "https://accounts.example.com" } }
+    /// ```
+    #[serde(rename = "jwtAuth", skip_serializing_if = "Option::is_none")]
+    pub jwt_auth: Option<JwtAuthConfig>,
     // Phase 5 (optional): pub cgi: Option<CgiConfig>,
 }
 
@@ -387,6 +399,38 @@ pub struct ApiKeyConfig {
     pub skip_paths: Option<Vec<String>>,
 }
 
+// ── JWT auth ───────────────────────────────────────────────────────────────
+
+/// JWT bearer-token validation configuration.
+///
+/// At least one of `secret` or `jwks_url` must be present.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct JwtAuthConfig {
+    /// HMAC-SHA256 secret for HS256-signed tokens.  Mutually exclusive with
+    /// `jwks_url`.  Stored as a plain string (use `$ENV_VAR` for security).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Remote JWKS URL for RS256 / ES256 tokens (e.g. Auth0, Google, Cognito).
+    /// Keys are fetched at startup and refreshed every `jwksRefreshSecs` seconds.
+    #[serde(rename = "jwksUrl", skip_serializing_if = "Option::is_none")]
+    pub jwks_url: Option<String>,
+    /// How often to re-fetch the JWKS (seconds).  Default: 3600 (1 hour).
+    #[serde(rename = "jwksRefreshSecs", skip_serializing_if = "Option::is_none")]
+    pub jwks_refresh_secs: Option<u64>,
+    /// Expected `aud` claim.  When set, tokens with a different audience are
+    /// rejected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audience: Option<Vec<String>>,
+    /// Expected `iss` claim.  When set, tokens from a different issuer are
+    /// rejected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    /// Paths that bypass JWT validation (same glob syntax as `basicAuth.skipPaths`).
+    #[serde(rename = "skipPaths", skip_serializing_if = "Option::is_none")]
+    pub skip_paths: Option<Vec<String>>,
+}
+
 // ── IP filter ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -553,6 +597,21 @@ pub struct ProxyRouteConfig {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sticky: Option<StickyConfig>,
+    /// Traffic mirror URL.  A fire-and-forget copy of every request is sent to
+    /// this backend asynchronously — the mirror response is discarded and the
+    /// client receives the primary response as normal.
+    ///
+    /// Useful for shadow-testing a new service version or capturing live traffic
+    /// for analysis without affecting real users.
+    ///
+    /// **Note:** Only request headers and method/path are mirrored in V1.
+    /// Request body mirroring requires body buffering and is deferred to V2.
+    ///
+    /// ```json
+    /// { "targets": ["http://primary:4000"], "mirror": "http://shadow:4000" }
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mirror: Option<String>,
 }
 
 /// Configuration for cookie-based sticky sessions.
@@ -698,6 +757,14 @@ pub struct RetryConfig {
     pub conditions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backoff_ms: Option<u64>,
+    /// Retry budget: maximum percentage of active requests that may be retries.
+    ///
+    /// Prevents retry storms: when all requests fail simultaneously, without a
+    /// budget each request might retry 3 times, multiplying load by 4x.
+    /// With `budgetPercent: 20`, at most 20 % of active requests are retries.
+    /// Defaults to unlimited (no budget enforced).
+    #[serde(rename = "budgetPercent", skip_serializing_if = "Option::is_none")]
+    pub budget_percent: Option<f64>,
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────

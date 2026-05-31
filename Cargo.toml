@@ -84,6 +84,14 @@ base64    = "0.22"
 # Phase 4: Rhai scripting middleware
 rhai = { version = "1", features = ["sync"] }
 
+# JWT bearer-token validation (Phase 4.3).
+# `jsonwebtoken` verifies HS256 (HMAC secret) and RS256/ES256 (JWKS/PEM).
+jsonwebtoken = "9"
+
+# HTTP client used for JWKS endpoint fetching and traffic mirroring.
+# `default-features = false` avoids native-tls; rustls keeps TLS consistent.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+
 # Phase 4.2: Redis-backed rate limiting.
 # tls-rustls enables rediss:// (TLS-encrypted) connections (e.g. AWS ElastiCache,
 # Azure Cache for Redis).  Redis is often on an internal network but cloud

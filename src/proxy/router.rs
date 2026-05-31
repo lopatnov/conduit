@@ -339,6 +339,7 @@ fn resolve_proxy(
                 hash_key,
                 cache_cfg,
                 rewrite_rules,
+                mirror_url,
             ) = match route_target {
                 ProxyRouteTarget::Full(cfg) => (
                     cfg.retry.as_ref(),
@@ -349,8 +350,9 @@ fn resolve_proxy(
                     cfg.hash_key.as_deref().unwrap_or("ip"),
                     cfg.cache.clone(),
                     cfg.rewrite.clone(),
+                    cfg.mirror.clone(),
                 ),
-                _ => (None, None, None, None, false, "ip", None, None),
+                _ => (None, None, None, None, false, "ip", None, None, None),
             };
 
             // Failover: when a backup URL is configured and all primary upstreams
@@ -450,6 +452,7 @@ fn resolve_proxy(
                     sni,
                     strip_prefix,
                     rewrite: rewrite_rules,
+                    mirror_url: mirror_url.clone(),
                 },
                 Some(other) => other,
                 None => {
@@ -586,6 +589,7 @@ fn resolve_grouped(
             sni,
             strip_prefix,
             rewrite: rewrite_rules,
+            mirror_url: None, // groups don't support mirror in V1
         },
         Some(other) => other,
         None => {
@@ -669,6 +673,7 @@ pub fn url_to_proxy_upstream(url: &str, strip_prefix: Option<String>) -> Option<
         sni,
         strip_prefix,
         rewrite: None,
+        mirror_url: None,
     })
 }
 
@@ -700,6 +705,8 @@ fn pick_with_retry(
         max_attempts: retry.attempts as usize,
         conditions: retry.conditions.clone(),
         backoff_ms: retry.backoff_ms,
+        budget_percent: retry.budget_percent,
+        is_retrying: false,
     };
     Some((first, state))
 }
@@ -1101,6 +1108,7 @@ mod tests {
             attempts: 3,
             conditions: vec!["5xx".to_string()],
             backoff_ms: None,
+            budget_percent: None,
         };
         let (url, state) = pick_with_retry(urls, "r", &counters, &retry).unwrap();
         assert_eq!(url, "http://a:4000");
@@ -1117,6 +1125,7 @@ mod tests {
             attempts: 2,
             conditions: vec!["connection_error".to_string()],
             backoff_ms: Some(50),
+            budget_percent: None,
         };
         let (url, state) = pick_with_retry(urls.clone(), "r", &counters, &retry).unwrap();
         assert!(urls.contains(&url));
@@ -1131,6 +1140,7 @@ mod tests {
             attempts: 3,
             conditions: vec![],
             backoff_ms: None,
+            budget_percent: None,
         };
         assert!(pick_with_retry(vec![], "r", &counters, &retry).is_none());
     }
@@ -1209,6 +1219,7 @@ mod tests {
             attempts: 3,
             conditions: vec!["5xx".to_string()],
             backoff_ms: None,
+            budget_percent: None,
         };
         let (url, retry, is_lc) = pick_url_by_strategy(
             urls.clone(),

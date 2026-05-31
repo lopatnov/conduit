@@ -85,10 +85,7 @@ pub fn record_request_latency(
     elapsed_us: u64,
     status: u16,
 ) {
-    let mut entry = registry
-        .statuses
-        .entry(url.to_owned())
-        .or_insert_with(UpstreamEntry::default);
+    let mut entry = registry.statuses.entry(url.to_owned()).or_default();
 
     // Peak EWMA: α * new + (1-α) * old, but keep the peak in a window
     const ALPHA: f64 = 0.1;

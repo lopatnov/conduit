@@ -22,18 +22,15 @@ use crate::config::schema::{
 };
 use crate::filter::chain::{
     ApiKeyGuard, BasicAuthGuard, CorsPreflight, FaultInjectionGuard, FilterChain, FilterContext,
-    HealthBypass, IpGuard, LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard,
+    HealthBypass, IpGuard, JwtGuard, LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard,
     XRequestIdGuard,
 };
 use crate::filter::rate_limit::RateLimiter;
 use crate::filter::rate_limit_redis::RedisRateLimiter;
-use crate::filter::{
-    auth, compression, cors, ip_filter, limits, logging, rate_limit, redirects, response_time,
-    script, security_headers,
-};
+use crate::filter::{compression, cors, logging, redirects, response_time, security_headers};
 use crate::handler::{
     acme_challenge as acme_handler, fallback, health, hot_reload as hot_reload_handler,
-    metrics as metrics_handler, response, static_files, LocalHandlerImpl,
+    metrics as metrics_handler, static_files, LocalHandlerImpl,
 };
 use crate::proxy::cache as proxy_cache;
 use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
@@ -135,6 +132,12 @@ pub struct AppState {
     /// `rateLimit.store: "redis://..."`.  `None` when no site uses Redis
     /// rate limiting.
     pub redis_rate_limiter: Option<Arc<RedisRateLimiter>>,
+    /// Number of requests currently in a retry state.
+    ///
+    /// Used to enforce `retry.budgetPercent`: before allowing a retry the
+    /// handler checks `retry_inflight * 100 / inflight ≤ budget_percent`.
+    /// Incremented when a retry is approved, decremented in `logging()`.
+    pub retry_inflight: Arc<AtomicUsize>,
 }
 
 impl AppState {
@@ -162,6 +165,7 @@ impl AppState {
             upload_addr,
             hot_reload_tx,
             redis_rate_limiter,
+            retry_inflight: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -173,6 +177,34 @@ pub struct ConduitProxy {
 }
 
 impl ConduitProxy {
+    /// Check the retry budget and increment `retry_inflight` if a retry is allowed.
+    ///
+    /// Returns `true` when the retry may proceed, `false` when the budget is
+    /// exhausted and the retry should be suppressed.
+    ///
+    /// Concurrent requests may race past this check, so the budget is a *soft*
+    /// limit — occasional over-budget retries are acceptable.
+    fn retry_budget_allows(&self, retry: &mut crate::proxy::ctx::RetryState) -> bool {
+        if let Some(budget_pct) = retry.budget_percent {
+            let inflight = self.state.inflight.load(Ordering::Relaxed).max(1) as f64;
+            let current_retries = self.state.retry_inflight.load(Ordering::Relaxed) as f64;
+            let limit = (inflight * budget_pct / 100.0).ceil() as usize;
+            let current = current_retries as usize;
+            if current >= limit {
+                tracing::debug!(
+                    budget_pct,
+                    current_retries,
+                    inflight,
+                    "retry budget exhausted — suppressing retry"
+                );
+                return false;
+            }
+        }
+        self.state.retry_inflight.fetch_add(1, Ordering::Relaxed);
+        retry.is_retrying = true;
+        true
+    }
+
     async fn do_request_filter(
         &self,
         session: &mut Session,
@@ -203,6 +235,7 @@ impl ConduitProxy {
             script_headers,
             extracted_client_ip,
             fault_injection_cfg,
+            jwt_auth_cfg,
         ) = {
             let config = self.state.config.load();
             let host = extract_host(session);
@@ -301,6 +334,7 @@ impl ConduitProxy {
                 req_headers_for_script,
                 client_ip,
                 site.and_then(|s| s.fault_injection.clone()),
+                site.and_then(|s| s.jwt_auth.clone()),
             )
         };
 
@@ -357,6 +391,7 @@ impl ConduitProxy {
             script_headers,
             client_ip: extracted_client_ip,
             fault_injection_cfg,
+            jwt_auth_cfg,
         };
         if self.run_guard_filters(session, guards).await? {
             return Ok(true);
@@ -433,6 +468,14 @@ impl ConduitProxy {
         // 6b. API-key Auth.
         if let Some(cfg) = guards.api_key_cfg {
             chain = chain.push(ApiKeyGuard { cfg });
+        }
+
+        // 6c. JWT Bearer-token Auth.
+        if let Some(cfg) = guards.jwt_auth_cfg {
+            chain = chain.push(JwtGuard {
+                cfg,
+                path: guards.script_path.clone(),
+            });
         }
 
         // 7. Redirects.
@@ -748,6 +791,18 @@ impl ProxyHttp for ConduitProxy {
     {
         append_forwarded_headers(session, upstream_request, &self.state, ctx)?;
         apply_upstream_path_transforms(upstream_request, ctx)?;
+
+        // Traffic mirroring: fire-and-forget copy to the mirror backend.
+        if let Some(req_ctx) = ctx.as_ref() {
+            if let UpstreamTarget::Proxy {
+                mirror_url: Some(ref mirror),
+                ..
+            } = req_ctx.upstream
+            {
+                fire_mirror_request(mirror, session, upstream_request);
+            }
+        }
+
         Ok(())
     }
 
@@ -993,8 +1048,8 @@ impl ProxyHttp for ConduitProxy {
     ) -> Box<pingora_core::Error> {
         use pingora_core::ErrorType::*;
 
-        if let Some(req_ctx) = ctx.as_ref() {
-            if let Some(retry) = &req_ctx.retry {
+        if let Some(req_ctx) = ctx.as_mut() {
+            if let Some(retry) = &mut req_ctx.retry {
                 if retry.has_attempts_left() {
                     let is_conn_err = matches!(
                         e.etype(),
@@ -1006,8 +1061,9 @@ impl ProxyHttp for ConduitProxy {
                             | SocketError
                     );
                     let is_timeout = matches!(e.etype(), ConnectTimedout);
-                    if (is_conn_err && retry.has_condition("connection_error"))
-                        || (is_timeout && retry.has_condition("timeout"))
+                    if ((is_conn_err && retry.has_condition("connection_error"))
+                        || (is_timeout && retry.has_condition("timeout")))
+                        && self.retry_budget_allows(retry)
                     {
                         e.set_retry(true);
                     }
@@ -1031,13 +1087,14 @@ impl ProxyHttp for ConduitProxy {
         e.retry
             .decide_reuse(client_reused && !session.as_ref().retry_buffer_truncated());
 
-        if let Some(req_ctx) = ctx.as_ref() {
-            if let Some(retry) = &req_ctx.retry {
+        if let Some(req_ctx) = ctx.as_mut() {
+            if let Some(retry) = &mut req_ctx.retry {
                 if retry.has_attempts_left() {
                     let is_timeout = matches!(e.etype(), ReadTimedout | WriteTimedout);
                     let is_5xx_retry = matches!(e.etype(), Custom("5xx_retry"));
-                    if (is_timeout && retry.has_condition("timeout"))
-                        || (is_5xx_retry && retry.has_condition("5xx"))
+                    if ((is_timeout && retry.has_condition("timeout"))
+                        || (is_5xx_retry && retry.has_condition("5xx")))
+                        && self.retry_budget_allows(retry)
                     {
                         e.set_retry(true);
                     }
@@ -1059,6 +1116,15 @@ impl ProxyHttp for ConduitProxy {
         if let Some(req_ctx) = ctx.as_ref() {
             if !matches!(req_ctx.upstream, UpstreamTarget::Local(_)) {
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                // Decrement retry budget counter if this request was a retry.
+                if req_ctx
+                    .retry
+                    .as_ref()
+                    .map(|r| r.is_retrying)
+                    .unwrap_or(false)
+                {
+                    self.state.retry_inflight.fetch_sub(1, Ordering::Relaxed);
+                }
                 // For least-conn routes, release the per-upstream slot.
                 if let Some(ref url) = req_ctx.proxy_upstream_url {
                     self.state.upstream_health.conn_dec(url);
@@ -1292,6 +1358,8 @@ struct GuardCtx {
     client_ip: String,
     /// Fault injection config (chaos testing).
     fault_injection_cfg: Option<crate::config::schema::FaultInjectionConfig>,
+    /// JWT auth config — validated in step 6c.
+    jwt_auth_cfg: Option<crate::config::schema::JwtAuthConfig>,
 }
 
 /// Classify a request's upstream target into a `HandlerKind` for filter routing.
@@ -1425,6 +1493,99 @@ fn apply_path_rewrites(path: &str, rules: Option<&[crate::config::schema::Rewrit
         }
     }
     out
+}
+
+/// Fire-and-forget a copy of the current request to a mirror backend.
+///
+/// The mirror task is detached (spawned with `tokio::spawn`); its response is
+/// discarded and any error is silently logged at DEBUG level.  The primary
+/// request processing is unaffected by mirror success or failure.
+///
+/// **V1 limitation:** only the method, path, query, and request headers are
+/// mirrored.  The request body is not buffered and is therefore not mirrored.
+fn fire_mirror_request(mirror_url: &str, session: &Session, upstream_request: &RequestHeader) {
+    // Build the mirror URL: base URL + path + query from the upstream request.
+    let path_and_query = upstream_request
+        .uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or_else(|| upstream_request.uri.path());
+
+    let target_url = {
+        let base = mirror_url.trim_end_matches('/');
+        format!("{base}{path_and_query}")
+    };
+
+    // Collect request headers (skip hop-by-hop and host).
+    let method = upstream_request.method.clone();
+    let mut headers = Vec::new();
+    for (name, value) in upstream_request.headers.iter() {
+        let n = name.as_str().to_ascii_lowercase();
+        if matches!(
+            n.as_str(),
+            "connection"
+                | "keep-alive"
+                | "transfer-encoding"
+                | "te"
+                | "trailer"
+                | "upgrade"
+                | "proxy-authorization"
+                | "proxy-authenticate"
+                | "host"
+        ) {
+            continue;
+        }
+        if let Ok(v) = value.to_str() {
+            headers.push((n, v.to_owned()));
+        }
+    }
+    // Add X-Mirrored-From so the mirror can distinguish shadow traffic.
+    let primary_host = session
+        .req_header()
+        .headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-")
+        .to_owned();
+    headers.push(("x-mirrored-from".to_owned(), primary_host));
+
+    tokio::spawn(async move {
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::debug!(error = %e, "mirror: failed to build client");
+                return;
+            }
+        };
+
+        let mut req = client.request(
+            reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET),
+            &target_url,
+        );
+        for (name, value) in &headers {
+            if let Ok(header_name) = reqwest::header::HeaderName::from_bytes(name.as_bytes()) {
+                if let Ok(header_value) = reqwest::header::HeaderValue::from_str(value) {
+                    req = req.header(header_name, header_value);
+                }
+            }
+        }
+
+        match req.send().await {
+            Ok(resp) => {
+                tracing::debug!(
+                    url = %target_url,
+                    status = resp.status().as_u16(),
+                    "mirror: response received (discarded)"
+                );
+            }
+            Err(e) => {
+                tracing::debug!(url = %target_url, error = %e, "mirror: request failed");
+            }
+        }
+    });
 }
 
 /// Return a compiled [`regex::Regex`] for `pattern`, using a process-wide cache

@@ -264,6 +264,8 @@ fn full_cfg_to_result(
         max_attempts: r.attempts as usize,
         conditions: r.conditions.clone(),
         backoff_ms: r.backoff_ms,
+        budget_percent: r.budget_percent,
+        is_retrying: false,
     });
 
     let upstream_url_for_lc = is_least_conn.then(|| chosen_url.clone());
@@ -1072,6 +1074,7 @@ mod tests {
                     attempts: 2,
                     conditions: vec!["connection_error".to_string()],
                     backoff_ms: Some(50),
+                    budget_percent: None,
                 }),
                 ..Default::default()
             }))),

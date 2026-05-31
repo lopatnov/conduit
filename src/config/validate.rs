@@ -115,6 +115,38 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
     if let Some(middleware) = &site.middleware {
         validate_middleware(middleware, prefix, errors);
     }
+    if let Some(jwt) = &site.jwt_auth {
+        validate_jwt_auth(jwt, &format!("{prefix}.jwtAuth"), errors);
+    }
+}
+
+fn validate_jwt_auth(
+    cfg: &crate::config::schema::JwtAuthConfig,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let has_secret = cfg.secret.is_some();
+    let has_jwks = cfg.jwks_url.is_some();
+    if !has_secret && !has_jwks {
+        errors.push(ValidationError::new(
+            prefix.to_owned(),
+            "jwtAuth requires either \"secret\" (HS256) or \"jwksUrl\" (RS256/ES256)",
+        ));
+    }
+    if has_secret && has_jwks {
+        errors.push(ValidationError::new(
+            prefix.to_owned(),
+            "jwtAuth.secret and jwtAuth.jwksUrl are mutually exclusive",
+        ));
+    }
+    if let Some(url) = &cfg.jwks_url {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            errors.push(ValidationError::new(
+                format!("{prefix}.jwksUrl"),
+                "jwksUrl must be an http:// or https:// URL",
+            ));
+        }
+    }
 }
 
 fn validate_middleware(

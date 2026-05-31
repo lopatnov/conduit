@@ -4,6 +4,7 @@ pub mod compression;
 pub mod cors;
 pub mod headers;
 pub mod ip_filter;
+pub mod jwt;
 pub mod limits;
 pub mod logging;
 pub mod rate_limit;

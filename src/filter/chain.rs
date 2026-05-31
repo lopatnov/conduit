@@ -22,12 +22,12 @@ use pingora_core::Result;
 use pingora_proxy::Session;
 
 use crate::config::schema::{
-    ApiKeyConfig, BasicAuthConfig, CorsConfig, FaultInjectionConfig, IpFilterConfig, LimitsConfig,
-    MiddlewareEntry, RateLimitConfig,
+    ApiKeyConfig, BasicAuthConfig, CorsConfig, FaultInjectionConfig, IpFilterConfig, JwtAuthConfig,
+    LimitsConfig, MiddlewareEntry, RateLimitConfig,
 };
 use crate::filter::rate_limit::RateLimiter;
 use crate::filter::rate_limit_redis::RedisRateLimiter;
-use crate::filter::{auth, cors, ip_filter, limits, rate_limit, script};
+use crate::filter::{auth, cors, ip_filter, jwt, limits, rate_limit, script};
 use crate::handler::response;
 use uuid::Uuid;
 
@@ -312,6 +312,38 @@ impl RequestFilter for ApiKeyGuard {
     }
 }
 
+/// JWT bearer-token authentication guard.
+///
+/// Validates the `Authorization: Bearer <token>` header using either an HMAC
+/// secret (`jwtAuth.secret`) or a remote JWKS endpoint (`jwtAuth.jwksUrl`).
+/// Returns `401 Unauthorized` when the token is absent or invalid.
+pub struct JwtGuard {
+    pub cfg: JwtAuthConfig,
+    pub path: String,
+}
+
+#[async_trait]
+impl RequestFilter for JwtGuard {
+    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
+        let auth_header = ctx
+            .session
+            .req_header()
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok());
+
+        match jwt::check_jwt(&self.cfg, &self.path, auth_header) {
+            jwt::JwtCheckResult::Allowed => Ok(FilterOutcome::Continue),
+            jwt::JwtCheckResult::Denied { reason } => {
+                tracing::debug!(reason, "JWT validation denied");
+                response::write_denied(ctx.session, Some("Bearer"), ctx.extra_headers).await?;
+                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+                Ok(FilterOutcome::Handled)
+            }
+        }
+    }
+}
+
 /// Injects artificial faults (aborts or delays) for chaos-engineering and
 /// testing retry/circuit-breaker behaviour.
 ///
@@ -340,7 +372,7 @@ impl RequestFilter for FaultInjectionGuard {
         // Abort injection — checked first.
         if let Some(ref abort) = self.cfg.abort {
             if roll < abort.percent {
-                let status = abort.status.unwrap_or(503).max(100).min(999);
+                let status = abort.status.unwrap_or(503).clamp(100, 999);
                 let body = abort
                     .body
                     .clone()

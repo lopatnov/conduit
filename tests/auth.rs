@@ -1,7 +1,9 @@
 mod common;
 
 use base64::Engine as _;
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::blocking::Client;
+use serde_json::json;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -489,5 +491,116 @@ fn rate_limit_key_by_header_missing_header_falls_back_to_shared_bucket() {
         resp.status().as_u16(),
         429,
         "4th request must be rate-limited when missing-header bucket is exhausted"
+    );
+}
+
+// ── JWT Auth tests ────────────────────────────────────────────────────────────
+
+fn jwt_secret() -> &'static str {
+    "test-jwt-secret-for-conduit"
+}
+
+fn make_jwt(secret: &str, exp_offset_secs: i64) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let exp = (now + exp_offset_secs) as u64;
+    let claims = json!({ "sub": "testuser", "exp": exp });
+    let key = EncodingKey::from_secret(secret.as_bytes());
+    encode(&Header::new(Algorithm::HS256), &claims, &key).unwrap()
+}
+
+fn server_with_jwt_auth() -> common::TestServer {
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "healthCheck": true,
+                "jwtAuth": {
+                    "secret": jwt_secret(),
+                    "skipPaths": ["/__health__"]
+                }
+            }]
+        }),
+    )
+}
+
+#[test]
+fn jwt_no_token_returns_401() {
+    let srv = server_with_jwt_auth();
+    let resp = plain_client().get(srv.url("/")).send().expect("GET /");
+    assert_eq!(resp.status().as_u16(), 401);
+}
+
+#[test]
+fn jwt_invalid_token_returns_401() {
+    let srv = server_with_jwt_auth();
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("authorization", "Bearer this.is.not.valid")
+        .send()
+        .expect("GET /");
+    assert_eq!(resp.status().as_u16(), 401);
+}
+
+#[test]
+fn jwt_wrong_secret_returns_401() {
+    let srv = server_with_jwt_auth();
+    let token = make_jwt("wrong-secret", 3600);
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .expect("GET /");
+    assert_eq!(resp.status().as_u16(), 401);
+}
+
+#[test]
+fn jwt_valid_token_passes() {
+    let srv = server_with_jwt_auth();
+    let token = make_jwt(jwt_secret(), 3600);
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .expect("GET /");
+    // No upstream configured — fallback handler returns 404 (not 401).
+    assert_ne!(
+        resp.status().as_u16(),
+        401,
+        "valid JWT should not be rejected"
+    );
+}
+
+#[test]
+fn jwt_skip_path_bypasses_auth() {
+    let srv = server_with_jwt_auth();
+    let resp = plain_client()
+        .get(srv.url("/__health__"))
+        .send()
+        .expect("GET /__health__");
+    assert_eq!(resp.status().as_u16(), 200);
+}
+
+#[test]
+fn jwt_www_authenticate_header_on_401() {
+    let srv = server_with_jwt_auth();
+    let resp = plain_client().get(srv.url("/")).send().expect("GET /");
+    assert_eq!(resp.status().as_u16(), 401);
+    let www_auth = resp.headers().get("www-authenticate");
+    assert!(
+        www_auth.is_some(),
+        "WWW-Authenticate header should be present"
+    );
+    assert!(
+        www_auth.unwrap().to_str().unwrap().contains("Bearer"),
+        "WWW-Authenticate should contain 'Bearer'"
     );
 }

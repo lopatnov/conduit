@@ -45,6 +45,7 @@ pub struct RequestCtx {
 
 impl RequestCtx {
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         site_idx: usize,
         upstream: UpstreamTarget,
@@ -90,6 +91,17 @@ pub struct RetryState {
     pub conditions: Vec<String>,
     /// Optional delay between retries in milliseconds.
     pub backoff_ms: Option<u64>,
+    /// Maximum percentage of in-flight requests that may be retries (0.0–100.0).
+    ///
+    /// Prevents retry storms: when many requests fail simultaneously, an
+    /// unconstrained retry budget multiplies load by `1 + attempts`.
+    /// `None` means unlimited retries are allowed (legacy behaviour).
+    pub budget_percent: Option<f64>,
+    /// Set to `true` once this request has been promoted to a retry.
+    ///
+    /// The `logging()` hook reads this flag to decrement `AppState.retry_inflight`
+    /// after the retry response is delivered.
+    pub is_retrying: bool,
 }
 
 impl RetryState {
@@ -116,6 +128,9 @@ pub enum UpstreamTarget {
         strip_prefix: Option<String>,
         /// Path rewrite rules applied before forwarding — first matching rule wins.
         rewrite: Option<Vec<RewriteRule>>,
+        /// Optional traffic mirror URL.  When `Some`, `upstream_request_filter`
+        /// fires a fire-and-forget copy of the request to this backend.
+        mirror_url: Option<String>,
     },
     Upload {
         addr: SocketAddr,
@@ -251,6 +266,8 @@ mod tests {
             max_attempts: max,
             conditions: conditions.iter().map(|s| s.to_string()).collect(),
             backoff_ms: None,
+            budget_percent: None,
+            is_retrying: false,
         }
     }
 
