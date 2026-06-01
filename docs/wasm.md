@@ -85,10 +85,10 @@ Conduit calls for each request.
 
 ### Required exports
 
-| Export | Signature | Description |
-| ------ | --------- | ----------- |
-| `on_request` | `() -> i32` | Called for every request. Return `0` to continue, `1` (or any non-zero) to abort |
-| `memory` | linear memory | Must be exported — all string data passes through it |
+| Export       | Signature     | Description                                                                      |
+| ------------ | ------------- | -------------------------------------------------------------------------------- |
+| `on_request` | `() -> i32`   | Called for every request. Return `0` to continue, `1` (or any non-zero) to abort |
+| `memory`     | linear memory | Must be exported — all string data passes through it                             |
 
 ### Host functions — read request
 
@@ -97,18 +97,18 @@ the number of bytes written. If the buffer is too small, the result is
 truncated (no error). If the value does not exist (e.g. header not found),
 `-1` is returned.
 
-| Function | Description |
-| -------- | ----------- |
-| `conduit_get_method(buf: i32, buf_len: i32) -> i32` | HTTP method (`"GET"`, `"POST"`, …) |
-| `conduit_get_path(buf: i32, buf_len: i32) -> i32` | Request path, e.g. `"/api/users"` |
-| `conduit_get_query(buf: i32, buf_len: i32) -> i32` | Raw query string; empty when absent |
-| `conduit_get_uri(buf: i32, buf_len: i32) -> i32` | Full URI: path + `"?"` + query |
-| `conduit_get_client_ip(buf: i32, buf_len: i32) -> i32` | Remote client IP address |
-| `conduit_get_request_id(buf: i32, buf_len: i32) -> i32` | `X-Request-ID` header value |
+| Function                                                                          | Description                                                         |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `conduit_get_method(buf: i32, buf_len: i32) -> i32`                               | HTTP method (`"GET"`, `"POST"`, …)                                  |
+| `conduit_get_path(buf: i32, buf_len: i32) -> i32`                                 | Request path, e.g. `"/api/users"`                                   |
+| `conduit_get_query(buf: i32, buf_len: i32) -> i32`                                | Raw query string; empty when absent                                 |
+| `conduit_get_uri(buf: i32, buf_len: i32) -> i32`                                  | Full URI: path + `"?"` + query                                      |
+| `conduit_get_client_ip(buf: i32, buf_len: i32) -> i32`                            | Remote client IP address                                            |
+| `conduit_get_request_id(buf: i32, buf_len: i32) -> i32`                           | `X-Request-ID` header value                                         |
 | `conduit_get_header(name_ptr: i32, name_len: i32, buf: i32, buf_len: i32) -> i32` | Named header value; `-1` if absent. Look-up is **case-insensitive** |
-| `conduit_get_header_count() -> i32` | Number of request headers |
-| `conduit_get_header_names(buf: i32, buf_len: i32) -> i32` | All header names, newline-separated |
-| `conduit_get_plugin_config(buf: i32, buf_len: i32) -> i32` | JSON bytes from `middleware[].config`; empty when not set |
+| `conduit_get_header_count() -> i32`                                               | Number of request headers                                           |
+| `conduit_get_header_names(buf: i32, buf_len: i32) -> i32`                         | All header names, newline-separated                                 |
+| `conduit_get_plugin_config(buf: i32, buf_len: i32) -> i32`                        | JSON bytes from `middleware[].config`; empty when not set           |
 
 ### Host functions — mutate request
 
@@ -116,27 +116,27 @@ Header mutations are collected during the plugin call and applied to the
 upstream request **after** `on_request` returns `0` (continue). They have no
 effect if the plugin aborts.
 
-| Function | Description |
-| -------- | ----------- |
+| Function                                                                               | Description                       |
+| -------------------------------------------------------------------------------------- | --------------------------------- |
 | `conduit_set_request_header(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32)` | Add or overwrite a request header |
-| `conduit_remove_request_header(name_ptr: i32, name_len: i32)` | Remove a request header |
+| `conduit_remove_request_header(name_ptr: i32, name_len: i32)`                          | Remove a request header           |
 
 ### Host functions — abort response
 
 Call these **before** returning `1` from `on_request`. They have no effect
 when the plugin continues (`return 0`).
 
-| Function | Description |
-| -------- | ----------- |
-| `conduit_set_response_status(status: i32)` | HTTP status code (clamped to 100–999; default: `500`) |
-| `conduit_set_response_header(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32)` | Add a response header |
-| `conduit_set_response_body(body_ptr: i32, body_len: i32)` | Set the response body (bytes, not required to be UTF-8) |
-| `conduit_abort_with_redirect(url_ptr: i32, url_len: i32)` | Shortcut: sets status 302 + `Location` header + body `"Redirecting..."`. Still return `1`. |
+| Function                                                                                | Description                                                                                |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `conduit_set_response_status(status: i32)`                                              | HTTP status code (clamped to 100–999; default: `500`)                                      |
+| `conduit_set_response_header(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32)` | Add a response header                                                                      |
+| `conduit_set_response_body(body_ptr: i32, body_len: i32)`                               | Set the response body (bytes, not required to be UTF-8)                                    |
+| `conduit_abort_with_redirect(url_ptr: i32, url_len: i32)`                               | Shortcut: sets status 302 + `Location` header + body `"Redirecting..."`. Still return `1`. |
 
 ### Host functions — logging
 
-| Function | Description |
-| -------- | ----------- |
+| Function                                              | Description                                                                       |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------- |
 | `conduit_log(level: i32, msg_ptr: i32, msg_len: i32)` | Write to the Conduit log. Levels: `0`=trace `1`=debug `2`=info `3`=warn `4`=error |
 
 ---
@@ -160,17 +160,45 @@ All string data passes through the plugin's **linear memory**:
 
 Any language that compiles to `wasm32-unknown-unknown` (no OS dependencies) works.
 
-| Language | Toolchain | Notes |
-| -------- | --------- | ----- |
-| **Rust** | `cargo build --target wasm32-unknown-unknown` | Best ecosystem for WASM; zero-cost abstractions |
-| **C / C++** | `clang --target=wasm32 -nostdlib` | Low-level, minimal binary size |
-| **Go** | [TinyGo](https://tinygo.org/) `tinygo build -target=wasi` | Full Go syntax; TinyGo required (standard `go` produces too-large WASM) |
-| **AssemblyScript** | `asc` (AssemblyScript compiler) | TypeScript-like syntax; designed for WASM |
-| **Zig** | `zig build-lib -target wasm32-freestanding` | Systems language with excellent WASM support |
+| Language           | Toolchain                                                 | Notes                                                                   |
+| ------------------ | --------------------------------------------------------- | ----------------------------------------------------------------------- |
+| **Rust**           | `cargo build --target wasm32-unknown-unknown`             | Best ecosystem for WASM; zero-cost abstractions                         |
+| **C / C++**        | `clang --target=wasm32 -nostdlib`                         | Low-level, minimal binary size                                          |
+| **Go**             | [TinyGo](https://tinygo.org/) `tinygo build -target=wasi` | Full Go syntax; TinyGo required (standard `go` produces too-large WASM) |
+| **AssemblyScript** | `asc` (AssemblyScript compiler)                           | TypeScript-like syntax; designed for WASM                               |
+| **Zig**            | `zig build-lib -target wasm32-freestanding`               | Systems language with excellent WASM support                            |
 
 ---
 
 ## Examples
+
+Every plugin is loaded via `conduit.yaml` (or `conduit.json`). The general
+pattern — place the `middleware` array alongside your proxy/static config:
+
+```yaml
+# conduit.yaml
+middleware:
+  - type: wasm
+    path: ./plugins/my-plugin.wasm   # path relative to working directory
+proxy:
+  /api: "http://backend:4000"
+```
+
+```json
+// conduit.json
+{
+  "middleware": [
+    { "type": "wasm", "path": "./plugins/my-plugin.wasm" }
+  ],
+  "proxy": { "/api": "http://backend:4000" }
+}
+```
+
+Plugins run **in order** for every request. Multiple plugins and Rhai scripts
+can be mixed freely. See [configuration.md — WASM middleware](configuration.md#wasm-middleware)
+for all config options.
+
+---
 
 ### Minimal plugin (WAT)
 
@@ -186,8 +214,18 @@ The smallest possible plugin — always passes through:
 ```
 
 Compile with `wat2wasm`:
+
 ```bash
 wat2wasm minimal.wat -o minimal.wasm
+```
+
+**conduit.yaml:**
+```yaml
+middleware:
+  - type: wasm
+    path: ./minimal.wasm
+proxy:
+  /: "http://backend:4000"
 ```
 
 ---
@@ -246,9 +284,30 @@ fn reject(status: i32, msg: &[u8]) {
 ```
 
 Build:
+
 ```bash
 cargo build --target wasm32-unknown-unknown --release
 cp target/wasm32-unknown-unknown/release/my_plugin.wasm ./plugins/
+```
+
+**conduit.yaml / conduit.json:**
+```yaml
+# conduit.yaml
+middleware:
+  - type: wasm
+    path: ./plugins/my_plugin.wasm
+proxy:
+  /api: "http://backend:4000"
+healthCheck: true
+```
+
+```json
+// conduit.json
+{
+  "middleware": [{ "type": "wasm", "path": "./plugins/my_plugin.wasm" }],
+  "proxy": { "/api": "http://backend:4000" },
+  "healthCheck": true
+}
 ```
 
 ---
@@ -276,6 +335,24 @@ pub extern "C" fn on_request() -> i32 {
         );
     }
     0 // continue — header is applied to upstream request
+}
+```
+
+**conduit.yaml / conduit.json:**
+```yaml
+# conduit.yaml — inject X-Plugin-Version before forwarding to upstream
+middleware:
+  - type: wasm
+    path: ./plugins/inject_header.wasm
+proxy:
+  /: "http://backend:4000"
+```
+
+```json
+// conduit.json
+{
+  "middleware": [{ "type": "wasm", "path": "./plugins/inject_header.wasm" }],
+  "proxy": { "/": "http://backend:4000" }
 }
 ```
 
@@ -313,6 +390,24 @@ pub extern "C" fn on_request() -> i32 {
         return 1; // abort with 302
     }
     0
+}
+```
+
+**conduit.yaml / conduit.json:**
+```yaml
+# conduit.yaml — redirect /old-api/* → /api/* before reaching upstream
+middleware:
+  - type: wasm
+    path: ./plugins/redirect.wasm
+proxy:
+  /api: "http://backend:4000"
+```
+
+```json
+// conduit.json
+{
+  "middleware": [{ "type": "wasm", "path": "./plugins/redirect.wasm" }],
+  "proxy": { "/api": "http://backend:4000" }
 }
 ```
 
@@ -360,6 +455,24 @@ clang --target=wasm32 -nostdlib -Wl,--no-entry \
       -o plugin.wasm plugin.c
 ```
 
+**conduit.yaml / conduit.json:**
+```yaml
+# conduit.yaml
+middleware:
+  - type: wasm
+    path: ./plugin.wasm
+proxy:
+  /api: "http://backend:4000"
+```
+
+```json
+// conduit.json
+{
+  "middleware": [{ "type": "wasm", "path": "./plugin.wasm" }],
+  "proxy": { "/api": "http://backend:4000" }
+}
+```
+
 ---
 
 ### Header check in Go (TinyGo)
@@ -404,6 +517,24 @@ Build with TinyGo:
 tinygo build -o plugin.wasm -target=wasi ./plugin.go
 ```
 
+**conduit.yaml / conduit.json:**
+```yaml
+# conduit.yaml
+middleware:
+  - type: wasm
+    path: ./plugin.wasm
+proxy:
+  /api: "http://backend:4000"
+```
+
+```json
+// conduit.json
+{
+  "middleware": [{ "type": "wasm", "path": "./plugin.wasm" }],
+  "proxy": { "/api": "http://backend:4000" }
+}
+```
+
 ---
 
 ### Using the plugin `config` field
@@ -411,18 +542,7 @@ tinygo build -o plugin.wasm -target=wasi ./plugin.go
 The `config` object from `conduit.yaml` is passed to the plugin as a JSON
 string via `conduit_get_plugin_config`. The plugin must parse it itself.
 
-Here's how to pass config in `conduit.yaml`:
-
-```yaml
-middleware:
-  - type: wasm
-    path: ./plugins/validator.wasm
-    config:
-      allowed_key: "secret-abc"
-      max_body_kb: 512
-```
-
-Reading it in Rust:
+**conduit.yaml / conduit.json:**
 
 ```yaml
 # conduit.yaml
@@ -431,7 +551,26 @@ middleware:
     path: ./plugins/validator.wasm
     config:
       allowed_key: "secret-abc"
+      max_body_kb: 512
+proxy:
+  /api: "http://backend:4000"
 ```
+
+```json
+// conduit.json
+{
+  "middleware": [
+    {
+      "type": "wasm",
+      "path": "./plugins/validator.wasm",
+      "config": { "allowed_key": "secret-abc", "max_body_kb": 512 }
+    }
+  ],
+  "proxy": { "/api": "http://backend:4000" }
+}
+```
+
+Reading the config in Rust:
 
 ```rust
 extern "C" {
@@ -584,17 +723,17 @@ Common causes:
 
 ## Comparison with Rhai
 
-| Feature | Rhai | WASM |
-| ------- | ---- | ---- |
-| Compile-time feature | none (always available) | `--features wasm` |
-| Language | Rhai (scripting) | Any language compiling to WASM |
-| Mutate request headers | ❌ read-only | ✅ set + remove |
-| Read client IP | ❌ | ✅ `conduit_get_client_ip` |
-| Plugin config | ❌ | ✅ `conduit_get_plugin_config` |
-| Performance | fast (interpreted) | faster (JIT-compiled) |
-| Development speed | fast (no build step) | slower (compile needed) |
-| Error isolation | fail-open | fail-open |
-| Shared state across requests | ❌ none | ❌ none (new Store per request) |
+| Feature                      | Rhai                    | WASM                            |
+| ---------------------------- | ----------------------- | ------------------------------- |
+| Compile-time feature         | none (always available) | `--features wasm`               |
+| Language                     | Rhai (scripting)        | Any language compiling to WASM  |
+| Mutate request headers       | ❌ read-only            | ✅ set + remove                 |
+| Read client IP               | ❌                      | ✅ `conduit_get_client_ip`      |
+| Plugin config                | ❌                      | ✅ `conduit_get_plugin_config`  |
+| Performance                  | fast (interpreted)      | faster (JIT-compiled)           |
+| Development speed            | fast (no build step)    | slower (compile needed)         |
+| Error isolation              | fail-open               | fail-open                       |
+| Shared state across requests | ❌ none                 | ❌ none (new Store per request) |
 
 **Use Rhai** for simple guards that only read headers and abort — fast to
 write, no build step.
