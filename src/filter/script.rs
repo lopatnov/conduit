@@ -161,6 +161,37 @@ pub enum ScriptOutcome {
     },
 }
 
+/// Convert a `serde_json::Value` into a Rhai `Dynamic` value so that plugin
+/// config objects can be used directly in scripts:
+///
+/// ```rhai
+/// if config.allowed_key == request.header("x-api-key") { ... }
+/// ```
+fn json_to_dynamic(v: &serde_json::Value) -> rhai::Dynamic {
+    match v {
+        serde_json::Value::Null => rhai::Dynamic::UNIT,
+        serde_json::Value::Bool(b) => rhai::Dynamic::from(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                rhai::Dynamic::from(i)
+            } else {
+                rhai::Dynamic::from(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => rhai::Dynamic::from(s.clone()),
+        serde_json::Value::Array(arr) => {
+            rhai::Dynamic::from(arr.iter().map(json_to_dynamic).collect::<Vec<_>>())
+        }
+        serde_json::Value::Object(obj) => {
+            let mut map = rhai::Map::new();
+            for (k, v) in obj {
+                map.insert(k.as_str().into(), json_to_dynamic(v));
+            }
+            rhai::Dynamic::from_map(map)
+        }
+    }
+}
+
 /// Execute the Rhai script at `script_path` against `req`.
 ///
 /// - Compiles the script on first call and caches the AST.
@@ -169,12 +200,16 @@ pub enum ScriptOutcome {
 /// - Returns [`ScriptOutcome::Abort`] when the script returns `false`.
 /// - On engine or I/O errors, logs a warning and returns `Continue` so that
 ///   a broken script does not take down the server.
+///
+/// The optional `plugin_config` is exposed as `config` in the script scope.
+/// It is derived from the `config` field of the `middleware[]` entry.
 pub fn run_script(
     script_path: &str,
     path: &str,
     method: &str,
     query: &str,
     headers: HashMap<String, String>,
+    plugin_config: Option<&serde_json::Value>,
 ) -> ScriptOutcome {
     let ast = match get_or_compile(script_path) {
         Ok(a) => a,
@@ -197,6 +232,13 @@ pub fn run_script(
 
     scope.push("request", req);
     scope.push("response", resp);
+
+    // Expose plugin config as `config` — a Dynamic map/value derived from
+    // the `middleware[].config` JSON object.  Absent when not configured.
+    let config_dynamic = plugin_config
+        .map(json_to_dynamic)
+        .unwrap_or(rhai::Dynamic::UNIT);
+    scope.push("config", config_dynamic);
 
     let result = eng.eval_ast_with_scope::<rhai::Dynamic>(&mut scope, &ast);
     match result {
@@ -268,7 +310,7 @@ mod tests {
         let path = p.to_str().unwrap().to_owned();
         // Clear the cache entry so this test always re-compiles.
         ast_cache().remove(&path);
-        run_script(&path, "/test", "GET", "", hdrs)
+        run_script(&path, "/test", "GET", "", hdrs, None)
     }
 
     #[test]
@@ -367,6 +409,7 @@ mod tests {
             "GET",
             "",
             HashMap::new(),
+            None,
         );
         assert!(matches!(outcome, ScriptOutcome::Continue));
     }
@@ -393,12 +436,12 @@ mod tests {
         ast_cache().remove(&path);
 
         // Without matching query → continue.
-        let ok = run_script(&path, "/test", "GET", "user=1", HashMap::new());
+        let ok = run_script(&path, "/test", "GET", "user=1", HashMap::new(), None);
         assert!(matches!(ok, ScriptOutcome::Continue));
 
         // With matching query → abort.
         ast_cache().remove(&path);
-        let blocked = run_script(&path, "/test", "GET", "admin=1", HashMap::new());
+        let blocked = run_script(&path, "/test", "GET", "admin=1", HashMap::new(), None);
         assert!(matches!(blocked, ScriptOutcome::Abort { .. }));
     }
 
@@ -455,8 +498,8 @@ mod tests {
         let path = p.to_str().unwrap().to_owned();
         ast_cache().remove(&path);
 
-        let r1 = run_script(&path, "/", "GET", "", HashMap::new());
-        let r2 = run_script(&path, "/", "GET", "", HashMap::new());
+        let r1 = run_script(&path, "/", "GET", "", HashMap::new(), None);
+        let r2 = run_script(&path, "/", "GET", "", HashMap::new(), None);
         assert!(matches!(r1, ScriptOutcome::Continue));
         assert!(matches!(r2, ScriptOutcome::Continue));
     }
@@ -490,5 +533,66 @@ mod tests {
             ScriptOutcome::Abort { status, .. } => assert_eq!(status, 200),
             other => panic!("expected Abort, got {other:?}"),
         }
+    }
+
+    // ── plugin config ─────────────────────────────────────────────────────────
+
+    fn run_with_config(script: &str, cfg: serde_json::Value) -> ScriptOutcome {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("test.rhai");
+        std::fs::write(&p, script).unwrap();
+        let path = p.to_str().unwrap().to_owned();
+        ast_cache().remove(&path);
+        run_script(&path, "/test", "GET", "", headers(&[]), Some(&cfg))
+    }
+
+    #[test]
+    fn config_string_field_accessible_in_script() {
+        let cfg = serde_json::json!({ "allowed_key": "secret-123" });
+        let script = r#"
+            if config.allowed_key == request.header("x-api-key") { return true; }
+            response.status = 403;
+            false
+        "#;
+        // Correct key → continue.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("cfg.rhai");
+        std::fs::write(&p, script).unwrap();
+        let path = p.to_str().unwrap().to_owned();
+        ast_cache().remove(&path);
+        let ok = run_script(&path, "/", "GET", "", headers(&[("x-api-key", "secret-123")]), Some(&cfg));
+        assert!(matches!(ok, ScriptOutcome::Continue));
+        // Wrong key → abort 403.
+        ast_cache().remove(&path);
+        let denied = run_script(&path, "/", "GET", "", headers(&[("x-api-key", "wrong")]), Some(&cfg));
+        assert!(matches!(denied, ScriptOutcome::Abort { status: 403, .. }));
+    }
+
+    #[test]
+    fn config_absent_gives_unit_value() {
+        // Scripts must handle absent config gracefully.
+        let script = "true";
+        assert!(matches!(run(script, headers(&[])), ScriptOutcome::Continue));
+    }
+
+    #[test]
+    fn config_number_field_accessible() {
+        let cfg = serde_json::json!({ "max_len": 10 });
+        let script = r#"
+            if config.max_len > 5 { return true; }
+            false
+        "#;
+        assert!(matches!(run_with_config(script, cfg), ScriptOutcome::Continue));
+    }
+
+    #[test]
+    fn config_array_field_accessible() {
+        let cfg = serde_json::json!({ "allowed": ["GET", "POST"] });
+        let script = r#"
+            if config.allowed.contains(request.method) { return true; }
+            response.status = 405;
+            false
+        "#;
+        assert!(matches!(run_with_config(script, cfg), ScriptOutcome::Continue));
     }
 }

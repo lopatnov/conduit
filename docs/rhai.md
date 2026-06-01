@@ -231,9 +231,9 @@ true
 
 ### Per-script config
 
-When `config` is set in the middleware entry, it is available as the raw JSON
-string in `request.header("x-conduit-config")` — **not yet** as a parsed
-object. Parse it with Rhai's JSON functions:
+Set a `config` object in the middleware entry — it becomes a `config` variable
+in the script scope. Fields map directly to Rhai values (strings, numbers,
+booleans, arrays, nested objects).
 
 ```yaml
 # conduit.yaml
@@ -243,26 +243,56 @@ middleware:
     config:
       valid_key: "$MY_SECRET_KEY"
       blocked_paths: ["/internal", "/debug"]
+      max_body_kb: 512
+```
+
+```json
+// conduit.json
+{
+  "middleware": [
+    {
+      "type": "script",
+      "path": "./scripts/check-key.rhai",
+      "config": {
+        "valid_key": "$MY_SECRET_KEY",
+        "blocked_paths": ["/internal", "/debug"],
+        "max_body_kb": 512
+      }
+    }
+  ]
+}
 ```
 
 ```rhai
-// check-key.rhai
-// Config is passed as JSON via a special internal header.
-// This feature is not yet exposed to Rhai — use WASM for config-driven
-// scripts. Below is a workaround using hardcoded values.
+// check-key.rhai — access config fields directly
 
+// String field
 let key = request.header("X-API-Key");
-if key == "" {
+if key != config.valid_key {
     response.status = 401;
     return false;
 }
+
+// Array field
+if config.blocked_paths.contains(request.path) {
+    response.status = 403;
+    return false;
+}
+
 true
 ```
 
-> **Note:** `config` objects are fully supported in [WASM plugins](wasm.md)
-> via `conduit_get_plugin_config()`. Rhai scripts currently only receive the
-> script `path` — the `config` field is accepted in YAML but not yet exposed
-> to the script runtime.
+Config types:
+
+| YAML / JSON value | Rhai type |
+| ----------------- | --------- |
+| `"string"` | `String` |
+| `42` | `i64` |
+| `3.14` | `f64` |
+| `true` / `false` | `bool` |
+| `[1, 2, 3]` | `Array` |
+| `{ key: val }` | `Map` — access as `config.key` |
+| absent (no `config:`) | `()` (unit) — check with `config == ()` |
 
 ---
 

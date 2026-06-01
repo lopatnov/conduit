@@ -715,6 +715,7 @@ impl RequestFilter for MiddlewareGuard {
                         &self.method,
                         &self.query,
                         self.headers.clone(),
+                        entry.config.as_ref(),
                     ) {
                         script::ScriptOutcome::Continue => {}
                         script::ScriptOutcome::Abort {
