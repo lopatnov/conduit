@@ -158,7 +158,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/upstreams/weight", post(upstreams_weight_handler))
         .route("/cache/purge", delete(cache_purge_handler))
         .route("/ip-deny", post(ip_deny_add_handler))
-        .route("/ip-deny", delete(ip_deny_remove_handler));
+        .route("/ip-deny", delete(ip_deny_remove_handler))
+        .route("/certs/reload", post(certs_reload_handler));
 
     // Wrap with bearer-token auth middleware if a token is configured.
     let token: Option<String> = state
@@ -764,6 +765,100 @@ async fn ip_deny_remove_handler(
         list.retain(|c| c != &cidr);
     }
     Json(json!({ "status": "ok", "action": "removed", "cidr": cidr }))
+}
+
+// ── Certificate rotation ──────────────────────────────────────────────────────
+
+/// Request body for `POST /certs/reload`.
+#[derive(Deserialize)]
+struct CertReloadRequest {
+    /// PEM-encoded certificate chain (leaf + intermediates).
+    cert: String,
+    /// PEM-encoded private key (PKCS#1, PKCS#8, or SEC1).
+    key: String,
+}
+
+/// `POST /certs/reload` — validate new cert+key and write them to disk.
+///
+/// The new certificate is validated (cert/key must match and be parseable),
+/// then written atomically to the file paths configured in `tls.cert` /
+/// `tls.key`.  After writing, a `conduit reload` or process restart will
+/// activate the new certificate for new TLS connections.
+///
+/// # Notes on zero-downtime rotation
+///
+/// Pingora 0.8's rustls backend does not expose a runtime cert-swap API.
+/// True zero-downtime rotation (hot-swap without restarting the listener)
+/// requires a process upgrade: start the new process with `--upgrade` so it
+/// inherits the listening socket FDs from the old process, then send SIGQUIT
+/// to the old process.  On systems managed by systemd this is done via
+/// `systemctl reload conduit`.
+///
+/// # Errors
+///
+/// Returns `400 Bad Request` when:
+/// - No site has `tls.cert` / `tls.key` configured.
+/// - The provided cert/key PEM is invalid or the pair does not match.
+///
+/// Returns `500 Internal Server Error` when the atomic file write fails.
+async fn certs_reload_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CertReloadRequest>,
+) -> AdminResult<Json<Value>> {
+    use crate::server::tls::validate_cert_key_pem;
+
+    // Find the first site that has manual TLS cert/key configured.
+    let config = state.config.load();
+    let (cert_path, key_path) = config
+        .sites
+        .iter()
+        .find_map(|site| {
+            let tls = site.tls.as_ref()?;
+            let cert = tls.cert.as_deref()?;
+            let key = tls.key.as_deref()?;
+            Some((cert.to_owned(), key.to_owned()))
+        })
+        .ok_or_else(|| {
+            AdminError::BadRequest(
+                "no site has tls.cert/tls.key configured — nothing to rotate".to_owned(),
+            )
+        })?;
+
+    // Validate cert+key before touching any files.
+    validate_cert_key_pem(&body.cert, &body.key)
+        .map_err(|e| AdminError::BadRequest(format!("invalid cert/key: {e}")))?;
+
+    // Write cert atomically: write to a temp file next to the destination,
+    // then rename so readers never see a partial write.
+    atomic_write(&cert_path, body.cert.as_bytes())
+        .map_err(|e| AdminError::ServerError(format!("failed to write cert to {cert_path}: {e}")))?;
+    atomic_write(&key_path, body.key.as_bytes())
+        .map_err(|e| AdminError::ServerError(format!("failed to write key to {key_path}: {e}")))?;
+
+    tracing::info!(cert = %cert_path, key = %key_path, "TLS certificate written via /certs/reload");
+
+    Ok(Json(json!({
+        "status": "ok",
+        "cert_path": cert_path,
+        "key_path": key_path,
+        "note": "certificate written to disk — restart or POST /reload (if not a cold-field change) to activate"
+    })))
+}
+
+/// Write `data` to `path` atomically by writing to a sibling `.tmp` file
+/// and then renaming it into place.
+fn atomic_write(path: &str, data: &[u8]) -> std::io::Result<()> {
+    use std::fs;
+    use std::io::Write as _;
+    let tmp = format!("{path}.tmp");
+    {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(data)?;
+        f.flush()?;
+        f.sync_all()?;
+    }
+    fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

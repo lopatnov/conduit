@@ -21,6 +21,7 @@ graceful shutdown — all without restarting the process.
   - [DELETE /cache/purge](#delete-cachepurge)
   - [POST /ip-deny](#post-ip-deny)
   - [DELETE /ip-deny](#delete-ip-deny)
+  - [POST /certs/reload](#post-certsreload)
 - [CLI shortcuts](#cli-shortcuts)
 - [Security](#security)
 
@@ -413,6 +414,87 @@ curl -X DELETE http://localhost:2019/ip-deny \
 **Response:**
 ```json
 { "status": "ok", "action": "removed", "cidr": "203.0.113.0/24" }
+```
+
+---
+
+### POST /certs/reload
+
+Validate a new TLS certificate + private key and write them atomically to the
+file paths configured in `tls.cert` / `tls.key`.  A **restart** or `conduit reload`
+is required afterwards for the new certificate to take effect on new connections.
+
+> **Why a restart?** Pingora 0.8's rustls backend builds an immutable
+> `ServerConfig` at startup and has no runtime cert-swap API.  Writing the
+> files here is the safe atomic step; applying them without downtime will be
+> possible once Pingora exposes a `ResolvesServerCert` hook (planned for 0.9+).
+> For Let's Encrypt, use `tls.acme` instead — renewals are fully automatic.
+
+**Request body:**
+
+```json
+{
+  "cert": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
+  "key":  "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+}
+```
+
+Both fields accept a full PEM string (including any intermediate certificates
+chained after the leaf certificate for `cert`).
+
+```bash
+# Read new cert and key from files, send to Admin API
+CERT=$(cat /tmp/new-server.crt)
+KEY=$(cat /tmp/new-server.key)
+
+curl -s -X POST http://localhost:2019/certs/reload \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer $TOKEN" \
+     -d "{\"cert\": $(echo "$CERT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'), \
+          \"key\":  $(echo "$KEY"  | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}"
+```
+
+Or with `jq` (cleaner):
+
+```bash
+jq -n --rawfile cert /tmp/new-server.crt \
+      --rawfile key  /tmp/new-server.key \
+      '{cert: $cert, key: $key}' \
+| curl -s -X POST http://localhost:2019/certs/reload \
+       -H "Content-Type: application/json" \
+       -H "Authorization: Bearer $TOKEN" \
+       -d @-
+```
+
+**Success response (200):**
+```json
+{
+  "status":    "ok",
+  "cert_path": "/etc/conduit/tls/server.crt",
+  "key_path":  "/etc/conduit/tls/server.key",
+  "note":      "certificate written to disk — restart or POST /reload to activate"
+}
+```
+
+**Error responses:**
+
+| Status | Cause |
+|--------|-------|
+| `400`  | No site has `tls.cert`/`tls.key` configured |
+| `400`  | Cert and key do not form a valid pair (mismatch, corrupt PEM, no cert found) |
+| `500`  | File write failed (permissions, disk full, …) |
+
+**Typical workflow:**
+
+```bash
+# 1. Upload and validate the new certificate
+jq -n --rawfile cert new.crt --rawfile key new.key '{cert: $cert, key: $key}' \
+  | curl -sX POST http://localhost:2019/certs/reload -H "Content-Type: application/json" -d @-
+
+# 2. Apply (graceful restart — new connections use new cert, in-flight finish normally)
+curl -sX POST http://localhost:2019/reload
+# → if conduit reports cold fields changed (tls.cert/tls.key), do a process restart instead:
+# systemctl restart conduit   # or: kill -TERM $(pgrep conduit)
 ```
 
 ---

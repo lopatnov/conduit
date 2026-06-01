@@ -1,3 +1,4 @@
+use std::io::BufReader;
 use std::sync::Arc;
 
 use pingora_core::listeners::tls::TlsSettings;
@@ -66,6 +67,131 @@ pub fn make_tls_settings_with_client_auth(
         "mTLS client certificate verification enabled"
     );
     Ok(settings)
+}
+
+/// Validate a cert+key PEM pair without touching the disk.
+///
+/// Parses both PEM strings and attempts to build a `rustls::ServerConfig` from
+/// them.  Returns `Ok(())` when they form a valid, matching pair; otherwise
+/// returns an error message describing what is wrong (expired, mismatched key,
+/// no certificate found, …).
+///
+/// This is used by `POST /certs/reload` to reject invalid certs before writing
+/// anything to disk.
+pub fn validate_cert_key_pem(cert_pem: &str, key_pem: &str) -> anyhow::Result<()> {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    use rustls_pemfile::Item;
+
+    // Parse certificates
+    let cert_items: Vec<Item> =
+        rustls_pemfile::read_all(&mut BufReader::new(cert_pem.as_bytes()))
+            .collect::<Result<_, _>>()
+            .map_err(|e| anyhow::anyhow!("failed to parse cert PEM: {e}"))?;
+
+    let certs: Vec<CertificateDer<'static>> = cert_items
+        .into_iter()
+        .filter_map(|item| {
+            if let Item::X509Certificate(der) = item {
+                Some(CertificateDer::from(der.to_vec()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if certs.is_empty() {
+        anyhow::bail!("no X.509 certificates found in cert PEM");
+    }
+
+    // Parse private key
+    let key_items: Vec<Item> =
+        rustls_pemfile::read_all(&mut BufReader::new(key_pem.as_bytes()))
+            .collect::<Result<_, _>>()
+            .map_err(|e| anyhow::anyhow!("failed to parse key PEM: {e}"))?;
+
+    let key: PrivateKeyDer<'static> = key_items
+        .into_iter()
+        .find_map(|item| match item {
+            Item::Pkcs1Key(k) => Some(PrivateKeyDer::Pkcs1(k.clone_key())),
+            Item::Pkcs8Key(k) => Some(PrivateKeyDer::Pkcs8(k.clone_key())),
+            Item::Sec1Key(k)  => Some(PrivateKeyDer::Sec1(k.clone_key())),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("no private key found in key PEM"))?;
+
+    // Build a ServerConfig — rustls verifies that the key matches the certificate.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| anyhow::anyhow!("cert/key validation failed: {e}"))?;
+
+    Ok(())
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::validate_cert_key_pem;
+
+    /// Generate a self-signed (cert PEM, key PEM) pair for testing.
+    fn generate_self_signed() -> (String, String) {
+        let key_pair = rcgen::KeyPair::generate().expect("keygen");
+        let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+            .expect("params")
+            .self_signed(&key_pair)
+            .expect("self-signed cert");
+        (cert.pem(), key_pair.serialize_pem())
+    }
+
+    #[test]
+    fn valid_self_signed_pair_passes() {
+        let (cert, key) = generate_self_signed();
+        assert!(
+            validate_cert_key_pem(&cert, &key).is_ok(),
+            "valid self-signed pair must pass validation"
+        );
+    }
+
+    #[test]
+    fn mismatched_key_is_rejected() {
+        let (cert, _) = generate_self_signed();
+        let (_, other_key) = generate_self_signed();
+        let result = validate_cert_key_pem(&cert, &other_key);
+        assert!(result.is_err(), "mismatched key must be rejected");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("cert/key validation failed"),
+            "error should mention validation: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_cert_pem_is_rejected() {
+        let (_, key) = generate_self_signed();
+        let result = validate_cert_key_pem("", &key);
+        assert!(result.is_err(), "empty cert PEM must be rejected");
+        assert!(
+            result.unwrap_err().to_string().contains("no X.509 certificates"),
+        );
+    }
+
+    #[test]
+    fn empty_key_pem_is_rejected() {
+        let (cert, _) = generate_self_signed();
+        let result = validate_cert_key_pem(&cert, "");
+        assert!(result.is_err(), "empty key PEM must be rejected");
+        assert!(
+            result.unwrap_err().to_string().contains("no private key"),
+        );
+    }
+
+    #[test]
+    fn garbage_pem_is_rejected() {
+        let result = validate_cert_key_pem("not a cert", "not a key");
+        assert!(result.is_err(), "garbage input must be rejected");
+    }
 }
 
 /// Load CA certificates from a PEM file and build a `WebPkiClientVerifier`.

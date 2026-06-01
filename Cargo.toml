@@ -71,7 +71,8 @@ instant-acme = { version = "0.8", features = ["rcgen"] }
 rcgen        = "0.14"
 x509-parser  = "0.17"
 # ring is the crypto provider for rustls; needed to install before TLS starts.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls         = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
 
 # --- Errors & utilities ---
 anyhow    = "1"
