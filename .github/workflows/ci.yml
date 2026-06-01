@@ -48,6 +48,32 @@ jobs:
       - name: test
         run: cargo test
 
+  # ── Build + test with all optional features enabled ─────────────────────────
+  ci-features:
+    name: All features (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: features-all
+        continue-on-error: true
+
+      - name: clippy (all features)
+        run: cargo clippy --features otlp,wasm,kubernetes -- -D warnings
+
+      - name: test (all features)
+        run: cargo test --features otlp,wasm,kubernetes
+
   # ── ACME integration tests (Linux only, requires Docker for Pebble) ─────────
   acme:
     name: ACME (Pebble)

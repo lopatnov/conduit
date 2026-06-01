@@ -18,15 +18,23 @@ Not sure what config to write first? **[← Configuration Recipes](recipes.md)**
 
 ## Docker
 
-Official images are published to the GitHub Container Registry on every release.
+Two image variants are published to the GitHub Container Registry on every release:
+
+| Variant | Tags | Includes |
+| ------- | ---- | -------- |
+| Standard | `:latest`, `:1.0.0`, `:1.0` | Core proxy, no optional features |
+| Full | `:latest-full`, `:1.0.0-full`, `:1.0-full` | + `otlp` (OTLP tracing) + `wasm` (WASM plugins) + `kubernetes` (CRD provider) |
 
 ```bash
+# Standard (~14 MB)
 docker pull ghcr.io/lopatnov/conduit:latest
-docker pull ghcr.io/lopatnov/conduit:1.0.0
+
+# Full — with OTLP tracing, WASM middleware, and Kubernetes CRD support
+docker pull ghcr.io/lopatnov/conduit:latest-full
 ```
 
-The image is a multi-stage musl build packaged into `FROM scratch` (~14 MB).
-It runs as UID 65534 (`nobody`) with no shell or OS userland.
+Both images are multi-stage musl builds packaged into `FROM scratch`.
+They run as UID 65534 (`nobody`) with no shell or OS userland.
 
 ### docker run
 

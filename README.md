@@ -106,14 +106,17 @@ cargo install lopatnov-conduit
 
 Download from [GitHub Releases](https://github.com/lopatnov/conduit/releases):
 
-| Platform                   | File                                       |
-| -------------------------- | ------------------------------------------ |
-| Linux x86-64               | `conduit-x86_64-unknown-linux-gnu.tar.gz`  |
-| Linux x86-64 musl (Docker) | `conduit-x86_64-unknown-linux-musl.tar.gz` |
-| Linux ARM64                | `conduit-aarch64-unknown-linux-gnu.tar.gz` |
-| macOS Intel                | `conduit-x86_64-apple-darwin.tar.gz`       |
-| macOS Apple Silicon        | `conduit-aarch64-apple-darwin.tar.gz`      |
-| Windows x86-64             | `conduit-x86_64-pc-windows-msvc.exe.zip`   |
+Each release ships two variants per platform: standard (no optional features)
+and **full** (with `otlp + wasm + kubernetes`).
+
+| Platform | Standard | Full (otlp + wasm + k8s) |
+| -------- | -------- | ------------------------ |
+| Linux x86-64 | `conduit-x86_64-unknown-linux-gnu.tar.gz` | `conduit-x86_64-unknown-linux-gnu-full.tar.gz` |
+| Linux x86-64 musl | `conduit-x86_64-unknown-linux-musl.tar.gz` | `conduit-x86_64-unknown-linux-musl-full.tar.gz` |
+| Linux ARM64 | `conduit-aarch64-unknown-linux-gnu.tar.gz` | `conduit-aarch64-unknown-linux-gnu-full.tar.gz` |
+| macOS Intel | `conduit-x86_64-apple-darwin.tar.gz` | `conduit-x86_64-apple-darwin-full.tar.gz` |
+| macOS Apple Silicon | `conduit-aarch64-apple-darwin.tar.gz` | `conduit-aarch64-apple-darwin-full.tar.gz` |
+| Windows x86-64 | `conduit-x86_64-pc-windows-msvc.exe.zip` | `conduit-x86_64-pc-windows-msvc-full.exe.zip` |
 
 ```bash
 # Linux example
@@ -355,15 +358,26 @@ Dynamic upstream changes survive until `conduit reload` — which resets from th
 
 ## Docker
 
+Two image variants are published on every release:
+
+| Image | Tag | Features |
+| ----- | --- | -------- |
+| Standard | `:latest`, `:1.0.0` | No optional features |
+| Full | `:latest-full`, `:1.0.0-full` | `otlp` + `wasm` + `kubernetes` |
+
 ```bash
+# Standard (~14 MB)
 docker pull ghcr.io/lopatnov/conduit:latest
+
+# Full — with OTLP tracing, WASM plugins, Kubernetes CRD support
+docker pull ghcr.io/lopatnov/conduit:latest-full
 
 docker run -p 8080:8080 \
   -v $(pwd)/conduit.yaml:/etc/conduit/conduit.yaml:ro \
-  ghcr.io/lopatnov/conduit -c /etc/conduit/conduit.yaml
+  ghcr.io/lopatnov/conduit:latest -c /etc/conduit/conduit.yaml
 ```
 
-~14 MB image built from `FROM scratch`, runs as `nobody` (UID 65534).
+Both images are built from `FROM scratch`, run as `nobody` (UID 65534).
 
 **docker-compose, systemd, Kubernetes, and production checklist →** [docs/deployment.md](docs/deployment.md)
 

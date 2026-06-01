@@ -1,6 +1,15 @@
 # syntax=docker/dockerfile:1
 # Multi-stage build: compile with musl for a fully-static binary,
 # then package into a minimal scratch image.
+#
+# Build arguments:
+#   FEATURES — optional comma-separated feature flags to enable.
+#              Leave empty (default) for the standard build.
+#              Use "otlp,wasm,kubernetes" for the full-featured image.
+#
+# Examples:
+#   docker build .                                         # standard
+#   docker build --build-arg FEATURES=otlp,wasm,kubernetes .  # full
 
 # ── Stage 1: build ────────────────────────────────────────────────────────────
 # Use the latest stable Rust on Alpine — keeps in sync with the toolchain
@@ -16,7 +25,14 @@ RUN apk add --no-cache build-base cmake perl linux-headers
 WORKDIR /src
 COPY . .
 
-RUN cargo build --release --target x86_64-unknown-linux-musl
+# Accept optional feature flags at build time.
+ARG FEATURES=""
+
+RUN if [ -n "$FEATURES" ]; then \
+      cargo build --release --target x86_64-unknown-linux-musl --features "$FEATURES"; \
+    else \
+      cargo build --release --target x86_64-unknown-linux-musl; \
+    fi
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM scratch

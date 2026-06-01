@@ -23,10 +23,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ── Standard builds (no optional features) ──────────────────────────
           # Linux x86-64 (glibc)
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             use_cross: false
+            features: ""
             asset_name: conduit-x86_64-unknown-linux-gnu
             archive_ext: tar.gz
 
@@ -34,6 +36,7 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             use_cross: true
+            features: ""
             asset_name: conduit-x86_64-unknown-linux-musl
             archive_ext: tar.gz
 
@@ -41,6 +44,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             use_cross: true
+            features: ""
             asset_name: conduit-aarch64-unknown-linux-gnu
             archive_ext: tar.gz
 
@@ -48,6 +52,7 @@ jobs:
           - target: x86_64-apple-darwin
             os: macos-latest
             use_cross: false
+            features: ""
             asset_name: conduit-x86_64-apple-darwin
             archive_ext: tar.gz
 
@@ -55,6 +60,7 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             use_cross: false
+            features: ""
             asset_name: conduit-aarch64-apple-darwin
             archive_ext: tar.gz
 
@@ -62,7 +68,52 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             use_cross: false
+            features: ""
             asset_name: conduit-x86_64-pc-windows-msvc.exe
+            archive_ext: zip
+
+          # ── Full builds (otlp + wasm + kubernetes) ──────────────────────────
+          # Identical targets, asset_name gains a "-full" suffix.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: false
+            features: "otlp,wasm,kubernetes"
+            asset_name: conduit-x86_64-unknown-linux-gnu-full
+            archive_ext: tar.gz
+
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+            features: "otlp,wasm,kubernetes"
+            asset_name: conduit-x86_64-unknown-linux-musl-full
+            archive_ext: tar.gz
+
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+            features: "otlp,wasm,kubernetes"
+            asset_name: conduit-aarch64-unknown-linux-gnu-full
+            archive_ext: tar.gz
+
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use_cross: false
+            features: "otlp,wasm,kubernetes"
+            asset_name: conduit-x86_64-apple-darwin-full
+            archive_ext: tar.gz
+
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_cross: false
+            features: "otlp,wasm,kubernetes"
+            asset_name: conduit-aarch64-apple-darwin-full
+            archive_ext: tar.gz
+
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
+            features: "otlp,wasm,kubernetes"
+            asset_name: conduit-x86_64-pc-windows-msvc-full.exe
             archive_ext: zip
 
     steps:
@@ -89,12 +140,24 @@ jobs:
       # Build (native)
       - name: Build (native)
         if: "!matrix.use_cross"
-        run: cargo build --release --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.features }}" ]; then
+            cargo build --release --target ${{ matrix.target }} --features "${{ matrix.features }}"
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
 
       # Build (cross)
       - name: Build (cross)
         if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.features }}" ]; then
+            cross build --release --target ${{ matrix.target }} --features "${{ matrix.features }}"
+          else
+            cross build --release --target ${{ matrix.target }}
+          fi
 
       # ---------- Package ----------
 
@@ -242,10 +305,55 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Standard image: no optional features
+
+  # ── 4a. Publish Docker image (full features) to GHCR ────────────────────
+  docker-full:
+    name: Publish Docker image (full features) to GHCR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          # Full-featured image uses a "-full" suffix on all tags.
+          tags: |
+            type=semver,pattern={{version}},suffix=-full
+            type=semver,pattern={{major}}.{{minor}},suffix=-full
+            type=raw,value=latest-full
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (all features)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: contrib/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            FEATURES=otlp,wasm,kubernetes
 
   # ── 4b. Vulnerability scan (Trivy) ───────────────────────────────────────
   docker-scan:
-    name: Vulnerability scan (Trivy)
+    name: Vulnerability scan — standard image (Trivy)
     needs: docker
     runs-on: ubuntu-latest
     permissions:
@@ -264,6 +372,32 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ needs.docker.outputs.version }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
+  docker-full-scan:
+    name: Vulnerability scan — full image (Trivy)
+    needs: docker-full
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan full image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ needs.docker-full.outputs.version }}-full
           format: table
           exit-code: '1'
           ignore-unfixed: true
