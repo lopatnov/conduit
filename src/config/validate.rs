@@ -659,6 +659,39 @@ fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<
             );
         }
     }
+    if let Some(cache) = &cfg.cache {
+        validate_cache_config(cache, &format!("{prefix}.cache"), errors);
+    }
+}
+
+/// Validate the `cache` config block on a proxy route.
+fn validate_cache_config(
+    cache: &crate::config::schema::CacheConfig,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let store = &cache.store;
+    let valid = store == "memory"
+        || store.starts_with("redis://")
+        || store.starts_with("rediss://")
+        || store.starts_with("disk:");
+    if !valid {
+        errors.push(ValidationError::new(
+            format!("{prefix}.store"),
+            format!(
+                "invalid store \"{store}\" — must be \"memory\", \
+                 a redis:// URL, a rediss:// URL (TLS), or disk:<path>"
+            ),
+        ));
+    }
+    if let (Some(swr), Some(ttl)) = (cache.stale_while_revalidate_secs, cache.ttl_secs) {
+        if swr as u64 > ttl * 10 {
+            // Not a hard error, just a suspicious config.
+            tracing::debug!(
+                "{prefix}.staleWhileRevalidateSecs ({swr}) is more than 10× ttlSecs ({ttl})"
+            );
+        }
+    }
 }
 
 /// Validate upstream groups: non-empty targets and WRR strategy requirements.
@@ -1118,6 +1151,41 @@ mod tests {
             r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "store": "memcached://localhost" } }"#,
         );
         assert!(!e.is_empty(), "invalid store must be rejected");
+        assert!(e[0].path.contains("store"), "got: {}", e[0].path);
+    }
+
+    // ── proxy cache store validation ─────────────────────────────────────────
+
+    fn proxy_with_cache(store: &str) -> Vec<ValidationError> {
+        errs(&format!(
+            r#"{{ "proxy": {{ "/api": {{ "targets": ["http://b:4000"], "cache": {{ "store": "{store}", "ttlSecs": 60 }} }} }} }}"#
+        ))
+    }
+
+    #[test]
+    fn cache_store_memory_valid() {
+        assert!(proxy_with_cache("memory").is_empty());
+    }
+
+    #[test]
+    fn cache_store_redis_url_valid() {
+        assert!(proxy_with_cache("redis://localhost:6379").is_empty());
+    }
+
+    #[test]
+    fn cache_store_rediss_tls_valid() {
+        assert!(proxy_with_cache("rediss://redis.example.com:6380").is_empty());
+    }
+
+    #[test]
+    fn cache_store_disk_valid() {
+        assert!(proxy_with_cache("disk:/var/cache/conduit").is_empty());
+    }
+
+    #[test]
+    fn cache_store_invalid_rejected() {
+        let e = proxy_with_cache("memcached://localhost");
+        assert!(!e.is_empty(), "invalid cache store must be rejected");
         assert!(e[0].path.contains("store"), "got: {}", e[0].path);
     }
 

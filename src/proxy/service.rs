@@ -1259,12 +1259,17 @@ impl ProxyHttp for ConduitProxy {
         // Select storage backend based on store string.
         let storage: &'static (dyn CacheStorage + Sync) = if cfg.store == "memory" {
             proxy_cache::cache_storage()
-        } else if let Some(url) = cfg
-            .store
-            .strip_prefix("redis://")
-            .map(|_| cfg.store.as_str())
-        {
-            cache_redis::get_or_create(url)
+        } else if cfg.store.starts_with("redis://") || cfg.store.starts_with("rediss://") {
+            match cache_redis::get_or_create(&cfg.store) {
+                Some(s) => s,
+                None => {
+                    tracing::warn!(
+                        store = %cfg.store,
+                        "Redis cache unavailable — caching disabled for this request"
+                    );
+                    return Ok(());
+                }
+            }
         } else if let Some(dir) = cfg.store.strip_prefix("disk:") {
             cache_disk::get_or_create(dir)
         } else {

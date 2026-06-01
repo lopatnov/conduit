@@ -45,16 +45,20 @@ fn redis_stores() -> &'static DashMap<String, &'static RedisCacheStorage> {
 
 /// Return (or create) the `'static` Redis storage for the given URL.
 ///
-/// Called at startup from `builder.rs::run_server()`.  Safe to call from
-/// synchronous code — `block_on` is used internally when the store does not
-/// yet exist.
-pub fn get_or_create(url: &str) -> &'static RedisCacheStorage {
+/// Returns `None` when the connection fails so the caller can disable caching
+/// gracefully rather than crashing.  The failure is logged at ERROR level.
+pub fn get_or_create(url: &str) -> Option<&'static RedisCacheStorage> {
     if let Some(s) = redis_stores().get(url) {
-        return *s;
+        return Some(*s);
     }
-    let storage = Box::leak(Box::new(RedisCacheStorage::new_blocking(url)));
-    redis_stores().insert(url.to_owned(), storage);
-    storage
+    match RedisCacheStorage::new_blocking(url) {
+        Ok(storage) => {
+            let leaked = Box::leak(Box::new(storage));
+            redis_stores().insert(url.to_owned(), leaked);
+            Some(leaked)
+        }
+        Err(_) => None,
+    }
 }
 
 // ── RedisCacheStorage ─────────────────────────────────────────────────────────
@@ -69,22 +73,23 @@ impl RedisCacheStorage {
     ///
     /// Returns a zero-overhead storage instance backed by a `ConnectionManager`
     /// that reconnects automatically on failure.
-    pub fn new_blocking(url: &str) -> Self {
+    /// Connect to Redis synchronously.
+    ///
+    /// Returns `Err` when the URL is invalid or Redis is unreachable so the
+    /// caller can disable caching gracefully rather than crashing.
+    pub fn new_blocking(url: &str) -> anyhow::Result<Self> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("tokio rt for redis cache");
+            .map_err(|e| anyhow::anyhow!("tokio rt for redis cache: {e}"))?;
         match rt.block_on(Self::new(url)) {
             Ok(s) => {
                 tracing::info!(url, "Redis proxy cache connected");
-                s
+                Ok(s)
             }
             Err(e) => {
-                tracing::error!(
-                    url,
-                    "Redis proxy cache connect failed: {e} — cache disabled"
-                );
-                panic!("redis cache connect: {e}")
+                tracing::error!(url, "Redis proxy cache connect failed: {e}");
+                Err(e)
             }
         }
     }
@@ -372,5 +377,16 @@ mod tests {
         let rk1 = RedisCacheStorage::redis_key(&k1);
         let rk2 = RedisCacheStorage::redis_key(&k2);
         assert_ne!(rk1, rk2, "different cache keys must not collide");
+    }
+
+    #[test]
+    #[ignore = "requires Redis to be unreachable on port 1 — run manually"]
+    fn unreachable_redis_returns_none_not_panic() {
+        // Port 1 is almost certainly not listening — connection must fail gracefully.
+        let result = get_or_create("redis://127.0.0.1:1");
+        assert!(
+            result.is_none(),
+            "unreachable Redis must return None, not panic"
+        );
     }
 }

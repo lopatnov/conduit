@@ -1462,7 +1462,7 @@ proxy:
 
 | Field                      | Type     | Default       | Description                                           |
 | -------------------------- | -------- | ------------- | ----------------------------------------------------- |
-| `store`                    | string   | —             | `"memory"` or `"redis://host:port"`                   |
+| `store`                    | string   | —             | `"memory"`, `"redis://host:port"`, `"rediss://host:port"` (TLS), or `"disk:/path"` |
 | `ttlSecs`                  | number   | —             | Fresh cache TTL (seconds)                             |
 | `maxSizeMb`                | number   | —             | Memory budget; LRU eviction above this                |
 | `staleWhileRevalidateSecs` | number   | `0`           | Serve stale while refreshing in background (RFC 5861) |
@@ -1481,6 +1481,69 @@ responses by `Accept-Language` or `Accept-Encoding`.
 returns the stale response immediately while a background request refreshes the
 cache. Zero latency penalty for users. A built-in cache lock prevents thundering
 herd — only one background fetch goes to the upstream at a time.
+
+### Cache store options
+
+**`"memory"`** — in-process cache, lost on restart. Best for single-instance
+deployments with small response bodies.
+
+**`"redis://host:port"` / `"rediss://host:port"`** — shared Redis cache.
+All Conduit instances share the same cache — consistent hit rate under
+horizontal scaling. `rediss://` enables TLS (AWS ElastiCache, Azure Cache).
+
+```yaml
+# conduit.yaml — Redis cache shared across multiple instances
+proxy:
+  /api:
+    targets: ["http://api1:4000", "http://api2:4000"]
+    cache:
+      store: "redis://redis:6379"
+      ttlSecs: 300
+      staleWhileRevalidateSecs: 60
+      varyHeaders: [Accept-Language]
+```
+
+```json
+// conduit.json
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://api1:4000", "http://api2:4000"],
+      "cache": {
+        "store": "redis://redis:6379",
+        "ttlSecs": 300,
+        "staleWhileRevalidateSecs": 60
+      }
+    }
+  }
+}
+```
+
+If Redis is unreachable at startup or during a request, caching is silently
+disabled for that request — the proxy continues to work normally (fail-open).
+
+**`"disk:/path/to/dir"`** — filesystem cache, survives restarts. Useful for
+large response bodies or when Redis is not available.
+
+```yaml
+proxy:
+  /assets:
+    targets: ["http://assets:4000"]
+    cache:
+      store: "disk:/var/cache/conduit"
+      ttlSecs: 86400   # 1 day
+```
+
+```json
+{
+  "proxy": {
+    "/assets": {
+      "targets": ["http://assets:4000"],
+      "cache": { "store": "disk:/var/cache/conduit", "ttlSecs": 86400 }
+    }
+  }
+}
+```
 
 See [`examples/stale-while-revalidate.yaml`](../examples/stale-while-revalidate.yaml)
 
