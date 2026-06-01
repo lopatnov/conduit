@@ -425,9 +425,9 @@ See [cli.md](cli.md) for all flags.
 
 ## Security
 
-**Keep the Admin API on loopback.** The default bind address `127.0.0.1:2019`
-is only reachable from the same host. Never expose it directly to a network
-interface.
+**Keep the Admin API on loopback.** Use `127.0.0.1` as the bind address —
+it is only reachable from the same host. Never use `0.0.0.0` without a VPN
+or SSH tunnel.
 
 **Always set a token in production.** Without `global.admin.token`, anyone
 with local access can reload configs, add upstreams, or shut down the server.

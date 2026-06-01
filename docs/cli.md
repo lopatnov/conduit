@@ -248,11 +248,14 @@ details, and all endpoint request/response schemas.
 The Admin API HTTP server only starts when `global.admin` is configured.
 Without it, admin CLI commands will fail to connect.
 
-The admin address is resolved in this order:
+The admin address (where the CLI connects to) is resolved in this order:
 
 1. `--admin ADDR` flag
 2. `CONDUIT_ADMIN` environment variable
 3. Default: `127.0.0.1:2019`
+
+> The default `127.0.0.1:2019` is only the **CLI connection target**.
+> The server does not open this port unless `global.admin.bind` is set in config.
 
 When `global.admin.token` is set on the server, set it as a Bearer token:
 
