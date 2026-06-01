@@ -1,10 +1,27 @@
 # Rhai Middleware
 
-Rhai is an embedded scripting language for Rust. Conduit runs a `.rhai` script
-for every request that passes through the middleware, giving you custom logic
-without recompiling the binary.
+Rhai is a specific embedded scripting language (not a compilation target). You
+write `.rhai` files — plain text files in Rhai syntax — and Conduit runs them
+for every request that passes through the middleware. No build step, no
+compiler, no toolchain required.
 
 > **No compile-time feature needed** — Rhai is always available.
+
+**When to use Rhai vs WASM:**
+
+| | Rhai | WASM |
+|-|------|------|
+| Language | Rhai only | Rust, C, Go, AssemblyScript, … |
+| Build step | None — edit and reload | Compile to `.wasm` |
+| Read request headers | ✅ | ✅ |
+| **Write** request headers | ❌ | ✅ |
+| Read client IP | ❌ | ✅ |
+| Plugin `config` access | ✅ | ✅ |
+| Best for | Simple guards, path checks, auth decisions | Header mutation, high performance, complex logic |
+
+Use **Rhai** when you want to inspect headers and allow/deny requests without
+a build step. Switch to [WASM](wasm.md) when you need to add or remove headers,
+or when the logic is complex enough to benefit from a compiled language.
 
 ---
 
@@ -19,8 +36,8 @@ without recompiling the binary.
   - [Allow / deny by header](#allow--deny-by-header)
   - [Block by path](#block-by-path)
   - [Block by HTTP method](#block-by-http-method)
-  - [Inject request header](#inject-request-header)
-  - [Rewrite path via response](#rewrite-path-via-response)
+  - [Check query parameters](#check-query-parameters)
+  - [Redirect old paths](#redirect-old-paths)
   - [Custom JSON error](#custom-json-error)
   - [Log and pass through](#log-and-pass-through)
   - [Per-script config](#per-script-config)
@@ -32,21 +49,39 @@ without recompiling the binary.
 
 ## Configuration
 
+Rhai scripts are plain text files with a `.rhai` extension. Create them with
+any text editor — no compiler needed.
+
 ```yaml
+# conduit.yaml
 middleware:
   - type: script
-    path: ./scripts/my-check.rhai
+    path: ./scripts/my-check.rhai    # path relative to working directory
 
   # Multiple scripts run in order — first false wins
   - type: script
     path: ./scripts/rate-check.rhai
 
-  # Optional config object available inside the script as JSON (see below)
+  # Optional config object available inside the script as `config` variable
   - type: script
     path: ./scripts/auth.rhai
     config:
       allowed_token: "secret-123"
       max_body_kb: 512
+```
+
+```json
+// conduit.json
+{
+  "middleware": [
+    { "type": "script", "path": "./scripts/my-check.rhai" },
+    {
+      "type": "script",
+      "path": "./scripts/auth.rhai",
+      "config": { "allowed_token": "secret-123", "max_body_kb": 512 }
+    }
+  ]
+}
 ```
 
 ```json
@@ -169,31 +204,63 @@ true
 
 ---
 
-### Inject request header
+### Check query parameters
 
-Add a header before forwarding to the upstream. Returning `true` passes the
-request through; any mutations to `response` are ignored when continuing.
+Block or restrict access based on query string values:
 
 ```rhai
-// add-correlation-id.rhai
-//
-// Note: Rhai cannot mutate request headers directly.
-// Use requestTransform.setHeaders in the config for static injection,
-// or WASM middleware for dynamic request header mutation.
-//
-// This script demonstrates a guard pattern: allow through, log.
-let existing = request.header("X-Correlation-ID");
-if existing == "" {
-    // Can't inject a new header from Rhai — log and let it pass.
-    // Use requestTransform or WASM for header injection.
+// debug-guard.rhai — block ?debug=1 in production
+if request.query.contains("debug=1") {
+    response.status = 403;
+    response.body   = "Debug mode is disabled";
+    return false;
 }
 true
 ```
 
-> **Limitation:** Rhai scripts can only **read** request headers, not write
-> them. To inject or remove request headers dynamically, use
-> [WASM middleware](wasm.md) (`conduit_set_request_header`) or the static
-> [`requestTransform`](configuration.md#request--response-transform) config.
+```rhai
+// api-version-check.rhai — require ?version=2
+if !request.query.contains("version=2") {
+    response.status = 400;
+    response.body   = "Missing required ?version=2 parameter";
+    return false;
+}
+true
+```
+
+---
+
+### Redirect old paths
+
+Use a redirect response to route legacy URLs to new ones:
+
+```rhai
+// legacy-redirect.rhai
+// Redirect /legacy/* → /api/*
+if request.path.starts_with("/legacy/") {
+    // Strip "/legacy/" prefix (8 chars) and build new URL
+    let new_path = "/api/" + request.path.sub_string(8);
+    response.status = 301;
+    response.header("Location", new_path);
+    return false;   // send the redirect response
+}
+true
+```
+
+```rhai
+// version-redirect.rhai
+// Redirect /v1/* → /v2/*
+if request.path.starts_with("/v1/") {
+    response.status = 308;   // Permanent Redirect, preserves method
+    response.header("Location", "/v2/" + request.path.sub_string(4));
+    return false;
+}
+true
+```
+
+> To rewrite the path **transparently** (without the client seeing a redirect),
+> use `proxy.*.rewrite` rules in the config — Rhai cannot modify the forwarded
+> path directly.
 
 ---
 
@@ -328,35 +395,126 @@ Set `RUST_LOG=conduit=debug` to see the full error context.
 
 ## Rhai language reference
 
-Rhai is a simple, Rust-like scripting language. Key features available in
-Conduit scripts:
+Rhai is a simple, Rust-like scripting language. Below are the patterns most
+useful when writing request middleware.
+
+### Variables and strings
 
 ```rhai
-// Variables
-let x = 42;
-let s = "hello";
+let path   = request.path;    // "/api/users"
+let method = request.method;  // "GET"
+let query  = request.query;   // "page=1&size=10"
+let auth   = request.header("Authorization");  // "" if absent
 
 // String interpolation
-let msg = `path is ${request.path}`;
+let msg = `${method} ${path} rejected`;
 
-// String methods
-request.path.starts_with("/api")
-request.path.ends_with(".json")
-request.method.to_lower() == "get"
-request.header("X-Foo").len() > 0
+// String tests
+path.starts_with("/api")
+path.ends_with(".json")
+path.contains("admin")
+auth.len() > 0
+auth == ""
 
-// Arrays
-let blocked = ["/admin", "/internal"];
-blocked.contains(request.path)
+// Case conversion
+method.to_lower() == "get"
+path.to_upper()
 
-// Conditionals
-if x > 10 { ... } else { ... }
+// Extract substring — sub_string(start) or sub_string(start, length)
+let tail = path.sub_string(5);      // skip first 5 chars
+let seg  = path.sub_string(1, 3);   // chars 1..4
+```
 
-// Early return
-if condition { return false; }
+### Checks and early return
+
+```rhai
+// Allow → return true (or just fall through)
+// Deny  → set response, return false
+
+if auth == "" {
+    response.status = 401;
+    response.body   = "Unauthorized";
+    return false;
+}
+
+// One-liner guard
+if !path.starts_with("/api") { return true; }  // not our concern
+```
+
+### Arrays
+
+```rhai
+let blocked = ["/admin", "/internal", "/debug"];
+if blocked.contains(path) {
+    response.status = 403;
+    return false;
+}
+
+let methods = ["GET", "POST"];
+if !methods.contains(method) {
+    response.status = 405;
+    response.header("Allow", "GET, POST");
+    return false;
+}
+```
+
+### Accessing config
+
+```rhai
+// config is set in conduit.yaml under middleware[].config
+// Absent config → config == ()
+
+if config == () {
+    // No config provided — use fallback
+    return true;
+}
+
+if config.allowed_key != request.header("X-API-Key") {
+    response.status = 403;
+    return false;
+}
+
+// Numeric config
+if config.max_path_len < path.len() {
+    response.status = 414;
+    return false;
+}
+
+// Array config
+if config.blocked_paths.contains(path) {
+    response.status = 403;
+    return false;
+}
+```
+
+### Response headers and redirect
+
+```rhai
+// Add response header (only effective when returning false)
+response.header("X-Reason", "blocked");
+response.header("Content-Type", "application/json");
+
+// Redirect
+response.status = 302;
+response.header("Location", "/new-path");
+return false;
+```
+
+### Conditionals and loops
+
+```rhai
+if x > 10 { ... } else if x > 5 { ... } else { ... }
+
+// Switch-like
+let result = switch method {
+    "GET"  => "read",
+    "POST" => "write",
+    _      => "unknown",
+};
 
 // Loops (rarely needed in middleware)
 for item in array { ... }
+while condition { ... }
 ```
 
 Full language documentation: [rhai.rs/book](https://rhai.rs/book/)
