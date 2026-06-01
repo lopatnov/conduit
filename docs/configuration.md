@@ -20,7 +20,7 @@ startup. This keeps secrets out of config files.
 Understanding the order in which features are applied helps when combining
 multiple auth methods or rate limits.
 
-```
+```txt
 Incoming request
   │
   ├─ 1. X-Request-ID injection        — auto-generate UUID v4 if absent
@@ -66,12 +66,12 @@ runs before `basicAuth` and `apiKey`, so a consumer match takes priority.
 
 Conduit automatically injects these headers into every proxied upstream request:
 
-| Header | Value | Notes |
-| ------ | ----- | ----- |
-| `X-Forwarded-For` | Client IP | Appended to existing value if header already present |
-| `X-Forwarded-Proto` | `http` or `https` | Derived from whether the site has TLS configured |
-| `X-Forwarded-Host` | Original `Host` header | Lets upstreams reconstruct full URLs |
-| `X-Request-ID` | UUID v4 | Auto-generated if absent; forwarded as-is if client sends it |
+| Header              | Value                  | Notes                                                        |
+| ------------------- | ---------------------- | ------------------------------------------------------------ |
+| `X-Forwarded-For`   | Client IP              | Appended to existing value if header already present         |
+| `X-Forwarded-Proto` | `http` or `https`      | Derived from whether the site has TLS configured             |
+| `X-Forwarded-Host`  | Original `Host` header | Lets upstreams reconstruct full URLs                         |
+| `X-Request-ID`      | UUID v4                | Auto-generated if absent; forwarded as-is if client sends it |
 
 To strip these from upstream responses (prevent leaking to clients), use
 `responseTransform.removeHeaders`.
@@ -83,15 +83,15 @@ To strip these from upstream responses (prevent leaking to clients), use
 `skipPaths` is supported by `basicAuth`, `apiKey`, `jwtAuth`, `forwardAuth`,
 `consumers`, `rateLimit`, and `logging`. Two pattern forms are supported:
 
-| Pattern | Matches |
-| ------- | ------- |
-| `/exact/path` | Only that exact path |
-| `/prefix/**` | The prefix itself, `/prefix/`, and any sub-path |
+| Pattern       | Matches                                         |
+| ------------- | ----------------------------------------------- |
+| `/exact/path` | Only that exact path                            |
+| `/prefix/**`  | The prefix itself, `/prefix/`, and any sub-path |
 
 ```yaml
 skipPaths:
-  - /__health__       # exact match
-  - /public/**        # /public, /public/, /public/img.png, /public/a/b/c
+  - /__health__ # exact match
+  - /public/** # /public, /public/, /public/img.png, /public/a/b/c
 ```
 
 > **Note:** only `/**` at the end is supported. Patterns like `/api/*/details`
@@ -102,6 +102,7 @@ skipPaths:
 ## Table of Contents
 
 **Essentials**
+
 - [Port and host](#port-and-host)
 - [TLS / HTTPS](#tls--https)
 - [HTTP/2](#http2)
@@ -109,6 +110,7 @@ skipPaths:
 - [Response time header](#response-time-header)
 
 **Routing**
+
 - [Proxy (reverse proxy)](#proxy)
 - [Routes (advanced matching)](#routes)
 - [Load balancing](#load-balancing)
@@ -117,6 +119,7 @@ skipPaths:
 - [Fallback](#fallback)
 
 **Reliability**
+
 - [Health checks](#health-checks)
 - [Circuit breaker](#circuit-breaker)
 - [Retry](#retry)
@@ -125,9 +128,11 @@ skipPaths:
 - [Fault injection](#fault-injection)
 
 **Caching**
+
 - [Proxy cache](#proxy-cache)
 
 **Authentication**
+
 - [Basic Auth](#basic-auth)
 - [API Key](#api-key)
 - [JWT Auth](#jwt-auth)
@@ -135,20 +140,24 @@ skipPaths:
 - [Consumers](#consumers)
 
 **Rate Limiting**
+
 - [Rate limiting](#rate-limiting)
 
 **Transforms**
+
 - [Request / response transform](#request--response-transform)
 - [Traffic mirroring](#traffic-mirroring)
 - [Custom response headers](#custom-response-headers)
 
 **Observability**
+
 - [Logging](#logging)
 - [Metrics (Prometheus)](#metrics)
 - [OpenTelemetry tracing](#opentelemetry-tracing)
 - [Hot reload](#hot-reload)
 
 **Security**
+
 - [Security headers](#security-headers)
 - [CORS](#cors)
 - [IP filter](#ip-filter)
@@ -157,10 +166,12 @@ skipPaths:
 - [mTLS (client certificates)](#mtls--client-certificate-authentication)
 
 **Middleware**
-- [Rhai script middleware](#rhai-script-middleware)
-- [WASM middleware](#wasm-middleware)
+
+- [Rhai script middleware](#rhai-script-middleware) / [Full guide](rhai.md) ↗
+- [WASM middleware](#wasm-middleware) / [Full guide](wasm.md) ↗
 
 **Advanced**
+
 - [Connection pool](#connection-pool)
 - [Multi-site (virtual hosting)](#multi-site)
 - [Upload](#upload)
@@ -174,10 +185,10 @@ skipPaths:
 ```yaml
 # YAML
 port: 8080
-host: api.example.com   # optional — virtual hosting
+host: api.example.com # optional — virtual hosting
 ```
 
-```json
+````json
 // JSON
 { "port": 8080, "host": "api.example.com" }
 
@@ -195,7 +206,6 @@ Use `host` when running [multiple sites](#multi-site) on the same process.
 
 ### Manual certificates
 
-```
 ```yaml
 # YAML
 port: 443
@@ -204,9 +214,9 @@ tls:
   key:  /etc/tls/server.key
   httpRedirectPort: 80
   versions: ["TLSv1.2", "TLSv1.3"]
-```
+````
 
-```json
+````json
 // JSON
 {
   "port": 443,
@@ -221,7 +231,6 @@ tls:
 
 ### Auto-TLS via Let's Encrypt
 
-```
 ```yaml
 # YAML
 port: 443
@@ -240,6 +249,7 @@ tls:
     "acme": { "email": "admin@example.com", "storage": "./certs", "challenge": "http-01" }
   }
 }
+```
 
 
 ### TLS field reference
@@ -267,12 +277,13 @@ tls:
 ## HTTP/2
 
 ```
+
 ```yaml
 # YAML
 port: 443
 tls:
   cert: ./certs/cert.pem
-  key:  ./certs/key.pem
+  key: ./certs/key.pem
 http2: true
 ```
 
@@ -288,16 +299,17 @@ http2: true
 Full config:
 
 ```
+
 ```yaml
 http2:
   maxConcurrentStreams: 100
   initialWindowSize: 65535
 ```
 
-| Field                  | Type   | Default | Description |
-| ---------------------- | ------ | ------- | ----------- |
+| Field                  | Type   | Default | Description                         |
+| ---------------------- | ------ | ------- | ----------------------------------- |
 | `maxConcurrentStreams` | number | `100`   | Max parallel streams per connection |
-| `initialWindowSize`    | number | `65535` | Flow-control window in bytes |
+| `initialWindowSize`    | number | `65535` | Flow-control window in bytes        |
 
 ---
 
@@ -332,11 +344,11 @@ compression:
 }
 ```
 
-| Field        | Type     | Default           | Description |
-| ------------ | -------- | ----------------- | ----------- |
-| `algorithms` | string[] | `["br", "gzip"]`  | Compression algorithms to offer |
-| `level`      | number   | `6`               | Compression level (1–9) |
-| `minBytes`   | number   | `1024`            | Minimum response size to compress (bytes) |
+| Field        | Type     | Default          | Description                               |
+| ------------ | -------- | ---------------- | ----------------------------------------- |
+| `algorithms` | string[] | `["br", "gzip"]` | Compression algorithms to offer           |
+| `level`      | number   | `6`              | Compression level (1–9)                   |
+| `minBytes`   | number   | `1024`           | Minimum response size to compress (bytes) |
 
 ---
 
@@ -385,6 +397,7 @@ proxy:
 ### Multiple targets
 
 ```
+
 ```yaml
 # YAML
 proxy:
@@ -414,6 +427,7 @@ proxy:
 Rewrite rules are evaluated in order. The first matching rule is applied.
 
 ```
+
 ```yaml
 # YAML
 proxy:
@@ -421,9 +435,9 @@ proxy:
     targets: ["http://backend:4000"]
     stripPrefix: true
     rewrite:
-      - from: "^/v[0-9]+/(.+)$"   # strip version prefix
+      - from: "^/v[0-9]+/(.+)$" # strip version prefix
         to: "/$1"
-      - from: "^/users/([0-9]+)$"  # migrate legacy paths
+      - from: "^/users/([0-9]+)$" # migrate legacy paths
         to: "/members/$1"
 ```
 
@@ -480,6 +494,7 @@ proxy:
 The `routes` array matches requests before `proxy` / `static`. First match wins.
 
 ```
+
 ```yaml
 # YAML
 routes:
@@ -545,11 +560,12 @@ Set `strategy` inside a proxy route. All strategies skip upstreams that are
 currently unhealthy (failed health probes) or ejected (outlier detection).
 
 ```
+
 ```yaml
 proxy:
   /api:
     targets: ["http://a:4000", "http://b:4000"]
-    strategy: least-conn   # pick a strategy
+    strategy: least-conn # pick a strategy
 ```
 
 ---
@@ -571,7 +587,7 @@ Simple, predictable, zero overhead.
 proxy:
   /api:
     targets: ["http://a:4000", "http://b:4000", "http://c:4000"]
-    strategy: round-robin   # or omit — this is the default
+    strategy: round-robin # or omit — this is the default
 ```
 
 ---
@@ -592,8 +608,8 @@ Targets must be `{ url, weight }` objects — plain strings use weight 1.
 proxy:
   /api:
     targets:
-      - { url: "http://primary:4000", weight: 9 }   # 90% of traffic
-      - { url: "http://canary:4000",  weight: 1 }   # 10% canary
+      - { url: "http://primary:4000", weight: 9 } # 90% of traffic
+      - { url: "http://canary:4000", weight: 1 } # 10% canary
     strategy: weighted-round-robin
 ```
 
@@ -629,6 +645,7 @@ reads and slow writes. Under uniform load it behaves like round-robin; its
 advantage emerges when some requests stall.
 
 ```
+
 ```yaml
 proxy:
   /api:
@@ -698,12 +715,13 @@ one backend.
 > hash ring. Use `sticky.cookie` for stable, cookie-based affinity.
 
 ```
+
 ```yaml
 proxy:
   /auth:
     targets: ["http://auth1:5000", "http://auth2:5000"]
     strategy: ip-hash
-    hashKey: ip   # default for ip-hash; can be omitted
+    hashKey: ip # default for ip-hash; can be omitted
 ```
 
 ```json
@@ -738,10 +756,12 @@ The `hashKey` field controls what is hashed:
 | `header:X-Name` | Value of header `X-Name` | Per-tenant or per-user routing |
 
 ```
+
 ```yaml
 proxy:
   /api:
-    targets: ["http://shard-1:4000", "http://shard-2:4000", "http://shard-3:4000"]
+    targets:
+      ["http://shard-1:4000", "http://shard-2:4000", "http://shard-3:4000"]
     strategy: consistent-hash
     hashKey: "header:X-Tenant-ID"
 ```
@@ -775,6 +795,7 @@ is unnecessary. In practice, `round-robin` is usually preferred since it
 provides better uniformity over small sample sizes.
 
 ```
+
 ```yaml
 proxy:
   /api:
@@ -845,6 +866,7 @@ Route a client to the same upstream for the duration of a session cookie,
 using consistent hashing on the cookie value.
 
 ```
+
 ```yaml
 proxy:
   /app:
@@ -879,6 +901,7 @@ An outer strategy picks the group; an inner strategy balances within it.
 `groups` is an array — each entry has `name`, `targets`, and optional `strategy`.
 
 ```
+
 ```yaml
 proxy:
   /api:
@@ -889,7 +912,7 @@ proxy:
       - name: eu-west
         targets: ["http://eu-west-1:4000", "http://eu-west-2:4000"]
         strategy: least-conn
-    groupStrategy: ip-hash   # outer: same client IP always hits same region
+    groupStrategy: ip-hash # outer: same client IP always hits same region
 ```
 
 ```json
@@ -916,6 +939,7 @@ See [`examples/upstream-groups.yaml`](../examples/upstream-groups.yaml)
 ### Simple directory
 
 ```
+
 ```yaml
 # YAML
 static: ./dist
@@ -929,6 +953,7 @@ static: ./dist
 ### Multiple directories
 
 ```
+
 ```yaml
 # YAML
 static:
@@ -944,10 +969,11 @@ static:
 ### Path-mapped directories
 
 ```
+
 ```yaml
 # YAML
 static:
-  /:     ./dist
+  /: ./dist
   /docs: ./docs-dist
 ```
 
@@ -959,16 +985,17 @@ static:
 ### Static options
 
 ```
+
 ```yaml
 # YAML
 static: ./dist
 staticOptions:
-  index: [index.html]       # default files for directory requests
-  dotFiles: ignore          # "ignore" | "allow" | "deny"
-  preCompressed: true       # serve .br / .gz if present
-  etag: true                # ETag / 304 Not Modified support
-  lastModified: true        # Last-Modified header
-  maxAge: "1y"              # Cache-Control max-age (humantime: "1d", "30m", "1y")
+  index: [index.html] # default files for directory requests
+  dotFiles: ignore # "ignore" | "allow" | "deny"
+  preCompressed: true # serve .br / .gz if present
+  etag: true # ETag / 304 Not Modified support
+  lastModified: true # Last-Modified header
+  maxAge: "1y" # Cache-Control max-age (humantime: "1d", "30m", "1y")
 ```
 
 ```json
@@ -1002,6 +1029,7 @@ staticOptions:
 `redirects` is an **array** of redirect rules.
 
 ```
+
 ```yaml
 # YAML
 redirects:
@@ -1009,7 +1037,7 @@ redirects:
     to: "https://example.com/new-path"
     status: 301
 
-  - from: "/blog/(.+)"   # regex capture group
+  - from: "/blog/(.+)" # regex capture group
     to: "https://blog.example.com/$1"
     status: 308
 ```
@@ -1037,6 +1065,7 @@ redirects:
 Return a response when no route matches.
 
 ```
+
 ```yaml
 # YAML — SPA: serve index.html for all unmatched browser routes
 fallback:
@@ -1082,12 +1111,12 @@ fallback:
 }
 ```
 
-| Field      | Type   | Default | Description |
-| ---------- | ------ | ------- | ----------- |
-| `file`     | path   | —       | File to serve |
-| `body`     | any    | —       | Response body (string or JSON object) |
-| `status`   | number | `200`   | HTTP status code |
-| `headers`  | object | —       | Response headers to set |
+| Field      | Type   | Default | Description                                                         |
+| ---------- | ------ | ------- | ------------------------------------------------------------------- |
+| `file`     | path   | —       | File to serve                                                       |
+| `body`     | any    | —       | Response body (string or JSON object)                               |
+| `status`   | number | `200`   | HTTP status code                                                    |
+| `headers`  | object | —       | Response headers to set                                             |
 | `byAccept` | object | —       | Content-type-aware rules keyed by Accept type (`html`, `json`, `*`) |
 
 ---
@@ -1130,6 +1159,7 @@ proxy:
 ### Site health endpoint (for load balancer probes)
 
 ```
+
 ```yaml
 # YAML
 healthCheck: true
@@ -1165,6 +1195,7 @@ When **all** upstreams reach `maxConnectionsPerUpstream` concurrent connections,
 Conduit returns `503` immediately instead of queuing.
 
 ```
+
 ```yaml
 # YAML
 proxy:
@@ -1195,6 +1226,7 @@ See [`examples/circuit-breaker.yaml`](../examples/circuit-breaker.yaml)
 ## Retry
 
 ```
+
 ```yaml
 # YAML
 proxy:
@@ -1207,7 +1239,7 @@ proxy:
         - "5xx"
         - timeout
       backoffMs: 100
-      backoffJitter: true   # add ±50% random spread to backoffMs
+      backoffJitter: true # add ±50% random spread to backoffMs
       budgetPercent: 20
     timeout:
       perTryMs: 2000
@@ -1248,6 +1280,7 @@ on POST/PUT/PATCH. Requests whose body exceeds the limit are not retried.
 Passively eject upstreams that return too many 5xx responses from real traffic.
 
 ```
+
 ```yaml
 # YAML
 outlierDetection:
@@ -1290,14 +1323,15 @@ the probe are blocked until the probe completes.
 ## Limits
 
 ```
+
 ```yaml
 # YAML
 limits:
-  maxBodyBytes: 10485760         # reject request bodies over 10 MB (413)
-  maxHeaderBytes: 65536          # reject headers over 64 KB
-  timeoutSecs: 30                # global request timeout (seconds)
-  maxInflightRequests: 1000      # return 503 when 1000 requests are in flight
-  maxBodyBufferBytes: 1048576    # buffer up to 1 MB per request for retry replay
+  maxBodyBytes: 10485760 # reject request bodies over 10 MB (413)
+  maxHeaderBytes: 65536 # reject headers over 64 KB
+  timeoutSecs: 30 # global request timeout (seconds)
+  maxInflightRequests: 1000 # return 503 when 1000 requests are in flight
+  maxBodyBufferBytes: 1048576 # buffer up to 1 MB per request for retry replay
 ```
 
 ```json
@@ -1328,6 +1362,7 @@ limits:
 > **For testing only** — do not use in production.
 
 ```
+
 ```yaml
 # YAML
 faultInjection:
@@ -1355,6 +1390,7 @@ faultInjection:
 ## Proxy Cache
 
 ```
+
 ```yaml
 # YAML
 proxy:
@@ -1363,11 +1399,11 @@ proxy:
     cache:
       store: memory
       ttlSecs: 60
-      maxSizeMb: 256                      # evict LRU entries after 256 MB
-      staleWhileRevalidateSecs: 300       # serve stale up to 5 min while refreshing
-      staleIfErrorSecs: 600               # serve stale up to 10 min if upstream fails
+      maxSizeMb: 256 # evict LRU entries after 256 MB
+      staleWhileRevalidateSecs: 300 # serve stale up to 5 min while refreshing
+      staleIfErrorSecs: 600 # serve stale up to 10 min if upstream fails
       varyHeaders: [Accept-Language, Accept-Encoding]
-      skipPaths: [/api/me, /api/cart]     # never cache these paths
+      skipPaths: [/api/me, /api/cart] # never cache these paths
       skipIfCookie: true
       methods: [GET, HEAD]
 ```
@@ -1425,14 +1461,15 @@ See [`examples/stale-while-revalidate.yaml`](../examples/stale-while-revalidate.
 ## Basic Auth
 
 ```
+
 ```yaml
 # YAML
 basicAuth:
   users:
     alice: "$ALICE_PASSWORD"
-    bob:   "$BOB_PASSWORD"
+    bob: "$BOB_PASSWORD"
   realm: "My App"
-  challenge: true       # send WWW-Authenticate header (default: true)
+  challenge: true # send WWW-Authenticate header (default: true)
   skipPaths: [/__health__]
 ```
 
@@ -1460,6 +1497,7 @@ basicAuth:
 ## API Key
 
 ```
+
 ```yaml
 # YAML
 apiKey:
@@ -1493,6 +1531,7 @@ Validates `Authorization: Bearer <token>` on every request.
 ### JWKS endpoint (recommended for production)
 
 ```
+
 ```yaml
 # YAML
 jwtAuth:
@@ -1519,6 +1558,7 @@ jwtAuth:
 ### Shared secret (HS256)
 
 ```
+
 ```yaml
 jwtAuth:
   secret: "$JWT_SECRET"
@@ -1544,12 +1584,13 @@ jwtAuth:
 ### Injecting JWT claims as upstream headers
 
 ```
+
 ```yaml
 requestTransform:
   setHeaders:
-    X-User-ID:    "{{ jwt.sub }}"
+    X-User-ID: "{{ jwt.sub }}"
     X-User-Email: "{{ jwt.email }}"
-    X-Tenant:     "{{ jwt.tid }}"
+    X-Tenant: "{{ jwt.tid }}"
   removeHeaders:
     - Authorization
 ```
@@ -1575,11 +1616,13 @@ See [`examples/jwt-auth.yaml`](../examples/jwt-auth.yaml)
 Delegate authentication to an external HTTP service.
 
 ```
+
 Client -> Conduit -> Auth service
-                     2xx  -> copy responseHeaders, forward to upstream
-                     4xx  -> return to client, stop
-                     fail -> 401 (fail closed)
-```
+2xx -> copy responseHeaders, forward to upstream
+4xx -> return to client, stop
+fail -> 401 (fail closed)
+
+````
 
 ```yaml
 # YAML
@@ -1626,6 +1669,7 @@ After identification, the consumer's username is injected as `X-Consumer-ID`.
 Unidentified requests receive `401`.
 
 ```
+
 ```yaml
 # YAML — V1 (API key / Basic Auth) + V2 (per-consumer JWT)
 consumers:
@@ -1684,14 +1728,15 @@ consumers:
 One JWKS endpoint for all consumers; consumers are identified by `sub` claim.
 
 ```
+
 ```yaml
 # YAML
 consumers:
   sharedJwt:
     jwksUrl: "https://YOUR_DOMAIN.auth0.com/.well-known/jwks.json"
     audience: ["https://api.example.com"]
-    issuer:   "https://YOUR_DOMAIN.auth0.com"
-    usernameClaim: "sub"   # default
+    issuer: "https://YOUR_DOMAIN.auth0.com"
+    usernameClaim: "sub" # default
 
   consumers:
     - username: "auth0|alice123"
@@ -1753,13 +1798,14 @@ See [`examples/consumers.yaml`](../examples/consumers.yaml)
 Applied to all requests before authentication.
 
 ```
+
 ```yaml
 # YAML
 rateLimit:
   windowSecs: 60
   limit: 1000
   keyBy: ip
-  store: memory             # or "redis://host:port" for multi-instance
+  store: memory # or "redis://host:port" for multi-instance
   skipPaths: [/__health__]
 ```
 
@@ -1781,6 +1827,7 @@ rateLimit:
 Applied after routing, independently of the site-level limit.
 
 ```
+
 ```yaml
 proxy:
   /api/payments:
@@ -1797,7 +1844,11 @@ proxy:
   "proxy": {
     "/api/payments": {
       "targets": ["http://payments:4000"],
-      "rateLimit": { "windowSecs": 60, "limit": 10, "keyBy": "header:X-User-ID" }
+      "rateLimit": {
+        "windowSecs": 60,
+        "limit": 10,
+        "keyBy": "header:X-User-ID"
+      }
     }
   }
 }
@@ -1805,13 +1856,13 @@ proxy:
 
 ### Rate limit field reference
 
-| Field        | Type     | Default    | Description |
-| ------------ | -------- | ---------- | ----------- |
-| `windowSecs` | number   | —          | Sliding window duration (seconds) — **required** |
-| `limit`      | number   | —          | Max requests per key per window — **required** |
-| `burst`      | number   | `0`        | Extra burst capacity above `limit` (see below) |
-| `keyBy`      | string   | `"ip"`     | `"ip"` or `"header:<name>"` |
-| `store`      | string   | `"memory"` | `"memory"` or `"redis://host:port"` |
+| Field        | Type     | Default    | Description                                                                           |
+| ------------ | -------- | ---------- | ------------------------------------------------------------------------------------- |
+| `windowSecs` | number   | —          | Sliding window duration (seconds) — **required**                                      |
+| `limit`      | number   | —          | Max requests per key per window — **required**                                        |
+| `burst`      | number   | `0`        | Extra burst capacity above `limit` (see below)                                        |
+| `keyBy`      | string   | `"ip"`     | `"ip"` or `"header:<name>"`                                                           |
+| `store`      | string   | `"memory"` | `"memory"` or `"redis://host:port"`                                                   |
 | `skipPaths`  | string[] | —          | Paths that bypass rate limiting — see [skipPaths glob syntax](#skippaths-glob-syntax) |
 
 The rate limiter uses a **token-bucket** algorithm. Tokens refill at
@@ -1839,8 +1890,8 @@ rateLimit:
 # YAML
 requestTransform:
   setHeaders:
-    X-User-ID:    "{{ jwt.sub }}"
-    X-Gateway:    conduit
+    X-User-ID: "{{ jwt.sub }}"
+    X-Gateway: conduit
   removeHeaders:
     - Authorization
 
@@ -1886,6 +1937,7 @@ Send a copy of requests to a shadow backend. The shadow response is discarded
 — clients only see the primary response.
 
 ```
+
 ```yaml
 proxy:
   /api:
@@ -1897,7 +1949,10 @@ proxy:
 // JSON
 {
   "proxy": {
-    "/api": { "targets": ["http://api-v1:4000"], "mirror": "http://api-v2:4000" }
+    "/api": {
+      "targets": ["http://api-v1:4000"],
+      "mirror": "http://api-v2:4000"
+    }
   }
 }
 ```
@@ -1950,6 +2005,7 @@ logging: combined    # Apache Combined Log Format
 Full config:
 
 ```
+
 ```yaml
 logging:
   format: json
@@ -1971,12 +2027,12 @@ logging:
 }
 ```
 
-| Format     | Description |
-| ---------- | ----------- |
-| `dev`      | Colorized, short — development |
-| `combined` | Apache Combined Log Format |
-| `common`   | Apache Common Log Format |
-| `short`    | Short, no timestamps |
+| Format     | Description                                  |
+| ---------- | -------------------------------------------- |
+| `dev`      | Colorized, short — development               |
+| `combined` | Apache Combined Log Format                   |
+| `common`   | Apache Common Log Format                     |
+| `short`    | Short, no timestamps                         |
 | `json`     | Structured JSON — Loki, Datadog, Splunk, ELK |
 
 ### JSON log fields
@@ -1997,12 +2053,12 @@ logging:
 }
 ```
 
-| Field         | Description |
-| ------------- | ----------- |
-| `duration_ms` | Total request time from accept to response sent (ms) |
+| Field         | Description                                                                                   |
+| ------------- | --------------------------------------------------------------------------------------------- |
+| `duration_ms` | Total request time from accept to response sent (ms)                                          |
 | `upstream_ms` | Time spent waiting for the upstream response (ms). Absent for local handlers (health, static) |
-| `request_id`  | Value of `X-Request-ID` — auto-generated UUID v4 if absent |
-| `upstream`    | Selected upstream URL |
+| `request_id`  | Value of `X-Request-ID` — auto-generated UUID v4 if absent                                    |
+| `upstream`    | Selected upstream URL                                                                         |
 
 ---
 
@@ -2023,6 +2079,7 @@ metrics:
 Prometheus scrape config:
 
 ```
+
 ```yaml
 scrape_configs:
   - job_name: conduit
@@ -2035,10 +2092,10 @@ scrape_configs:
 
 In addition to the site-level metrics, Conduit exposes per-upstream URL metrics:
 
-| Metric | Type | Labels | Description |
-| ------ | ---- | ------ | ----------- |
-| `conduit_upstream_requests_total` | counter | `upstream`, `status` | Requests forwarded to each upstream (including retries) |
-| `conduit_upstream_latency_seconds` | histogram | `upstream` | Upstream response latency (request sent → response received) |
+| Metric                             | Type      | Labels               | Description                                                  |
+| ---------------------------------- | --------- | -------------------- | ------------------------------------------------------------ |
+| `conduit_upstream_requests_total`  | counter   | `upstream`, `status` | Requests forwarded to each upstream (including retries)      |
+| `conduit_upstream_latency_seconds` | histogram | `upstream`           | Upstream response latency (request sent → response received) |
 
 These complement `conduit_upstream_errors_total{route}` for diagnosing which
 specific backend is slow or returning errors.
@@ -2076,12 +2133,12 @@ global:
 Each span: `method`, `path`, `status`, `duration_ms`, `upstream_url`, `request_id`.
 5xx responses set span status to `ERROR`.
 
-| Field         | Type   | Default | Description |
-| ------------- | ------ | ------- | ----------- |
-| `endpoint`    | string | —       | gRPC OTLP endpoint URL |
-| `serviceName` | string | —       | `service.name` in all spans |
+| Field         | Type   | Default | Description                             |
+| ------------- | ------ | ------- | --------------------------------------- |
+| `endpoint`    | string | —       | gRPC OTLP endpoint URL                  |
+| `serviceName` | string | —       | `service.name` in all spans             |
 | `sampleRate`  | number | `1.0`   | Fraction of requests to trace (0.0–1.0) |
-| `timeoutMs`   | number | `5000`  | Export timeout |
+| `timeoutMs`   | number | `5000`  | Export timeout                          |
 
 See [`examples/observability.yaml`](../examples/observability.yaml)
 
@@ -2129,18 +2186,18 @@ securityHeaders: true
 
 Sets these four headers on every response:
 
-| HTTP header | Value |
-| ----------- | ----- |
-| `X-Content-Type-Options` | `nosniff` |
-| `X-Frame-Options` | `SAMEORIGIN` |
-| `Referrer-Policy` | `strict-origin-when-cross-origin` |
-| `X-XSS-Protection` | `1; mode=block` |
+| HTTP header              | Value                             |
+| ------------------------ | --------------------------------- |
+| `X-Content-Type-Options` | `nosniff`                         |
+| `X-Frame-Options`        | `SAMEORIGIN`                      |
+| `Referrer-Policy`        | `strict-origin-when-cross-origin` |
+| `X-XSS-Protection`       | `1; mode=block`                   |
 
 ### Custom security headers
 
 ```yaml
 securityHeaders:
-  hstsMaxAgeSecs: 63072000    # → Strict-Transport-Security: max-age=63072000; includeSubDomains
+  hstsMaxAgeSecs: 63072000 # → Strict-Transport-Security: max-age=63072000; includeSubDomains
   csp: "default-src 'self'; script-src 'self'"
   xFrameOptions: DENY
   referrerPolicy: "strict-origin-when-cross-origin"
@@ -2176,6 +2233,7 @@ securityHeaders:
 ## CORS
 
 ```
+
 ```yaml
 # YAML — open CORS (development only)
 cors: true
@@ -2220,6 +2278,7 @@ Allow or deny requests by client IP or CIDR range. Evaluated **before**
 authentication — blocked IPs get `403` immediately.
 
 ```
+
 ```yaml
 # YAML — allowlist (deny all others)
 ipFilter:
@@ -2260,6 +2319,7 @@ When both `allow` and `deny` are set, `allow` takes precedence.
 Replace upstream `5xx` bodies with a generic JSON error.
 
 ```
+
 ```yaml
 maskErrors: true
 ```
@@ -2276,6 +2336,7 @@ Clients receive: `{ "error": "Internal Server Error", "status": 500 }`
 ## Upstream TLS Verification
 
 ```
+
 ```yaml
 proxy:
   /api:
@@ -2309,13 +2370,14 @@ proxy:
 Require clients to present a TLS certificate signed by a trusted CA.
 
 ```
+
 ```yaml
 tls:
   cert: /etc/tls/server.crt
-  key:  /etc/tls/server.key
+  key: /etc/tls/server.key
   clientAuth:
     ca: /etc/tls/client-ca.crt
-    optional: false   # true = allow connections without cert
+    optional: false # true = allow connections without cert
 ```
 
 ```json
@@ -2341,9 +2403,12 @@ See [`examples/mtls.yaml`](../examples/mtls.yaml)
 ## Rhai Script Middleware
 
 Execute custom Rhai scripts per request. Scripts run in order; any script can
-reject or modify the request.
+reject the request or read headers to make decisions.
+
+**→ Full guide with examples: [rhai.md](rhai.md)**
 
 ```
+
 ```yaml
 # YAML
 middleware:
@@ -2386,7 +2451,10 @@ middleware:
 
 > **Requires** `cargo build --features wasm`
 
+**→ Full guide with ABI reference, Rust examples, and build instructions: [wasm.md](wasm.md)**
+
 ```
+
 ```yaml
 # YAML
 middleware:
@@ -2424,13 +2492,14 @@ Return `0` to continue, non-zero to reject. Conduit **fails open** on errors.
 Configure the upstream HTTP connection pool per route.
 
 ```
+
 ```yaml
 proxy:
   /api:
     targets: ["http://backend:4000"]
     pool:
-      maxIdle: 100          # max idle connections to keep open
-      idleTimeoutSecs: 90   # close idle connections after 90 s
+      maxIdle: 100 # max idle connections to keep open
+      idleTimeoutSecs: 90 # close idle connections after 90 s
 ```
 
 ```json
@@ -2457,6 +2526,7 @@ proxy:
 Run multiple virtual hosts from one process.
 
 ```
+
 ```yaml
 # YAML
 global:
@@ -2524,19 +2594,20 @@ Enable multipart file upload. The upload handler is only started when this
 section is present in the config.
 
 ```
+
 ```yaml
 # YAML
 upload:
-  path: /upload          # URL path for the upload endpoint (required)
-  dir: ./uploads         # directory where files are saved (required)
-  maxFileSizeBytes: 52428800        # 50 MB per file
-  maxTotalSizeBytes: 209715200      # 200 MB total per request
+  path: /upload # URL path for the upload endpoint (required)
+  dir: ./uploads # directory where files are saved (required)
+  maxFileSizeBytes: 52428800 # 50 MB per file
+  maxTotalSizeBytes: 209715200 # 200 MB total per request
   maxFiles: 10
   allowedMimeTypes: ["image/jpeg", "image/png", "application/pdf"]
-  fieldName: file        # multipart field name (default: "file")
+  fieldName: file # multipart field name (default: "file")
 ```
 
-```json
+````json
 // JSON
 {
   "upload": {
@@ -2572,7 +2643,7 @@ global:
   admin:
     bind: "127.0.0.1:2019"   # loopback only
     token: "$ADMIN_TOKEN"     # optional Bearer token
-```
+````
 
 The Admin API provides 10 endpoints: hot-reload, status, upstream management,
 cache purge, and runtime IP deny-list.
@@ -2585,16 +2656,16 @@ cache purge, and runtime IP deny-list.
 
 All metrics are at the [`metrics.path`](#metrics) endpoint.
 
-| Metric | Type | Labels | Description |
-| ------ | ---- | ------ | ----------- |
-| `conduit_requests_total` | counter | `method`, `status` | Total HTTP requests |
-| `conduit_request_duration_seconds` | histogram | `method`, `status` | Request latency |
-| `conduit_active_connections` | gauge | — | Current active connections |
-| `conduit_upstream_errors_total` | counter | `route`, `status` | Upstream error responses |
-| `conduit_retry_attempts_total` | counter | `route`, `condition` | Retry attempts by trigger |
-| `conduit_rate_limit_rejected_total` | counter | `site` | Rate-limited requests |
-| `conduit_cache_hits_total` | counter | `route` | Proxy cache hits |
-| `conduit_cache_misses_total` | counter | `route` | Proxy cache misses |
+| Metric                              | Type      | Labels               | Description                |
+| ----------------------------------- | --------- | -------------------- | -------------------------- |
+| `conduit_requests_total`            | counter   | `method`, `status`   | Total HTTP requests        |
+| `conduit_request_duration_seconds`  | histogram | `method`, `status`   | Request latency            |
+| `conduit_active_connections`        | gauge     | —                    | Current active connections |
+| `conduit_upstream_errors_total`     | counter   | `route`, `status`    | Upstream error responses   |
+| `conduit_retry_attempts_total`      | counter   | `route`, `condition` | Retry attempts by trigger  |
+| `conduit_rate_limit_rejected_total` | counter   | `site`               | Rate-limited requests      |
+| `conduit_cache_hits_total`          | counter   | `route`              | Proxy cache hits           |
+| `conduit_cache_misses_total`        | counter   | `route`              | Proxy cache misses         |
 
 **Example Grafana queries:**
 
