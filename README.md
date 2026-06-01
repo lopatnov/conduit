@@ -48,9 +48,9 @@ cargo install lopatnov-conduit
 ## Quick Start
 
 ```bash
-# 1. Create a config with the interactive wizard
-#    (asks: YAML or JSON? port? static dir? proxy? TLS? …)
-conduit init
+# 1. Create a config
+conduit init        # interactive wizard (asks format, port, proxy, TLS, …)
+conduit init -y     # non-interactive: accept all defaults → conduit.yaml
 
 # 2. Start
 conduit
@@ -241,7 +241,8 @@ strip          = true   # strip debug symbols
 conduit [-c FILE]                  start the server
 conduit validate [-c FILE]         validate config — exit 0 OK, exit 1 errors
 conduit fmt [--write] [-c FILE]    pretty-print / normalize config
-conduit init [-o FILE]             interactive setup wizard
+conduit init [-y] [-o FILE] [--port N] [--proxy URL] [--format yaml|json] ...
+                                   setup wizard (-y = non-interactive, use defaults)
 conduit probe [-c FILE]            ping every upstream, show latency table
 
 conduit reload   [--admin ADDR]    hot-reload config without restarting
