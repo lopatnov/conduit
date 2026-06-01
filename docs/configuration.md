@@ -13,6 +13,21 @@ conduit validate -c conduit.yaml # validate without starting
 Fields accept **environment variable references** — `"$MY_VAR"` is replaced at
 startup. This keeps secrets out of config files.
 
+### Optional build features
+
+Some features require the binary to be compiled with a specific flag:
+
+| Feature | Flag | Affects |
+| ------- | ---- | ------- |
+| `otlp` | `cargo build --features otlp` | [`global.otlp`](#opentelemetry-tracing) — OpenTelemetry tracing |
+| `wasm` | `cargo build --features wasm` | [`middleware[].type: "wasm"`](#wasm-middleware) — WebAssembly plugins |
+| `kubernetes` | `cargo build --features kubernetes` | `--kubernetes-namespace` CLI flag — CRD-based config (not a config file field) |
+
+The standard `npx`/`npm`/`cargo install` binaries do not include these features.
+Download a `-full` binary from [GitHub Releases](https://github.com/lopatnov/conduit/releases)
+or build from source with `--features otlp,wasm,kubernetes` for all three.
+See [docs/cli.md — Build features](cli.md#build-features) for details.
+
 ---
 
 ## Table of Contents
@@ -2407,6 +2422,8 @@ See [`examples/mtls.yaml`](../examples/mtls.yaml)
 ---
 
 ## Rhai Script Middleware
+
+> **No build feature required** — Rhai is always included in the standard binary.
 
 Execute custom Rhai scripts per request. Scripts run in order; any script can
 reject the request or read headers to make decisions.
