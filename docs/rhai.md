@@ -17,6 +17,7 @@ compiler, no toolchain required.
 | **Write** request headers | ❌ | ✅ |
 | Read client IP | ❌ | ✅ |
 | Plugin `config` access | ✅ | ✅ |
+| **Response phase** (`phase: "response"`) | ✅ | ✅ (`on_response` export) |
 | Best for | Simple guards, path checks, auth decisions | Header mutation, high performance, complex logic |
 
 Use **Rhai** when you want to inspect headers and allow/deny requests without
@@ -41,6 +42,7 @@ or when the logic is complex enough to benefit from a compiled language.
   - [Custom JSON error](#custom-json-error)
   - [Log and pass through](#log-and-pass-through)
   - [Per-script config](#per-script-config)
+- [Response phase](#response-phase)
 - [Execution model](#execution-model)
 - [Error handling](#error-handling)
 - [Rhai language reference](#rhai-language-reference)
@@ -360,6 +362,79 @@ Config types:
 | `[1, 2, 3]` | `Array` |
 | `{ key: val }` | `Map` — access as `config.key` |
 | absent (no `config:`) | `()` (unit) — check with `config == ()` |
+
+---
+
+## Response phase
+
+Scripts can run **after** the upstream response is received by setting
+`phase: "response"` in the middleware entry. The same `.rhai` file path — no
+separate file needed.
+
+```yaml
+# conduit.yaml
+middleware:
+  # Request phase (default) — runs before upstream
+  - type: script
+    path: ./scripts/auth-check.rhai
+
+  # Response phase — runs after upstream responds
+  - type: script
+    path: ./scripts/add-response-headers.rhai
+    phase: "response"
+```
+
+```json
+// conduit.json
+{
+  "middleware": [
+    { "type": "script", "path": "./scripts/auth-check.rhai" },
+    { "type": "script", "path": "./scripts/add-response-headers.rhai", "phase": "response" }
+  ]
+}
+```
+
+In a response-phase script, two variables are available instead of `request`:
+
+| Variable | Properties / Methods | Description |
+| -------- | -------------------- | ----------- |
+| `upstream` | `.status` | HTTP status returned by upstream (e.g. `200`, `404`) |
+| | `.header("Name")` | Read an upstream response header |
+| `response` | `.set_header("Name", "Value")` | Add/overwrite a header on the client response |
+| | `.remove_header("Name")` | Remove a header from the client response |
+
+Return value is ignored — response scripts always continue.
+
+```rhai
+// add-response-headers.rhai — add security header to all responses
+response.set_header("X-Served-By", "conduit");
+response.remove_header("X-Powered-By");
+```
+
+```rhai
+// log-errors.rhai — log when upstream returns 5xx
+if upstream.status >= 500 {
+    print(`upstream error: ${upstream.status} for path`);
+    // Add debug header for internal use
+    response.set_header("X-Upstream-Error", upstream.status);
+}
+```
+
+```rhai
+// hide-server.rhai — remove server identity headers on all responses
+response.remove_header("Server");
+response.remove_header("X-Powered-By");
+response.remove_header("Via");
+```
+
+```rhai
+// cors-on-error.rhai — ensure CORS header is present even on 4xx/5xx
+// (some upstreams strip CORS headers on errors)
+let origin = "https://app.example.com";
+if upstream.header("Access-Control-Allow-Origin") == "" {
+    response.set_header("Access-Control-Allow-Origin", origin);
+}
+```
 
 ---
 

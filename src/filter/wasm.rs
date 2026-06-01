@@ -425,6 +425,229 @@ fn run_inner(request: WasmRequest, path: &str) -> anyhow::Result<WasmOutcome> {
     }
 }
 
+// ── Response phase ────────────────────────────────────────────────────────────
+
+/// Context passed to the WASM plugin during the response phase.
+#[derive(Clone)]
+pub struct WasmResponseContext {
+    /// HTTP status code returned by the upstream.
+    pub status: u16,
+    /// Response headers from the upstream (lower-cased keys).
+    pub headers: std::collections::HashMap<String, String>,
+    /// JSON bytes from `middleware[].config`; empty when not configured.
+    pub plugin_config: Vec<u8>,
+}
+
+/// State threaded through the Wasmtime Store for the response phase.
+struct WasmResponseState {
+    ctx: WasmResponseContext,
+    /// Headers to add/overwrite on the response going to the client.
+    added_headers: Vec<(String, String)>,
+    /// Header names to remove from the response.
+    removed_headers: Vec<String>,
+    /// Optional body override (replaces the upstream body when set).
+    response_body: Option<Vec<u8>>,
+}
+
+impl WasmResponseState {
+    fn new(ctx: WasmResponseContext) -> Self {
+        Self {
+            ctx,
+            added_headers: Vec::new(),
+            removed_headers: Vec::new(),
+            response_body: None,
+        }
+    }
+}
+
+/// Outcome returned by `run_wasm_response`.
+pub struct WasmResponseOutcome {
+    /// Headers to add/overwrite on the client response.
+    pub added_headers: Vec<(String, String)>,
+    /// Headers to remove from the client response.
+    pub removed_headers: Vec<String>,
+    /// Optional body to replace the upstream response body.
+    pub body: Option<bytes::Bytes>,
+}
+
+fn register_response_host_functions(
+    linker: &mut Linker<WasmResponseState>,
+) -> anyhow::Result<()> {
+    // conduit_get_response_status — read upstream status code
+    linker.func_wrap(
+        "conduit",
+        "conduit_get_response_status",
+        |c: Caller<'_, WasmResponseState>| -> i32 { c.data().ctx.status as i32 },
+    )?;
+
+    // conduit_get_response_header — read a named upstream response header
+    linker.func_wrap(
+        "conduit",
+        "conduit_get_response_header",
+        |mut c: Caller<'_, WasmResponseState>,
+         name_ptr: i32,
+         name_len: i32,
+         buf: i32,
+         buf_len: i32|
+         -> i32 {
+            let name = mem_read_str_resp(&mut c, name_ptr, name_len).to_ascii_lowercase();
+            let value = c.data().ctx.headers.get(&name).cloned();
+            match value {
+                Some(v) => mem_write_resp(&mut c, v.as_bytes(), buf, buf_len),
+                None => -1,
+            }
+        },
+    )?;
+
+    // conduit_set_response_header — add/overwrite a response header
+    linker.func_wrap(
+        "conduit",
+        "conduit_set_response_header",
+        |mut c: Caller<'_, WasmResponseState>,
+         name_ptr: i32,
+         name_len: i32,
+         val_ptr: i32,
+         val_len: i32| {
+            let name = mem_read_str_resp(&mut c, name_ptr, name_len);
+            let val = mem_read_str_resp(&mut c, val_ptr, val_len);
+            c.data_mut().added_headers.push((name, val));
+        },
+    )?;
+
+    // conduit_remove_response_header — remove a response header
+    linker.func_wrap(
+        "conduit",
+        "conduit_remove_response_header",
+        |mut c: Caller<'_, WasmResponseState>, name_ptr: i32, name_len: i32| {
+            let name = mem_read_str_resp(&mut c, name_ptr, name_len);
+            c.data_mut().removed_headers.push(name);
+        },
+    )?;
+
+    // conduit_set_response_body — override the response body
+    linker.func_wrap(
+        "conduit",
+        "conduit_set_response_body",
+        |mut c: Caller<'_, WasmResponseState>, body_ptr: i32, body_len: i32| {
+            let Some(mem) = c.get_export("memory").and_then(|e| e.into_memory()) else {
+                return;
+            };
+            let start = body_ptr as usize;
+            let end = start.saturating_add(body_len as usize);
+            let bytes = mem.data(&c).get(start..end).unwrap_or_default().to_vec();
+            c.data_mut().response_body = Some(bytes);
+        },
+    )?;
+
+    // conduit_get_plugin_config
+    linker.func_wrap(
+        "conduit",
+        "conduit_get_plugin_config",
+        |mut c: Caller<'_, WasmResponseState>, buf: i32, buf_len: i32| -> i32 {
+            let cfg = c.data().ctx.plugin_config.clone();
+            mem_write_resp(&mut c, &cfg, buf, buf_len)
+        },
+    )?;
+
+    // conduit_log
+    linker.func_wrap(
+        "conduit",
+        "conduit_log",
+        |mut c: Caller<'_, WasmResponseState>, level: i32, msg_ptr: i32, msg_len: i32| {
+            let msg = mem_read_str_resp(&mut c, msg_ptr, msg_len);
+            match level {
+                0 => tracing::trace!(wasm = true, "{msg}"),
+                1 => tracing::debug!(wasm = true, "{msg}"),
+                2 => tracing::info!(wasm = true, "{msg}"),
+                3 => tracing::warn!(wasm = true, "{msg}"),
+                _ => tracing::error!(wasm = true, "{msg}"),
+            }
+        },
+    )?;
+
+    Ok(())
+}
+
+/// Memory helpers for the response-phase Store type.
+fn mem_read_str_resp(caller: &mut Caller<'_, WasmResponseState>, ptr: i32, len: i32) -> String {
+    let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+        return String::new();
+    };
+    let data = mem.data(&*caller);
+    let start = ptr as usize;
+    let end = start.saturating_add(len as usize);
+    String::from_utf8_lossy(data.get(start..end).unwrap_or_default()).into_owned()
+}
+
+fn mem_write_resp(
+    caller: &mut Caller<'_, WasmResponseState>,
+    src: &[u8],
+    buf: i32,
+    buf_len: i32,
+) -> i32 {
+    let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+        return 0;
+    };
+    let to_write = src.len().min(buf_len as usize);
+    let _ = mem.write(caller, buf as usize, &src[..to_write]);
+    to_write as i32
+}
+
+/// Run the `on_response` export of a WASM plugin (if it exists).
+///
+/// Fail-open: if the module has no `on_response` export, or if execution
+/// fails, the empty outcome is returned and the response passes through
+/// unchanged.
+pub fn run_wasm_response(ctx: WasmResponseContext, path: &str) -> WasmResponseOutcome {
+    let empty = WasmResponseOutcome {
+        added_headers: Vec::new(),
+        removed_headers: Vec::new(),
+        body: None,
+    };
+    match run_response_inner(ctx, path) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            tracing::warn!(
+                plugin = path,
+                error = %e,
+                "WASM on_response error — response passes through (fail-open)"
+            );
+            empty
+        }
+    }
+}
+
+fn run_response_inner(ctx: WasmResponseContext, path: &str) -> anyhow::Result<WasmResponseOutcome> {
+    let module = get_or_compile(path)?;
+    let mut store = Store::new(engine(), WasmResponseState::new(ctx));
+    let mut linker = Linker::new(engine());
+    register_response_host_functions(&mut linker)?;
+
+    let instance = linker.instantiate(&mut store, &module)?;
+
+    // on_response is optional — skip silently if not exported.
+    let on_response = match instance.get_typed_func::<i32, i32>(&mut store, "on_response") {
+        Ok(f) => f,
+        Err(_) => {
+            return Ok(WasmResponseOutcome {
+                added_headers: Vec::new(),
+                removed_headers: Vec::new(),
+                body: None,
+            });
+        }
+    };
+
+    let status_arg = store.data().ctx.status as i32;
+    on_response.call(&mut store, status_arg)?;
+    let state = store.into_data();
+
+    Ok(WasmResponseOutcome {
+        added_headers: state.added_headers,
+        removed_headers: state.removed_headers,
+        body: state.response_body.map(bytes::Bytes::from),
+    })
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

@@ -136,6 +136,15 @@ impl ResponseFilterChain {
         let mask_enabled = site.and_then(|s| s.mask_errors).unwrap_or(false);
         chain = chain.push(ErrorMaskFilter { mask_enabled });
 
+        // Phase 7 — Rhai / WASM on_response middleware.
+        let middleware = site
+            .and_then(|s| s.middleware.as_ref())
+            .cloned()
+            .unwrap_or_default();
+        if !middleware.is_empty() {
+            chain = chain.push(MiddlewareResponseFilter { middleware });
+        }
+
         chain
     }
 }
@@ -292,5 +301,112 @@ impl ResponseFilter for ErrorMaskFilter {
             return Ok(ResponseFilterOutcome::MaskBody);
         }
         Ok(ResponseFilterOutcome::Continue)
+    }
+}
+
+// ── Phase 7: Rhai / WASM on_response middleware ───────────────────────────────
+
+use crate::config::schema::MiddlewareEntry;
+
+/// Phase 7 — Run Rhai and WASM middleware entries that are configured for the
+/// response phase.
+///
+/// - **WASM** (`type: "wasm"`): if the module exports `on_response(status) -> i32`,
+///   it is called here.  The export is optional — modules without it are skipped.
+/// - **Rhai** (`type: "script"`, `phase: "response"`): runs the script with
+///   `upstream.status`, `upstream.header("Name")`, `response.set_header()`, etc.
+///
+/// All header mutations collected by the plugins are applied to `resp`.
+pub struct MiddlewareResponseFilter {
+    pub middleware: Vec<MiddlewareEntry>,
+}
+
+impl ResponseFilter for MiddlewareResponseFilter {
+    fn apply(
+        &self,
+        resp: &mut ResponseHeader,
+        req_ctx: &RequestCtx,
+    ) -> Result<ResponseFilterOutcome> {
+        let status = resp.status.as_u16();
+
+        // Build a lowercase header map for plugins to read.
+        let headers: std::collections::HashMap<String, String> = resp
+            .headers
+            .iter()
+            .filter_map(|(k, v)| {
+                v.to_str().ok().map(|vs| (k.as_str().to_ascii_lowercase(), vs.to_owned()))
+            })
+            .collect();
+
+        for entry in &self.middleware {
+            match entry.r#type.as_str() {
+                // ── Rhai response scripts ─────────────────────────────────────
+                "script" => {
+                    // Only run scripts that explicitly opt into the response phase.
+                    let phase = entry.phase.as_deref().unwrap_or("request");
+                    if phase != "response" {
+                        continue;
+                    }
+                    let Some(ref path) = entry.path else { continue };
+                    let outcome = crate::filter::script::run_script_response(
+                        path,
+                        status,
+                        headers.clone(),
+                        entry.config.as_ref(),
+                    );
+                    apply_response_mutations(resp, outcome.added_headers, outcome.removed_headers);
+                }
+
+                // ── WASM on_response ──────────────────────────────────────────
+                #[cfg(feature = "wasm")]
+                "wasm" => {
+                    let Some(ref path) = entry.path else { continue };
+                    let plugin_config = entry
+                        .config
+                        .as_ref()
+                        .and_then(|v| serde_json::to_vec(v).ok())
+                        .unwrap_or_default();
+                    let ctx = crate::filter::wasm::WasmResponseContext {
+                        status,
+                        headers: headers.clone(),
+                        plugin_config,
+                    };
+                    let outcome = crate::filter::wasm::run_wasm_response(ctx, path);
+                    apply_response_mutations(resp, outcome.added_headers, outcome.removed_headers);
+                    if let Some(body_bytes) = outcome.body {
+                        // Store the override body in the upstream_response_body
+                        // override slot — handled by upstream_response_body_filter.
+                        // We signal this via a custom header that the body filter reads.
+                        // (Using a header is simpler than extending RequestCtx here.)
+                        let _ = resp.insert_header(
+                            "x-conduit-wasm-body-override",
+                            format!("{}", body_bytes.len()),
+                        );
+                        // Store body bytes via header value (base64 for safety).
+                        use base64::Engine as _;
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(&body_bytes);
+                        let _ = resp.insert_header("x-conduit-wasm-body-b64", encoded);
+                    }
+                }
+
+                _ => {}
+            }
+        }
+
+        Ok(ResponseFilterOutcome::Continue)
+    }
+}
+
+/// Apply header mutations to a Pingora response header.
+fn apply_response_mutations(
+    resp: &mut ResponseHeader,
+    added: Vec<(String, String)>,
+    removed: Vec<String>,
+) {
+    for name in removed {
+        resp.remove_header(&name);
+    }
+    for (name, value) in added {
+        let _ = resp.insert_header(name.clone(), value.as_str());
     }
 }

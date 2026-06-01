@@ -858,9 +858,19 @@ pub struct MiddlewareEntry {
     pub r#type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_json::Value>,
-    // Only used when type = "script" (Phase 4 Rhai)
+    /// File path to the script / WASM module.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Pipeline phase to run this entry in.
+    ///
+    /// - `"request"` (default) — run during the request phase (before upstream)
+    /// - `"response"` — run during the response phase (after upstream responds)
+    ///
+    /// WASM plugins do not need this field: if the module exports `on_response`,
+    /// it is called automatically in both phases (request AND response).
+    /// For Rhai scripts, set `phase: "response"` to run on the response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
 }
 
 // ── Static files ───────────────────────────────────────────────────────────

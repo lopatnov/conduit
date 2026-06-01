@@ -28,6 +28,7 @@ response, or redirect the client.
   - [Header check in Go (TinyGo)](#header-check-in-go-tinygo)
   - [Header check in AssemblyScript](#header-check-in-assemblyscript)
   - [Using the plugin config field](#using-the-plugin-config-field)
+- [Response phase — on_response](#response-phase--on_response)
 - [Building plugins](#building-plugins)
 - [Execution model](#execution-model)
 - [Error handling](#error-handling)
@@ -771,6 +772,99 @@ pub extern "C" fn on_request() -> i32 {
 For a cleaner approach, add a `no_std`-compatible JSON crate like
 [`miniserde`](https://crates.io/crates/miniserde) or
 [`serde_json_core`](https://crates.io/crates/serde-json-core).
+
+---
+
+## Response phase — `on_response`
+
+Plugins can optionally export `on_response(status: i32) -> i32` to run after
+the upstream responds. The export is **optional** — if missing, the plugin is
+simply not called for the response.
+
+```wat
+;; WAT — plugin handles both request and response
+(module
+  (memory (export "memory") 1)
+
+  (func (export "on_request") (result i32)
+    i32.const 0  ;; continue
+  )
+
+  (func (export "on_response") (param $status i32) (result i32)
+    ;; status parameter = upstream HTTP status code
+    i32.const 0  ;; return value is ignored (always continues)
+  )
+)
+```
+
+### Response host functions
+
+In `on_response`, six host functions are available:
+
+| Function | Description |
+| -------- | ----------- |
+| `conduit_get_response_status() -> i32` | Upstream HTTP status code |
+| `conduit_get_response_header(name_ptr, name_len, buf, buf_len) -> i32` | Read upstream response header; `-1` if absent |
+| `conduit_set_response_header(name_ptr, name_len, val_ptr, val_len)` | Add/overwrite header on client response |
+| `conduit_remove_response_header(name_ptr, name_len)` | Remove header from client response |
+| `conduit_set_response_body(body_ptr, body_len)` | Replace response body |
+| `conduit_get_plugin_config(buf, buf_len) -> i32` | Same as request phase |
+| `conduit_log(level, msg_ptr, msg_len)` | Same as request phase |
+
+> Request-phase functions (`conduit_get_method`, `conduit_get_header`, etc.)
+> are **not** available in `on_response`.
+
+### Example in Rust — add header on error
+
+```rust
+// src/lib.rs
+extern "C" {
+    fn conduit_get_response_status() -> i32;
+    fn conduit_set_response_header(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32);
+    fn conduit_set_response_body(body_ptr: i32, body_len: i32);
+}
+
+// on_request is still required even if you only need on_response
+#[no_mangle]
+pub extern "C" fn on_request() -> i32 { 0 }
+
+#[no_mangle]
+pub extern "C" fn on_response(_status: i32) -> i32 {
+    let status = unsafe { conduit_get_response_status() };
+    if status >= 500 {
+        // Replace error body with a clean JSON message
+        let body = b"{\"error\":\"Internal Server Error\"}";
+        unsafe {
+            conduit_set_response_body(body.as_ptr() as i32, body.len() as i32);
+            let ct = b"content-type";
+            let ctv = b"application/json";
+            conduit_set_response_header(
+                ct.as_ptr() as i32, ct.len() as i32,
+                ctv.as_ptr() as i32, ctv.len() as i32,
+            );
+        }
+    }
+    0
+}
+```
+
+**conduit.yaml / conduit.json:**
+```yaml
+# conduit.yaml — no extra config needed, on_response runs automatically
+middleware:
+  - type: wasm
+    path: ./plugins/error_handler.wasm
+proxy:
+  /api: "http://backend:4000"
+```
+
+```json
+// conduit.json
+{
+  "middleware": [{ "type": "wasm", "path": "./plugins/error_handler.wasm" }],
+  "proxy": { "/api": "http://backend:4000" }
+}
+```
 
 ---
 

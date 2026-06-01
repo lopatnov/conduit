@@ -265,6 +265,140 @@ pub fn run_script(
     }
 }
 
+// ── Response phase ────────────────────────────────────────────────────────────
+
+/// Outcome of running a Rhai script during the response phase.
+#[derive(Debug)]
+pub struct ScriptResponseOutcome {
+    /// Headers to add/overwrite on the client response.
+    pub added_headers: Vec<(String, String)>,
+    /// Headers to remove from the client response.
+    pub removed_headers: Vec<String>,
+}
+
+/// Mutable response builder used by response-phase scripts.
+///
+/// Scripts can call `response.set_header("Name", "Value")` to add headers,
+/// `response.remove_header("Name")` to delete headers, and read the upstream
+/// status with `response.status`.
+#[derive(Debug, Clone)]
+pub struct ScriptResponseBuilder {
+    /// Upstream HTTP status code (read-only to the script).
+    pub status: i64,
+    pub added_headers: Vec<(String, String)>,
+    pub removed_headers: Vec<String>,
+}
+
+impl ScriptResponseBuilder {
+    fn new(status: u16) -> Self {
+        Self {
+            status: status as i64,
+            added_headers: Vec::new(),
+            removed_headers: Vec::new(),
+        }
+    }
+
+    /// Add or overwrite a response header.
+    pub fn set_header(&mut self, name: &str, value: &str) {
+        self.added_headers.push((name.to_owned(), value.to_owned()));
+    }
+
+    /// Remove a response header.
+    pub fn remove_header(&mut self, name: &str) {
+        self.removed_headers.push(name.to_owned());
+    }
+}
+
+/// Execute a Rhai script during the **response** phase.
+///
+/// The script receives:
+/// - `response` — a mutable builder: `response.status` (read), `response.set_header()`,
+///   `response.remove_header()`
+/// - `upstream` — read-only view: `upstream.status`, `upstream.header("Name")`
+/// - `config` — same as request phase
+///
+/// Return value is ignored for response scripts (always continues).
+/// On compile / runtime errors the script is skipped (fail-open).
+pub fn run_script_response(
+    script_path: &str,
+    status: u16,
+    headers: HashMap<String, String>,
+    plugin_config: Option<&serde_json::Value>,
+) -> ScriptResponseOutcome {
+    let ast = match get_or_compile(script_path) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!(script = script_path, "Rhai response compile error: {e}");
+            return ScriptResponseOutcome {
+                added_headers: Vec::new(),
+                removed_headers: Vec::new(),
+            };
+        }
+    };
+
+    let eng = engine_response();
+    let mut scope = rhai::Scope::new();
+
+    scope.push("response", ScriptResponseBuilder::new(status));
+
+    // Expose upstream headers as a read-only map via a simple wrapper.
+    // Scripts access: upstream.header("Name")
+    scope.push("upstream", ScriptUpstreamView { status: status as i64, headers });
+
+    let config_dynamic = plugin_config
+        .map(json_to_dynamic)
+        .unwrap_or(rhai::Dynamic::UNIT);
+    scope.push("config", config_dynamic);
+
+    if let Err(e) = eng.eval_ast_with_scope::<rhai::Dynamic>(&mut scope, &ast) {
+        tracing::warn!(script = script_path, "Rhai response runtime error: {e}");
+    }
+
+    let builder: ScriptResponseBuilder = scope
+        .get_value::<ScriptResponseBuilder>("response")
+        .unwrap_or_else(|| ScriptResponseBuilder::new(status));
+
+    ScriptResponseOutcome {
+        added_headers: builder.added_headers,
+        removed_headers: builder.removed_headers,
+    }
+}
+
+/// Read-only upstream response view exposed as `upstream` in response scripts.
+#[derive(Debug, Clone)]
+pub struct ScriptUpstreamView {
+    pub status: i64,
+    pub headers: HashMap<String, String>,
+}
+
+impl ScriptUpstreamView {
+    pub fn header(&mut self, name: &str) -> String {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+/// Rhai engine for the response phase — registers the response-specific types.
+fn engine_response() -> &'static rhai::Engine {
+    static RESP_ENGINE: std::sync::OnceLock<rhai::Engine> = std::sync::OnceLock::new();
+    RESP_ENGINE.get_or_init(|| {
+        let mut eng = rhai::Engine::new();
+
+        eng.register_type_with_name::<ScriptResponseBuilder>("ResponseBuilder");
+        eng.register_get("status", |r: &mut ScriptResponseBuilder| r.status);
+        eng.register_fn("set_header", ScriptResponseBuilder::set_header);
+        eng.register_fn("remove_header", ScriptResponseBuilder::remove_header);
+
+        eng.register_type_with_name::<ScriptUpstreamView>("UpstreamView");
+        eng.register_get("status", |u: &mut ScriptUpstreamView| u.status);
+        eng.register_fn("header", ScriptUpstreamView::header);
+
+        eng
+    })
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Return the compiled AST for `path`, compiling it on first access.
