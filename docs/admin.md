@@ -58,6 +58,49 @@ global:
 The Admin API uses **Bearer token authentication only** — no cookies, no
 Basic Auth, no JWT.
 
+### Generating a token
+
+Use any method that produces a cryptographically random string. Store the
+result in an environment variable — never hardcode it in the config file.
+
+```bash
+# openssl (recommended — available on Linux, macOS, Windows via Git Bash)
+openssl rand -hex 32
+# → e.g. a3f8c2d1b4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1
+
+# /dev/urandom (Linux / macOS)
+cat /dev/urandom | head -c 32 | base64
+
+# Python 3
+python3 -c "import secrets; print(secrets.token_hex(32))"
+
+# Node.js
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+# PowerShell (Windows)
+[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Max 256 }))
+```
+
+Set it as an environment variable and reference it from the config:
+
+```bash
+# Generate once and save
+export ADMIN_TOKEN=$(openssl rand -hex 32)
+
+# Or store in a .env file (loaded by systemd EnvironmentFile=)
+echo "ADMIN_TOKEN=$(openssl rand -hex 32)" >> /etc/conduit/conduit.env
+```
+
+```yaml
+# conduit.yaml — reference the env var
+global:
+  admin:
+    bind: "127.0.0.1:2019"
+    token: "$ADMIN_TOKEN"
+```
+
+### Using the token
+
 When `global.admin.token` is set, every request must include:
 ```
 Authorization: Bearer <token>
