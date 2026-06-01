@@ -37,6 +37,56 @@ pub fn validate(config: &AppConfig) -> Vec<ValidationError> {
     errors
 }
 
+/// Return human-readable warnings for config options that require a compile-time
+/// feature which is not currently enabled.
+///
+/// The server still starts — all warnings describe things that will be silently
+/// ignored at runtime.  Callers should log each entry with `tracing::warn!`.
+///
+/// ```
+/// for w in feature_warnings(&config) {
+///     tracing::warn!("{w}");
+/// }
+/// ```
+pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
+    let mut warnings: Vec<String> = Vec::new();
+
+    // ── global.otlp ───────────────────────────────────────────────────────────
+    #[cfg(not(feature = "otlp"))]
+    if config.global.as_ref().and_then(|g| g.otlp.as_ref()).is_some() {
+        warnings.push(
+            "global.otlp is configured but Conduit was compiled without the `otlp` feature \
+             — OpenTelemetry tracing will be disabled. \
+             Recompile with `--features otlp` to enable."
+                .to_owned(),
+        );
+    }
+
+    // ── middleware type: "wasm" ───────────────────────────────────────────────
+    #[cfg(not(feature = "wasm"))]
+    {
+        for (i, site) in config.sites.iter().enumerate() {
+            if let Some(middleware) = &site.middleware {
+                let wasm_entries: Vec<usize> = middleware
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.r#type == "wasm")
+                    .map(|(j, _)| j)
+                    .collect();
+                for j in wasm_entries {
+                    warnings.push(format!(
+                        "sites[{i}].middleware[{j}] has type \"wasm\" but Conduit was compiled \
+                         without the `wasm` feature — this middleware entry will be ignored. \
+                         Recompile with `--features wasm` to enable."
+                    ));
+                }
+            }
+        }
+    }
+
+    warnings
+}
+
 // ── Cross-site checks ──────────────────────────────────────────────────────
 
 fn effective_port(site: &SiteConfig) -> u16 {
@@ -1442,5 +1492,85 @@ mod tests {
             "error must mention invalid URL: {:?}",
             e
         );
+    }
+
+    // ── feature_warnings ─────────────────────────────────────────────────────
+
+    fn warns(json: &str) -> Vec<String> {
+        feature_warnings(&parse(json))
+    }
+
+    #[test]
+    fn no_warnings_for_plain_config() {
+        // A config with no feature-gated options produces no warnings.
+        assert!(warns(r#"{ "port": 8080, "proxy": "http://up:4000" }"#).is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "wasm")]
+    fn no_warning_when_wasm_feature_enabled() {
+        // When the wasm feature IS compiled in, no warning is emitted.
+        let w = warns(
+            r#"{ "port": 8080,
+                 "middleware": [{ "type": "wasm", "path": "p.wasm" }] }"#,
+        );
+        assert!(w.is_empty(), "wasm feature active → no warning: {w:?}");
+    }
+
+    #[test]
+    #[cfg(not(feature = "wasm"))]
+    fn warning_for_wasm_middleware_without_feature() {
+        let w = warns(
+            r#"{ "port": 8080,
+                 "middleware": [{ "type": "wasm", "path": "plugin.wasm" }] }"#,
+        );
+        assert_eq!(w.len(), 1, "expected exactly one warning: {w:?}");
+        assert!(w[0].contains("wasm"), "warning must mention 'wasm': {}", w[0]);
+        assert!(
+            w[0].contains("--features wasm"),
+            "warning must mention compile flag: {}",
+            w[0]
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "wasm"))]
+    fn warning_per_wasm_entry() {
+        // Two wasm entries → two warnings (one per entry).
+        let w = warns(
+            r#"{ "port": 8080,
+                 "middleware": [
+                     { "type": "wasm", "path": "a.wasm" },
+                     { "type": "script", "path": "b.rhai" },
+                     { "type": "wasm", "path": "c.wasm" }
+                 ] }"#,
+        );
+        assert_eq!(w.len(), 2, "two wasm entries → two warnings: {w:?}");
+    }
+
+    #[test]
+    #[cfg(not(feature = "otlp"))]
+    fn warning_for_otlp_without_feature() {
+        let w = warns(
+            r#"{ "global": { "otlp": { "endpoint": "http://otel:4317" } },
+                 "sites": [{ "port": 8080 }] }"#,
+        );
+        assert_eq!(w.len(), 1, "expected exactly one otlp warning: {w:?}");
+        assert!(w[0].contains("otlp"), "warning must mention 'otlp': {}", w[0]);
+        assert!(
+            w[0].contains("--features otlp"),
+            "warning must mention compile flag: {}",
+            w[0]
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "otlp")]
+    fn no_warning_when_otlp_feature_enabled() {
+        let w = warns(
+            r#"{ "global": { "otlp": { "endpoint": "http://otel:4317" } },
+                 "sites": [{ "port": 8080 }] }"#,
+        );
+        assert!(w.is_empty(), "otlp feature active → no warning: {w:?}");
     }
 }

@@ -339,6 +339,9 @@ fn run_server(config_path: &str) {
         }
         process::exit(1);
     }
+    for w in validate::feature_warnings(&cfg) {
+        tracing::warn!("feature not compiled in: {w}");
+    }
     if let Err(e) = builder::run_server(cfg, path.to_path_buf(), None) {
         eprintln!("server error: {e}");
         process::exit(1);
@@ -411,6 +414,10 @@ fn cmd_validate(config_path: &str) {
         }
     };
     let errors = validate::validate(&app);
+    let warnings = validate::feature_warnings(&app);
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
     if errors.is_empty() {
         let site_count = app.sites.len();
         let route_count: usize = app

@@ -253,6 +253,9 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
             errors.iter().map(|e| format!("{}: {}", e.path, e.message)).collect::<Vec<_>>().join("; ")
         )));
     }
+    for w in validate::feature_warnings(&new_config) {
+        tracing::warn!("feature not compiled in: {w}");
+    }
 
     // Detect fields that require a restart (cold changes).
     let cold_fields = detect_cold_changes(&state.config.load(), &new_config);
@@ -285,12 +288,19 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
     // Spawn health-check tasks for any newly-configured routes.
     health::spawn_health_checks(state.upstream_health.clone(), &new_config);
 
+    // Collect feature warnings before moving new_config.
+    let fw: Vec<String> = validate::feature_warnings(&new_config);
+
     // Apply: hot-swap config, clear runtime upstream overrides, reset rate limiter.
     state.config.store(Arc::new(new_config));
     state.upstream_health.clear_overrides();
     state.rate_limiter.clear();
 
-    Ok(Json(json!({ "status": "ok", "message": "config reloaded" })))
+    let mut resp = json!({ "status": "ok", "message": "config reloaded" });
+    if !fw.is_empty() {
+        resp["warnings"] = json!(fw);
+    }
+    Ok(Json(resp))
 }
 
 /// Return the list of field paths that changed between `old` and `new` and
