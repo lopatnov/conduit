@@ -362,9 +362,37 @@ curl -X DELETE http://localhost:2019/ip-deny \
 
 ## CLI shortcuts
 
-The `conduit` binary has built-in commands that call the Admin API so you
-don't need `curl`. The `--admin ADDR` flag and `CONDUIT_ADMIN` env var set
-the address (default: `127.0.0.1:2019`).
+The `conduit` binary has built-in commands that wrap the Admin API:
+
+```bash
+# Default address (127.0.0.1:2019) — no flag needed
+conduit reload
+conduit status
+conduit shutdown
+
+# Custom address via flag
+conduit reload   --admin 10.0.0.5:2019
+conduit status   --admin 10.0.0.5:2019
+conduit shutdown --admin 10.0.0.5:2019
+
+# Custom address via environment variable (useful in scripts)
+export CONDUIT_ADMIN=10.0.0.5:2019
+conduit reload
+conduit status
+
+# Upstream management
+conduit upstreams
+conduit upstreams add    --route /api --target http://api-3:4000
+conduit upstreams add    --route /api --target http://api-3:4000 --weight 2
+conduit upstreams remove --route /api --target http://api-3:4000
+conduit upstreams weight --route /api --target http://api-1:4000 --weight 3
+
+# Scope a change to one specific site only
+conduit upstreams add --route /api --target http://api-3:4000 --site api.example.com:443
+
+# Upstream health table (human-readable)
+conduit status --upstream
+```
 
 | CLI command | Admin API call |
 | ----------- | -------------- |
@@ -373,11 +401,11 @@ the address (default: `127.0.0.1:2019`).
 | `conduit status --upstream` | `GET /upstreams` (formatted as table) |
 | `conduit shutdown` | `POST /shutdown` |
 | `conduit upstreams` | `GET /upstreams` |
-| `conduit upstreams add --route /api --target http://b:4000` | `POST /upstreams/add` |
-| `conduit upstreams remove --route /api --target http://b:4000` | `POST /upstreams/remove` |
-| `conduit upstreams weight --route /api --target http://b:4000 --weight 3` | `POST /upstreams/weight` |
+| `conduit upstreams add` | `POST /upstreams/add` |
+| `conduit upstreams remove` | `POST /upstreams/remove` |
+| `conduit upstreams weight` | `POST /upstreams/weight` |
 
-See [cli.md](cli.md) for full flag documentation.
+See [cli.md](cli.md) for all flags.
 
 ---
 
