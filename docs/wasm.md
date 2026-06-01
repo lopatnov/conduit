@@ -26,6 +26,7 @@ response, or redirect the client.
   - [Redirect old paths](#redirect-old-paths)
   - [Header check in C](#header-check-in-c)
   - [Header check in Go (TinyGo)](#header-check-in-go-tinygo)
+  - [Header check in AssemblyScript](#header-check-in-assemblyscript)
   - [Using the plugin config field](#using-the-plugin-config-field)
 - [Building plugins](#building-plugins)
 - [Execution model](#execution-model)
@@ -471,7 +472,11 @@ proxy:
 
 ### Header check in C
 
-The same auth-check as the Rust example, written in C:
+**Project structure:**
+```
+api-key-check-c/
+└── plugin.c
+```
 
 ```c
 // plugin.c
@@ -493,7 +498,6 @@ int on_request(void) {
         conduit_set_response_body(msg, 15);
         return 1;
     }
-    // Compare first n bytes
     const char *expected = "my-secret";
     if (n != 9) { conduit_set_response_status(403); return 1; }
     for (int i = 0; i < 9; i++) {
@@ -503,12 +507,12 @@ int on_request(void) {
 }
 ```
 
-Build with Clang:
-
+**Build** (output filename is explicit in `-o`):
 ```bash
 clang --target=wasm32 -nostdlib -Wl,--no-entry \
       -Wl,--export=on_request -Wl,--export=memory \
-      -o plugin.wasm plugin.c
+      -o api_key_check.wasm plugin.c
+# Output: api_key_check.wasm  ← you choose the name in -o
 ```
 
 **conduit.yaml / conduit.json:**
@@ -516,7 +520,7 @@ clang --target=wasm32 -nostdlib -Wl,--no-entry \
 # conduit.yaml
 middleware:
   - type: wasm
-    path: ./plugin.wasm
+    path: ./api_key_check.wasm   # the -o name from build step
 proxy:
   /api: "http://backend:4000"
 ```
@@ -524,7 +528,7 @@ proxy:
 ```json
 // conduit.json
 {
-  "middleware": [{ "type": "wasm", "path": "./plugin.wasm" }],
+  "middleware": [{ "type": "wasm", "path": "./api_key_check.wasm" }],
   "proxy": { "/api": "http://backend:4000" }
 }
 ```
@@ -533,9 +537,17 @@ proxy:
 
 ### Header check in Go (TinyGo)
 
+**Project structure:**
+```
+api-key-check-go/
+└── plugin.go
+```
+
 ```go
 // plugin.go
 package main
+
+import "unsafe"
 
 //go:wasmimport conduit conduit_get_header
 func conduitGetHeader(namePtr, nameLen, bufPtr, bufLen uint32) int32
@@ -567,10 +579,11 @@ func onRequest() int32 {
 func main() {}
 ```
 
-Build with TinyGo:
-
+**Build** (output filename is explicit in `-o`):
 ```bash
-tinygo build -o plugin.wasm -target=wasi ./plugin.go
+# Install TinyGo: https://tinygo.org/getting-started/install/
+tinygo build -o api_key_check.wasm -target=wasi ./plugin.go
+# Output: api_key_check.wasm  ← you choose the name in -o
 ```
 
 **conduit.yaml / conduit.json:**
@@ -578,7 +591,7 @@ tinygo build -o plugin.wasm -target=wasi ./plugin.go
 # conduit.yaml
 middleware:
   - type: wasm
-    path: ./plugin.wasm
+    path: ./api_key_check.wasm   # the -o name from build step
 proxy:
   /api: "http://backend:4000"
 ```
@@ -586,7 +599,91 @@ proxy:
 ```json
 // conduit.json
 {
-  "middleware": [{ "type": "wasm", "path": "./plugin.wasm" }],
+  "middleware": [{ "type": "wasm", "path": "./api_key_check.wasm" }],
+  "proxy": { "/api": "http://backend:4000" }
+}
+```
+
+---
+
+### Header check in AssemblyScript
+
+AssemblyScript compiles TypeScript-like syntax directly to WASM — no Rust or C toolchain needed.
+
+**Project structure:**
+```
+api-key-check-as/
+├── package.json
+└── plugin.ts
+```
+
+```bash
+# package.json — install AssemblyScript compiler
+npm init -y
+npm install --save-dev assemblyscript
+npx asinit .
+```
+
+```typescript
+// plugin.ts
+@external("conduit", "conduit_get_header")
+declare function conduit_get_header(
+  namePtr: i32, nameLen: i32,
+  buf: i32, bufLen: i32
+): i32;
+
+@external("conduit", "conduit_set_response_status")
+declare function conduit_set_response_status(status: i32): void;
+
+@external("conduit", "conduit_set_response_body")
+declare function conduit_set_response_body(bodyPtr: i32, bodyLen: i32): void;
+
+const BUF_SIZE: i32 = 256;
+let buf = new ArrayBuffer(BUF_SIZE);
+
+export function on_request(): i32 {
+  const keyName = String.UTF8.encode("x-api-key");
+  const bufPtr = changetype<i32>(buf);
+  const n = conduit_get_header(
+    changetype<i32>(keyName), keyName.byteLength,
+    bufPtr, BUF_SIZE
+  );
+  if (n < 0) {
+    const msg = String.UTF8.encode("missing API key");
+    conduit_set_response_status(401);
+    conduit_set_response_body(changetype<i32>(msg), msg.byteLength);
+    return 1;
+  }
+  const received = String.UTF8.decodeUnsafe(bufPtr, n);
+  if (received != "my-secret") {
+    conduit_set_response_status(403);
+    return 1;
+  }
+  return 0;
+}
+```
+
+**Build:**
+```bash
+npx asc plugin.ts --target release --outFile api_key_check.wasm \
+    --exportRuntime --exportMemory --use abort=
+# Output: api_key_check.wasm
+```
+
+**conduit.yaml / conduit.json:**
+```yaml
+# conduit.yaml
+middleware:
+  - type: wasm
+    path: ./api_key_check.wasm
+proxy:
+  /api: "http://backend:4000"
+```
+
+```json
+// conduit.json
+{
+  "middleware": [{ "type": "wasm", "path": "./api_key_check.wasm" }],
   "proxy": { "/api": "http://backend:4000" }
 }
 ```
