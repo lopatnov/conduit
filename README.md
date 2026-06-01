@@ -78,39 +78,41 @@ GET /api/users   → proxied to http://localhost:4000/api/users
 
 ## Installation
 
+> **Standard vs full binary:** All installation options below install the
+> **standard** binary — no optional features (`otlp`, `wasm`, `kubernetes`).
+> If you need OTLP tracing, WASM plugins, or Kubernetes CRD mode, use the
+> **full binary** from [GitHub Releases](#option-3--pre-built-binaries) or
+> [build from source](#optional-features) with `--features otlp,wasm,kubernetes`.
+
 ### Option 1 — npx (no installation, always latest)
 
 ```bash
-npx @lopatnov/conduit
-npx @lopatnov/conduit init
-npx @lopatnov/conduit validate
+npx @lopatnov/conduit           # start the server
+npx @lopatnov/conduit init      # interactive setup wizard
+npx @lopatnov/conduit validate  # validate config
 ```
+
+Downloads the platform binary on first run, then caches it. Always uses the
+**standard** binary. No optional features.
 
 ### Option 2 — npm global install
 
-Install once, run anywhere as `conduit`:
-
 ```bash
 npm install -g @lopatnov/conduit
-conduit
-conduit validate
+conduit           # start the server
+conduit validate  # validate config
 ```
 
-### Option 3 — Cargo
+Installs the **standard** binary for your platform. No optional features.
 
-```bash
-cargo install lopatnov-conduit
-```
+### Option 3 — Pre-built binaries
 
-### Option 4 — Pre-built binaries
+Download from [GitHub Releases](https://github.com/lopatnov/conduit/releases).
 
-Download from [GitHub Releases](https://github.com/lopatnov/conduit/releases):
+Each release ships two variants per platform:
 
-Each release ships two variants per platform: standard (no optional features)
-and **full** (with `otlp + wasm + kubernetes`).
-
-| Platform | Standard | Full (otlp + wasm + k8s) |
-| -------- | -------- | ------------------------ |
+| Platform | Standard | Full (otlp + wasm + kubernetes) |
+| -------- | -------- | ------------------------------- |
 | Linux x86-64 | `conduit-x86_64-unknown-linux-gnu.tar.gz` | `conduit-x86_64-unknown-linux-gnu-full.tar.gz` |
 | Linux x86-64 musl | `conduit-x86_64-unknown-linux-musl.tar.gz` | `conduit-x86_64-unknown-linux-musl-full.tar.gz` |
 | Linux ARM64 | `conduit-aarch64-unknown-linux-gnu.tar.gz` | `conduit-aarch64-unknown-linux-gnu-full.tar.gz` |
@@ -119,10 +121,23 @@ and **full** (with `otlp + wasm + kubernetes`).
 | Windows x86-64 | `conduit-x86_64-pc-windows-msvc.exe.zip` | `conduit-x86_64-pc-windows-msvc-full.exe.zip` |
 
 ```bash
-# Linux example
+# Linux — standard
 curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu.tar.gz \
-  | tar xz
-./conduit --version
+  | tar xz && ./conduit --version
+
+# Linux — full (OTLP + WASM + Kubernetes)
+curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu-full.tar.gz \
+  | tar xz && ./conduit --version
+```
+
+### Option 4 — Cargo
+
+```bash
+# Standard binary (no optional features)
+cargo install lopatnov-conduit
+
+# Full binary — enables OTLP tracing, WASM plugins, Kubernetes CRD mode
+cargo install lopatnov-conduit --features otlp,wasm,kubernetes
 ```
 
 ---
@@ -165,11 +180,13 @@ compile-time dependencies:
 | `kubernetes` | `--features kubernetes` | Kubernetes CRD config provider (`--kubernetes-namespace`) |
 
 ```bash
-# Enable specific features
+# One feature
 cargo build --release --features otlp
-cargo build --release --features otlp,wasm,kubernetes
 
-# All features
+# Multiple features
+cargo build --release --features otlp,wasm
+
+# All optional features
 cargo build --release --features otlp,wasm,kubernetes
 ```
 

@@ -1801,7 +1801,7 @@ proxy:
     }
   }
 }
-
+```
 
 ### Rate limit field reference
 
@@ -1835,7 +1835,6 @@ rateLimit:
 
 ### Static header transforms
 
-```
 ```yaml
 # YAML
 requestTransform:
@@ -1901,7 +1900,7 @@ proxy:
     "/api": { "targets": ["http://api-v1:4000"], "mirror": "http://api-v2:4000" }
   }
 }
-
+```
 
 The mirrored request includes all original headers plus `X-Mirrored-From: <host>`.
 Mirror failures do not affect clients.
@@ -1915,7 +1914,6 @@ Mirror failures do not affect clients.
 Inject headers into every response site-wide. These are in addition to any
 headers set by `responseTransform`.
 
-```
 ```yaml
 # YAML
 headers:
@@ -1931,13 +1929,12 @@ headers:
     "X-API-Version": "3"
   }
 }
-
+```
 
 ---
 
 ## Logging
 
-```
 ```yaml
 # YAML — shorthand
 logging: dev         # colorized, short — for development
@@ -1972,7 +1969,7 @@ logging:
     "skipPaths": ["/__health__", "/__metrics__", "/favicon.ico"]
   }
 }
-
+```
 
 | Format     | Description |
 | ---------- | ----------- |
@@ -2074,7 +2071,7 @@ global:
     }
   }
 }
-
+```
 
 Each span: `method`, `path`, `status`, `duration_ms`, `upstream_url`, `request_id`.
 5xx responses set span status to `ERROR`.
