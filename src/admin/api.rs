@@ -7,6 +7,7 @@ use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::extract::Query;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use pingora_core::server::ShutdownWatch;
@@ -18,6 +19,33 @@ use tokio::net::TcpListener;
 use crate::config;
 use crate::config::schema::LoggingConfig;
 use crate::config::validate;
+
+// ── Typed error responses ─────────────────────────────────────────────────────
+
+/// Typed error for Admin API handlers.
+///
+/// Implements [`IntoResponse`] so handlers can return `Result<T, AdminError>`
+/// and get consistent JSON error bodies without ad-hoc `json!({ "status": "error" })`.
+#[derive(Debug)]
+pub enum AdminError {
+    /// 400 Bad Request — invalid input (e.g. bad URL format, missing field).
+    BadRequest(String),
+    /// 500 Internal Server Error — config parse / validation failure.
+    ServerError(String),
+}
+
+impl IntoResponse for AdminError {
+    fn into_response(self) -> Response {
+        let (status, message) = match self {
+            AdminError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            AdminError::ServerError(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+        };
+        (status, Json(json!({ "status": "error", "message": message }))).into_response()
+    }
+}
+
+/// Shorthand result type for Admin API handlers.
+pub type AdminResult<T> = Result<T, AdminError>;
 use crate::proxy::health;
 use crate::proxy::service::AppState;
 
@@ -210,36 +238,28 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     }))
 }
 
-async fn reload_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<Value>> {
     // Re-parse the config file.
-    let new_config = match config::load_config(&state.config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            return Json(json!({
-                "status": "error",
-                "message": format!("failed to parse config: {e}"),
-            }));
-        }
-    };
+    let new_config = config::load_config(&state.config_path).map_err(|e| {
+        AdminError::ServerError(format!("failed to parse config: {e}"))
+    })?;
 
     // Validate the new config before applying it.
     let errors = validate::validate(&new_config);
     if !errors.is_empty() {
-        return Json(json!({
-            "status": "error",
-            "message": "config validation failed",
-            "errors": errors,
-        }));
+        return Err(AdminError::ServerError(format!(
+            "config validation failed: {}",
+            errors.iter().map(|e| format!("{}: {}", e.path, e.message)).collect::<Vec<_>>().join("; ")
+        )));
     }
 
     // Detect fields that require a restart (cold changes).
     let cold_fields = detect_cold_changes(&state.config.load(), &new_config);
     if !cold_fields.is_empty() {
-        return Json(json!({
-            "status": "error",
-            "message": "cold fields changed — restart required",
-            "cold_fields": cold_fields,
-        }));
+        return Err(AdminError::BadRequest(format!(
+            "cold fields changed — restart required: {}",
+            cold_fields.join(", ")
+        )));
     }
 
     // Switch log writer if any site's logging.file path changed.
@@ -269,7 +289,7 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     state.upstream_health.clear_overrides();
     state.rate_limiter.clear();
 
-    Json(json!({ "status": "ok", "message": "config reloaded" }))
+    Ok(Json(json!({ "status": "ok", "message": "config reloaded" })))
 }
 
 /// Return the list of field paths that changed between `old` and `new` and
@@ -663,7 +683,7 @@ struct CachePurgeParams {
 /// JSON on bad input.
 async fn cache_purge_handler(
     Query(params): Query<CachePurgeParams>,
-) -> (StatusCode, Json<Value>) {
+) -> AdminResult<Json<Value>> {
     use pingora_cache::storage::{PurgeType, Storage};
     use pingora_cache::trace::Span;
 
@@ -675,10 +695,9 @@ async fn cache_purge_handler(
     } else if let Some(r) = raw.strip_prefix("http://") {
         ("http", r)
     } else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "status": "error", "message": "url must start with http:// or https://" })),
-        );
+        return Err(AdminError::BadRequest(
+            "url must start with http:// or https://".to_owned(),
+        ));
     };
 
     let (authority, path_query) = rest
@@ -708,10 +727,7 @@ async fn cache_purge_handler(
         .await
         .unwrap_or(false);
 
-    (
-        StatusCode::OK,
-        Json(json!({ "status": "ok", "purged": purged, "url": raw })),
-    )
+    Ok(Json(json!({ "status": "ok", "purged": purged, "url": raw })))
 }
 
 // ── Dynamic IP deny-list ──────────────────────────────────────────────────────

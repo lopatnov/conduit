@@ -159,12 +159,22 @@ impl LoadBalancingStrategy for LeastResponseTime {
 }
 
 /// Power of Two Choices (P2C): sample 2 random backends and forward to the
-/// less-loaded one.
+/// one with lower **EWMA latency**.
 ///
-/// Achieves O(log log n) maximum load with O(1) selection — significantly
-/// better tail latency than random and competitive with `least-conn` at scale.
+/// Achieves O(log log n) maximum load imbalance with O(1) selection.
+/// Uses the time-decayed Peak EWMA latency tracked in `UpstreamEntry.ewma_latency_us`
+/// rather than active connection counts — this matches how linkerd2-proxy implements
+/// P2C (via Tower's `PeakEwma`) and gives better tail-latency decisions.
+///
+/// Latency measurements decay over a 10-second time constant so stale readings
+/// from past traffic bursts do not permanently bias routing.
+///
 /// Reference: linkerd2-proxy `linkerd/pool/p2c/src/lib.rs`.
 pub struct P2cChoice;
+
+/// Default EWMA value used when an upstream has no recorded latency yet.
+/// 30 ms — matches linkerd's `DEFAULT_RTT = 30 ms`.
+const P2C_DEFAULT_LATENCY_US: f64 = 30_000.0;
 
 impl LoadBalancingStrategy for P2cChoice {
     fn pick(
@@ -183,12 +193,20 @@ impl LoadBalancingStrategy for P2cChoice {
                 upstream::pick_round_robin(urls, route_key, counters).map(|u| (u, false))
             }
             len => {
-                // Sample two distinct random indices.
+                // Sample two distinct random indices and pick the lower-latency one.
                 let (a, b) = gen_pair(len);
-                let load_a = health.conn_load(&urls[a]);
-                let load_b = health.conn_load(&urls[b]);
-                // Pick the less loaded; break ties in favour of `a`.
-                let chosen = if load_a <= load_b { &urls[a] } else { &urls[b] };
+                let latency_a = health
+                    .statuses
+                    .get(&urls[a])
+                    .map(|e| e.ewma_latency_us)
+                    .unwrap_or(P2C_DEFAULT_LATENCY_US);
+                let latency_b = health
+                    .statuses
+                    .get(&urls[b])
+                    .map(|e| e.ewma_latency_us)
+                    .unwrap_or(P2C_DEFAULT_LATENCY_US);
+                // Pick the lower latency; break ties in favour of `a`.
+                let chosen = if latency_a <= latency_b { &urls[a] } else { &urls[b] };
                 Some((chosen.clone(), false))
             }
         }

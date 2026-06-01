@@ -44,10 +44,26 @@ pub struct UpstreamEntry {
     pub recovery_time_secs: Option<u64>,
     /// Peak Exponentially-Weighted Moving Average latency in microseconds.
     ///
-    /// Updated on every completed proxy request.  Uses decay factor α = 0.1
-    /// (roughly 10-sample half-life) — the same approach as linkerd's `PeakEwma`.
-    /// Used by `LeastResponseTime` to select the fastest currently-available backend.
+    /// Updated on every completed proxy request.  Uses a **time-based decay**
+    /// with a 10-second time constant (matching linkerd2-proxy's default):
+    ///
+    ///   new_ewma = old_ewma × e^(-Δt / 10s)  +  α × sample
+    ///
+    /// where Δt is the wall-clock time since the last sample.  This means
+    /// stale measurements naturally decay between traffic bursts rather than
+    /// persisting until the next request arrives.
+    ///
+    /// Default initial value: 30 000 µs (30 ms) — a realistic RPC latency,
+    /// matching linkerd's `DEFAULT_RTT = 30 ms`.  New upstreams therefore
+    /// receive fair load sooner than the previous 1-second conservative default.
+    ///
+    /// Used by `LeastResponseTime` and `P2c` to select the fastest backend.
     pub ewma_latency_us: f64,
+    /// Wall-clock time (seconds since UNIX epoch) of the last EWMA sample.
+    ///
+    /// Used for time-based decay: when a new sample arrives, the old EWMA is
+    /// multiplied by `e^(-elapsed / DECAY_SECS)` before mixing in the new value.
+    pub ewma_last_sample_secs: f64,
     /// Consecutive 5xx responses from actual proxy traffic (passive health check).
     /// Resets to 0 on any non-5xx response.
     pub consecutive_5xx: u32,
@@ -79,7 +95,8 @@ impl Default for UpstreamEntry {
             consecutive_successes: 0,
             latency_ms: None,
             recovery_time_secs: None,
-            ewma_latency_us: 1_000_000.0, // default: 1 second (conservative)
+            ewma_latency_us: 30_000.0,  // default: 30 ms (matches linkerd DEFAULT_RTT)
+            ewma_last_sample_secs: 0.0, // will be set on first sample
             consecutive_5xx: 0,
             ejected_until_secs: None,
             ejection_count: 0,
@@ -88,21 +105,50 @@ impl Default for UpstreamEntry {
     }
 }
 
+/// EWMA time-decay constant: 10 seconds (matches linkerd2-proxy default).
+///
+/// Measurements older than this contribute less than `1/e ≈ 37%` of their
+/// original weight.  Prevents stale latency readings from biasing load decisions
+/// after a traffic pause.
+const EWMA_DECAY_SECS: f64 = 10.0;
+
+/// EWMA mixing factor for new samples (α = 0.1 → ~10-sample effective window).
+const EWMA_ALPHA: f64 = 0.1;
+
 /// Update the Peak EWMA latency for `url` after completing a proxy request.
 ///
-/// `elapsed_us` is the end-to-end request latency in microseconds.
-/// Uses decay factor α = 0.1 (approximately 10-sample window).
+/// Uses **time-based exponential decay** before mixing in the new sample:
+///
+///   decayed  = old_ewma × e^(-Δt / DECAY_SECS)
+///   new_ewma = decayed + α × sample
+///
+/// This matches linkerd2-proxy's `PeakEwma` approach: measurements automatically
+/// decay between traffic bursts so old slow periods don't bias future routing.
 pub fn record_request_latency(
     registry: &UpstreamRegistry,
     url: &str,
     elapsed_us: u64,
     status: u16,
 ) {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+
     let mut entry = registry.statuses.entry(url.to_owned()).or_default();
 
-    // Peak EWMA: α * new + (1-α) * old, but keep the peak in a window
-    const ALPHA: f64 = 0.1;
-    entry.ewma_latency_us = ALPHA * elapsed_us as f64 + (1.0 - ALPHA) * entry.ewma_latency_us;
+    // Apply time-based decay since the last sample.
+    let delta = if entry.ewma_last_sample_secs > 0.0 {
+        (now_secs - entry.ewma_last_sample_secs).max(0.0)
+    } else {
+        0.0 // first sample — no decay
+    };
+    let decay = (-delta / EWMA_DECAY_SECS).exp();
+    let decayed = entry.ewma_latency_us * decay;
+
+    // Mix in the new sample.
+    entry.ewma_latency_us = decayed + EWMA_ALPHA * elapsed_us as f64;
+    entry.ewma_last_sample_secs = now_secs;
 
     // Passive health: track consecutive 5xx responses.
     if status >= 500 {
@@ -833,11 +879,20 @@ mod tests {
     #[test]
     fn ewma_latency_updates_toward_sample() {
         let reg = UpstreamRegistry::new();
-        // Insert with default (1_000_000 µs = 1s).
+        // Default EWMA is 30_000 µs (30 ms).  The first sample has no time-based
+        // decay (ewma_last_sample_secs == 0.0 → decay = e^0 = 1.0).
+        // After first sample: 1.0 * 30_000 + 0.1 * 100_000 = 30_000 + 10_000 = 40_000
         record_request_latency(&reg, "http://u:4000", 100_000, 200); // 100 ms
         let v = reg.statuses.get("http://u:4000").unwrap().ewma_latency_us;
-        // After one sample: 0.1 * 100_000 + 0.9 * 1_000_000 = 910_000
-        assert!((v - 910_000.0).abs() < 1.0);
+        // Allow small floating-point tolerance.
+        assert!((v - 40_000.0).abs() < 1.0, "expected ≈40_000, got {v}");
+    }
+
+    #[test]
+    fn ewma_default_is_30ms() {
+        // New upstreams start at 30 ms = 30_000 µs (matches linkerd DEFAULT_RTT).
+        let entry = super::UpstreamEntry::default();
+        assert!((entry.ewma_latency_us - 30_000.0).abs() < 1.0);
     }
 
     #[test]
