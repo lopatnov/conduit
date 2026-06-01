@@ -28,16 +28,18 @@ graceful shutdown — all without restarting the process.
 
 ## Setup
 
-> **Always-on:** The Admin API starts automatically on `127.0.0.1:2019` even
-> without any explicit configuration. To disable it or change the address,
-> set `global.admin.bind` explicitly.
+The Admin HTTP server **only starts when `global.admin` is explicitly configured**.
+Without it, no port is opened and the API is completely inaccessible.
+
+Internal background tasks (upstream health checks, rate-limiter cleanup,
+hot-reload file watcher) run regardless of admin config.
 
 ```yaml
 # conduit.yaml
 global:
   admin:
-    bind: "127.0.0.1:2019"   # loopback only — change to disable or rebind
-    token: "$ADMIN_TOKEN"     # recommended: require a Bearer token
+    bind: "127.0.0.1:2019"   # required — loopback only
+    token: "$ADMIN_TOKEN"     # strongly recommended in production
 ```
 
 ```json
@@ -45,10 +47,9 @@ global:
 { "global": { "admin": { "bind": "127.0.0.1:2019", "token": "$ADMIN_TOKEN" } } }
 ```
 
-> **Security:** The Admin API always listens on `127.0.0.1:2019` by default.
-> Without a `token`, anyone with local access can reload configs, add upstreams,
-> or shut down the server. **Always set a token in production.**
-> Keep `bind` on loopback — never bind to `0.0.0.0` without a VPN or SSH tunnel.
+> **Security:** Keep `bind` on loopback (`127.0.0.1`). Never bind to `0.0.0.0`
+> without a VPN or SSH tunnel. Without a `token`, anyone with access to that
+> address can reload configs, add upstreams, or shut down the server.
 
 ---
 

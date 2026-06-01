@@ -38,7 +38,12 @@ struct UpstreamModifyRequest {
 
 pub struct AdminApiService {
     pub state: Arc<AppState>,
-    pub bind: String,
+    /// Address to bind the Admin HTTP server on, e.g. `"127.0.0.1:2019"`.
+    ///
+    /// `None` when `global.admin` is absent from the config — in that case
+    /// the internal background tasks (health checks, rate-limiter cleanup,
+    /// hot-reload watcher) still run, but no HTTP endpoint is exposed.
+    pub bind: Option<String>,
 }
 
 #[async_trait]
@@ -80,11 +85,21 @@ impl BackgroundService for AdminApiService {
             }
         }
 
+        // HTTP Admin server — only starts when global.admin.bind is configured.
+        let bind_addr = match &self.bind {
+            Some(addr) => addr.clone(),
+            None => {
+                // No admin config: background tasks run, HTTP server does not.
+                shutdown.changed().await.ok();
+                return;
+            }
+        };
+
         let app = build_router(self.state.clone());
-        let listener = match TcpListener::bind(&self.bind).await {
+        let listener = match TcpListener::bind(&bind_addr).await {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("admin API failed to bind {}: {e}", self.bind);
+                eprintln!("admin API failed to bind {bind_addr}: {e}");
                 return;
             }
         };

@@ -8,6 +8,9 @@ use pingora_core::services::background::background_service;
 use pingora_proxy::http_proxy_service;
 
 use crate::admin::api::AdminApiService;
+// DEFAULT_ADMIN_BIND is still the default for CLI commands (conduit reload etc.)
+// but is no longer a fallback for the server-side HTTP binding.
+#[allow(unused_imports)]
 use crate::config::defaults::DEFAULT_ADMIN_BIND;
 use crate::config::schema::AppConfig;
 use crate::config::schema::SiteConfig;
@@ -181,13 +184,14 @@ pub fn run_server(
         }
     }
 
-    let admin_bind = config
+    // Only bind the Admin HTTP server when global.admin is explicitly configured.
+    // Background tasks (health checks, rate-limiter cleanup, hot-reload) always run.
+    let admin_bind: Option<String> = config
         .global
         .as_ref()
         .and_then(|g| g.admin.as_ref())
         .and_then(|a| a.bind.as_deref())
-        .unwrap_or(DEFAULT_ADMIN_BIND)
-        .to_owned();
+        .map(str::to_owned);
 
     // Bind the upload server listener before creating AppState so the router
     // can forward matching requests to the loopback address immediately.
@@ -299,6 +303,9 @@ pub fn run_server(
     }
 
     // ── Admin API background service ─────────────────────────────────────────
+    // Always registered so that health checks, rate-limiter cleanup, and the
+    // hot-reload watcher run regardless of admin config.  The HTTP server
+    // itself only binds when admin_bind is Some.
     let admin = AdminApiService {
         state: state.clone(),
         bind: admin_bind,

@@ -2585,8 +2585,8 @@ sites:
 | `workers`             | number | CPU count        | Worker threads — cold restart to change         |
 | `backlog`             | number | `1024`           | TCP accept backlog                              |
 | `shutdownTimeoutSecs` | number | —                | Grace period for in-flight requests on shutdown |
-| `admin.bind`          | string | `127.0.0.1:2019` | Admin API address (loopback only)               |
-| `admin.token`         | string | —                | Required Bearer token for Admin API             |
+| `admin.bind`          | string | — (not started)  | Admin API address. **Required to enable the Admin API.** Omit to disable it entirely |
+| `admin.token`         | string | —                | Bearer token required for every Admin API request (strongly recommended) |
 | `otlp`                | object | —                | OpenTelemetry tracing config                    |
 
 ---
