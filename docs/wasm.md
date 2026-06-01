@@ -22,8 +22,8 @@ response, or redirect the client.
 - [Examples](#examples)
   - [Minimal plugin (WAT)](#minimal-plugin-wat)
   - [Header check in Rust](#header-check-in-rust)
-  - [Inject a header in Rust](#inject-a-header-in-rust)
-  - [Redirect old paths in Rust](#redirect-old-paths-in-rust)
+  - [Inject a request header](#inject-a-request-header)
+  - [Redirect old paths](#redirect-old-paths)
   - [Header check in C](#header-check-in-c)
   - [Header check in Go (TinyGo)](#header-check-in-go-tinygo)
   - [Using the plugin config field](#using-the-plugin-config-field)
@@ -315,7 +315,7 @@ healthCheck: true
 
 ---
 
-### Inject a header in Rust
+### Inject a request header
 
 Add `X-Plugin-Version: 1.0` to every forwarded request:
 
@@ -361,7 +361,7 @@ proxy:
 
 ---
 
-### Redirect old paths in Rust
+### Redirect old paths
 
 Permanently redirect `/old-api/` to `/api/`:
 
