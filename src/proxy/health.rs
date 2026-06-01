@@ -57,6 +57,18 @@ pub struct UpstreamEntry {
     /// Number of times this upstream has been ejected.  Used for backoff:
     /// ejection duration = `base_time × 2^ejection_count`.
     pub ejection_count: u32,
+    /// Half-open circuit breaker state.
+    ///
+    /// When an ejection period expires, the first request that checks
+    /// `is_healthy()` sets `half_open = true` and is allowed through as a
+    /// "probe" request.  All subsequent requests are blocked (`is_healthy`
+    /// returns `false`) until the probe completes:
+    ///
+    /// - Probe succeeds (non-5xx): `half_open` is cleared, ejection is lifted,
+    ///   `ejection_count` is reset — full traffic resumes immediately.
+    /// - Probe fails (5xx): `half_open` is cleared, upstream is re-ejected with
+    ///   the next exponential-backoff duration.
+    pub half_open: bool,
 }
 
 impl Default for UpstreamEntry {
@@ -71,6 +83,7 @@ impl Default for UpstreamEntry {
             consecutive_5xx: 0,
             ejected_until_secs: None,
             ejection_count: 0,
+            half_open: false,
         }
     }
 }
@@ -96,6 +109,35 @@ pub fn record_request_latency(
         entry.consecutive_5xx = entry.consecutive_5xx.saturating_add(1);
     } else {
         entry.consecutive_5xx = 0;
+    }
+
+    // Half-open circuit breaker resolution.
+    if entry.half_open {
+        entry.half_open = false;
+        if status < 500 && status != 0 {
+            // Probe succeeded: lift the ejection and reset the counter so the
+            // next ejection cycle starts fresh.
+            entry.ejected_until_secs = None;
+            entry.ejection_count = 0;
+            tracing::info!(url, "half-open probe succeeded — upstream fully recovered");
+        } else {
+            // Probe failed: re-eject with the next exponential-backoff level.
+            const BASE_SECS: u64 = 30;
+            const MAX_SECS: u64 = 300;
+            let duration =
+                (BASE_SECS * (1u64 << entry.ejection_count.min(10))).min(MAX_SECS);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            entry.ejected_until_secs = Some(now + duration);
+            entry.ejection_count = entry.ejection_count.saturating_add(1);
+            tracing::warn!(
+                url,
+                ejected_for_secs = duration,
+                "half-open probe failed — re-ejecting upstream"
+            );
+        }
     }
 }
 
@@ -350,23 +392,57 @@ impl UpstreamRegistry {
     ///
     /// Defaults to `true` when the URL has not been seen by a probe yet
     /// (optimistic assumption so traffic flows before the first check).
+    ///
+    /// Implements half-open circuit breaker: when an ejection period expires,
+    /// the *first* call transitions the upstream to half-open and returns `true`
+    /// (the "probe" request).  Subsequent calls return `false` until the probe
+    /// resolves via [`record_request_latency`].
     pub fn is_healthy(&self, url: &str) -> bool {
+        // Fast path: entry not yet in registry → optimistic.
         let Some(entry) = self.statuses.get(url) else {
-            return true; // optimistic: not yet seen
+            return true;
         };
         if !entry.healthy {
             return false;
         }
-        // Check outlier-detection ejection.
-        if let Some(until) = entry.ejected_until_secs {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            if now < until {
-                return false; // still ejected
+        let Some(until) = entry.ejected_until_secs else {
+            return true;
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        if now < until {
+            return false; // still within ejection period
+        }
+
+        // Ejection period expired.
+        if entry.half_open {
+            // A probe is already in flight — block this request.
+            return false;
+        }
+
+        // First request after ejection expires: promote to half-open probe.
+        // Drop the shared ref and acquire exclusive access.
+        drop(entry);
+        let mut e = self.statuses.entry(url.to_owned()).or_default();
+        // Re-check after acquiring write lock (another thread may have raced us).
+        let now2 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if let Some(until2) = e.ejected_until_secs {
+            if now2 < until2 {
+                return false; // re-ejected by racing call
             }
         }
+        if e.half_open {
+            return false; // another thread beat us to the probe
+        }
+        // We are the probe request.
+        e.half_open = true;
+        tracing::info!(url, "ejection period expired — half-open probe request dispatched");
         true
     }
 
@@ -1004,5 +1080,90 @@ mod tests {
         reg.clear_overrides();
         assert!(reg.overrides.is_empty());
         assert!(reg.get_override_targets("*", "/api").is_none());
+    }
+
+    // ── half-open circuit breaker ─────────────────────────────────────────────
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    #[test]
+    fn ejected_upstream_is_not_healthy() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://u:4000";
+        reg.statuses.entry(url.to_owned()).or_default().ejected_until_secs =
+            Some(now_secs() + 300);
+        assert!(!reg.is_healthy(url), "ejected upstream must not be healthy");
+    }
+
+    #[test]
+    fn first_call_after_ejection_expires_enters_half_open() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://u:4000";
+        // Set an expired ejection (in the past).
+        reg.statuses.entry(url.to_owned()).or_default().ejected_until_secs =
+            Some(now_secs().saturating_sub(1));
+        // First call should return true (probe allowed) and set half_open.
+        assert!(reg.is_healthy(url), "first call after ejection must be allowed as probe");
+        assert!(
+            reg.statuses.get(url).unwrap().half_open,
+            "half_open must be set after probe dispatch"
+        );
+    }
+
+    #[test]
+    fn second_call_while_half_open_is_blocked() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://u:4000";
+        reg.statuses.entry(url.to_owned()).or_default().ejected_until_secs =
+            Some(now_secs().saturating_sub(1));
+        // First call = probe.
+        let _ = reg.is_healthy(url);
+        // Second call = must be blocked.
+        assert!(!reg.is_healthy(url), "second call while half_open must be blocked");
+    }
+
+    #[test]
+    fn successful_probe_clears_ejection_and_half_open() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://u:4000";
+        {
+            let mut e = reg.statuses.entry(url.to_owned()).or_default();
+            e.ejected_until_secs = Some(now_secs().saturating_sub(1));
+            e.ejection_count = 2;
+        }
+        // Dispatch the probe.
+        assert!(reg.is_healthy(url));
+        // Simulate a successful probe response (status 200).
+        record_request_latency(&reg, url, 10_000, 200);
+        let e = reg.statuses.get(url).unwrap();
+        assert!(!e.half_open, "half_open must be cleared after success");
+        assert!(e.ejected_until_secs.is_none(), "ejection must be lifted after success");
+        assert_eq!(e.ejection_count, 0, "ejection_count must be reset after success");
+    }
+
+    #[test]
+    fn failed_probe_re_ejects_with_backoff() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://u:4000";
+        {
+            let mut e = reg.statuses.entry(url.to_owned()).or_default();
+            e.ejected_until_secs = Some(now_secs().saturating_sub(1));
+            e.ejection_count = 1;
+        }
+        assert!(reg.is_healthy(url));
+        // Simulate a failed probe response (status 500).
+        record_request_latency(&reg, url, 10_000, 500);
+        let e = reg.statuses.get(url).unwrap();
+        assert!(!e.half_open, "half_open must be cleared after failure");
+        assert!(
+            e.ejected_until_secs.is_some(),
+            "upstream must be re-ejected after probe failure"
+        );
+        assert_eq!(e.ejection_count, 2, "ejection_count must be incremented");
     }
 }

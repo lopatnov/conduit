@@ -250,6 +250,7 @@ fn full_cfg_to_result(
         max_attempts: r.attempts as usize,
         conditions: r.conditions.clone(),
         backoff_ms: r.backoff_ms,
+        backoff_jitter: r.backoff_jitter.unwrap_or(false),
         budget_percent: r.budget_percent,
         is_retrying: false,
     });
@@ -1052,6 +1053,7 @@ mod tests {
                     attempts: 2,
                     conditions: vec!["connection_error".to_string()],
                     backoff_ms: Some(50),
+                    backoff_jitter: None,
                     budget_percent: None,
                 }),
                 ..Default::default()

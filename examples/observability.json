@@ -1,0 +1,55 @@
+{
+  "global": {
+    "otlp": {
+      "endpoint": "http://tempo:4317",
+      "serviceName": "conduit",
+      "sampleRate": 0.05,
+      "timeoutMs": 5000
+    },
+    "admin": {
+      "bind": "127.0.0.1:2019"
+    }
+  },
+
+  "sites": [
+    {
+      "port": 8080,
+
+      "logging": {
+        "format": "json",
+        "file": "./logs/access.log",
+        "skipPaths": ["/__health__", "/__metrics__", "/favicon.ico", "/robots.txt"]
+      },
+
+      "metrics": {
+        "path": "/__metrics__",
+        "token": "$METRICS_TOKEN"
+      },
+
+      "healthCheck": {
+        "includeUpstreams": true
+      },
+
+      "outlierDetection": {
+        "consecutive5xx": 5,
+        "baseEjectionTimeSecs": 30,
+        "maxEjectionTimeSecs": 300,
+        "maxEjectionPercent": 10
+      },
+
+      "securityHeaders": true,
+
+      "proxy": {
+        "/api": {
+          "targets": ["http://api1:4000", "http://api2:4000"],
+          "strategy": "least-conn",
+          "stripPrefix": true,
+          "healthCheck": {
+            "path": "/health",
+            "intervalSecs": 10
+          }
+        }
+      }
+    }
+  ]
+}

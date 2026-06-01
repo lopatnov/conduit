@@ -693,6 +693,7 @@ fn pick_with_retry(
         max_attempts: retry.attempts as usize,
         conditions: retry.conditions.clone(),
         backoff_ms: retry.backoff_ms,
+        backoff_jitter: retry.backoff_jitter.unwrap_or(false),
         budget_percent: retry.budget_percent,
         is_retrying: false,
     };
@@ -1122,6 +1123,7 @@ mod tests {
             conditions: vec!["5xx".to_string()],
             backoff_ms: None,
             budget_percent: None,
+                backoff_jitter: None,
         };
         let (url, state) = pick_with_retry(urls, "r", &counters, &retry).unwrap();
         assert_eq!(url, "http://a:4000");
@@ -1139,6 +1141,7 @@ mod tests {
             conditions: vec!["connection_error".to_string()],
             backoff_ms: Some(50),
             budget_percent: None,
+                backoff_jitter: None,
         };
         let (url, state) = pick_with_retry(urls.clone(), "r", &counters, &retry).unwrap();
         assert!(urls.contains(&url));
@@ -1154,6 +1157,7 @@ mod tests {
             conditions: vec![],
             backoff_ms: None,
             budget_percent: None,
+                backoff_jitter: None,
         };
         assert!(pick_with_retry(vec![], "r", &counters, &retry).is_none());
     }
@@ -1233,6 +1237,7 @@ mod tests {
             conditions: vec!["5xx".to_string()],
             backoff_ms: None,
             budget_percent: None,
+                backoff_jitter: None,
         };
         let (url, retry, is_lc) = pick_url_by_strategy(
             urls.clone(),

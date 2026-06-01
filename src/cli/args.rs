@@ -22,6 +22,13 @@ pub struct Cli {
     )]
     pub config: String,
 
+    /// Watch Kubernetes ConduitSite CRDs in this namespace instead of reading
+    /// a config file. Use "*" to watch all namespaces.
+    /// Requires: cargo build --features kubernetes
+    #[cfg(feature = "kubernetes")]
+    #[arg(long, value_name = "NAMESPACE")]
+    pub kubernetes_namespace: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -38,8 +45,8 @@ pub enum Command {
     Probe(ProbeArgs),
     /// Reload config via Admin API
     Reload(AdminArgs),
-    /// Show server status
-    Status(AdminArgs),
+    /// Show server status and optionally upstream health
+    Status(StatusArgs),
     /// Graceful shutdown via Admin API
     Shutdown(AdminArgs),
     /// Manage upstream targets at runtime
@@ -65,6 +72,16 @@ pub struct InitArgs {
     /// Write config to this file instead of the default config path
     #[arg(short, long, value_name = "FILE")]
     pub output: Option<String>,
+}
+
+#[derive(Args)]
+pub struct StatusArgs {
+    /// Admin API address
+    #[arg(long, value_name = "ADDR", env = "CONDUIT_ADMIN")]
+    pub admin: Option<String>,
+    /// Show upstream health table (URL, healthy, latency, ejected, 5xx count)
+    #[arg(long)]
+    pub upstream: bool,
 }
 
 #[derive(Args)]

@@ -108,7 +108,7 @@ impl RedisRateLimiter {
         let key = format!("{client_key}:{limit}:{window_secs}");
         self.fallback
             .entry(key)
-            .or_insert_with(|| TokenBucket::new(limit, window_secs))
+            .or_insert_with(|| TokenBucket::new(limit, 0, window_secs))
             .try_consume()
     }
 

@@ -1,0 +1,140 @@
+{
+  "global": {
+    "admin": {
+      "bind": "127.0.0.1:2019",
+      "token": "$ADMIN_TOKEN"
+    },
+    "otlp": {
+      "endpoint": "http://tempo:4317",
+      "serviceName": "api-gateway",
+      "sampleRate": 0.1
+    }
+  },
+
+  "sites": [
+    {
+      "port": 443,
+      "host": "api.example.com",
+
+      "tls": {
+        "cert": "/etc/tls/api.crt",
+        "key":  "/etc/tls/api.key",
+        "httpRedirectPort": 80
+      },
+
+      "securityHeaders": {
+        "hsts": "max-age=31536000; includeSubDomains",
+        "contentSecurityPolicy": "default-src 'none'",
+        "frameOptions": "DENY",
+        "referrerPolicy": "no-referrer"
+      },
+
+      "jwtAuth": {
+        "jwksUrl": "https://auth.example.com/.well-known/jwks.json",
+        "jwksRefreshSecs": 3600,
+        "audience": ["api.example.com"],
+        "issuer": "https://auth.example.com",
+        "skipPaths": ["/__health__", "/docs/**", "/v1/public/**"]
+      },
+
+      "rateLimit": {
+        "windowSecs": 60,
+        "limit": 1000,
+        "keyBy": "ip",
+        "skipPaths": ["/__health__"]
+      },
+
+      "requestTransform": {
+        "setHeaders": {
+          "X-User-ID":    "{{ jwt.sub }}",
+          "X-User-Email": "{{ jwt.email }}",
+          "X-Tenant-ID":  "{{ jwt.tid }}"
+        },
+        "removeHeaders": ["Authorization"]
+      },
+
+      "responseTransform": {
+        "removeHeaders": ["X-Powered-By", "Server", "X-AspNet-Version"],
+        "setHeaders": {
+          "X-Served-By": "conduit"
+        }
+      },
+
+      "logging": {
+        "format": "json",
+        "skipPaths": ["/__health__", "/__metrics__"]
+      },
+
+      "proxy": {
+        "/v1/users": {
+          "targets": ["http://user-svc-1:8080", "http://user-svc-2:8080"],
+          "strategy": "round-robin",
+          "stripPrefix": true,
+          "rateLimit": {
+            "windowSecs": 60,
+            "limit": 100,
+            "keyBy": "header:X-User-ID"
+          },
+          "healthCheck": {
+            "path": "/healthz",
+            "intervalSecs": 10,
+            "unhealthyThreshold": 3,
+            "maxConnectionsPerUpstream": 50
+          },
+          "backup": "http://user-svc-read-replica:8080",
+          "retry": {
+            "attempts": 2,
+            "conditions": ["connection_error", "5xx"],
+            "backoffMs": 50,
+            "budgetPercent": 20
+          }
+        },
+        "/v1/payments": {
+          "targets": ["https://payment-svc:8443"],
+          "strategy": "round-robin",
+          "stripPrefix": true,
+          "upstreamTls": {
+            "verify": true,
+            "serverName": "payment-svc.internal"
+          },
+          "rateLimit": {
+            "windowSecs": 60,
+            "limit": 10,
+            "keyBy": "header:X-User-ID"
+          },
+          "healthCheck": {
+            "maxConnectionsPerUpstream": 20
+          }
+        },
+        "/v1/search": {
+          "targets": ["http://search-v1:9000"],
+          "mirror": "http://search-v2:9001",
+          "strategy": "round-robin",
+          "stripPrefix": true
+        },
+        "/__health__": "http://health-aggregator:7000",
+        "/docs": {
+          "targets": ["http://docs-server:3000"],
+          "cache": {
+            "store": "memory",
+            "ttlSecs": 3600
+          }
+        }
+      },
+
+      "metrics": {
+        "path": "/__metrics__",
+        "token": "$METRICS_TOKEN"
+      },
+
+      "maskErrors": true,
+
+      "outlierDetection": {
+        "consecutive5xx": 5,
+        "baseEjectionTimeSecs": 30,
+        "maxEjectionTimeSecs": 300,
+        "maxEjectionPercent": 50
+      }
+    }
+  ]
+}

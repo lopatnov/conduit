@@ -143,12 +143,28 @@ impl RequestFilter for XRequestIdGuard {
 /// Rejects requests whose client IP is not in the allow-list / is in the deny-list.
 pub struct IpGuard {
     pub cfg: IpFilterConfig,
+    /// Runtime deny-list managed via Admin API (`POST /ip-deny` / `DELETE /ip-deny`).
+    /// Checked in addition to `ipFilter.deny` from the static config.
+    pub dynamic_deny: Arc<std::sync::RwLock<Vec<String>>>,
 }
 
 #[async_trait]
 impl RequestFilter for IpGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        if !ip_filter::is_allowed(&self.cfg, ctx.session) {
+        // Fast path: no static rules and no dynamic denies — nothing to check.
+        let has_static = self.cfg.allow.is_some() || self.cfg.deny.is_some();
+        let has_dynamic = self
+            .dynamic_deny
+            .read()
+            .map(|l| !l.is_empty())
+            .unwrap_or(false);
+        if !has_static && !has_dynamic {
+            return Ok(FilterOutcome::Continue);
+        }
+
+        let blocked = !ip_filter::is_allowed(&self.cfg, ctx.session)
+            || self.is_dynamic_denied(ctx.session);
+        if blocked {
             response::write_response(
                 ctx.session,
                 403,
@@ -161,6 +177,24 @@ impl RequestFilter for IpGuard {
             return Ok(FilterOutcome::Handled);
         }
         Ok(FilterOutcome::Continue)
+    }
+}
+
+impl IpGuard {
+    /// Returns `true` when the client IP matches any entry in `dynamic_deny`.
+    fn is_dynamic_denied(&self, session: &pingora_proxy::Session) -> bool {
+        let Ok(deny_list) = self.dynamic_deny.read() else {
+            return false;
+        };
+        if deny_list.is_empty() {
+            return false;
+        }
+        let cfg = IpFilterConfig {
+            allow: None,
+            deny: Some(deny_list.clone()),
+            trust_proxy: self.cfg.trust_proxy,
+        };
+        !ip_filter::is_allowed(&cfg, session)
     }
 }
 
@@ -323,7 +357,7 @@ impl RequestFilter for ConsumersGuard {
                 .rate_limiter
                 .entry(key)
                 .or_insert_with(|| {
-                    crate::filter::rate_limit::TokenBucket::new(rl_cfg.limit, rl_cfg.window_secs)
+                    crate::filter::rate_limit::TokenBucket::new(rl_cfg.limit, rl_cfg.burst.unwrap_or(0), rl_cfg.window_secs)
                 })
                 .try_consume();
             if !allowed {

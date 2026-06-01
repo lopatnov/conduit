@@ -7,7 +7,7 @@
 [![npm downloads](https://img.shields.io/npm/dt/@lopatnov/conduit.svg)](https://www.npmjs.com/package/@lopatnov/conduit)
 [![GitHub stars](https://img.shields.io/github/stars/lopatnov/conduit)](https://github.com/lopatnov/conduit/stargazers)
 [![GitHub issues](https://img.shields.io/github/issues/lopatnov/conduit)](https://github.com/lopatnov/conduit/issues)
-[![License](https://img.shields.io/github/license/lopatnov/conduit)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 
 **High-performance reverse proxy and static file server** built on [Cloudflare Pingora](https://github.com/cloudflare/pingora).
 
@@ -29,17 +29,16 @@ cargo install lopatnov-conduit
 ## Table of Contents
 
 - [Quick Start](#quick-start)
-- [Live Demo](#live-demo)
+- [Live Demo](docs/live-demo.md) ↗
 - [Installation](#installation)
 - [Building from Source](#building-from-source)
-- [CLI Commands](#cli-commands)
+- [CLI Commands](#cli-commands) / [CLI Reference](docs/cli.md) ↗
 - [Configuration](#configuration)
-- [Configuration Recipes](#configuration-recipes)
+- [Configuration Recipes](#configuration-recipes) / [All recipes](docs/recipes.md) ↗
 - [Admin API](#admin-api)
-- [Docker](#docker)
-- [Deployment](docs/deployment.md) ↗
+- [Docker / Deployment](docs/deployment.md) ↗
 - [Editor Integration (JSON Schema)](#editor-integration-json-schema)
-- [Benchmarks](#benchmarks)
+- [Benchmarks](docs/benchmarks.md) ↗
 - [Contributing](#contributing)
 - [Built With](#built-with)
 - [License](#license)
@@ -74,33 +73,6 @@ GET /            → serves ./dist/index.html
 GET /style.css   → serves ./dist/style.css
 GET /api/users   → proxied to http://localhost:4000/api/users
 ```
-
----
-
-## Live Demo
-
-The repository includes a self-contained demo with **two virtual sites running from a single
-Conduit process**, a round-robin load balancer across two API backends, proxy caching, Basic Auth,
-and more — just like [express-reverse-proxy's demo](https://github.com/lopatnov/express-reverse-proxy)
-runs on multiple ports, but here everything shares one binary.
-
-```bash
-# Terminal 1 — two mock API instances (ports 4000 and 4001)
-node demo/api/server.js
-
-# Terminal 2 — Conduit: two virtual sites from one process
-conduit -c demo/conduit.json
-```
-
-| URL                                            | Description                                                  |
-| ---------------------------------------------- | ------------------------------------------------------------ |
-| [http://localhost:8080](http://localhost:8080) | Public app — proxy, cache, compression, rate limiting        |
-| [http://localhost:8081](http://localhost:8081) | Admin panel — protected with Basic Auth (`admin / demo1234`) |
-
-**VS Code users:** run the _"Demo: Start (Conduit + API)"_ task (`Terminal → Run Task…`)
-to launch both processes at once.
-
-See [`demo/README.md`](demo/README.md) for full details.
 
 ---
 
@@ -178,6 +150,29 @@ cargo build --release
 # Windows: target\release\conduit.exe
 ```
 
+### Optional features
+
+The default binary includes everything except three optional features that add
+compile-time dependencies:
+
+| Feature | Flag | What it enables |
+| ------- | ---- | --------------- |
+| `otlp` | `--features otlp` | OpenTelemetry OTLP tracing (`global.otlp` config) |
+| `wasm` | `--features wasm` | WebAssembly plugin middleware (`type: "wasm"`) |
+| `kubernetes` | `--features kubernetes` | Kubernetes CRD config provider (`--kubernetes-namespace`) |
+
+```bash
+# Enable specific features
+cargo build --release --features otlp
+cargo build --release --features otlp,wasm,kubernetes
+
+# All features
+cargo build --release --features otlp,wasm,kubernetes
+```
+
+See **[docs/cli.md — Build features](docs/cli.md#build-features)** for full
+documentation of each feature.
+
 ### Cross-compilation
 
 Requires [cross](https://github.com/cross-rs/cross) and Docker:
@@ -209,40 +204,26 @@ strip          = true   # strip debug symbols
 ## CLI Commands
 
 ```text
-conduit                         start the server (reads conduit.json)
-conduit -c <file>               start with a specific config file
-conduit --version               print version and exit
+conduit [-c FILE]                  start the server
+conduit validate [-c FILE]         validate config — exit 0 OK, exit 1 errors
+conduit fmt [--write] [-c FILE]    pretty-print / normalize config
+conduit init [-o FILE]             interactive setup wizard
+conduit probe [-c FILE]            ping every upstream, show latency table
 
-conduit init [-o <file>]        interactive wizard — creates conduit.json
-conduit validate [-c <file>]    validate config (exit 0 = OK, exit 1 = errors)
-conduit probe [-c <file>]       HEAD to every upstream, show latency table
-conduit fmt [-c <file>]         pretty-print config to stdout
-conduit fmt --write [-c <file>] pretty-print config back to the file
-
-conduit reload [--admin ADDR]   hot-reload config without restarting
-conduit status [--admin ADDR]   show server uptime, version, inflight requests
-conduit upstreams [--admin ADDR]         list all upstream health and latency
+conduit reload   [--admin ADDR]    hot-reload config without restarting
+conduit status   [--admin ADDR]    show version, uptime, in-flight requests
+conduit shutdown [--admin ADDR]    graceful shutdown
+conduit upstreams [--admin ADDR]   list upstream health and latency
 conduit upstreams add    --route PATH --target URL [--weight N] [--site LABEL]
 conduit upstreams remove --route PATH --target URL [--site LABEL]
-conduit upstreams weight --route PATH --target URL --weight N [--site LABEL]
-conduit shutdown [--admin ADDR] graceful shutdown
+conduit upstreams weight --route PATH --target URL --weight N   [--site LABEL]
+
+conduit completions bash|zsh|fish|powershell|elvish
+conduit man                        generate man page (roff)
 ```
 
-### Shell completions
-
-```bash
-conduit completions bash   >> ~/.bashrc
-conduit completions zsh    >> ~/.zshrc
-conduit completions fish   >> ~/.config/fish/completions/conduit.fish
-conduit completions powershell >> $PROFILE
-```
-
-### Environment variables
-
-| Variable        | Default          | Description                                      |
-| --------------- | ---------------- | ------------------------------------------------ |
-| `RUST_LOG`      | `info`           | Log level: `error` `warn` `info` `debug` `trace` |
-| `CONDUIT_ADMIN` | `127.0.0.1:2019` | Admin API address for management commands        |
+For detailed descriptions of every flag, argument, and exit code see
+**[docs/cli.md](docs/cli.md)**.
 
 ---
 
@@ -260,58 +241,12 @@ For the full configuration reference see **[docs/configuration.md](docs/configur
 
 ## Configuration Recipes
 
-### SPA with API proxy (production)
+Both **YAML** and **JSON** are fully supported. JSON is shown below for
+compactness; click the YAML link to see the annotated version with comments.
 
-```json
-{
-  "host": "app.example.com",
-  "port": 443,
-  "tls": { "cert": "$CERT", "key": "$KEY", "httpRedirectPort": 80 },
-  "http2": true,
-  "securityHeaders": true,
-  "cors": { "origins": ["https://app.example.com"], "credentials": true },
-  "logging": { "format": "json", "file": "/var/log/conduit/access.log" },
-  "static": "./dist",
-  "staticOptions": { "maxAge": "7d", "preCompressed": true },
-  "proxy": {
-    "/api": {
-      "targets": ["http://api1:4000", "http://api2:4000"],
-      "strategy": "least-conn",
-      "stripPrefix": true,
-      "retry": { "attempts": 3, "conditions": ["connection_error", "5xx"] },
-      "healthCheck": { "path": "/health", "intervalSecs": 10 },
-      "cache": { "store": "memory", "ttlSecs": 60, "skipIfCookie": true }
-    }
-  },
-  "rateLimit": { "windowSecs": 60, "limit": 300, "skipPaths": ["/__health__"] },
-  "healthCheck": true,
-  "metrics": { "path": "/__metrics__", "token": "$METRICS_TOKEN" },
-  "fallback": {
-    "byAccept": {
-      "html": { "status": 200, "file": "./dist/index.html" },
-      "json": { "status": 404, "body": { "error": "Not Found" } }
-    }
-  }
-}
-```
+### Local dev server
 
-### Production with Auto-TLS (Let's Encrypt)
-
-```json
-{
-  "port": 443,
-  "tls": { "acme": { "email": "admin@example.com" } },
-  "compression": true,
-  "securityHeaders": true,
-  "static": "./dist",
-  "proxy": {
-    "/api": { "targets": ["http://api:4000"], "strategy": "least-conn" }
-  },
-  "healthCheck": true
-}
-```
-
-### Frontend development with hot reload
+YAML with comments: [`examples/dev-hot-reload.yaml`](examples/dev-hot-reload.yaml)
 
 ```json
 {
@@ -321,48 +256,69 @@ For the full configuration reference see **[docs/configuration.md](docs/configur
   "hotReload": true,
   "static": "./src",
   "proxy": { "/api": "http://localhost:4000" },
-  "fallback": { "status": 200, "file": "./src/index.html" }
+  "fallback": { "file": "./src/index.html", "status": 200 }
+}
+```
+
+### Auto-TLS + SPA (production)
+
+YAML with comments: [`examples/spa-with-api.yaml`](examples/spa-with-api.yaml)
+
+```json
+{
+  "port": 443,
+  "tls": { "acme": { "email": "admin@example.com", "storage": "/var/cache/conduit/certs" }, "httpRedirectPort": 80 },
+  "http2": true,
+  "securityHeaders": true,
+  "compression": true,
+  "static": "./dist",
+  "staticOptions": { "preCompressed": true, "maxAge": "1y" },
+  "proxy": {
+    "/api": {
+      "targets": ["http://api1:4000", "http://api2:4000"],
+      "strategy": "least-conn",
+      "stripPrefix": true,
+      "healthCheck": { "path": "/health" },
+      "cache": { "store": "memory", "ttlSecs": 60, "skipIfCookie": true }
+    }
+  },
+  "rateLimit": { "windowSecs": 60, "limit": 300 },
+  "healthCheck": true,
+  "metrics": { "path": "/__metrics__" },
+  "fallback": {
+    "byAccept": {
+      "html": { "file": "./dist/index.html", "status": 200 },
+      "json": { "body": { "error": "Not Found" }, "status": 404 }
+    }
+  }
 }
 ```
 
 ### Microservices gateway
 
+YAML with comments: [`examples/api-gateway.yaml`](examples/api-gateway.yaml)
+
 ```json
 {
   "port": 8080,
   "ipFilter": { "allow": ["10.0.0.0/8"] },
+  "rateLimit": { "windowSecs": 60, "limit": 500 },
   "proxy": {
-    "/users": "http://users-svc:4001",
+    "/users":  "http://users-svc:4001",
     "/orders": "http://orders-svc:4002",
-    "/catalog": ["http://catalog1:4003", "http://catalog2:4003"]
+    "/catalog": {
+      "targets": ["http://catalog1:4003", "http://catalog2:4003"],
+      "cache": { "store": "memory", "ttlSecs": 300 }
+    }
   },
   "healthCheck": true,
-  "metrics": { "path": "/__metrics__" }
+  "metrics": { "path": "/__metrics__" },
+  "maskErrors": true
 }
 ```
 
-### Weighted load balancing + IP hash
-
-```json
-{
-  "port": 443,
-  "tls": { "cert": "$CERT", "key": "$KEY" },
-  "proxy": {
-    "/api": {
-      "targets": [
-        { "url": "http://powerful:4000", "weight": 3 },
-        { "url": "http://normal:4000", "weight": 1 }
-      ],
-      "strategy": "weighted-round-robin"
-    },
-    "/auth": {
-      "targets": ["http://auth1:5000", "http://auth2:5000"],
-      "strategy": "ip-hash",
-      "hashKey": "ip"
-    }
-  }
-}
-```
+**→ More recipes:** [docs/recipes.md](docs/recipes.md) —
+HTTPS, JWT, load balancing, failover, security hardening, observability, multi-site.
 
 ---
 
@@ -399,55 +355,17 @@ Dynamic upstream changes survive until `conduit reload` — which resets from th
 
 ## Docker
 
-Official images are published to the **GitHub Container Registry** on every tagged release:
-
 ```bash
 docker pull ghcr.io/lopatnov/conduit:latest
-docker pull ghcr.io/lopatnov/conduit:1.0.0
-```
 
-The image is built from [`contrib/Dockerfile`](contrib/Dockerfile) — a multi-stage build
-that compiles a fully-static musl binary and packages it into a `FROM scratch` image (~14 MB).
-It runs as UID 65534 (`nobody`) with no shell or OS userland.
-
-### Run
-
-```bash
 docker run -p 8080:8080 \
-  -v $(pwd)/conduit.json:/etc/conduit/conduit.json:ro \
-  -v $(pwd)/dist:/dist:ro \
-  ghcr.io/lopatnov/conduit
+  -v $(pwd)/conduit.yaml:/etc/conduit/conduit.yaml:ro \
+  ghcr.io/lopatnov/conduit -c /etc/conduit/conduit.yaml
 ```
 
-### docker-compose
+~14 MB image built from `FROM scratch`, runs as `nobody` (UID 65534).
 
-```yaml
-services:
-  conduit:
-    image: ghcr.io/lopatnov/conduit:latest
-    ports:
-      - "443:443"
-      - "80:80"
-    volumes:
-      - ./conduit.json:/etc/conduit/conduit.json:ro
-      - ./dist:/dist:ro
-      - ./certs:/certs
-    environment:
-      METRICS_TOKEN: "${METRICS_TOKEN}"
-    restart: unless-stopped
-
-  api:
-    image: my-api:latest
-    expose: ["4000"]
-```
-
-### Build your own image
-
-```bash
-git clone https://github.com/lopatnov/conduit
-cd conduit
-docker build -f contrib/Dockerfile -t conduit:local .
-```
+**docker-compose, systemd, Kubernetes, and production checklist →** [docs/deployment.md](docs/deployment.md)
 
 ---
 
@@ -508,7 +426,7 @@ https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.js
 
 ## Benchmarks
 
-See [docs/benchmarks.md](docs/benchmarks.md) for methodology and results.
+Methodology, test setup, and results: **[docs/benchmarks.md](docs/benchmarks.md)**
 
 ---
 
@@ -527,68 +445,84 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before
 
 ### Core runtime
 
-![Rust](https://img.shields.io/badge/Rust-000000?style=flat&logo=rust&logoColor=white)
-![Cloudflare Pingora](https://img.shields.io/badge/Cloudflare_Pingora_0.8-F48120?style=flat&logo=cloudflare&logoColor=white)
-![Tokio](https://img.shields.io/badge/Tokio-000000?style=flat&logo=tokio&logoColor=white)
-![Axum](https://img.shields.io/badge/Axum_0.8-000000?style=flat)
+| Crate | Role |
+| ----- | ---- |
+| [Rust](https://rust-lang.org) | Systems language |
+| [Cloudflare Pingora 0.8](https://github.com/cloudflare/pingora) | Async HTTP proxy framework |
+| [Tokio](https://tokio.rs) | Async runtime |
+| [Axum 0.8](https://github.com/tokio-rs/axum) | Admin API HTTP server |
 
 ### TLS & certificates
 
-![rustls](https://img.shields.io/badge/rustls-5C5C5C?style=flat)
-![rcgen](https://img.shields.io/badge/rcgen-5C5C5C?style=flat)
-![instant-acme](https://img.shields.io/badge/instant--acme-5C5C5C?style=flat)
+| Crate | Role |
+| ----- | ---- |
+| [rustls](https://github.com/rustls/rustls) | TLS implementation |
+| [rcgen](https://github.com/rustls/rcgen) | Certificate generation (tests) |
+| [instant-acme](https://github.com/instant-labs/instant-acme) | ACME / Let's Encrypt client |
 
 ### Configuration & parsing
 
-![serde](https://img.shields.io/badge/serde-5C5C5C?style=flat)
-![serde_json](https://img.shields.io/badge/serde__json-5C5C5C?style=flat)
-![indexmap](https://img.shields.io/badge/indexmap-5C5C5C?style=flat)
-![humantime](https://img.shields.io/badge/humantime-5C5C5C?style=flat)
-![serde_path_to_error](https://img.shields.io/badge/serde__path__to__error-5C5C5C?style=flat)
+| Crate | Role |
+| ----- | ---- |
+| [serde](https://serde.rs) + [serde_json](https://github.com/serde-rs/json) | Serialization |
+| [serde_yaml](https://github.com/dtolnay/serde-yaml) | YAML config format |
+| [serde_path_to_error](https://github.com/dtolnay/path-to-error) | Precise parse error messages |
+| [indexmap](https://github.com/bluss/indexmap) | Ordered map for route config |
 
 ### Performance & concurrency
 
-![arc-swap](https://img.shields.io/badge/arc--swap-5C5C5C?style=flat)
-![dashmap](https://img.shields.io/badge/dashmap-5C5C5C?style=flat)
-![async-compression](https://img.shields.io/badge/async--compression_(brotli_·_gzip_·_deflate)-5C5C5C?style=flat)
+| Crate | Role |
+| ----- | ---- |
+| [arc-swap](https://github.com/vorner/arc-swap) | Lock-free hot reload |
+| [dashmap](https://github.com/xacrimon/dashmap) | Concurrent rate-limit state |
+| [async-compression](https://github.com/Nemo157/async-compression) | Brotli / gzip / deflate |
 
 ### Middleware & scripting
 
-![Rhai](https://img.shields.io/badge/Rhai_scripting-5C5C5C?style=flat)
-![Wasmtime](https://img.shields.io/badge/Wasmtime_(WASM_plugins)-5C5C5C?style=flat)
-![regex](https://img.shields.io/badge/regex-5C5C5C?style=flat)
-![Redis](https://img.shields.io/badge/Redis_(rate_limit_store)-DC382D?style=flat&logo=redis&logoColor=white)
+| Crate | Role |
+| ----- | ---- |
+| [rhai](https://rhai.rs) | Embedded scripting engine |
+| [wasmtime](https://wasmtime.dev) | WASM plugin host |
+| [regex](https://github.com/rust-lang/regex) | URL rewriting |
+| [reqwest](https://github.com/seanmonstar/reqwest) | Forward auth, JWKS, mirroring |
+| [redis](https://github.com/redis-rs/redis-rs) | Distributed rate-limit store |
 
-### File handling
+### Auth & security
 
-![notify](https://img.shields.io/badge/notify_(fs_watcher)-5C5C5C?style=flat)
-![multer](https://img.shields.io/badge/multer_(multipart)-5C5C5C?style=flat)
-![uuid](https://img.shields.io/badge/uuid_v4-5C5C5C?style=flat)
-![mime_guess](https://img.shields.io/badge/mime__guess-5C5C5C?style=flat)
+| Crate | Role |
+| ----- | ---- |
+| [jsonwebtoken](https://github.com/Keats/jsonwebtoken) | JWT validation (HS256, RS256, ES256) |
+| [ipnet](https://github.com/krisprice/ipnet) | CIDR-based IP filtering |
 
-### CLI & UX
+### File handling & CLI
 
-![clap](https://img.shields.io/badge/clap_4_(derive)-5C5C5C?style=flat)
-![clap_complete](https://img.shields.io/badge/clap__complete_(bash_·_zsh_·_fish)-5C5C5C?style=flat)
-![clap_mangen](https://img.shields.io/badge/clap__mangen_(man_page)-5C5C5C?style=flat)
-![dialoguer](https://img.shields.io/badge/dialoguer_(init_wizard)-5C5C5C?style=flat)
-![indicatif](https://img.shields.io/badge/indicatif_(progress_bars)-5C5C5C?style=flat)
+| Crate | Role |
+| ----- | ---- |
+| [notify](https://github.com/notify-rs/notify) | Filesystem watcher (hot reload) |
+| [uuid](https://github.com/uuid-rs/uuid) | X-Request-ID generation |
+| [mime_guess](https://github.com/abonander/mime_guess) | Content-Type detection |
+| [clap 4](https://github.com/clap-rs/clap) | CLI argument parsing |
+| [clap_complete](https://github.com/clap-rs/clap) | Shell completion scripts |
+| [dialoguer](https://github.com/console-rs/dialoguer) | `conduit init` wizard |
+| [indicatif](https://github.com/console-rs/indicatif) | Progress bars |
 
 ### Observability
 
-![tracing](https://img.shields.io/badge/tracing_+_tracing--subscriber-5C5C5C?style=flat)
-![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?style=flat&logo=prometheus&logoColor=white)
+| Crate | Role |
+| ----- | ---- |
+| [tracing](https://github.com/tokio-rs/tracing) + tracing-subscriber | Structured logging |
+| [prometheus](https://github.com/tikv/rust-prometheus) | Metrics exposition |
+| [opentelemetry](https://github.com/open-telemetry/opentelemetry-rust) + opentelemetry-otlp | OTLP tracing (`--features otlp`) |
 
-### Dev tools & CI
+### Dev & CI
 
-![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?style=flat&logo=githubactions&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker_(musl_+_scratch)-2496ED?style=flat&logo=docker&logoColor=white)
-![cross](https://img.shields.io/badge/cross_(cross--compilation)-5C5C5C?style=flat)
-![reqwest](https://img.shields.io/badge/reqwest_(integration_tests)-5C5C5C?style=flat)
-![criterion](https://img.shields.io/badge/criterion_(benchmarks)-5C5C5C?style=flat)
-![serial_test](https://img.shields.io/badge/serial__test-5C5C5C?style=flat)
-![SonarCloud](https://img.shields.io/badge/SonarCloud-F3702A?style=flat&logo=sonarcloud&logoColor=white)
-![CodeRabbit](https://img.shields.io/badge/CodeRabbit-FF7A00?style=flat)
+| Tool | Role |
+| ---- | ---- |
+| [GitHub Actions](https://github.com/features/actions) | CI / release pipeline |
+| [Docker](https://docker.com) (musl + scratch) | Minimal container image |
+| [cross](https://github.com/cross-rs/cross) | Cross-compilation |
+| [criterion](https://github.com/bheisler/criterion.rs) | Benchmarks |
+| [SonarCloud](https://sonarcloud.io) | Static analysis |
 
 ---
 

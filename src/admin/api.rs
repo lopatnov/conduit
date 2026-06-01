@@ -6,7 +6,8 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
-use axum::routing::{get, post};
+use axum::extract::Query;
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use pingora_core::server::ShutdownWatch;
 use pingora_core::services::background::BackgroundService;
@@ -109,7 +110,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/upstreams", get(upstreams_handler))
         .route("/upstreams/add", post(upstreams_add_handler))
         .route("/upstreams/remove", post(upstreams_remove_handler))
-        .route("/upstreams/weight", post(upstreams_weight_handler));
+        .route("/upstreams/weight", post(upstreams_weight_handler))
+        .route("/cache/purge", delete(cache_purge_handler))
+        .route("/ip-deny", post(ip_deny_add_handler))
+        .route("/ip-deny", delete(ip_deny_remove_handler));
 
     // Wrap with bearer-token auth middleware if a token is configured.
     let token: Option<String> = state
@@ -621,6 +625,112 @@ async fn upstreams_weight_handler(
         "target":  req.target,
         "weight":  weight,
     }))
+}
+
+// ── Cache purge ───────────────────────────────────────────────────────────────
+
+/// Query parameters for `DELETE /cache/purge`.
+#[derive(Deserialize)]
+struct CachePurgeParams {
+    /// Full URL to purge, e.g. `https://example.com/api/data?page=1`
+    url: String,
+}
+
+/// `DELETE /cache/purge?url=<url>` — invalidate a specific cache entry.
+///
+/// Parses the URL into its components, builds the same `CacheKey` that the
+/// proxy would use, and calls `MemCache::purge()` on the shared storage.
+///
+/// Returns `{"status":"ok","purged":true}` when an entry was found and removed,
+/// `{"status":"ok","purged":false}` when no matching entry existed, or an error
+/// JSON on bad input.
+async fn cache_purge_handler(
+    Query(params): Query<CachePurgeParams>,
+) -> (StatusCode, Json<Value>) {
+    use pingora_cache::storage::{PurgeType, Storage};
+    use pingora_cache::trace::Span;
+
+    let raw = params.url.trim();
+
+    // Parse scheme, host, path, query from the URL.
+    let (scheme, rest) = if let Some(r) = raw.strip_prefix("https://") {
+        ("https", r)
+    } else if let Some(r) = raw.strip_prefix("http://") {
+        ("http", r)
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "status": "error", "message": "url must start with http:// or https://" })),
+        );
+    };
+
+    let (authority, path_query) = rest
+        .find('/')
+        .map(|i| (&rest[..i], &rest[i..]))
+        .unwrap_or((rest, "/"));
+
+    let (path, query) = path_query
+        .find('?')
+        .map(|i| (&path_query[..i], Some(&path_query[i + 1..])))
+        .unwrap_or((path_query, None));
+
+    let cache_key = crate::proxy::cache::build_cache_key(
+        authority,
+        scheme,
+        path,
+        query,
+        None,
+        None,
+    );
+    let compact = cache_key.to_compact();
+    let storage = crate::proxy::cache::cache_storage();
+
+    let span = Span::inactive().handle();
+    let purged = storage
+        .purge(&compact, PurgeType::Invalidation, &span)
+        .await
+        .unwrap_or(false);
+
+    (
+        StatusCode::OK,
+        Json(json!({ "status": "ok", "purged": purged, "url": raw })),
+    )
+}
+
+// ── Dynamic IP deny-list ──────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct IpDenyBody {
+    /// CIDR to add or remove, e.g. `"1.2.3.0/24"` or `"10.0.0.5"`.
+    cidr: String,
+}
+
+/// `POST /ip-deny` — add a CIDR to the runtime deny-list.
+async fn ip_deny_add_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<IpDenyBody>,
+) -> Json<Value> {
+    let cidr = body.cidr.trim().to_owned();
+    {
+        let mut list = state.dynamic_deny.write().unwrap_or_else(|e| e.into_inner());
+        if !list.contains(&cidr) {
+            list.push(cidr.clone());
+        }
+    }
+    Json(json!({ "status": "ok", "action": "added", "cidr": cidr }))
+}
+
+/// `DELETE /ip-deny` — remove a CIDR from the runtime deny-list.
+async fn ip_deny_remove_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<IpDenyBody>,
+) -> Json<Value> {
+    let cidr = body.cidr.trim().to_owned();
+    {
+        let mut list = state.dynamic_deny.write().unwrap_or_else(|e| e.into_inner());
+        list.retain(|c| c != &cidr);
+    }
+    Json(json!({ "status": "ok", "action": "removed", "cidr": cidr }))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

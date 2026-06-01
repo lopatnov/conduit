@@ -501,6 +501,17 @@ pub struct HealthCheckOptions {
 pub struct RateLimitConfig {
     pub window_secs: u64,
     pub limit: u64,
+    /// Optional burst capacity on top of `limit`.
+    ///
+    /// The token bucket starts with `limit + burst` tokens and refills at
+    /// `limit / windowSecs` per second.  This allows short traffic spikes up to
+    /// `limit + burst` requests without being rate-limited, while the sustained
+    /// throughput is still capped at `limit / windowSecs` requests per second.
+    ///
+    /// Example: `limit: 60, windowSecs: 60, burst: 20` → allows up to 80 requests
+    /// in a burst, sustained at 1 req/s.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub burst: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub algorithm: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -789,6 +800,9 @@ pub struct IpFilterConfig {
     pub allow: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deny: Option<Vec<String>>,
+    /// When `true`, read the client IP from `X-Forwarded-For` instead of the
+    /// TCP connection address.  Only enable when Conduit is behind a trusted
+    /// reverse proxy that sets this header.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_proxy: Option<bool>,
 }
@@ -1207,6 +1221,15 @@ pub struct RetryConfig {
     pub conditions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backoff_ms: Option<u64>,
+    /// When `true`, adds a random ±50 % jitter to `backoffMs` on each retry.
+    ///
+    /// Prevents retry storms: if many requests fail simultaneously, adding jitter
+    /// distributes the retry attempts over time rather than creating a synchronized
+    /// wave.  The effective delay is `backoffMs * [0.5, 1.5)`.
+    ///
+    /// Only meaningful when `backoffMs` is also set.
+    #[serde(rename = "backoffJitter", skip_serializing_if = "Option::is_none")]
+    pub backoff_jitter: Option<bool>,
     /// Retry budget: maximum percentage of active requests that may be retries.
     ///
     /// Prevents retry storms: when all requests fail simultaneously, without a

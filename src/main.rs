@@ -34,6 +34,14 @@ fn main() {
 fn dispatch_command(cli: Cli) {
     let config = resolve_config_path(&cli.config);
 
+    // Kubernetes CRD mode: when --kubernetes-namespace is set and no subcommand
+    // is given, start the server using the KubernetesProvider instead of a file.
+    #[cfg(feature = "kubernetes")]
+    if let (Some(ns), None) = (&cli.kubernetes_namespace, &cli.command) {
+        run_server_kubernetes(ns);
+        return;
+    }
+
     match cli.command {
         None => ServeCmd {
             config_path: config,
@@ -65,6 +73,7 @@ fn dispatch_command(cli: Cli) {
         Some(Command::Status(args)) => {
             StatusCmd {
                 admin_addr: resolve_admin(args.admin.as_deref()),
+                upstream: args.upstream,
             }
             .execute();
         }
@@ -148,10 +157,15 @@ impl CliCommand for ReloadCmd {
 
 struct StatusCmd {
     admin_addr: String,
+    upstream: bool,
 }
 impl CliCommand for StatusCmd {
     fn execute(self) {
-        admin_get("status", &self.admin_addr);
+        if self.upstream {
+            print_upstream_table(&self.admin_addr);
+        } else {
+            admin_get("status", &self.admin_addr);
+        }
     }
 }
 
@@ -284,7 +298,61 @@ fn run_server(config_path: &str) {
         }
         process::exit(1);
     }
-    if let Err(e) = builder::run_server(cfg, path.to_path_buf()) {
+    if let Err(e) = builder::run_server(cfg, path.to_path_buf(), None) {
+        eprintln!("server error: {e}");
+        process::exit(1);
+    }
+}
+
+// ── Kubernetes provider startup ────────────────────────────────────────────
+
+/// Start Conduit using Kubernetes `ConduitSite` CRDs as the config source.
+///
+/// Spawns a background thread that runs the [`KubernetesProvider`], waits for
+/// the initial config, then starts the server. Subsequent CRD changes are
+/// received by the server's live-update watcher and hot-swapped without restart.
+///
+/// Requires: `cargo build --features kubernetes`.
+#[cfg(feature = "kubernetes")]
+fn run_server_kubernetes(namespace: &str) {
+    use conduit::config::kubernetes::KubernetesProvider;
+    use conduit::config::provider::Provider;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<conduit::config::schema::AppConfig>(4);
+    let ns = namespace.to_owned();
+
+    // Spawn the provider in its own thread with a dedicated Tokio runtime.
+    std::thread::Builder::new()
+        .name("kubernetes-provider".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime for kubernetes-provider");
+            if let Err(e) = rt.block_on(KubernetesProvider::new(ns).run(tx)) {
+                eprintln!("kubernetes provider error: {e}");
+                process::exit(1);
+            }
+        })
+        .expect("failed to spawn kubernetes-provider thread");
+
+    // Block until the provider delivers the initial config (or the channel closes).
+    let initial_config = match rx.blocking_recv() {
+        Some(cfg) => cfg,
+        None => {
+            eprintln!("error: kubernetes provider closed before sending initial config");
+            process::exit(1);
+        }
+    };
+
+    tracing::info!(
+        namespace,
+        sites = initial_config.sites.len(),
+        "initial config loaded from ConduitSite CRDs"
+    );
+
+    // Start the server; pass `rx` so CRD changes are hot-swapped automatically.
+    if let Err(e) = builder::run_server(initial_config, std::path::PathBuf::new(), Some(rx)) {
         eprintln!("server error: {e}");
         process::exit(1);
     }
@@ -648,6 +716,100 @@ fn parse_upstream_url(url: &str) -> Option<(bool, String, u16, String)> {
     };
 
     Some((is_tls, host, port, path))
+}
+
+// ── conduit status --upstream ──────────────────────────────────────────────
+
+/// Fetch upstream health from the Admin API and print a formatted table.
+fn print_upstream_table(addr: &str) {
+    let body = match http_get("upstreams", addr) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+    let json: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error parsing response: {e}");
+            process::exit(1);
+        }
+    };
+    let flat = match json.get("upstreams").and_then(|v| v.as_array()) {
+        Some(arr) => arr.clone(),
+        None => {
+            // Fallback: the whole response might be an array.
+            match json.as_array() {
+                Some(arr) => arr.clone(),
+                None => {
+                    println!("{body}");
+                    return;
+                }
+            }
+        }
+    };
+
+    if flat.is_empty() {
+        println!("No upstreams registered.");
+        return;
+    }
+
+    // Compute column widths.
+    let url_w = flat
+        .iter()
+        .filter_map(|e| e.get("url").and_then(|v| v.as_str()))
+        .map(|s| s.len())
+        .max()
+        .unwrap_or(3)
+        .max(3);
+
+    println!(
+        "{:<url_w$}  {:<7}  {:<10}  {:<7}  {}",
+        "URL", "Healthy", "Latency", "Ejected", "5xx"
+    );
+    println!("{}", "─".repeat(url_w + 42));
+
+    for entry in &flat {
+        let url = entry
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let healthy = entry
+            .get("healthy")
+            .and_then(|v| v.as_bool())
+            .map(|b| if b { "✓" } else { "✗" })
+            .unwrap_or("?");
+        let latency = entry
+            .get("latency_ms")
+            .and_then(|v| v.as_u64())
+            .map(|ms| format!("{ms} ms"))
+            .unwrap_or_else(|| "—".to_owned());
+        let ejected = entry
+            .get("ejected")
+            .and_then(|v| v.as_bool())
+            .map(|b| if b { "yes" } else { "no" })
+            .unwrap_or("—");
+        let consec_5xx = entry
+            .get("consecutive_5xx")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "0".to_owned());
+        println!(
+            "{:<url_w$}  {:<7}  {:<10}  {:<7}  {}",
+            url, healthy, latency, ejected, consec_5xx
+        );
+    }
+    println!();
+    let healthy_count = flat
+        .iter()
+        .filter(|e| {
+            e.get("healthy")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        })
+        .count();
+    println!("{}/{} upstreams healthy", healthy_count, flat.len());
 }
 
 // ── Admin API helpers ──────────────────────────────────────────────────────

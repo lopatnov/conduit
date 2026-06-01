@@ -328,4 +328,51 @@ mod tests {
         let ip = parse_xff("2001:db8::1");
         assert_eq!(ip, Some("2001:db8::1".parse().unwrap()));
     }
+
+    // ── dynamic deny-list (IpFilterConfig denylist) ───────────────────────────
+
+    #[test]
+    fn dynamic_deny_blocks_matching_cidr() {
+        let cfg = IpFilterConfig {
+            allow: None,
+            deny: Some(vec!["192.168.1.0/24".to_owned()]),
+            trust_proxy: None,
+        };
+        // IP in denied range → blocked
+        assert!(!apply_ip_filter(
+            Some("192.168.1.42".parse().unwrap()),
+            &cfg
+        ));
+        // IP outside denied range → allowed
+        assert!(apply_ip_filter(
+            Some("10.0.0.1".parse().unwrap()),
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn dynamic_deny_blocks_exact_ip() {
+        let cfg = IpFilterConfig {
+            allow: None,
+            deny: Some(vec!["203.0.113.5".to_owned()]),
+            trust_proxy: None,
+        };
+        assert!(!apply_ip_filter(
+            Some("203.0.113.5".parse().unwrap()),
+            &cfg
+        ));
+        assert!(apply_ip_filter(
+            Some("203.0.113.6".parse().unwrap()),
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn empty_dynamic_deny_allows_all() {
+        let cfg = IpFilterConfig::default();
+        assert!(apply_ip_filter(
+            Some("1.2.3.4".parse().unwrap()),
+            &cfg
+        ));
+    }
 }

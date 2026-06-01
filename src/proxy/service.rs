@@ -69,6 +69,16 @@ pub struct ConduitMetrics {
     ///
     /// Labels: `site` (host:port or "*").
     pub rate_limit_rejected_total: CounterVec,
+    /// Total requests proxied to each upstream URL (including retries).
+    ///
+    /// Labels: `upstream` (full URL), `status` (e.g. "200", "502", "0" for
+    /// connection errors).
+    pub upstream_requests_total: CounterVec,
+    /// Upstream response latency histogram (seconds from request sent to response
+    /// received), keyed by upstream URL.
+    ///
+    /// Label: `upstream` (full URL).
+    pub upstream_latency_seconds: HistogramVec,
 }
 
 impl ConduitMetrics {
@@ -131,6 +141,21 @@ impl ConduitMetrics {
                 )
                 .expect("register conduit_rate_limit_rejected_total");
 
+                let upstream_requests_total = prometheus::register_counter_vec!(
+                    "conduit_upstream_requests_total",
+                    "Total requests forwarded to each upstream URL",
+                    &["upstream", "status"]
+                )
+                .expect("register conduit_upstream_requests_total");
+
+                let upstream_latency_seconds = prometheus::register_histogram_vec!(
+                    "conduit_upstream_latency_seconds",
+                    "Upstream response latency in seconds (request sent → response received)",
+                    &["upstream"],
+                    vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+                )
+                .expect("register conduit_upstream_latency_seconds");
+
                 Arc::new(Self {
                     requests_total,
                     request_duration_seconds,
@@ -140,6 +165,8 @@ impl ConduitMetrics {
                     upstream_errors_total,
                     retry_attempts_total,
                     rate_limit_rejected_total,
+                    upstream_requests_total,
+                    upstream_latency_seconds,
                 })
             })
             .clone()
@@ -188,6 +215,12 @@ pub struct AppState {
     /// handler checks `retry_inflight * 100 / inflight ≤ budget_percent`.
     /// Incremented when a retry is approved, decremented in `logging()`.
     pub retry_inflight: Arc<AtomicUsize>,
+    /// Dynamically managed IP deny-list, editable via Admin API
+    /// `POST /ip-deny` and `DELETE /ip-deny` without a config reload.
+    ///
+    /// Checked by `IpGuard` in addition to `ipFilter.deny` from the config.
+    /// Entries are plain CIDR strings (e.g. `"1.2.3.0/24"`).
+    pub dynamic_deny: Arc<std::sync::RwLock<Vec<String>>>,
 }
 
 impl AppState {
@@ -216,6 +249,7 @@ impl AppState {
             hot_reload_tx,
             redis_rate_limiter,
             retry_inflight: Arc::new(AtomicUsize::new(0)),
+            dynamic_deny: Arc::new(std::sync::RwLock::new(Vec::new())),
         }
     }
 }
@@ -508,7 +542,7 @@ impl ConduitProxy {
                             .rate_limiter
                             .entry(key)
                             .or_insert_with(|| {
-                                rate_limit::TokenBucket::new(rl_cfg.limit, rl_cfg.window_secs)
+                                rate_limit::TokenBucket::new(rl_cfg.limit, rl_cfg.burst.unwrap_or(0), rl_cfg.window_secs)
                             })
                             .try_consume()
                     };
@@ -593,10 +627,14 @@ impl ConduitProxy {
         //    available to upstream and all downstream filters.
         chain = chain.push(XRequestIdGuard);
 
-        // 1. IP filter — runs for every request, including health/ACME.
-        if let Some(cfg) = guards.ip_cfg {
-            chain = chain.push(IpGuard { cfg });
-        }
+        // 1. IP filter — always pushed so the runtime deny-list (POST /ip-deny)
+        //    works even when no static `ipFilter` config is present.
+        //    Uses the default empty config when not configured (all IPs pass
+        //    unless the dynamic_deny list has entries).
+        chain = chain.push(IpGuard {
+            cfg: guards.ip_cfg.unwrap_or_default(),
+            dynamic_deny: self.state.dynamic_deny.clone(),
+        });
 
         // 2. CORS preflight — runs before auth; browsers send OPTIONS without credentials.
         if let Some(cfg) = guards.cors_cfg {
@@ -766,10 +804,10 @@ impl ConduitProxy {
             }
 
             HandlerKind::Health => {
-                let upstream_pairs = self.collect_upstream_pairs(ctx);
+                let upstream_infos = self.collect_upstream_infos(ctx);
                 Some(Box::new(health::HealthHandler {
                     extra_headers: extra,
-                    upstream_pairs,
+                    upstream_infos,
                 }))
             }
 
@@ -857,7 +895,15 @@ impl ConduitProxy {
 
     /// Collect `(url, is_healthy)` pairs for the health endpoint when
     /// `healthCheck.includeUpstreams` is enabled.
-    fn collect_upstream_pairs(&self, ctx: &Option<RequestCtx>) -> Vec<(String, bool)> {
+    /// Collect per-upstream health info for the health-check handler.
+    ///
+    /// Returns an empty vec when `healthCheck.includeUpstreams` is not set.
+    /// When enabled, returns extended data per upstream (healthy, latency,
+    /// ejection status, consecutive 5xx) drawn from the UpstreamRegistry.
+    fn collect_upstream_infos(
+        &self,
+        ctx: &Option<RequestCtx>,
+    ) -> Vec<crate::handler::health::UpstreamHealthInfo> {
         let req_ctx = match ctx.as_ref() {
             Some(c) => c,
             None => return vec![],
@@ -878,6 +924,7 @@ impl ConduitProxy {
         if !include {
             return vec![];
         }
+        use crate::handler::health::UpstreamHealthInfo;
         use crate::proxy::upstream as us;
         let mut urls: Vec<String> = Vec::new();
         if let Some(proxy) = &site.proxy {
@@ -890,10 +937,28 @@ impl ConduitProxy {
                 }
             }
         }
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         urls.into_iter()
             .map(|url| {
-                let healthy = self.state.upstream_health.is_healthy(&url);
-                (url, healthy)
+                let entry = self.state.upstream_health.statuses.get(&url);
+                let healthy = entry.as_ref().map(|e| e.healthy).unwrap_or(true);
+                let latency_ms = entry.as_ref().and_then(|e| e.latency_ms);
+                let ejected = entry
+                    .as_ref()
+                    .and_then(|e| e.ejected_until_secs)
+                    .map(|until| until > now_secs)
+                    .unwrap_or(false);
+                let consecutive_5xx = entry.as_ref().map(|e| e.consecutive_5xx).unwrap_or(0);
+                UpstreamHealthInfo {
+                    url,
+                    healthy,
+                    latency_ms,
+                    ejected,
+                    consecutive_5xx,
+                }
             })
             .collect()
     }
@@ -1054,6 +1119,12 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
+        // Record the moment we start forwarding to the upstream so that
+        // `logging()` can compute upstream_response_time_ms.
+        if let Some(req_ctx) = ctx.as_mut() {
+            req_ctx.upstream_start = Some(std::time::Instant::now());
+        }
+
         append_forwarded_headers(session, upstream_request, &self.state, ctx)?;
         apply_upstream_path_transforms(upstream_request, ctx)?;
 
@@ -1480,6 +1551,10 @@ impl ProxyHttp for ConduitProxy {
                 .get("x-request-id")
                 .and_then(|v| v.to_str().ok());
             let upstream_addr = ctx.as_ref().and_then(|c| c.proxy_upstream_url.as_deref());
+            let upstream_ms = ctx
+                .as_ref()
+                .and_then(|c| c.upstream_start)
+                .map(|t| t.elapsed().as_millis() as u64);
             logging::write_access_log(
                 session,
                 start_time,
@@ -1488,6 +1563,7 @@ impl ProxyHttp for ConduitProxy {
                 &logging::AccessLogContext {
                     request_id,
                     upstream_addr,
+                    upstream_ms,
                 },
             );
         }
@@ -1524,6 +1600,26 @@ impl ProxyHttp for ConduitProxy {
                     .upstream_errors_total
                     .with_label_values(&[&route, &status])
                     .inc();
+            }
+        }
+
+        // Per-upstream metrics: requests_total and latency_seconds.
+        if let Some(url) = ctx.as_ref().and_then(|c| c.proxy_upstream_url.as_deref()) {
+            self.state
+                .metrics
+                .upstream_requests_total
+                .with_label_values(&[url, &status])
+                .inc();
+            if let Some(upstream_secs) = ctx
+                .as_ref()
+                .and_then(|c| c.upstream_start)
+                .map(|t| t.elapsed().as_secs_f64())
+            {
+                self.state
+                    .metrics
+                    .upstream_latency_seconds
+                    .with_label_values(&[url])
+                    .observe(upstream_secs);
             }
         }
 
@@ -1591,11 +1687,42 @@ impl ProxyHttp for ConduitProxy {
 
 // ── upstream_peer helpers ─────────────────────────────────────────────────────
 
+/// Apply ±50 % jitter to a backoff duration.
+///
+/// Uses splitmix64 seeded from current nanoseconds — the same fast RNG used
+/// elsewhere in the proxy.  Returns a value in `[ms/2, ms*3/2)`.
+pub(crate) fn jitter_backoff_ms(ms: u64) -> u64 {
+    if ms == 0 {
+        return 0;
+    }
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64;
+    let mut x = seed
+        .wrapping_mul(0x9e3779b97f4a7c15)
+        .wrapping_add(0x6c62272e07bb0142);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+    x ^= x >> 31;
+    // jitter ∈ [0, ms) → result ∈ [ms/2, ms/2 + ms) = [ms/2, 3ms/2)
+    let jitter = x % ms;
+    ms / 2 + jitter
+}
+
 /// Sleep for the configured backoff duration when this is a retry attempt (not the first try).
+///
+/// When `retry.backoff_jitter` is `true`, applies ±50 % randomness to spread
+/// retries in time and avoid synchronized thundering herds.
 async fn apply_backoff(retry: &RetryState) {
     if retry.attempt > 0 {
         if let Some(ms) = retry.backoff_ms {
-            tokio::time::sleep(Duration::from_millis(ms)).await;
+            let effective_ms = if retry.backoff_jitter {
+                jitter_backoff_ms(ms)
+            } else {
+                ms
+            };
+            tokio::time::sleep(Duration::from_millis(effective_ms)).await;
         }
     }
 }
@@ -2086,4 +2213,38 @@ fn rebuild_uri(original: &http::Uri, new_path: &str) -> Result<http::Uri> {
             "failed to build upstream URI",
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── jitter_backoff_ms ─────────────────────────────────────────────────────
+
+    #[test]
+    fn jitter_result_is_within_50_percent_range() {
+        // Run 100 times to reduce flakiness from the time-seeded RNG.
+        for _ in 0..100 {
+            let ms = 200u64;
+            let result = jitter_backoff_ms(ms);
+            assert!(
+                result >= ms / 2 && result < ms + ms / 2,
+                "jitter result {result} must be in [{}, {})",
+                ms / 2,
+                ms + ms / 2
+            );
+        }
+    }
+
+    #[test]
+    fn jitter_zero_ms_returns_zero() {
+        assert_eq!(jitter_backoff_ms(0), 0);
+    }
+
+    #[test]
+    fn jitter_one_ms_returns_zero_or_one() {
+        let result = jitter_backoff_ms(1);
+        // ms=1 → ms/2 = 0, jitter ∈ [0, 1) → result ∈ {0}
+        assert!(result < 2, "result {result} out of range for ms=1");
+    }
 }

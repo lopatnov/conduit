@@ -1,0 +1,51 @@
+{
+  "port": 8080,
+
+  "logging": "json",
+
+  "proxy": {
+    "/api": {
+      "targets": [
+        "http://api-1:4000",
+        "http://api-2:4000",
+        "http://api-3:4000"
+      ],
+      "strategy": "least-conn",
+      "healthCheck": {
+        "path": "/health",
+        "intervalSecs": 10,
+        "unhealthyThreshold": 3,
+        "healthyThreshold": 1,
+        "maxConnectionsPerUpstream": 100
+      },
+      "backup": "http://api-read-replica:4000",
+      "retry": {
+        "attempts": 3,
+        "conditions": ["connection_error", "5xx", "timeout"],
+        "backoffMs": 100,
+        "budgetPercent": 20
+      },
+      "timeout": {
+        "connectMs": 500,
+        "readMs": 5000,
+        "perTryMs": 2000
+      }
+    },
+    "/healthz": "http://health-aggregator:7000"
+  },
+
+  "outlierDetection": {
+    "consecutive5xx": 5,
+    "baseEjectionTimeSecs": 30,
+    "maxEjectionTimeSecs": 300,
+    "maxEjectionPercent": 33
+  },
+
+  "maskErrors": true,
+
+  "healthCheck": true,
+
+  "metrics": {
+    "path": "/__metrics__"
+  }
+}

@@ -67,6 +67,13 @@ pub struct RequestCtx {
     /// (default 1 MiB).  Retries are still attempted but without body replay —
     /// only safe for idempotent methods (GET/HEAD) in that case.
     pub body_too_large: bool,
+    /// Timestamp recorded at the start of `upstream_request_filter` — i.e. the
+    /// moment the proxied request was forwarded to the upstream.
+    ///
+    /// Used to compute `upstream_response_time`: the duration between sending
+    /// the request and receiving the first byte of the upstream response.
+    /// `None` for local handlers (health, static, metrics, …).
+    pub upstream_start: Option<Instant>,
 }
 
 impl RequestCtx {
@@ -100,6 +107,7 @@ impl RequestCtx {
             body_buffer: Vec::new(),
             body_too_large: false,
             jwt_claims: None,
+            upstream_start: None,
             #[cfg(feature = "otlp")]
             otel_span: None,
         }
@@ -124,6 +132,8 @@ pub struct RetryState {
     pub conditions: Vec<String>,
     /// Optional delay between retries in milliseconds.
     pub backoff_ms: Option<u64>,
+    /// When `true`, jitter ±50% is applied to `backoff_ms` to avoid retry storms.
+    pub backoff_jitter: bool,
     /// Maximum percentage of in-flight requests that may be retries (0.0–100.0).
     ///
     /// Prevents retry storms: when many requests fail simultaneously, an
@@ -307,6 +317,7 @@ mod tests {
             max_attempts: max,
             conditions: conditions.iter().map(|s| s.to_string()).collect(),
             backoff_ms: None,
+            backoff_jitter: false,
             budget_percent: None,
             is_retrying: false,
         }

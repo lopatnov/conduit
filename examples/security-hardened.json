@@ -1,0 +1,89 @@
+{
+  "global": {
+    "admin": {
+      "bind": "127.0.0.1:2019",
+      "token": "$ADMIN_TOKEN"
+    }
+  },
+
+  "sites": [
+    {
+      "port": 443,
+      "host": "secure.example.com",
+
+      "tls": {
+        "cert": "/etc/tls/server.crt",
+        "key":  "/etc/tls/server.key",
+        "httpRedirectPort": 80,
+        "versions": ["TLSv1.2", "TLSv1.3"]
+      },
+
+      "securityHeaders": {
+        "hsts": "max-age=63072000; includeSubDomains; preload",
+        "contentSecurityPolicy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+        "frameOptions": "DENY",
+        "referrerPolicy": "strict-origin-when-cross-origin"
+      },
+
+      "cors": {
+        "origins": ["https://app.example.com", "https://admin.example.com"],
+        "credentials": true,
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "headers": ["Authorization", "Content-Type", "X-Request-ID"]
+      },
+
+      "ipFilter": {
+        "allow": [
+          "10.0.0.0/8",
+          "172.16.0.0/12",
+          "203.0.113.0/24"
+        ]
+      },
+
+      "rateLimit": {
+        "windowSecs": 60,
+        "limit": 200,
+        "keyBy": "ip",
+        "skipPaths": ["/__health__"]
+      },
+
+      "apiKey": {
+        "keys": ["$API_KEY_PRIMARY", "$API_KEY_SECONDARY"],
+        "header": "X-API-Key",
+        "skipPaths": ["/__health__", "/public/**"]
+      },
+
+      "maskErrors": true,
+
+      "proxy": {
+        "/api": {
+          "targets": ["https://api-internal:8443"],
+          "stripPrefix": true,
+          "upstreamTls": {
+            "verify": true,
+            "serverName": "api-internal.svc.cluster.local"
+          }
+        },
+        "/admin": {
+          "targets": ["http://admin-ui:3000"],
+          "stripPrefix": true
+        }
+      },
+
+      "healthCheck": true,
+
+      "metrics": {
+        "path": "/__metrics__",
+        "token": "$METRICS_TOKEN"
+      },
+
+      "requestTransform": {
+        "removeHeaders": ["X-Real-IP", "X-Admin-User"]
+      },
+
+      "responseTransform": {
+        "removeHeaders": ["Server", "X-Powered-By"]
+      }
+    }
+  ]
+}

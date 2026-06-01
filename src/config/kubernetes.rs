@@ -266,6 +266,7 @@ pub fn build_app_config<'a>(
         global: Some(GlobalConfig {
             admin: Some(AdminConfig {
                 bind: Some(admin_bind.to_owned()),
+                token: None,
             }),
             ..Default::default()
         }),

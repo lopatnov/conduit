@@ -149,7 +149,19 @@ fn connect_redis_rate_limiter_if_configured(
     }
 }
 
-pub fn run_server(config: AppConfig, config_path: PathBuf) -> anyhow::Result<()> {
+/// Start the Conduit server.
+///
+/// * `config`         — initial [`AppConfig`] to serve
+/// * `config_path`    — path used by `POST /reload`; pass [`PathBuf::new()`]
+///                      when configuration comes from a live provider (e.g. Kubernetes)
+/// * `config_updates` — optional live-update channel; when `Some`, a background
+///                      thread watches the receiver and hot-swaps the config on
+///                      every received [`AppConfig`] (used by the Kubernetes provider)
+pub fn run_server(
+    config: AppConfig,
+    config_path: PathBuf,
+    config_updates: Option<tokio::sync::mpsc::Receiver<AppConfig>>,
+) -> anyhow::Result<()> {
     // Install the ring crypto provider for rustls before any TLS initialization.
     // This is a no-op if another provider was already installed (e.g., in tests).
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -193,6 +205,35 @@ pub fn run_server(config: AppConfig, config_path: PathBuf) -> anyhow::Result<()>
         upload_addr,
         redis_rl,
     ));
+
+    // ── Live config updates (e.g. Kubernetes CRD provider) ───────────────────
+    // When a live-update channel is provided, spawn a background thread that
+    // hot-swaps the config whenever a new AppConfig arrives on the channel.
+    // This is the same mechanism as `POST /reload`, but driven by an external
+    // provider rather than an explicit admin API call.
+    if let Some(mut rx) = config_updates {
+        let state_clone = state.clone();
+        std::thread::Builder::new()
+            .name("config-update-watcher".into())
+            .spawn(move || {
+                // Run a minimal Tokio runtime for the async channel receiver.
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("tokio runtime for config-update-watcher");
+                rt.block_on(async move {
+                    while let Some(new_cfg) = rx.recv().await {
+                        tracing::info!(
+                            sites = new_cfg.sites.len(),
+                            "live config update received — hot-swapping"
+                        );
+                        state_clone.config.store(Arc::new(new_cfg));
+                    }
+                    tracing::warn!("config update channel closed; live updates stopped");
+                });
+            })
+            .expect("failed to spawn config-update-watcher thread");
+    }
 
     // ── Phase 3.1: ACME certificate procurement ──────────────────────────────
     // For each site that uses `tls.acme`, obtain (or load a cached) certificate

@@ -23,20 +23,26 @@ conduit init
 | ------------------------------------- | -------------------------------------- |
 | Serve files + proxy locally           | `minimal.yaml`                         |
 | React / Vue / Angular SPA             | `spa-with-api.yaml`                    |
-| HTTPS with certificates               | `tls-h2.yaml` or `tls-acme.yaml`       |
-| Auto-TLS via Let's Encrypt            | `tls-acme.yaml`                        |
-| Multiple backends, load balancing     | `load-balanced.yaml`                   |
-| Multiple apps on one server           | `multi-site.yaml`                      |
 | Local dev with hot reload             | `dev-hot-reload.yaml`                  |
+| HTTPS with manual certificates        | `tls-h2.yaml`                          |
+| Auto-TLS via Let's Encrypt            | `tls-acme.yaml`                        |
+| mTLS — require client certificates    | `mtls.yaml`                            |
+| Multiple backends, load balancing     | `load-balanced.yaml`                   |
+| Geo-regional / two-level balancing    | `upstream-groups.yaml`                 |
+| Multiple apps on one server           | `multi-site.yaml`                      |
 | JWT / external auth                   | `jwt-auth.yaml` or `forward-auth.yaml` |
+| Named API clients (consumer model)    | `consumers.yaml`                       |
 | Full API gateway                      | `api-gateway.yaml`                     |
 | Resilience (circuit breaker, retries) | `circuit-breaker.yaml`                 |
+| Response cache + stale-while-revalidate | `stale-while-revalidate.yaml`        |
 | Metrics + tracing                     | `observability.yaml`                   |
 | Security hardening                    | `security-hardened.yaml`               |
-| Response cache                        | `with-cache.yaml`                      |
 | URL rewriting                         | `path-rewrite.yaml`                    |
 | Custom Rhai middleware                | `rhai-middleware.yaml`                 |
 | Redis rate limiting                   | `redis-rate-limit.yaml`                |
+
+For each scenario with both YAML and JSON side by side, and explanations, see
+**[docs/recipes.md](../docs/recipes.md)**.
 
 ---
 
@@ -112,9 +118,21 @@ In-memory proxy cache with TTL, Vary headers, and cookie / path exclusions.
 
 ---
 
+### [api-gateway.yaml](api-gateway.yaml) / [api-gateway.json](api-gateway.json)
+
+Full API gateway: JWT auth, per-route rate limiting, JWT claim injection,
+response header cleanup, traffic mirroring to a shadow environment, circuit
+breaker, failover, outlier detection, and OTLP tracing.
+
+**Features:** `jwtAuth`, `rateLimit` (per-route), `requestTransform`,
+`responseTransform`, `mirror`, `healthCheck.maxConnectionsPerUpstream`,
+`backup`, `outlierDetection`, `global.otlp` (requires `--features otlp`)
+
+---
+
 ## Authentication examples
 
-### [jwt-auth.yaml](jwt-auth.yaml) ✨ NEW
+### [jwt-auth.yaml](jwt-auth.yaml) / [jwt-auth.json](jwt-auth.json)
 
 JWT bearer-token validation. Supports JWKS endpoints (Auth0, AWS Cognito,
 Keycloak, Google) and HS256 shared secrets. Injects JWT claims as upstream
@@ -124,7 +142,7 @@ headers using `{{ jwt.sub }}` template syntax.
 
 ---
 
-### [forward-auth.yaml](forward-auth.yaml) ✨ NEW
+### [forward-auth.yaml](forward-auth.yaml) / [forward-auth.json](forward-auth.json)
 
 Delegate auth to an external HTTP service (oauth2-proxy, Ory Oathkeeper,
 custom auth middleware). The auth service's response headers are injected
@@ -134,9 +152,20 @@ into the upstream request.
 
 ---
 
+### [consumers.yaml](consumers.yaml) / [consumers.json](consumers.json)
+
+Named API clients with per-consumer credentials (API key, Basic Auth, JWT),
+rate limits, and custom headers. Includes the sharedJwt pattern for Auth0 /
+Cognito / Keycloak.
+
+**Features:** `consumers`, `consumer.apiKey`, `consumer.basicAuth`,
+`consumer.jwt`, `consumers.sharedJwt` (V3)
+
+---
+
 ## Resilience examples
 
-### [circuit-breaker.yaml](circuit-breaker.yaml) ✨ NEW
+### [circuit-breaker.yaml](circuit-breaker.yaml) / [circuit-breaker.json](circuit-breaker.json)
 
 Circuit breaker, retry budget, service failover, and outlier detection — all
 working together to keep the service stable under load and failures.
@@ -146,9 +175,27 @@ working together to keep the service stable under load and failures.
 
 ---
 
+### [stale-while-revalidate.yaml](stale-while-revalidate.yaml) / [stale-while-revalidate.json](stale-while-revalidate.json)
+
+Serve stale cached content immediately while refreshing in the background.
+Zero latency penalty on cache expiry.
+
+**Features:** `cache.staleWhileRevalidateSecs`, `cache.staleIfErrorSecs`
+
+---
+
+### [mtls.yaml](mtls.yaml) / [mtls.json](mtls.json)
+
+Mutual TLS — require clients to present a certificate signed by a trusted CA.
+Authentication at the TLS handshake, before any HTTP processing.
+
+**Features:** `tls.clientAuth`, certificate generation guide
+
+---
+
 ## Observability examples
 
-### [observability.yaml](observability.yaml) ✨ NEW
+### [observability.yaml](observability.yaml) / [observability.json](observability.json)
 
 Full observability stack: Prometheus metrics, OpenTelemetry OTLP tracing
 (Grafana Tempo / Jaeger), structured JSON access logs, and health endpoints.
@@ -160,7 +207,7 @@ Full observability stack: Prometheus metrics, OpenTelemetry OTLP tracing
 
 ## Security examples
 
-### [security-hardened.yaml](security-hardened.yaml) ✨ NEW
+### [security-hardened.yaml](security-hardened.yaml) / [security-hardened.json](security-hardened.json)
 
 Defence-in-depth configuration: TLS hardening, security headers, CORS policy,
 IP allowlist, rate limiting, API key auth, error masking, admin auth, and
