@@ -380,9 +380,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires Redis to be unreachable on port 1 — run manually"]
     fn unreachable_redis_returns_none_not_panic() {
-        // Port 1 is almost certainly not listening — connection must fail gracefully.
+        // Port 1 is reserved and never listening — connection is refused immediately,
+        // no Redis instance needed. Verifies fail-open: must return None, not panic.
         let result = get_or_create("redis://127.0.0.1:1");
         assert!(
             result.is_none(),
