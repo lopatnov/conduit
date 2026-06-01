@@ -319,20 +319,38 @@ conduit reload --admin 127.0.0.1:2019
 
 > **Requires** `cargo build --features kubernetes`
 
-Instead of a config file or ConfigMap, you can configure Conduit directly via
-Kubernetes custom resources. Each `ConduitSite` object maps to one site in the
-Conduit config. Conduit watches for `Added`, `Modified`, and `Deleted` events
-and reloads automatically — no `conduit reload` needed.
+Instead of a config file or ConfigMap, you can configure Conduit directly with
+Kubernetes custom resources. Each `ConduitSite` object represents one virtual
+site — the same as one entry in the `sites:` array of `conduit.yaml`.
 
-**Install the CRD:**
+**How it works:**
+1. Conduit connects to the cluster (via `KUBECONFIG` or in-cluster service account)
+2. Reads all `ConduitSite` resources in the given namespace
+3. Combines them into a running config
+4. Watches for `Added`, `Modified`, `Deleted` events → hot-reloads automatically
+
+No `conduit reload` is needed. No config file is read (`-c` flag is ignored).
+
+**Step 1 — Install the CRD definition (once per cluster):**
 
 ```bash
 kubectl apply -f contrib/k8s/conduitsite-crd.yaml
 ```
 
-**Define a site:**
+**Step 2 — Deploy Conduit with the kubernetes flag:**
+
+```bash
+# Watch "default" namespace
+conduit --kubernetes-namespace default
+
+# Watch all namespaces (requires cluster-wide RBAC)
+conduit --kubernetes-namespace '*'
+```
+
+**Step 3 — Create ConduitSite resources:**
 
 ```yaml
+# my-app-site.yaml
 apiVersion: conduit.io/v1
 kind: ConduitSite
 metadata:
@@ -347,26 +365,50 @@ spec:
     limit: 500
 ```
 
-The `spec` fields mirror the Conduit config schema exactly — any field valid
-in `conduit.yaml` is valid in the `spec`. Multiple `ConduitSite` resources in
-a namespace are combined into a single multi-site config.
-
-**Start Conduit in Kubernetes mode:**
-
-```bash
-# Watch ConduitSite CRDs in the "default" namespace
-conduit --kubernetes-namespace default
-
-# Watch all namespaces (requires cluster-wide RBAC)
-conduit --kubernetes-namespace '*'
+```yaml
+# my-api-site.yaml — a second site with TLS and JWT auth
+apiVersion: conduit.io/v1
+kind: ConduitSite
+metadata:
+  name: my-api
+  namespace: default
+spec:
+  port: 443
+  host: api.example.com
+  tls:
+    acme:
+      email: admin@example.com
+      storage: /certs
+  jwtAuth:
+    jwksUrl: "https://auth.example.com/.well-known/jwks.json"
+  proxy:
+    /v1: "http://api-svc:4000"
+  healthCheck: true
 ```
 
-Conduit reads all `ConduitSite` resources in the given namespace, combines them
-into a single multi-site config, and hot-reloads whenever a CRD is added,
-modified, or deleted — no `conduit reload` needed.
+```bash
+kubectl apply -f my-app-site.yaml
+kubectl apply -f my-api-site.yaml
+# Conduit detects the new resources and hot-reloads immediately
+```
 
-No config file is read when `--kubernetes-namespace` is set. The `-c` flag is
-ignored in this mode.
+**`spec` fields** mirror the Conduit config schema exactly — every field that
+works in `conduit.yaml` works in `spec`. Multiple `ConduitSite` resources in a
+namespace are combined into a single multi-site Conduit config.
+
+**Update a site** (zero-downtime):
+
+```bash
+kubectl patch conduitsite my-app -p '{"spec":{"rateLimit":{"limit":1000}}}' --type=merge
+# Conduit detects the Modified event and hot-reloads within seconds
+```
+
+**Delete a site:**
+
+```bash
+kubectl delete conduitsite my-app
+# Conduit removes the site from its running config immediately
+```
 
 ### Compared to nginx-ingress
 

@@ -156,6 +156,20 @@ All string data passes through the plugin's **linear memory**:
 
 ---
 
+## Supported languages
+
+Any language that compiles to `wasm32-unknown-unknown` (no OS dependencies) works.
+
+| Language | Toolchain | Notes |
+| -------- | --------- | ----- |
+| **Rust** | `cargo build --target wasm32-unknown-unknown` | Best ecosystem for WASM; zero-cost abstractions |
+| **C / C++** | `clang --target=wasm32 -nostdlib` | Low-level, minimal binary size |
+| **Go** | [TinyGo](https://tinygo.org/) `tinygo build -target=wasi` | Full Go syntax; TinyGo required (standard `go` produces too-large WASM) |
+| **AssemblyScript** | `asc` (AssemblyScript compiler) | TypeScript-like syntax; designed for WASM |
+| **Zig** | `zig build-lib -target wasm32-freestanding` | Systems language with excellent WASM support |
+
+---
+
 ## Examples
 
 ### Minimal plugin (WAT)
@@ -304,9 +318,111 @@ pub extern "C" fn on_request() -> i32 {
 
 ---
 
-### Using plugin config in Rust
+### Header check in C
 
-Read the `config` JSON passed from `conduit.yaml`:
+The same auth-check as the Rust example, written in C:
+
+```c
+// plugin.c
+extern int conduit_get_header(
+    const char *name, int name_len,
+    char *buf, int buf_len);
+extern void conduit_set_response_status(int status);
+extern void conduit_set_response_body(const char *body, int body_len);
+
+static char buf[256];
+
+__attribute__((export_name("on_request")))
+int on_request(void) {
+    const char *key_name = "x-api-key";
+    int n = conduit_get_header(key_name, 9, buf, sizeof(buf));
+    if (n < 0) {
+        conduit_set_response_status(401);
+        const char *msg = "missing API key";
+        conduit_set_response_body(msg, 15);
+        return 1;
+    }
+    // Compare first n bytes
+    const char *expected = "my-secret";
+    if (n != 9) { conduit_set_response_status(403); return 1; }
+    for (int i = 0; i < 9; i++) {
+        if (buf[i] != expected[i]) { conduit_set_response_status(403); return 1; }
+    }
+    return 0;
+}
+```
+
+Build with Clang:
+
+```bash
+clang --target=wasm32 -nostdlib -Wl,--no-entry \
+      -Wl,--export=on_request -Wl,--export=memory \
+      -o plugin.wasm plugin.c
+```
+
+---
+
+### Header check in Go (TinyGo)
+
+```go
+// plugin.go
+package main
+
+//go:wasmimport conduit conduit_get_header
+func conduitGetHeader(namePtr, nameLen, bufPtr, bufLen uint32) int32
+
+//go:wasmimport conduit conduit_set_response_status
+func conduitSetResponseStatus(status int32)
+
+//export on_request
+func onRequest() int32 {
+    name := "x-api-key"
+    buf := make([]byte, 256)
+    n := conduitGetHeader(
+        uint32(uintptr(unsafe.Pointer(&[]byte(name)[0]))),
+        uint32(len(name)),
+        uint32(uintptr(unsafe.Pointer(&buf[0]))),
+        uint32(len(buf)),
+    )
+    if n < 0 {
+        conduitSetResponseStatus(401)
+        return 1
+    }
+    if string(buf[:n]) != "my-secret" {
+        conduitSetResponseStatus(403)
+        return 1
+    }
+    return 0
+}
+
+func main() {}
+```
+
+Build with TinyGo:
+
+```bash
+tinygo build -o plugin.wasm -target=wasi ./plugin.go
+```
+
+---
+
+### Using the plugin `config` field
+
+The `config` object from `conduit.yaml` is passed to the plugin as a JSON
+string via `conduit_get_plugin_config`. The plugin must parse it itself.
+
+Here's how to pass config in `conduit.yaml`:
+
+```yaml
+middleware:
+  - type: wasm
+    path: ./plugins/validator.wasm
+    config:
+      allowed_key: "secret-abc"
+      max_body_kb: 512
+```
+
+Reading it in Rust:
 
 ```yaml
 # conduit.yaml
@@ -366,9 +482,9 @@ For a cleaner approach, add a `no_std`-compatible JSON crate like
 
 ---
 
-## Building a Rust plugin
+## Building plugins
 
-### Cargo.toml
+### Rust — Cargo.toml
 
 ```toml
 [package]
@@ -384,7 +500,7 @@ opt-level = "s"           # optimize for size
 strip = true              # strip debug symbols
 ```
 
-### Build
+### Rust — build
 
 ```bash
 # Add the WASM target (once)
@@ -397,13 +513,37 @@ cargo build --target wasm32-unknown-unknown --release
 ls target/wasm32-unknown-unknown/release/*.wasm
 ```
 
-### Optimize (optional)
-
-Use [`wasm-opt`](https://github.com/WebAssembly/binaryen) to reduce file size:
+### C / C++ — build
 
 ```bash
-wasm-opt -Os -o my-plugin-opt.wasm \
-  target/wasm32-unknown-unknown/release/my_plugin.wasm
+# Clang with WASM target (install from llvm.org or via package manager)
+clang --target=wasm32 -nostdlib \
+      -Wl,--no-entry -Wl,--export=on_request -Wl,--export=memory \
+      -o plugin.wasm plugin.c
+```
+
+### Go — build with TinyGo
+
+```bash
+# Install TinyGo: https://tinygo.org/getting-started/install/
+tinygo build -o plugin.wasm -target=wasi ./plugin.go
+```
+
+### AssemblyScript — build
+
+```bash
+# Install: npm install -g assemblyscript
+asc plugin.ts --target release --outFile plugin.wasm \
+    --exportRuntime --exportMemory
+```
+
+### Optimize binary size (optional)
+
+[`wasm-opt`](https://github.com/WebAssembly/binaryen) shrinks any `.wasm` file regardless of source language:
+
+```bash
+# Install: https://github.com/WebAssembly/binaryen/releases
+wasm-opt -Os -o plugin-opt.wasm plugin.wasm
 ```
 
 ---

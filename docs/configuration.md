@@ -15,90 +15,6 @@ startup. This keeps secrets out of config files.
 
 ---
 
-## Request pipeline
-
-Understanding the order in which features are applied helps when combining
-multiple auth methods or rate limits.
-
-```txt
-Incoming request
-  │
-  ├─ 1. X-Request-ID injection        — auto-generate UUID v4 if absent
-  ├─ 2. IP filter                     — 403 if blocked (before any auth)
-  ├─ 3. CORS preflight                — OPTIONS short-circuit
-  ├─ 4. Health / ACME bypass          — skip all guards for /__health__ etc.
-  ├─ 5. Inflight limit                — 503 if maxInflightRequests exceeded
-  ├─ 6. Site-level rate limit         — 429 if over limit
-  ├─ 7. Consumers                     — identify named client (V1/V2/V3)
-  ├─ 8. Basic Auth                    — 401 if credentials missing/wrong
-  ├─ 9. API Key                       — 401 if key missing/wrong
-  ├─ 10. JWT Auth                     — 401 if token invalid
-  ├─ 11. Forward Auth                 — delegate to external service
-  ├─ 12. Redirects                    — 301/308 if path matches
-  ├─ 13. Fault injection              — abort/delay (testing only)
-  ├─ 14. Rhai / WASM middleware       — custom scripts in order
-  │
-  ├─ Route matching + per-route rate limit
-  ├─ Circuit breaker check
-  │
-  └─ Upstream request
-       ├─ X-Forwarded-For / -Proto / -Host injection
-       ├─ requestTransform (setHeaders / removeHeaders)
-       ├─ Path rewrite (stripPrefix / rewrite rules)
-       └─ Traffic mirror (fire-and-forget)
-
-Upstream response
-  ├─ CRLF header protection
-  ├─ CORS / security / custom headers injection
-  ├─ responseTransform
-  ├─ X-Response-Time header
-  ├─ Retry-on-error decision
-  └─ Error masking (5xx body replacement)
-```
-
-Steps 7–11 are mutually exclusive in practice — only one auth method identifies
-the client, but multiple may be configured as fallbacks. The `consumers` guard
-runs before `basicAuth` and `apiKey`, so a consumer match takes priority.
-
----
-
-## Forwarded headers
-
-Conduit automatically injects these headers into every proxied upstream request:
-
-| Header              | Value                  | Notes                                                        |
-| ------------------- | ---------------------- | ------------------------------------------------------------ |
-| `X-Forwarded-For`   | Client IP              | Appended to existing value if header already present         |
-| `X-Forwarded-Proto` | `http` or `https`      | Derived from whether the site has TLS configured             |
-| `X-Forwarded-Host`  | Original `Host` header | Lets upstreams reconstruct full URLs                         |
-| `X-Request-ID`      | UUID v4                | Auto-generated if absent; forwarded as-is if client sends it |
-
-To strip these from upstream responses (prevent leaking to clients), use
-`responseTransform.removeHeaders`.
-
----
-
-## `skipPaths` glob syntax
-
-`skipPaths` is supported by `basicAuth`, `apiKey`, `jwtAuth`, `forwardAuth`,
-`consumers`, `rateLimit`, and `logging`. Two pattern forms are supported:
-
-| Pattern       | Matches                                         |
-| ------------- | ----------------------------------------------- |
-| `/exact/path` | Only that exact path                            |
-| `/prefix/**`  | The prefix itself, `/prefix/`, and any sub-path |
-
-```yaml
-skipPaths:
-  - /__health__ # exact match
-  - /public/** # /public, /public/, /public/img.png, /public/a/b/c
-```
-
-> **Note:** only `/**` at the end is supported. Patterns like `/api/*/details`
-> or `/**.json` are treated as exact matches (no wildcard expansion).
-
----
-
 ## Table of Contents
 
 **Essentials**
@@ -180,6 +96,119 @@ skipPaths:
 
 ---
 
+## Concepts
+
+These sections explain **how Conduit behaves** — not config fields you set,
+but background knowledge that helps understand the rest of the reference.
+
+### Request pipeline
+
+The order in which configured features are applied for every incoming request:
+
+```txt
+Incoming request
+  │
+  ├─ 1. X-Request-ID injection        — auto-generate UUID v4 if absent
+  ├─ 2. IP filter                     — 403 if blocked (before any auth)
+  ├─ 3. CORS preflight                — OPTIONS short-circuit
+  ├─ 4. Health / ACME bypass          — skip all guards for /__health__ etc.
+  ├─ 5. Inflight limit                — 503 if maxInflightRequests exceeded
+  ├─ 6. Site-level rate limit         — 429 if over limit
+  ├─ 7. Consumers                     — identify named client (V1/V2/V3)
+  ├─ 8. Basic Auth                    — 401 if credentials missing/wrong
+  ├─ 9. API Key                       — 401 if key missing/wrong
+  ├─ 10. JWT Auth                     — 401 if token invalid
+  ├─ 11. Forward Auth                 — delegate to external service
+  ├─ 12. Redirects                    — 301/308 if path matches
+  ├─ 13. Fault injection              — abort/delay (testing only)
+  ├─ 14. Rhai / WASM middleware       — custom scripts in order
+  │
+  ├─ Route matching + per-route rate limit
+  ├─ Circuit breaker check
+  │
+  └─ Upstream request
+       ├─ X-Forwarded-For / -Proto / -Host injection
+       ├─ requestTransform (setHeaders / removeHeaders)
+       ├─ Path rewrite (stripPrefix / rewrite rules)
+       └─ Traffic mirror (fire-and-forget)
+
+Upstream response
+  ├─ CRLF header protection
+  ├─ CORS / security / custom headers injection
+  ├─ responseTransform
+  ├─ X-Response-Time header
+  ├─ Retry-on-error decision
+  └─ Error masking (5xx body replacement)
+```
+
+Steps 7–11 are mutually exclusive in practice — only one auth method identifies
+the client, but multiple may be configured as fallbacks. The `consumers` guard
+runs before `basicAuth` and `apiKey`, so a consumer match takes priority.
+
+### Forwarded headers
+
+Conduit **automatically** injects these headers into every proxied upstream
+request. No configuration is needed — they are always present.
+
+| Header              | Value                  | Notes |
+| ------------------- | ---------------------- | ----- |
+| `X-Forwarded-For`   | Client IP              | Appended to existing value if already present |
+| `X-Forwarded-Proto` | `http` or `https`      | Derived from whether the site has TLS configured |
+| `X-Forwarded-Host`  | Original `Host` header | Lets upstreams reconstruct full URLs |
+| `X-Request-ID`      | UUID v4                | Auto-generated if absent; forwarded as-is if client sends it |
+
+To remove any of these before forwarding, use `requestTransform.removeHeaders`:
+
+```yaml
+# conduit.yaml
+requestTransform:
+  removeHeaders: [X-Forwarded-For, X-Forwarded-Host]
+```
+
+```json
+// conduit.json
+{ "requestTransform": { "removeHeaders": ["X-Forwarded-For", "X-Forwarded-Host"] } }
+```
+
+### `skipPaths` glob syntax
+
+Many config sections accept a `skipPaths` list — requests whose path matches
+are bypassed by that feature entirely. It is **not** a top-level field; it
+appears inside `basicAuth`, `apiKey`, `jwtAuth`, `forwardAuth`, `consumers`,
+`rateLimit`, and `logging`.
+
+Two pattern forms are supported:
+
+| Pattern       | Matches |
+| ------------- | ------- |
+| `/exact/path` | Only that exact path |
+| `/prefix/**`  | The prefix itself, `/prefix/`, and any sub-path |
+
+```yaml
+# conduit.yaml — example inside jwtAuth
+jwtAuth:
+  secret: "$JWT_SECRET"
+  skipPaths:
+    - /__health__    # exact match — health check bypasses JWT
+    - /public/**     # /public, /public/, /public/assets/logo.png, …
+```
+
+```json
+// conduit.json
+{
+  "jwtAuth": {
+    "secret": "$JWT_SECRET",
+    "skipPaths": ["/__health__", "/public/**"]
+  }
+}
+```
+
+> **Note:** only `/**` at the end is supported as a wildcard.
+> Patterns like `/api/*/details` or `/**.json` are treated as **exact** matches
+> (no mid-path or extension wildcards).
+
+---
+
 ## Port and Host
 
 ```yaml
@@ -188,14 +217,14 @@ port: 8080
 host: api.example.com # optional — virtual hosting
 ```
 
-````json
+```json
 // JSON
 { "port": 8080, "host": "api.example.com" }
+```
 
-
-| Field  | Type   | Default | Description |
-| ------ | ------ | ------- | ----------- |
-| `port` | number | `3000`  | TCP port to listen on |
+| Field  | Type   | Default | Description                                                    |
+| ------ | ------ | ------- | -------------------------------------------------------------- |
+| `port` | number | `3000`  | TCP port to listen on                                          |
 | `host` | string | —       | Virtual hostname. Omit to match all `Host` headers (catch-all) |
 
 Use `host` when running [multiple sites](#multi-site) on the same process.
@@ -211,23 +240,23 @@ Use `host` when running [multiple sites](#multi-site) on the same process.
 port: 443
 tls:
   cert: /etc/tls/server.crt
-  key:  /etc/tls/server.key
+  key: /etc/tls/server.key
   httpRedirectPort: 80
   versions: ["TLSv1.2", "TLSv1.3"]
-````
+```
 
-````json
+```json
 // JSON
 {
   "port": 443,
   "tls": {
     "cert": "/etc/tls/server.crt",
-    "key":  "/etc/tls/server.key",
+    "key": "/etc/tls/server.key",
     "httpRedirectPort": 80,
     "versions": ["TLSv1.2", "TLSv1.3"]
   }
 }
-
+```
 
 ### Auto-TLS via Let's Encrypt
 
@@ -246,27 +275,30 @@ tls:
 {
   "port": 443,
   "tls": {
-    "acme": { "email": "admin@example.com", "storage": "./certs", "challenge": "http-01" }
+    "acme": {
+      "email": "admin@example.com",
+      "storage": "./certs",
+      "challenge": "http-01"
+    }
   }
 }
 ```
 
-
 ### TLS field reference
 
-| Field               | Type     | Default | Description |
-| ------------------- | -------- | ------- | ----------- |
-| `cert`              | path     | —       | PEM certificate file |
-| `key`               | path     | —       | PEM private key file |
-| `ca`                | path     | —       | CA bundle for upstream verification |
-| `httpRedirectPort`  | number   | —       | Port that redirects HTTP to HTTPS |
-| `versions`          | string[] | all     | Allowed TLS versions — rustls format (`"TLSv1.2"`, `"TLSv1.3"`) |
-| `ciphers`           | string[] | all     | Allowed cipher suites — rustls names, **not** OpenSSL |
-| `acme.email`        | string   | —       | Contact email for ACME account |
-| `acme.storage`      | path     | —       | Directory for certificate persistence |
-| `acme.challenge`    | string   | —       | `"http-01"` or `"dns-01"` |
-| `acme.directory`    | string   | —       | Custom ACME directory URL. Use `"https://acme-staging-v02.api.letsencrypt.org/directory"` for Let's Encrypt staging (rate-limit-free testing) |
-| `clientAuth`        | object   | —       | [mTLS client cert verification](#mtls--client-certificate-authentication) |
+| Field              | Type     | Default | Description                                                                                                                                   |
+| ------------------ | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cert`             | path     | —       | PEM certificate file                                                                                                                          |
+| `key`              | path     | —       | PEM private key file                                                                                                                          |
+| `ca`               | path     | —       | CA bundle for upstream verification                                                                                                           |
+| `httpRedirectPort` | number   | —       | Port that redirects HTTP to HTTPS                                                                                                             |
+| `versions`         | string[] | all     | Allowed TLS versions — rustls format (`"TLSv1.2"`, `"TLSv1.3"`)                                                                               |
+| `ciphers`          | string[] | all     | Allowed cipher suites — rustls names, **not** OpenSSL                                                                                         |
+| `acme.email`       | string   | —       | Contact email for ACME account                                                                                                                |
+| `acme.storage`     | path     | —       | Directory for certificate persistence                                                                                                         |
+| `acme.challenge`   | string   | —       | `"http-01"` or `"dns-01"`                                                                                                                     |
+| `acme.directory`   | string   | —       | Custom ACME directory URL. Use `"https://acme-staging-v02.api.letsencrypt.org/directory"` for Let's Encrypt staging (rate-limit-free testing) |
+| `clientAuth`       | object   | —       | [mTLS client cert verification](#mtls--client-certificate-authentication)                                                                     |
 
 > **Note — single cert per port:** rustls does not support per-SNI certificate
 > selection. When multiple HTTPS sites share the same port, the first registered
@@ -275,8 +307,6 @@ tls:
 ---
 
 ## HTTP/2
-
-```
 
 ```yaml
 # YAML
@@ -294,11 +324,9 @@ http2: true
   "tls": { "cert": "./certs/cert.pem", "key": "./certs/key.pem" },
   "http2": true
 }
-
+```
 
 Full config:
-
-```
 
 ```yaml
 http2:
@@ -392,11 +420,9 @@ proxy:
 ```json
 // JSON
 { "proxy": { "/api": "http://backend:4000" } }
-
+```
 
 ### Multiple targets
-
-```
 
 ```yaml
 # YAML
@@ -420,13 +446,11 @@ proxy:
     }
   }
 }
-
+```
 
 ### URL rewriting
 
 Rewrite rules are evaluated in order. The first matching rule is applied.
-
-```
 
 ```yaml
 # YAML
@@ -455,45 +479,43 @@ proxy:
     }
   }
 }
-
+```
 
 ### Proxy route field reference
 
-| Field                      | Type             | Default       | Description |
-| -------------------------- | ---------------- | ------------- | ----------- |
-| `targets`                  | string[] or object[] | —         | Upstream URLs (plain strings or `{url, weight}`) |
-| `strategy`                 | string           | `round-robin` | Load balancing — see [Load balancing](#load-balancing) |
-| `stripPrefix`              | bool             | `false`       | Remove matched path prefix before forwarding |
-| `hashKey`                  | string           | —             | Key for hash-based strategies: `"ip"`, `"url"`, `"header:X-Name"` |
-| `rewrite`                  | object[]         | —             | URL rewrite rules: `[{from, to}]` — first match wins |
-| `http2`                    | bool             | `false`       | Enable HTTP/2 for upstream connections |
-| `timeout.connectMs`        | number           | `3000`        | TCP connect timeout |
-| `timeout.sendMs`           | number           | —             | Request send timeout |
-| `timeout.readMs`           | number           | `30000`       | Response read timeout |
-| `timeout.perTryMs`         | number           | —             | Per-retry timeout |
-| `retry.attempts`           | number           | `0`           | Number of retry attempts |
-| `retry.conditions`         | string[]         | —             | `connection_error`, `5xx`, `timeout` |
-| `retry.backoffMs`          | number           | `0`           | Wait between retries |
-| `retry.budgetPercent`      | number           | —             | Max % of active requests that may be retries |
-| `healthCheck`              | object           | —             | Active health probes — see [Health checks](#health-checks) |
-| `backup`                   | string           | —             | Fallback URL when all primaries are unhealthy |
-| `cache`                    | object           | —             | Response cache — see [Proxy cache](#proxy-cache) |
-| `pool`                     | object           | —             | Connection pool — see [Connection pool](#connection-pool) |
-| `rateLimit`                | object           | —             | Per-route rate limit — see [Rate limiting](#rate-limiting) |
-| `upstreamTls`              | object           | —             | TLS for HTTPS upstreams — see [Upstream TLS](#upstream-tls-verification) |
-| `mirror`                   | string           | —             | Shadow URL — see [Traffic mirroring](#traffic-mirroring) |
-| `sticky.cookie`            | string           | —             | Cookie name for sticky sessions |
-| `groups`                   | object[]         | —             | Two-level LB groups: `[{name, targets, strategy}]` |
-| `groupStrategy`            | string           | `round-robin` | Outer strategy when `groups` is set |
-| `backup`                   | string           | —             | Failover URL when all primaries are unhealthy |
+| Field                 | Type                 | Default       | Description                                                              |
+| --------------------- | -------------------- | ------------- | ------------------------------------------------------------------------ |
+| `targets`             | string[] or object[] | —             | Upstream URLs (plain strings or `{url, weight}`)                         |
+| `strategy`            | string               | `round-robin` | Load balancing — see [Load balancing](#load-balancing)                   |
+| `stripPrefix`         | bool                 | `false`       | Remove matched path prefix before forwarding                             |
+| `hashKey`             | string               | —             | Key for hash-based strategies: `"ip"`, `"url"`, `"header:X-Name"`        |
+| `rewrite`             | object[]             | —             | URL rewrite rules: `[{from, to}]` — first match wins                     |
+| `http2`               | bool                 | `false`       | Enable HTTP/2 for upstream connections                                   |
+| `timeout.connectMs`   | number               | `3000`        | TCP connect timeout                                                      |
+| `timeout.sendMs`      | number               | —             | Request send timeout                                                     |
+| `timeout.readMs`      | number               | `30000`       | Response read timeout                                                    |
+| `timeout.perTryMs`    | number               | —             | Per-retry timeout                                                        |
+| `retry.attempts`      | number               | `0`           | Number of retry attempts                                                 |
+| `retry.conditions`    | string[]             | —             | `connection_error`, `5xx`, `timeout`                                     |
+| `retry.backoffMs`     | number               | `0`           | Wait between retries                                                     |
+| `retry.budgetPercent` | number               | —             | Max % of active requests that may be retries                             |
+| `healthCheck`         | object               | —             | Active health probes — see [Health checks](#health-checks)               |
+| `backup`              | string               | —             | Fallback URL when all primaries are unhealthy                            |
+| `cache`               | object               | —             | Response cache — see [Proxy cache](#proxy-cache)                         |
+| `pool`                | object               | —             | Connection pool — see [Connection pool](#connection-pool)                |
+| `rateLimit`           | object               | —             | Per-route rate limit — see [Rate limiting](#rate-limiting)               |
+| `upstreamTls`         | object               | —             | TLS for HTTPS upstreams — see [Upstream TLS](#upstream-tls-verification) |
+| `mirror`              | string               | —             | Shadow URL — see [Traffic mirroring](#traffic-mirroring)                 |
+| `sticky.cookie`       | string               | —             | Cookie name for sticky sessions                                          |
+| `groups`              | object[]             | —             | Two-level LB groups: `[{name, targets, strategy}]`                       |
+| `groupStrategy`       | string               | `round-robin` | Outer strategy when `groups` is set                                      |
+| `backup`              | string               | —             | Failover URL when all primaries are unhealthy                            |
 
 ---
 
 ## Routes
 
 The `routes` array matches requests before `proxy` / `static`. First match wins.
-
-```
 
 ```yaml
 # YAML
@@ -526,12 +548,22 @@ routes:
 {
   "routes": [
     {
-      "match": { "path": "/api/v2/**", "method": ["GET", "POST"], "headers": { "X-Version": "2" } },
+      "match": {
+        "path": "/api/v2/**",
+        "method": ["GET", "POST"],
+        "headers": { "X-Version": "2" }
+      },
       "proxy": { "targets": ["http://v2-backend:4000"] }
     },
     {
-      "match": { "path": "/api/**", "method": ["POST", "PUT", "PATCH", "DELETE"] },
-      "proxy": { "targets": ["http://write-api:4001", "http://write-api:4002"], "strategy": "least-conn" }
+      "match": {
+        "path": "/api/**",
+        "method": ["POST", "PUT", "PATCH", "DELETE"]
+      },
+      "proxy": {
+        "targets": ["http://write-api:4001", "http://write-api:4002"],
+        "strategy": "least-conn"
+      }
     },
     {
       "match": { "path": "/**" },
@@ -539,18 +571,18 @@ routes:
     }
   ]
 }
-
+```
 
 Each route entry has exactly three top-level fields: `match`, `proxy`, and `static`.
 Auth, rate limiting, and other policies come from the site-level config and apply
 to all routes uniformly.
 
-| `match` field | Type     | Description |
-| ------------- | -------- | ----------- |
+| `match` field | Type     | Description                                                       |
+| ------------- | -------- | ----------------------------------------------------------------- |
 | `path`        | glob     | Path glob — see [`skipPaths` glob syntax](#skippaths-glob-syntax) |
-| `method`      | string[] | HTTP methods to match (case-insensitive) |
-| `headers`     | object   | Request headers that must be present with given values |
-| `query`       | object   | Query parameters that must be present with given values |
+| `method`      | string[] | HTTP methods to match (case-insensitive)                          |
+| `headers`     | object   | Request headers that must be present with given values            |
+| `query`       | object   | Query parameters that must be present with given values           |
 
 ---
 
@@ -558,8 +590,6 @@ to all routes uniformly.
 
 Set `strategy` inside a proxy route. All strategies skip upstreams that are
 currently unhealthy (failed health probes) or ejected (outlier detection).
-
-```
 
 ```yaml
 proxy:
@@ -576,7 +606,7 @@ Cycles through the target list in order, one request at a time. A per-route
 atomic counter is incremented on each request and taken modulo the number of
 healthy upstreams.
 
-```
+```txt
 Request 1 → a  Request 2 → b  Request 3 → a  …
 ```
 
@@ -620,13 +650,13 @@ proxy:
     "/api": {
       "targets": [
         { "url": "http://primary:4000", "weight": 9 },
-        { "url": "http://canary:4000",  "weight": 1 }
+        { "url": "http://canary:4000", "weight": 1 }
       ],
       "strategy": "weighted-round-robin"
     }
   }
 }
-
+```
 
 > **Note:** `conduit upstreams weight` can change weights at runtime without
 > reloading the config.
@@ -643,8 +673,6 @@ retries and errors).
 **Use when:** requests have highly variable response times — e.g. a mix of fast
 reads and slow writes. Under uniform load it behaves like round-robin; its
 advantage emerges when some requests stall.
-
-```
 
 ```yaml
 proxy:
@@ -696,7 +724,7 @@ proxy:
     }
   }
 }
-
+```
 
 ---
 
@@ -713,8 +741,6 @@ one backend.
 > **Caveat:** adding or removing an upstream changes `pool_size` and remaps
 > roughly half of all clients. This is `hash % N` (modulo), not a consistent
 > hash ring. Use `sticky.cookie` for stable, cookie-based affinity.
-
-```
 
 ```yaml
 proxy:
@@ -734,7 +760,7 @@ proxy:
     }
   }
 }
-
+```
 
 ---
 
@@ -749,13 +775,11 @@ request attribute to a dedicated upstream.
 
 The `hashKey` field controls what is hashed:
 
-| `hashKey` value | Hashes | Example use case |
-| --------------- | ------ | ---------------- |
-| `ip` | Client IP | Per-IP affinity |
-| `url` | Full request URL | Cache-locality — same URL always hits same backend |
-| `header:X-Name` | Value of header `X-Name` | Per-tenant or per-user routing |
-
-```
+| `hashKey` value | Hashes                   | Example use case                                   |
+| --------------- | ------------------------ | -------------------------------------------------- |
+| `ip`            | Client IP                | Per-IP affinity                                    |
+| `url`           | Full request URL         | Cache-locality — same URL always hits same backend |
+| `header:X-Name` | Value of header `X-Name` | Per-tenant or per-user routing                     |
 
 ```yaml
 proxy:
@@ -771,13 +795,17 @@ proxy:
 {
   "proxy": {
     "/api": {
-      "targets": ["http://shard-1:4000", "http://shard-2:4000", "http://shard-3:4000"],
+      "targets": [
+        "http://shard-1:4000",
+        "http://shard-2:4000",
+        "http://shard-3:4000"
+      ],
       "strategy": "consistent-hash",
       "hashKey": "header:X-Tenant-ID"
     }
   }
 }
-
+```
 
 > **Same caveat as ip-hash:** pool size changes remap a large fraction of keys.
 > This is `hash % N`, not a Karger consistent hash ring.
@@ -793,8 +821,6 @@ thread-local RNG.
 useful for very large pools where maintaining a round-robin counter per route
 is unnecessary. In practice, `round-robin` is usually preferred since it
 provides better uniformity over small sample sizes.
-
-```
 
 ```yaml
 proxy:
@@ -836,27 +862,32 @@ proxy:
 {
   "proxy": {
     "/api": {
-      "targets": ["http://a:4000", "http://b:4000", "http://c:4000", "http://d:4000"],
+      "targets": [
+        "http://a:4000",
+        "http://b:4000",
+        "http://c:4000",
+        "http://d:4000"
+      ],
       "strategy": "p2c"
     }
   }
 }
-
+```
 
 ---
 
 ### Strategy comparison
 
-| Strategy              | Session affinity | Handles variable load | Pool change impact | Best for |
-| --------------------- | :--------------: | :-------------------: | :----------------: | -------- |
-| `round-robin`         | ✗ | ✗ | none | Homogeneous, stateless services |
-| `weighted-round-robin`| ✗ | ✗ | none | Mixed-capacity pools, canary rollouts |
-| `least-conn`          | ✗ | ✓ | none | Variable request duration (mixed workloads) |
-| `least-response-time` | ✗ | ✓ | none | Multi-region, geographically dispersed upstreams |
-| `ip-hash`             | by IP | ✗ | remaps ~50% | Soft affinity without cookies |
-| `consistent-hash`     | by key | ✗ | remaps ~50% | Per-tenant / per-key routing |
-| `random`              | ✗ | ✗ | none | Very large pools, simple distribution |
-| `p2c`                 | ✗ | ✓ | none | Large pools, low-overhead load awareness |
+| Strategy               | Session affinity | Handles variable load | Pool change impact | Best for                                         |
+| ---------------------- | :--------------: | :-------------------: | :----------------: | ------------------------------------------------ |
+| `round-robin`          |        ✗         |           ✗           |        none        | Homogeneous, stateless services                  |
+| `weighted-round-robin` |        ✗         |           ✗           |        none        | Mixed-capacity pools, canary rollouts            |
+| `least-conn`           |        ✗         |           ✓           |        none        | Variable request duration (mixed workloads)      |
+| `least-response-time`  |        ✗         |           ✓           |        none        | Multi-region, geographically dispersed upstreams |
+| `ip-hash`              |      by IP       |           ✗           |    remaps ~50%     | Soft affinity without cookies                    |
+| `consistent-hash`      |      by key      |           ✗           |    remaps ~50%     | Per-tenant / per-key routing                     |
+| `random`               |        ✗         |           ✗           |        none        | Very large pools, simple distribution            |
+| `p2c`                  |        ✗         |           ✓           |        none        | Large pools, low-overhead load awareness         |
 
 ---
 
@@ -864,8 +895,6 @@ proxy:
 
 Route a client to the same upstream for the duration of a session cookie,
 using consistent hashing on the cookie value.
-
-```
 
 ```yaml
 proxy:
@@ -887,7 +916,7 @@ proxy:
     }
   }
 }
-
+```
 
 If the client presents no cookie (first request), the request is routed by the
 configured strategy and the upstream is recorded — no cookie is set by Conduit.
@@ -899,8 +928,6 @@ The application is responsible for setting the session cookie.
 
 An outer strategy picks the group; an inner strategy balances within it.
 `groups` is an array — each entry has `name`, `targets`, and optional `strategy`.
-
-```
 
 ```yaml
 proxy:
@@ -921,14 +948,22 @@ proxy:
   "proxy": {
     "/api": {
       "groups": [
-        { "name": "us-east", "targets": ["http://us-east-1:4000", "http://us-east-2:4000"], "strategy": "least-conn" },
-        { "name": "eu-west", "targets": ["http://eu-west-1:4000", "http://eu-west-2:4000"], "strategy": "least-conn" }
+        {
+          "name": "us-east",
+          "targets": ["http://us-east-1:4000", "http://us-east-2:4000"],
+          "strategy": "least-conn"
+        },
+        {
+          "name": "eu-west",
+          "targets": ["http://eu-west-1:4000", "http://eu-west-2:4000"],
+          "strategy": "least-conn"
+        }
       ],
       "groupStrategy": "ip-hash"
     }
   }
 }
-
+```
 
 See [`examples/upstream-groups.yaml`](../examples/upstream-groups.yaml)
 
@@ -938,8 +973,6 @@ See [`examples/upstream-groups.yaml`](../examples/upstream-groups.yaml)
 
 ### Simple directory
 
-```
-
 ```yaml
 # YAML
 static: ./dist
@@ -948,11 +981,9 @@ static: ./dist
 ```json
 // JSON
 { "static": "./dist" }
-
+```
 
 ### Multiple directories
-
-```
 
 ```yaml
 # YAML
@@ -964,11 +995,9 @@ static:
 ```json
 // JSON
 { "static": ["./dist", "./public"] }
-
+```
 
 ### Path-mapped directories
-
-```
 
 ```yaml
 # YAML
@@ -980,11 +1009,9 @@ static:
 ```json
 // JSON
 { "static": { "/": "./dist", "/docs": "./docs-dist" } }
-
+```
 
 ### Static options
-
-```
 
 ```yaml
 # YAML
@@ -1011,24 +1038,22 @@ staticOptions:
     "maxAge": "1y"
   }
 }
+```
 
-
-| Field           | Type     | Default      | Description |
-| --------------- | -------- | ------------ | ----------- |
-| `index`         | string[] | `["index.html"]` | Default files for directory requests |
-| `dotFiles`      | string   | `"ignore"`   | `"ignore"`, `"allow"`, or `"deny"` |
-| `preCompressed` | bool     | `false`      | Serve pre-compressed `.br` / `.gz` files |
-| `etag`          | bool     | `true`       | ETag + conditional GET support |
-| `lastModified`  | bool     | `true`       | `Last-Modified` header |
-| `maxAge`        | string   | —            | `Cache-Control: max-age` — humantime duration string |
+| Field           | Type     | Default          | Description                                          |
+| --------------- | -------- | ---------------- | ---------------------------------------------------- |
+| `index`         | string[] | `["index.html"]` | Default files for directory requests                 |
+| `dotFiles`      | string   | `"ignore"`       | `"ignore"`, `"allow"`, or `"deny"`                   |
+| `preCompressed` | bool     | `false`          | Serve pre-compressed `.br` / `.gz` files             |
+| `etag`          | bool     | `true`           | ETag + conditional GET support                       |
+| `lastModified`  | bool     | `true`           | `Last-Modified` header                               |
+| `maxAge`        | string   | —                | `Cache-Control: max-age` — humantime duration string |
 
 ---
 
 ## Redirects
 
 `redirects` is an **array** of redirect rules.
-
-```
 
 ```yaml
 # YAML
@@ -1046,25 +1071,27 @@ redirects:
 // JSON
 {
   "redirects": [
-    { "from": "/old-path", "to": "https://example.com/new-path", "status": 301 },
+    {
+      "from": "/old-path",
+      "to": "https://example.com/new-path",
+      "status": 301
+    },
     { "from": "/blog/(.+)", "to": "https://blog.example.com/$1", "status": 308 }
   ]
 }
+```
 
-
-| Field    | Type   | Default | Description |
-| -------- | ------ | ------- | ----------- |
-| `from`   | string | —       | Path or regex pattern to match |
+| Field    | Type   | Default | Description                                             |
+| -------- | ------ | ------- | ------------------------------------------------------- |
+| `from`   | string | —       | Path or regex pattern to match                          |
 | `to`     | string | —       | Destination URL (capture groups `$1`…`$N` are expanded) |
-| `status` | number | `301`   | HTTP redirect status code |
+| `status` | number | `301`   | HTTP redirect status code                               |
 
 ---
 
 ## Fallback
 
 Return a response when no route matches.
-
-```
 
 ```yaml
 # YAML — SPA: serve index.html for all unmatched browser routes
@@ -1154,11 +1181,9 @@ proxy:
     }
   }
 }
-
+```
 
 ### Site health endpoint (for load balancer probes)
-
-```
 
 ```yaml
 # YAML
@@ -1172,20 +1197,20 @@ healthCheck:
 ```json
 // JSON
 { "healthCheck": { "includeUpstreams": true } }
-
+```
 
 ### Health check field reference
 
-| Field                       | Type    | Default       | Description |
-| --------------------------- | ------- | ------------- | ----------- |
-| `path`                      | string  | `/__health__` | Probe URL path |
-| `intervalSecs`              | number  | `10`          | Probe interval |
-| `timeoutMs`                 | number  | `2000`        | Probe timeout |
-| `unhealthyThreshold`        | number  | `3`           | Consecutive failures before removal |
-| `healthyThreshold`          | number  | `1`           | Consecutive passes before re-adding |
-| `slowStartSecs`             | number  | `0`           | Traffic ramp-up period after recovery |
-| `maxConnectionsPerUpstream` | number  | —             | [Circuit breaker](#circuit-breaker) threshold |
-| `includeUpstreams`          | bool    | `false`       | Include upstream health in `/__health__` response |
+| Field                       | Type   | Default       | Description                                       |
+| --------------------------- | ------ | ------------- | ------------------------------------------------- |
+| `path`                      | string | `/__health__` | Probe URL path                                    |
+| `intervalSecs`              | number | `10`          | Probe interval                                    |
+| `timeoutMs`                 | number | `2000`        | Probe timeout                                     |
+| `unhealthyThreshold`        | number | `3`           | Consecutive failures before removal               |
+| `healthyThreshold`          | number | `1`           | Consecutive passes before re-adding               |
+| `slowStartSecs`             | number | `0`           | Traffic ramp-up period after recovery             |
+| `maxConnectionsPerUpstream` | number | —             | [Circuit breaker](#circuit-breaker) threshold     |
+| `includeUpstreams`          | bool   | `false`       | Include upstream health in `/__health__` response |
 
 ---
 
@@ -1193,8 +1218,6 @@ healthCheck:
 
 When **all** upstreams reach `maxConnectionsPerUpstream` concurrent connections,
 Conduit returns `503` immediately instead of queuing.
-
-```
 
 ```yaml
 # YAML
@@ -1217,15 +1240,13 @@ proxy:
     }
   }
 }
-
+```
 
 See [`examples/circuit-breaker.yaml`](../examples/circuit-breaker.yaml)
 
 ---
 
 ## Retry
-
-```
 
 ```yaml
 # YAML
@@ -1261,7 +1282,7 @@ proxy:
     }
   }
 }
-
+```
 
 **Retry budget** prevents retry storms. With `budgetPercent: 20`, at most 20% of
 active requests may be retries at any moment.
@@ -1278,8 +1299,6 @@ on POST/PUT/PATCH. Requests whose body exceeds the limit are not retried.
 ## Outlier Detection
 
 Passively eject upstreams that return too many 5xx responses from real traffic.
-
-```
 
 ```yaml
 # YAML
@@ -1300,29 +1319,27 @@ outlierDetection:
     "maxEjectionPercent": 33
   }
 }
-
+```
 
 Ejection uses exponential backoff: 30 s → 60 s → 120 s → … up to
 `maxEjectionTimeSecs`.
 
-**Half-open circuit breaker:** when the ejection period expires, the *first*
+**Half-open circuit breaker:** when the ejection period expires, the _first_
 request is allowed through as a probe. If the probe succeeds (non-5xx), the
 upstream is fully restored and `ejection_count` is reset. If it fails, the
 upstream is re-ejected with the next backoff level. All other requests during
 the probe are blocked until the probe completes.
 
-| Field                  | Type   | Default | Description |
-| ---------------------- | ------ | ------- | ----------- |
-| `consecutive5xx`       | number | `5`     | Consecutive errors before ejection |
-| `baseEjectionTimeSecs` | number | `30`    | Initial ejection duration |
-| `maxEjectionTimeSecs`  | number | `300`   | Maximum ejection duration (cap on backoff) |
+| Field                  | Type   | Default | Description                                  |
+| ---------------------- | ------ | ------- | -------------------------------------------- |
+| `consecutive5xx`       | number | `5`     | Consecutive errors before ejection           |
+| `baseEjectionTimeSecs` | number | `30`    | Initial ejection duration                    |
+| `maxEjectionTimeSecs`  | number | `300`   | Maximum ejection duration (cap on backoff)   |
 | `maxEjectionPercent`   | number | `10`    | Max % of cluster that may be ejected at once |
 
 ---
 
 ## Limits
-
-```
 
 ```yaml
 # YAML
@@ -1345,23 +1362,21 @@ limits:
     "maxBodyBufferBytes": 1048576
   }
 }
+```
 
-
-| Field                  | Type   | Default | Description |
-| ---------------------- | ------ | ------- | ----------- |
-| `maxBodyBytes`         | number | —       | Max request body size — returns `413` if exceeded |
-| `maxHeaderBytes`       | number | —       | Max request header size |
-| `timeoutSecs`          | number | —       | Global request timeout |
-| `maxInflightRequests`  | number | —       | Max concurrent requests — returns `503` if exceeded (must be ≥ 1) |
-| `maxBodyBufferBytes`   | number | —       | Max body buffered per request for retry replay |
+| Field                 | Type   | Default | Description                                                       |
+| --------------------- | ------ | ------- | ----------------------------------------------------------------- |
+| `maxBodyBytes`        | number | —       | Max request body size — returns `413` if exceeded                 |
+| `maxHeaderBytes`      | number | —       | Max request header size                                           |
+| `timeoutSecs`         | number | —       | Global request timeout                                            |
+| `maxInflightRequests` | number | —       | Max concurrent requests — returns `503` if exceeded (must be ≥ 1) |
+| `maxBodyBufferBytes`  | number | —       | Max body buffered per request for retry replay                    |
 
 ---
 
 ## Fault Injection
 
 > **For testing only** — do not use in production.
-
-```
 
 ```yaml
 # YAML
@@ -1383,13 +1398,11 @@ faultInjection:
     "delay": { "percent": 10, "ms": 500 }
   }
 }
-
+```
 
 ---
 
 ## Proxy Cache
-
-```
 
 ```yaml
 # YAML
@@ -1428,21 +1441,21 @@ proxy:
     }
   }
 }
-
+```
 
 ### Cache field reference
 
-| Field                      | Type     | Default       | Description |
-| -------------------------- | -------- | ------------- | ----------- |
-| `store`                    | string   | —             | `"memory"` or `"redis://host:port"` |
-| `ttlSecs`                  | number   | —             | Fresh cache TTL (seconds) |
-| `maxSizeMb`                | number   | —             | Memory budget; LRU eviction above this |
+| Field                      | Type     | Default       | Description                                           |
+| -------------------------- | -------- | ------------- | ----------------------------------------------------- |
+| `store`                    | string   | —             | `"memory"` or `"redis://host:port"`                   |
+| `ttlSecs`                  | number   | —             | Fresh cache TTL (seconds)                             |
+| `maxSizeMb`                | number   | —             | Memory budget; LRU eviction above this                |
 | `staleWhileRevalidateSecs` | number   | `0`           | Serve stale while refreshing in background (RFC 5861) |
-| `staleIfErrorSecs`         | number   | `0`           | Serve stale when upstream returns 5xx (RFC 5861) |
-| `varyHeaders`              | string[] | —             | Vary cache key by these request headers |
-| `skipPaths`                | string[] | —             | Paths to never cache |
-| `skipIfCookie`             | bool     | `false`       | Skip caching when request has a cookie |
-| `methods`                  | string[] | `[GET, HEAD]` | Cacheable HTTP methods |
+| `staleIfErrorSecs`         | number   | `0`           | Serve stale when upstream returns 5xx (RFC 5861)      |
+| `varyHeaders`              | string[] | —             | Vary cache key by these request headers               |
+| `skipPaths`                | string[] | —             | Paths to never cache                                  |
+| `skipIfCookie`             | bool     | `false`       | Skip caching when request has a cookie                |
+| `methods`                  | string[] | `[GET, HEAD]` | Cacheable HTTP methods                                |
 
 **Cache key** — `scheme + host + path + query string`. Request body is never
 part of the key, so POST responses are not cached by default (add `"POST"` to
@@ -1459,8 +1472,6 @@ See [`examples/stale-while-revalidate.yaml`](../examples/stale-while-revalidate.
 ---
 
 ## Basic Auth
-
-```
 
 ```yaml
 # YAML
@@ -1483,20 +1494,18 @@ basicAuth:
     "skipPaths": ["/__health__"]
   }
 }
+```
 
-
-| Field       | Type     | Default      | Description |
-| ----------- | -------- | ------------ | ----------- |
-| `users`     | object   | —            | `{ username: password }` map |
-| `realm`     | string   | `"Conduit"`  | Shown in browser login dialog |
-| `challenge` | bool     | `true`       | Whether to send `WWW-Authenticate` header |
-| `skipPaths` | string[] | —            | Paths that bypass Basic Auth — see [glob syntax](#skippaths-glob-syntax) |
+| Field       | Type     | Default     | Description                                                              |
+| ----------- | -------- | ----------- | ------------------------------------------------------------------------ |
+| `users`     | object   | —           | `{ username: password }` map                                             |
+| `realm`     | string   | `"Conduit"` | Shown in browser login dialog                                            |
+| `challenge` | bool     | `true`      | Whether to send `WWW-Authenticate` header                                |
+| `skipPaths` | string[] | —           | Paths that bypass Basic Auth — see [glob syntax](#skippaths-glob-syntax) |
 
 ---
 
 ## API Key
-
-```
 
 ```yaml
 # YAML
@@ -1517,7 +1526,7 @@ apiKey:
     "skipPaths": ["/__health__", "/public/**"]
   }
 }
-
+```
 
 The key may be sent in the configured `header` or as a `?api_key=` query
 parameter.
@@ -1529,8 +1538,6 @@ parameter.
 Validates `Authorization: Bearer <token>` on every request.
 
 ### JWKS endpoint (recommended for production)
-
-```
 
 ```yaml
 # YAML
@@ -1553,11 +1560,9 @@ jwtAuth:
     "skipPaths": ["/__health__", "/public/**"]
   }
 }
-
+```
 
 ### Shared secret (HS256)
-
-```
 
 ```yaml
 jwtAuth:
@@ -1568,22 +1573,20 @@ jwtAuth:
 ```json
 // JSON
 { "jwtAuth": { "secret": "$JWT_SECRET", "skipPaths": ["/__health__"] } }
-
+```
 
 ### JWT field reference
 
-| Field             | Type     | Default | Description |
-| ----------------- | -------- | ------- | ----------- |
+| Field             | Type     | Default | Description                                             |
+| ----------------- | -------- | ------- | ------------------------------------------------------- |
 | `secret`          | string   | —       | HS256 shared secret (mutually exclusive with `jwksUrl`) |
-| `jwksUrl`         | string   | —       | JWKS endpoint URL (RS256 / ES256) |
-| `jwksRefreshSecs` | number   | `3600`  | JWKS key refresh interval |
-| `audience`        | string[] | —       | Required `aud` claims |
-| `issuer`          | string   | —       | Required `iss` claim |
-| `skipPaths`       | string[] | —       | Paths that bypass JWT validation |
+| `jwksUrl`         | string   | —       | JWKS endpoint URL (RS256 / ES256)                       |
+| `jwksRefreshSecs` | number   | `3600`  | JWKS key refresh interval                               |
+| `audience`        | string[] | —       | Required `aud` claims                                   |
+| `issuer`          | string   | —       | Required `iss` claim                                    |
+| `skipPaths`       | string[] | —       | Paths that bypass JWT validation                        |
 
 ### Injecting JWT claims as upstream headers
-
-```
 
 ```yaml
 requestTransform:
@@ -1599,11 +1602,14 @@ requestTransform:
 // JSON
 {
   "requestTransform": {
-    "setHeaders": { "X-User-ID": "{{ jwt.sub }}", "X-User-Email": "{{ jwt.email }}" },
+    "setHeaders": {
+      "X-User-ID": "{{ jwt.sub }}",
+      "X-User-Email": "{{ jwt.email }}"
+    },
     "removeHeaders": ["Authorization"]
   }
 }
-
+```
 
 Unknown claims expand to empty string. See [Request / Response Transform](#request--response-transform).
 
@@ -1615,14 +1621,14 @@ See [`examples/jwt-auth.yaml`](../examples/jwt-auth.yaml)
 
 Delegate authentication to an external HTTP service.
 
-```
+```txt
 
 Client -> Conduit -> Auth service
 2xx -> copy responseHeaders, forward to upstream
 4xx -> return to client, stop
 fail -> 401 (fail closed)
 
-````
+```
 
 ```yaml
 # YAML
@@ -1645,15 +1651,15 @@ forwardAuth:
     "skipPaths": ["/__health__", "/public/**"]
   }
 }
+```
 
-
-| Field             | Type     | Default | Description |
-| ----------------- | -------- | ------- | ----------- |
-| `url`             | string   | —       | Auth service URL (required) |
-| `requestHeaders`  | string[] | —       | Client headers to forward to auth service |
+| Field             | Type     | Default | Description                                           |
+| ----------------- | -------- | ------- | ----------------------------------------------------- |
+| `url`             | string   | —       | Auth service URL (required)                           |
+| `requestHeaders`  | string[] | —       | Client headers to forward to auth service             |
 | `responseHeaders` | string[] | —       | Auth response headers to inject into upstream request |
-| `timeoutMs`       | number   | `5000`  | Auth service timeout |
-| `skipPaths`       | string[] | —       | Paths that bypass forward auth |
+| `timeoutMs`       | number   | `5000`  | Auth service timeout                                  |
+| `skipPaths`       | string[] | —       | Paths that bypass forward auth                        |
 
 The auth service receives `X-Forwarded-Method`, `X-Forwarded-Uri`,
 `X-Forwarded-For`, plus any `requestHeaders`.
@@ -1667,8 +1673,6 @@ See [`examples/forward-auth.yaml`](../examples/forward-auth.yaml)
 Named API clients with per-consumer credentials, rate limits, and headers.
 After identification, the consumer's username is injected as `X-Consumer-ID`.
 Unidentified requests receive `401`.
-
-```
 
 ```yaml
 # YAML — V1 (API key / Basic Auth) + V2 (per-consumer JWT)
@@ -1710,24 +1714,37 @@ consumers:
     "idHeader": "X-Consumer-ID",
     "skipPaths": ["/__health__"],
     "consumers": [
-      { "username": "alice", "apiKey": "$ALICE_KEY",
-        "rateLimit": { "windowSecs": 60, "limit": 100 }, "headers": { "X-Tier": "free" } },
-      { "username": "billing-service", "basicAuth": { "password": "$BILLING_PASSWORD" },
-        "headers": { "X-Internal": "true" } },
-      { "username": "mobile-app", "jwt": { "secret": "$MOBILE_JWT_SECRET" },
-        "rateLimit": { "windowSecs": 60, "limit": 500 } },
-      { "username": "partner-app",
-        "jwt": { "jwksUrl": "https://partner.example.com/.well-known/jwks.json", "audience": ["my-api"] } }
+      {
+        "username": "alice",
+        "apiKey": "$ALICE_KEY",
+        "rateLimit": { "windowSecs": 60, "limit": 100 },
+        "headers": { "X-Tier": "free" }
+      },
+      {
+        "username": "billing-service",
+        "basicAuth": { "password": "$BILLING_PASSWORD" },
+        "headers": { "X-Internal": "true" }
+      },
+      {
+        "username": "mobile-app",
+        "jwt": { "secret": "$MOBILE_JWT_SECRET" },
+        "rateLimit": { "windowSecs": 60, "limit": 500 }
+      },
+      {
+        "username": "partner-app",
+        "jwt": {
+          "jwksUrl": "https://partner.example.com/.well-known/jwks.json",
+          "audience": ["my-api"]
+        }
+      }
     ]
   }
 }
-
+```
 
 ### V3: Shared JWT (Auth0 / Cognito / Keycloak pattern)
 
 One JWKS endpoint for all consumers; consumers are identified by `sub` claim.
-
-```
 
 ```yaml
 # YAML
@@ -1759,33 +1776,39 @@ consumers:
       "usernameClaim": "sub"
     },
     "consumers": [
-      { "username": "auth0|alice123", "rateLimit": { "windowSecs": 60, "limit": 100 } },
-      { "username": "auth0|bob456", "rateLimit": { "windowSecs": 60, "limit": 10000 } }
+      {
+        "username": "auth0|alice123",
+        "rateLimit": { "windowSecs": 60, "limit": 100 }
+      },
+      {
+        "username": "auth0|bob456",
+        "rateLimit": { "windowSecs": 60, "limit": 10000 }
+      }
     ]
   }
 }
-
+```
 
 ### `ConsumersConfig` field reference
 
-| Field          | Type     | Default         | Description |
-| -------------- | -------- | --------------- | ----------- |
-| `consumers`    | object[] | —               | List of named consumers |
+| Field          | Type     | Default         | Description                                          |
+| -------------- | -------- | --------------- | ---------------------------------------------------- |
+| `consumers`    | object[] | —               | List of named consumers                              |
 | `idHeader`     | string   | `x-consumer-id` | Header injected into upstream with consumer username |
-| `apiKeyHeader` | string   | `x-api-key`     | Header to read API keys from |
-| `skipPaths`    | string[] | —               | Paths that bypass consumer auth |
-| `sharedJwt`    | object   | —               | Single JWKS for all consumers (V3) |
+| `apiKeyHeader` | string   | `x-api-key`     | Header to read API keys from                         |
+| `skipPaths`    | string[] | —               | Paths that bypass consumer auth                      |
+| `sharedJwt`    | object   | —               | Single JWKS for all consumers (V3)                   |
 
 ### Per-consumer fields
 
-| Field       | Type   | Description |
-| ----------- | ------ | ----------- |
-| `username`  | string | Required — unique name, injected as `X-Consumer-ID` |
-| `apiKey`    | string | API key credential |
+| Field       | Type   | Description                                                 |
+| ----------- | ------ | ----------------------------------------------------------- |
+| `username`  | string | Required — unique name, injected as `X-Consumer-ID`         |
+| `apiKey`    | string | API key credential                                          |
 | `basicAuth` | object | `{ password }` — username is taken from `consumer.username` |
-| `jwt`       | object | `{ secret? jwksUrl? audience? issuer? }` (V2) |
-| `rateLimit` | object | Per-consumer rate limit (global, not per-IP) |
-| `headers`   | object | Additional headers to inject into upstream request |
+| `jwt`       | object | `{ secret? jwksUrl? audience? issuer? }` (V2)               |
+| `rateLimit` | object | Per-consumer rate limit (global, not per-IP)                |
+| `headers`   | object | Additional headers to inject into upstream request          |
 
 See [`examples/consumers.yaml`](../examples/consumers.yaml)
 
@@ -1796,8 +1819,6 @@ See [`examples/consumers.yaml`](../examples/consumers.yaml)
 ### Site-level
 
 Applied to all requests before authentication.
-
-```
 
 ```yaml
 # YAML
@@ -1820,13 +1841,11 @@ rateLimit:
     "skipPaths": ["/__health__"]
   }
 }
-
+```
 
 ### Per-route
 
 Applied after routing, independently of the site-level limit.
-
-```
 
 ```yaml
 proxy:
@@ -1916,17 +1935,17 @@ responseTransform:
     "removeHeaders": ["Server", "X-Powered-By", "X-AspNet-Version"]
   }
 }
-
+```
 
 ### JWT claim templates
 
 Available in `requestTransform.setHeaders` after JWT validation:
 
-| Template          | Claim   | Notes |
-| ----------------- | ------- | ----- |
-| `{{ jwt.sub }}`   | `sub`   | User identifier — always present |
-| `{{ jwt.email }}` | `email` | Email claim (if IdP includes it) |
-| `{{ jwt.iss }}`   | `iss`   | Token issuer |
+| Template          | Claim   | Notes                                               |
+| ----------------- | ------- | --------------------------------------------------- |
+| `{{ jwt.sub }}`   | `sub`   | User identifier — always present                    |
+| `{{ jwt.email }}` | `email` | Email claim (if IdP includes it)                    |
+| `{{ jwt.iss }}`   | `iss`   | Token issuer                                        |
 | any claim         | any     | `{{ jwt.<claim> }}` — unknown claims expand to `""` |
 
 ---
@@ -1935,8 +1954,6 @@ Available in `requestTransform.setHeaders` after JWT validation:
 
 Send a copy of requests to a shadow backend. The shadow response is discarded
 — clients only see the primary response.
-
-```
 
 ```yaml
 proxy:
@@ -2000,11 +2017,9 @@ logging: combined    # Apache Combined Log Format
 ```json
 // JSON
 { "logging": "json" }
-
+```
 
 Full config:
-
-```
 
 ```yaml
 logging:
@@ -2074,11 +2089,9 @@ metrics:
 ```json
 // JSON
 { "metrics": { "path": "/__metrics__", "token": "$METRICS_TOKEN" } }
-
+```
 
 Prometheus scrape config:
-
-```
 
 ```yaml
 scrape_configs:
@@ -2213,14 +2226,14 @@ securityHeaders:
     "referrerPolicy": "strict-origin-when-cross-origin"
   }
 }
+```
 
-
-| Field            | Type   | Default (object form)              | Sets HTTP header |
-| ---------------- | ------ | ---------------------------------- | ---------------- |
-| `hstsMaxAgeSecs` | number | — (not set)                        | `Strict-Transport-Security: max-age=<N>; includeSubDomains` |
-| `csp`            | string | — (not set)                        | `Content-Security-Policy` |
-| `xFrameOptions`  | string | `SAMEORIGIN`                       | `X-Frame-Options` |
-| `referrerPolicy` | string | `strict-origin-when-cross-origin`  | `Referrer-Policy` |
+| Field            | Type   | Default (object form)             | Sets HTTP header                                            |
+| ---------------- | ------ | --------------------------------- | ----------------------------------------------------------- |
+| `hstsMaxAgeSecs` | number | — (not set)                       | `Strict-Transport-Security: max-age=<N>; includeSubDomains` |
+| `csp`            | string | — (not set)                       | `Content-Security-Policy`                                   |
+| `xFrameOptions`  | string | `SAMEORIGIN`                      | `X-Frame-Options`                                           |
+| `referrerPolicy` | string | `strict-origin-when-cross-origin` | `Referrer-Policy`                                           |
 
 > **Always set:** `X-Content-Type-Options: nosniff` and `X-XSS-Protection: 1; mode=block`
 > are added in both `true` and object forms — they cannot be disabled.
@@ -2231,8 +2244,6 @@ securityHeaders:
 ---
 
 ## CORS
-
-```
 
 ```yaml
 # YAML — open CORS (development only)
@@ -2258,15 +2269,15 @@ cors:
     "maxAgeSecs": 86400
   }
 }
+```
 
-
-| Field            | Type     | Default | Description |
-| ---------------- | -------- | ------- | ----------- |
-| `origins`        | string[] | `["*"]` | Allowed origins |
-| `methods`        | string[] | all     | Allowed methods |
-| `allowedHeaders` | string[] | all     | Allowed request headers |
+| Field            | Type     | Default | Description                                  |
+| ---------------- | -------- | ------- | -------------------------------------------- |
+| `origins`        | string[] | `["*"]` | Allowed origins                              |
+| `methods`        | string[] | all     | Allowed methods                              |
+| `allowedHeaders` | string[] | all     | Allowed request headers                      |
 | `credentials`    | bool     | `false` | Allow `Authorization` / cookies cross-origin |
-| `maxAgeSecs`     | number   | —       | `Access-Control-Max-Age` (preflight cache) |
+| `maxAgeSecs`     | number   | —       | `Access-Control-Max-Age` (preflight cache)   |
 
 `cors: true` allows any origin (`*`). Always use the object form in production.
 
@@ -2276,8 +2287,6 @@ cors:
 
 Allow or deny requests by client IP or CIDR range. Evaluated **before**
 authentication — blocked IPs get `403` immediately.
-
-```
 
 ```yaml
 # YAML — allowlist (deny all others)
@@ -2302,12 +2311,12 @@ ipFilter:
     "trustProxy": true
   }
 }
+```
 
-
-| Field        | Type     | Default | Description |
-| ------------ | -------- | ------- | ----------- |
-| `allow`      | string[] | —       | Allowed CIDRs — deny all others |
-| `deny`       | string[] | —       | Denied CIDRs — allow all others |
+| Field        | Type     | Default | Description                           |
+| ------------ | -------- | ------- | ------------------------------------- |
+| `allow`      | string[] | —       | Allowed CIDRs — deny all others       |
+| `deny`       | string[] | —       | Denied CIDRs — allow all others       |
 | `trustProxy` | bool     | `false` | Trust `X-Forwarded-For` for client IP |
 
 When both `allow` and `deny` are set, `allow` takes precedence.
@@ -2318,8 +2327,6 @@ When both `allow` and `deny` are set, `allow` takes precedence.
 
 Replace upstream `5xx` bodies with a generic JSON error.
 
-```
-
 ```yaml
 maskErrors: true
 ```
@@ -2327,15 +2334,13 @@ maskErrors: true
 ```json
 // JSON
 { "maskErrors": true }
-
+```
 
 Clients receive: `{ "error": "Internal Server Error", "status": 500 }`
 
 ---
 
 ## Upstream TLS Verification
-
-```
 
 ```yaml
 proxy:
@@ -2352,24 +2357,25 @@ proxy:
   "proxy": {
     "/api": {
       "targets": ["https://api-internal:8443"],
-      "upstreamTls": { "verify": true, "serverName": "api-internal.svc.cluster.local" }
+      "upstreamTls": {
+        "verify": true,
+        "serverName": "api-internal.svc.cluster.local"
+      }
     }
   }
 }
+```
 
-
-| Field        | Type   | Default | Description |
-| ------------ | ------ | ------- | ----------- |
-| `verify`     | bool   | `false` | Verify upstream cert against system CA store |
-| `serverName` | string | from URL | Override SNI hostname |
+| Field        | Type   | Default  | Description                                  |
+| ------------ | ------ | -------- | -------------------------------------------- |
+| `verify`     | bool   | `false`  | Verify upstream cert against system CA store |
+| `serverName` | string | from URL | Override SNI hostname                        |
 
 ---
 
 ## mTLS — Client Certificate Authentication
 
 Require clients to present a TLS certificate signed by a trusted CA.
-
-```
 
 ```yaml
 tls:
@@ -2389,12 +2395,12 @@ tls:
     "clientAuth": { "ca": "/etc/tls/client-ca.crt", "optional": false }
   }
 }
+```
 
-
-| Field      | Type   | Default | Description |
-| ---------- | ------ | ------- | ----------- |
-| `ca`       | path   | —       | CA PEM file that signs authorized client certs — **required** |
-| `optional` | bool   | `false` | `false` = reject without cert; `true` = allow without cert |
+| Field      | Type | Default | Description                                                   |
+| ---------- | ---- | ------- | ------------------------------------------------------------- |
+| `ca`       | path | —       | CA PEM file that signs authorized client certs — **required** |
+| `optional` | bool | `false` | `false` = reject without cert; `true` = allow without cert    |
 
 See [`examples/mtls.yaml`](../examples/mtls.yaml)
 
@@ -2406,8 +2412,6 @@ Execute custom Rhai scripts per request. Scripts run in order; any script can
 reject the request or read headers to make decisions.
 
 **→ Full guide with examples: [rhai.md](rhai.md)**
-
-```
 
 ```yaml
 # YAML
@@ -2426,23 +2430,27 @@ middleware:
 {
   "middleware": [
     { "type": "script", "path": "./scripts/auth-check.rhai" },
-    { "type": "script", "path": "./scripts/add-headers.rhai", "config": { "tier": "premium" } }
+    {
+      "type": "script",
+      "path": "./scripts/add-headers.rhai",
+      "config": { "tier": "premium" }
+    }
   ]
 }
-
+```
 
 > **Note:** inline scripts are not supported — use `path` to a `.rhai` file.
 > Optional `config` is passed to the script as a JSON value.
 
 **Available Rhai functions:**
 
-| Function | Description |
-| -------- | ----------- |
-| `request.header(name)` | Read a request header |
-| `request.set_header(name, value)` | Set a request header |
-| `request.remove_header(name)` | Remove a request header |
-| `request.uri()` | Get the request URI |
-| `request.method()` | Get the HTTP method |
+| Function                             | Description                          |
+| ------------------------------------ | ------------------------------------ |
+| `request.header(name)`               | Read a request header                |
+| `request.set_header(name, value)`    | Set a request header                 |
+| `request.remove_header(name)`        | Remove a request header              |
+| `request.uri()`                      | Get the request URI                  |
+| `request.method()`                   | Get the HTTP method                  |
 | `request.set_response(status, body)` | Short-circuit with a custom response |
 
 ---
@@ -2452,8 +2460,6 @@ middleware:
 > **Requires** `cargo build --features wasm`
 
 **→ Full guide with ABI reference, Rust examples, and build instructions: [wasm.md](wasm.md)**
-
-```
 
 ```yaml
 # YAML
@@ -2465,33 +2471,31 @@ middleware:
 ```json
 // JSON
 { "middleware": [{ "type": "wasm", "path": "./plugins/my-plugin.wasm" }] }
-
+```
 
 Plugins export `on_request() -> i32` and a `memory` export.
 Return `0` to continue, non-zero to reject. Conduit **fails open** on errors.
 
 **Host functions:**
 
-| Function | Description |
-| -------- | ----------- |
-| `conduit_get_header` | Read a request header |
-| `conduit_set_header` | Set a request header |
-| `conduit_remove_header` | Remove a request header |
-| `conduit_get_uri` | Get request URI |
-| `conduit_get_method` | Get HTTP method |
-| `conduit_get_header_names` | List all header names |
-| `conduit_set_response` | Short-circuit with a custom response |
-| `conduit_abort_with_redirect` | Redirect the client |
-| `conduit_get_request_id` | Get X-Request-ID |
-| `conduit_log` | Write to Conduit log |
+| Function                      | Description                          |
+| ----------------------------- | ------------------------------------ |
+| `conduit_get_header`          | Read a request header                |
+| `conduit_set_header`          | Set a request header                 |
+| `conduit_remove_header`       | Remove a request header              |
+| `conduit_get_uri`             | Get request URI                      |
+| `conduit_get_method`          | Get HTTP method                      |
+| `conduit_get_header_names`    | List all header names                |
+| `conduit_set_response`        | Short-circuit with a custom response |
+| `conduit_abort_with_redirect` | Redirect the client                  |
+| `conduit_get_request_id`      | Get X-Request-ID                     |
+| `conduit_log`                 | Write to Conduit log                 |
 
 ---
 
 ## Connection Pool
 
 Configure the upstream HTTP connection pool per route.
-
-```
 
 ```yaml
 proxy:
@@ -2512,11 +2516,11 @@ proxy:
     }
   }
 }
+```
 
-
-| Field             | Type   | Default | Description |
-| ----------------- | ------ | ------- | ----------- |
-| `maxIdle`         | number | —       | Max idle connections kept alive |
+| Field             | Type   | Default | Description                                    |
+| ----------------- | ------ | ------- | ---------------------------------------------- |
+| `maxIdle`         | number | —       | Max idle connections kept alive                |
 | `idleTimeoutSecs` | number | —       | Close idle connections after this many seconds |
 
 ---
@@ -2524,8 +2528,6 @@ proxy:
 ## Multi-Site
 
 Run multiple virtual hosts from one process.
-
-```
 
 ```yaml
 # YAML
@@ -2567,24 +2569,25 @@ sites:
   },
   "sites": [
     {
-      "port": 443, "host": "app.example.com",
+      "port": 443,
+      "host": "app.example.com",
       "tls": { "cert": "./certs/app.crt", "key": "./certs/app.key" },
       "proxy": { "/api": "http://app-backend:4000" }
     }
   ]
 }
-
+```
 
 ### Global field reference
 
-| Field                  | Type   | Default          | Description |
-| ---------------------- | ------ | ---------------- | ----------- |
-| `workers`              | number | CPU count        | Worker threads — cold restart to change |
-| `backlog`              | number | `1024`           | TCP accept backlog |
-| `shutdownTimeoutSecs`  | number | —                | Grace period for in-flight requests on shutdown |
-| `admin.bind`           | string | `127.0.0.1:2019` | Admin API address (loopback only) |
-| `admin.token`          | string | —                | Required Bearer token for Admin API |
-| `otlp`                 | object | —                | OpenTelemetry tracing config |
+| Field                 | Type   | Default          | Description                                     |
+| --------------------- | ------ | ---------------- | ----------------------------------------------- |
+| `workers`             | number | CPU count        | Worker threads — cold restart to change         |
+| `backlog`             | number | `1024`           | TCP accept backlog                              |
+| `shutdownTimeoutSecs` | number | —                | Grace period for in-flight requests on shutdown |
+| `admin.bind`          | string | `127.0.0.1:2019` | Admin API address (loopback only)               |
+| `admin.token`         | string | —                | Required Bearer token for Admin API             |
+| `otlp`                | object | —                | OpenTelemetry tracing config                    |
 
 ---
 
@@ -2592,8 +2595,6 @@ sites:
 
 Enable multipart file upload. The upload handler is only started when this
 section is present in the config.
-
-```
 
 ```yaml
 # YAML
@@ -2607,7 +2608,7 @@ upload:
   fieldName: file # multipart field name (default: "file")
 ```
 
-````json
+```json
 // JSON
 {
   "upload": {
@@ -2620,17 +2621,17 @@ upload:
     "fieldName": "file"
   }
 }
+```
 
-
-| Field               | Type     | Default  | Description |
-| ------------------- | -------- | -------- | ----------- |
-| `path`              | string   | —        | URL path for upload endpoint — **required** |
+| Field               | Type     | Default  | Description                                     |
+| ------------------- | -------- | -------- | ----------------------------------------------- |
+| `path`              | string   | —        | URL path for upload endpoint — **required**     |
 | `dir`               | string   | —        | Directory to save uploaded files — **required** |
-| `maxFileSizeBytes`  | number   | —        | Max size per individual file |
-| `maxTotalSizeBytes` | number   | —        | Max total size of all files in one request |
-| `maxFiles`          | number   | —        | Max number of files per request |
-| `allowedMimeTypes`  | string[] | all      | Allowed MIME types (e.g. `"image/jpeg"`) |
-| `fieldName`         | string   | `"file"` | Multipart field name to read |
+| `maxFileSizeBytes`  | number   | —        | Max size per individual file                    |
+| `maxTotalSizeBytes` | number   | —        | Max total size of all files in one request      |
+| `maxFiles`          | number   | —        | Max number of files per request                 |
+| `allowedMimeTypes`  | string[] | all      | Allowed MIME types (e.g. `"image/jpeg"`)        |
+| `fieldName`         | string   | `"file"` | Multipart field name to read                    |
 
 ---
 
@@ -2641,9 +2642,9 @@ Configure with [`global.admin`](#multi-site):
 ```yaml
 global:
   admin:
-    bind: "127.0.0.1:2019"   # loopback only
-    token: "$ADMIN_TOKEN"     # optional Bearer token
-````
+    bind: "127.0.0.1:2019" # loopback only
+    token: "$ADMIN_TOKEN" # optional Bearer token
+```
 
 The Admin API provides 10 endpoints: hot-reload, status, upstream management,
 cache purge, and runtime IP deny-list.

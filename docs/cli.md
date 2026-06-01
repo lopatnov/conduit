@@ -241,8 +241,12 @@ unhealthy (status ≥ 500 or connection failure), **0** if all pass.
 
 ## Admin commands
 
-These commands talk to the running server's Admin API. They require the server
-to be running with `global.admin.bind` configured.
+These commands talk to the running server's Admin API.
+See **[docs/admin.md](admin.md)** for the full HTTP API reference, authentication
+details, and all endpoint request/response schemas.
+
+The Admin API listens on `127.0.0.1:2019` by default — it starts automatically
+even without explicit `global.admin` config.
 
 The admin address is resolved in this order:
 

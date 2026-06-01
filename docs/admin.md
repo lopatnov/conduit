@@ -28,43 +28,56 @@ graceful shutdown — all without restarting the process.
 
 ## Setup
 
-Configure in `conduit.yaml` / `conduit.json`:
+> **Always-on:** The Admin API starts automatically on `127.0.0.1:2019` even
+> without any explicit configuration. To disable it or change the address,
+> set `global.admin.bind` explicitly.
 
 ```yaml
+# conduit.yaml
 global:
   admin:
-    bind: "127.0.0.1:2019"   # default — loopback only
-    token: "$ADMIN_TOKEN"     # optional Bearer token
+    bind: "127.0.0.1:2019"   # loopback only — change to disable or rebind
+    token: "$ADMIN_TOKEN"     # recommended: require a Bearer token
 ```
 
 ```json
+// conduit.json
 { "global": { "admin": { "bind": "127.0.0.1:2019", "token": "$ADMIN_TOKEN" } } }
 ```
 
-The Admin API is **only started** when `global.admin` is configured. It is not
-available by default.
-
-> **Security:** Keep `bind` on loopback (`127.0.0.1`). If you need remote
-> access, use an SSH tunnel or a VPN — do not expose the Admin API directly.
+> **Security:** The Admin API always listens on `127.0.0.1:2019` by default.
+> Without a `token`, anyone with local access can reload configs, add upstreams,
+> or shut down the server. **Always set a token in production.**
+> Keep `bind` on loopback — never bind to `0.0.0.0` without a VPN or SSH tunnel.
 
 ---
 
 ## Authentication
 
-When `global.admin.token` is set, every request must include an
-`Authorization: Bearer <token>` header. Requests without the correct token
-receive `401 Unauthorized`.
+The Admin API uses **Bearer token authentication only** — no cookies, no
+Basic Auth, no JWT.
+
+When `global.admin.token` is set, every request must include:
+```
+Authorization: Bearer <token>
+```
+Requests without the correct token receive `401 Unauthorized`.
 
 ```bash
-# Without token
+# Without token (works when token is not configured)
 curl http://localhost:2019/status
 
 # With token
 curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:2019/status
+
+# Using CONDUIT_ADMIN env var for address + inline token
+export CONDUIT_ADMIN=127.0.0.1:2019
+curl -H "Authorization: Bearer $ADMIN_TOKEN" http://$CONDUIT_ADMIN/status
 ```
 
-The token can also be set via the `CONDUIT_ADMIN_TOKEN` environment variable
-when using [CLI shortcuts](#cli-shortcuts).
+The `CONDUIT_ADMIN` env var sets the **address** used by CLI shortcuts.
+The token must always be passed explicitly via the `Authorization` header
+(or via conduit CLI commands that read it from `CONDUIT_ADMIN_TOKEN`).
 
 ---
 

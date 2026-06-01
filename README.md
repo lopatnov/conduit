@@ -36,6 +36,7 @@ cargo install lopatnov-conduit
 - [Configuration](#configuration)
 - [Configuration Recipes](#configuration-recipes) / [All recipes](docs/recipes.md) ↗
 - [Admin API](#admin-api) / [API Reference](docs/admin.md) ↗
+- [Middleware](docs/configuration.md#rhai-script-middleware) — [Rhai guide](docs/rhai.md) ↗ · [WASM guide](docs/wasm.md) ↗
 - [Docker / Deployment](docs/deployment.md) ↗
 - [Editor Integration (JSON Schema)](#editor-integration-json-schema)
 - [Benchmarks](docs/benchmarks.md) ↗
