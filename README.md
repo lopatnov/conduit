@@ -78,21 +78,15 @@ GET /style.css   → serves ./dist/style.css
 GET /api/users   → proxied to http://localhost:4000/api/users
 ```
 
-> **Path forwarding:** by default the full path is forwarded — `/api/users` arrives
-> at the upstream as `/api/users`. Add `stripPrefix: true` to strip the matched
-> prefix so `/api/users` becomes `/users` on the upstream:
->
-> ```json
-> {
->   "proxy": {
->     "/api": { "targets": ["http://localhost:4000"], "stripPrefix": true }
->   }
-> }
-> ```
->
-> This matches nginx's `proxy_pass http://backend/;` (trailing-slash) behaviour.
-> Without `stripPrefix`, Conduit behaves like nginx's `proxy_pass http://backend;`
-> (no trailing slash) — keeping the full path.
+With `stripPrefix: true` the matched prefix is removed before forwarding:
+
+```json
+{ "proxy": { "/api": { "targets": ["http://localhost:4000"], "stripPrefix": true } } }
+```
+
+```text
+GET /api/users   → proxied to http://localhost:4000/users
+```
 
 ---
 
