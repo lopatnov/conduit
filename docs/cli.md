@@ -142,23 +142,32 @@ whitespace, or for converting YAML to canonical JSON.
 
 ### init
 
-Interactive wizard that generates a `conduit.json` starter config.
+Interactive wizard that generates a starter config in YAML or JSON.
 
 ```bash
-conduit init                   # writes to conduit.json
-conduit init -o my-site.json   # custom output path
+conduit init                    # asks format → writes conduit.yaml or conduit.json
+conduit init -o my-site.yaml    # YAML output (inferred from extension)
+conduit init -o my-site.json    # JSON output (inferred from extension)
 ```
 
 | Flag | Short | Default | Description |
 | ---- | ----- | ------- | ----------- |
-| `--output FILE` | `-o` | `conduit.json` | Write the generated config here |
+| `--output FILE` | `-o` | wizard asks | Write the generated config here |
+
+**Format selection:**
+- When `-o` is given, the format is inferred from the extension (`.yaml`/`.yml` → YAML, `.json` → JSON)
+- When `-o` is omitted, the wizard asks: *"YAML (recommended) or JSON?"*
+  - YAML default → writes `conduit.yaml`
+  - JSON default → writes `conduit.json`
 
 The wizard asks for:
-- Port and optional hostname
+- Output format (YAML / JSON)
+- Port
 - Whether to serve static files and from which directory
 - Whether to proxy to a backend and the backend URL
-- Whether to enable TLS (and which variant — manual certs or Let's Encrypt)
-- Whether to enable HTTPS redirect, security headers, CORS, compression
+- Whether to enable TLS (manual certs or Let's Encrypt / ACME)
+- Whether to enable the health check endpoint
+- Log format (dev / json / combined / none)
 
 ---
 

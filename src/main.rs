@@ -57,8 +57,12 @@ fn dispatch_command(cli: Cli) {
         }
         .execute(),
         Some(Command::Init(args)) => {
-            let output = args.output.unwrap_or(config);
-            InitCmd { output }.execute();
+            // Pass the explicit output path, if given. When absent the wizard
+            // asks for the format and picks the appropriate default name.
+            InitCmd {
+                output: args.output,
+            }
+            .execute();
         }
         Some(Command::Probe(_)) => ProbeCmd {
             config_path: config,
@@ -126,11 +130,12 @@ impl CliCommand for FmtCmd {
 }
 
 struct InitCmd {
-    output: String,
+    /// Explicit output path from `-o`; `None` → wizard picks the default.
+    output: Option<String>,
 }
 impl CliCommand for InitCmd {
     fn execute(self) {
-        if let Err(e) = init::run_init(&self.output) {
+        if let Err(e) = init::run_init(self.output.as_deref()) {
             eprintln!("error: {e}");
             process::exit(1);
         }

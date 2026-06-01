@@ -49,6 +49,7 @@ cargo install lopatnov-conduit
 
 ```bash
 # 1. Create a config with the interactive wizard
+#    (asks: YAML or JSON? port? static dir? proxy? TLS? …)
 conduit init
 
 # 2. Start
@@ -58,15 +59,18 @@ conduit
 conduit validate
 ```
 
-Minimum working config — save as `conduit.json` (or [`examples/minimal.yaml`](examples/minimal.yaml) for the annotated YAML version):
+Or write a config by hand — both formats are equivalent:
 
 ```json
+// conduit.json
 {
   "port": 3000,
   "static": "./dist",
   "proxy": { "/api": "http://localhost:4000" }
 }
 ```
+
+See [`examples/minimal.yaml`](examples/minimal.yaml) for the annotated YAML version.
 
 ```text
 GET /            → serves ./dist/index.html
@@ -79,7 +83,11 @@ GET /api/users   → proxied to http://localhost:4000/api/users
 > prefix so `/api/users` becomes `/users` on the upstream:
 >
 > ```json
-> { "proxy": { "/api": { "targets": ["http://localhost:4000"], "stripPrefix": true } } }
+> {
+>   "proxy": {
+>     "/api": { "targets": ["http://localhost:4000"], "stripPrefix": true }
+>   }
+> }
 > ```
 >
 > This matches nginx's `proxy_pass http://backend/;` (trailing-slash) behaviour.
@@ -123,14 +131,14 @@ Download from [GitHub Releases](https://github.com/lopatnov/conduit/releases).
 
 Each release ships two variants per platform:
 
-| Platform | Standard | Full (otlp + wasm + kubernetes) |
-| -------- | -------- | ------------------------------- |
-| Linux x86-64 | `conduit-x86_64-unknown-linux-gnu.tar.gz` | `conduit-x86_64-unknown-linux-gnu-full.tar.gz` |
-| Linux x86-64 musl | `conduit-x86_64-unknown-linux-musl.tar.gz` | `conduit-x86_64-unknown-linux-musl-full.tar.gz` |
-| Linux ARM64 | `conduit-aarch64-unknown-linux-gnu.tar.gz` | `conduit-aarch64-unknown-linux-gnu-full.tar.gz` |
-| macOS Intel | `conduit-x86_64-apple-darwin.tar.gz` | `conduit-x86_64-apple-darwin-full.tar.gz` |
-| macOS Apple Silicon | `conduit-aarch64-apple-darwin.tar.gz` | `conduit-aarch64-apple-darwin-full.tar.gz` |
-| Windows x86-64 | `conduit-x86_64-pc-windows-msvc.exe.zip` | `conduit-x86_64-pc-windows-msvc-full.exe.zip` |
+| Platform            | Standard                                   | Full (otlp + wasm + kubernetes)                 |
+| ------------------- | ------------------------------------------ | ----------------------------------------------- |
+| Linux x86-64        | `conduit-x86_64-unknown-linux-gnu.tar.gz`  | `conduit-x86_64-unknown-linux-gnu-full.tar.gz`  |
+| Linux x86-64 musl   | `conduit-x86_64-unknown-linux-musl.tar.gz` | `conduit-x86_64-unknown-linux-musl-full.tar.gz` |
+| Linux ARM64         | `conduit-aarch64-unknown-linux-gnu.tar.gz` | `conduit-aarch64-unknown-linux-gnu-full.tar.gz` |
+| macOS Intel         | `conduit-x86_64-apple-darwin.tar.gz`       | `conduit-x86_64-apple-darwin-full.tar.gz`       |
+| macOS Apple Silicon | `conduit-aarch64-apple-darwin.tar.gz`      | `conduit-aarch64-apple-darwin-full.tar.gz`      |
+| Windows x86-64      | `conduit-x86_64-pc-windows-msvc.exe.zip`   | `conduit-x86_64-pc-windows-msvc-full.exe.zip`   |
 
 ```bash
 # Linux — standard
@@ -185,10 +193,10 @@ cargo build --release
 The default binary includes everything except three optional features that add
 compile-time dependencies:
 
-| Feature | Flag | What it enables |
-| ------- | ---- | --------------- |
-| `otlp` | `--features otlp` | OpenTelemetry OTLP tracing (`global.otlp` config) |
-| `wasm` | `--features wasm` | WebAssembly plugin middleware (`type: "wasm"`) |
+| Feature      | Flag                    | What it enables                                           |
+| ------------ | ----------------------- | --------------------------------------------------------- |
+| `otlp`       | `--features otlp`       | OpenTelemetry OTLP tracing (`global.otlp` config)         |
+| `wasm`       | `--features wasm`       | WebAssembly plugin middleware (`type: "wasm"`)            |
 | `kubernetes` | `--features kubernetes` | Kubernetes CRD config provider (`--kubernetes-namespace`) |
 
 ```bash
@@ -299,7 +307,13 @@ YAML with comments: [`examples/spa-with-api.yaml`](examples/spa-with-api.yaml)
 ```json
 {
   "port": 443,
-  "tls": { "acme": { "email": "admin@example.com", "storage": "/var/cache/conduit/certs" }, "httpRedirectPort": 80 },
+  "tls": {
+    "acme": {
+      "email": "admin@example.com",
+      "storage": "/var/cache/conduit/certs"
+    },
+    "httpRedirectPort": 80
+  },
   "http2": true,
   "securityHeaders": true,
   "compression": true,
@@ -336,7 +350,7 @@ YAML with comments: [`examples/api-gateway.yaml`](examples/api-gateway.yaml)
   "ipFilter": { "allow": ["10.0.0.0/8"] },
   "rateLimit": { "windowSecs": 60, "limit": 500 },
   "proxy": {
-    "/users":  "http://users-svc:4001",
+    "/users": "http://users-svc:4001",
     "/orders": "http://orders-svc:4002",
     "/catalog": {
       "targets": ["http://catalog1:4003", "http://catalog2:4003"],
@@ -376,12 +390,12 @@ Dynamic upstream changes survive until `conduit reload` — which resets from th
 
 **Request body fields for `/upstreams/add`, `/upstreams/remove`, `/upstreams/weight`:**
 
-| Field    | Required | Description                                                                              |
-| -------- | -------- | ---------------------------------------------------------------------------------------- |
-| `route`  | ✅        | Route path, e.g. `"/api"`                                                                |
-| `target` | ✅        | Full upstream URL, e.g. `"http://b3:4000"`                                               |
-| `weight` | add/weight | Target weight (default: 1 for add)                                                    |
-| `site`   | —        | Site label to scope the change, e.g. `"app.example.com:443"`. Omit to apply to all sites with this route. |
+| Field    | Required   | Description                                                                                               |
+| -------- | ---------- | --------------------------------------------------------------------------------------------------------- |
+| `route`  | ✅         | Route path, e.g. `"/api"`                                                                                 |
+| `target` | ✅         | Full upstream URL, e.g. `"http://b3:4000"`                                                                |
+| `weight` | add/weight | Target weight (default: 1 for add)                                                                        |
+| `site`   | —          | Site label to scope the change, e.g. `"app.example.com:443"`. Omit to apply to all sites with this route. |
 
 ---
 
@@ -389,10 +403,10 @@ Dynamic upstream changes survive until `conduit reload` — which resets from th
 
 Two image variants are published on every release:
 
-| Image | Tag | Features |
-| ----- | --- | -------- |
-| Standard | `:latest`, `:1.0.0` | No optional features |
-| Full | `:latest-full`, `:1.0.0-full` | `otlp` + `wasm` + `kubernetes` |
+| Image    | Tag                           | Features                       |
+| -------- | ----------------------------- | ------------------------------ |
+| Standard | `:latest`, `:1.0.0`           | No optional features           |
+| Full     | `:latest-full`, `:1.0.0-full` | `otlp` + `wasm` + `kubernetes` |
 
 ```bash
 # Standard (~14 MB)
@@ -488,84 +502,84 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before
 
 ### Core runtime
 
-| Crate | Role |
-| ----- | ---- |
-| [Rust](https://rust-lang.org) | Systems language |
+| Crate                                                           | Role                       |
+| --------------------------------------------------------------- | -------------------------- |
+| [Rust](https://rust-lang.org)                                   | Systems language           |
 | [Cloudflare Pingora 0.8](https://github.com/cloudflare/pingora) | Async HTTP proxy framework |
-| [Tokio](https://tokio.rs) | Async runtime |
-| [Axum 0.8](https://github.com/tokio-rs/axum) | Admin API HTTP server |
+| [Tokio](https://tokio.rs)                                       | Async runtime              |
+| [Axum 0.8](https://github.com/tokio-rs/axum)                    | Admin API HTTP server      |
 
 ### TLS & certificates
 
-| Crate | Role |
-| ----- | ---- |
-| [rustls](https://github.com/rustls/rustls) | TLS implementation |
-| [rcgen](https://github.com/rustls/rcgen) | Certificate generation (tests) |
-| [instant-acme](https://github.com/instant-labs/instant-acme) | ACME / Let's Encrypt client |
+| Crate                                                        | Role                           |
+| ------------------------------------------------------------ | ------------------------------ |
+| [rustls](https://github.com/rustls/rustls)                   | TLS implementation             |
+| [rcgen](https://github.com/rustls/rcgen)                     | Certificate generation (tests) |
+| [instant-acme](https://github.com/instant-labs/instant-acme) | ACME / Let's Encrypt client    |
 
 ### Configuration & parsing
 
-| Crate | Role |
-| ----- | ---- |
-| [serde](https://serde.rs) + [serde_json](https://github.com/serde-rs/json) | Serialization |
-| [serde_yaml](https://github.com/dtolnay/serde-yaml) | YAML config format |
-| [serde_path_to_error](https://github.com/dtolnay/path-to-error) | Precise parse error messages |
-| [indexmap](https://github.com/bluss/indexmap) | Ordered map for route config |
+| Crate                                                                      | Role                         |
+| -------------------------------------------------------------------------- | ---------------------------- |
+| [serde](https://serde.rs) + [serde_json](https://github.com/serde-rs/json) | Serialization                |
+| [serde_yaml](https://github.com/dtolnay/serde-yaml)                        | YAML config format           |
+| [serde_path_to_error](https://github.com/dtolnay/path-to-error)            | Precise parse error messages |
+| [indexmap](https://github.com/bluss/indexmap)                              | Ordered map for route config |
 
 ### Performance & concurrency
 
-| Crate | Role |
-| ----- | ---- |
-| [arc-swap](https://github.com/vorner/arc-swap) | Lock-free hot reload |
-| [dashmap](https://github.com/xacrimon/dashmap) | Concurrent rate-limit state |
-| [async-compression](https://github.com/Nemo157/async-compression) | Brotli / gzip / deflate |
+| Crate                                                             | Role                        |
+| ----------------------------------------------------------------- | --------------------------- |
+| [arc-swap](https://github.com/vorner/arc-swap)                    | Lock-free hot reload        |
+| [dashmap](https://github.com/xacrimon/dashmap)                    | Concurrent rate-limit state |
+| [async-compression](https://github.com/Nemo157/async-compression) | Brotli / gzip / deflate     |
 
 ### Middleware & scripting
 
-| Crate | Role |
-| ----- | ---- |
-| [rhai](https://rhai.rs) | Embedded scripting engine |
-| [wasmtime](https://wasmtime.dev) | WASM plugin host |
-| [regex](https://github.com/rust-lang/regex) | URL rewriting |
+| Crate                                             | Role                          |
+| ------------------------------------------------- | ----------------------------- |
+| [rhai](https://rhai.rs)                           | Embedded scripting engine     |
+| [wasmtime](https://wasmtime.dev)                  | WASM plugin host              |
+| [regex](https://github.com/rust-lang/regex)       | URL rewriting                 |
 | [reqwest](https://github.com/seanmonstar/reqwest) | Forward auth, JWKS, mirroring |
-| [redis](https://github.com/redis-rs/redis-rs) | Distributed rate-limit store |
+| [redis](https://github.com/redis-rs/redis-rs)     | Distributed rate-limit store  |
 
 ### Auth & security
 
-| Crate | Role |
-| ----- | ---- |
+| Crate                                                 | Role                                 |
+| ----------------------------------------------------- | ------------------------------------ |
 | [jsonwebtoken](https://github.com/Keats/jsonwebtoken) | JWT validation (HS256, RS256, ES256) |
-| [ipnet](https://github.com/krisprice/ipnet) | CIDR-based IP filtering |
+| [ipnet](https://github.com/krisprice/ipnet)           | CIDR-based IP filtering              |
 
 ### File handling & CLI
 
-| Crate | Role |
-| ----- | ---- |
-| [notify](https://github.com/notify-rs/notify) | Filesystem watcher (hot reload) |
-| [uuid](https://github.com/uuid-rs/uuid) | X-Request-ID generation |
-| [mime_guess](https://github.com/abonander/mime_guess) | Content-Type detection |
-| [clap 4](https://github.com/clap-rs/clap) | CLI argument parsing |
-| [clap_complete](https://github.com/clap-rs/clap) | Shell completion scripts |
-| [dialoguer](https://github.com/console-rs/dialoguer) | `conduit init` wizard |
-| [indicatif](https://github.com/console-rs/indicatif) | Progress bars |
+| Crate                                                 | Role                            |
+| ----------------------------------------------------- | ------------------------------- |
+| [notify](https://github.com/notify-rs/notify)         | Filesystem watcher (hot reload) |
+| [uuid](https://github.com/uuid-rs/uuid)               | X-Request-ID generation         |
+| [mime_guess](https://github.com/abonander/mime_guess) | Content-Type detection          |
+| [clap 4](https://github.com/clap-rs/clap)             | CLI argument parsing            |
+| [clap_complete](https://github.com/clap-rs/clap)      | Shell completion scripts        |
+| [dialoguer](https://github.com/console-rs/dialoguer)  | `conduit init` wizard           |
+| [indicatif](https://github.com/console-rs/indicatif)  | Progress bars                   |
 
 ### Observability
 
-| Crate | Role |
-| ----- | ---- |
-| [tracing](https://github.com/tokio-rs/tracing) + tracing-subscriber | Structured logging |
-| [prometheus](https://github.com/tikv/rust-prometheus) | Metrics exposition |
+| Crate                                                                                      | Role                             |
+| ------------------------------------------------------------------------------------------ | -------------------------------- |
+| [tracing](https://github.com/tokio-rs/tracing) + tracing-subscriber                        | Structured logging               |
+| [prometheus](https://github.com/tikv/rust-prometheus)                                      | Metrics exposition               |
 | [opentelemetry](https://github.com/open-telemetry/opentelemetry-rust) + opentelemetry-otlp | OTLP tracing (`--features otlp`) |
 
 ### Dev & CI
 
-| Tool | Role |
-| ---- | ---- |
-| [GitHub Actions](https://github.com/features/actions) | CI / release pipeline |
-| [Docker](https://docker.com) (musl + scratch) | Minimal container image |
-| [cross](https://github.com/cross-rs/cross) | Cross-compilation |
-| [criterion](https://github.com/bheisler/criterion.rs) | Benchmarks |
-| [SonarCloud](https://sonarcloud.io) | Static analysis |
+| Tool                                                  | Role                    |
+| ----------------------------------------------------- | ----------------------- |
+| [GitHub Actions](https://github.com/features/actions) | CI / release pipeline   |
+| [Docker](https://docker.com) (musl + scratch)         | Minimal container image |
+| [cross](https://github.com/cross-rs/cross)            | Cross-compilation       |
+| [criterion](https://github.com/bheisler/criterion.rs) | Benchmarks              |
+| [SonarCloud](https://sonarcloud.io)                   | Static analysis         |
 
 ---
 

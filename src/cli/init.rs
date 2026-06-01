@@ -3,10 +3,35 @@ use std::path::Path;
 use dialoguer::{Confirm, Input, Select};
 use serde_json::{json, Value};
 
+/// Output format selected by the user.
+#[derive(Clone, Copy, PartialEq)]
+enum Format {
+    Yaml,
+    Json,
+}
+
+impl Format {
+    fn default_filename(self) -> &'static str {
+        match self {
+            Format::Yaml => "conduit.yaml",
+            Format::Json => "conduit.json",
+        }
+    }
+
+    /// Infer format from a file extension, returning `None` when unknown.
+    fn from_path(path: &str) -> Option<Self> {
+        let lower = path.to_lowercase();
+        if lower.ends_with(".yaml") || lower.ends_with(".yml") {
+            Some(Format::Yaml)
+        } else if lower.ends_with(".json") {
+            Some(Format::Json)
+        } else {
+            None
+        }
+    }
+}
+
 /// Ask the user how to configure TLS (if at all).
-///
-/// Returns `None` when the user opts out of TLS, or a JSON value representing
-/// either a manual-cert or ACME block.
 fn ask_tls_config() -> anyhow::Result<Option<Value>> {
     let want_tls = Confirm::new()
         .with_prompt("Enable TLS (HTTPS)?")
@@ -42,15 +67,48 @@ fn ask_tls_config() -> anyhow::Result<Option<Value>> {
     }
 }
 
+/// Serialize `value` to a YAML string.
+///
+/// The output uses the serde_yaml formatter.  Comments from the schema are
+/// not included — for a fully-annotated starting point use `examples/minimal.yaml`.
+fn to_yaml_string(value: &Value) -> anyhow::Result<String> {
+    Ok(serde_yaml::to_string(value)?)
+}
+
 /// Run the interactive `conduit init` wizard.
 ///
-/// Asks a series of questions and writes a `conduit.json` to `output_path`.
-/// Returns `Ok(())` on success or an error string on failure.
-pub fn run_init(output_path: &str) -> anyhow::Result<()> {
-    let path = Path::new(output_path);
+/// * `output_path` — explicit output path from `-o`; when `None` the wizard
+///   asks for the format and picks a sensible default name (`conduit.yaml` or
+///   `conduit.json`).
+pub fn run_init(output_path: Option<&str>) -> anyhow::Result<()> {
+    println!("Welcome to conduit init! Answer a few questions to get started.\n");
+
+    // ── Format ───────────────────────────────────────────────────────────────
+    // If the output path was given explicitly, infer format from extension.
+    // Otherwise ask the user.
+    let format = if let Some(path) = output_path {
+        Format::from_path(path).unwrap_or(Format::Yaml)
+    } else {
+        let format_options = [
+            "YAML  (recommended — supports comments)",
+            "JSON  (compatible with all JSON tooling)",
+        ];
+        let fmt_choice = Select::new()
+            .with_prompt("Output format")
+            .items(format_options)
+            .default(0)
+            .interact()?;
+        if fmt_choice == 0 { Format::Yaml } else { Format::Json }
+    };
+
+    let resolved_path = output_path
+        .map(str::to_owned)
+        .unwrap_or_else(|| format.default_filename().to_owned());
+    let path = Path::new(&resolved_path);
+
     if path.exists() {
         let overwrite = Confirm::new()
-            .with_prompt(format!("{output_path} already exists. Overwrite?"))
+            .with_prompt(format!("{resolved_path} already exists. Overwrite?"))
             .default(false)
             .interact()?;
         if !overwrite {
@@ -59,15 +117,13 @@ pub fn run_init(output_path: &str) -> anyhow::Result<()> {
         }
     }
 
-    println!("Welcome to conduit init! Answer a few questions to get started.\n");
-
-    // ── Port ────────────────────────────────────────────────────────────────
+    // ── Port ─────────────────────────────────────────────────────────────────
     let port: u16 = Input::new()
         .with_prompt("Port")
         .default(8080u16)
         .interact_text()?;
 
-    // ── Static file serving ─────────────────────────────────────────────────
+    // ── Static file serving ──────────────────────────────────────────────────
     let want_static = Confirm::new()
         .with_prompt("Serve static files?")
         .default(true)
@@ -83,7 +139,7 @@ pub fn run_init(output_path: &str) -> anyhow::Result<()> {
         None
     };
 
-    // ── Reverse proxy ───────────────────────────────────────────────────────
+    // ── Reverse proxy ────────────────────────────────────────────────────────
     let want_proxy = Confirm::new()
         .with_prompt("Proxy to an upstream server?")
         .default(false)
@@ -99,16 +155,16 @@ pub fn run_init(output_path: &str) -> anyhow::Result<()> {
         None
     };
 
-    // ── TLS ─────────────────────────────────────────────────────────────────
+    // ── TLS ──────────────────────────────────────────────────────────────────
     let tls_config = ask_tls_config()?;
 
-    // ── Health check ────────────────────────────────────────────────────────
+    // ── Health check ─────────────────────────────────────────────────────────
     let want_health = Confirm::new()
         .with_prompt("Enable health check endpoint (GET /__health__)?")
         .default(true)
         .interact()?;
 
-    // ── Logging ─────────────────────────────────────────────────────────────
+    // ── Logging ──────────────────────────────────────────────────────────────
     let log_formats = [
         "dev (human-readable)",
         "json (structured)",
@@ -125,10 +181,10 @@ pub fn run_init(output_path: &str) -> anyhow::Result<()> {
         0 => Some(json!("dev")),
         1 => Some(json!("json")),
         2 => Some(json!("combined")),
-        _ => None, // "none" → no logging field
+        _ => None,
     };
 
-    // ── Assemble config ─────────────────────────────────────────────────────
+    // ── Assemble config ──────────────────────────────────────────────────────
     let mut site = json!({ "port": port });
 
     if let Some(dir) = static_dir {
@@ -147,13 +203,17 @@ pub fn run_init(output_path: &str) -> anyhow::Result<()> {
         site["logging"] = logging;
     }
 
-    let config_str = serde_json::to_string_pretty(&site)?;
+    // ── Serialize ────────────────────────────────────────────────────────────
+    let config_str = match format {
+        Format::Yaml => to_yaml_string(&site)?,
+        Format::Json => serde_json::to_string_pretty(&site)?,
+    };
 
     std::fs::write(path, &config_str)?;
 
-    println!("\nWrote {output_path}:\n");
+    println!("\nWrote {resolved_path}:\n");
     println!("{config_str}");
-    println!("\nRun `conduit` to start the server, or `conduit validate` to check the config.");
+    println!("Run `conduit -c {resolved_path}` to start, or `conduit validate -c {resolved_path}` to check the config.");
 
     Ok(())
 }
