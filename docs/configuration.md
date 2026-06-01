@@ -164,7 +164,7 @@ skipPaths:
 - [Connection pool](#connection-pool)
 - [Multi-site (virtual hosting)](#multi-site)
 - [Upload](#upload)
-- [Admin API](#admin-api)
+- [Admin API](#admin-api) — see also [admin.md](admin.md) for full reference
 - [Prometheus metrics reference](#prometheus-metrics-reference)
 
 ---
@@ -2565,61 +2565,19 @@ upload:
 
 ## Admin API
 
-Listens on `127.0.0.1:2019` (loopback only). Configure with [`global.admin`](#multi-site).
+Configure with [`global.admin`](#multi-site):
 
-```
-```bash
-curl http://localhost:2019/status
-curl -X POST http://localhost:2019/reload
-curl http://localhost:2019/upstreams
-curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:2019/status
-```
-
-| Method | Path | Description |
-| ------ | ---- | ----------- |
-| `GET`    | `/status` | Server status, version, in-flight count |
-| `POST`   | `/reload` | Hot-reload config from file |
-| `GET`    | `/upstreams` | All upstreams with health, latency, ejection status |
-| `POST`   | `/upstreams/add` | Add upstream to a route (in-memory) |
-| `POST`   | `/upstreams/remove` | Remove upstream from a route |
-| `POST`   | `/upstreams/weight` | Change upstream weight |
-| `POST`   | `/shutdown` | Graceful shutdown |
-| `DELETE` | `/cache/purge?url=<url>` | Invalidate a specific cache entry by URL |
-| `POST`   | `/ip-deny` | Add a CIDR to the runtime deny-list |
-| `DELETE` | `/ip-deny` | Remove a CIDR from the runtime deny-list |
-
-### Cache purge
-
-```bash
-# Invalidate a specific URL from the in-memory cache
-curl -X DELETE "http://localhost:2019/cache/purge?url=https://example.com/api/data"
+```yaml
+global:
+  admin:
+    bind: "127.0.0.1:2019"   # loopback only
+    token: "$ADMIN_TOKEN"     # optional Bearer token
 ```
 
-Returns `{"status":"ok","purged":true}` when an entry was found and removed,
-`{"status":"ok","purged":false}` when no matching entry existed.
+The Admin API provides 10 endpoints: hot-reload, status, upstream management,
+cache purge, and runtime IP deny-list.
 
-### Runtime IP deny-list
-
-Add or remove CIDRs at runtime without reloading the config. Takes effect
-immediately for all new requests.
-
-```bash
-# Block a CIDR
-curl -X POST http://localhost:2019/ip-deny \
-     -H "Content-Type: application/json" \
-     -d '{"cidr":"192.0.2.0/24"}'
-
-# Remove a CIDR
-curl -X DELETE http://localhost:2019/ip-deny \
-     -H "Content-Type: application/json" \
-     -d '{"cidr":"192.0.2.0/24"}'
-```
-
-Deny entries are in-memory only and are **not persisted** across restarts. To
-make them permanent, add them to `ipFilter.deny` in the config.
-
-Dynamic changes (`add`/`remove`/`weight`) are in-memory only and reset on
-`conduit reload`.
+**→ Full reference with request/response examples: [docs/admin.md](admin.md)**
 
 ---
 

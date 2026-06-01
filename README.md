@@ -35,7 +35,7 @@ cargo install lopatnov-conduit
 - [CLI Commands](#cli-commands) / [CLI Reference](docs/cli.md) ↗
 - [Configuration](#configuration)
 - [Configuration Recipes](#configuration-recipes) / [All recipes](docs/recipes.md) ↗
-- [Admin API](#admin-api)
+- [Admin API](#admin-api) / [API Reference](docs/admin.md) ↗
 - [Docker / Deployment](docs/deployment.md) ↗
 - [Editor Integration (JSON Schema)](#editor-integration-json-schema)
 - [Benchmarks](docs/benchmarks.md) ↗
@@ -365,32 +365,24 @@ HTTPS, JWT, load balancing, failover, security hardening, observability, multi-s
 
 ## Admin API
 
-Runs on `127.0.0.1:2019` (loopback only — never exposed to the network).
+Local HTTP server for hot-reloading config, inspecting upstream health, and
+runtime traffic management — without restarting.
 
-```json
-{ "global": { "admin": { "bind": "127.0.0.1:2019" } } }
+```yaml
+global:
+  admin:
+    bind: "127.0.0.1:2019"   # loopback only
+    token: "$ADMIN_TOKEN"     # optional Bearer token
 ```
 
-| Endpoint            | Method | Description                               |
-| ------------------- | ------ | ----------------------------------------- |
-| `/status`           | GET    | Server version, uptime, inflight requests |
-| `/reload`           | POST   | Hot-reload config from disk               |
-| `/shutdown`         | POST   | Graceful shutdown                         |
-| `/upstreams`        | GET    | Health, latency, and weights per backend  |
-| `/upstreams/add`    | POST   | Add an upstream (in memory only)          |
-| `/upstreams/remove` | POST   | Remove an upstream                        |
-| `/upstreams/weight` | POST   | Change a backend's weight (WRR only)      |
+```bash
+conduit reload              # hot-reload config
+conduit status              # server health summary
+conduit status --upstream   # upstream health table
+conduit upstreams add --route /api --target http://new-backend:4000
+```
 
-Dynamic upstream changes survive until `conduit reload` — which resets from the config file.
-
-**Request body fields for `/upstreams/add`, `/upstreams/remove`, `/upstreams/weight`:**
-
-| Field    | Required   | Description                                                                                               |
-| -------- | ---------- | --------------------------------------------------------------------------------------------------------- |
-| `route`  | ✅         | Route path, e.g. `"/api"`                                                                                 |
-| `target` | ✅         | Full upstream URL, e.g. `"http://b3:4000"`                                                                |
-| `weight` | add/weight | Target weight (default: 1 for add)                                                                        |
-| `site`   | —          | Site label to scope the change, e.g. `"app.example.com:443"`. Omit to apply to all sites with this route. |
+Full reference with request/response examples: **[docs/admin.md](docs/admin.md)**
 
 ---
 
