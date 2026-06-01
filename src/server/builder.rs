@@ -66,6 +66,11 @@ fn classify_site_port(
     port_tls: &mut TlsPortMap,
     port_plain: &mut HashSet<u16>,
 ) {
+    // TCP-proxy sites manage their own listeners — skip HTTP port classification.
+    if site.tcp.is_some() {
+        return;
+    }
+
     let port = site
         .port
         .unwrap_or(if site.tls.is_some() { 443 } else { 80 });

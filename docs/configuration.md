@@ -329,7 +329,7 @@ port: 443
 tls:
   cert: ./certs/cert.pem
   key: ./certs/key.pem
-http2: true
+http2: {}          # enable HTTP/2 with defaults
 ```
 
 ```json
@@ -337,7 +337,7 @@ http2: true
 {
   "port": 443,
   "tls": { "cert": "./certs/cert.pem", "key": "./certs/key.pem" },
-  "http2": true
+  "http2": {}
 }
 ```
 

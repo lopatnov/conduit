@@ -83,6 +83,46 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
     if let Some(tls) = &site.tls {
         validate_tls(tls, &format!("{prefix}.tls"), errors);
     }
+
+    // TCP proxy site validation.
+    if let Some(tcp) = &site.tcp {
+        if tcp.targets.is_empty() {
+            errors.push(ValidationError::new(
+                format!("{prefix}.tcp.targets"),
+                "at least one target is required for a TCP proxy site",
+            ));
+        }
+        for (i, t) in tcp.targets.iter().enumerate() {
+            // Targets must be "host:port" — no http:// prefix.
+            if t.starts_with("http://") || t.starts_with("https://") {
+                errors.push(ValidationError::new(
+                    format!("{prefix}.tcp.targets[{i}]"),
+                    format!(
+                        "TCP target \"{t}\" must be a plain host:port — no http:// prefix"
+                    ),
+                ));
+            } else if !t.contains(':') {
+                errors.push(ValidationError::new(
+                    format!("{prefix}.tcp.targets[{i}]"),
+                    format!("TCP target \"{t}\" must include a port, e.g. \"host:3306\""),
+                ));
+            }
+        }
+        // TCP sites cannot be combined with HTTP features.
+        if site.proxy.is_some() {
+            errors.push(ValidationError::new(
+                format!("{prefix}.tcp"),
+                "tcp cannot be combined with proxy on the same site",
+            ));
+        }
+        if site.static_files.is_some() {
+            errors.push(ValidationError::new(
+                format!("{prefix}.tcp"),
+                "tcp cannot be combined with static on the same site",
+            ));
+        }
+    }
+
     if let Some(proxy) = &site.proxy {
         validate_proxy(proxy, &format!("{prefix}.proxy"), errors);
     }
@@ -1187,6 +1227,41 @@ mod tests {
         let e = proxy_with_cache("memcached://localhost");
         assert!(!e.is_empty(), "invalid cache store must be rejected");
         assert!(e[0].path.contains("store"), "got: {}", e[0].path);
+    }
+
+    // ── TCP proxy validation ──────────────────────────────────────────────────
+
+    #[test]
+    fn tcp_proxy_valid() {
+        let e = errs(r#"{ "port": 3306, "tcp": { "targets": ["mysql:3306"] } }"#);
+        assert!(e.is_empty(), "valid TCP site must pass: {e:?}");
+    }
+
+    #[test]
+    fn tcp_proxy_no_targets_rejected() {
+        let e = errs(r#"{ "port": 3306, "tcp": { "targets": [] } }"#);
+        assert!(!e.is_empty());
+        assert!(e[0].path.contains("targets"), "got: {}", e[0].path);
+    }
+
+    #[test]
+    fn tcp_proxy_http_prefix_rejected() {
+        let e = errs(r#"{ "port": 3306, "tcp": { "targets": ["http://mysql:3306"] } }"#);
+        assert!(!e.is_empty(), "http:// prefix must be rejected for TCP targets");
+    }
+
+    #[test]
+    fn tcp_proxy_missing_port_rejected() {
+        let e = errs(r#"{ "port": 3306, "tcp": { "targets": ["just-a-host"] } }"#);
+        assert!(!e.is_empty(), "target without port must be rejected");
+    }
+
+    #[test]
+    fn tcp_proxy_combined_with_proxy_rejected() {
+        let e = errs(
+            r#"{ "port": 3306, "tcp": { "targets": ["mysql:3306"] }, "proxy": "http://b:4000" }"#,
+        );
+        assert!(!e.is_empty(), "tcp + proxy must be rejected");
     }
 
     // ── middleware validation ─────────────────────────────────────────────────
