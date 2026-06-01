@@ -70,6 +70,8 @@ impl BackgroundService for AdminApiService {
         {
             let config = self.state.config.load();
             health::spawn_health_checks(self.state.upstream_health.clone(), &config);
+            // Warm up connection pools for routes with prewarmConnections set.
+            health::spawn_connection_warmup(&config);
         }
 
         // Spawn the browser hot-reload file watcher if any site has hotReload enabled.

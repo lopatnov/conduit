@@ -552,6 +552,14 @@ routes:
       targets: ["http://write-api:4001", "http://write-api:4002"]
       strategy: least-conn
 
+  # Beta users via cookie → canary backend
+  - match:
+      cookies:
+        beta: "1"             # exact: cookie beta=1
+        experiment: "blue|green"  # regex: blue or green
+    proxy:
+      targets: ["http://canary:4000"]
+
   # Everything else → SPA static files
   - match:
       path: /**
@@ -596,8 +604,14 @@ to all routes uniformly.
 | ------------- | -------- | ----------------------------------------------------------------- |
 | `path`        | glob     | Path glob — see [`skipPaths` glob syntax](#skippaths-glob-syntax) |
 | `method`      | string[] | HTTP methods to match (case-insensitive)                          |
-| `headers`     | object   | Request headers that must be present with given values            |
-| `query`       | object   | Query parameters that must be present with given values           |
+| `headers`     | object   | Request headers that must match (exact or regex)                  |
+| `query`       | object   | Query parameters that must match (exact or regex)                 |
+| `cookies`     | object   | Cookies that must match (exact or regex)                          |
+
+All `headers`, `query`, and `cookies` values are matched as **full-string
+regex** (anchored `^…$`). Plain strings like `"v2"` or `"1"` match exactly;
+regex patterns like `"blue|green"` or `"Bearer .+"` use regex semantics. An
+invalid regex falls back to exact-string comparison.
 
 ---
 
@@ -1225,6 +1239,7 @@ healthCheck:
 | `healthyThreshold`          | number | `1`           | Consecutive passes before re-adding               |
 | `slowStartSecs`             | number | `0`           | Traffic ramp-up period after recovery             |
 | `maxConnectionsPerUpstream` | number | —             | [Circuit breaker](#circuit-breaker) threshold     |
+| `prewarmConnections`        | number | `0`           | Pre-establish N keepalive connections at startup (max 8) |
 | `includeUpstreams`          | bool   | `false`       | Include upstream health in `/__health__` response |
 
 ---

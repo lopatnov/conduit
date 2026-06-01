@@ -605,6 +605,64 @@ pub fn spawn_health_checks(registry: Arc<UpstreamRegistry>, config: &AppConfig) 
     }
 }
 
+/// Spawn background connection warmup tasks for routes that have
+/// `healthCheck.prewarmConnections` configured.
+///
+/// For each such route, sends `n` sequential HEAD requests to the configured
+/// health-check path immediately after startup, populating Pingora's connection
+/// pool so the first real user requests don't pay the TCP-handshake cost.
+pub fn spawn_connection_warmup(config: &AppConfig) {
+    for site in &config.sites {
+        let Some(crate::config::schema::ProxyConfig::Routes(routes)) = &site.proxy else {
+            continue;
+        };
+        for route_target in routes.values() {
+            let crate::config::schema::ProxyRouteTarget::Full(cfg) = route_target else {
+                continue;
+            };
+            let Some(hc) = &cfg.health_check else {
+                continue;
+            };
+            let n = match hc.prewarm_connections {
+                Some(0) | None => continue,
+                Some(n) => n.min(8) as usize, // clamp to 8
+            };
+            let path = hc
+                .path
+                .clone()
+                .unwrap_or_else(|| "/".to_string());
+            let urls = crate::proxy::upstream::target_urls(route_target);
+            for url in urls {
+                let path = path.clone();
+                tokio::spawn(async move {
+                    for i in 0..n {
+                        let target = format!("{url}{path}");
+                        match reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(5))
+                            .build()
+                        {
+                            Ok(client) => {
+                                match client.head(&target).send().await {
+                                    Ok(_) => tracing::debug!(
+                                        url, attempt = i + 1, total = n,
+                                        "connection warmup request succeeded"
+                                    ),
+                                    Err(e) => tracing::debug!(
+                                        url, attempt = i + 1, total = n,
+                                        "connection warmup request failed: {e}"
+                                    ),
+                                }
+                            }
+                            Err(e) => tracing::warn!("connection warmup client build error: {e}"),
+                        }
+                    }
+                    tracing::info!(url, n, "connection warmup complete");
+                });
+            }
+        }
+    }
+}
+
 /// Spawn a single background health-check task for a set of upstream URLs.
 fn spawn_health_task(
     registry: Arc<UpstreamRegistry>,

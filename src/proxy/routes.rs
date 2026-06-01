@@ -85,6 +85,16 @@ fn route_matches(
             return false;
         }
     }
+    // 5. Cookies.
+    if let Some(cookies) = &m.cookies {
+        let cookie_header = req_headers
+            .get("cookie")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !cookies_match(cookies, cookie_header) {
+            return false;
+        }
+    }
     true
 }
 
@@ -118,6 +128,39 @@ fn query_params_match(
         }
     }
     true
+}
+
+/// Return `true` when every cookie predicate in `predicates` is satisfied.
+///
+/// Parses the `Cookie` header value (e.g. `"a=1; b=2"`) and matches each
+/// named cookie against the given pattern using the same regex semantics as
+/// header and query matching.
+fn cookies_match(
+    predicates: &indexmap::IndexMap<String, String>,
+    cookie_header: &str,
+) -> bool {
+    for (name, pattern) in predicates {
+        let value = cookie_value(cookie_header, name).unwrap_or("");
+        if !regex_match(pattern, value) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Return the value of cookie `name` from a `Cookie` header value string.
+///
+/// The `Cookie` header format is `name1=val1; name2=val2; …`.
+fn cookie_value<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
+    for pair in cookie_header.split(';') {
+        let pair = pair.trim();
+        if let Some((k, v)) = pair.split_once('=') {
+            if k.trim() == name {
+                return Some(v.trim());
+            }
+        }
+    }
+    None
 }
 
 // ── Action dispatch ───────────────────────────────────────────────────────────
@@ -1184,5 +1227,86 @@ mod tests {
             conn_count, 0,
             "conn counter must be zero after invalid-URL fallback"
         );
+    }
+
+    // ── cookie_value ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn cookie_value_found() {
+        assert_eq!(cookie_value("a=1; b=2; c=3", "b"), Some("2"));
+    }
+
+    #[test]
+    fn cookie_value_first_cookie() {
+        assert_eq!(cookie_value("session=abc; other=x", "session"), Some("abc"));
+    }
+
+    #[test]
+    fn cookie_value_not_found() {
+        assert_eq!(cookie_value("a=1; b=2", "missing"), None);
+    }
+
+    #[test]
+    fn cookie_value_empty_header() {
+        assert_eq!(cookie_value("", "any"), None);
+    }
+
+    // ── cookies_match ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn cookies_match_exact() {
+        let mut predicates = IndexMap::new();
+        predicates.insert("beta".to_string(), "1".to_string());
+        assert!(cookies_match(&predicates, "beta=1; session=abc"));
+        assert!(!cookies_match(&predicates, "beta=0; session=abc"));
+        assert!(!cookies_match(&predicates, "session=abc"));
+    }
+
+    #[test]
+    fn cookies_match_regex() {
+        let mut predicates = IndexMap::new();
+        predicates.insert("experiment".to_string(), "blue|green".to_string());
+        assert!(cookies_match(&predicates, "experiment=blue"));
+        assert!(cookies_match(&predicates, "experiment=green"));
+        assert!(!cookies_match(&predicates, "experiment=red"));
+    }
+
+    #[test]
+    fn cookies_match_multiple_predicates() {
+        let mut predicates = IndexMap::new();
+        predicates.insert("beta".to_string(), "1".to_string());
+        predicates.insert("group".to_string(), "A|B".to_string());
+        assert!(cookies_match(&predicates, "beta=1; group=A"));
+        assert!(cookies_match(&predicates, "group=B; beta=1; other=x"));
+        assert!(!cookies_match(&predicates, "beta=1; group=C")); // group doesn't match
+        assert!(!cookies_match(&predicates, "beta=0; group=A")); // beta doesn't match
+    }
+
+    // ── route_matches with cookies ────────────────────────────────────────────
+
+    #[test]
+    fn route_matches_cookie_predicate() {
+        let mut cookies_map = IndexMap::new();
+        cookies_map.insert("beta".to_string(), "1".to_string());
+        let m = MatchConfig {
+            cookies: Some(cookies_map),
+            ..Default::default()
+        };
+
+        // Cookie present with correct value.
+        let mut req_headers = http::HeaderMap::new();
+        req_headers.insert(
+            "cookie",
+            http::HeaderValue::from_static("beta=1; session=abc"),
+        );
+        assert!(route_matches(&m, "/any", "GET", &req_headers, None));
+
+        // Cookie absent.
+        assert!(!route_matches(&m, "/any", "GET", &http::HeaderMap::new(), None));
+
+        // Cookie present with wrong value.
+        let mut wrong_headers = http::HeaderMap::new();
+        wrong_headers.insert("cookie", http::HeaderValue::from_static("beta=0"));
+        assert!(!route_matches(&m, "/any", "GET", &wrong_headers, None));
     }
 }

@@ -1170,6 +1170,16 @@ pub struct UpstreamHealthCheck {
         skip_serializing_if = "Option::is_none"
     )]
     pub max_connections_per_upstream: Option<u64>,
+    /// Number of keepalive connections to pre-establish at server startup.
+    ///
+    /// When set, Conduit sends this many sequential HEAD requests to the
+    /// `healthCheck.path` of each target URL immediately after startup, warming
+    /// Pingora's connection pool so the first real requests don't pay the
+    /// TCP-handshake cost.
+    ///
+    /// Defaults to `0` (disabled).  Values above 8 are clamped to 8.
+    #[serde(rename = "prewarmConnections", skip_serializing_if = "Option::is_none")]
+    pub prewarm_connections: Option<u8>,
 }
 
 // ── Cache ──────────────────────────────────────────────────────────────────
@@ -1358,6 +1368,21 @@ pub struct MatchConfig {
     /// Query parameter values that must be present and match (exact string or regex).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<IndexMap<String, String>>,
+    /// Cookie values that must be present and match (exact string or regex).
+    ///
+    /// Reads the `Cookie` request header and matches named cookies against the
+    /// given patterns.  All entries must match simultaneously.  Uses the same
+    /// regex semantics as `headers` and `query`.
+    ///
+    /// Example — route canary users:
+    /// ```yaml
+    /// match:
+    ///   cookies:
+    ///     beta: "1"
+    ///     experiment: "blue|green"
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cookies: Option<IndexMap<String, String>>,
 }
 
 /// Fault injection configuration — inject artificial errors or delays into
