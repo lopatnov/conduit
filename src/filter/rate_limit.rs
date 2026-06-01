@@ -108,6 +108,16 @@ fn extract_key(cfg: &RateLimitConfig, session: &Session) -> String {
 /// Check the token-bucket rate limit for this request.
 ///
 /// Returns `true` if the request is within the limit (allowed to proceed).
+/// Maximum number of distinct rate-limit buckets per limiter.
+///
+/// When the DashMap exceeds this threshold a new key receives its own bucket
+/// only if it already exists.  If it doesn't exist we return `false`
+/// (treat as rate-limited) to prevent unbounded memory growth.
+///
+/// An attacker sending millions of unique `X-Custom-Header` values could
+/// otherwise exhaust memory by creating millions of token buckets.
+const MAX_BUCKETS: usize = 100_000;
+
 pub fn check(cfg: &RateLimitConfig, session: &Session, limiter: &RateLimiter) -> bool {
     let path = session.req_header().uri.path();
     if is_path_skipped(cfg.skip_paths.as_deref(), path) {
@@ -115,6 +125,23 @@ pub fn check(cfg: &RateLimitConfig, session: &Session, limiter: &RateLimiter) ->
     }
 
     let key = extract_key(cfg, session);
+
+    // Fast path: bucket already exists.
+    if let Some(mut bucket) = limiter.get_mut(&key) {
+        return bucket.try_consume();
+    }
+
+    // Slow path: new key — check capacity before inserting.
+    if limiter.len() >= MAX_BUCKETS {
+        // Map is full: treat as rate-limited rather than allocating another bucket.
+        tracing::warn!(
+            key = %key,
+            buckets = limiter.len(),
+            "rate-limit bucket cap reached — treating new key as rate-limited"
+        );
+        return false;
+    }
+
     limiter
         .entry(key)
         .or_insert_with(|| TokenBucket::new(cfg.limit, cfg.burst.unwrap_or(0), cfg.window_secs))

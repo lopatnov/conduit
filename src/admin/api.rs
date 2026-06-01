@@ -20,6 +20,19 @@ use crate::config;
 use crate::config::schema::LoggingConfig;
 use crate::config::validate;
 
+/// Constant-time byte-slice equality to prevent timing attacks on Bearer tokens.
+///
+/// A naive `a == b` short-circuits on the first differing byte, leaking how
+/// many leading bytes the attacker guessed correctly.  This function always
+/// inspects every byte of both slices regardless of where they diverge.
+fn subtle_eq(a: &[u8], b: &[u8]) -> bool {
+    use subtle::ConstantTimeEq;
+    // Length check is intentionally NOT constant-time: a different length
+    // does not help an attacker who must guess the full token anyway, and
+    // this avoids allocating a padded buffer.
+    a.len() == b.len() && a.ct_eq(b).into()
+}
+
 // ── Typed error responses ─────────────────────────────────────────────────────
 
 /// Typed error for Admin API handlers.
@@ -184,7 +197,11 @@ fn build_router(state: Arc<AppState>) -> Router {
                             .and_then(|v| v.to_str().ok())
                             .unwrap_or("");
                         let provided = auth.strip_prefix("Bearer ").map(str::trim).unwrap_or("");
-                        if provided == token.as_str() {
+                        // Use constant-time comparison to prevent timing attacks.
+                        // A variable-time `==` leaks whether a prefix of the token
+                        // is correct, enabling character-by-character brute force.
+                        let ok = subtle_eq(provided.as_bytes(), token.as_bytes());
+                        if ok {
                             Ok(next.run(request).await)
                         } else {
                             Err(StatusCode::UNAUTHORIZED)

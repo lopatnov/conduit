@@ -170,6 +170,36 @@ fn trust_proxy_xff_allowed_ip_passes() {
     );
 }
 
+/// Security: forged leftmost XFF must NOT bypass IP filtering.
+///
+/// Attack: attacker sends `X-Forwarded-For: <allowed-ip>`.
+/// Trusted proxy appends the real client IP (test: 127.0.0.1).
+/// With rightmost XFF semantics, 127.0.0.1 is used → blocked by the allowlist.
+#[test]
+#[serial]
+fn trust_proxy_forged_leftmost_xff_does_not_bypass_filter() {
+    // Allow only 10.0.0.0/8 — localhost (127.0.0.1) is NOT in the allowed range.
+    let server = server_with_ip_filter(serde_json::json!({
+        "allow": ["10.0.0.0/8"],
+        "trustProxy": true
+    }));
+    let client = reqwest::blocking::Client::new();
+    // Attacker forges the first (leftmost) XFF entry to look like an allowed IP.
+    // The second entry simulates what a real trusted proxy would append (127.0.0.1).
+    let resp = client
+        .get(server.url("/__health__"))
+        .header("X-Forwarded-For", "10.1.2.3, 127.0.0.1")
+        .send()
+        .expect("GET");
+    // With rightmost semantics: 127.0.0.1 is used → NOT in 10.0.0.0/8 → 403.
+    // Old leftmost semantics would have used 10.1.2.3 → ALLOWED (bypass!).
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "forged leftmost XFF must not bypass the IP allowlist; rightmost (127.0.0.1) must be used"
+    );
+}
+
 #[test]
 #[serial]
 fn trust_proxy_false_uses_direct_ip_not_xff() {

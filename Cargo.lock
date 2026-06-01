@@ -2686,6 +2686,7 @@ dependencies = [
  "serde_path_to_error",
  "serde_yaml",
  "serial_test",
+ "subtle",
  "tempfile",
  "thiserror 2.0.18",
  "time",

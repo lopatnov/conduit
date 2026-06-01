@@ -33,11 +33,27 @@ pub(crate) fn apply_ip_filter(ip: Option<IpAddr>, config: &IpFilterConfig) -> bo
     }
 }
 
-/// Parse the first (leftmost) IP address from an `X-Forwarded-For` header value.
+/// Parse the trusted client IP from an `X-Forwarded-For` header value.
+///
+/// Takes the **rightmost** entry — the IP appended by the immediately adjacent
+/// trusted proxy.  This is the only entry a trusted proxy can vouch for.
+///
+/// The leftmost entry is **attacker-controlled**: a client behind a real proxy
+/// can forge `X-Forwarded-For: 1.1.1.1` and the proxy will prepend it, making
+/// the leftmost entry `1.1.1.1` (spoofed).  The rightmost entry is added by
+/// the trusted proxy itself and cannot be forged by the downstream client.
+///
+/// ```text
+/// Attacker sends:   X-Forwarded-For: 1.1.1.1
+/// Trusted proxy adds its view of the client IP (e.g. 5.5.5.5):
+///   X-Forwarded-For: 1.1.1.1, 5.5.5.5
+/// Leftmost = 1.1.1.1  ← FORGED
+/// Rightmost = 5.5.5.5 ← added by trusted proxy, safe to use
+/// ```
 ///
 /// Extracted for unit testability — `client_ip` calls this when `trust_proxy` is enabled.
 pub(crate) fn parse_xff(xff: &str) -> Option<IpAddr> {
-    xff.split(',').next()?.trim().parse().ok()
+    xff.split(',').last()?.trim().parse().ok()
 }
 
 fn client_ip(session: &Session, trust_proxy: bool) -> Option<IpAddr> {
@@ -308,9 +324,29 @@ mod tests {
     }
 
     #[test]
-    fn xff_first_of_multiple_ips() {
+    fn xff_rightmost_of_multiple() {
+        // Security: rightmost is added by the trusted proxy, cannot be forged.
+        // A client behind a proxy could send "X-Forwarded-For: 1.1.1.1" and the
+        // proxy appends ", real_client_ip" — we must trust the rightmost, not the left.
         let ip = parse_xff("203.0.113.1, 10.0.0.1, 192.168.1.1");
-        assert_eq!(ip, Some("203.0.113.1".parse().unwrap()));
+        assert_eq!(
+            ip,
+            Some("192.168.1.1".parse().unwrap()),
+            "must return rightmost (trusted-proxy-appended) IP"
+        );
+    }
+
+    #[test]
+    fn xff_spoof_protection() {
+        // Attacker forges: X-Forwarded-For: 8.8.8.8
+        // Trusted proxy appends real client IP: 5.5.5.5
+        // Result: "8.8.8.8, 5.5.5.5" — rightmost is safe
+        let ip = parse_xff("8.8.8.8, 5.5.5.5");
+        assert_eq!(
+            ip,
+            Some("5.5.5.5".parse().unwrap()),
+            "forged leftmost must not be used"
+        );
     }
 
     #[test]
@@ -325,7 +361,7 @@ mod tests {
 
     #[test]
     fn xff_ipv6() {
-        let ip = parse_xff("2001:db8::1");
+        let ip = parse_xff("203.0.113.1, 2001:db8::1");
         assert_eq!(ip, Some("2001:db8::1".parse().unwrap()));
     }
 
