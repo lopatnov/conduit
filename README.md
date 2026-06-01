@@ -58,7 +58,7 @@ conduit
 conduit validate
 ```
 
-Minimum working config — save as `conduit.json`:
+Minimum working config — save as `conduit.json` (or [`examples/minimal.yaml`](examples/minimal.yaml) for the annotated YAML version):
 
 ```json
 {
@@ -73,6 +73,18 @@ GET /            → serves ./dist/index.html
 GET /style.css   → serves ./dist/style.css
 GET /api/users   → proxied to http://localhost:4000/api/users
 ```
+
+> **Path forwarding:** by default the full path is forwarded — `/api/users` arrives
+> at the upstream as `/api/users`. Add `stripPrefix: true` to strip the matched
+> prefix so `/api/users` becomes `/users` on the upstream:
+>
+> ```json
+> { "proxy": { "/api": { "targets": ["http://localhost:4000"], "stripPrefix": true } } }
+> ```
+>
+> This matches nginx's `proxy_pass http://backend/;` (trailing-slash) behaviour.
+> Without `stripPrefix`, Conduit behaves like nginx's `proxy_pass http://backend;`
+> (no trailing slash) — keeping the full path.
 
 ---
 
