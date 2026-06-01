@@ -579,16 +579,19 @@ fn parse_range(header: &str, total: u64) -> Option<(u64, u64)> {
 }
 
 /// Attempt to decode a two-byte hex sequence (the digits after `%`) into a
-/// raw byte.  Returns `None` if the sequence is invalid or encodes a path
-/// separator (`/` or `\`), which must never be decoded to prevent traversal.
+/// raw byte.  Returns `None` if the sequence is invalid or encodes a
+/// dangerous byte.
 fn try_decode_percent_seq(hex: &[u8]) -> Option<u8> {
     let hs = std::str::from_utf8(hex).ok()?;
     let byte = u8::from_str_radix(hs, 16).ok()?;
-    // Never decode %2F ('/') or %5C ('\') — path separators allow traversal.
-    if byte == b'/' || byte == b'\\' {
-        return None;
+    // Never decode dangerous bytes:
+    // • %2F '/' and %5C '\' — path separators enable directory traversal.
+    // • %00 NUL — null bytes truncate paths at the OS syscall boundary on
+    //   POSIX systems (e.g. `file.php%00.txt` → opens `file.php`).
+    match byte {
+        b'/' | b'\\' | b'\0' => None,
+        b => Some(b),
     }
-    Some(byte)
 }
 
 fn percent_decode(s: &str) -> String {
@@ -646,6 +649,43 @@ fn decode_rel_path(req_path: &str, strip_prefix: Option<&str>) -> String {
             sanitize_path(after)
         }
         None => sanitize_path(&decoded),
+    }
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percent_decode_null_byte_is_rejected() {
+        // %00 must NOT be decoded — it would truncate the path at the OS level.
+        let decoded = percent_decode("file%00.txt");
+        assert!(
+            !decoded.contains('\0'),
+            "null byte must not appear in decoded path: {decoded:?}"
+        );
+        // The literal `%00` should remain undecoded, not become NUL.
+        assert_eq!(decoded, "file%00.txt", "undecoded %00 must be preserved as-is");
+    }
+
+    #[test]
+    fn percent_decode_slash_not_decoded() {
+        let decoded = percent_decode("%2Fetc%2Fpasswd");
+        assert_eq!(decoded, "%2Fetc%2Fpasswd", "%2F must not be decoded");
+    }
+
+    #[test]
+    fn percent_decode_normal_chars_decoded() {
+        let decoded = percent_decode("hello%20world");
+        assert_eq!(decoded, "hello world");
+    }
+
+    #[test]
+    fn sanitize_path_removes_dotdot() {
+        assert_eq!(sanitize_path("../etc/passwd"), "etc/passwd");
+        assert_eq!(sanitize_path("a/../../b"), "b");
     }
 }
 

@@ -452,16 +452,29 @@ fn glob_single_star(rest: &[u8], s: &[u8]) -> bool {
 /// wrapped in an anchored `^(?:…)$` form.  Invalid patterns are not stored so
 /// they fall back to exact-string comparison without re-attempting compilation.
 ///
-/// The cache grows at most to the number of distinct patterns in the loaded
-/// config, which is small and bounded.
+/// Maximum number of compiled regular expressions to keep in the cache.
+///
+/// Patterns come from the admin-controlled config, so in practice there are
+/// only a few dozen at most.  The cap is a defence-in-depth safety net against
+/// an unbounded DashMap growth in pathological configs (e.g. thousands of
+/// header-match patterns across many config reloads).
+const MAX_REGEX_CACHE: usize = 2_048;
+
+/// Return a compiled, anchored version of `pattern`, reusing a cached copy
+/// when available.
 fn get_anchored_regex(pattern: &str) -> Option<Regex> {
     static CACHE: OnceLock<DashMap<String, Regex>> = OnceLock::new();
     let cache = CACHE.get_or_init(DashMap::new);
     if let Some(re) = cache.get(pattern) {
         return Some(re.clone());
     }
+    // Don't grow the cache past the safety cap — fall back to compile-each-time
+    // for new patterns once full.  This keeps memory bounded without silently
+    // dropping existing cached patterns.
     let re = Regex::new(&format!("^(?:{pattern})$")).ok()?;
-    cache.insert(pattern.to_owned(), re.clone());
+    if cache.len() < MAX_REGEX_CACHE {
+        cache.insert(pattern.to_owned(), re.clone());
+    }
     Some(re)
 }
 

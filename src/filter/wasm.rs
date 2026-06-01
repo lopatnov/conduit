@@ -64,7 +64,26 @@ use wasmtime::{Caller, Engine, Linker, Module, Store};
 static WASM_ENGINE: OnceLock<Engine> = OnceLock::new();
 
 fn engine() -> &'static Engine {
-    WASM_ENGINE.get_or_init(Engine::default)
+    WASM_ENGINE.get_or_init(|| {
+        // Harden the WASM engine against malicious or buggy plugins:
+        //
+        // • epoch_interruption: allows the Store to abort execution after a
+        //   configurable number of epochs.  We do not yet increment the epoch
+        //   counter (that would require a background thread), but enabling it
+        //   now means we can add per-call fuel limits later without changing
+        //   the engine config (engine config is immutable after first use).
+        //
+        // • wasm_memory64: disabled — plugins don't need >4 GiB address space
+        //   and 64-bit memory makes bound-checking more complex.
+        let mut config = wasmtime::Config::new();
+        config.epoch_interruption(true);
+        config.wasm_memory64(false);
+        // Raise the memory guard region so out-of-bounds WASM accesses reliably
+        // trap rather than silently reading/writing host memory.
+        config.memory_guard_size(64 * 1024 * 1024); // 64 MiB guard
+        // Cap via StoreLimitsBuilder instead (applied per-Store, see run_inner).
+        Engine::new(&config).unwrap_or_default()
+    })
 }
 
 static WASM_MODULES: OnceLock<DashMap<String, Arc<Module>>> = OnceLock::new();
@@ -112,6 +131,9 @@ struct WasmState {
     response_body: Vec<u8>,
     added_headers: Vec<(String, String)>,
     removed_headers: Vec<String>,
+    /// Per-call resource limiter — enforces a 16 MiB linear memory cap to
+    /// prevent a plugin from exhausting the proxy's address space.
+    resource_limits: wasmtime::StoreLimits,
 }
 
 impl WasmState {
@@ -123,6 +145,9 @@ impl WasmState {
             response_body: Vec::new(),
             added_headers: Vec::new(),
             removed_headers: Vec::new(),
+            resource_limits: wasmtime::StoreLimitsBuilder::new()
+                .memory_size(16 * 1024 * 1024) // 16 MiB max per plugin call
+                .build(),
         }
     }
 }
@@ -401,6 +426,9 @@ pub fn run_wasm(request: WasmRequest, path: &str) -> WasmOutcome {
 fn run_inner(request: WasmRequest, path: &str) -> anyhow::Result<WasmOutcome> {
     let module = get_or_compile(path)?;
     let mut store = Store::new(engine(), WasmState::new(request));
+    // Enforce per-call memory limit — prevents a plugin from OOM-killing the
+    // proxy by allocating unlimited linear memory.
+    store.limiter(|s| &mut s.resource_limits as &mut dyn wasmtime::ResourceLimiter);
     let mut linker = Linker::new(engine());
     register_host_functions(&mut linker)?;
 
@@ -442,12 +470,10 @@ pub struct WasmResponseContext {
 /// State threaded through the Wasmtime Store for the response phase.
 struct WasmResponseState {
     ctx: WasmResponseContext,
-    /// Headers to add/overwrite on the response going to the client.
     added_headers: Vec<(String, String)>,
-    /// Header names to remove from the response.
     removed_headers: Vec<String>,
-    /// Optional body override (replaces the upstream body when set).
     response_body: Option<Vec<u8>>,
+    resource_limits: wasmtime::StoreLimits,
 }
 
 impl WasmResponseState {
@@ -457,6 +483,9 @@ impl WasmResponseState {
             added_headers: Vec::new(),
             removed_headers: Vec::new(),
             response_body: None,
+            resource_limits: wasmtime::StoreLimitsBuilder::new()
+                .memory_size(16 * 1024 * 1024)
+                .build(),
         }
     }
 }
@@ -621,6 +650,7 @@ pub fn run_wasm_response(ctx: WasmResponseContext, path: &str) -> WasmResponseOu
 fn run_response_inner(ctx: WasmResponseContext, path: &str) -> anyhow::Result<WasmResponseOutcome> {
     let module = get_or_compile(path)?;
     let mut store = Store::new(engine(), WasmResponseState::new(ctx));
+    store.limiter(|s| &mut s.resource_limits as &mut dyn wasmtime::ResourceLimiter);
     let mut linker = Linker::new(engine());
     register_response_host_functions(&mut linker)?;
 

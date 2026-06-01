@@ -84,6 +84,58 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
         }
     }
 
+    // ── Weak JWT secrets ─────────────────────────────────────────────────────
+    // JWT HMAC secrets shorter than 32 bytes can be brute-forced or guessed.
+    // RFC 7518 requires secrets be at least as long as the hash output
+    // (32 bytes for HS256, 48 for HS384, 64 for HS512).  32 bytes minimum is
+    // the practical floor.
+    for (i, site) in config.sites.iter().enumerate() {
+        if let Some(jwt) = &site.jwt_auth {
+            if let Some(secret) = &jwt.secret {
+                if secret.len() < 32 {
+                    warnings.push(format!(
+                        "sites[{i}].jwtAuth.secret is only {} bytes — minimum recommended \
+                         length is 32 bytes for HS256.  A short secret can be brute-forced. \
+                         Use a cryptographically random secret of at least 32 bytes.",
+                        secret.len()
+                    ));
+                }
+            }
+        }
+        // Check consumer-level JWT secrets.
+        if let Some(consumers_cfg) = &site.consumers {
+            for (j, consumer) in consumers_cfg.consumers.iter().enumerate() {
+                if let Some(jwt) = &consumer.jwt {
+                    if let Some(secret) = &jwt.secret {
+                        if secret.len() < 32 {
+                            warnings.push(format!(
+                                "sites[{i}].consumers.consumers[{j}].jwt.secret is only {} bytes \
+                                 — minimum recommended length is 32 bytes.",
+                                secret.len()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Metrics endpoint without authentication ───────────────────────────────
+    // The /__metrics__ endpoint exposes internal counters (upstreams, routes,
+    // error rates, etc.) that help attackers map the system topology.
+    // A token should always be configured in production.
+    for (i, site) in config.sites.iter().enumerate() {
+        if let Some(metrics) = &site.metrics {
+            if metrics.token.is_none() {
+                warnings.push(format!(
+                    "sites[{i}].metrics is configured without a token — the \
+                     /__metrics__ endpoint is publicly accessible. \
+                     Set metrics.token to require Bearer authentication in production."
+                ));
+            }
+        }
+    }
+
     warnings
 }
 

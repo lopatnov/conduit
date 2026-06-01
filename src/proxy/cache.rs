@@ -166,6 +166,12 @@ pub fn response_cacheable(cfg: &CacheConfig, resp: &ResponseHeader) -> RespCache
         return RespCacheable::Uncacheable(NoCacheReason::OriginNotCache);
     }
 
+    // RFC 7234 § 3: Never cache responses that set session cookies — sharing
+    // a cached Set-Cookie response across clients would hijack their sessions.
+    if resp.headers.contains_key("set-cookie") {
+        return RespCacheable::Uncacheable(NoCacheReason::OriginNotCache);
+    }
+
     // Prefer explicit config values; fall back to upstream Cache-Control header.
     let swr = cfg
         .stale_while_revalidate_secs
@@ -529,5 +535,34 @@ mod tests {
     #[test]
     fn path_matches_glob_sub_path() {
         assert!(path_matches("/api/auth/**", "/api/auth/token"));
+    }
+
+    // ── response_cacheable: Set-Cookie ────────────────────────────────────────
+
+    #[test]
+    fn set_cookie_response_is_not_cached() {
+        use pingora_http::ResponseHeader;
+        let mut resp = ResponseHeader::build(200, None).unwrap();
+        resp.insert_header("set-cookie", "session=abc; HttpOnly").unwrap();
+        assert!(
+            matches!(
+                response_cacheable(&cfg(60), &resp),
+                RespCacheable::Uncacheable(_)
+            ),
+            "response with Set-Cookie must not be cached"
+        );
+    }
+
+    #[test]
+    fn response_without_set_cookie_is_cached() {
+        use pingora_http::ResponseHeader;
+        let resp = ResponseHeader::build(200, None).unwrap();
+        assert!(
+            matches!(
+                response_cacheable(&cfg(60), &resp),
+                RespCacheable::Cacheable(_)
+            ),
+            "response without Set-Cookie should be cacheable"
+        );
     }
 }

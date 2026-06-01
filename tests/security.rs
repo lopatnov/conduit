@@ -9,6 +9,31 @@ mod common;
 use reqwest::blocking::Client;
 use serial_test::serial;
 
+// ── Null byte path injection ──────────────────────────────────────────────────
+
+/// Null bytes (%00) in static file paths must never reach the OS.
+/// On POSIX, a null byte terminates a path at the syscall boundary:
+/// `file.php%00.txt` would open `file.php` rather than a `.txt` file.
+#[test]
+#[serial]
+fn static_null_byte_in_path_is_blocked() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("secret.php"), "<?php phpinfo(); ?>").unwrap();
+    std::fs::write(dir.path().join("public.txt"), "ok").unwrap();
+
+    let srv = static_server(dir.path().to_str().unwrap());
+
+    // Request for `secret.php%00.txt` must NOT serve `secret.php`.
+    let resp = reqwest::blocking::get(srv.url("/secret.php%00.txt")).unwrap();
+    let status = resp.status().as_u16();
+    let body = resp.text().unwrap_or_default();
+    assert!(
+        !body.contains("phpinfo"),
+        "null-byte injection must not serve secret.php: {body:.50}"
+    );
+    assert_ne!(status, 200, "null-byte path must not return 200");
+}
+
 // ── Static-file path traversal ────────────────────────────────────────────────
 
 /// Helper: start a static-file server rooted at `dir`.

@@ -73,19 +73,43 @@ pub fn write_access_log(
 
 // ── Formatting ─────────────────────────────────────────────────────────────
 
+/// Sanitize a string for inclusion in a **text** log line.
+///
+/// Replaces ASCII control characters (`\r`, `\n`, `\t`, NUL, and other
+/// C0 controls below 0x20) with a space so that an attacker cannot inject
+/// fake log entries by crafting a URL or User-Agent containing `\r\n`.
+///
+/// JSON log format is safe by default (serde_json escapes all control
+/// characters), so this function is only needed for text-based formats.
+fn sanitize_log_field(s: &str) -> std::borrow::Cow<'_, str> {
+    // Fast path: scan for any control character before allocating.
+    if !s.bytes().any(|b| b < 0x20) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    // Slow path: replace control chars with a visible placeholder.
+    std::borrow::Cow::Owned(
+        s.chars()
+            .map(|c| if (c as u32) < 0x20 { ' ' } else { c })
+            .collect(),
+    )
+}
+
 fn format_line(
     session: &Session,
     start_time: Instant,
     format: &LogFormat,
     extra: &AccessLogContext<'_>,
 ) -> String {
+    // Sanitize user-controlled fields in text formats to prevent log injection
+    // (CR/LF in a URL or User-Agent would let an attacker forge log entries).
     let method = session.req_header().method.as_str();
-    let path = session
+    let raw_path = session
         .req_header()
         .uri
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or_else(|| session.req_header().uri.path());
+    let path = sanitize_log_field(raw_path);
     let status = session
         .response_written()
         .map(|h| h.status.as_u16().to_string())
@@ -117,18 +141,20 @@ fn format_line(
         LogFormat::Combined => {
             let t = clf_now();
             let ver = http_version(session);
-            let referer = session
+            let raw_referer = session
                 .req_header()
                 .headers
                 .get("referer")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("-");
-            let ua = session
+            let raw_ua = session
                 .req_header()
                 .headers
                 .get("user-agent")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("-");
+            let referer = sanitize_log_field(raw_referer);
+            let ua = sanitize_log_field(raw_ua);
             format!(
                 r#"{client_ip} - - [{t}] "{method} {path} {ver}" {status} {body_bytes} "{referer}" "{ua}""#
             )
@@ -302,12 +328,46 @@ mod tests {
 
     #[test]
     fn json_log_omits_upstream_ms_when_absent() {
-        // AccessLogContext with None upstream_ms must not include the field.
         let mut obj = serde_json::json!({ "method": "GET" });
         let upstream_ms: Option<u64> = None;
         if let Some(ms) = upstream_ms {
             obj["upstream_ms"] = serde_json::Value::from(ms);
         }
         assert!(obj.get("upstream_ms").is_none(), "upstream_ms must be absent when None");
+    }
+
+    // ── sanitize_log_field ────────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_log_field_clean_string_is_returned_borrowed() {
+        let s = "/api/v1/users";
+        let out = sanitize_log_field(s);
+        assert_eq!(out.as_ref(), s);
+        // Fast path returns a borrowed slice (no allocation).
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn sanitize_log_field_removes_crlf_injection() {
+        // An attacker who injects \r\n in a URL could forge log entries.
+        let malicious = "/path\r\nFake-Log-Entry: injected";
+        let out = sanitize_log_field(malicious);
+        assert!(!out.contains('\r'), "\\r must be removed");
+        assert!(!out.contains('\n'), "\\n must be removed");
+        assert!(out.contains("Fake-Log-Entry"), "rest of string must survive");
+    }
+
+    #[test]
+    fn sanitize_log_field_removes_null_byte() {
+        let s = "/path\x00injection";
+        let out = sanitize_log_field(s);
+        assert!(!out.contains('\0'), "null byte must be removed");
+    }
+
+    #[test]
+    fn sanitize_log_field_removes_other_control_chars() {
+        let s = "/tab\there";
+        let out = sanitize_log_field(s);
+        assert!(!out.contains('\t'), "tab must be replaced");
     }
 }
