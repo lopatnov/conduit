@@ -39,7 +39,7 @@ pub enum Command {
     Validate(ValidateArgs),
     /// Format config file to stdout (or overwrite with --write)
     Fmt(FmtArgs),
-    /// Create conduit.json interactively
+    /// Generate a starter config (interactive wizard or -y for non-interactive)
     Init(InitArgs),
     /// HEAD each upstream and report latency
     Probe(ProbeArgs),
