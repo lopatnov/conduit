@@ -57,10 +57,20 @@ fn dispatch_command(cli: Cli) {
         }
         .execute(),
         Some(Command::Init(args)) => {
-            // Pass the explicit output path, if given. When absent the wizard
-            // asks for the format and picks the appropriate default name.
             InitCmd {
                 output: args.output,
+                yes: args.yes,
+                format: args.format,
+                port: args.port,
+                static_dir: args.static_dir,
+                no_static: args.no_static,
+                proxy: args.proxy,
+                no_proxy: args.no_proxy,
+                log: args.log,
+                no_health: args.no_health,
+                tls_cert: args.tls_cert,
+                tls_key: args.tls_key,
+                tls_acme: args.tls_acme,
             }
             .execute();
         }
@@ -130,12 +140,38 @@ impl CliCommand for FmtCmd {
 }
 
 struct InitCmd {
-    /// Explicit output path from `-o`; `None` → wizard picks the default.
     output: Option<String>,
+    yes: bool,
+    format: Option<String>,
+    port: Option<u16>,
+    static_dir: Option<String>,
+    no_static: bool,
+    proxy: Option<String>,
+    no_proxy: bool,
+    log: Option<String>,
+    no_health: bool,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+    tls_acme: Option<String>,
 }
 impl CliCommand for InitCmd {
     fn execute(self) {
-        if let Err(e) = init::run_init(self.output.as_deref()) {
+        let opts = init::InitOptions {
+            output: self.output.as_deref(),
+            yes: self.yes,
+            format: self.format.as_deref(),
+            port: self.port,
+            static_dir: self.static_dir.as_deref(),
+            no_static: self.no_static,
+            proxy: self.proxy.as_deref(),
+            no_proxy: self.no_proxy,
+            log: self.log.as_deref(),
+            no_health: self.no_health,
+            tls_cert: self.tls_cert.as_deref(),
+            tls_key: self.tls_key.as_deref(),
+            tls_acme: self.tls_acme.as_deref(),
+        };
+        if let Err(e) = init::run_init(opts) {
             eprintln!("error: {e}");
             process::exit(1);
         }

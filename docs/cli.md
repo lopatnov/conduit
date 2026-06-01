@@ -142,32 +142,59 @@ whitespace, or for converting YAML to canonical JSON.
 
 ### init
 
-Interactive wizard that generates a starter config in YAML or JSON.
+Interactive wizard that generates a starter config in YAML or JSON. All
+questions can be skipped with flags — useful for scripts and CI pipelines.
 
 ```bash
-conduit init                    # asks format → writes conduit.yaml or conduit.json
-conduit init -o my-site.yaml    # YAML output (inferred from extension)
-conduit init -o my-site.json    # JSON output (inferred from extension)
+# Interactive (default)
+conduit init
+
+# Non-interactive: accept all defaults
+conduit init --yes
+conduit init -y
+
+# Non-interactive with overrides
+conduit init -y --port 3000 --proxy http://localhost:4000
+conduit init -y --format yaml --port 443 --tls-acme admin@example.com -o prod.yaml
+
+# Format inferred from -o extension
+conduit init -o conduit.yaml   # YAML
+conduit init -o conduit.json   # JSON
 ```
 
-| Flag | Short | Default | Description |
-| ---- | ----- | ------- | ----------- |
-| `--output FILE` | `-o` | wizard asks | Write the generated config here |
+**`--yes` defaults:**
 
-**Format selection:**
-- When `-o` is given, the format is inferred from the extension (`.yaml`/`.yml` → YAML, `.json` → JSON)
-- When `-o` is omitted, the wizard asks: *"YAML (recommended) or JSON?"*
-  - YAML default → writes `conduit.yaml`
-  - JSON default → writes `conduit.json`
+| Setting | Default |
+| ------- | ------- |
+| format | yaml |
+| port | 8080 |
+| static | `./dist` (enabled) |
+| proxy | disabled |
+| TLS | disabled |
+| health check | enabled |
+| log format | dev |
 
-The wizard asks for:
-- Output format (YAML / JSON)
-- Port
-- Whether to serve static files and from which directory
-- Whether to proxy to a backend and the backend URL
-- Whether to enable TLS (manual certs or Let's Encrypt / ACME)
-- Whether to enable the health check endpoint
-- Log format (dev / json / combined / none)
+**All flags:**
+
+| Flag | Short | Description |
+| ---- | ----- | ----------- |
+| `--output FILE` | `-o` | Output file path (format inferred from extension) |
+| `--yes` | `-y` | Non-interactive: accept all defaults, no prompts |
+| `--format <yaml\|json>` | — | Output format (overrides extension inference) |
+| `--port N` | — | Port number [default: 8080] |
+| `--static-dir DIR` | — | Serve static files from `DIR` |
+| `--no-static` | — | Disable static file serving |
+| `--proxy URL` | — | Proxy requests to upstream `URL` |
+| `--no-proxy` | — | Disable proxy |
+| `--log <dev\|json\|combined\|none>` | — | Log format [default: dev] |
+| `--no-health` | — | Disable `/__health__` endpoint |
+| `--tls-cert FILE` | — | TLS certificate file (enables manual TLS) |
+| `--tls-key FILE` | — | TLS private key file (required with `--tls-cert`) |
+| `--tls-acme EMAIL` | — | ACME email (enables Let's Encrypt auto-TLS) |
+
+When both `--yes` and individual flags are given, the flags override the
+defaults. Any setting not covered by a flag is silently set to its default
+without prompting.
 
 ---
 
