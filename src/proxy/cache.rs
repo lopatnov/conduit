@@ -98,8 +98,18 @@ pub fn build_cache_key(
 /// Returns `true` when caching should proceed, `false` when it should bypass:
 /// - HTTP method not in the configured allow-list (default: GET + HEAD only).
 /// - Request carries a `Cookie` header and `skipIfCookie` is `true`.
+/// - Request carries an `Authorization` header — per RFC 7234 § 3.2, caching
+///   authenticated responses is unsafe by default (the private response for
+///   user A must not be served to user B).  This prevents cache poisoning
+///   attacks where an authenticated response leaks to other users.
 /// - The request path matches one of the `skipPaths` patterns.
-pub fn should_cache_request(cfg: &CacheConfig, method: &str, has_cookie: bool, path: &str) -> bool {
+pub fn should_cache_request(
+    cfg: &CacheConfig,
+    method: &str,
+    has_cookie: bool,
+    has_authorization: bool,
+    path: &str,
+) -> bool {
     // Method filter (default: GET and HEAD only).
     let default_methods = ["GET", "HEAD"];
     let allowed: &[String] = cfg.methods.as_deref().unwrap_or(&[]);
@@ -111,6 +121,12 @@ pub fn should_cache_request(cfg: &CacheConfig, method: &str, has_cookie: bool, p
         allowed.iter().any(|m| m.eq_ignore_ascii_case(method))
     };
     if !method_ok {
+        return false;
+    }
+
+    // RFC 7234 § 3.2: never cache requests that carry an Authorization header.
+    // Authenticated responses are user-specific and must not be shared via cache.
+    if has_authorization {
         return false;
     }
 
@@ -282,71 +298,72 @@ mod tests {
 
     #[test]
     fn get_is_cached_by_default() {
-        assert!(should_cache_request(&cfg(60), "GET", false, "/api"));
+        assert!(should_cache_request(&cfg(60), "GET", false, false, "/api"));
     }
 
     #[test]
     fn head_is_cached_by_default() {
-        assert!(should_cache_request(&cfg(60), "HEAD", false, "/api"));
+        assert!(should_cache_request(&cfg(60), "HEAD", false, false, "/api"));
     }
 
     #[test]
     fn post_is_not_cached_by_default() {
-        assert!(!should_cache_request(&cfg(60), "POST", false, "/api"));
+        assert!(!should_cache_request(&cfg(60), "POST", false, false, "/api"));
     }
 
     #[test]
     fn method_check_is_case_insensitive() {
-        assert!(should_cache_request(&cfg(60), "get", false, "/"));
-        assert!(should_cache_request(&cfg(60), "Get", false, "/"));
+        assert!(should_cache_request(&cfg(60), "get", false, false, "/"));
+        assert!(should_cache_request(&cfg(60), "Get", false, false, "/"));
     }
 
     #[test]
     fn skip_if_cookie_blocks_when_cookie_present() {
         let mut c = cfg(60);
         c.skip_if_cookie = Some(true);
-        assert!(!should_cache_request(&c, "GET", true, "/api"));
+        assert!(!should_cache_request(&c, "GET", true, false, "/api"));
     }
 
     #[test]
     fn skip_if_cookie_allows_when_no_cookie() {
         let mut c = cfg(60);
         c.skip_if_cookie = Some(true);
-        assert!(should_cache_request(&c, "GET", false, "/api"));
+        assert!(should_cache_request(&c, "GET", false, false, "/api"));
     }
 
     #[test]
     fn skip_if_cookie_false_ignores_cookie() {
         let mut c = cfg(60);
         c.skip_if_cookie = Some(false);
-        assert!(should_cache_request(&c, "GET", true, "/api"));
+        assert!(should_cache_request(&c, "GET", true, false, "/api"));
     }
 
     #[test]
     fn skip_paths_exact_prefix_blocks() {
         let mut c = cfg(60);
         c.skip_paths = Some(vec!["/api/auth".into()]);
-        assert!(!should_cache_request(&c, "GET", false, "/api/auth"));
-        assert!(!should_cache_request(&c, "GET", false, "/api/auth/login"));
+        assert!(!should_cache_request(&c, "GET", false, false, "/api/auth"));
+        assert!(!should_cache_request(&c, "GET", false, false, "/api/auth/login"));
     }
 
     #[test]
     fn skip_paths_exact_prefix_does_not_block_other_paths() {
         let mut c = cfg(60);
         c.skip_paths = Some(vec!["/api/auth".into()]);
-        assert!(should_cache_request(&c, "GET", false, "/api/data"));
-        assert!(should_cache_request(&c, "GET", false, "/api"));
+        assert!(should_cache_request(&c, "GET", false, false, "/api/data"));
+        assert!(should_cache_request(&c, "GET", false, false, "/api"));
     }
 
     #[test]
     fn skip_paths_glob_blocks_prefix_and_subpaths() {
         let mut c = cfg(60);
         c.skip_paths = Some(vec!["/api/auth/**".into()]);
-        assert!(!should_cache_request(&c, "GET", false, "/api/auth"));
-        assert!(!should_cache_request(&c, "GET", false, "/api/auth/"));
+        assert!(!should_cache_request(&c, "GET", false, false, "/api/auth"));
+        assert!(!should_cache_request(&c, "GET", false, false, "/api/auth/"));
         assert!(!should_cache_request(
             &c,
             "GET",
+            false,
             false,
             "/api/auth/anything"
         ));
@@ -356,22 +373,52 @@ mod tests {
     fn skip_paths_glob_does_not_block_different_prefix() {
         let mut c = cfg(60);
         c.skip_paths = Some(vec!["/api/auth/**".into()]);
-        assert!(should_cache_request(&c, "GET", false, "/api/data"));
-        assert!(should_cache_request(&c, "GET", false, "/api"));
+        assert!(should_cache_request(&c, "GET", false, false, "/api/data"));
+        assert!(should_cache_request(&c, "GET", false, false, "/api"));
     }
 
     #[test]
     fn custom_methods_allow_post() {
         let mut c = cfg(60);
         c.methods = Some(vec!["GET".into(), "POST".into()]);
-        assert!(should_cache_request(&c, "POST", false, "/"));
+        assert!(should_cache_request(&c, "POST", false, false, "/"));
     }
 
     #[test]
     fn custom_methods_block_head_when_not_listed() {
         let mut c = cfg(60);
         c.methods = Some(vec!["GET".into()]);
-        assert!(!should_cache_request(&c, "HEAD", false, "/"));
+        assert!(!should_cache_request(&c, "HEAD", false, false, "/"));
+    }
+
+    // ── Authorization blocks caching (RFC 7234 § 3.2) ────────────────────────
+
+    #[test]
+    fn authorized_request_is_never_cached() {
+        // Even a plain GET with Authorization must be bypassed to prevent one
+        // user's private response from being served to another.
+        assert!(
+            !should_cache_request(&cfg(60), "GET", false, true, "/api"),
+            "GET + Authorization must not be cached"
+        );
+    }
+
+    #[test]
+    fn authorized_request_is_never_cached_regardless_of_cookie_setting() {
+        let mut c = cfg(60);
+        c.skip_if_cookie = Some(false); // cookies explicitly allowed
+        assert!(
+            !should_cache_request(&c, "GET", false, true, "/api"),
+            "Authorization must block caching even when skipIfCookie is false"
+        );
+    }
+
+    #[test]
+    fn no_authorization_header_is_cached_normally() {
+        assert!(
+            should_cache_request(&cfg(60), "GET", false, false, "/api"),
+            "request without Authorization should be cacheable"
+        );
     }
 
     // ── cache_storage ─────────────────────────────────────────────────────────

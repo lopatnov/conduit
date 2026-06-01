@@ -474,6 +474,195 @@ fn max_body_bytes_enforced_without_content_length() {
     );
 }
 
+// ── Authorization blocks caching (RFC 7234 § 3.2) ────────────────────────────
+
+/// Responses to requests with an Authorization header must NEVER be served
+/// from cache — they are user-specific and would leak to other users.
+#[test]
+#[serial]
+fn cache_does_not_serve_authorized_responses() {
+    use std::io::{Read, Write};
+
+    // Counter upstream that tracks how many times it was called.
+    let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let call_count2 = call_count.clone();
+    let echo_port = common::free_port();
+    let _echo = std::thread::spawn(move || {
+        let listener = std::net::TcpListener::bind(format!("127.0.0.1:{echo_port}")).unwrap();
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { continue };
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf);
+            let n = call_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let body = format!("call-{n}");
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n{}",
+                body.len(), body
+            );
+            let _ = s.write_all(resp.as_bytes());
+        }
+    });
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": {
+                    "/": {
+                        "targets": [format!("http://127.0.0.1:{echo_port}")],
+                        "cache": { "store": "memory", "ttlSecs": 3600 }
+                    }
+                }
+            }]
+        }),
+    );
+
+    let client = Client::new();
+
+    // Request 1: with Authorization — must hit upstream.
+    let r1 = client.get(srv.url("/"))
+        .header("authorization", "Bearer token-user-a")
+        .send().unwrap();
+    assert_eq!(r1.status().as_u16(), 200);
+    let body1 = r1.text().unwrap();
+
+    // Request 2: different user, with Authorization — must ALSO hit upstream,
+    // not receive user A's cached response.
+    let r2 = client.get(srv.url("/"))
+        .header("authorization", "Bearer token-user-b")
+        .send().unwrap();
+    let body2 = r2.text().unwrap();
+
+    // Both requests must reach the upstream (call count = 2, not 1).
+    // If caching was wrongly applied, the second request would return body1.
+    let calls = call_count.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        calls >= 2,
+        "both authorized requests must reach upstream (calls={calls}), \
+         not return a cached response from a different user"
+    );
+    assert_ne!(body1, body2, "each call must get a unique response");
+}
+
+// ── Unsafe POST retry blocked ─────────────────────────────────────────────────
+
+/// POST requests must NOT be retried on 5xx to prevent double-mutations
+/// (double charges, duplicate emails, etc.).
+#[test]
+#[serial]
+fn post_requests_are_not_retried_on_5xx() {
+    use std::io::{Read, Write};
+    use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
+
+    let call_count = Arc::new(AtomicU32::new(0));
+    let cc2 = call_count.clone();
+    let echo_port = common::free_port();
+    let _echo = std::thread::spawn(move || {
+        let listener = std::net::TcpListener::bind(format!("127.0.0.1:{echo_port}")).unwrap();
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { continue };
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf);
+            cc2.fetch_add(1, Ordering::Relaxed);
+            // Always return 500.
+            let body = "error";
+            let resp = format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(), body
+            );
+            let _ = s.write_all(resp.as_bytes());
+        }
+    });
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": {
+                    "/": {
+                        "targets": [format!("http://127.0.0.1:{echo_port}")],
+                        "retry": { "attempts": 3, "conditions": ["5xx"] }
+                    }
+                }
+            }]
+        }),
+    );
+
+    let client = Client::new();
+    let _resp = client.post(srv.url("/")).body("payload").send().unwrap();
+    // The proxy may return 500 or 502 depending on how Pingora handles the
+    // upstream response; what matters is that the upstream was hit exactly ONCE.
+
+    // POST must be forwarded exactly ONCE — no retries.
+    let calls = call_count.load(Ordering::Relaxed);
+    assert_eq!(calls, 1,
+        "POST must not be retried on 5xx — upstream was called {calls} times");
+}
+
+/// GET requests ARE retried on 5xx (safe, idempotent method).
+#[test]
+#[serial]
+fn get_requests_are_retried_on_5xx() {
+    use std::io::{Read, Write};
+    use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
+
+    let call_count = Arc::new(AtomicU32::new(0));
+    let cc2 = call_count.clone();
+    let echo_port = common::free_port();
+    let _echo = std::thread::spawn(move || {
+        let listener = std::net::TcpListener::bind(format!("127.0.0.1:{echo_port}")).unwrap();
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { continue };
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf);
+            let n = cc2.fetch_add(1, Ordering::Relaxed);
+            let (status, body) = if n == 0 { (500, "error") } else { (200, "ok") };
+            let resp = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(), body
+            );
+            let _ = s.write_all(resp.as_bytes());
+        }
+    });
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "limits": { "maxBodyBufferBytes": 1048576 },
+                "proxy": {
+                    "/": {
+                        "targets": [format!("http://127.0.0.1:{echo_port}")],
+                        "retry": { "attempts": 2, "conditions": ["5xx"] }
+                    }
+                }
+            }]
+        }),
+    );
+
+    let resp = Client::new().get(srv.url("/")).send().unwrap();
+    // First call returns 500 → retried → second call returns 200.
+    assert_eq!(resp.status().as_u16(), 200,
+        "GET should be retried and succeed on second attempt");
+    let calls = call_count.load(Ordering::Relaxed);
+    assert_eq!(calls, 2, "upstream must be called twice (1 fail + 1 retry)");
+}
+
 // ── Rate-limit burst ──────────────────────────────────────────────────────────
 
 /// With `burst` configured, clients can exceed the window rate briefly.

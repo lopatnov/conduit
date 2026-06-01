@@ -1371,12 +1371,13 @@ impl ProxyHttp for ConduitProxy {
             return Ok(());
         };
 
-        // Check request-side policy (method, cookies, skip-paths).
+        // Check request-side policy (method, cookies, authorization, skip-paths).
         let method = session.req_header().method.as_str();
         let path = session.req_header().uri.path();
         let has_cookie = session.req_header().headers.contains_key("cookie");
+        let has_authorization = session.req_header().headers.contains_key("authorization");
 
-        if !proxy_cache::should_cache_request(cfg, method, has_cookie, path) {
+        if !proxy_cache::should_cache_request(cfg, method, has_cookie, has_authorization, path) {
             return Ok(());
         }
 
@@ -1499,14 +1500,12 @@ impl ProxyHttp for ConduitProxy {
 
     fn fail_to_connect(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         _peer: &HttpPeer,
         ctx: &mut Self::CTX,
         mut e: Box<pingora_core::Error>,
     ) -> Box<pingora_core::Error> {
         use pingora_core::ErrorType::*;
-        // Note: _session is deliberately unused for path-based metrics here;
-        // we avoid accessing it to prevent borrow issues with `ctx`.
         if let Some(req_ctx) = ctx.as_mut() {
             if let Some(retry) = &mut req_ctx.retry {
                 if retry.has_attempts_left() {
@@ -1525,8 +1524,14 @@ impl ProxyHttp for ConduitProxy {
                     } else {
                         "timeout"
                     };
-                    if ((is_conn_err && retry.has_condition("connection_error"))
-                        || (is_timeout && retry.has_condition("timeout")))
+                    // Only retry safe/idempotent HTTP methods to prevent
+                    // double-submission of POST/PUT/DELETE/PATCH requests.
+                    // RFC 7231 § 4.2.2 defines idempotent methods.
+                    let method = session.req_header().method.as_str();
+                    let is_safe_method = is_safe_http_method(method);
+                    if is_safe_method
+                        && ((is_conn_err && retry.has_condition("connection_error"))
+                            || (is_timeout && retry.has_condition("timeout")))
                         && self.retry_budget_allows(retry)
                     {
                         e.set_retry(true);
@@ -1562,8 +1567,11 @@ impl ProxyHttp for ConduitProxy {
                     let is_timeout = matches!(e.etype(), ReadTimedout | WriteTimedout);
                     let is_5xx_retry = matches!(e.etype(), Custom("5xx_retry"));
                     let condition = if is_timeout { "timeout" } else { "5xx" };
-                    if ((is_timeout && retry.has_condition("timeout"))
-                        || (is_5xx_retry && retry.has_condition("5xx")))
+                    // Only retry safe/idempotent methods — see fail_to_connect.
+                    let method = session.req_header().method.as_str();
+                    if is_safe_http_method(method)
+                        && ((is_timeout && retry.has_condition("timeout"))
+                            || (is_5xx_retry && retry.has_condition("5xx")))
                         && self.retry_budget_allows(retry)
                     {
                         e.set_retry(true);
@@ -1810,6 +1818,25 @@ pub(crate) fn jitter_backoff_ms(ms: u64) -> u64 {
 ///
 /// When `retry.backoff_jitter` is `true`, applies ±50 % randomness to spread
 /// retries in time and avoid synchronized thundering herds.
+/// Returns `true` for HTTP methods that are safe to retry.
+///
+/// RFC 7231 § 4.2.2 defines **idempotent** methods: a request is idempotent
+/// when repeating it has the same effect as sending it once.  We only retry
+/// these to prevent double-mutations (double charges, double emails, etc.).
+///
+/// `PUT` and `DELETE` are technically idempotent but are excluded here because
+/// in practice applications often treat them as non-idempotent.  Operators who
+/// want to retry them can configure `retry.conditions: ["connection_error"]`
+/// without worrying — this function is the default safety gate.
+///
+/// Safe to retry: GET, HEAD, OPTIONS, TRACE.
+fn is_safe_http_method(method: &str) -> bool {
+    matches!(
+        method.to_ascii_uppercase().as_str(),
+        "GET" | "HEAD" | "OPTIONS" | "TRACE"
+    )
+}
+
 async fn apply_backoff(retry: &RetryState) {
     if retry.attempt > 0 {
         if let Some(ms) = retry.backoff_ms {

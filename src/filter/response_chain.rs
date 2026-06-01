@@ -196,6 +196,21 @@ impl ResponseFilter for InjectExtraHeadersFilter {
         resp: &mut ResponseHeader,
         _req_ctx: &RequestCtx,
     ) -> Result<ResponseFilterOutcome> {
+        // Strip Pingora's default `Server: Pingora` banner — it leaks the
+        // proxy software name, helping attackers target Pingora-specific CVEs.
+        // Upstream-set Server headers (from a real backend) are left alone since
+        // Pingora only injects this value for its own locally-generated responses
+        // (502/503/504 error pages); we strip it here before the client sees it.
+        if resp
+            .headers
+            .get("server")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("Pingora"))
+            .unwrap_or(false)
+        {
+            resp.remove_header("server");
+        }
+
         for (name, value) in &self.headers {
             resp.insert_header(name.clone(), value.clone())?;
         }
