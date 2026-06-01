@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use async_compression::tokio::bufread::{BrotliEncoder, DeflateEncoder, GzipEncoder};
+use async_compression::tokio::bufread::{BrotliEncoder, DeflateEncoder, GzipEncoder, ZstdEncoder};
 use async_compression::Level;
 use bytes::Bytes;
 use tokio::io::AsyncReadExt as _;
@@ -24,7 +24,8 @@ pub fn effective(cfg: &CompressionConfig) -> Option<CompressOptions> {
     match cfg {
         CompressionConfig::Enabled(false) => None,
         CompressionConfig::Enabled(true) => Some(CompressOptions {
-            algorithms: vec!["br".to_owned(), "gzip".to_owned()],
+            // br first (best ratio), then zstd (fast + small), then gzip (widest compat)
+            algorithms: vec!["br".to_owned(), "zstd".to_owned(), "gzip".to_owned()],
             level: 6,
             min_bytes: 1024,
         }),
@@ -32,7 +33,7 @@ pub fn effective(cfg: &CompressionConfig) -> Option<CompressOptions> {
             let algorithms = opts
                 .algorithms
                 .clone()
-                .unwrap_or_else(|| vec!["br".to_owned(), "gzip".to_owned()]);
+                .unwrap_or_else(|| vec!["br".to_owned(), "zstd".to_owned(), "gzip".to_owned()]);
             if algorithms.is_empty() {
                 return None;
             }
@@ -62,8 +63,9 @@ pub fn best_encoding(
     }
     for algo in &opts.algorithms {
         match algo.as_str() {
-            "br" if accept.brotli => return Some("br"),
-            "gzip" if accept.gzip => return Some("gzip"),
+            "br"      if accept.brotli  => return Some("br"),
+            "zstd"    if accept.zstd    => return Some("zstd"),
+            "gzip"    if accept.gzip    => return Some("gzip"),
             "deflate" if accept.deflate => return Some("deflate"),
             _ => {}
         }
@@ -102,6 +104,13 @@ pub async fn compress_bytes(data: Bytes, encoding: &str, level: u8) -> Bytes {
         "deflate" => {
             let r = tokio::io::BufReader::new(Cursor::new(data.clone()));
             DeflateEncoder::with_quality(r, lev)
+                .read_to_end(&mut out)
+                .await
+                .is_ok()
+        }
+        "zstd" => {
+            let r = tokio::io::BufReader::new(Cursor::new(data.clone()));
+            ZstdEncoder::with_quality(r, lev)
                 .read_to_end(&mut out)
                 .await
                 .is_ok()
@@ -151,7 +160,7 @@ mod tests {
             level: 6,
             min_bytes: 1024,
         };
-        let accept = AcceptEncoding {
+        let accept = AcceptEncoding { zstd: false,
             gzip: true,
             ..Default::default()
         };
@@ -165,7 +174,7 @@ mod tests {
             level: 6,
             min_bytes: 0,
         };
-        let accept = AcceptEncoding {
+        let accept = AcceptEncoding { zstd: false,
             brotli: true,
             gzip: true,
             deflate: false,
@@ -209,7 +218,7 @@ mod tests {
             min_bytes: 0,
         };
         // brotli NOT accepted — should fall back to gzip.
-        let accept = AcceptEncoding {
+        let accept = AcceptEncoding { zstd: false,
             brotli: false,
             gzip: true,
             deflate: false,
@@ -224,7 +233,7 @@ mod tests {
             level: 6,
             min_bytes: 0,
         };
-        let accept = AcceptEncoding {
+        let accept = AcceptEncoding { zstd: false,
             brotli: false,
             gzip: false,
             deflate: true,
@@ -240,7 +249,7 @@ mod tests {
             min_bytes: 0,
         };
         // Client accepts nothing.
-        let accept = AcceptEncoding {
+        let accept = AcceptEncoding { zstd: false,
             brotli: false,
             gzip: false,
             deflate: false,
@@ -308,5 +317,48 @@ mod tests {
         let mut decoded = Vec::new();
         dec.read_to_end(&mut decoded).await.unwrap();
         assert_eq!(decoded, original.as_ref());
+    }
+
+    #[tokio::test]
+    async fn compress_zstd_roundtrip() {
+        use async_compression::tokio::bufread::ZstdDecoder;
+
+        let original = Bytes::from("hello world ".repeat(100));
+        let compressed = compress_bytes(original.clone(), "zstd", 6).await;
+        assert!(
+            compressed.len() < original.len(),
+            "zstd should compress repetitive data: compressed={} original={}",
+            compressed.len(),
+            original.len()
+        );
+
+        let mut dec = ZstdDecoder::new(tokio::io::BufReader::new(std::io::Cursor::new(compressed)));
+        let mut decoded = Vec::new();
+        dec.read_to_end(&mut decoded).await.unwrap();
+        assert_eq!(decoded, original.as_ref());
+    }
+
+    #[test]
+    fn best_encoding_picks_zstd_when_available() {
+        let opts = CompressOptions {
+            algorithms: vec!["br".to_owned(), "zstd".to_owned(), "gzip".to_owned()],
+            level: 6,
+            min_bytes: 0,
+        };
+        // Only zstd accepted.
+        let accept = AcceptEncoding { zstd: true, ..Default::default() };
+        assert_eq!(best_encoding(&opts, &accept, 2000), Some("zstd"));
+    }
+
+    #[test]
+    fn best_encoding_prefers_br_over_zstd() {
+        let opts = CompressOptions {
+            algorithms: vec!["br".to_owned(), "zstd".to_owned(), "gzip".to_owned()],
+            level: 6,
+            min_bytes: 0,
+        };
+        // Both br and zstd accepted — br wins (listed first).
+        let accept = AcceptEncoding { brotli: true, zstd: true, ..Default::default() };
+        assert_eq!(best_encoding(&opts, &accept, 2000), Some("br"));
     }
 }

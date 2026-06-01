@@ -329,6 +329,15 @@ pub struct Http2Config {
     pub max_concurrent_streams: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initial_window_size: Option<u32>,
+    /// Allow HTTP/2 upgrade on plaintext (cleartext) connections — h2c.
+    ///
+    /// When `true`, a client connecting on a plain HTTP port can negotiate
+    /// HTTP/2 without TLS.  Useful for internal gRPC traffic or when TLS is
+    /// handled by an upstream load-balancer.
+    ///
+    /// **Does not affect TLS ports** — those always negotiate HTTP/2 via ALPN.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub h2c: Option<bool>,
 }
 
 // ── Logging ────────────────────────────────────────────────────────────────
@@ -836,6 +845,14 @@ pub struct LimitsConfig {
     /// Defaults to 1 MiB (1_048_576 bytes).  Set to 0 to disable buffering.
     #[serde(rename = "maxBodyBufferBytes", skip_serializing_if = "Option::is_none")]
     pub max_body_buffer_bytes: Option<u64>,
+    /// Maximum number of requests served over a single keepalive connection.
+    ///
+    /// After this many requests the connection is closed and per-connection
+    /// memory is reclaimed.  `None` means unlimited (default Pingora behaviour).
+    ///
+    /// Equivalent to nginx's `keepalive_requests`.
+    #[serde(rename = "keepaliveRequestLimit", skip_serializing_if = "Option::is_none")]
+    pub keepalive_request_limit: Option<u32>,
 }
 
 // ── Redirects ──────────────────────────────────────────────────────────────

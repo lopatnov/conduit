@@ -351,14 +351,15 @@ http2:
 
 | Field                  | Type   | Default | Description                         |
 | ---------------------- | ------ | ------- | ----------------------------------- |
-| `maxConcurrentStreams` | number | `100`   | Max parallel streams per connection |
-| `initialWindowSize`    | number | `65535` | Flow-control window in bytes        |
+| `maxConcurrentStreams` | number  | `100`   | Max parallel streams per connection |
+| `initialWindowSize`    | number  | `65535` | Flow-control window in bytes        |
+| `h2c`                  | bool    | `false` | Allow HTTP/2 upgrade on **plaintext** connections (h2c). For TLS ports HTTP/2 is negotiated via ALPN regardless. Useful for internal gRPC without TLS. |
 
 ---
 
 ## Compression
 
-Add `Content-Encoding: br` / `gzip` / `deflate` to responses.
+Add `Content-Encoding: br` / `zstd` / `gzip` / `deflate` to responses.
 
 ```yaml
 # YAML — enable with defaults
@@ -366,7 +367,7 @@ compression: true
 
 # Fine-grained
 compression:
-  algorithms: [br, gzip]   # try Brotli first, fall back to gzip
+  algorithms: [br, zstd, gzip]  # Brotli first, then Zstd, then gzip
   level: 6                  # compression level (1=fast, 9=smallest)
   minBytes: 1024            # don't compress responses smaller than 1 KB
 ```
@@ -380,7 +381,7 @@ compression:
 // JSON
 {
   "compression": {
-    "algorithms": ["br", "gzip"],
+    "algorithms": ["br", "zstd", "gzip"],
     "level": 6,
     "minBytes": 1024
   }
@@ -389,7 +390,7 @@ compression:
 
 | Field        | Type     | Default          | Description                               |
 | ------------ | -------- | ---------------- | ----------------------------------------- |
-| `algorithms` | string[] | `["br", "gzip"]` | Compression algorithms to offer           |
+| `algorithms` | string[] | `["br", "zstd", "gzip"]` | Compression algorithms to offer. Supported: `"br"` (Brotli), `"zstd"` (Zstandard), `"gzip"`, `"deflate"` |
 | `level`      | number   | `6`              | Compression level (1–9)                   |
 | `minBytes`   | number   | `1024`           | Minimum response size to compress (bytes) |
 
@@ -1396,11 +1397,12 @@ limits:
 
 | Field                 | Type   | Default | Description                                                       |
 | --------------------- | ------ | ------- | ----------------------------------------------------------------- |
-| `maxBodyBytes`        | number | —       | Max request body size — returns `413` if exceeded                 |
-| `maxHeaderBytes`      | number | —       | Max request header size                                           |
-| `timeoutSecs`         | number | —       | Global request timeout                                            |
-| `maxInflightRequests` | number | —       | Max concurrent requests — returns `503` if exceeded (must be ≥ 1) |
-| `maxBodyBufferBytes`  | number | —       | Max body buffered per request for retry replay                    |
+| `maxBodyBytes`          | number | —  | Max request body size — returns `413` if exceeded                   |
+| `maxHeaderBytes`        | number | —  | Max request header size                                             |
+| `timeoutSecs`           | number | —  | Global request timeout                                              |
+| `maxInflightRequests`   | number | —  | Max concurrent requests — returns `503` if exceeded (must be ≥ 1)  |
+| `maxBodyBufferBytes`    | number | —  | Max body buffered per request for retry replay                      |
+| `keepaliveRequestLimit` | number | —  | Max requests per keepalive connection; closes and recycles after. Equivalent to nginx's `keepalive_requests`. |
 
 ---
 

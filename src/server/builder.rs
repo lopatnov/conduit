@@ -5,7 +5,9 @@ use std::sync::Arc;
 use pingora_core::server::configuration::Opt;
 use pingora_core::server::Server;
 use pingora_core::services::background::background_service;
-use pingora_proxy::http_proxy_service;
+use pingora_core::apps::HttpServerOptions;
+use pingora_core::services::listening::Service as ListeningService;
+use pingora_proxy::{http_proxy_service, HttpProxy};
 
 use crate::admin::api::AdminApiService;
 // DEFAULT_ADMIN_BIND is still the default for CLI commands (conduit reload etc.)
@@ -259,7 +261,39 @@ pub fn run_server(
     let proxy = ConduitProxy {
         state: state.clone(),
     };
-    let mut proxy_service = http_proxy_service(&server.configuration, proxy);
+
+    // Build HttpServerOptions from site configs.
+    // h2c: enable if any site has http2.h2c = true.
+    // keepalive_request_limit: use the smallest non-None value across sites.
+    let h2c = config.sites.iter().any(|s| {
+        s.http2
+            .as_ref()
+            .and_then(|h| match h {
+                crate::config::schema::Http2Config { h2c: Some(true), .. } => Some(true),
+                _ => None,
+            })
+            .unwrap_or(false)
+    });
+    let keepalive_request_limit: Option<u32> = config
+        .sites
+        .iter()
+        .filter_map(|s| s.limits.as_ref()?.keepalive_request_limit)
+        .min();
+
+    let server_options = if h2c || keepalive_request_limit.is_some() {
+        let mut opts = HttpServerOptions::default();
+        opts.h2c = h2c;
+        opts.keepalive_request_limit = keepalive_request_limit;
+        Some(opts)
+    } else {
+        None
+    };
+
+    // Create HttpProxy with options, then wrap in a listening service.
+    let mut inner_proxy = HttpProxy::new(proxy, server.configuration.clone());
+    inner_proxy.server_options = server_options;
+    inner_proxy.handle_init_modules();
+    let mut proxy_service = ListeningService::new("Conduit HTTP Proxy".to_owned(), inner_proxy);
 
     let (port_tls, port_plain) = classify_ports(&config.sites, &acme_certs);
 

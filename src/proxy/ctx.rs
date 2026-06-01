@@ -218,6 +218,7 @@ pub struct AcceptEncoding {
     pub brotli: bool,
     pub gzip: bool,
     pub deflate: bool,
+    pub zstd: bool,
 }
 
 impl AcceptEncoding {
@@ -235,9 +236,10 @@ impl AcceptEncoding {
                 continue;
             }
             match token.as_str() {
-                "br" => enc.brotli = true,
-                "gzip" => enc.gzip = true,
+                "br"   => enc.brotli = true,
+                "gzip" => enc.gzip   = true,
                 "deflate" => enc.deflate = true,
+                "zstd" => enc.zstd   = true,
                 _ => {}
             }
         }
@@ -274,10 +276,19 @@ mod tests {
 
     #[test]
     fn parse_multiple_encodings() {
-        let enc = AcceptEncoding::parse("br, gzip, deflate");
+        let enc = AcceptEncoding::parse("br, gzip, deflate, zstd");
         assert!(enc.brotli);
         assert!(enc.gzip);
         assert!(enc.deflate);
+        assert!(enc.zstd);
+    }
+
+    #[test]
+    fn parse_zstd_only() {
+        let enc = AcceptEncoding::parse("zstd");
+        assert!(enc.zstd);
+        assert!(!enc.brotli);
+        assert!(!enc.gzip);
     }
 
     #[test]
