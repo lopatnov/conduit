@@ -235,18 +235,30 @@ proxy:
 
 ### Header check in Rust
 
-A plugin that returns `401` when `X-API-Key` is missing or wrong.
+Returns `401` when `X-API-Key` is missing or wrong.
+
+**Project structure:**
+```
+api-key-check/
+├── Cargo.toml
+└── src/lib.rs
+```
+
+```toml
+# Cargo.toml
+[package]
+name = "api-key-check"   # ← determines the output filename
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+```
 
 ```rust
 // src/lib.rs
-use std::ffi::CStr;
-
-// Import host functions.
 extern "C" {
-    fn conduit_get_header(
-        name_ptr: i32, name_len: i32,
-        buf: i32, buf_len: i32,
-    ) -> i32;
+    fn conduit_get_header(name_ptr: i32, name_len: i32, buf: i32, buf_len: i32) -> i32;
     fn conduit_set_response_status(status: i32);
     fn conduit_set_response_body(body_ptr: i32, body_len: i32);
 }
@@ -262,20 +274,16 @@ pub extern "C" fn on_request() -> i32 {
             BUF.as_ptr() as i32, BUF.len() as i32,
         )
     };
-
     if n < 0 {
-        // Header absent.
         reject(401, b"missing API key");
         return 1;
     }
-
     let value = unsafe { &BUF[..n as usize] };
     if value != b"my-secret" {
         reject(403, b"invalid API key");
         return 1;
     }
-
-    0 // continue
+    0
 }
 
 fn reject(status: i32, msg: &[u8]) {
@@ -286,11 +294,12 @@ fn reject(status: i32, msg: &[u8]) {
 }
 ```
 
-Build:
-
+**Build:**
 ```bash
 cargo build --target wasm32-unknown-unknown --release
-cp target/wasm32-unknown-unknown/release/my_plugin.wasm ./plugins/
+# Output: target/wasm32-unknown-unknown/release/api_key_check.wasm
+#         (Cargo replaces hyphens with underscores in the filename)
+cp target/wasm32-unknown-unknown/release/api_key_check.wasm ./plugins/
 ```
 
 **conduit.yaml / conduit.json:**
@@ -298,7 +307,7 @@ cp target/wasm32-unknown-unknown/release/my_plugin.wasm ./plugins/
 # conduit.yaml
 middleware:
   - type: wasm
-    path: ./plugins/my_plugin.wasm
+    path: ./plugins/api_key_check.wasm   # the copied .wasm file
 proxy:
   /api: "http://backend:4000"
 healthCheck: true
@@ -307,7 +316,7 @@ healthCheck: true
 ```json
 // conduit.json
 {
-  "middleware": [{ "type": "wasm", "path": "./plugins/my_plugin.wasm" }],
+  "middleware": [{ "type": "wasm", "path": "./plugins/api_key_check.wasm" }],
   "proxy": { "/api": "http://backend:4000" },
   "healthCheck": true
 }
@@ -317,14 +326,30 @@ healthCheck: true
 
 ### Inject a request header
 
-Add `X-Plugin-Version: 1.0` to every forwarded request:
+Adds `X-Plugin-Version: 1.0` to every upstream request.
+
+**Project structure:**
+```
+inject-header/
+├── Cargo.toml
+└── src/lib.rs
+```
+
+```toml
+# Cargo.toml
+[package]
+name = "inject-header"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+```
 
 ```rust
+// src/lib.rs
 extern "C" {
-    fn conduit_set_request_header(
-        name_ptr: i32, name_len: i32,
-        val_ptr: i32, val_len: i32,
-    );
+    fn conduit_set_request_header(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32);
 }
 
 #[no_mangle]
@@ -337,13 +362,20 @@ pub extern "C" fn on_request() -> i32 {
             value.as_ptr() as i32, value.len() as i32,
         );
     }
-    0 // continue — header is applied to upstream request
+    0 // continue — header mutation is applied before forwarding
 }
+```
+
+**Build:**
+```bash
+cargo build --target wasm32-unknown-unknown --release
+# Output: target/wasm32-unknown-unknown/release/inject_header.wasm
+cp target/wasm32-unknown-unknown/release/inject_header.wasm ./plugins/
 ```
 
 **conduit.yaml / conduit.json:**
 ```yaml
-# conduit.yaml — inject X-Plugin-Version before forwarding to upstream
+# conduit.yaml
 middleware:
   - type: wasm
     path: ./plugins/inject_header.wasm
@@ -363,9 +395,28 @@ proxy:
 
 ### Redirect old paths
 
-Permanently redirect `/old-api/` to `/api/`:
+Sends a 302 redirect from `/old-api/` to `/api/`.
+
+**Project structure:**
+```
+path-redirect/
+├── Cargo.toml
+└── src/lib.rs
+```
+
+```toml
+# Cargo.toml
+[package]
+name = "path-redirect"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+```
 
 ```rust
+// src/lib.rs
 extern "C" {
     fn conduit_get_path(buf: i32, buf_len: i32) -> i32;
     fn conduit_abort_with_redirect(url_ptr: i32, url_len: i32);
@@ -378,30 +429,32 @@ pub extern "C" fn on_request() -> i32 {
     let n = unsafe {
         conduit_get_path(PATH_BUF.as_ptr() as i32, PATH_BUF.len() as i32)
     };
-    if n <= 0 {
-        return 0;
-    }
+    if n <= 0 { return 0; }
     let path = unsafe { &PATH_BUF[..n as usize] };
     if path.starts_with(b"/old-api/") {
         let new_path = b"/api/";
         unsafe {
-            conduit_abort_with_redirect(
-                new_path.as_ptr() as i32,
-                new_path.len() as i32,
-            );
+            conduit_abort_with_redirect(new_path.as_ptr() as i32, new_path.len() as i32);
         }
-        return 1; // abort with 302
+        return 1; // abort with 302 redirect
     }
     0
 }
 ```
 
+**Build:**
+```bash
+cargo build --target wasm32-unknown-unknown --release
+# Output: target/wasm32-unknown-unknown/release/path_redirect.wasm
+cp target/wasm32-unknown-unknown/release/path_redirect.wasm ./plugins/
+```
+
 **conduit.yaml / conduit.json:**
 ```yaml
-# conduit.yaml — redirect /old-api/* → /api/* before reaching upstream
+# conduit.yaml
 middleware:
   - type: wasm
-    path: ./plugins/redirect.wasm
+    path: ./plugins/path_redirect.wasm   # runs before the proxy
 proxy:
   /api: "http://backend:4000"
 ```
@@ -409,7 +462,7 @@ proxy:
 ```json
 // conduit.json
 {
-  "middleware": [{ "type": "wasm", "path": "./plugins/redirect.wasm" }],
+  "middleware": [{ "type": "wasm", "path": "./plugins/path_redirect.wasm" }],
   "proxy": { "/api": "http://backend:4000" }
 }
 ```
@@ -651,9 +704,15 @@ rustup target add wasm32-unknown-unknown
 # Build
 cargo build --target wasm32-unknown-unknown --release
 
-# Output
+# The output filename = package name with hyphens replaced by underscores:
+#   name = "my-plugin"   →   target/.../my_plugin.wasm
+#   name = "api-check"   →   target/.../api_check.wasm
 ls target/wasm32-unknown-unknown/release/*.wasm
 ```
+
+> **Cargo naming rule:** Cargo replaces `-` with `_` in the output `.wasm`
+> filename. `name = "api-key-check"` → `api_key_check.wasm`.
+> Use this exact name in `conduit.yaml path:`.
 
 ### C / C++ — build
 
