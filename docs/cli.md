@@ -122,21 +122,22 @@ conduit validate -c conduit.yaml && echo "Config OK"
 
 ### fmt
 
-Normalize and pretty-print the config. Always outputs **JSON** regardless of
-the input format (YAML in → JSON out).
+Normalize and pretty-print the config, preserving the input format:
+`.yaml` / `.yml` files stay YAML, `.json` files stay JSON.
 
 ```bash
 # Print to stdout (useful for diffing)
 conduit fmt
-conduit fmt -c conduit.yaml
+conduit fmt -c conduit.yaml   # → pretty YAML
+conduit fmt -c conduit.json   # → pretty JSON
 
 # Overwrite the file in place
 conduit fmt --write
 conduit fmt --write -c conduit.yaml
 ```
 
-`--write` rewrites the config file. Useful for normalizing key order and
-whitespace, or for converting YAML to canonical JSON.
+`--write` rewrites the config file in place. Useful for normalizing key order
+and whitespace after manual edits.
 
 ---
 

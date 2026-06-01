@@ -463,13 +463,33 @@ fn cmd_fmt(config_path: &str, write: bool) {
             process::exit(1);
         }
     };
-    let formatted = match serde_json::to_string_pretty(&app) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error serializing config: {e}");
-            process::exit(1);
+
+    // Preserve the input format: YAML files stay YAML, JSON files stay JSON.
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let is_yaml = ext == "yaml" || ext == "yml";
+
+    let formatted = if is_yaml {
+        match serde_yaml::to_string(&app) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error serializing config: {e}");
+                process::exit(1);
+            }
+        }
+    } else {
+        match serde_json::to_string_pretty(&app) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error serializing config: {e}");
+                process::exit(1);
+            }
         }
     };
+
     if write {
         if let Err(e) = std::fs::write(path, &formatted) {
             eprintln!("error writing {}: {e}", path.display());
