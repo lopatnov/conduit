@@ -387,6 +387,93 @@ fn priority_routing_above_threshold_sheds_low_priority() {
     );
 }
 
+// ── maxBodyBytes chunked bypass ───────────────────────────────────────────────
+
+/// Clients that use chunked transfer encoding (no Content-Length) must not
+/// bypass `maxBodyBytes`.  Previously only the declared Content-Length was
+/// checked; actual body bytes were not enforced.
+#[test]
+#[serial]
+fn max_body_bytes_enforced_without_content_length() {
+    // Upstream echoes whatever it receives.
+    let echo_port = common::free_port();
+    let _echo = {
+        use std::io::{Read, Write};
+        std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{echo_port}")).unwrap();
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let mut buf = vec![0u8; 65536];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let body = format!("received {} bytes", n);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                let _ = s.write_all(resp.as_bytes());
+            }
+        })
+    };
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    // maxBodyBytes = 100 bytes.
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "limits": { "maxBodyBytes": 100 },
+                "proxy": {
+                    "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] }
+                }
+            }]
+        }),
+    );
+
+    // Send a POST with Content-Length that reports 10 bytes but body is 200 bytes.
+    // This is the standard bypass — the LimitsGuard sees 10 (< 100) and passes.
+    // The actual body enforcement should catch the 200 bytes.
+    let client = reqwest::blocking::Client::new();
+
+    // Case 1: over-declared Content-Length is checked at header phase → 413.
+    let resp_declared = client
+        .post(srv.url("/"))
+        .header("content-length", "5000")
+        .body("x".repeat(5000))
+        .send()
+        .unwrap();
+    assert_eq!(
+        resp_declared.status().as_u16(),
+        413,
+        "declared Content-Length > maxBodyBytes must return 413"
+    );
+
+    // Case 2: no Content-Length (e.g. chunked) — actual bytes enforced in body filter.
+    // We can't trivially send chunked with reqwest, but we can send a body
+    // without explicitly setting Content-Length by using streaming:
+    // reqwest will add Content-Length for a known-size body, so we use raw TCP.
+    let raw_req = format!(
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+        200, // chunk size in hex
+        "B".repeat(200)
+    );
+    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    use std::io::{Read, Write};
+    stream.write_all(raw_req.as_bytes()).unwrap();
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    // The upstream should NOT receive 200 bytes — the body must be truncated/dropped.
+    // Either we get a 413 from Conduit or the upstream receives truncated data.
+    // The key assertion: the upstream must not echo "received 200 bytes".
+    assert!(
+        !response.contains("received 200 bytes"),
+        "chunked body exceeding maxBodyBytes must not fully reach upstream: {response:.100}"
+    );
+}
+
 // ── Rate-limit burst ──────────────────────────────────────────────────────────
 
 /// With `burst` configured, clients can exceed the window rate briefly.

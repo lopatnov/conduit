@@ -1124,11 +1124,52 @@ impl ProxyHttp for ConduitProxy {
         let Some(req_ctx) = ctx.as_mut() else {
             return Ok(());
         };
-        // Only buffer when retry is configured (otherwise wasteful).
-        if req_ctx.retry.is_none() {
-            return Ok(());
+
+        {
+            let chunk_len = body.as_ref().map(|c| c.len()).unwrap_or(0);
+            req_ctx.actual_body_bytes += chunk_len as u64;
+
+            // ── Enforce maxBodyBytes on the ACTUAL received bytes ─────────────
+            // The LimitsGuard (request_filter phase) only checks the declared
+            // Content-Length header.  A client using chunked encoding or sending
+            // more bytes than declared would bypass that check entirely.
+            // Here we count actual bytes and drop the chunk (+ all future chunks)
+            // once the limit is exceeded, preventing large bodies from reaching
+            // the upstream.
+            if chunk_len > 0 {
+                let max_body = {
+                    let config = self.state.config.load();
+                    config
+                        .sites
+                        .get(req_ctx.site_idx)
+                        .and_then(|s| s.limits.as_ref())
+                        .and_then(|l| l.max_body_bytes)
+                };
+                if let Some(max) = max_body {
+                    if req_ctx.actual_body_bytes > max {
+                        // Drop this chunk — prevents forwarding to upstream.
+                        *body = None;
+                        let prev = req_ctx.actual_body_bytes - chunk_len as u64;
+                        if prev <= max {
+                            // Log only on first violation.
+                            tracing::warn!(
+                                actual = req_ctx.actual_body_bytes,
+                                max,
+                                "request body exceeded maxBodyBytes (chunked/no Content-Length) \
+                                 — body dropped, upstream will receive truncated request"
+                            );
+                        }
+                        req_ctx.body_buffer.clear();
+                        req_ctx.body_too_large = true;
+                        return Ok(());
+                    }
+                }
+            }
         }
-        if req_ctx.body_too_large {
+
+        // ── Retry body buffering (separate from size enforcement) ────────────
+        // Only buffer when retry is configured (otherwise wasteful).
+        if req_ctx.retry.is_none() || req_ctx.body_too_large {
             return Ok(());
         }
 

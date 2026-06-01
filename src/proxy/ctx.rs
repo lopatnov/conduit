@@ -67,6 +67,12 @@ pub struct RequestCtx {
     /// (default 1 MiB).  Retries are still attempted but without body replay —
     /// only safe for idempotent methods (GET/HEAD) in that case.
     pub body_too_large: bool,
+    /// Running tally of actual body bytes received so far.
+    ///
+    /// Incremented in `request_body_filter` for every chunk regardless of
+    /// whether retry buffering is active.  Used to enforce `limits.maxBodyBytes`
+    /// against clients that omit `Content-Length` or use chunked encoding.
+    pub actual_body_bytes: u64,
     /// Timestamp recorded at the start of `upstream_request_filter` — i.e. the
     /// moment the proxied request was forwarded to the upstream.
     ///
@@ -106,6 +112,7 @@ impl RequestCtx {
             response_transform,
             body_buffer: Vec::new(),
             body_too_large: false,
+            actual_body_bytes: 0,
             jwt_claims: None,
             upstream_start: None,
             #[cfg(feature = "otlp")]

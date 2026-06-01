@@ -114,9 +114,31 @@ fn ast_cache() -> &'static DashMap<String, AST> {
 
 /// Return a reference to the shared Rhai engine with the Conduit API
 /// registered.  The engine is constructed at most once per process.
+/// Maximum Rhai operations per script execution.
+///
+/// Prevents infinite loops in malicious or buggy scripts from hanging a
+/// worker thread indefinitely.  At ~10 ns per operation this allows scripts
+/// up to ~5 ms — plenty for access-control logic.
+const MAX_SCRIPT_OPERATIONS: u64 = 500_000;
+
+/// Maximum string length a Rhai script may produce (bytes).
+///
+/// Prevents memory exhaustion via string concatenation loops.
+const MAX_SCRIPT_STRING_SIZE: usize = 1_048_576; // 1 MiB
+
+/// Maximum number of elements in any Rhai array or map.
+const MAX_SCRIPT_ARRAY_SIZE: usize = 65_536;
+
 fn engine() -> &'static Engine {
     ENGINE.get_or_init(|| {
         let mut eng = Engine::new();
+
+        // ── Resource limits (DoS protection) ──────────────────────────────
+        // Prevents runaway scripts from exhausting CPU or memory.
+        eng.set_max_operations(MAX_SCRIPT_OPERATIONS);
+        eng.set_max_string_size(MAX_SCRIPT_STRING_SIZE);
+        eng.set_max_array_size(MAX_SCRIPT_ARRAY_SIZE);
+        eng.set_max_map_size(MAX_SCRIPT_ARRAY_SIZE);
 
         // Register ScriptRequest ────────────────────────────────────────
         eng.register_type_with_name::<ScriptRequest>("Request");
@@ -385,6 +407,12 @@ fn engine_response() -> &'static rhai::Engine {
     static RESP_ENGINE: std::sync::OnceLock<rhai::Engine> = std::sync::OnceLock::new();
     RESP_ENGINE.get_or_init(|| {
         let mut eng = rhai::Engine::new();
+
+        // ── Same resource limits as the request engine ─────────────────────
+        eng.set_max_operations(MAX_SCRIPT_OPERATIONS);
+        eng.set_max_string_size(MAX_SCRIPT_STRING_SIZE);
+        eng.set_max_array_size(MAX_SCRIPT_ARRAY_SIZE);
+        eng.set_max_map_size(MAX_SCRIPT_ARRAY_SIZE);
 
         eng.register_type_with_name::<ScriptResponseBuilder>("ResponseBuilder");
         eng.register_get("status", |r: &mut ScriptResponseBuilder| r.status);
