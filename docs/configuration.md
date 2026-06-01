@@ -2688,6 +2688,50 @@ sites:
 
 ---
 
+## TCP Proxy
+
+Forward raw TCP connections without HTTP parsing. Useful for MySQL, PostgreSQL,
+Redis, SMTP, and any other non-HTTP protocol.
+
+```yaml
+# conduit.yaml
+sites:
+  - port: 3306
+    tcp:
+      targets:
+        - "mysql-primary:3306"
+        - "mysql-replica:3306"
+      strategy: round-robin      # or "random" (default: round-robin)
+      connectTimeoutMs: 5000     # upstream connect timeout (default: 5000)
+```
+
+```json
+// conduit.json
+{
+  "sites": [
+    {
+      "port": 3306,
+      "tcp": {
+        "targets": ["mysql-primary:3306", "mysql-replica:3306"],
+        "strategy": "round-robin",
+        "connectTimeoutMs": 5000
+      }
+    }
+  ]
+}
+```
+
+| Field              | Type     | Default        | Description |
+| ------------------ | -------- | -------------- | ----------- |
+| `targets`          | string[] | —              | Upstream `host:port` addresses — **required** |
+| `strategy`         | string   | `round-robin`  | `"round-robin"` or `"random"` |
+| `connectTimeoutMs` | number   | `5000`         | Upstream connect timeout (ms) |
+
+> **Note:** `tcp` cannot be combined with `proxy`, `static`, or other HTTP
+> features on the same site. Use a separate port/site for HTTP traffic.
+
+---
+
 ## Upload
 
 Enable multipart file upload. The upload handler is only started when this

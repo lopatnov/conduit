@@ -318,6 +318,30 @@ pub fn run_server(
 
     server.add_service(proxy_service);
 
+    // ── Raw TCP proxy services ────────────────────────────────────────────────
+    // Each site with a `tcp` block gets its own Pingora listening service.
+    // These operate at the transport layer — no HTTP parsing, bytes relayed as-is.
+    for site in &config.sites {
+        let Some(ref tcp_cfg) = site.tcp else { continue };
+        if tcp_cfg.targets.is_empty() {
+            tracing::warn!("TCP site on port {:?} has no targets — skipped", site.port);
+            continue;
+        }
+        let port = site.port.unwrap_or(80);
+        let proxy = crate::proxy::tcp::TcpProxy::new(tcp_cfg);
+        let mut tcp_svc = ListeningService::new(
+            format!("Conduit TCP Proxy :{port}"),
+            proxy,
+        );
+        tcp_svc.add_tcp(&format!("0.0.0.0:{port}"));
+        server.add_service(tcp_svc);
+        tracing::info!(
+            port,
+            targets = tcp_cfg.targets.join(", "),
+            "TCP proxy service registered"
+        );
+    }
+
     // ── HTTP → HTTPS redirect services ───────────────────────────────────────
     // For each site that has `tls.httpRedirectPort`, spin up a tiny Pingora
     // service that 308-redirects to the HTTPS equivalent.  The redirect service

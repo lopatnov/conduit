@@ -176,6 +176,21 @@ pub struct SiteConfig {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxyConfig>,
+    /// Raw TCP proxy — forward bytes to an upstream TCP address without HTTP parsing.
+    ///
+    /// Useful for non-HTTP protocols: MySQL, PostgreSQL, Redis, SMTP, etc.
+    /// Cannot be combined with `proxy`, `static`, or other HTTP features on
+    /// the same site.  Set `port` at the site level.
+    ///
+    /// ```yaml
+    /// sites:
+    ///   - port: 3306
+    ///     tcp:
+    ///       targets: ["mysql-primary:3306", "mysql-replica:3306"]
+    ///       strategy: round-robin   # optional; default: round-robin
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tcp: Option<TcpConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upload: Option<UploadConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1468,4 +1483,25 @@ pub struct OutlierDetectionConfig {
     /// Prevents all upstreams from being ejected at once.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_ejection_percent: Option<u8>,
+}
+
+// ── TCP proxy ──────────────────────────────────────────────────────────────
+
+/// Raw TCP proxy configuration.
+///
+/// Proxies a raw TCP connection to one of the specified upstream addresses.
+/// No HTTP parsing — bytes are forwarded as-is in both directions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TcpConfig {
+    /// Upstream addresses to forward connections to, e.g. `["mysql:3306"]`.
+    /// Plain `host:port` strings — no `http://` prefix.
+    #[serde(default)]
+    pub targets: Vec<String>,
+    /// Load balancing strategy: `"round-robin"` (default) or `"random"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
+    /// Connection timeout to upstream in milliseconds (default: 5000).
+    #[serde(rename = "connectTimeoutMs", skip_serializing_if = "Option::is_none")]
+    pub connect_timeout_ms: Option<u64>,
 }
