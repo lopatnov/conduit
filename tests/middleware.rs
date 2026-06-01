@@ -187,6 +187,243 @@ fn validate_rejects_script_entry_without_path() {
     );
 }
 
+// ── Demo middleware integration tests ─────────────────────────────────────────
+
+/// Helper: write a Rhai script to `dir` and return its path string.
+fn write_script(dir: &tempfile::TempDir, name: &str, src: &str) -> String {
+    let p = dir.path().join(name);
+    std::fs::write(&p, src).unwrap();
+    p.to_string_lossy().into_owned()
+}
+
+/// Helper: compile WAT → WASM bytes and write to `dir`, return path.
+fn compile_wat_to_file(dir: &tempfile::TempDir, name: &str, wat_src: &str) -> String {
+    let bytes = wat::parse_str(wat_src).expect("WAT must compile");
+    let p = dir.path().join(name);
+    std::fs::write(&p, &bytes).unwrap();
+    p.to_string_lossy().into_owned()
+}
+
+// ── Rhai api-gate demo ───────────────────────────────────────────────────────
+
+/// Helper: build a gate config where all requests go to an echo upstream.
+fn api_gate_config(
+    port: u16, admin_port: u16, echo_port: u16,
+    script: &str, api_key: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "middleware": [{
+                "type": "script",
+                "path": script,
+                "config": { "api_key": api_key, "api_header": "x-api-key" }
+            }],
+            "proxy": {
+                "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] }
+            }
+        }]
+    })
+}
+
+/// Missing API key returns 401 (Rhai script aborts before reaching upstream).
+#[test]
+fn demo_rhai_api_gate_missing_key_returns_401() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = write_script(
+        &dir, "api-gate.rhai",
+        include_str!("../examples/middleware-demo/api-gate.rhai"),
+    );
+    let echo_port = free_port();
+    let _echo = common::start_echo_upstream(echo_port);
+    let port = free_port();
+    let admin_port = free_port();
+    let cfg = api_gate_config(port, admin_port, echo_port, &script, "secret");
+    let srv = common::TestServer::start_with_config(port, admin_port, cfg);
+
+    let resp = reqwest::blocking::get(srv.url("/")).unwrap();
+    assert_eq!(resp.status().as_u16(), 401, "missing key must return 401");
+    let body: serde_json::Value = resp.json().unwrap_or_default();
+    assert_eq!(body["status"], 401);
+}
+
+/// Wrong API key returns 403.
+#[test]
+fn demo_rhai_api_gate_wrong_key_returns_403() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = write_script(
+        &dir, "api-gate.rhai",
+        include_str!("../examples/middleware-demo/api-gate.rhai"),
+    );
+    let echo_port = free_port();
+    let _echo = common::start_echo_upstream(echo_port);
+    let port = free_port();
+    let admin_port = free_port();
+    let cfg = api_gate_config(port, admin_port, echo_port, &script, "correct-key");
+    let srv = common::TestServer::start_with_config(port, admin_port, cfg);
+
+    let resp = reqwest::blocking::Client::new()
+        .get(srv.url("/"))
+        .header("x-api-key", "wrong-key")
+        .send()
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 403, "wrong key must return 403");
+}
+
+/// Correct API key passes through to upstream — echo returns 200.
+#[test]
+fn demo_rhai_api_gate_correct_key_reaches_upstream() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = write_script(
+        &dir, "api-gate.rhai",
+        include_str!("../examples/middleware-demo/api-gate.rhai"),
+    );
+    let echo_port = free_port();
+    let _echo = common::start_echo_upstream(echo_port);
+    let port = free_port();
+    let admin_port = free_port();
+    let cfg = api_gate_config(port, admin_port, echo_port, &script, "correct-key");
+    let srv = common::TestServer::start_with_config(port, admin_port, cfg);
+
+    let resp = reqwest::blocking::Client::new()
+        .get(srv.url("/"))
+        .header("x-api-key", "correct-key")
+        .send()
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200, "correct key must reach upstream (200)");
+    let body: serde_json::Value = resp.json().unwrap_or_default();
+    // Echo returns the request headers it received.
+    assert!(body.get("headers").is_some(), "echo must return headers object");
+}
+
+// ── Rhai response-enricher demo ───────────────────────────────────────────────
+
+/// Response enricher adds X-Served-By to upstream responses.
+#[test]
+fn demo_rhai_response_enricher_adds_served_by() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = write_script(
+        &dir,
+        "response-enricher.rhai",
+        include_str!("../examples/middleware-demo/response-enricher.rhai"),
+    );
+    let echo_port = free_port();
+    let _echo = common::start_echo_upstream(echo_port);
+
+    let port = free_port();
+    let admin_port = free_port();
+    let cfg = serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "middleware": [{
+                "type": "script",
+                "phase": "response",
+                "path": script,
+                "config": { "service_name": "test-api", "hide_server": true }
+            }],
+            "proxy": {
+                "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] }
+            }
+        }]
+    });
+    let srv = common::TestServer::start_with_config(port, admin_port, cfg);
+    let resp = reqwest::blocking::get(srv.url("/")).unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        resp.headers().get("x-served-by").and_then(|v| v.to_str().ok()),
+        Some("test-api"),
+        "response enricher must inject X-Served-By: test-api"
+    );
+}
+
+// ── WASM header-injector demo ─────────────────────────────────────────────────
+
+/// WASM header-injector injects X-Wasm-Plugin on forwarded requests.
+/// Verified by checking the response from a local echo upstream.
+/// Requires `--features wasm`.
+#[test]
+#[cfg(feature = "wasm")]
+fn demo_wasm_header_injector_injects_x_wasm_plugin() {
+    let dir = tempfile::tempdir().unwrap();
+    let wasm_path = compile_wat_to_file(
+        &dir,
+        "header-injector.wasm",
+        include_str!("../examples/middleware-demo/header-injector.wat"),
+    );
+
+    // Echo server: returns the headers it received as JSON body.
+    let echo_port = free_port();
+    let _echo = common::start_echo_upstream(echo_port);
+
+    let port = free_port();
+    let admin_port = free_port();
+    let cfg = serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "middleware": [{ "type": "wasm", "path": wasm_path }],
+            "proxy": {
+                "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] }
+            }
+        }]
+    });
+    let srv = common::TestServer::start_with_config(port, admin_port, cfg);
+    let resp = reqwest::blocking::Client::new()
+        .get(srv.url("/"))
+        .send()
+        .unwrap();
+    // The upstream echo returns the headers it received.
+    // We check that X-Wasm-Plugin arrived at the echo server.
+    let body: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
+    let headers = body.get("headers").cloned().unwrap_or(serde_json::Value::Null);
+    assert_eq!(
+        headers.get("x-wasm-plugin")
+            .or_else(|| headers.get("X-Wasm-Plugin"))
+            .and_then(|v| v.as_str()),
+        Some("header-injector/1.0"),
+        "upstream must receive X-Wasm-Plugin: header-injector/1.0; got headers: {headers}"
+    );
+}
+
+// ── WASM response-tagger demo ─────────────────────────────────────────────────
+
+/// WASM response-tagger adds X-Processed-By: wasm to upstream responses.
+/// Requires `--features wasm`.
+#[test]
+#[cfg(feature = "wasm")]
+fn demo_wasm_response_tagger_adds_processed_by() {
+    let dir = tempfile::tempdir().unwrap();
+    let wasm_path = compile_wat_to_file(
+        &dir,
+        "response-tagger.wasm",
+        include_str!("../examples/middleware-demo/response-tagger.wat"),
+    );
+    let echo_port = free_port();
+    let _echo = common::start_echo_upstream(echo_port);
+
+    let port = free_port();
+    let admin_port = free_port();
+    let cfg = serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "middleware": [{ "type": "wasm", "path": wasm_path }],
+            "proxy": {
+                "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] }
+            }
+        }]
+    });
+    let srv = common::TestServer::start_with_config(port, admin_port, cfg);
+    let resp = reqwest::blocking::get(srv.url("/")).unwrap();
+    assert_eq!(
+        resp.headers().get("x-processed-by").and_then(|v| v.to_str().ok()),
+        Some("wasm"),
+        "WASM response tagger must inject X-Processed-By: wasm"
+    );
+}
+
 /// A middleware entry with an unknown type is rejected during validation.
 #[test]
 fn validate_rejects_unknown_middleware_type() {

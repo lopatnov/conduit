@@ -1,0 +1,33 @@
+{
+  "port": 8080,
+  "middleware": [
+    {
+      "type": "script",
+      "path": "./api-gate.rhai",
+      "config": {
+        "api_key": "demo-secret",
+        "api_header": "x-api-key"
+      }
+    },
+    {
+      "type": "wasm",
+      "path": "./header-injector.wasm"
+    },
+    {
+      "type": "script",
+      "phase": "response",
+      "path": "./response-enricher.rhai",
+      "config": {
+        "service_name": "demo-api",
+        "hide_server": true
+      }
+    },
+    {
+      "type": "wasm",
+      "path": "./response-tagger.wasm"
+    }
+  ],
+  "proxy": {
+    "targets": ["http://httpbin.org/anything"]
+  }
+}

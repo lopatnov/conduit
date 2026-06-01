@@ -708,6 +708,10 @@ impl RequestFilter for MiddlewareGuard {
             match entry.r#type.as_str() {
                 // ── Rhai scripting ────────────────────────────────────────────
                 "script" => {
+                    // Skip scripts explicitly configured for the response phase.
+                    if entry.phase.as_deref() == Some("response") {
+                        continue;
+                    }
                     let Some(ref path) = entry.path else { continue };
                     match script::run_script(
                         path,

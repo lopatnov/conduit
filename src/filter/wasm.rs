@@ -153,6 +153,7 @@ fn mem_write(caller: &mut Caller<'_, WasmState>, src: &[u8], buf: i32, buf_len: 
 // ── Outcome ───────────────────────────────────────────────────────────────────
 
 /// What a WASM plugin returns after inspecting a request.
+#[derive(Debug)]
 pub enum WasmOutcome {
     Continue {
         added_headers: Vec<(String, String)>,
@@ -1013,5 +1014,81 @@ mod tests {
             }
             _ => panic!("expected Abort"),
         }
+    }
+
+    // ── Demo plugin smoke tests ───────────────────────────────────────────────
+
+    #[test]
+    fn demo_header_injector_wat_injects_headers() {
+        // Verify the example request-phase WAT compiles and produces the
+        // expected header injections.
+        let src = include_str!("../../examples/middleware-demo/header-injector.wat");
+        let (_f, p) = compile_wat(src);
+
+        let mut r = req();
+        r.request_id = "req-001".to_owned();
+        r.headers.insert("x-request-id".into(), "req-001".into());
+
+        match run_wasm(r, &p) {
+            WasmOutcome::Continue { added_headers, .. } => {
+                let plugin = added_headers
+                    .iter()
+                    .find(|(k, _)| k == "x-wasm-plugin")
+                    .map(|(_, v)| v.as_str());
+                assert_eq!(plugin, Some("header-injector/1.0"),
+                    "must inject X-Wasm-Plugin");
+
+                let trace = added_headers
+                    .iter()
+                    .find(|(k, _)| k == "x-trace-id")
+                    .map(|(_, v)| v.as_str());
+                assert_eq!(trace, Some("req-001"),
+                    "must forward X-Request-ID as X-Trace-Id");
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn demo_header_injector_no_request_id_skips_trace() {
+        let src = include_str!("../../examples/middleware-demo/header-injector.wat");
+        let (_f, p) = compile_wat(src);
+
+        // No X-Request-ID → X-Trace-Id must NOT be injected.
+        match run_wasm(req(), &p) {
+            WasmOutcome::Continue { added_headers, .. } => {
+                let has_trace = added_headers.iter().any(|(k, _)| k == "x-trace-id");
+                assert!(!has_trace, "no X-Request-ID must not produce X-Trace-Id");
+
+                let plugin = added_headers
+                    .iter()
+                    .find(|(k, _)| k == "x-wasm-plugin")
+                    .map(|(_, v)| v.as_str());
+                assert_eq!(plugin, Some("header-injector/1.0"),
+                    "X-Wasm-Plugin must always be injected");
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn demo_response_tagger_wat_adds_processed_by() {
+        // response-tagger.wat is a response-only plugin — only imports
+        // conduit_set_response_header, which the response linker provides.
+        let src = include_str!("../../examples/middleware-demo/response-tagger.wat");
+        let (_f, p) = compile_wat(src);
+        let ctx = WasmResponseContext {
+            status: 200,
+            headers: HashMap::new(),
+            plugin_config: Vec::new(),
+        };
+        let outcome = run_wasm_response(ctx, &p);
+        let hdr = outcome
+            .added_headers
+            .iter()
+            .find(|(k, _)| k == "x-processed-by")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(hdr, Some("wasm"),
+            "response phase must inject X-Processed-By: wasm");
     }
 }
