@@ -70,9 +70,10 @@ See [docs/cli.md — Build features](cli.md#build-features) for details.
 - [Forward Auth](#forward-auth)
 - [Consumers](#consumers)
 
-**Rate Limiting**
+**Rate Limiting & Load Shedding**
 
 - [Rate limiting](#rate-limiting)
+- [Priority routing](#priority-routing)
 
 **Transforms**
 
@@ -526,6 +527,7 @@ proxy:
 | `groups`              | object[]             | —             | Two-level LB groups: `[{name, targets, strategy}]`                       |
 | `groupStrategy`       | string               | `round-robin` | Outer strategy when `groups` is set                                      |
 | `backup`              | string               | —             | Failover URL when all primaries are unhealthy                            |
+| `priority`            | number (0–100)       | `50`          | Request priority for load shedding — see [Priority routing](#priority-routing) |
 
 ---
 
@@ -1397,12 +1399,87 @@ limits:
 
 | Field                 | Type   | Default | Description                                                       |
 | --------------------- | ------ | ------- | ----------------------------------------------------------------- |
-| `maxBodyBytes`          | number | —  | Max request body size — returns `413` if exceeded                   |
-| `maxHeaderBytes`        | number | —  | Max request header size                                             |
-| `timeoutSecs`           | number | —  | Global request timeout                                              |
-| `maxInflightRequests`   | number | —  | Max concurrent requests — returns `503` if exceeded (must be ≥ 1)  |
-| `maxBodyBufferBytes`    | number | —  | Max body buffered per request for retry replay                      |
-| `keepaliveRequestLimit` | number | —  | Max requests per keepalive connection; closes and recycles after. Equivalent to nginx's `keepalive_requests`. |
+| `maxBodyBytes`          | number | —    | Max request body size — returns `413` if exceeded                   |
+| `maxHeaderBytes`        | number | —    | Max request header size                                             |
+| `timeoutSecs`           | number | —    | Global request timeout                                              |
+| `maxInflightRequests`   | number | —    | Max concurrent requests — returns `503` if exceeded (must be ≥ 1)  |
+| `maxBodyBufferBytes`    | number | —    | Max body buffered per request for retry replay                      |
+| `keepaliveRequestLimit` | number | —    | Max requests per keepalive connection; closes and recycles after. Equivalent to nginx's `keepalive_requests`. |
+| `priorityThreshold`     | number | `0.8` | Fraction of `maxInflightRequests` at which low-priority routes are shed (0.0–1.0) — see [Priority routing](#priority-routing) |
+
+---
+
+## Priority Routing
+
+Priority routing lets high-value routes continue to be served when the site is
+under load, while low-priority routes are shed with `503 Load Shedding`.
+
+### How it works
+
+1. Set `limits.maxInflightRequests` to cap total concurrency.
+2. Set `limits.priorityThreshold` (default `0.8`) — the fraction of the cap at
+   which shedding begins.
+3. Mark routes with `priority: 0–100` (`50` = normal, omitted = normal).
+4. When `inflight / maxInflightRequests ≥ priorityThreshold`, any request whose
+   effective priority is **below 50** receives `503 Load Shedding`.
+
+Requests with `priority ≥ 50` (normal or high) are never shed by this
+mechanism.  The `X-Priority: <0–100>` request header can **raise** the
+effective priority above the configured route value (useful for trusted
+internal callers).
+
+```yaml
+# YAML
+limits:
+  maxInflightRequests: 2000
+  priorityThreshold: 0.8   # shed low-priority at 1600+ concurrent
+
+routes:
+  - match:
+      path: /api/critical/**
+    proxy:
+      targets: [http://api:4000]
+      priority: 90          # always served
+
+  - match:
+      path: /api/batch/**
+    proxy:
+      targets: [http://api:4000]
+      priority: 10          # shed first when overloaded
+
+  - match:
+      path: /api/**
+    proxy:
+      targets: [http://api:4000]
+      # no priority → defaults to 50 (normal, not shed)
+```
+
+```json
+{
+  "limits": {
+    "maxInflightRequests": 2000,
+    "priorityThreshold": 0.8
+  },
+  "routes": [
+    {
+      "match": { "path": "/api/critical/**" },
+      "proxy": { "targets": ["http://api:4000"], "priority": 90 }
+    },
+    {
+      "match": { "path": "/api/batch/**" },
+      "proxy": { "targets": ["http://api:4000"], "priority": 10 }
+    }
+  ]
+}
+```
+
+| Field                    | Type          | Default | Description                                |
+| ------------------------ | ------------- | ------- | ------------------------------------------ |
+| `limits.priorityThreshold` | number      | `0.8`   | Load fraction at which shedding begins (0.0–1.0) |
+| `proxy.*.priority`       | number (0–100) | `50`   | Route priority; below 50 = sheddable       |
+
+> **Note:** Priority routing only applies when both `maxInflightRequests` **and**
+> `priorityThreshold` are configured on the site.
 
 ---
 

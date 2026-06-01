@@ -121,7 +121,7 @@ Pre-compressed assets, least-conn balancing, API cache, content-aware fallback.
 port: 443
 tls:
   cert: /etc/tls/cert.pem
-  key:  /etc/tls/key.pem
+  key: /etc/tls/key.pem
   httpRedirectPort: 80
 
 http2: true
@@ -180,12 +180,20 @@ fallback:
 // conduit.json
 {
   "port": 443,
-  "tls": { "cert": "/etc/tls/cert.pem", "key": "/etc/tls/key.pem", "httpRedirectPort": 80 },
+  "tls": {
+    "cert": "/etc/tls/cert.pem",
+    "key": "/etc/tls/key.pem",
+    "httpRedirectPort": 80
+  },
   "http2": true,
   "securityHeaders": true,
   "compression": true,
   "cors": { "origins": ["https://app.example.com"], "credentials": true },
-  "logging": { "format": "json", "file": "/var/log/conduit/access.log", "skipPaths": ["/__health__", "/__metrics__"] },
+  "logging": {
+    "format": "json",
+    "file": "/var/log/conduit/access.log",
+    "skipPaths": ["/__health__", "/__metrics__"]
+  },
   "static": "./dist",
   "staticOptions": { "preCompressed": true, "maxAge": "1y" },
   "proxy": {
@@ -224,8 +232,8 @@ TLS with your own certificate files — from Let's Encrypt CLI, Certbot, or a CA
 port: 443
 tls:
   cert: /etc/tls/fullchain.pem
-  key:  /etc/tls/privkey.pem
-  httpRedirectPort: 80        # redirect port 80 → 443 automatically
+  key: /etc/tls/privkey.pem
+  httpRedirectPort: 80 # redirect port 80 → 443 automatically
   versions: ["TLSv1.2", "TLSv1.3"]
 http2: true
 securityHeaders: true
@@ -303,10 +311,10 @@ service-to-service auth, B2B APIs, and IoT devices.
 port: 443
 tls:
   cert: /etc/tls/server.crt
-  key:  /etc/tls/server.key
+  key: /etc/tls/server.key
   clientAuth:
-    ca: /etc/tls/client-ca.crt   # CA that signs authorized client certs
-    optional: false               # reject connections without a valid cert
+    ca: /etc/tls/client-ca.crt # CA that signs authorized client certs
+    optional: false # reject connections without a valid cert
 proxy:
   /api:
     targets: ["http://backend:4000"]
@@ -322,7 +330,9 @@ proxy:
     "key": "/etc/tls/server.key",
     "clientAuth": { "ca": "/etc/tls/client-ca.crt", "optional": false }
   },
-  "proxy": { "/api": { "targets": ["http://backend:4000"], "stripPrefix": true } }
+  "proxy": {
+    "/api": { "targets": ["http://backend:4000"], "stripPrefix": true }
+  }
 }
 ```
 
@@ -349,9 +359,9 @@ jwtAuth:
 # Inject validated claims so the backend knows who the user is.
 requestTransform:
   setHeaders:
-    X-User-ID:    "{{ jwt.sub }}"
+    X-User-ID: "{{ jwt.sub }}"
     X-User-Email: "{{ jwt.email }}"
-  removeHeaders: [Authorization]   # backend trusts X-User-* instead
+  removeHeaders: [Authorization] # backend trusts X-User-* instead
 
 proxy:
   /api: "http://backend:4000"
@@ -369,7 +379,10 @@ healthCheck: true
     "skipPaths": ["/__health__"]
   },
   "requestTransform": {
-    "setHeaders": { "X-User-ID": "{{ jwt.sub }}", "X-User-Email": "{{ jwt.email }}" },
+    "setHeaders": {
+      "X-User-ID": "{{ jwt.sub }}",
+      "X-User-Email": "{{ jwt.email }}"
+    },
     "removeHeaders": ["Authorization"]
   },
   "proxy": { "/api": "http://backend:4000" },
@@ -390,8 +403,8 @@ port: 8080
 
 apiKey:
   keys:
-    - "$API_KEY_V2"     # new key
-    - "$API_KEY_V1"     # old key — remove after all clients migrate
+    - "$API_KEY_V2" # new key
+    - "$API_KEY_V1" # old key — remove after all clients migrate
   header: X-API-Key
   skipPaths: [/__health__, /public/**]
 
@@ -451,12 +464,23 @@ proxy:
   "consumers": {
     "skipPaths": ["/__health__"],
     "consumers": [
-      { "username": "free-tier-client", "apiKey": "$FREE_KEY",
-        "rateLimit": { "windowSecs": 60, "limit": 60 }, "headers": { "X-Tier": "free" } },
-      { "username": "premium-client", "apiKey": "$PREMIUM_KEY",
-        "rateLimit": { "windowSecs": 60, "limit": 6000 }, "headers": { "X-Tier": "premium" } },
-      { "username": "internal-service", "basicAuth": { "password": "$INTERNAL_PASSWORD" },
-        "headers": { "X-Internal": "true" } }
+      {
+        "username": "free-tier-client",
+        "apiKey": "$FREE_KEY",
+        "rateLimit": { "windowSecs": 60, "limit": 60 },
+        "headers": { "X-Tier": "free" }
+      },
+      {
+        "username": "premium-client",
+        "apiKey": "$PREMIUM_KEY",
+        "rateLimit": { "windowSecs": 60, "limit": 6000 },
+        "headers": { "X-Tier": "premium" }
+      },
+      {
+        "username": "internal-service",
+        "basicAuth": { "password": "$INTERNAL_PASSWORD" },
+        "headers": { "X-Internal": "true" }
+      }
     ]
   },
   "proxy": { "/api": "http://backend:4000" }
@@ -517,8 +541,8 @@ canary deployment.
 proxy:
   /api:
     targets:
-      - { url: "http://main:4000", weight: 9 }    # 90%
-      - { url: "http://canary:4000", weight: 1 }  # 10% canary
+      - { url: "http://main:4000", weight: 9 } # 90%
+      - { url: "http://canary:4000", weight: 1 } # 10% canary
     strategy: weighted-round-robin
 ```
 
@@ -560,7 +584,7 @@ proxy:
       path: /health
       intervalSecs: 10
       unhealthyThreshold: 2
-      slowStartSecs: 30     # ramp recovered upstream over 30 s
+      slowStartSecs: 30 # ramp recovered upstream over 30 s
 ```
 
 ```json
@@ -600,7 +624,7 @@ proxy:
     healthCheck:
       path: /health
       intervalSecs: 10
-    backup: "http://dr-site:4000"   # used only when all primaries are unhealthy
+    backup: "http://dr-site:4000" # used only when all primaries are unhealthy
     retry:
       attempts: 2
       conditions: [connection_error, "5xx"]
@@ -647,8 +671,16 @@ proxy:
   "proxy": {
     "/api": {
       "groups": [
-        { "name": "us-east", "targets": ["http://us-east-1:4000", "http://us-east-2:4000"], "strategy": "least-conn" },
-        { "name": "eu-west", "targets": ["http://eu-west-1:4000", "http://eu-west-2:4000"], "strategy": "least-conn" }
+        {
+          "name": "us-east",
+          "targets": ["http://us-east-1:4000", "http://us-east-2:4000"],
+          "strategy": "least-conn"
+        },
+        {
+          "name": "eu-west",
+          "targets": ["http://eu-west-1:4000", "http://eu-west-2:4000"],
+          "strategy": "least-conn"
+        }
       ],
       "groupStrategy": "ip-hash"
     }
@@ -674,13 +706,13 @@ proxy:
     healthCheck:
       path: /health
       intervalSecs: 10
-      maxConnectionsPerUpstream: 100   # circuit breaker: 503 when all hit this
+      maxConnectionsPerUpstream: 100 # circuit breaker: 503 when all hit this
     backup: "http://replica:4000"
     retry:
       attempts: 3
       conditions: [connection_error, "5xx", timeout]
       backoffMs: 100
-      budgetPercent: 20   # max 20% of active requests may be retries
+      budgetPercent: 20 # max 20% of active requests may be retries
     timeout:
       connectMs: 500
       readMs: 10000
@@ -692,7 +724,7 @@ outlierDetection:
   maxEjectionTimeSecs: 300
   maxEjectionPercent: 33
 
-maskErrors: true   # hide upstream stack traces from clients
+maskErrors: true # hide upstream stack traces from clients
 ```
 
 ```json
@@ -702,13 +734,27 @@ maskErrors: true   # hide upstream stack traces from clients
     "/api": {
       "targets": ["http://a:4000", "http://b:4000", "http://c:4000"],
       "strategy": "least-conn",
-      "healthCheck": { "path": "/health", "intervalSecs": 10, "maxConnectionsPerUpstream": 100 },
+      "healthCheck": {
+        "path": "/health",
+        "intervalSecs": 10,
+        "maxConnectionsPerUpstream": 100
+      },
       "backup": "http://replica:4000",
-      "retry": { "attempts": 3, "conditions": ["connection_error", "5xx", "timeout"], "backoffMs": 100, "budgetPercent": 20 },
+      "retry": {
+        "attempts": 3,
+        "conditions": ["connection_error", "5xx", "timeout"],
+        "backoffMs": 100,
+        "budgetPercent": 20
+      },
       "timeout": { "connectMs": 500, "readMs": 10000, "perTryMs": 3000 }
     }
   },
-  "outlierDetection": { "consecutive5xx": 5, "baseEjectionTimeSecs": 30, "maxEjectionTimeSecs": 300, "maxEjectionPercent": 33 },
+  "outlierDetection": {
+    "consecutive5xx": 5,
+    "baseEjectionTimeSecs": 30,
+    "maxEjectionTimeSecs": 300,
+    "maxEjectionPercent": 33
+  },
   "maskErrors": true
 }
 ```
@@ -730,8 +776,8 @@ proxy:
     cache:
       store: memory
       ttlSecs: 60
-      staleWhileRevalidateSecs: 300   # serve stale for up to 5 min while refreshing
-      staleIfErrorSecs: 600           # serve stale if upstream is down
+      staleWhileRevalidateSecs: 300 # serve stale for up to 5 min while refreshing
+      staleIfErrorSecs: 600 # serve stale if upstream is down
       varyHeaders: [Accept-Language]
       skipIfCookie: true
       skipPaths: [/api/me, /api/cart]
@@ -781,8 +827,8 @@ rateLimit:
   limit: 500
 
 proxy:
-  /users:   "http://users-svc:4001"
-  /orders:  "http://orders-svc:4002"
+  /users: "http://users-svc:4001"
+  /orders: "http://orders-svc:4002"
   /catalog:
     targets: ["http://catalog1:4003", "http://catalog2:4003"]
     strategy: round-robin
@@ -810,8 +856,19 @@ maskErrors: true
   "proxy": {
     "/users": "http://users-svc:4001",
     "/orders": "http://orders-svc:4002",
-    "/catalog": { "targets": ["http://catalog1:4003", "http://catalog2:4003"], "cache": { "store": "memory", "ttlSecs": 300 } },
-    "/payments": { "targets": ["https://payment-svc:8443"], "upstreamTls": { "verify": true }, "rateLimit": { "windowSecs": 60, "limit": 20, "keyBy": "header:X-User-ID" } }
+    "/catalog": {
+      "targets": ["http://catalog1:4003", "http://catalog2:4003"],
+      "cache": { "store": "memory", "ttlSecs": 300 }
+    },
+    "/payments": {
+      "targets": ["https://payment-svc:8443"],
+      "upstreamTls": { "verify": true },
+      "rateLimit": {
+        "windowSecs": 60,
+        "limit": 20,
+        "keyBy": "header:X-User-ID"
+      }
+    }
   },
   "healthCheck": true,
   "metrics": { "path": "/__metrics__" },
@@ -832,7 +889,7 @@ Strict per-route limits on expensive endpoints.
 port: 443
 tls:
   cert: /etc/tls/cert.pem
-  key:  /etc/tls/key.pem
+  key: /etc/tls/key.pem
   httpRedirectPort: 80
 
 jwtAuth:
@@ -842,7 +899,7 @@ jwtAuth:
 
 requestTransform:
   setHeaders:
-    X-User-ID:   "{{ jwt.sub }}"
+    X-User-ID: "{{ jwt.sub }}"
     X-User-Role: "{{ jwt.role }}"
   removeHeaders: [Authorization]
 
@@ -877,14 +934,49 @@ logging:
 // conduit.json
 {
   "port": 443,
-  "tls": { "cert": "/etc/tls/cert.pem", "key": "/etc/tls/key.pem", "httpRedirectPort": 80 },
-  "jwtAuth": { "jwksUrl": "https://auth.example.com/.well-known/jwks.json", "audience": ["api.example.com"], "skipPaths": ["/__health__"] },
-  "requestTransform": { "setHeaders": { "X-User-ID": "{{ jwt.sub }}", "X-User-Role": "{{ jwt.role }}" }, "removeHeaders": ["Authorization"] },
+  "tls": {
+    "cert": "/etc/tls/cert.pem",
+    "key": "/etc/tls/key.pem",
+    "httpRedirectPort": 80
+  },
+  "jwtAuth": {
+    "jwksUrl": "https://auth.example.com/.well-known/jwks.json",
+    "audience": ["api.example.com"],
+    "skipPaths": ["/__health__"]
+  },
+  "requestTransform": {
+    "setHeaders": {
+      "X-User-ID": "{{ jwt.sub }}",
+      "X-User-Role": "{{ jwt.role }}"
+    },
+    "removeHeaders": ["Authorization"]
+  },
   "responseTransform": { "removeHeaders": ["Server", "X-Powered-By"] },
   "proxy": {
-    "/v1/users": { "targets": ["http://users:4001", "http://users:4002"], "strategy": "least-conn", "stripPrefix": true, "rateLimit": { "windowSecs": 60, "limit": 200, "keyBy": "header:X-User-ID" } },
-    "/v1/payments": { "targets": ["http://payments:4002"], "stripPrefix": true, "rateLimit": { "windowSecs": 60, "limit": 10, "keyBy": "header:X-User-ID" } },
-    "/v1/search": { "targets": ["http://search:4003"], "stripPrefix": true, "cache": { "store": "memory", "ttlSecs": 30 } }
+    "/v1/users": {
+      "targets": ["http://users:4001", "http://users:4002"],
+      "strategy": "least-conn",
+      "stripPrefix": true,
+      "rateLimit": {
+        "windowSecs": 60,
+        "limit": 200,
+        "keyBy": "header:X-User-ID"
+      }
+    },
+    "/v1/payments": {
+      "targets": ["http://payments:4002"],
+      "stripPrefix": true,
+      "rateLimit": {
+        "windowSecs": 60,
+        "limit": 10,
+        "keyBy": "header:X-User-ID"
+      }
+    },
+    "/v1/search": {
+      "targets": ["http://search:4003"],
+      "stripPrefix": true,
+      "cache": { "store": "memory", "ttlSecs": 30 }
+    }
   },
   "healthCheck": true,
   "maskErrors": true,
@@ -913,12 +1005,12 @@ sites:
 
     tls:
       cert: /etc/tls/server.crt
-      key:  /etc/tls/server.key
+      key: /etc/tls/server.key
       httpRedirectPort: 80
       versions: ["TLSv1.2", "TLSv1.3"]
 
     securityHeaders:
-      hstsMaxAgeSecs: 63072000   # 2 years
+      hstsMaxAgeSecs: 63072000 # 2 years
       csp: "default-src 'self'"
       xFrameOptions: DENY
       referrerPolicy: "strict-origin-when-cross-origin"
@@ -959,18 +1051,39 @@ sites:
 // conduit.json
 {
   "global": { "admin": { "bind": "127.0.0.1:2019", "token": "$ADMIN_TOKEN" } },
-  "sites": [{
-    "port": 443, "host": "secure.example.com",
-    "tls": { "cert": "/etc/tls/server.crt", "key": "/etc/tls/server.key", "httpRedirectPort": 80, "versions": ["TLSv1.2", "TLSv1.3"] },
-    "securityHeaders": { "hstsMaxAgeSecs": 63072000, "csp": "default-src 'self'", "xFrameOptions": "DENY" },
-    "cors": { "origins": ["https://app.example.com"], "credentials": true },
-    "ipFilter": { "allow": ["10.0.0.0/8", "172.16.0.0/12"] },
-    "rateLimit": { "windowSecs": 60, "limit": 200 },
-    "apiKey": { "keys": ["$API_KEY_PRIMARY", "$API_KEY_SECONDARY"], "skipPaths": ["/__health__"] },
-    "maskErrors": true,
-    "proxy": { "/api": { "targets": ["https://api-internal:8443"], "stripPrefix": true, "upstreamTls": { "verify": true } } },
-    "healthCheck": true
-  }]
+  "sites": [
+    {
+      "port": 443,
+      "host": "secure.example.com",
+      "tls": {
+        "cert": "/etc/tls/server.crt",
+        "key": "/etc/tls/server.key",
+        "httpRedirectPort": 80,
+        "versions": ["TLSv1.2", "TLSv1.3"]
+      },
+      "securityHeaders": {
+        "hstsMaxAgeSecs": 63072000,
+        "csp": "default-src 'self'",
+        "xFrameOptions": "DENY"
+      },
+      "cors": { "origins": ["https://app.example.com"], "credentials": true },
+      "ipFilter": { "allow": ["10.0.0.0/8", "172.16.0.0/12"] },
+      "rateLimit": { "windowSecs": 60, "limit": 200 },
+      "apiKey": {
+        "keys": ["$API_KEY_PRIMARY", "$API_KEY_SECONDARY"],
+        "skipPaths": ["/__health__"]
+      },
+      "maskErrors": true,
+      "proxy": {
+        "/api": {
+          "targets": ["https://api-internal:8443"],
+          "stripPrefix": true,
+          "upstreamTls": { "verify": true }
+        }
+      },
+      "healthCheck": true
+    }
+  ]
 }
 ```
 
@@ -990,7 +1103,7 @@ global:
   otlp:
     endpoint: "http://tempo:4317"
     serviceName: "my-service"
-    sampleRate: 0.1        # 10% sampling in production
+    sampleRate: 0.1 # 10% sampling in production
 
   admin:
     bind: "127.0.0.1:2019"
@@ -1031,25 +1144,40 @@ sites:
 // conduit.json
 {
   "global": {
-    "otlp": { "endpoint": "http://tempo:4317", "serviceName": "my-service", "sampleRate": 0.1 },
+    "otlp": {
+      "endpoint": "http://tempo:4317",
+      "serviceName": "my-service",
+      "sampleRate": 0.1
+    },
     "admin": { "bind": "127.0.0.1:2019" }
   },
-  "sites": [{
-    "port": 8080,
-    "logging": { "format": "json", "file": "./logs/access.log", "skipPaths": ["/__health__", "/__metrics__"] },
-    "metrics": { "path": "/__metrics__", "token": "$METRICS_TOKEN" },
-    "healthCheck": { "includeUpstreams": true },
-    "outlierDetection": { "consecutive5xx": 5, "baseEjectionTimeSecs": 30, "maxEjectionTimeSecs": 300, "maxEjectionPercent": 10 },
-    "securityHeaders": true,
-    "proxy": {
-      "/api": {
-        "targets": ["http://api1:4000", "http://api2:4000"],
-        "strategy": "least-conn",
-        "stripPrefix": true,
-        "healthCheck": { "path": "/health", "intervalSecs": 10 }
+  "sites": [
+    {
+      "port": 8080,
+      "logging": {
+        "format": "json",
+        "file": "./logs/access.log",
+        "skipPaths": ["/__health__", "/__metrics__"]
+      },
+      "metrics": { "path": "/__metrics__", "token": "$METRICS_TOKEN" },
+      "healthCheck": { "includeUpstreams": true },
+      "outlierDetection": {
+        "consecutive5xx": 5,
+        "baseEjectionTimeSecs": 30,
+        "maxEjectionTimeSecs": 300,
+        "maxEjectionPercent": 10
+      },
+      "securityHeaders": true,
+      "proxy": {
+        "/api": {
+          "targets": ["http://api1:4000", "http://api2:4000"],
+          "strategy": "least-conn",
+          "stripPrefix": true,
+          "healthCheck": { "path": "/health", "intervalSecs": 10 }
+        }
       }
     }
-  }]
+  ]
 }
 ```
 
@@ -1090,7 +1218,7 @@ sites:
     host: admin.example.com
     tls:
       cert: /etc/tls/admin.crt
-      key:  /etc/tls/admin.key
+      key: /etc/tls/admin.key
     ipFilter:
       allow: ["10.0.0.0/8"]
     basicAuth:
@@ -1109,25 +1237,40 @@ sites:
 ```json
 // conduit.json
 {
-  "global": { "workers": 4, "admin": { "bind": "127.0.0.1:2019", "token": "$ADMIN_TOKEN" } },
+  "global": {
+    "workers": 4,
+    "admin": { "bind": "127.0.0.1:2019", "token": "$ADMIN_TOKEN" }
+  },
   "sites": [
     {
-      "port": 443, "host": "app.example.com",
-      "tls": { "acme": { "email": "admin@example.com", "storage": "/var/cache/conduit/certs", "challenge": "http-01" } },
-      "jwtAuth": { "jwksUrl": "https://auth.example.com/.well-known/jwks.json", "skipPaths": ["/__health__"] },
+      "port": 443,
+      "host": "app.example.com",
+      "tls": {
+        "acme": {
+          "email": "admin@example.com",
+          "storage": "/var/cache/conduit/certs",
+          "challenge": "http-01"
+        }
+      },
+      "jwtAuth": {
+        "jwksUrl": "https://auth.example.com/.well-known/jwks.json",
+        "skipPaths": ["/__health__"]
+      },
       "proxy": { "/api": "http://app-backend:4000" },
       "static": "./dist",
       "fallback": { "file": "./dist/index.html", "status": 200 }
     },
     {
-      "port": 443, "host": "admin.example.com",
+      "port": 443,
+      "host": "admin.example.com",
       "tls": { "cert": "/etc/tls/admin.crt", "key": "/etc/tls/admin.key" },
       "ipFilter": { "allow": ["10.0.0.0/8"] },
       "basicAuth": { "users": { "admin": "$ADMIN_PASSWORD" } },
       "proxy": { "/": "http://admin-ui:3000" }
     },
     {
-      "port": 9090, "host": "127.0.0.1",
+      "port": 9090,
+      "host": "127.0.0.1",
       "metrics": { "path": "/metrics" },
       "healthCheck": true
     }

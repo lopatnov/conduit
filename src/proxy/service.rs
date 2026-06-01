@@ -569,6 +569,56 @@ impl ConduitProxy {
             }
         }
 
+        // ── Priority-based load shedding (post-routing) ───────────────────────
+        // When the site is above its priority threshold, low-priority routes
+        // are shed with 503.  Priority can be overridden upward by the
+        // X-Priority request header (0-100).
+        {
+            let config = self.state.config.load();
+            let path = session.req_header().uri.path().to_owned();
+            if let Some(site) = config.sites.get(req_ctx.site_idx) {
+                if let Some(limits) = &site.limits {
+                    if let (Some(max_inflight), Some(threshold)) = (
+                        limits.max_inflight_requests,
+                        limits.priority_threshold,
+                    ) {
+                        let current =
+                            self.state.inflight.load(Ordering::Relaxed) as f64;
+                        let load_fraction = current / max_inflight as f64;
+                        if load_fraction >= threshold {
+                            // Determine effective priority: route config OR X-Priority header.
+                            let route_priority =
+                                router::find_route_priority(site, &path).unwrap_or(50);
+                            let header_priority = session
+                                .req_header()
+                                .headers
+                                .get("x-priority")
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(|s| s.parse::<u8>().ok())
+                                .unwrap_or(0);
+                            let effective_priority = route_priority.max(header_priority);
+                            if effective_priority < 50 {
+                                let extra = req_ctx.extra_headers.clone();
+                                response::write_response(
+                                    session,
+                                    503,
+                                    "application/json",
+                                    bytes::Bytes::from_static(
+                                        b"{\"error\":\"Service Unavailable\",\"reason\":\"load shedding\",\"status\":503}",
+                                    ),
+                                    &extra,
+                                )
+                                .await?;
+                                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+                                self.state.metrics.active_connections.dec();
+                                return Ok(true);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ── JWT claims extraction for header template substitution ─────────────
         // Guards have passed — JWT is valid if jwtAuth is configured.  Decode
         // claims a second time (fast, no remote I/O) so requestTransform values

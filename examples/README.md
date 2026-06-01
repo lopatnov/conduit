@@ -34,6 +34,7 @@ conduit init
 | Named API clients (consumer model)    | `consumers.yaml`                       |
 | Full API gateway                      | `api-gateway.yaml`                     |
 | Resilience (circuit breaker, retries) | `circuit-breaker.yaml`                 |
+| Priority-based load shedding          | `priority-routing.yaml`                |
 | Response cache + stale-while-revalidate | `stale-while-revalidate.yaml`        |
 | Metrics + tracing                     | `observability.yaml`                   |
 | Security hardening                    | `security-hardened.yaml`               |
@@ -172,6 +173,17 @@ working together to keep the service stable under load and failures.
 
 **Features:** `healthCheck.maxConnectionsPerUpstream`, `retry.budgetPercent`,
 `backup` (failover), `outlierDetection`, `maskErrors`
+
+---
+
+### [priority-routing.yaml](priority-routing.yaml) / [priority-routing.json](priority-routing.json)
+
+Progressive load shedding: when the site is under heavy load, low-priority
+routes (batch jobs, analytics) are rejected with `503 Load Shedding` while
+critical routes (checkout, main API) continue to be served normally.
+
+**Features:** `limits.maxInflightRequests`, `limits.priorityThreshold`,
+`proxy.*.priority`, `X-Priority` header override
 
 ---
 

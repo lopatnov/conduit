@@ -868,6 +868,21 @@ pub struct LimitsConfig {
     /// Equivalent to nginx's `keepalive_requests`.
     #[serde(rename = "keepaliveRequestLimit", skip_serializing_if = "Option::is_none")]
     pub keepalive_request_limit: Option<u32>,
+    /// Inflight load fraction at which low-priority routes are shed (0.0–1.0).
+    ///
+    /// Requires `maxInflightRequests` to be set.  When
+    /// `inflight / maxInflightRequests ≥ priorityThreshold`, requests whose
+    /// effective priority (from `proxy.*.priority` or the `X-Priority` header)
+    /// is below 50 are rejected with `503 Load Shedding`.  Requests with no
+    /// explicit priority or priority ≥ 50 are always forwarded.
+    ///
+    /// Example: `maxInflightRequests: 1000, priorityThreshold: 0.8` →
+    /// at 800+ concurrent requests, low-priority routes are shed.
+    ///
+    /// Defaults to `0.8` when `maxInflightRequests` is set and any route
+    /// configures a `priority`.
+    #[serde(rename = "priorityThreshold", skip_serializing_if = "Option::is_none")]
+    pub priority_threshold: Option<f64>,
 }
 
 // ── Redirects ──────────────────────────────────────────────────────────────
@@ -1051,6 +1066,20 @@ pub struct ProxyRouteConfig {
     /// ```
     #[serde(rename = "rateLimit", skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<RateLimitConfig>,
+    /// Request priority for load shedding (0 = lowest, 100 = highest).
+    ///
+    /// When the site is under load and `limits.priorityThreshold` is set,
+    /// requests below the shed threshold are rejected with `503 Load Shedding`
+    /// while higher-priority routes continue to be served.
+    ///
+    /// The effective priority is the **maximum** of this field and the numeric
+    /// value of the incoming `X-Priority` header (0–100).
+    ///
+    /// ```json
+    /// { "targets": ["http://critical:4000"], "priority": 80 }
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u8>,
 }
 
 /// Configuration for cookie-based sticky sessions.

@@ -110,9 +110,14 @@
         "limits": {
           "type": "object",
           "properties": {
-            "maxBodyBytes":   { "type": "integer", "minimum": 0 },
-            "maxHeaderBytes": { "type": "integer", "minimum": 0 },
-            "timeoutSecs":    { "type": "integer", "minimum": 0 }
+            "maxBodyBytes":          { "type": "integer", "minimum": 0 },
+            "maxHeaderBytes":        { "type": "integer", "minimum": 0 },
+            "timeoutSecs":           { "type": "integer", "minimum": 0 },
+            "maxInflightRequests":   { "type": "integer", "minimum": 1 },
+            "maxBodyBufferBytes":    { "type": "integer", "minimum": 0 },
+            "keepaliveRequestLimit": { "type": "integer", "minimum": 1 },
+            "priorityThreshold":     { "type": "number", "minimum": 0, "maximum": 1,
+                                       "description": "Fraction of maxInflightRequests at which low-priority routes (priority < 50) are shed (0.0–1.0). Default 0.8." }
           }
         },
         "headers":   { "type": "object", "additionalProperties": { "type": "string" } },
@@ -408,6 +413,12 @@
             "skipPaths":  { "type": "array", "items": { "type": "string" } }
           },
           "description": "Per-route rate limit (in addition to site-level rateLimit)."
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Route priority for load shedding (0=lowest, 100=highest, default 50). When the site exceeds limits.priorityThreshold, requests to routes with priority < 50 receive 503 Load Shedding."
         },
         "cache": {
           "type": "object",

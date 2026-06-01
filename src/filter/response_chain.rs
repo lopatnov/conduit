@@ -325,7 +325,7 @@ impl ResponseFilter for MiddlewareResponseFilter {
     fn apply(
         &self,
         resp: &mut ResponseHeader,
-        req_ctx: &RequestCtx,
+        _req_ctx: &RequestCtx,
     ) -> Result<ResponseFilterOutcome> {
         let status = resp.status.as_u16();
 

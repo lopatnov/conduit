@@ -764,6 +764,22 @@ pub fn find_route_rate_limit(
     None
 }
 
+/// Return the effective priority for the matched route, if any.
+///
+/// Returns `None` when:
+/// - The site has no `routes` proxy block
+/// - No route matches `path`
+/// - The matched route has no `priority` field
+pub fn find_route_priority(site: &SiteConfig, path: &str) -> Option<u8> {
+    use crate::config::schema::ProxyConfig;
+    if let Some(ProxyConfig::Routes(routes)) = &site.proxy {
+        if let Some((_, ProxyRouteTarget::Full(cfg))) = find_route(routes, path) {
+            return cfg.priority;
+        }
+    }
+    None
+}
+
 pub fn resolve_static_roots(cfg: &StaticConfig, path: &str) -> (Vec<PathBuf>, Option<String>) {
     match cfg {
         StaticConfig::Single(s) => (vec![PathBuf::from(s)], None),
@@ -1737,6 +1753,57 @@ mod tests {
             addr_override.contains("override-target"),
             "after override, runtime target must be used: got {addr_override}"
         );
+    }
+
+    // ── find_route_priority ───────────────────────────────────────────────────
+
+    fn make_priority_site(path: &str, priority: u8) -> SiteConfig {
+        use crate::config::schema::{ProxyConfig, ProxyRouteConfig, ProxyRouteTarget};
+        let mut routes = indexmap::IndexMap::new();
+        let mut cfg = ProxyRouteConfig {
+            targets: vec![],
+            ..Default::default()
+        };
+        cfg.priority = Some(priority);
+        routes.insert(path.to_string(), ProxyRouteTarget::Full(Box::new(cfg)));
+        SiteConfig {
+            proxy: Some(ProxyConfig::Routes(routes)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn find_route_priority_returns_configured_value() {
+        let site = make_priority_site("/api", 80);
+        assert_eq!(find_route_priority(&site, "/api/users"), Some(80));
+    }
+
+    #[test]
+    fn find_route_priority_returns_none_when_not_set() {
+        use crate::config::schema::{ProxyConfig, ProxyRouteTarget};
+        let mut routes = indexmap::IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Url("http://u:4000".to_string()),
+        );
+        let site = SiteConfig {
+            proxy: Some(ProxyConfig::Routes(routes)),
+            ..Default::default()
+        };
+        assert!(find_route_priority(&site, "/").is_none());
+    }
+
+    #[test]
+    fn find_route_priority_no_match_returns_none() {
+        let site = make_priority_site("/api", 80);
+        // Path does not start with /api → no match → None.
+        assert!(find_route_priority(&site, "/other").is_none());
+    }
+
+    #[test]
+    fn find_route_priority_low_priority_is_zero() {
+        let site = make_priority_site("/batch", 0);
+        assert_eq!(find_route_priority(&site, "/batch/jobs"), Some(0));
     }
 
     #[test]

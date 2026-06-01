@@ -1,0 +1,56 @@
+# Priority Routing — load-shed low-priority routes under heavy load
+#
+# When inflight requests exceed 80% of maxInflightRequests, routes with
+# priority < 50 receive "503 Load Shedding" instead of being proxied.
+# Critical routes (priority >= 50) are always served.
+#
+# Use-cases:
+#   - Protect revenue-critical APIs from background batch jobs
+#   - Ensure health checks / admin traffic always gets through
+#   - Progressive degradation: shed analytics before shedding checkout
+
+port: 8080
+
+limits:
+  maxInflightRequests: 1000  # total concurrency cap
+  priorityThreshold: 0.8     # shed low-priority at 800+ concurrent
+
+routes:
+  # ── Critical: always served ───────────────────────────────────────────────
+  - match:
+      path: /checkout/**
+    proxy:
+      targets: [http://checkout:4000]
+      priority: 90    # high — never shed
+
+  - match:
+      path: /api/v1/**
+    proxy:
+      targets: [http://api:4000]
+      priority: 70    # above threshold — never shed
+
+  # ── Normal: default behavior ──────────────────────────────────────────────
+  - match:
+      path: /api/**
+    proxy:
+      targets: [http://api:4000]
+      # no priority → defaults to 50 (not shed)
+
+  # ── Low priority: shed first ──────────────────────────────────────────────
+  - match:
+      path: /batch/**
+    proxy:
+      targets: [http://workers:4000]
+      priority: 10    # below 50 → shed when overloaded
+
+  - match:
+      path: /analytics/**
+    proxy:
+      targets: [http://analytics:4000]
+      priority: 0     # lowest — first to be shed
+
+  # ── Catch-all ─────────────────────────────────────────────────────────────
+  - match:
+      path: /**
+    proxy:
+      targets: [http://api:4000]
