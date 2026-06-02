@@ -1,3 +1,4 @@
+#![cfg(feature = "jwt")]
 //! JWT bearer-token validation.
 //!
 //! Supports two modes:

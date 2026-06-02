@@ -1,3 +1,4 @@
+#[cfg(feature = "acme")]
 pub mod acme_challenge;
 pub mod fallback;
 pub mod health;

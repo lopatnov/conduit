@@ -93,6 +93,7 @@ impl BackgroundService for AdminApiService {
         // Spawn a background task that evicts stale rate-limiter entries every 60 s.
         {
             let limiter = self.state.rate_limiter.clone();
+            #[cfg(feature = "redis")]
             let redis_rl = self.state.redis_rate_limiter.clone();
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -100,6 +101,7 @@ impl BackgroundService for AdminApiService {
                     interval.tick().await;
                     crate::filter::rate_limit::cleanup(&limiter);
                     // Also clean up the Redis fallback map if in use.
+                    #[cfg(feature = "redis")]
                     if let Some(ref rrl) = redis_rl {
                         rrl.cleanup_fallback();
                     }

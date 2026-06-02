@@ -16,9 +16,12 @@ use crate::admin::api::AdminApiService;
 use crate::config::defaults::DEFAULT_ADMIN_BIND;
 use crate::config::schema::AppConfig;
 use crate::config::schema::SiteConfig;
+#[cfg(feature = "redis")]
 use crate::filter::rate_limit_redis::RedisRateLimiter;
 use crate::proxy::service::{AppState, ConduitProxy};
-use crate::server::{acme as acme_util, tls as tls_util};
+#[cfg(feature = "acme")]
+use crate::server::acme as acme_util;
+use crate::server::tls as tls_util;
 use crate::upload::UploadService;
 
 /// Maps a TCP port to `(cert_path, key_path, h2_enabled)` for TLS-enabled ports.
@@ -130,6 +133,7 @@ fn bind_upload_listener_if_needed(
 /// A temporary single-threaded Tokio runtime is used for the async handshake so
 /// this can run from the synchronous `run_server`.  Connection failures are logged
 /// as warnings and the server falls back to the in-memory limiter.
+#[cfg(feature = "redis")]
 fn connect_redis_rate_limiter_if_configured(
     config: &AppConfig,
 ) -> anyhow::Result<Option<Arc<RedisRateLimiter>>> {
@@ -204,18 +208,17 @@ pub fn run_server(
     // can forward matching requests to the loopback address immediately.
     let (upload_addr, upload_std_listener) = bind_upload_listener_if_needed(&config)?;
 
-    // If any site uses a Redis-backed rate limiter, connect to Redis now.
-    // Connection failures are logged as warnings; the server falls back to the
-    // in-memory rate limiter rather than refusing to start.
-    let redis_rl = connect_redis_rate_limiter_if_configured(&config)?;
-
-    // Create AppState early so acme_challenges can be shared with the ACME flow.
-    let state = Arc::new(AppState::new_with_redis(
-        config.clone(),
-        config_path,
-        upload_addr,
-        redis_rl,
-    ));
+    // Create AppState. When redis feature is enabled, also connect to Redis
+    // if any site uses a Redis-backed rate limiter.
+    let state = {
+        #[cfg(feature = "redis")]
+        {
+            let redis_rl = connect_redis_rate_limiter_if_configured(&config)?;
+            Arc::new(AppState::new_with_redis(config.clone(), config_path, upload_addr, redis_rl))
+        }
+        #[cfg(not(feature = "redis"))]
+        Arc::new(AppState::new(config.clone(), config_path, upload_addr))
+    };
 
     // ── Live config updates (e.g. Kubernetes CRD provider) ───────────────────
     // When a live-update channel is provided, spawn a background thread that
@@ -246,11 +249,12 @@ pub fn run_server(
             .expect("failed to spawn config-update-watcher thread");
     }
 
-    // ── Phase 3.1: ACME certificate procurement ──────────────────────────────
-    // For each site that uses `tls.acme`, obtain (or load a cached) certificate
-    // before Pingora starts.  A dedicated Tokio runtime is used for the async
-    // ACME negotiation so this can run from the synchronous `run_server`.
+    // ── Phase 3.1: ACME certificate procurement (feature: acme) ─────────────
+    #[cfg(feature = "acme")]
     let acme_certs = obtain_acme_certs(&config, &state.acme_challenges)?;
+    #[cfg(not(feature = "acme"))]
+    let acme_certs: std::collections::HashMap<u16, (String, String)> =
+        std::collections::HashMap::new();
 
     let opt = Opt {
         upgrade: false,
@@ -323,9 +327,8 @@ pub fn run_server(
 
     server.add_service(proxy_service);
 
-    // ── Raw TCP proxy services ────────────────────────────────────────────────
-    // Each site with a `tcp` block gets its own Pingora listening service.
-    // These operate at the transport layer — no HTTP parsing, bytes relayed as-is.
+    // ── Raw TCP proxy services (requires --features tcp) ─────────────────────
+    #[cfg(feature = "tcp")]
     for site in &config.sites {
         let Some(ref tcp_cfg) = site.tcp else { continue };
         if tcp_cfg.targets.is_empty() {
@@ -392,6 +395,7 @@ pub fn run_server(
 /// Returns a map of `port → (cert_path, key_path)` for successfully obtained
 /// certificates.  Sites whose procurement fails are logged and excluded from
 /// the map (they fall back to plain TCP).
+#[cfg(feature = "acme")]
 fn obtain_acme_certs(
     config: &AppConfig,
     challenges: &Arc<dashmap::DashMap<String, String>>,

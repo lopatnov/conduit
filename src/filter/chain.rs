@@ -22,13 +22,25 @@ use pingora_core::Result;
 use pingora_proxy::Session;
 
 use crate::config::schema::{
-    ApiKeyConfig, BasicAuthConfig, ConsumersConfig, CorsConfig, FaultInjectionConfig,
-    ForwardAuthConfig, IpFilterConfig, JwtAuthConfig, LimitsConfig, MiddlewareEntry,
-    RateLimitConfig,
+    ApiKeyConfig, BasicAuthConfig, CorsConfig, IpFilterConfig,
+    LimitsConfig, MiddlewareEntry, RateLimitConfig,
 };
+#[cfg(feature = "jwt")]
+use crate::config::schema::JwtAuthConfig;
+#[cfg(feature = "consumers")]
+use crate::config::schema::ConsumersConfig;
+#[cfg(feature = "fault-injection")]
+use crate::config::schema::FaultInjectionConfig;
+#[cfg(feature = "forward-auth")]
+use crate::config::schema::ForwardAuthConfig;
 use crate::filter::rate_limit::RateLimiter;
+#[cfg(feature = "redis")]
 use crate::filter::rate_limit_redis::RedisRateLimiter;
-use crate::filter::{auth, cors, ip_filter, jwt, limits, rate_limit, script};
+use crate::filter::{auth, cors, ip_filter, limits, rate_limit};
+#[cfg(feature = "jwt")]
+use crate::filter::jwt;
+#[cfg(feature = "rhai")]
+use crate::filter::script;
 use crate::handler::response;
 use uuid::Uuid;
 
@@ -60,6 +72,8 @@ pub struct FilterContext<'a> {
     /// In-memory rate-limit token buckets.
     pub rate_limiter: &'a RateLimiter,
     /// Optional Redis-backed rate limiter (may be `None` at startup).
+    /// Only available when compiled with `--features redis`.
+    #[cfg(feature = "redis")]
     pub redis_rate_limiter: Option<&'a Arc<RedisRateLimiter>>,
     /// Per-client-IP concurrent connection counts (nginx limit_conn pattern).
     pub ip_conn_counts: &'a dashmap::DashMap<String, AtomicUsize>,
@@ -389,7 +403,10 @@ impl RequestFilter for RateLimitGuard {
             &self.cfg,
             ctx.session,
             ctx.rate_limiter,
+            #[cfg(feature = "redis")]
             ctx.redis_rate_limiter,
+            #[cfg(not(feature = "redis"))]
+            None,
         )
         .await;
         if !allowed {
@@ -433,11 +450,13 @@ impl RequestFilter for RateLimitGuard {
 ///   - Injects any per-consumer custom headers
 ///
 /// Returns 401 when no consumer matches.
+#[cfg(feature = "consumers")]
 pub struct ConsumersGuard {
     pub cfg: ConsumersConfig,
     pub path: String,
 }
 
+#[cfg(feature = "consumers")]
 #[async_trait]
 impl RequestFilter for ConsumersGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
@@ -561,11 +580,13 @@ impl RequestFilter for ApiKeyGuard {
 /// Validates the `Authorization: Bearer <token>` header using either an HMAC
 /// secret (`jwtAuth.secret`) or a remote JWKS endpoint (`jwtAuth.jwksUrl`).
 /// Returns `401 Unauthorized` when the token is absent or invalid.
+#[cfg(feature = "jwt")]
 pub struct JwtGuard {
     pub cfg: JwtAuthConfig,
     pub path: String,
 }
 
+#[cfg(feature = "jwt")]
 #[async_trait]
 impl RequestFilter for JwtGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
@@ -598,6 +619,7 @@ impl RequestFilter for JwtGuard {
 ///
 /// Uses a process-wide `reqwest::Client` with a connection pool so that
 /// hot-path requests don't pay TCP setup overhead.
+#[cfg(feature = "forward-auth")]
 pub struct ForwardAuthGuard {
     pub cfg: ForwardAuthConfig,
     pub path: String,
@@ -620,6 +642,7 @@ fn forward_auth_client() -> &'static reqwest::Client {
     })
 }
 
+#[cfg(feature = "forward-auth")]
 #[async_trait]
 impl RequestFilter for ForwardAuthGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
@@ -730,10 +753,12 @@ impl RequestFilter for ForwardAuthGuard {
 /// **Should not be used in production.**  Use it in staging or test
 /// environments to validate that your clients handle upstream failures
 /// gracefully.
+#[cfg(feature = "fault-injection")]
 pub struct FaultInjectionGuard {
     pub cfg: FaultInjectionConfig,
 }
 
+#[cfg(feature = "fault-injection")]
 #[async_trait]
 impl RequestFilter for FaultInjectionGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
@@ -830,6 +855,7 @@ impl RequestFilter for MiddlewareGuard {
         for entry in &self.middleware {
             match entry.r#type.as_str() {
                 // ── Rhai scripting ────────────────────────────────────────────
+                #[cfg(feature = "rhai")]
                 "script" => {
                     // Skip scripts explicitly configured for the response phase.
                     if entry.phase.as_deref() == Some("response") {
@@ -967,8 +993,10 @@ async fn rate_limit_allowed(
     cfg: &RateLimitConfig,
     session: &mut Session,
     rate_limiter: &RateLimiter,
-    redis: Option<&Arc<RedisRateLimiter>>,
+    #[cfg(feature = "redis")] redis: Option<&Arc<RedisRateLimiter>>,
+    #[cfg(not(feature = "redis"))] _redis: Option<()>,
 ) -> bool {
+    #[cfg(feature = "redis")]
     if cfg
         .store
         .as_deref()
@@ -979,6 +1007,8 @@ async fn rate_limit_allowed(
             return rrl.check(&key, cfg.limit, cfg.window_secs).await;
         }
     }
+    #[cfg(not(feature = "redis"))]
+    let _ = cfg.store.as_deref(); // suppress unused warning when redis disabled
     rate_limit::check(cfg, session, rate_limiter)
 }
 

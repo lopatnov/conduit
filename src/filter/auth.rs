@@ -2,9 +2,12 @@ use base64::Engine as _;
 use pingora_proxy::Session;
 use subtle::ConstantTimeEq as _;
 
-use crate::config::schema::{
-    ApiKeyConfig, BasicAuthConfig, Consumer, ConsumersConfig, JwtAuthConfig,
-};
+use crate::config::schema::{ApiKeyConfig, BasicAuthConfig};
+#[cfg(feature = "consumers")]
+use crate::config::schema::{Consumer, ConsumersConfig};
+#[cfg(feature = "jwt")]
+use crate::config::schema::JwtAuthConfig;
+#[cfg(feature = "jwt")]
 use crate::filter::jwt;
 
 /// Constant-time byte-string equality for credential comparisons.
@@ -26,6 +29,7 @@ fn ct_eq_str(a: &str, b: &str) -> bool {
 ///
 /// Used by both the V2 per-consumer JWT check and the V3 sharedJwt check to
 /// avoid duplicating the struct literal in two places.
+#[cfg(feature = "jwt")]
 fn build_jwt_auth_cfg(
     secret: Option<String>,
     jwks_url: Option<String>,
@@ -302,11 +306,13 @@ mod tests {
 ///   the username must equal `consumer.username`.
 ///
 /// Returns `None` when no consumer matches (caller should return 401).
+#[cfg(feature = "consumers")]
 pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Option<&'a Consumer> {
     let api_key_header = cfg.api_key_header.as_deref().unwrap_or("x-api-key");
 
     // ── V3: Shared JWT — validate once, identify by claim value ───────────────
-    // Checked BEFORE per-consumer credentials so a single JWKS fetch handles all.
+    // Requires the `jwt` feature.
+    #[cfg(feature = "jwt")]
     if let Some(ref shared) = cfg.shared_jwt {
         let jwt_cfg = build_jwt_auth_cfg(
             shared.secret.clone(),
@@ -320,11 +326,8 @@ pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Opt
             .get("authorization")
             .and_then(|v| v.to_str().ok());
 
-        // Use check_jwt_extracting to validate and extract claims in a single
-        // decode pass instead of calling check_jwt + extract_claims separately.
         let (jwt_result, maybe_claims) = jwt::check_jwt_extracting(&jwt_cfg, "", auth_hdr);
         if let jwt::JwtCheckResult::Allowed = jwt_result {
-            // Token is valid — look up consumer by username claim.
             if let Some(claims) = maybe_claims {
                 let claim_key = shared.username_claim.as_deref().unwrap_or("sub");
                 if let Some(serde_json::Value::String(sub)) = claims.get(claim_key) {
@@ -332,8 +335,6 @@ pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Opt
                     if let Some(consumer) = cfg.consumers.iter().find(|c| c.username == sub) {
                         return Some(consumer);
                     }
-                    // Token valid but no consumer with this sub → no match.
-                    // Fall through to per-consumer credential checks below.
                 }
             }
         }
@@ -361,10 +362,8 @@ pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Opt
             }
         }
 
-        // ── JWT check (V2) ────────────────────────────────────────────────
-        // Validate Bearer token against this consumer's JWT credential.
-        // ConsumersGuard calls check_jwt() independently — does NOT require
-        // the site-level JwtGuard to run first.
+        // ── JWT check (V2) — requires `jwt` feature ──────────────────────
+        #[cfg(feature = "jwt")]
         if let Some(ref consumer_jwt) = consumer.jwt {
             let jwt_cfg = build_jwt_auth_cfg(
                 consumer_jwt.secret.clone(),
@@ -377,7 +376,6 @@ pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Opt
                 .headers
                 .get("authorization")
                 .and_then(|v| v.to_str().ok());
-            // Pass "" as path — skip_paths: None means the check is never skipped.
             if let jwt::JwtCheckResult::Allowed = jwt::check_jwt(&jwt_cfg, "", auth_hdr) {
                 return Some(consumer);
             }

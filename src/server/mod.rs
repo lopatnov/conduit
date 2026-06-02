@@ -1,3 +1,4 @@
+#[cfg(feature = "acme")]
 pub mod acme;
 pub mod builder;
 pub mod otel;

@@ -356,8 +356,8 @@ impl ResponseFilter for MiddlewareResponseFilter {
         for entry in &self.middleware {
             match entry.r#type.as_str() {
                 // ── Rhai response scripts ─────────────────────────────────────
+                #[cfg(feature = "rhai")]
                 "script" => {
-                    // Only run scripts that explicitly opt into the response phase.
                     let phase = entry.phase.as_deref().unwrap_or("request");
                     if phase != "response" {
                         continue;

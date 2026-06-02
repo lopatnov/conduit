@@ -17,27 +17,43 @@ use pingora_proxy::{ProxyHttp, Session};
 use prometheus::{CounterVec, HistogramVec};
 
 use crate::config::schema::{
-    ApiKeyConfig, AppConfig, BasicAuthConfig, ConnectionPoolConfig, ConsumersConfig, CorsConfig,
-    ForwardAuthConfig, HealthCheckConfig, IpFilterConfig, LimitsConfig, MiddlewareEntry,
+    ApiKeyConfig, AppConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig,
+    HealthCheckConfig, IpFilterConfig, LimitsConfig, MiddlewareEntry,
     ProxyTimeout, RateLimitConfig,
 };
+#[cfg(feature = "consumers")]
+use crate::config::schema::ConsumersConfig;
+#[cfg(feature = "forward-auth")]
+use crate::config::schema::ForwardAuthConfig;
 use crate::filter::chain::{
-    ApiKeyGuard, BasicAuthGuard, ConsumersGuard, CorsPreflight, FaultInjectionGuard, FilterChain,
-    FilterContext, ForwardAuthGuard, HealthBypass, IpGuard, JwtGuard,
+    ApiKeyGuard, BasicAuthGuard, CorsPreflight, FilterChain,
+    FilterContext, HealthBypass, IpGuard,
     LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard, XRequestIdGuard,
+    AllowedHostsGuard,
 };
+#[cfg(feature = "consumers")]
+use crate::filter::chain::ConsumersGuard;
+#[cfg(feature = "fault-injection")]
+use crate::filter::chain::FaultInjectionGuard;
+#[cfg(feature = "forward-auth")]
+use crate::filter::chain::ForwardAuthGuard;
 use crate::filter::rate_limit::{self, RateLimiter};
+#[cfg(feature = "redis")]
 use crate::filter::rate_limit_redis::RedisRateLimiter;
 use crate::filter::{compression, cors, logging, redirects, response_time, security_headers};
 use crate::handler::response;
 use crate::handler::{
-    acme_challenge as acme_handler, fallback, health, hot_reload as hot_reload_handler,
+    fallback, health, hot_reload as hot_reload_handler,
     metrics as metrics_handler, static_files, LocalHandlerImpl,
 };
+#[cfg(feature = "acme")]
+use crate::handler::acme_challenge as acme_handler;
 use crate::proxy::cache as proxy_cache;
 use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
-use crate::proxy::{cache_disk, cache_redis};
+#[cfg(feature = "redis")]
+use crate::proxy::cache_redis;
+use crate::proxy::cache_disk;
 use crate::proxy::{router, upstream};
 use crate::util::log_writer::LogWriter;
 
@@ -217,7 +233,8 @@ pub struct AppState {
     pub hot_reload_tx: tokio::sync::broadcast::Sender<()>,
     /// Redis-backed rate limiter, instantiated when any site configures
     /// `rateLimit.store: "redis://..."`.  `None` when no site uses Redis
-    /// rate limiting.
+    /// rate limiting.  Requires `--features redis`.
+    #[cfg(feature = "redis")]
     pub redis_rate_limiter: Option<Arc<RedisRateLimiter>>,
     /// Number of requests currently in a retry state.
     ///
@@ -244,14 +261,27 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: AppConfig, config_path: PathBuf, upload_addr: Option<SocketAddr>) -> Self {
-        Self::new_with_redis(config, config_path, upload_addr, None)
+        Self::new_inner(config, config_path, upload_addr)
     }
 
+    /// Create AppState with an optional Redis rate limiter.
+    /// Only available when compiled with `--features redis`.
+    #[cfg(feature = "redis")]
     pub fn new_with_redis(
         config: AppConfig,
         config_path: PathBuf,
         upload_addr: Option<SocketAddr>,
         redis_rate_limiter: Option<Arc<RedisRateLimiter>>,
+    ) -> Self {
+        let mut state = Self::new_inner(config, config_path, upload_addr);
+        state.redis_rate_limiter = redis_rate_limiter;
+        state
+    }
+
+    fn new_inner(
+        config: AppConfig,
+        config_path: PathBuf,
+        upload_addr: Option<SocketAddr>,
     ) -> Self {
         let (hot_reload_tx, _) = tokio::sync::broadcast::channel(16);
         Self {
@@ -266,7 +296,8 @@ impl AppState {
             acme_challenges: Arc::new(DashMap::new()),
             upload_addr,
             hot_reload_tx,
-            redis_rate_limiter,
+            #[cfg(feature = "redis")]
+            redis_rate_limiter: None,
             retry_inflight: Arc::new(AtomicUsize::new(0)),
             dynamic_deny: Arc::new(std::sync::RwLock::new(Vec::new())),
             ip_conn_counts: Arc::new(DashMap::new()),
@@ -704,9 +735,8 @@ impl ConduitProxy {
         }
 
         // ── JWT claims extraction for header template substitution ─────────────
-        // Guards have passed — JWT is valid if jwtAuth is configured.  Decode
-        // claims a second time (fast, no remote I/O) so requestTransform values
-        // can reference `{{ jwt.sub }}`, `{{ jwt.email }}`, etc.
+        // Only available when compiled with --features jwt.
+        #[cfg(feature = "jwt")]
         if let Some(ref jwt_cfg) = jwt_auth_cfg {
             if let Some(auth_hdr) = session
                 .req_header()
@@ -803,6 +833,7 @@ impl ConduitProxy {
         }
 
         // 6. Consumer model auth (identifies consumer, injects X-Consumer-ID).
+        #[cfg(feature = "consumers")]
         if let Some(cfg) = guards.consumers_cfg {
             chain = chain.push(ConsumersGuard {
                 cfg,
@@ -821,14 +852,19 @@ impl ConduitProxy {
         }
 
         // 6c. JWT Bearer-token Auth.
+        #[cfg(feature = "jwt")]
         if let Some(cfg) = guards.jwt_auth_cfg {
-            chain = chain.push(JwtGuard {
-                cfg,
-                path: guards.script_path.clone(),
-            });
+            {
+                use crate::filter::chain::JwtGuard;
+                chain = chain.push(JwtGuard {
+                    cfg,
+                    path: guards.script_path.clone(),
+                });
+            }
         }
 
         // 6d. Forward Auth — delegate to external auth service.
+        #[cfg(feature = "forward-auth")]
         if let Some(cfg) = guards.forward_auth_cfg {
             chain = chain.push(ForwardAuthGuard {
                 cfg,
@@ -842,6 +878,7 @@ impl ConduitProxy {
         });
 
         // 8. Fault injection (chaos testing — disabled in production).
+        #[cfg(feature = "fault-injection")]
         if let Some(cfg) = guards.fault_injection_cfg {
             chain = chain.push(FaultInjectionGuard { cfg });
         }
@@ -861,6 +898,7 @@ impl ConduitProxy {
             extra_headers: &guards.extra_headers,
             inflight: &self.state.inflight,
             rate_limiter: &self.state.rate_limiter,
+            #[cfg(feature = "redis")]
             redis_rate_limiter: self.state.redis_rate_limiter.as_ref(),
             ip_conn_counts: &self.state.ip_conn_counts,
             client_ip: guards.client_ip,
@@ -929,20 +967,25 @@ impl ConduitProxy {
             HandlerKind::Proxy => None,
 
             HandlerKind::AcmeChallenge => {
-                let token = if let Some(RequestCtx {
-                    upstream: UpstreamTarget::Local(LocalHandler::AcmeChallenge { token }),
-                    ..
-                }) = ctx.as_ref()
+                #[cfg(feature = "acme")]
                 {
-                    token.clone()
-                } else {
-                    unreachable!()
-                };
-                Some(Box::new(acme_handler::AcmeChallengeHandler {
-                    token,
-                    challenges: self.state.acme_challenges.clone(),
-                    extra_headers: extra,
-                }))
+                    let token = if let Some(RequestCtx {
+                        upstream: UpstreamTarget::Local(LocalHandler::AcmeChallenge { token }),
+                        ..
+                    }) = ctx.as_ref()
+                    {
+                        token.clone()
+                    } else {
+                        unreachable!()
+                    };
+                    return Some(Box::new(acme_handler::AcmeChallengeHandler {
+                        token,
+                        challenges: self.state.acme_challenges.clone(),
+                        extra_headers: extra,
+                    }));
+                }
+                #[cfg(not(feature = "acme"))]
+                None
             }
 
             HandlerKind::Health => {
@@ -1450,15 +1493,26 @@ impl ProxyHttp for ConduitProxy {
         let storage: &'static (dyn CacheStorage + Sync) = if cfg.store == "memory" {
             proxy_cache::cache_storage()
         } else if cfg.store.starts_with("redis://") || cfg.store.starts_with("rediss://") {
-            match cache_redis::get_or_create(&cfg.store) {
-                Some(s) => s,
-                None => {
-                    tracing::warn!(
-                        store = %cfg.store,
-                        "Redis cache unavailable — caching disabled for this request"
-                    );
-                    return Ok(());
+            #[cfg(feature = "redis")]
+            {
+                match cache_redis::get_or_create(&cfg.store) {
+                    Some(s) => s,
+                    None => {
+                        tracing::warn!(
+                            store = %cfg.store,
+                            "Redis cache unavailable — caching disabled for this request"
+                        );
+                        return Ok(());
+                    }
                 }
+            }
+            #[cfg(not(feature = "redis"))]
+            {
+                tracing::warn!(
+                    store = %cfg.store,
+                    "Redis cache requires --features redis — caching disabled"
+                );
+                return Ok(());
             }
         } else if let Some(dir) = cfg.store.strip_prefix("disk:") {
             cache_disk::get_or_create(dir)
@@ -2130,13 +2184,16 @@ struct GuardCtx {
     /// Remote client IP — used by WASM plugins.
     client_ip: String,
     /// Fault injection config (chaos testing).
+    /// Field always present; guard only pushed when `--features fault-injection`.
     fault_injection_cfg: Option<crate::config::schema::FaultInjectionConfig>,
     /// JWT auth config — validated in step 6c.
     jwt_auth_cfg: Option<crate::config::schema::JwtAuthConfig>,
     /// Forward-auth config — validated in step 6d.
-    forward_auth_cfg: Option<ForwardAuthConfig>,
-    /// Consumer model auth config — validated in step 6 (before basicAuth).
-    consumers_cfg: Option<ConsumersConfig>,
+    /// Field always present; guard only pushed when `--features forward-auth`.
+    forward_auth_cfg: Option<crate::config::schema::ForwardAuthConfig>,
+    /// Consumer model auth config.
+    /// Field always present; guard only pushed when `--features consumers`.
+    consumers_cfg: Option<crate::config::schema::ConsumersConfig>,
     /// Site label for Prometheus metrics (`host:port` or `"*"`).
     site_label: String,
 }

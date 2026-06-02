@@ -86,6 +86,98 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
         }
     }
 
+    // ── Rhai scripting (feature: rhai) ───────────────────────────────────────
+    #[cfg(not(feature = "rhai"))]
+    for (i, site) in config.sites.iter().enumerate() {
+        if let Some(middleware) = &site.middleware {
+            for (j, e) in middleware.iter().enumerate() {
+                if e.r#type == "script" {
+                    warnings.push(format!(
+                        "sites[{i}].middleware[{j}] has type \"script\" but Conduit was compiled \
+                         without the `rhai` feature — this entry will be ignored. \
+                         Recompile with `--features rhai` to enable."
+                    ));
+                }
+            }
+        }
+    }
+
+    // ── JWT authentication (feature: jwt) ────────────────────────────────────
+    #[cfg(not(feature = "jwt"))]
+    for (i, site) in config.sites.iter().enumerate() {
+        if site.jwt_auth.is_some() {
+            warnings.push(format!(
+                "sites[{i}].jwtAuth is configured but Conduit was compiled without the `jwt` \
+                 feature — JWT authentication will be disabled. \
+                 Recompile with `--features jwt` to enable."
+            ));
+        }
+    }
+
+    // ── ForwardAuth (feature: forward-auth) ──────────────────────────────────
+    #[cfg(not(feature = "forward-auth"))]
+    for (i, site) in config.sites.iter().enumerate() {
+        if site.forward_auth.is_some() {
+            warnings.push(format!(
+                "sites[{i}].forwardAuth is configured but Conduit was compiled without the \
+                 `forward-auth` feature — ForwardAuth will be disabled. \
+                 Recompile with `--features forward-auth` to enable."
+            ));
+        }
+    }
+
+    // ── ACME / auto-TLS (feature: acme) ──────────────────────────────────────
+    #[cfg(not(feature = "acme"))]
+    for (i, site) in config.sites.iter().enumerate() {
+        if site.tls.as_ref().and_then(|t| t.acme.as_ref()).is_some() {
+            warnings.push(format!(
+                "sites[{i}].tls.acme is configured but Conduit was compiled without the `acme` \
+                 feature — automatic TLS certificate provisioning will be disabled. \
+                 Recompile with `--features acme` to enable."
+            ));
+        }
+    }
+
+    // ── TCP proxy (feature: tcp) ──────────────────────────────────────────────
+    #[cfg(not(feature = "tcp"))]
+    for (i, site) in config.sites.iter().enumerate() {
+        if site.tcp.is_some() {
+            warnings.push(format!(
+                "sites[{i}].tcp is configured but Conduit was compiled without the `tcp` \
+                 feature — TCP proxy mode will be disabled. \
+                 Recompile with `--features tcp` to enable."
+            ));
+        }
+    }
+
+    // ── Redis (feature: redis) ────────────────────────────────────────────────
+    #[cfg(not(feature = "redis"))]
+    for (i, site) in config.sites.iter().enumerate() {
+        let uses_redis = site.rate_limit.as_ref()
+            .and_then(|rl| rl.store.as_deref())
+            .map(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
+            .unwrap_or(false);
+        if uses_redis {
+            warnings.push(format!(
+                "sites[{i}].rateLimit.store uses Redis but Conduit was compiled without the \
+                 `redis` feature — falling back to in-memory rate limiting. \
+                 Recompile with `--features redis` to enable."
+            ));
+        }
+    }
+
+    // ── Fault injection (feature: fault-injection) ────────────────────────────
+    #[cfg(not(feature = "fault-injection"))]
+    for (i, site) in config.sites.iter().enumerate() {
+        if site.fault_injection.is_some() {
+            warnings.push(format!(
+                "sites[{i}].faultInjection is configured but Conduit was compiled without the \
+                 `fault-injection` feature — fault injection will be disabled. \
+                 Recompile with `--features fault-injection` to enable."
+            ));
+        }
+    }
+
     // ── Proxy loop detection ─────────────────────────────────────────────────
     // Warn when a proxy target URL points back to a port this same Conduit
     // instance is listening on — that creates an infinite request loop.
@@ -1738,7 +1830,7 @@ mod tests {
     #[test]
     #[cfg(not(feature = "wasm"))]
     fn warning_per_wasm_entry() {
-        // Two wasm entries → two warnings (one per entry).
+        // Two wasm + one script entry → warnings depend on which features are off.
         let w = warns(
             r#"{ "port": 8080,
                  "middleware": [
@@ -1747,7 +1839,10 @@ mod tests {
                      { "type": "wasm", "path": "c.wasm" }
                  ] }"#,
         );
-        assert_eq!(w.len(), 2, "two wasm entries → two warnings: {w:?}");
+        // At least 2 warnings for the two WASM entries.
+        assert!(w.len() >= 2, "at least two wasm warnings expected: {w:?}");
+        let wasm_warns = w.iter().filter(|m| m.contains("wasm")).count();
+        assert_eq!(wasm_warns, 2, "exactly two wasm warnings: {w:?}");
     }
 
     #[test]
@@ -1810,10 +1905,20 @@ mod tests {
     // ── weak JWT secret ───────────────────────────────────────────────────────
 
     #[test]
+    #[cfg(feature = "jwt")]  // secret-length warning only fires when jwt feature is enabled
     fn short_jwt_secret_warns() {
         let w = warns(r#"{ "port": 8080, "jwtAuth": { "secret": "short" } }"#);
         assert!(!w.is_empty(), "short secret must warn");
-        assert!(w[0].contains("32 bytes"), "warning must mention 32 bytes: {}", w[0]);
+        let has_32_bytes_warn = w.iter().any(|m| m.contains("32 bytes"));
+        assert!(has_32_bytes_warn, "warning must mention 32 bytes: {w:?}");
+    }
+
+    #[test]
+    #[cfg(not(feature = "jwt"))]  // when jwt feature is off, generates a different warning
+    fn jwt_without_feature_warns() {
+        let w = warns(r#"{ "port": 8080, "jwtAuth": { "secret": "short" } }"#);
+        assert!(!w.is_empty(), "jwtAuth without jwt feature must warn");
+        assert!(w.iter().any(|m| m.contains("jwt")), "warning must mention jwt: {w:?}");
     }
 
     #[test]

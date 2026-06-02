@@ -1,3 +1,4 @@
+#![cfg(feature = "redis")]
 //! Redis-backed rate limiting with graceful fallback to in-process memory.
 //!
 //! Both `redis://` (plaintext) and `rediss://` (TLS) URLs are supported.

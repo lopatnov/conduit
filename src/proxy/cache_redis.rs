@@ -1,3 +1,4 @@
+#![cfg(feature = "redis")]
 //! Redis-backed proxy cache storage (Phase 3.8).
 //!
 //! Implements the `pingora_cache::Storage` trait using Redis as the backend.

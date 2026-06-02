@@ -1,3 +1,4 @@
+#![cfg(feature = "rhai")]
 //! Rhai scripting middleware — Phase 4.1.
 //!
 //! Exposes a sandboxed [`run_script`] function that executes a Rhai script

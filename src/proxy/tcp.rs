@@ -1,3 +1,4 @@
+#![cfg(feature = "tcp")]
 //! Raw TCP proxy — forwards bytes bidirectionally between client and upstream.
 //!
 //! Implements Pingora's [`ServerApp`] trait: for every accepted TCP connection,
