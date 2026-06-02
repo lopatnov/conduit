@@ -1,7 +1,15 @@
 FROM ghcr.io/cross-rs/riscv64gc-unknown-linux-gnu:0.2.5
 
-# Install cmake — required by libz-ng-sys (transitive dep of async-compression)
+# Install a modern cmake from Kitware's official APT repository.
+# The Ubuntu 18.04 (bionic) base only ships cmake 3.10.2, but libz-ng-sys
+# (transitive dep of async-compression) requires cmake >= 3.14.
 RUN apt-get update -q && \
+    apt-get install -y --no-install-recommends ca-certificates gpg wget && \
+    wget -qO - https://apt.kitware.com/keys/kitware-archive-latest.asc \
+        | gpg --dearmor -o /etc/apt/trusted.gpg.d/kitware.gpg && \
+    echo "deb https://apt.kitware.com/ubuntu/ bionic main" \
+        > /etc/apt/sources.list.d/kitware.list && \
+    apt-get update -q && \
     apt-get install -y --no-install-recommends cmake && \
     rm -rf /var/lib/apt/lists/*
 
