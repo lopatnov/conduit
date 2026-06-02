@@ -15,18 +15,29 @@ startup. This keeps secrets out of config files.
 
 ### Optional build features
 
-Some features require the binary to be compiled with a specific flag:
+The standard binary covers most use cases. Some config sections require a feature flag:
 
-| Feature      | Flag                                | Affects                                                                        |
-| ------------ | ----------------------------------- | ------------------------------------------------------------------------------ |
-| `otlp`       | `cargo build --features otlp`       | [`global.otlp`](#opentelemetry-tracing) — OpenTelemetry tracing                |
-| `wasm`       | `cargo build --features wasm`       | [`middleware[].type: "wasm"`](#wasm-middleware) — WebAssembly plugins          |
-| `kubernetes` | `cargo build --features kubernetes` | `--kubernetes-namespace` CLI flag — CRD-based config (not a config file field) |
+| Feature           | Flag                               | Config section                                              |
+| ----------------- | ---------------------------------- | ----------------------------------------------------------- |
+| `jwt`             | `--features jwt`                   | [`jwtAuth`](#jwt-auth) + [`{{ jwt.* }}`](#jwt-claim-templates) templates |
+| `consumers`       | `--features consumers`             | [`consumers`](#consumers)                                   |
+| `forward-auth`    | `--features forward-auth`          | [`forwardAuth`](#forward-auth)                              |
+| `rhai`            | `--features rhai`                  | [`middleware[].type: "script"`](#rhai-script-middleware)    |
+| `wasm`            | `--features wasm`                  | [`middleware[].type: "wasm"`](#wasm-middleware)             |
+| `tcp`             | `--features tcp`                   | [`type: "tcp"` site](#tcp-proxy)                           |
+| `upload`          | `--features upload`                | [`upload`](#upload)                                         |
+| `redis`           | `--features redis`                 | `rateLimit.store: "redis://..."`, `cache.store: "redis://..."` |
+| `cache`           | `--features cache`                 | [`proxy.*.cache`](#proxy-cache)                             |
+| `disk-cache`      | `--features disk-cache`            | `cache.store: "disk:/path"`                                 |
+| `acme`            | `--features acme`                  | [`tls.acme`](#auto-tls-via-lets-encrypt)                    |
+| `fault-injection` | `--features fault-injection`       | [`faultInjection`](#fault-injection)                        |
+| `otlp`            | `--features otlp`                  | [`global.otlp`](#opentelemetry-tracing)                     |
+| `kubernetes`      | `--features kubernetes`            | `--kubernetes-namespace` CLI flag (not a config field)      |
+| `full`            | `--features full`                  | All of the above                                            |
 
-The standard `npx`/`npm`/`cargo install` binaries do not include these features.
 Download a `-full` binary from [GitHub Releases](https://github.com/lopatnov/conduit/releases)
-or build from source with `--features otlp,wasm,kubernetes` for all three.
-See [docs/cli.md — Build features](cli.md#build-features) for details.
+or build from source: `cargo build --release --features full`.
+See [docs/cli.md — Build features](cli.md#build-features) for binary sizes and details.
 
 ---
 
@@ -1594,7 +1605,7 @@ proxy:
 
 | Field                      | Type     | Default       | Description                                                                        |
 | -------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------- |
-| `store`                    | string   | —             | `"memory"`, `"redis://host:port"`, `"rediss://host:port"` (TLS), or `"disk:/path"` |
+| `store`                    | string   | —             | `"memory"` (standard), `"redis://..."` / `"rediss://..."` (`--features redis`), `"disk:/path"` (`--features disk-cache`) |
 | `ttlSecs`                  | number   | —             | Fresh cache TTL (seconds)                                                          |
 | `maxSizeMb`                | number   | —             | Memory budget; LRU eviction above this                                             |
 | `staleWhileRevalidateSecs` | number   | `0`           | Serve stale while refreshing in background (RFC 5861)                              |
@@ -1633,6 +1644,7 @@ maximum TTL — upstream headers cannot extend it beyond the configured limit.
 deployments with small response bodies.
 
 **`"redis://host:port"` / `"rediss://host:port"`** — shared Redis cache.
+(`--features redis` required)
 All Conduit instances share the same cache — consistent hit rate under
 horizontal scaling. `rediss://` enables TLS (AWS ElastiCache, Azure Cache).
 
@@ -1667,8 +1679,9 @@ proxy:
 If Redis is unreachable at startup or during a request, caching is silently
 disabled for that request — the proxy continues to work normally (fail-open).
 
-**`"disk:/path/to/dir"`** — filesystem cache, survives restarts. Useful for
-large response bodies or when Redis is not available.
+**`"disk:/path/to/dir"`** — filesystem cache, survives restarts.
+(`--features disk-cache` required)
+Useful for large response bodies or when Redis is not available.
 
 ```yaml
 proxy:
@@ -2046,6 +2059,9 @@ See [`examples/consumers.yaml`](../examples/consumers.yaml)
 
 ## Rate Limiting
 
+In-memory rate limiting is part of the standard build.
+`store: "redis://..."` requires `--features redis`.
+
 ### Site-level
 
 Applied to all requests before authentication.
@@ -2111,7 +2127,7 @@ proxy:
 | `limit`      | number   | —          | Max requests per key per window — **required**                                                              |
 | `burst`      | number   | `0`        | Extra burst capacity above `limit` (see below)                                                              |
 | `keyBy`      | string   | `"ip"`     | `"ip"` or `"header:<name>"`                                                                                 |
-| `store`      | string   | `"memory"` | `"memory"` or `"redis://host:port"`                                                                         |
+| `store`      | string   | `"memory"` | `"memory"` or `"redis://host:port"` (`--features redis` required for Redis)                                 |
 | `skipPaths`  | string[] | —          | Paths that bypass rate limiting — see [skipPaths glob syntax](#skippaths-glob-syntax)                       |
 | `dryRun`     | bool     | `false`    | Log rate-limit violations without actually rejecting requests — useful for tuning limits before enforcement |
 
@@ -2169,6 +2185,8 @@ responseTransform:
 ```
 
 ### JWT claim templates
+
+> **Requires** `cargo build --features jwt` — templates expand to `""` when JWT auth is not active.
 
 Available in `requestTransform.setHeaders` after JWT validation:
 
@@ -2866,7 +2884,7 @@ sites:
 | `shutdownTimeoutSecs` | number | —               | Grace period for in-flight requests on shutdown                                      |
 | `admin.bind`          | string | — (not started) | Admin API address. **Required to enable the Admin API.** Omit to disable it entirely |
 | `admin.token`         | string | —               | Bearer token required for every Admin API request (strongly recommended)             |
-| `otlp`                | object | —               | OpenTelemetry tracing config                                                         |
+| `otlp`                | object | —               | OpenTelemetry tracing config (`--features otlp` required — see [OpenTelemetry Tracing](#opentelemetry-tracing)) |
 
 ---
 
