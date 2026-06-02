@@ -28,39 +28,24 @@ jobs:
           - language: actions
             build-mode: none
 
-          # Rust source — must be compiled for accurate analysis
+          # Rust source — CodeQL uses its own extractor; build-mode: none is the only supported mode
           - language: rust
-            build-mode: manual
+            build-mode: none
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
 
-      - name: Set up Rust
-        if: matrix.language == 'rust'
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
-        with:
-          toolchain: stable
-
-      - name: Cache Rust build artifacts
-        if: matrix.language == 'rust'
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        continue-on-error: true
-
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@ff0a06e83cb2de871e5a09832bc6a81e7276941f  # v3
+        uses: github/codeql-action/init@b22c66273205240d86582638b860f9b25772b4d3  # v3
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
-          # Extended security suite: covers more CWEs than the default pack.
-          queries: security-extended,security-and-quality
-
-      - name: Build Rust (manual build for CodeQL)
-        if: matrix.language == 'rust'
-        run: cargo build --features full
+          # Note: do NOT add custom queries here — conflicts with GitHub Default Setup.
+          # Switch repo to "Advanced setup" in Settings → Code Security to enable custom packs.
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@ff0a06e83cb2de871e5a09832bc6a81e7276941f  # v3
+        uses: github/codeql-action/analyze@b22c66273205240d86582638b860f9b25772b4d3  # v3
         with:
           category: "/language:${{ matrix.language }}"
