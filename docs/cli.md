@@ -28,8 +28,19 @@ conduit [OPTIONS] [COMMAND]
 - [Exit codes](#exit-codes)
 - [Kubernetes CRD mode](#kubernetes-crd-mode)
 - [Build features](#build-features)
-  - [`otlp`](#otlp--opentelemetry-distributed-tracing)
+  - [`jwt`](#jwt--jwt-bearer-token-authentication)
+  - [`consumers`](#consumers--consumer-model)
+  - [`forward-auth`](#forward-auth--forwardauth-middleware)
+  - [`rhai`](#rhai--rhai-scripting-middleware)
   - [`wasm`](#wasm--webassembly-plugin-middleware)
+  - [`tcp`](#tcp--tcp-passthrough-proxy)
+  - [`upload`](#upload--file-upload-handler)
+  - [`redis`](#redis--redis-backed-rate-limiting-and-caching)
+  - [`cache`](#cache--response-caching)
+  - [`disk-cache`](#disk-cache--disk-backed-cache)
+  - [`acme`](#acme--auto-tls--lets-encrypt)
+  - [`fault-injection`](#fault-injection--chaos-testing)
+  - [`otlp`](#otlp--opentelemetry-distributed-tracing)
   - [`kubernetes`](#kubernetes--kubernetes-crd-config-provider)
 
 ---
@@ -38,9 +49,9 @@ conduit [OPTIONS] [COMMAND]
 
 These flags are accepted by every command.
 
-| Flag                        | Short | Default        | Description                                                                                                                                                                        |
-| --------------------------- | ----- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--config FILE`             | `-c`  | `conduit.json` | Config file path                                                                                                                                                                   |
+| Flag                        | Short | Default                        | Description                                                                                                                                                                        |
+| --------------------------- | ----- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--config FILE`             | `-c`  | auto-discovered (see below)    | Config file path                                                                                                                                                                   |
 | `--version`                 | `-V`  | —              | Print version and exit                                                                                                                                                             |
 | `--help`                    | `-h`  | —              | Print help and exit                                                                                                                                                                |
 | `--kubernetes-namespace NS` | —     | —              | Read config from Kubernetes `ConduitSite` CRDs instead of a file. `"*"` watches all namespaces. Requires `--features kubernetes`. See [Kubernetes CRD mode](#kubernetes-crd-mode). |
@@ -55,9 +66,8 @@ When no `-c` flag is given, Conduit resolves the config in this order:
 2. `conduit.yaml` — fallback if `conduit.json` is absent
 3. `conduit.yml` — fallback if neither of the above exists
 
-Auto-discovery only applies when the path is the default (`conduit.json`).
-When you pass `-c some-other-name.json`, that exact path is used and there is
-no fallback.
+Auto-discovery only applies when **no `-c` flag is given**.
+When you pass `-c some-other-name.json`, that exact path is used with no fallback.
 
 Both JSON and YAML are supported everywhere `-c` is accepted.
 
@@ -78,7 +88,7 @@ On startup, Conduit:
 
 1. Loads and validates the config — exits 1 with a field-level error message on failure
 2. Binds all configured ports
-3. Starts the Admin API on `127.0.0.1:2019` (if `global.admin` is set)
+3. Starts the Admin API on `global.admin.bind` (only if `global.admin` is configured)
 4. Begins serving traffic
 
 If `hotReload` is enabled, Conduit watches the config file and reloads it
@@ -230,8 +240,9 @@ unhealthy (status ≥ 500 or connection failure), **0** if all pass.
 
 **Notes:**
 
-- `https://` upstreams get a **TCP connect check** (not a full TLS handshake),
-  so they appear as "connected" even with an invalid certificate.
+- `https://` upstreams are checked with a **plain TCP connect** — TLS is not
+  negotiated and the certificate is not verified. An unreachable host still shows
+  as a failure, but a host with an expired or self-signed cert will show as healthy.
 - The probe path defaults to `/` — adjust the upstream URL if a different
   path is required.
 - Useful as a pre-deploy readiness check in CI:
@@ -259,13 +270,18 @@ The admin address (where the CLI connects to) is resolved in this order:
 > The default `127.0.0.1:2019` is only the **CLI connection target**.
 > The server does not open this port unless `global.admin.bind` is set in config.
 
-When `global.admin.token` is set on the server, set it as a Bearer token:
+When `global.admin.token` is set on the server, authenticate CLI commands via
+the `CONDUIT_ADMIN_TOKEN` environment variable:
 
 ```bash
 export CONDUIT_ADMIN_TOKEN="my-secret-token"
-# The admin commands automatically use $CONDUIT_ADMIN for the address.
-# For the token, pass it via Authorization header directly with curl,
-# or set it in your shell profile:
+conduit status     # token sent automatically
+conduit reload     # token sent automatically
+```
+
+For direct `curl` calls, pass the token as a Bearer header:
+
+```bash
 curl -H "Authorization: Bearer $CONDUIT_ADMIN_TOKEN" http://localhost:2019/status
 ```
 
@@ -472,6 +488,7 @@ mandb
 | ------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `RUST_LOG`                | `warn`           | Log level for the server process. Format: `error\|warn\|info\|debug\|trace` or per-crate: `conduit=debug,pingora=warn`                                                               |
 | `CONDUIT_ADMIN`           | `127.0.0.1:2019` | Admin API address used by `reload`, `status`, `shutdown`, and `upstreams` commands                                                                                                   |
+| `CONDUIT_ADMIN_TOKEN`     | —                | Bearer token sent with every Admin API request from the CLI. Set when the server has `global.admin.token` configured.                                                                |
 | `CONDUIT_ACME_EXTRA_ROOT` | —                | Path to a PEM CA file trusted for ACME HTTP client. For CI environments using test ACME servers (e.g. [Pebble](https://github.com/letsencrypt/pebble)) with self-signed certificates |
 
 Config files also support `$VAR` interpolation — any environment variable can
@@ -529,10 +546,12 @@ for the CRD schema and `kubectl apply` instructions.
 
 ## Build features
 
-Conduit uses compile-time feature flags to keep the default binary lean and
-its attack surface small. The **standard build** (`cargo build --release`)
-contains only the core proxy engine. Optional capabilities are added with
-`--features`.
+Conduit uses compile-time feature flags to keep the default binary lean.
+The **standard build** (`cargo build --release`) includes the core reverse proxy,
+TLS, static files, rate limiting, basic/API-key auth, compression, hot-reload,
+Prometheus metrics, health checks, and the Admin API — everything needed for most
+production deployments. Optional capabilities with heavier dependencies are added
+with `--features`.
 
 ```bash
 # Standard build (minimal, fast, secure)
@@ -562,7 +581,8 @@ cargo build --release --features "jwt,rhai,redis"
 | `tcp`             | TCP passthrough proxy (`type: "tcp"` site)          | —                       |
 | `upload`          | File upload handler (`upload:` site config)         | `multer`                |
 | `redis`           | Redis-backed rate limiting & caching                | `redis`                 |
-| `cache`           | Response caching (stub; pingora-cache always a dep) | —                       |
+| `cache`           | Response caching (`proxy.*.cache`)                  | —                       |
+| `disk-cache`      | Disk-backed cache store (`cache.store: "disk:/…"`)  | —                       |
 | `acme`            | Auto-TLS / Let's Encrypt (`tls.acme`)               | `instant-acme`, `rcgen` |
 | `fault-injection` | Fault injection for chaos testing                   | —                       |
 | `otlp`            | OpenTelemetry OTLP tracing                          | `opentelemetry` stack   |
@@ -609,18 +629,83 @@ Dependencies: `rhai = "1"` (sync feature)
 
 ---
 
+### `upload` — File upload handler
+
+Enables `upload:` site config for multipart file uploads. Starts a loopback
+Axum server on a random port; the Pingora proxy forwards matching requests to it.
+
+```yaml
+upload:
+  path: /files
+  dir: ./uploads
+  maxFileSizeBytes: 10485760   # 10 MB
+  allowedMimeTypes: ["image/jpeg", "image/png", "application/pdf"]
+```
+
+Files are saved with UUID v4 names. The success response includes `name`,
+`originalName`, `size`, and `mimeType`.
+
+Dependencies: `multer = "3"`
+
+---
+
+### `cache` — Response caching
+
+Enables `proxy.*.cache` route config for in-memory response caching via
+Pingora's cache layer. Supports TTL, skip-paths, cookie exclusion, Vary headers,
+stale-while-revalidate, and stale-if-error.
+
+```yaml
+proxy:
+  /api:
+    targets: ["http://backend:4000"]
+    cache:
+      store: memory
+      ttlSecs: 60
+      staleWhileRevalidateSecs: 300
+```
+
+For Redis-backed shared cache add `--features redis`.
+For disk-backed persistent cache add `--features disk-cache`.
+
+---
+
+### `disk-cache` — Disk-backed cache
+
+Enables `cache.store: "disk:/path"`. Cache entries are written atomically
+(`.tmp` → rename) and survive restarts. Useful for large response bodies or
+when Redis is not available.
+
+```yaml
+proxy:
+  /assets:
+    targets: ["http://assets:4000"]
+    cache:
+      store: "disk:/var/cache/conduit"
+      ttlSecs: 86400   # 1 day
+```
+
+Requires `--features cache` (depends on `cache`).
+
+---
+
 ### `acme` — Auto-TLS / Let's Encrypt
 
 Enables `tls.acme` site config for automatic certificate provisioning via the
 ACME protocol (Let's Encrypt). Certificates are fetched at startup, cached to
-disk, and renewed automatically.
+disk, and renewed automatically 30 days before expiry.
+
+The domain is taken from the site's `host` field — no separate `domain:` field exists.
 
 ```yaml
+host: api.example.com   # ← domain used for the certificate
+port: 443
 tls:
   acme:
-    domain: "api.example.com"
     email: "admin@example.com"
     storage: "./certs"
+    challenge: http-01
+  httpRedirectPort: 80
 ```
 
 Dependencies: `instant-acme = "0.8"`, `rcgen = "0.14"`
@@ -660,22 +745,57 @@ tcp:
 
 ### `consumers` — Consumer model
 
-Enables `consumers:` site config for per-consumer credentials (API key,
-Basic Auth, JWT) with per-consumer rate limits and header injection.
+Enables `consumers:` site config for named API clients with per-consumer
+credentials (API key, Basic Auth, JWT), rate limits, and custom upstream headers.
+The identified consumer's username is injected as `X-Consumer-ID`.
+
+```yaml
+consumers:
+  consumers:
+    - username: mobile-app
+      apiKey: "$MOBILE_KEY"
+      rateLimit: { windowSecs: 60, limit: 500 }
+      headers: { X-Tier: mobile }
+    - username: partner
+      basicAuth: { password: "$PARTNER_PASS" }
+```
+
+JWT consumers (V2/V3) additionally require `--features jwt`.
 
 ---
 
 ### `forward-auth` — ForwardAuth middleware
 
-Enables `forwardAuth:` site config to delegate authentication decisions
-to an external HTTP service. 2xx = allow, 4xx/5xx = deny.
+Enables `forwardAuth:` site config to delegate every authentication decision
+to an external HTTP service. `2xx` = allow (inject response headers into
+upstream request); `4xx`/`5xx` = deny; unreachable = fail closed.
+
+```yaml
+forwardAuth:
+  url: "http://auth-service:9000/verify"
+  requestHeaders: [Authorization, Cookie]
+  responseHeaders: [X-User-ID, X-Role]
+  timeoutMs: 3000
+  skipPaths: [/__health__]
+```
 
 ---
 
 ### `fault-injection` — Chaos testing
 
-Enables `faultInjection:` site config. **Not for production.** Used
-to test circuit-breaker and retry behaviour by injecting delays and errors.
+Enables `faultInjection:` site config. **Do not use in production.** Used
+to test circuit-breaker, retry, and timeout behaviour by injecting artificial
+delays and errors into a fraction of requests.
+
+```yaml
+faultInjection:
+  abort:
+    percent: 5      # 5% of requests return 503
+    status: 503
+    body: '{"error":"injected"}'
+  delay:
+    percent: 10     # 10% of requests are delayed
+    ms: 500
 
 ---
 
@@ -717,13 +837,24 @@ middleware:
 
 Conduit uses Wasmtime as the WASM runtime. Plugins run in order alongside Rhai
 scripts (`type: "script"`). Plugin failures are **fail-open** — if a plugin
-panics or returns an error, Conduit logs the error and continues processing.
+panics or returns an error, Conduit logs a warning and continues processing.
 
-**17 host functions** are available: read/set/remove headers, get URI/method,
-list header names, set response, redirect, get request ID, log.
+Plugins may export two hooks:
+
+| Export | Signature | Phase | Notes |
+|--------|-----------|-------|-------|
+| `on_request` | `() → i32` | Before upstream | **Required.** `0` = continue, `1` = abort |
+| `on_response` | `(status: i32) → i32` | After upstream response | Optional. `0` = continue, `1` = replace response |
+
+**17 host functions** are available across both phases: read/set/remove headers,
+get URI/method/IP/request-id, list header names, set response body/status,
+redirect, read plugin config, log.
+
+See [`contrib/wasm/README.md`](../contrib/wasm/README.md) for the full ABI reference
+and examples in Rust, C, and WAT.
 
 When the binary is built **without** `--features wasm`, `type: "wasm"` entries
-cause a validation error on startup.
+log a startup warning and are skipped (fail-open).
 
 Dependencies added: `wasmtime` (Cranelift JIT)
 
