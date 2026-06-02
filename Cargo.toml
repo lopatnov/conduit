@@ -79,6 +79,7 @@ anyhow    = "1"
 thiserror = "2"
 bytes     = "1"
 subtle    = "2"   # constant-time comparisons (admin token auth)
+libc      = "0.2" # O_NOFOLLOW for atomic symlink-safe file open (Unix)
 url       = "2"   # URL parsing for proxy-loop and SSRF detection
 httpdate  = "1"
 http      = "1"

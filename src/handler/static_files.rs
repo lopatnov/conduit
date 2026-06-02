@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt as _;
 
 use async_compression::tokio::bufread::{BrotliEncoder, DeflateEncoder, GzipEncoder};
 use async_compression::Level;
@@ -188,6 +190,31 @@ pub async fn handle_static(
 }
 
 // ── File resolution ────────────────────────────────────────────────────────
+
+/// Open `path` for reading without following symlinks (nginx pattern).
+///
+/// On Linux/macOS: uses `O_NOFOLLOW` which makes the open syscall fail
+/// atomically when the final path component is a symbolic link.  This
+/// eliminates the TOCTOU window between stat_no_symlink() and open().
+///
+/// On Windows: falls back to a regular open (symlinks there require
+/// elevated privileges to create, so the risk is lower).
+async fn open_no_follow(path: &Path) -> std::io::Result<tokio::fs::File> {
+    #[cfg(unix)]
+    {
+        // O_NOFOLLOW is 0x20000 on Linux and 0x100 on macOS — use the
+        // platform constant via std's OpenOptionsExt trait.
+        let std_file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        return Ok(tokio::fs::File::from_std(std_file));
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::fs::File::open(path).await
+    }
+}
 
 /// Check `path` metadata WITHOUT following symlinks.
 ///
@@ -388,7 +415,7 @@ async fn stream_file_compressed(
     encoding: &str,
     level: u8,
 ) -> Result<()> {
-    let mut file = tokio::fs::File::open(path).await.map_err(|e| {
+    let mut file = open_no_follow(path).await.map_err(|e| {
         pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
     })?;
     if offset > 0 {
@@ -460,7 +487,7 @@ async fn stream_encoded<R: AsyncRead + Unpin>(session: &mut Session, mut reader:
 /// Stream `length` bytes from `file` starting at `offset` in 64 KiB chunks.
 async fn stream_file(session: &mut Session, path: &Path, offset: u64, length: u64) -> Result<()> {
     const CHUNK: usize = 64 * 1024;
-    let mut file = tokio::fs::File::open(path).await.map_err(|e| {
+    let mut file = open_no_follow(path).await.map_err(|e| {
         pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
     })?;
     if offset > 0 {

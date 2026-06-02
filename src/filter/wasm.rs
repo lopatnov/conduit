@@ -63,25 +63,37 @@ use wasmtime::{Caller, Engine, Linker, Module, Store};
 
 static WASM_ENGINE: OnceLock<Engine> = OnceLock::new();
 
+/// Maximum WASM fuel (instruction budget) per plugin call.
+///
+/// wasmtime consumes one unit of fuel per WebAssembly instruction executed.
+/// At ~1–2 ns per instruction on modern hardware this allows roughly 5–10 ms
+/// of CPU time per call — far more than needed for header-manipulation logic
+/// but still a hard cap that terminates infinite loops.
+///
+/// (Pattern from wasmtime docs: `Config::consume_fuel` + `Store::set_fuel`.)
+const WASM_MAX_FUEL: u64 = 10_000_000;
+
 fn engine() -> &'static Engine {
     WASM_ENGINE.get_or_init(|| {
         // Harden the WASM engine against malicious or buggy plugins:
         //
-        // • epoch_interruption: allows the Store to abort execution after a
-        //   configurable number of epochs.  We do not yet increment the epoch
-        //   counter (that would require a background thread), but enabling it
-        //   now means we can add per-call fuel limits later without changing
-        //   the engine config (engine config is immutable after first use).
+        // • consume_fuel: each WASM instruction consumes one unit.  When the
+        //   budget runs out the execution traps immediately.  Unlike
+        //   epoch_interruption this works WITHOUT a background thread — the
+        //   budget is set per-Store in run_inner() / run_response_inner().
+        //
+        //   Note: we previously enabled epoch_interruption but never started
+        //   the epoch-counter background thread, so that setting was inert.
+        //   Fuel is the correct per-request CPU limit mechanism.
         //
         // • wasm_memory64: disabled — plugins don't need >4 GiB address space
         //   and 64-bit memory makes bound-checking more complex.
         let mut config = wasmtime::Config::new();
-        config.epoch_interruption(true);
+        config.consume_fuel(true);
         config.wasm_memory64(false);
         // Raise the memory guard region so out-of-bounds WASM accesses reliably
         // trap rather than silently reading/writing host memory.
         config.memory_guard_size(64 * 1024 * 1024); // 64 MiB guard
-        // Cap via StoreLimitsBuilder instead (applied per-Store, see run_inner).
         Engine::new(&config).unwrap_or_default()
     })
 }
@@ -426,9 +438,11 @@ pub fn run_wasm(request: WasmRequest, path: &str) -> WasmOutcome {
 fn run_inner(request: WasmRequest, path: &str) -> anyhow::Result<WasmOutcome> {
     let module = get_or_compile(path)?;
     let mut store = Store::new(engine(), WasmState::new(request));
-    // Enforce per-call memory limit — prevents a plugin from OOM-killing the
-    // proxy by allocating unlimited linear memory.
+    // Enforce per-call memory limit — prevents a plugin from OOM-killing the proxy.
     store.limiter(|s| &mut s.resource_limits as &mut dyn wasmtime::ResourceLimiter);
+    // Enforce per-call CPU budget — terminates infinite loops and runaway plugins.
+    // Each WASM instruction consumes 1 unit of fuel; a trap is raised when exhausted.
+    store.set_fuel(WASM_MAX_FUEL)?;
     let mut linker = Linker::new(engine());
     register_host_functions(&mut linker)?;
 
@@ -651,6 +665,7 @@ fn run_response_inner(ctx: WasmResponseContext, path: &str) -> anyhow::Result<Wa
     let module = get_or_compile(path)?;
     let mut store = Store::new(engine(), WasmResponseState::new(ctx));
     store.limiter(|s| &mut s.resource_limits as &mut dyn wasmtime::ResourceLimiter);
+    store.set_fuel(WASM_MAX_FUEL)?;
     let mut linker = Linker::new(engine());
     register_response_host_functions(&mut linker)?;
 
@@ -712,6 +727,31 @@ mod tests {
     }
 
     // ── Passthrough / abort ───────────────────────────────────────────────────
+
+    // ── Fuel (CPU limit) ──────────────────────────────────────────────────────
+
+    #[test]
+    fn infinite_loop_is_terminated_by_fuel_limit() {
+        // An infinite loop must be terminated by the fuel budget and fail-open.
+        // With the old epoch_interruption approach this would hang forever.
+        let (_f, p) = compile_wat(
+            r#"(module
+              (func (export "on_request") (result i32)
+                block $exit
+                  loop $loop
+                    ;; unconditional loop — runs until fuel is exhausted
+                    br $loop
+                  end
+                end
+                i32.const 0))"#,
+        );
+        // run_wasm is fail-open: any error (including fuel exhaustion) returns Continue.
+        let outcome = run_wasm(req(), &p);
+        assert!(
+            matches!(outcome, WasmOutcome::Continue { .. }),
+            "infinite loop must fail-open (fuel exhaustion → Continue): {outcome:?}"
+        );
+    }
 
     #[test]
     fn passthrough_returns_continue() {
