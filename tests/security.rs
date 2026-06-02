@@ -34,6 +34,41 @@ fn static_null_byte_in_path_is_blocked() {
     assert_ne!(status, 200, "null-byte path must not return 200");
 }
 
+// ── Static file symlink traversal ────────────────────────────────────────────
+
+/// Symlinks in the static root must NOT be served — they could point anywhere
+/// on the filesystem and bypass path sanitization.
+#[test]
+#[serial]
+#[cfg(unix)]
+fn static_symlink_traversal_blocked() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("www");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("index.html"), "<h1>ok</h1>").unwrap();
+
+    // Secret file OUTSIDE the static root.
+    let secret = dir.path().join("secret.txt");
+    std::fs::write(&secret, "TOP SECRET CONTENT").unwrap();
+
+    // Symlink INSIDE the static root pointing to the secret file.
+    let link = root.join("link.txt");
+    std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+    let srv = static_server(root.to_str().unwrap());
+
+    // The symlink must NOT be served.
+    let resp = reqwest::blocking::get(srv.url("/link.txt")).unwrap();
+    let status = resp.status().as_u16();
+    let body = resp.text().unwrap_or_default();
+
+    assert_ne!(status, 200, "symlink must not return 200");
+    assert!(
+        !body.contains("TOP SECRET"),
+        "symlink traversal must not leak secret file: {body:.100}"
+    );
+}
+
 // ── Static-file path traversal ────────────────────────────────────────────────
 
 /// Helper: start a static-file server rooted at `dir`.

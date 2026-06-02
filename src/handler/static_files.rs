@@ -185,12 +185,27 @@ pub async fn handle_static(
 
 // ── File resolution ────────────────────────────────────────────────────────
 
+/// Check `path` metadata WITHOUT following symlinks.
+///
+/// Returns `None` when the path does not exist or is a symbolic link.
+/// Symlinks are rejected to prevent directory traversal: a symlink inside
+/// the static root could point anywhere on the filesystem (e.g.
+/// `/var/www/html/secret` → `/etc/passwd`), bypassing `sanitize_path`'s
+/// `..`-traversal protection.
+async fn stat_no_symlink(path: &std::path::Path) -> Option<std::fs::Metadata> {
+    let meta = tokio::fs::symlink_metadata(path).await.ok()?;
+    if meta.is_symlink() {
+        return None; // Reject — symlink could escape the static root.
+    }
+    Some(meta)
+}
+
 async fn find_file(roots: &[PathBuf], rel: &str, options: &StaticOptions) -> Option<PathBuf> {
     for root in roots {
         let candidate = root.join(rel);
-        match tokio::fs::metadata(&candidate).await {
-            Ok(m) if m.is_file() => return Some(candidate),
-            Ok(m) if m.is_dir() => {
+        match stat_no_symlink(&candidate).await {
+            Some(m) if m.is_file() => return Some(candidate),
+            Some(m) if m.is_dir() => {
                 if let Some(p) = find_index(&candidate, options).await {
                     return Some(p);
                 }
@@ -213,11 +228,7 @@ async fn find_index(dir: &Path, options: &StaticOptions) -> Option<PathBuf> {
     let indices = options.index.as_deref().unwrap_or(&defaults);
     for name in indices {
         let p = dir.join(name);
-        if tokio::fs::metadata(&p)
-            .await
-            .map(|m| m.is_file())
-            .unwrap_or(false)
-        {
+        if stat_no_symlink(&p).await.map(|m| m.is_file()).unwrap_or(false) {
             return Some(p);
         }
     }
@@ -657,6 +668,35 @@ fn decode_rel_path(req_path: &str, strip_prefix: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn symlink_in_static_root_is_not_served() {
+        // stat_no_symlink must return None for symlinks — serving them would
+        // allow directory traversal (symlink → /etc/passwd, etc.).
+        let dir = tempfile::tempdir().unwrap();
+        let real_file = dir.path().join("real.txt");
+        std::fs::write(&real_file, "contents").unwrap();
+
+        // Create a symlink pointing to the real file.
+        let link_path = dir.path().join("link.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_file, &link_path).unwrap();
+        #[cfg(windows)]
+        {
+            // Skip symlink test on Windows (requires privileges).
+            return;
+        }
+        // stat_no_symlink must reject the symlink.
+        assert!(
+            stat_no_symlink(&link_path).await.is_none(),
+            "symlink must not be served by static file handler"
+        );
+        // Regular file is fine.
+        assert!(
+            stat_no_symlink(&real_file).await.is_some(),
+            "regular file must be served"
+        );
+    }
 
     #[test]
     fn percent_decode_null_byte_is_rejected() {

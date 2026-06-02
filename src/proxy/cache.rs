@@ -77,11 +77,17 @@ pub fn build_cache_key(
         (Some(vary), Some(headers)) if !vary.is_empty() => {
             let mut parts = vec![base];
             for name in vary {
+                // Normalize to lowercase so that "Accept-Language" and
+                // "accept-language" in the config produce the same cache key.
+                // http::HeaderMap::get() is already case-insensitive, so the
+                // value lookup is correct either way; the normalization here
+                // ensures the key string representation is consistent.
+                let name_lc = name.to_ascii_lowercase();
                 let val = headers
-                    .get(name.as_str())
+                    .get(name_lc.as_str())
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("");
-                parts.push(format!("{name}={val}"));
+                parts.push(format!("{name_lc}={val}"));
             }
             parts.join("\0")
         }
@@ -298,6 +304,27 @@ mod tests {
         let k2 = build_cache_key("h.com", "https", "/", None, Some(&vary), Some(&h));
         // Same header value must produce the same key.
         assert_eq!(k1.to_compact().primary, k2.to_compact().primary);
+    }
+
+    #[test]
+    fn cache_key_vary_header_case_normalized() {
+        // "Accept-Language" and "accept-language" in the config must produce
+        // the same cache key — the lookup is case-insensitive but the old code
+        // put the unnormalized name in the key string, causing misses.
+        let mut h = http::HeaderMap::new();
+        h.insert("accept-language", "en".parse().unwrap());
+
+        let vary_upper = vec!["Accept-Language".to_string()];
+        let vary_lower = vec!["accept-language".to_string()];
+
+        let k_upper = build_cache_key("h.com", "https", "/", None, Some(&vary_upper), Some(&h));
+        let k_lower = build_cache_key("h.com", "https", "/", None, Some(&vary_lower), Some(&h));
+
+        assert_eq!(
+            k_upper.to_compact().primary,
+            k_lower.to_compact().primary,
+            "vary header name case must be normalized in the cache key"
+        );
     }
 
     // ── should_cache_request ──────────────────────────────────────────────────

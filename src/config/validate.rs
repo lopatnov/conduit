@@ -358,6 +358,24 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
     if let Some(middleware) = &site.middleware {
         validate_middleware(middleware, prefix, errors);
     }
+    if let Some(api_key_cfg) = &site.api_key {
+        // Empty strings in the key list create a bypass: when a client sends
+        // no X-Api-Key header, `provided` defaults to "", which matches "".
+        for (i, key) in api_key_cfg.keys.iter().enumerate() {
+            if key.is_empty() {
+                errors.push(ValidationError::new(
+                    format!("{prefix}.apiKey.keys[{i}]"),
+                    "API key must not be empty — an empty key allows unauthenticated access",
+                ));
+            }
+        }
+        if api_key_cfg.keys.is_empty() {
+            errors.push(ValidationError::new(
+                format!("{prefix}.apiKey.keys"),
+                "apiKey.keys must contain at least one key",
+            ));
+        }
+    }
     if let Some(jwt) = &site.jwt_auth {
         validate_jwt_auth(jwt, &format!("{prefix}.jwtAuth"), errors);
     }
@@ -417,6 +435,15 @@ fn validate_consumers(
         // consumers don't need their own credentials — they're identified by the
         // sharedJwt sub claim.  A credential is only required when sharedJwt is absent.
         let has_shared_jwt = cfg.shared_jwt.is_some();
+        // Empty consumer API key creates bypass (same as site-level).
+        if let Some(ref key) = c.api_key {
+            if key.is_empty() {
+                errors.push(ValidationError::new(
+                    format!("{entry_prefix}.apiKey"),
+                    "consumer apiKey must not be empty — an empty key allows unauthenticated access",
+                ));
+            }
+        }
         if !has_shared_jwt && c.api_key.is_none() && c.basic_auth.is_none() && c.jwt.is_none() {
             errors.push(ValidationError::new(
                 entry_prefix.clone(),
@@ -1841,6 +1868,46 @@ mod tests {
                 .iter()
                 .all(|e| !e.message.contains("Admin API")),
             "forwardAuth to external service must not warn about admin API"
+        );
+    }
+
+    // ── empty API key ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_api_key_is_rejected() {
+        // An empty key creates a bypass: clients without the header have provided=""
+        // which matches the empty key.
+        let e = errs(r#"{ "port": 8080, "apiKey": { "keys": [""] } }"#);
+        assert!(!e.is_empty(), "empty API key must be rejected");
+        assert!(
+            e.iter().any(|err| err.message.contains("empty")),
+            "error must mention empty key: {e:?}"
+        );
+    }
+
+    #[test]
+    fn non_empty_api_key_is_valid() {
+        assert!(
+            errs(r#"{ "port": 8080, "apiKey": { "keys": ["secret-key-123"] } }"#).is_empty(),
+            "non-empty API key must pass validation"
+        );
+    }
+
+    #[test]
+    fn empty_keys_list_is_rejected() {
+        let e = errs(r#"{ "port": 8080, "apiKey": { "keys": [] } }"#);
+        assert!(!e.is_empty(), "empty keys list must be rejected");
+    }
+
+    #[test]
+    fn consumer_empty_api_key_is_rejected() {
+        let e = errs(r#"{
+            "port": 8080,
+            "consumers": { "consumers": [{ "username": "bob", "apiKey": "" }] }
+        }"#);
+        assert!(
+            e.iter().any(|err| err.message.contains("empty")),
+            "consumer empty apiKey must be rejected: {e:?}"
         );
     }
 }
