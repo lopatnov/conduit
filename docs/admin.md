@@ -39,8 +39,8 @@ hot-reload file watcher) run regardless of admin config.
 # conduit.yaml
 global:
   admin:
-    bind: "127.0.0.1:2019"   # required — loopback only
-    token: "$ADMIN_TOKEN"     # strongly recommended in production
+    bind: "127.0.0.1:2019" # required — loopback only
+    token: "$ADMIN_TOKEN" # strongly recommended in production
 ```
 
 ```json
@@ -103,9 +103,11 @@ global:
 ### Using the token
 
 When `global.admin.token` is set, every request must include:
+
 ```
 Authorization: Bearer <token>
 ```
+
 Requests without the correct token receive `401 Unauthorized`.
 
 ```bash
@@ -137,6 +139,7 @@ curl http://localhost:2019/status
 ```
 
 **Response:**
+
 ```json
 {
   "status": "running",
@@ -150,16 +153,16 @@ curl http://localhost:2019/status
 }
 ```
 
-| Field | Description |
-| ----- | ----------- |
-| `status` | Always `"running"` when the server is up |
-| `inflight` | Requests currently being processed |
-| `retry_inflight` | Requests currently in a retry attempt |
-| `sites` | Number of configured virtual sites |
-| `configured_upstreams` | Total upstream targets across all routes |
-| `healthy_upstreams` | Upstreams currently passing health probes |
+| Field                    | Description                                   |
+| ------------------------ | --------------------------------------------- |
+| `status`                 | Always `"running"` when the server is up      |
+| `inflight`               | Requests currently being processed            |
+| `retry_inflight`         | Requests currently in a retry attempt         |
+| `sites`                  | Number of configured virtual sites            |
+| `configured_upstreams`   | Total upstream targets across all routes      |
+| `healthy_upstreams`      | Upstreams currently passing health probes     |
 | `total_probed_upstreams` | Upstreams that have been probed at least once |
-| `config_path` | Path to the loaded config file |
+| `config_path`            | Path to the loaded config file                |
 
 ---
 
@@ -173,17 +176,41 @@ curl -X POST http://localhost:2019/reload
 ```
 
 **On success:**
+
 ```json
 { "status": "ok", "message": "config reloaded" }
 ```
 
-**On validation error:**
+**On success with feature warnings** (feature configured but not compiled in):
+
+```json
+{
+  "status": "ok",
+  "message": "config reloaded",
+  "warnings": ["jwtAuth is configured but --features jwt was not compiled in"]
+}
+```
+
+**On validation error (400):**
+
 ```json
 {
   "status": "error",
   "message": "config error at proxy./api.retry.attempts: must be > 0"
 }
 ```
+
+**On cold field change (400):**
+
+```json
+{
+  "status": "error",
+  "message": "cold fields changed — restart required: sites[0].tls.cert"
+}
+```
+
+Cold fields must be changed via a process restart (`systemctl restart conduit`),
+not via `POST /reload`.
 
 **What's hot-reloadable** (applied immediately, no restart):  
 `proxy`, `static`, `routes`, `rateLimit`, `basicAuth`, `apiKey`, `jwtAuth`,
@@ -195,8 +222,10 @@ curl -X POST http://localhost:2019/reload
 `port`, `tls.cert/key`, `tls.versions/ciphers`, `workers`, `backlog`,
 `global.admin.bind`.
 
-> **Note:** `POST /reload` resets all runtime upstream overrides added via
-> `/upstreams/add`, `/upstreams/remove`, and `/upstreams/weight`.
+> **Note:** `POST /reload` resets runtime upstream overrides (added via
+> `/upstreams/add`, `/upstreams/remove`, `/upstreams/weight`) and clears
+> in-memory rate-limiter counters. Dynamic IP deny entries (`POST /ip-deny`)
+> are **not** reset on reload — they persist until the process restarts.
 
 ---
 
@@ -210,6 +239,7 @@ curl -X POST http://localhost:2019/shutdown
 ```
 
 **Response:**
+
 ```json
 { "status": "shutting_down" }
 ```
@@ -227,6 +257,7 @@ curl http://localhost:2019/upstreams
 ```
 
 **Response:**
+
 ```json
 {
   "upstreams": [
@@ -255,13 +286,17 @@ curl http://localhost:2019/upstreams
           "url": "http://api-1:4000",
           "weight": 1,
           "healthy": true,
-          "latency_ms": 12
+          "latency_ms": 12,
+          "consecutive_failures": 0,
+          "consecutive_successes": 5
         },
         {
           "url": "http://api-2:4000",
           "weight": 1,
           "healthy": false,
-          "latency_ms": null
+          "latency_ms": null,
+          "consecutive_failures": 3,
+          "consecutive_successes": 0
         }
       ]
     }
@@ -270,6 +305,7 @@ curl http://localhost:2019/upstreams
 ```
 
 The response has two sections:
+
 - `upstreams` — flat list of all known upstream URLs with their current health state
 - `routes` — per-site, per-route view showing strategy and target weights
 
@@ -288,14 +324,15 @@ curl -X POST http://localhost:2019/upstreams/add \
 
 **Request body:**
 
-| Field | Required | Description |
-| ----- | -------- | ----------- |
-| `route` | ✅ | Route path prefix, e.g. `"/api"` |
-| `target` | ✅ | Full upstream URL, e.g. `"http://api-3:4000"` |
-| `weight` | — | Weight for weighted-round-robin (default: `1`) |
-| `site` | — | Scope to a specific site label, e.g. `"api.example.com:443"`. Omit to apply to all sites with this route |
+| Field    | Required | Description                                                                                              |
+| -------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| `route`  | ✅       | Route path prefix, e.g. `"/api"`                                                                         |
+| `target` | ✅       | Full upstream URL, e.g. `"http://api-3:4000"`                                                            |
+| `weight` | —        | Weight for weighted-round-robin (default: `1`)                                                           |
+| `site`   | —        | Scope to a specific site label, e.g. `"api.example.com:443"`. Omit to apply to all sites with this route |
 
 **Response:**
+
 ```json
 {
   "status": "ok",
@@ -321,8 +358,15 @@ curl -X POST http://localhost:2019/upstreams/remove \
 **Request body:** `route` and `target` (required), `site` (optional).
 
 **Response:**
+
 ```json
-{ "status": "ok", "removed": true, "site": "*", "route": "/api", "target": "http://api-3:4000" }
+{
+  "status": "ok",
+  "removed": true,
+  "site": "*",
+  "route": "/api",
+  "target": "http://api-3:4000"
+}
 ```
 
 `"removed": false` when the target was not found for the given route.
@@ -344,8 +388,15 @@ curl -X POST http://localhost:2019/upstreams/weight \
 **Request body:** `route`, `target`, `weight` (all required), `site` (optional).
 
 **Response:**
+
 ```json
-{ "status": "ok", "site": "*", "route": "/api", "target": "http://api-1:4000", "weight": 3 }
+{
+  "status": "ok",
+  "site": "*",
+  "route": "/api",
+  "target": "http://api-1:4000",
+  "weight": 3
+}
 ```
 
 This is the HTTP equivalent of the `conduit upstreams weight` CLI command.
@@ -363,6 +414,7 @@ curl -X DELETE "http://localhost:2019/cache/purge?url=https://api.example.com/v1
 **Query parameter:** `url` — the full URL to purge (scheme + host + path + query).
 
 **Response:**
+
 ```json
 { "status": "ok", "purged": true, "url": "https://api.example.com/v1/products" }
 ```
@@ -377,7 +429,8 @@ curl -X DELETE "http://localhost:2019/cache/purge?url=https://api.example.com/v1
 ### POST /ip-deny
 
 Add a CIDR to the runtime deny-list. Takes effect immediately for all new
-requests. In-memory only — does not survive a restart or `POST /reload`.
+requests. In-memory only — persists across `POST /reload` but resets on
+process restart.
 
 ```bash
 curl -X POST http://localhost:2019/ip-deny \
@@ -387,17 +440,22 @@ curl -X POST http://localhost:2019/ip-deny \
 
 **Request body:**
 
-| Field | Required | Description |
-| ----- | -------- | ----------- |
-| `cidr` | ✅ | CIDR block or single IP, e.g. `"203.0.113.0/24"` or `"10.0.0.5"` |
+| Field  | Required | Description                                                      |
+| ------ | -------- | ---------------------------------------------------------------- |
+| `cidr` | ✅       | CIDR block or single IP, e.g. `"203.0.113.0/24"` or `"10.0.0.5"` |
 
 **Response:**
+
 ```json
 { "status": "ok", "action": "added", "cidr": "203.0.113.0/24" }
 ```
 
-To make the deny permanent, add the CIDR to `ipFilter.deny` in the config
-and run `POST /reload`.
+To make the deny **permanent** (survives restarts), add the CIDR to
+`ipFilter.deny` in the config file and run `POST /reload`.
+
+> **Note:** there is no `GET /ip-deny` endpoint. To inspect the current
+> runtime deny list, check the `ipFilter.deny` config and any CIDRs added
+> at runtime — the dynamic list is not exposed via the API.
 
 ---
 
@@ -412,20 +470,23 @@ curl -X DELETE http://localhost:2019/ip-deny \
 ```
 
 **Response:**
+
 ```json
 { "status": "ok", "action": "removed", "cidr": "203.0.113.0/24" }
 ```
+
+> Always returns `"action": "removed"` even if the CIDR was not in the list.
 
 ---
 
 ### POST /certs/reload
 
 Validate a new TLS certificate + private key and write them atomically to the
-file paths configured in `tls.cert` / `tls.key`.  A **restart** or `conduit reload`
+file paths configured in `tls.cert` / `tls.key`. A **restart** or `conduit reload`
 is required afterwards for the new certificate to take effect on new connections.
 
 > **Why a restart?** Pingora 0.8's rustls backend builds an immutable
-> `ServerConfig` at startup and has no runtime cert-swap API.  Writing the
+> `ServerConfig` at startup and has no runtime cert-swap API. Writing the
 > files here is the safe atomic step; applying them without downtime will be
 > possible once Pingora exposes a `ResolvesServerCert` hook (planned for 0.9+).
 > For Let's Encrypt, use `tls.acme` instead — renewals are fully automatic.
@@ -435,7 +496,7 @@ is required afterwards for the new certificate to take effect on new connections
 ```json
 {
   "cert": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
-  "key":  "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+  "key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 }
 ```
 
@@ -467,34 +528,41 @@ jq -n --rawfile cert /tmp/new-server.crt \
 ```
 
 **Success response (200):**
+
 ```json
 {
-  "status":    "ok",
+  "status": "ok",
   "cert_path": "/etc/conduit/tls/server.crt",
-  "key_path":  "/etc/conduit/tls/server.key",
-  "note":      "certificate written to disk — restart or POST /reload to activate"
+  "key_path": "/etc/conduit/tls/server.key",
+  "note": "certificate written to disk — restart or POST /reload to activate"
 }
 ```
 
 **Error responses:**
 
-| Status | Cause |
-|--------|-------|
-| `400`  | No site has `tls.cert`/`tls.key` configured |
+| Status | Cause                                                                        |
+| ------ | ---------------------------------------------------------------------------- |
+| `400`  | No site has `tls.cert`/`tls.key` configured                                  |
 | `400`  | Cert and key do not form a valid pair (mismatch, corrupt PEM, no cert found) |
-| `500`  | File write failed (permissions, disk full, …) |
+| `500`  | File write failed (permissions, disk full, …)                                |
 
 **Typical workflow:**
 
 ```bash
 # 1. Upload and validate the new certificate
 jq -n --rawfile cert new.crt --rawfile key new.key '{cert: $cert, key: $key}' \
-  | curl -sX POST http://localhost:2019/certs/reload -H "Content-Type: application/json" -d @-
+  | curl -sX POST http://localhost:2019/certs/reload \
+         -H "Content-Type: application/json" \
+         -H "Authorization: Bearer $ADMIN_TOKEN" \
+         -d @-
 
-# 2. Apply (graceful restart — new connections use new cert, in-flight finish normally)
-curl -sX POST http://localhost:2019/reload
-# → if conduit reports cold fields changed (tls.cert/tls.key), do a process restart instead:
-# systemctl restart conduit   # or: kill -TERM $(pgrep conduit)
+# 2. Apply — POST /reload works here because the cert/key file PATHS in config
+#    did not change (only the file contents changed), so no cold-field error.
+curl -sX POST http://localhost:2019/reload \
+     -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# If the cert/key paths themselves changed in conduit.yaml, a full restart is needed:
+# systemctl restart conduit
 ```
 
 ---
@@ -533,16 +601,16 @@ conduit upstreams add --route /api --target http://api-3:4000 --site api.example
 conduit status --upstream
 ```
 
-| CLI command | Admin API call |
-| ----------- | -------------- |
-| `conduit reload` | `POST /reload` |
-| `conduit status` | `GET /status` |
+| CLI command                 | Admin API call                        |
+| --------------------------- | ------------------------------------- |
+| `conduit reload`            | `POST /reload`                        |
+| `conduit status`            | `GET /status`                         |
 | `conduit status --upstream` | `GET /upstreams` (formatted as table) |
-| `conduit shutdown` | `POST /shutdown` |
-| `conduit upstreams` | `GET /upstreams` |
-| `conduit upstreams add` | `POST /upstreams/add` |
-| `conduit upstreams remove` | `POST /upstreams/remove` |
-| `conduit upstreams weight` | `POST /upstreams/weight` |
+| `conduit shutdown`          | `POST /shutdown`                      |
+| `conduit upstreams`         | `GET /upstreams`                      |
+| `conduit upstreams add`     | `POST /upstreams/add`                 |
+| `conduit upstreams remove`  | `POST /upstreams/remove`              |
+| `conduit upstreams weight`  | `POST /upstreams/weight`              |
 
 See [cli.md](cli.md) for all flags.
 
@@ -561,7 +629,7 @@ with local access can reload configs, add upstreams, or shut down the server.
 global:
   admin:
     bind: "127.0.0.1:2019"
-    token: "$ADMIN_TOKEN"   # read from environment variable
+    token: "$ADMIN_TOKEN" # read from environment variable
 ```
 
 **Zero-downtime config update workflow:**
