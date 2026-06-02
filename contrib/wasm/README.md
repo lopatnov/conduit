@@ -25,8 +25,9 @@ A plugin is a `.wasm` module that:
    - Return `1` → abort (use `conduit_set_response_*` to set the error response)
 2. **May export `on_response(status: i32) → i32`** — called after the upstream responds
    - `status` is the upstream HTTP status code
-   - Return `0` → continue
-   - Return `1` → replace response body/headers with what was set via host functions
+   - Return value is **ignored** — any headers/body set via response host functions are always applied
+   - Modifications via `conduit_set_response_header`, `conduit_remove_response_header`,
+     and `conduit_set_response_body` take effect regardless of the return value
 3. **Must export `"memory"`** — Conduit reads/writes plugin memory via this export
 
 **Fail-open:** compile errors, link errors, missing exports, and runtime traps all

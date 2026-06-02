@@ -90,10 +90,14 @@ Conduit calls for each request.
 
 ### Required exports
 
-| Export       | Signature     | Description                                                                      |
-| ------------ | ------------- | -------------------------------------------------------------------------------- |
-| `on_request` | `() -> i32`   | Called for every request. Return `0` to continue, `1` (or any non-zero) to abort |
-| `memory`     | linear memory | Must be exported — all string data passes through it                             |
+| Export       | Signature     | Required | Description                                                                       |
+| ------------ | ------------- | :------: | --------------------------------------------------------------------------------- |
+| `on_request` | `() -> i32`   | **Yes**  | Called for every request. Return `0` to continue, `1` (or any non-zero) to abort |
+| `memory`     | linear memory | **Yes**  | Must be exported — all string data passes through it                              |
+| `on_response`| `(i32) -> i32`| No       | Called after upstream responds. Parameter = upstream status. Return value is ignored — always continues. See [Response phase](#response-phase--on_response) |
+
+> `on_request` is **always required**, even for response-only plugins. The
+> function body can be empty (`return 0`) if you only need `on_response`.
 
 ### Host functions — read request
 
@@ -184,7 +188,7 @@ pattern — place the `middleware` array alongside your proxy/static config:
 # conduit.yaml
 middleware:
   - type: wasm
-    path: ./plugins/my-plugin.wasm   # path relative to working directory
+    path: ./plugins/my-plugin.wasm # path relative to working directory
 proxy:
   /api: "http://backend:4000"
 ```
@@ -192,9 +196,7 @@ proxy:
 ```json
 // conduit.json
 {
-  "middleware": [
-    { "type": "wasm", "path": "./plugins/my-plugin.wasm" }
-  ],
+  "middleware": [{ "type": "wasm", "path": "./plugins/my-plugin.wasm" }],
   "proxy": { "/api": "http://backend:4000" }
 }
 ```
@@ -218,13 +220,18 @@ The smallest possible plugin — always passes through:
 )
 ```
 
-Compile with `wat2wasm`:
+Compile with `wat2wasm` or `wasm-tools`:
 
 ```bash
+# wat2wasm (from wabt — https://github.com/WebAssembly/wabt)
 wat2wasm minimal.wat -o minimal.wasm
+
+# wasm-tools (modern alternative — cargo install wasm-tools)
+wasm-tools parse minimal.wat -o minimal.wasm
 ```
 
 **conduit.yaml:**
+
 ```yaml
 middleware:
   - type: wasm
@@ -240,6 +247,7 @@ proxy:
 Returns `401` when `X-API-Key` is missing or wrong.
 
 **Project structure:**
+
 ```
 api-key-check/
 ├── Cargo.toml
@@ -259,7 +267,7 @@ crate-type = ["cdylib"]
 
 ```rust
 // src/lib.rs
-extern "C" {
+unsafe extern "C" {
     fn conduit_get_header(name_ptr: i32, name_len: i32, buf: i32, buf_len: i32) -> i32;
     fn conduit_set_response_status(status: i32);
     fn conduit_set_response_body(body_ptr: i32, body_len: i32);
@@ -297,6 +305,7 @@ fn reject(status: i32, msg: &[u8]) {
 ```
 
 **Build:**
+
 ```bash
 cargo build --target wasm32-unknown-unknown --release
 # Output: target/wasm32-unknown-unknown/release/api_key_check.wasm
@@ -305,11 +314,12 @@ cp target/wasm32-unknown-unknown/release/api_key_check.wasm ./plugins/
 ```
 
 **conduit.yaml / conduit.json:**
+
 ```yaml
 # conduit.yaml
 middleware:
   - type: wasm
-    path: ./plugins/api_key_check.wasm   # the copied .wasm file
+    path: ./plugins/api_key_check.wasm # the copied .wasm file
 proxy:
   /api: "http://backend:4000"
 healthCheck: true
@@ -331,6 +341,7 @@ healthCheck: true
 Adds `X-Plugin-Version: 1.0` to every upstream request.
 
 **Project structure:**
+
 ```
 inject-header/
 ├── Cargo.toml
@@ -350,7 +361,7 @@ crate-type = ["cdylib"]
 
 ```rust
 // src/lib.rs
-extern "C" {
+unsafe extern "C" {
     fn conduit_set_request_header(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32);
 }
 
@@ -369,6 +380,7 @@ pub extern "C" fn on_request() -> i32 {
 ```
 
 **Build:**
+
 ```bash
 cargo build --target wasm32-unknown-unknown --release
 # Output: target/wasm32-unknown-unknown/release/inject_header.wasm
@@ -376,6 +388,7 @@ cp target/wasm32-unknown-unknown/release/inject_header.wasm ./plugins/
 ```
 
 **conduit.yaml / conduit.json:**
+
 ```yaml
 # conduit.yaml
 middleware:
@@ -400,6 +413,7 @@ proxy:
 Sends a 302 redirect from `/old-api/` to `/api/`.
 
 **Project structure:**
+
 ```
 path-redirect/
 ├── Cargo.toml
@@ -419,7 +433,7 @@ crate-type = ["cdylib"]
 
 ```rust
 // src/lib.rs
-extern "C" {
+unsafe extern "C" {
     fn conduit_get_path(buf: i32, buf_len: i32) -> i32;
     fn conduit_abort_with_redirect(url_ptr: i32, url_len: i32);
 }
@@ -445,6 +459,7 @@ pub extern "C" fn on_request() -> i32 {
 ```
 
 **Build:**
+
 ```bash
 cargo build --target wasm32-unknown-unknown --release
 # Output: target/wasm32-unknown-unknown/release/path_redirect.wasm
@@ -452,11 +467,12 @@ cp target/wasm32-unknown-unknown/release/path_redirect.wasm ./plugins/
 ```
 
 **conduit.yaml / conduit.json:**
+
 ```yaml
 # conduit.yaml
 middleware:
   - type: wasm
-    path: ./plugins/path_redirect.wasm   # runs before the proxy
+    path: ./plugins/path_redirect.wasm # runs before the proxy
 proxy:
   /api: "http://backend:4000"
 ```
@@ -474,6 +490,7 @@ proxy:
 ### Header check in C
 
 **Project structure:**
+
 ```
 api-key-check-c/
 └── plugin.c
@@ -509,6 +526,7 @@ int on_request(void) {
 ```
 
 **Build** (output filename is explicit in `-o`):
+
 ```bash
 clang --target=wasm32 -nostdlib -Wl,--no-entry \
       -Wl,--export=on_request -Wl,--export=memory \
@@ -517,11 +535,12 @@ clang --target=wasm32 -nostdlib -Wl,--no-entry \
 ```
 
 **conduit.yaml / conduit.json:**
+
 ```yaml
 # conduit.yaml
 middleware:
   - type: wasm
-    path: ./api_key_check.wasm   # the -o name from build step
+    path: ./api_key_check.wasm # the -o name from build step
 proxy:
   /api: "http://backend:4000"
 ```
@@ -539,6 +558,7 @@ proxy:
 ### Header check in Go (TinyGo)
 
 **Project structure:**
+
 ```
 api-key-check-go/
 └── plugin.go
@@ -581,6 +601,7 @@ func main() {}
 ```
 
 **Build** (output filename is explicit in `-o`):
+
 ```bash
 # Install TinyGo: https://tinygo.org/getting-started/install/
 tinygo build -o api_key_check.wasm -target=wasi ./plugin.go
@@ -588,11 +609,12 @@ tinygo build -o api_key_check.wasm -target=wasi ./plugin.go
 ```
 
 **conduit.yaml / conduit.json:**
+
 ```yaml
 # conduit.yaml
 middleware:
   - type: wasm
-    path: ./api_key_check.wasm   # the -o name from build step
+    path: ./api_key_check.wasm # the -o name from build step
 proxy:
   /api: "http://backend:4000"
 ```
@@ -612,6 +634,7 @@ proxy:
 AssemblyScript compiles TypeScript-like syntax directly to WASM — no Rust or C toolchain needed.
 
 **Project structure:**
+
 ```
 api-key-check-as/
 ├── package.json
@@ -665,6 +688,7 @@ export function on_request(): i32 {
 ```
 
 **Build:**
+
 ```bash
 npx asc plugin.ts --target release --outFile api_key_check.wasm \
     --exportRuntime --exportMemory --use abort=
@@ -672,6 +696,7 @@ npx asc plugin.ts --target release --outFile api_key_check.wasm \
 ```
 
 **conduit.yaml / conduit.json:**
+
 ```yaml
 # conduit.yaml
 middleware:
@@ -727,7 +752,7 @@ proxy:
 Reading the config in Rust:
 
 ```rust
-extern "C" {
+unsafe extern "C" {
     fn conduit_get_plugin_config(buf: i32, buf_len: i32) -> i32;
     fn conduit_get_header(name_ptr: i32, name_len: i32, buf: i32, buf_len: i32) -> i32;
     fn conduit_set_response_status(status: i32);
@@ -799,17 +824,17 @@ simply not called for the response.
 
 ### Response host functions
 
-In `on_response`, six host functions are available:
+In `on_response`, seven host functions are available:
 
-| Function | Description |
-| -------- | ----------- |
-| `conduit_get_response_status() -> i32` | Upstream HTTP status code |
+| Function                                                               | Description                                   |
+| ---------------------------------------------------------------------- | --------------------------------------------- |
+| `conduit_get_response_status() -> i32`                                 | Upstream HTTP status code                     |
 | `conduit_get_response_header(name_ptr, name_len, buf, buf_len) -> i32` | Read upstream response header; `-1` if absent |
-| `conduit_set_response_header(name_ptr, name_len, val_ptr, val_len)` | Add/overwrite header on client response |
-| `conduit_remove_response_header(name_ptr, name_len)` | Remove header from client response |
-| `conduit_set_response_body(body_ptr, body_len)` | Replace response body |
-| `conduit_get_plugin_config(buf, buf_len) -> i32` | Same as request phase |
-| `conduit_log(level, msg_ptr, msg_len)` | Same as request phase |
+| `conduit_set_response_header(name_ptr, name_len, val_ptr, val_len)`    | Add/overwrite header on client response       |
+| `conduit_remove_response_header(name_ptr, name_len)`                   | Remove header from client response            |
+| `conduit_set_response_body(body_ptr, body_len)`                        | Replace response body                         |
+| `conduit_get_plugin_config(buf, buf_len) -> i32`                       | Same as request phase                         |
+| `conduit_log(level, msg_ptr, msg_len)`                                 | Same as request phase                         |
 
 > Request-phase functions (`conduit_get_method`, `conduit_get_header`, etc.)
 > are **not** available in `on_response`.
@@ -818,7 +843,7 @@ In `on_response`, six host functions are available:
 
 ```rust
 // src/lib.rs
-extern "C" {
+unsafe extern "C" {
     fn conduit_get_response_status() -> i32;
     fn conduit_set_response_header(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32);
     fn conduit_set_response_body(body_ptr: i32, body_len: i32);
@@ -849,6 +874,7 @@ pub extern "C" fn on_response(_status: i32) -> i32 {
 ```
 
 **conduit.yaml / conduit.json:**
+
 ```yaml
 # conduit.yaml — no extra config needed, on_response runs automatically
 middleware:
@@ -949,6 +975,10 @@ wasm-opt -Os -o plugin-opt.wasm plugin.wasm
 - WASM execution is **synchronous** and runs in the request-handling thread.
 - There is **no network or filesystem access** from within the WASM sandbox —
   only the 17 host functions listed above.
+- **Fuel limit:** 10,000,000 Wasmtime fuel units per invocation (both
+  `on_request` and `on_response`). Each WASM instruction consumes one unit.
+  A plugin that exceeds the limit is terminated and fails open (request
+  passes through). Typical request-phase plugins use well under 100,000 units.
 
 ---
 
@@ -976,17 +1006,18 @@ Common causes:
 
 ## Comparison with Rhai
 
-| Feature                      | Rhai                    | WASM                            |
-| ---------------------------- | ----------------------- | ------------------------------- |
-| Compile-time feature         | none (always available) | `--features wasm`               |
-| Language                     | Rhai (scripting)        | Any language compiling to WASM  |
-| Mutate request headers       | ❌ read-only            | ✅ set + remove                 |
-| Read client IP               | ❌                      | ✅ `conduit_get_client_ip`      |
-| Plugin config                | ❌                      | ✅ `conduit_get_plugin_config`  |
-| Performance                  | fast (interpreted)      | faster (JIT-compiled)           |
-| Development speed            | fast (no build step)    | slower (compile needed)         |
-| Error isolation              | fail-open               | fail-open                       |
-| Shared state across requests | ❌ none                 | ❌ none (new Store per request) |
+| Feature                      | Rhai                      | WASM                             |
+| ---------------------------- | ------------------------- | -------------------------------- |
+| Compile-time feature         | `--features rhai`         | `--features wasm`                |
+| Language                     | Rhai (scripting)          | Any language compiling to WASM   |
+| Mutate request headers       | ❌ read-only              | ✅ set + remove                  |
+| Read client IP               | ❌                        | ✅ `conduit_get_client_ip`       |
+| Plugin config                | ✅ `config` variable      | ✅ `conduit_get_plugin_config`   |
+| CPU limit per invocation     | 500,000 operations        | 10,000,000 fuel units            |
+| Performance                  | fast (interpreted)        | faster (JIT-compiled)            |
+| Development speed            | fast (no build step)      | slower (compile needed)          |
+| Error isolation              | fail-open                 | fail-open                        |
+| Shared state across requests | ❌ none                   | ❌ none (new Store per request)  |
 
 **Use Rhai** for simple guards that only read headers and abort — fast to
 write, no build step.
