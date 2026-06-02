@@ -150,3 +150,47 @@ Key sections:
 > `{ "admin": "$ADMIN_PASSWORD" }`.
 
 See [`demo/README.md`](../demo/README.md) for a full walkthrough of every feature.
+
+---
+
+## Middleware pipeline demo
+
+> **Requires** `cargo build --features "rhai,wasm"`
+
+A separate demo in `examples/middleware-demo/` shows a full four-stage
+middleware pipeline — Rhai and WASM running together in request and response phases:
+
+| # | File | Type | Phase | What it does |
+|---|------|------|-------|--------------|
+| 1 | `api-gate.rhai` | Rhai | request | API key check — `401`/`403` on bad/missing key |
+| 2 | `header-injector.wasm` | WASM | request | Injects `X-Trace-Id` + `X-Wasm-Plugin` onto upstream request |
+| 3 | `response-enricher.rhai` | Rhai | response | Adds `X-Served-By`, `X-Error-Category`; strips `Server`/`X-Powered-By` |
+| 4 | `response-tagger.wasm` | WASM | response | Adds `X-Processed-By: wasm` to every response |
+
+```bash
+# Build with Rhai + WASM support
+cargo build --features "rhai,wasm"
+
+# Compile WAT → WASM (once)
+wasm-tools parse examples/middleware-demo/header-injector.wat \
+  -o examples/middleware-demo/header-injector.wasm
+wasm-tools parse examples/middleware-demo/response-tagger.wat \
+  -o examples/middleware-demo/response-tagger.wasm
+
+# Start (proxies to httpbin.org — no local backends needed)
+./target/debug/conduit -c examples/middleware-demo/conduit.yaml
+```
+
+```bash
+# Missing API key → 401
+curl -i http://localhost:8080/
+
+# Valid key → 200 with all four injected headers
+curl -i -H "X-Api-Key: demo-secret" http://localhost:8080/
+# X-Trace-Id: <request-id>        ← WASM (step 2)
+# X-Wasm-Plugin: header-injector  ← WASM (step 2)
+# X-Served-By: demo-api           ← Rhai response (step 3)
+# X-Processed-By: wasm            ← WASM response (step 4)
+```
+
+See [`examples/middleware-demo/README.md`](../examples/middleware-demo/README.md) for details.
