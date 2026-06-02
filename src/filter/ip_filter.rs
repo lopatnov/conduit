@@ -56,6 +56,21 @@ pub(crate) fn parse_xff(xff: &str) -> Option<IpAddr> {
     xff.split(',').last()?.trim().parse().ok()
 }
 
+/// Public wrapper for testability — returns the effective client IP.
+pub(crate) fn client_ip_for_check(session: &Session, trust_proxy: bool) -> Option<IpAddr> {
+    client_ip(session, trust_proxy)
+}
+
+/// Check whether `ip` is blocked by any rule in `rules` (deny-list mode).
+///
+/// Used by `IpGuard::is_dynamic_denied` to avoid cloning the deny list Vec.
+pub(crate) fn is_in_deny_list(ip: Option<IpAddr>, rules: &[String]) -> bool {
+    match ip {
+        None => false, // unknown IP passes
+        Some(ip) => rules.iter().any(|r| matches_rule(&ip, r)),
+    }
+}
+
 fn client_ip(session: &Session, trust_proxy: bool) -> Option<IpAddr> {
     if trust_proxy {
         if let Some(xff) = session.req_header().headers.get("x-forwarded-for") {

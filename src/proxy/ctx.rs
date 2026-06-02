@@ -101,7 +101,6 @@ pub struct RequestCtx {
 
 impl RequestCtx {
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         site_idx: usize,
         upstream: UpstreamTarget,

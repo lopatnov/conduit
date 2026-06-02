@@ -175,6 +175,16 @@ impl ConduitMetrics {
 
 // ── AppState ──────────────────────────────────────────────────────────────────
 
+/// Shared state for the entire Conduit process.
+///
+/// `AppState` lives behind an `Arc` that is cloned once per Pingora worker
+/// thread at startup.  Every field must be `Send + Sync`.
+///
+/// ## Hot-reload
+/// The config field is an [`ArcSwap`] — `POST /reload` atomically swaps in a
+/// new `AppConfig` while in-flight requests finish with the old snapshot.
+/// Rate-limiter and round-robin counters are cleared on reload; all other state
+/// (health registry, inflight counter, log writer) persists across reloads.
 pub struct AppState {
     pub config: Arc<ArcSwap<AppConfig>>,
     pub inflight: Arc<AtomicUsize>,
@@ -266,6 +276,22 @@ impl AppState {
 
 // ── ConduitProxy ──────────────────────────────────────────────────────────────
 
+/// The Pingora [`ProxyHttp`] implementation that processes every HTTP request.
+///
+/// `ConduitProxy` is the central routing and middleware engine:
+///
+/// 1. **`request_filter`** — increments inflight counter, builds `RequestCtx`,
+///    runs the `FilterChain` (IP guard → CORS → limits → rate-limit → auth →
+///    forward-auth → redirect → scripts/WASM), applies priority shedding.
+/// 2. **`upstream_request_filter`** — appends forwarding headers, rewrites paths,
+///    fires mirrors, expands JWT header templates.
+/// 3. **`upstream_response_filter`** — runs the `ResponseFilterChain` (CRLF strip
+///    → inject headers → response transform → response time → retry-on-error →
+///    error-mask → middleware).
+/// 4. **`logging`** — decrements inflight, updates EWMA/outlier-detection state,
+///    writes access log, records Prometheus metrics.
+///
+/// One `ConduitProxy` is shared (behind `Arc`) across all Pingora worker threads.
 pub struct ConduitProxy {
     pub state: Arc<AppState>,
 }
@@ -299,6 +325,23 @@ impl ConduitProxy {
         true
     }
 
+    /// Core request-processing pipeline.
+    ///
+    /// Called by Pingora's [`ProxyHttp::request_filter`] hook.  Returns
+    /// `Ok(true)` when a response has already been written (request handled
+    /// locally or rejected), `Ok(false)` to continue to the upstream proxy path.
+    ///
+    /// Pipeline order:
+    /// 1. Inflight counter increment + OTel span start.
+    /// 2. Route the request → populate `RequestCtx` with upstream, retry, cache cfg.
+    /// 3. Extract per-site guards from config.
+    /// 4. Run `FilterChain`: XRequestId → IP filter → CORS preflight → health bypass
+    ///    → AllowedHosts → limits → rate-limit → consumers → basic-auth → API-key
+    ///    → JWT → forward-auth → redirect → fault injection → middleware.
+    /// 5. Per-route rate limit check.
+    /// 6. Priority-based load shedding.
+    /// 7. JWT claims extraction for header template expansion.
+    /// 8. Dispatch to local handler or proxy upstream.
     async fn do_request_filter(
         &self,
         session: &mut Session,

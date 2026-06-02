@@ -17,6 +17,29 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget};
 use crate::proxy::upstream;
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Return the current Unix timestamp as whole seconds.
+///
+/// Used throughout the health module for ejection/recovery time comparisons.
+/// Centralised here to avoid repeating the same `SystemTime::now()…` chain.
+#[inline]
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Return the current Unix timestamp as fractional seconds (for EWMA decay).
+#[inline]
+fn now_secs_f64() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
 // ── Per-upstream health state ─────────────────────────────────────────────────
 
 /// Live health state for a single upstream URL.
@@ -130,16 +153,13 @@ pub fn record_request_latency(
     elapsed_us: u64,
     status: u16,
 ) {
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64();
+    let ts_f64 = now_secs_f64();
 
     let mut entry = registry.statuses.entry(url.to_owned()).or_default();
 
     // Apply time-based decay since the last sample.
     let delta = if entry.ewma_last_sample_secs > 0.0 {
-        (now_secs - entry.ewma_last_sample_secs).max(0.0)
+        (ts_f64 - entry.ewma_last_sample_secs).max(0.0)
     } else {
         0.0 // first sample — no decay
     };
@@ -148,7 +168,7 @@ pub fn record_request_latency(
 
     // Mix in the new sample.
     entry.ewma_latency_us = decayed + EWMA_ALPHA * elapsed_us as f64;
-    entry.ewma_last_sample_secs = now_secs;
+    entry.ewma_last_sample_secs = ts_f64;
 
     // Passive health: track consecutive 5xx responses.
     if status >= 500 {
@@ -172,10 +192,7 @@ pub fn record_request_latency(
             const MAX_SECS: u64 = 300;
             let duration =
                 (BASE_SECS * (1u64 << entry.ejection_count.min(10))).min(MAX_SECS);
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            let now = now_secs();
             entry.ejected_until_secs = Some(now + duration);
             entry.ejection_count = entry.ejection_count.saturating_add(1);
             tracing::warn!(
@@ -216,10 +233,7 @@ pub fn maybe_eject(
     // Count currently-ejected upstreams to enforce max_ejection_percent.
     let total = registry.statuses.len().max(1);
     let max_ejected = (total * max_pct / 100).max(1);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = now_secs();
     let currently_ejected = registry
         .statuses
         .iter()
@@ -268,10 +282,7 @@ pub fn slow_start_fraction(entry: &UpstreamEntry, window_secs: u64) -> f64 {
     let Some(recovery) = entry.recovery_time_secs else {
         return 1.0; // no recovery time recorded → fully ramped
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = now_secs();
     let elapsed = now.saturating_sub(recovery);
     if elapsed >= window_secs {
         1.0
@@ -454,10 +465,7 @@ impl UpstreamRegistry {
         let Some(until) = entry.ejected_until_secs else {
             return true;
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = now_secs();
 
         if now < until {
             return false; // still within ejection period
@@ -474,10 +482,7 @@ impl UpstreamRegistry {
         drop(entry);
         let mut e = self.statuses.entry(url.to_owned()).or_default();
         // Re-check after acquiring write lock (another thread may have raced us).
-        let now2 = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now2 = now_secs();
         if let Some(until2) = e.ejected_until_secs {
             if now2 < until2 {
                 return false; // re-ejected by racing call
@@ -739,10 +744,7 @@ fn spawn_health_task(
                 );
                 if ok && !was_healthy && entry.healthy {
                     // Record recovery time for slow-start weight ramping.
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
+                    let now = now_secs();
                     entry.recovery_time_secs = Some(now);
                     tracing::info!(url, "upstream recovered");
                 } else if !ok && was_healthy && !entry.healthy {
@@ -1196,13 +1198,7 @@ mod tests {
     }
 
     // ── half-open circuit breaker ─────────────────────────────────────────────
-
-    fn now_secs() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-    }
+    // Tests use the module-level now_secs() helper directly.
 
     #[test]
     fn ejected_upstream_is_not_healthy() {

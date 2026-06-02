@@ -201,6 +201,9 @@ impl RequestFilter for IpGuard {
 
 impl IpGuard {
     /// Returns `true` when the client IP matches any entry in `dynamic_deny`.
+    ///
+    /// Holds the read lock only for the duration of the check — avoids the
+    /// previous `deny_list.clone()` that allocated a full Vec per request.
     fn is_dynamic_denied(&self, session: &pingora_proxy::Session) -> bool {
         let Ok(deny_list) = self.dynamic_deny.read() else {
             return false;
@@ -208,13 +211,11 @@ impl IpGuard {
         if deny_list.is_empty() {
             return false;
         }
-        let cfg = IpFilterConfig {
-            allow: None,
-            deny: Some(deny_list.clone()),
-            trust_proxy: self.cfg.trust_proxy,
-            dry_run: None, // dynamic deny always enforces
-        };
-        !ip_filter::is_allowed(&cfg, session)
+        // Use apply_ip_filter directly while holding the read lock so we avoid
+        // cloning the deny list into a new IpFilterConfig on every request.
+        let trust_proxy = self.cfg.trust_proxy.unwrap_or(false);
+        let client_ip = ip_filter::client_ip_for_check(session, trust_proxy);
+        ip_filter::is_in_deny_list(client_ip, &deny_list)
     }
 }
 
