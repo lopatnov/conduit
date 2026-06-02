@@ -2,7 +2,6 @@
 
 [![npm version](https://img.shields.io/npm/v/@lopatnov/conduit.svg)](https://www.npmjs.com/package/@lopatnov/conduit)
 [![npm downloads](https://img.shields.io/npm/dt/@lopatnov/conduit.svg)](https://www.npmjs.com/package/@lopatnov/conduit)
-[![GitHub](https://img.shields.io/badge/source-GitHub-181717.svg)](https://github.com/lopatnov/conduit)
 [![License](https://img.shields.io/github/license/lopatnov/conduit)](https://github.com/lopatnov/conduit/blob/main/LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/lopatnov/conduit)](https://github.com/lopatnov/conduit/stargazers)
 
