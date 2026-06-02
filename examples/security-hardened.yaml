@@ -6,7 +6,7 @@
 #   • CORS locked to known origins
 #   • IP allowlist (internal networks only)
 #   • Rate limiting per IP to prevent brute-force and DDoS
-#   • Basic Auth on the admin UI
+#   • Admin UI route (Basic Auth can be added — see instructions near /admin route)
 #   • API key authentication on the API
 #   • Error masking (hide stack traces from clients)
 #   • Admin API protected by bearer token

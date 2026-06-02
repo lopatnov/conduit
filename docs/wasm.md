@@ -173,16 +173,21 @@ Any language that compiles to `wasm32-unknown-unknown` (no OS dependencies) work
 | ------------------ | --------------------------------------------------------- | ----------------------------------------------------------------------- |
 | **Rust**           | `cargo build --target wasm32-unknown-unknown`             | Best ecosystem for WASM; zero-cost abstractions                         |
 | **C / C++**        | `clang --target=wasm32 -nostdlib`                         | Low-level, minimal binary size                                          |
-| **Go**             | [TinyGo](https://tinygo.org/) `tinygo build -target=wasip1` | Full Go syntax; TinyGo required. Use `wasip1` (not `wasi`) target — see note below |
+| **Go**             | [TinyGo](https://tinygo.org/) `tinygo build -target=wasm-unknown` | Full Go syntax; TinyGo required. Use `wasm-unknown` (freestanding) target — see note below |
 | **AssemblyScript** | `asc` (AssemblyScript compiler)                           | TypeScript-like syntax; designed for WASM                               |
 | **Zig**            | `zig build-lib -target wasm32-freestanding`               | Systems language with excellent WASM support                            |
 
-> **TinyGo / WASI note:** Conduit only registers imports under the `"conduit"`
-> namespace — it does **not** implement `wasi_snapshot_preview1`. TinyGo's
-> `-target=wasi` produces modules that import WASI functions; these will fail
-> to link at instantiation time with "unknown import" errors. Use
-> `-target=wasip1` (TinyGo ≥ 0.28) or `-target=wasm` (freestanding) instead,
-> and declare host functions with `//go:wasmimport conduit <funcname>`.
+> **TinyGo target note:** Conduit only registers imports under the `"conduit"`
+> namespace — it does **not** implement `wasi_snapshot_preview1`.
+>
+> | TinyGo target | Imports | Works with Conduit? |
+> |---|---|---|
+> | `-target=wasm-unknown` | Only explicit `//go:wasmimport` | ✅ **Use this** |
+> | `-target=wasi` / `-target=wasip1` | `wasi_snapshot_preview1` (fd_write, etc.) | ❌ Fails at instantiation |
+> | `-target=wasm` | env/gojs (browser-focused) | ❌ Not freestanding |
+>
+> Use `-target=wasm-unknown` and declare all host functions with
+> `//go:wasmimport conduit <funcname>` — no WASI runtime needed.
 
 ---
 
@@ -611,7 +616,7 @@ func main() {}
 
 ```bash
 # Install TinyGo: https://tinygo.org/getting-started/install/
-tinygo build -o api_key_check.wasm -target=wasip1 ./plugin.go
+tinygo build -o api_key_check.wasm -target=wasm-unknown ./plugin.go
 # Output: api_key_check.wasm  ← you choose the name in -o
 ```
 
@@ -951,7 +956,7 @@ clang --target=wasm32 -nostdlib \
 
 ```bash
 # Install TinyGo: https://tinygo.org/getting-started/install/
-tinygo build -o plugin.wasm -target=wasip1 ./plugin.go
+tinygo build -o plugin.wasm -target=wasm-unknown ./plugin.go
 ```
 
 ### AssemblyScript — build

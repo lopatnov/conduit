@@ -333,7 +333,7 @@ compile-time feature-flag system so the binary stays lean for simple deployments
   size reduction: ~30% smaller standard build vs full build.
 
 - **Two Docker image variants** — `:latest` (standard, ~14 MB, no optional
-  features) and `:latest-full` (all 13 features).  Multi-stage musl build,
+  features) and `:latest-full` (all 14 features).  Multi-stage musl build,
   `FROM scratch`, runs as UID 65534.
 
 - **CI full-features builds** — GitHub Actions matrix now includes a

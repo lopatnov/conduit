@@ -279,7 +279,9 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
                 .join("; ")
         )));
     }
-    for w in validate::feature_warnings(&new_config) {
+    // Collect feature warnings once — used for both logging and the response body.
+    let fw: Vec<String> = validate::feature_warnings(&new_config);
+    for w in &fw {
         tracing::warn!("feature not compiled in: {w}");
     }
 
@@ -313,9 +315,6 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
 
     // Spawn health-check tasks for any newly-configured routes.
     health::spawn_health_checks(state.upstream_health.clone(), &new_config);
-
-    // Collect feature warnings before moving new_config.
-    let fw: Vec<String> = validate::feature_warnings(&new_config);
 
     // Apply: hot-swap config, clear runtime upstream overrides, reset rate limiter.
     state.config.store(Arc::new(new_config));
