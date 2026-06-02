@@ -527,18 +527,155 @@ for the CRD schema and `kubectl apply` instructions.
 
 ## Build features
 
-Conduit ships three optional compile-time features. The default binary (`cargo
-build --release`) includes none of them; enable the ones you need:
+Conduit uses compile-time feature flags to keep the default binary lean and
+its attack surface small.  The **standard build** (`cargo build --release`)
+contains only the core proxy engine.  Optional capabilities are added with
+`--features`.
 
 ```bash
-# Single feature
-cargo build --release --features otlp
-cargo build --release --features wasm
-cargo build --release --features kubernetes
+# Standard build (minimal, fast, secure)
+cargo build --release
 
-# Multiple features
-cargo build --release --features otlp,wasm,kubernetes
+# Single optional feature
+cargo build --release --features jwt
+cargo build --release --features rhai
+cargo build --release --features acme
+
+# Full build — every feature enabled
+cargo build --release --features full
+
+# Select combination
+cargo build --release --features "jwt,rhai,redis"
 ```
+
+### Feature overview
+
+| Feature | What it enables | Dependencies added |
+|---------|----------------|-------------------|
+| `jwt` | JWT Bearer-token auth + JWKS URL | `jsonwebtoken` |
+| `consumers` | Per-consumer credentials + rate limits | — |
+| `forward-auth` | ForwardAuth subrequest middleware | — |
+| `rhai` | Rhai scripting middleware (`type: "script"`) | `rhai` |
+| `wasm` | WASM plugin middleware (`type: "wasm"`) | `wasmtime` |
+| `tcp` | TCP passthrough proxy (`type: "tcp"` site) | — |
+| `upload` | File upload handler (`upload:` site config) | — |
+| `redis` | Redis-backed rate limiting & caching | `redis` |
+| `cache` | Response caching (stub; pingora-cache always a dep) | — |
+| `acme` | Auto-TLS / Let's Encrypt (`tls.acme`) | `instant-acme`, `rcgen` |
+| `fault-injection` | Fault injection for chaos testing | — |
+| `otlp` | OpenTelemetry OTLP tracing | `opentelemetry` stack |
+| `kubernetes` | Kubernetes CRD config provider | `kube`, `k8s-openapi` |
+| `full` | All of the above | all of the above |
+
+When a feature is off but its config field is set, Conduit logs a warning at
+startup and continues with that feature disabled (fail-open, no crash).
+
+---
+
+### `jwt` — JWT Bearer-token authentication
+
+Enables `jwtAuth` site config.  Supports HS256 (shared secret) and RS256/ES256
+(remote JWKS URL).  When disabled, `jwtAuth` config is ignored with a warning.
+
+```yaml
+jwtAuth:
+  jwksUrl: "https://auth.example.com/.well-known/jwks.json"
+  issuer: "https://auth.example.com/"
+  audience: ["my-api"]
+```
+
+Dependencies: `jsonwebtoken = "9"`
+
+---
+
+### `rhai` — Rhai scripting middleware
+
+Enables `type: "script"` middleware entries. Scripts run in a sandboxed Rhai
+engine with resource limits (500 000 operations, 1 MiB string, 65 536 array).
+
+```yaml
+middleware:
+  - type: script
+    path: ./scripts/api-gate.rhai
+    config: { api_key: "$SECRET" }
+  - type: script
+    phase: response
+    path: ./scripts/response-enricher.rhai
+```
+
+Dependencies: `rhai = "1"` (sync feature)
+
+---
+
+### `acme` — Auto-TLS / Let's Encrypt
+
+Enables `tls.acme` site config for automatic certificate provisioning via the
+ACME protocol (Let's Encrypt).  Certificates are fetched at startup, cached to
+disk, and renewed automatically.
+
+```yaml
+tls:
+  acme:
+    domain: "api.example.com"
+    email: "admin@example.com"
+    storage: "./certs"
+```
+
+Dependencies: `instant-acme = "0.8"`, `rcgen = "0.14"`
+
+---
+
+### `redis` — Redis-backed rate limiting and caching
+
+Enables `rateLimit.store: "redis://..."` and `cache.store: "redis://..."`.
+Falls back to in-memory on connection failure (fail-open, logged as warning).
+
+```yaml
+rateLimit:
+  windowSecs: 60
+  limit: 1000
+  store: "redis://localhost:6379"
+```
+
+Dependencies: `redis = "1"` (tokio-comp + rustls features)
+
+---
+
+### `tcp` — TCP passthrough proxy
+
+Enables `tcp:` site config for raw TCP forwarding (no HTTP parsing).
+Useful for databases, MQTT, custom binary protocols.
+
+```yaml
+port: 5432
+tcp:
+  targets: ["db-primary:5432", "db-replica:5432"]
+  strategy: round-robin
+  connectTimeoutMs: 3000
+```
+
+---
+
+### `consumers` — Consumer model
+
+Enables `consumers:` site config for per-consumer credentials (API key,
+Basic Auth, JWT) with per-consumer rate limits and header injection.
+
+---
+
+### `forward-auth` — ForwardAuth middleware
+
+Enables `forwardAuth:` site config to delegate authentication decisions
+to an external HTTP service.  2xx = allow, 4xx/5xx = deny.
+
+---
+
+### `fault-injection` — Chaos testing
+
+Enables `faultInjection:` site config.  **Not for production.**  Used
+to test circuit-breaker and retry behaviour by injecting delays and errors.
+
+---
 
 ### `otlp` — OpenTelemetry distributed tracing
 

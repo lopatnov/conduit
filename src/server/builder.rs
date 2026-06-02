@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use pingora_core::server::configuration::Opt;
@@ -427,7 +427,7 @@ fn obtain_acme_certs(
 
     for (port, domain, acme_cfg) in acme_sites {
         let storage = acme_cfg.storage.as_deref().unwrap_or("./certs");
-        let storage_dir = Path::new(storage);
+        let storage_dir = std::path::Path::new(storage);
         // HTTP-01 challenge port: use httpRedirectPort if set, otherwise port 80.
         let challenge_port = config
             .sites

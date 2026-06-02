@@ -339,12 +339,14 @@ pub struct MiddlewareResponseFilter {
 impl ResponseFilter for MiddlewareResponseFilter {
     fn apply(
         &self,
+        #[cfg_attr(not(any(feature = "rhai", feature = "wasm")), allow(unused_variables))]
         resp: &mut ResponseHeader,
         _req_ctx: &RequestCtx,
     ) -> Result<ResponseFilterOutcome> {
+        // Status and headers are only needed by rhai/wasm plugins.
+        #[cfg(any(feature = "rhai", feature = "wasm"))]
         let status = resp.status.as_u16();
-
-        // Build a lowercase header map for plugins to read.
+        #[cfg(any(feature = "rhai", feature = "wasm"))]
         let headers: std::collections::HashMap<String, String> = resp
             .headers
             .iter()
@@ -413,6 +415,7 @@ impl ResponseFilter for MiddlewareResponseFilter {
 }
 
 /// Apply header mutations to a Pingora response header.
+#[cfg(any(feature = "rhai", feature = "wasm"))]
 fn apply_response_mutations(
     resp: &mut ResponseHeader,
     added: Vec<(String, String)>,

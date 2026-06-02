@@ -29,8 +29,8 @@ use crate::filter::chain::{
     ApiKeyGuard, BasicAuthGuard, CorsPreflight, FilterChain,
     FilterContext, HealthBypass, IpGuard,
     LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard, XRequestIdGuard,
-    AllowedHostsGuard,
 };
+use crate::filter::chain::AllowedHostsGuard;
 #[cfg(feature = "consumers")]
 use crate::filter::chain::ConsumersGuard;
 #[cfg(feature = "fault-injection")]
@@ -814,7 +814,7 @@ impl ConduitProxy {
         chain = chain.push(HealthBypass { bypass: is_bypass });
 
         // 3a. AllowedHosts: Host header allowlist (after bypass so health is exempt).
-        chain = chain.push(crate::filter::chain::AllowedHostsGuard {
+        chain = chain.push(AllowedHostsGuard {
             security_cfg: guards.security_cfg.clone(),
             host: guards.host.clone(),
         });
@@ -2156,6 +2156,9 @@ enum HandlerKind {
 
 /// All per-request guard data bundled into one value to keep `run_guard_filters`
 /// within clippy's argument-count limit (7).
+// Fields that are only read when optional features are compiled in.
+// Allow dead_code for the base (no-feature) build — they ARE used with --features full.
+#[allow(dead_code)]
 struct GuardCtx {
     ip_cfg: Option<IpFilterConfig>,
     limits_cfg: Option<LimitsConfig>,

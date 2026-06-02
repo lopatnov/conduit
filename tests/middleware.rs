@@ -30,6 +30,7 @@ fn make_config(port: u16, admin_port: u16, script_path: &str) -> serde_json::Val
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// A script that unconditionally passes all requests should not affect 200 OK.
+#[cfg(feature = "rhai")]
 #[test]
 fn script_allow_all_passes_request_through() {
     let dir = tempfile::tempdir().unwrap();
@@ -47,6 +48,7 @@ fn script_allow_all_passes_request_through() {
 
 /// A script that returns `false` immediately causes every request to get a
 /// `200 text/plain` abort (the default script response status is 200).
+#[cfg(feature = "rhai")]
 #[test]
 fn script_deny_all_aborts_with_default_200() {
     let dir = tempfile::tempdir().unwrap();
@@ -65,6 +67,7 @@ fn script_deny_all_aborts_with_default_200() {
 
 /// A script that sets `response.status = 403` and returns `false` causes the
 /// caller to receive a 403 response.
+#[cfg(feature = "rhai")]
 #[test]
 fn script_abort_with_custom_status() {
     let dir = tempfile::tempdir().unwrap();
@@ -82,6 +85,7 @@ fn script_abort_with_custom_status() {
 
 /// A script that sets `response.status = 401` with a `WWW-Authenticate` header
 /// and returns `false` sends both the status and the header.
+#[cfg(feature = "rhai")]
 #[test]
 fn script_abort_with_response_header() {
     let dir = tempfile::tempdir().unwrap();
@@ -109,6 +113,7 @@ fn script_abort_with_response_header() {
 
 /// A script that inspects the `Authorization` header and allows or denies
 /// based on its value.
+#[cfg(feature = "rhai")]
 #[test]
 fn script_conditional_on_request_header() {
     let dir = tempfile::tempdir().unwrap();
@@ -228,6 +233,7 @@ fn api_gate_config(
 }
 
 /// Missing API key returns 401 (Rhai script aborts before reaching upstream).
+#[cfg(feature = "rhai")]
 #[test]
 fn demo_rhai_api_gate_missing_key_returns_401() {
     let dir = tempfile::tempdir().unwrap();
@@ -249,6 +255,7 @@ fn demo_rhai_api_gate_missing_key_returns_401() {
 }
 
 /// Wrong API key returns 403.
+#[cfg(feature = "rhai")]
 #[test]
 fn demo_rhai_api_gate_wrong_key_returns_403() {
     let dir = tempfile::tempdir().unwrap();
@@ -272,6 +279,7 @@ fn demo_rhai_api_gate_wrong_key_returns_403() {
 }
 
 /// Correct API key passes through to upstream — echo returns 200.
+#[cfg(feature = "rhai")]
 #[test]
 fn demo_rhai_api_gate_correct_key_reaches_upstream() {
     let dir = tempfile::tempdir().unwrap();
@@ -300,6 +308,7 @@ fn demo_rhai_api_gate_correct_key_reaches_upstream() {
 // ── Rhai response-enricher demo ───────────────────────────────────────────────
 
 /// Response enricher adds X-Served-By to upstream responses.
+#[cfg(feature = "rhai")]
 #[test]
 fn demo_rhai_response_enricher_adds_served_by() {
     let dir = tempfile::tempdir().unwrap();
@@ -429,6 +438,7 @@ fn demo_wasm_response_tagger_adds_processed_by() {
 /// A Rhai script with an infinite loop must NOT hang the server forever.
 /// The engine's operation limit (500 000 ops) should abort execution and
 /// the request should pass through (fail-open) within a reasonable time.
+#[cfg(feature = "rhai")]
 #[test]
 fn rhai_infinite_loop_aborts_gracefully() {
     let dir = tempfile::tempdir().unwrap();
@@ -460,6 +470,7 @@ fn rhai_infinite_loop_aborts_gracefully() {
 
 /// A Rhai script allocating a huge string is bounded by the engine's
 /// max_string_size limit and must not exhaust process memory.
+#[cfg(feature = "rhai")]
 #[test]
 fn rhai_string_allocation_is_bounded() {
     let dir = tempfile::tempdir().unwrap();
@@ -505,6 +516,93 @@ true
     // fail-open: script errors → request passes through
     assert_eq!(resp.status().as_u16(), 200,
         "script resource limit error must be fail-open (request passes)");
+}
+
+// ── Feature-flag warning tests ────────────────────────────────────────────────
+
+/// When rhai feature is off, configuring a script middleware generates a warning.
+#[test]
+#[cfg(not(feature = "rhai"))]
+fn rhai_without_feature_generates_warning() {
+    let config = conduit::config::from_str(
+        r#"{ "port": 8080, "middleware": [{ "type": "script", "path": "x.rhai" }] }"#
+    ).expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("rhai")),
+        "missing rhai without feature warning: {warnings:?}"
+    );
+}
+
+/// When tcp feature is off, configuring a tcp site generates a warning.
+#[test]
+#[cfg(not(feature = "tcp"))]
+fn tcp_without_feature_generates_warning() {
+    let config = conduit::config::from_str(
+        r#"{ "port": 8080, "tcp": { "targets": ["db:5432"] } }"#
+    ).expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("tcp")),
+        "missing tcp without feature warning: {warnings:?}"
+    );
+}
+
+/// When acme feature is off, configuring tls.acme generates a warning.
+#[test]
+#[cfg(not(feature = "acme"))]
+fn acme_without_feature_generates_warning() {
+    // AcmeConfig requires email field
+    let config = conduit::config::from_str(
+        r#"{ "port": 443, "tls": { "acme": { "email": "admin@example.com" } } }"#
+    ).expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("acme")),
+        "missing acme without feature warning: {warnings:?}"
+    );
+}
+
+/// When redis feature is off, configuring redis store generates a warning.
+#[test]
+#[cfg(not(feature = "redis"))]
+fn redis_without_feature_generates_warning() {
+    let config = conduit::config::from_str(
+        r#"{ "port": 8080, "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://localhost:6379" } }"#
+    ).expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("redis")),
+        "missing redis without feature warning: {warnings:?}"
+    );
+}
+
+/// When fault-injection feature is off, configuring faultInjection generates a warning.
+#[test]
+#[cfg(not(feature = "fault-injection"))]
+fn fault_injection_without_feature_generates_warning() {
+    let config = conduit::config::from_str(
+        r#"{ "port": 8080, "faultInjection": { "abort": { "percent": 10, "status": 503 } } }"#
+    ).expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("fault")),
+        "missing fault-injection without feature warning: {warnings:?}"
+    );
+}
+
+/// When forward-auth feature is off, configuring forwardAuth generates a warning.
+#[test]
+#[cfg(not(feature = "forward-auth"))]
+fn forward_auth_without_feature_generates_warning() {
+    let config = conduit::config::from_str(
+        r#"{ "port": 8080, "forwardAuth": { "url": "http://auth:4000/verify" } }"#
+    ).expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("forward-auth")),
+        "missing forward-auth without feature warning: {warnings:?}"
+    );
 }
 
 /// A middleware entry with an unknown type is rejected during validation.

@@ -630,6 +630,7 @@ pub struct ForwardAuthGuard {
 /// Uses separate `connect_timeout` (TCP SYN + TLS handshake) and overall
 /// `timeout` (from connect to last body byte) so that both hung TCP
 /// connections AND slow auth servers are bounded.
+#[cfg(feature = "forward-auth")]
 fn forward_auth_client() -> &'static reqwest::Client {
     use std::sync::OnceLock;
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -851,7 +852,7 @@ pub type ScriptGuard = MiddlewareGuard;
 
 #[async_trait]
 impl RequestFilter for MiddlewareGuard {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
+    async fn apply<'a>(&self, #[cfg_attr(not(any(feature = "rhai", feature = "wasm")), allow(unused_variables))] ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
         for entry in &self.middleware {
             match entry.r#type.as_str() {
                 // ── Rhai scripting ────────────────────────────────────────────

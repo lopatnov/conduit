@@ -385,6 +385,7 @@ pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Opt
 }
 
 /// Validate `Authorization: Basic <b64>` against a consumer's username and password.
+#[cfg(feature = "consumers")]
 fn check_consumer_basic(username: &str, password: &str, session: &Session) -> bool {
     let auth_header = session
         .req_header()
