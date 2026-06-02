@@ -558,7 +558,7 @@ cargo build --release --features "jwt,rhai,redis"
 | `rhai` | Rhai scripting middleware (`type: "script"`) | `rhai` |
 | `wasm` | WASM plugin middleware (`type: "wasm"`) | `wasmtime` |
 | `tcp` | TCP passthrough proxy (`type: "tcp"` site) | — |
-| `upload` | File upload handler (`upload:` site config) | — |
+| `upload` | File upload handler (`upload:` site config) | `multer` |
 | `redis` | Redis-backed rate limiting & caching | `redis` |
 | `cache` | Response caching (stub; pingora-cache always a dep) | — |
 | `acme` | Auto-TLS / Let's Encrypt (`tls.acme`) | `instant-acme`, `rcgen` |
