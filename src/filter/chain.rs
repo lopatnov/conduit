@@ -730,14 +730,19 @@ impl RequestFilter for MiddlewareGuard {
                         continue;
                     }
                     let Some(ref path) = entry.path else { continue };
-                    match script::run_script(
+                    // `run_script` may read the script file from disk on first
+                    // call (subsequent calls use the AST cache).  Use
+                    // `block_in_place` so the Tokio scheduler knows this thread
+                    // may block and can temporarily move other tasks elsewhere.
+                    let outcome = tokio::task::block_in_place(|| script::run_script(
                         path,
                         &self.req_path,
                         &self.method,
                         &self.query,
                         self.headers.clone(),
                         entry.config.as_ref(),
-                    ) {
+                    ));
+                    match outcome {
                         script::ScriptOutcome::Continue => {}
                         script::ScriptOutcome::Abort {
                             status,
@@ -793,7 +798,12 @@ impl RequestFilter for MiddlewareGuard {
                         plugin_config,
                     };
 
-                    match crate::filter::wasm::run_wasm(request, path) {
+                    // `run_wasm` reads the .wasm file from disk on first call.
+                    // Use block_in_place so Tokio can schedule around the I/O.
+                    let wasm_outcome = tokio::task::block_in_place(|| {
+                        crate::filter::wasm::run_wasm(request, path)
+                    });
+                    match wasm_outcome {
                         crate::filter::wasm::WasmOutcome::Continue {
                             added_headers,
                             removed_headers,

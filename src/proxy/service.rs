@@ -1284,7 +1284,14 @@ impl ProxyHttp for ConduitProxy {
         let config = self.state.config.load();
         let chain = ResponseFilterChain::build(req_ctx, &config);
 
-        match chain.run(upstream_response, req_ctx)? {
+        // The response chain may execute WASM plugins whose .wasm file is
+        // read from disk on first load.  Use block_in_place to signal Tokio
+        // that this synchronous chain execution may block.
+        let run_result = tokio::task::block_in_place(|| {
+            chain.run(upstream_response, req_ctx)
+        });
+
+        match run_result? {
             ResponseFilterOutcome::Continue => {}
 
             ResponseFilterOutcome::RetryUpstream => {
