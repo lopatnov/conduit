@@ -17,10 +17,10 @@ startup. This keeps secrets out of config files.
 
 Some features require the binary to be compiled with a specific flag:
 
-| Feature | Flag | Affects |
-| ------- | ---- | ------- |
-| `otlp` | `cargo build --features otlp` | [`global.otlp`](#opentelemetry-tracing) — OpenTelemetry tracing |
-| `wasm` | `cargo build --features wasm` | [`middleware[].type: "wasm"`](#wasm-middleware) — WebAssembly plugins |
+| Feature      | Flag                                | Affects                                                                        |
+| ------------ | ----------------------------------- | ------------------------------------------------------------------------------ |
+| `otlp`       | `cargo build --features otlp`       | [`global.otlp`](#opentelemetry-tracing) — OpenTelemetry tracing                |
+| `wasm`       | `cargo build --features wasm`       | [`middleware[].type: "wasm"`](#wasm-middleware) — WebAssembly plugins          |
 | `kubernetes` | `cargo build --features kubernetes` | `--kubernetes-namespace` CLI flag — CRD-based config (not a config file field) |
 
 The standard `npx`/`npm`/`cargo install` binaries do not include these features.
@@ -166,11 +166,11 @@ runs before `basicAuth` and `apiKey`, so a consumer match takes priority.
 Conduit **automatically** injects these headers into every proxied upstream
 request. No configuration is needed — they are always present.
 
-| Header              | Value                  | Notes |
-| ------------------- | ---------------------- | ----- |
-| `X-Forwarded-For`   | Client IP              | Appended to existing value if already present |
-| `X-Forwarded-Proto` | `http` or `https`      | Derived from whether the site has TLS configured |
-| `X-Forwarded-Host`  | Original `Host` header | Lets upstreams reconstruct full URLs |
+| Header              | Value                  | Notes                                                        |
+| ------------------- | ---------------------- | ------------------------------------------------------------ |
+| `X-Forwarded-For`   | Client IP              | Appended to existing value if already present                |
+| `X-Forwarded-Proto` | `http` or `https`      | Derived from whether the site has TLS configured             |
+| `X-Forwarded-Host`  | Original `Host` header | Lets upstreams reconstruct full URLs                         |
 | `X-Request-ID`      | UUID v4                | Auto-generated if absent; forwarded as-is if client sends it |
 
 To remove any of these before forwarding, use `requestTransform.removeHeaders`:
@@ -183,7 +183,11 @@ requestTransform:
 
 ```json
 // conduit.json
-{ "requestTransform": { "removeHeaders": ["X-Forwarded-For", "X-Forwarded-Host"] } }
+{
+  "requestTransform": {
+    "removeHeaders": ["X-Forwarded-For", "X-Forwarded-Host"]
+  }
+}
 ```
 
 ### `skipPaths` glob syntax
@@ -195,9 +199,9 @@ appears inside `basicAuth`, `apiKey`, `jwtAuth`, `forwardAuth`, `consumers`,
 
 Two pattern forms are supported:
 
-| Pattern       | Matches |
-| ------------- | ------- |
-| `/exact/path` | Only that exact path |
+| Pattern       | Matches                                         |
+| ------------- | ----------------------------------------------- |
+| `/exact/path` | Only that exact path                            |
 | `/prefix/**`  | The prefix itself, `/prefix/`, and any sub-path |
 
 ```yaml
@@ -205,8 +209,8 @@ Two pattern forms are supported:
 jwtAuth:
   secret: "$JWT_SECRET"
   skipPaths:
-    - /__health__    # exact match — health check bypasses JWT
-    - /public/**     # /public, /public/, /public/assets/logo.png, …
+    - /__health__ # exact match — health check bypasses JWT
+    - /public/** # /public, /public/, /public/assets/logo.png, …
 ```
 
 ```json
@@ -276,6 +280,8 @@ tls:
 
 ### Auto-TLS via Let's Encrypt
 
+> **Requires** `cargo build --features acme`
+
 ```yaml
 # YAML
 port: 443
@@ -330,7 +336,7 @@ port: 443
 tls:
   cert: ./certs/cert.pem
   key: ./certs/key.pem
-http2: {}          # enable HTTP/2 with defaults
+http2: {} # enable HTTP/2 with defaults
 ```
 
 ```json
@@ -350,11 +356,11 @@ http2:
   initialWindowSize: 65535
 ```
 
-| Field                  | Type   | Default | Description                         |
-| ---------------------- | ------ | ------- | ----------------------------------- |
-| `maxConcurrentStreams` | number  | `100`   | Max parallel streams per connection |
-| `initialWindowSize`    | number  | `65535` | Flow-control window in bytes        |
-| `h2c`                  | bool    | `false` | Allow HTTP/2 upgrade on **plaintext** connections (h2c). For TLS ports HTTP/2 is negotiated via ALPN regardless. Useful for internal gRPC without TLS. |
+| Field                  | Type   | Default | Description                                                                                                                                            |
+| ---------------------- | ------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `maxConcurrentStreams` | number | `100`   | Max parallel streams per connection                                                                                                                    |
+| `initialWindowSize`    | number | `65535` | Flow-control window in bytes                                                                                                                           |
+| `h2c`                  | bool   | `false` | Allow HTTP/2 upgrade on **plaintext** connections (h2c). For TLS ports HTTP/2 is negotiated via ALPN regardless. Useful for internal gRPC without TLS. |
 
 ---
 
@@ -402,11 +408,11 @@ compression:
     - "image/svg"
 ```
 
-| Field        | Type     | Default          | Description                               |
-| ------------ | -------- | ---------------- | ----------------------------------------- |
-| `algorithms` | string[] | `["br", "zstd", "gzip"]` | Compression algorithms to offer. Supported: `"br"` (Brotli), `"zstd"` (Zstandard), `"gzip"`, `"deflate"` |
-| `level`      | number   | `6`              | Compression level (1–9)                   |
-| `minBytes`   | number   | `1024`           | Minimum response size to compress (bytes) |
+| Field        | Type     | Default                                                                                                        | Description                                                                                               |
+| ------------ | -------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `algorithms` | string[] | `["br", "zstd", "gzip"]`                                                                                       | Compression algorithms to offer. Supported: `"br"` (Brotli), `"zstd"` (Zstandard), `"gzip"`, `"deflate"`  |
+| `level`      | number   | `6`                                                                                                            | Compression level (1–9)                                                                                   |
+| `minBytes`   | number   | `1024`                                                                                                         | Minimum response size to compress (bytes)                                                                 |
 | `types`      | string[] | `["text/", "application/json", "application/xml", "application/javascript", "application/xhtml", "image/svg"]` | Content-Type prefixes to compress. Use `["*"]` to compress all types (not recommended for binary content) |
 
 ---
@@ -514,33 +520,33 @@ proxy:
 
 ### Proxy route field reference
 
-| Field                 | Type                 | Default       | Description                                                              |
-| --------------------- | -------------------- | ------------- | ------------------------------------------------------------------------ |
-| `targets`             | string[] or object[] | —             | Upstream URLs (plain strings or `{url, weight}`)                         |
-| `strategy`            | string               | `round-robin` | Load balancing — see [Load balancing](#load-balancing)                   |
-| `stripPrefix`         | bool                 | `false`       | Remove matched path prefix before forwarding                             |
-| `hashKey`             | string               | —             | Key for hash-based strategies: `"ip"`, `"url"`, `"header:X-Name"`        |
-| `rewrite`             | object[]             | —             | URL rewrite rules: `[{from, to}]` — first match wins                     |
-| `http2`               | bool                 | `false`       | Enable HTTP/2 for upstream connections                                   |
-| `timeout.connectMs`   | number               | `3000`        | TCP connect timeout                                                      |
-| `timeout.sendMs`      | number               | —             | Request send timeout                                                     |
-| `timeout.readMs`      | number               | `30000`       | Response read timeout                                                    |
-| `timeout.perTryMs`    | number               | —             | Per-retry timeout                                                        |
-| `retry.attempts`      | number               | `0`           | Number of retry attempts                                                 |
-| `retry.conditions`    | string[]             | —             | `connection_error`, `5xx`, `timeout`                                     |
-| `retry.backoffMs`     | number               | `0`           | Wait between retries                                                     |
-| `retry.budgetPercent` | number               | —             | Max % of active requests that may be retries                             |
-| `healthCheck`         | object               | —             | Active health probes — see [Health checks](#health-checks)               |
-| `backup`              | string               | —             | Fallback URL when all primaries are unhealthy                            |
-| `cache`               | object               | —             | Response cache — see [Proxy cache](#proxy-cache)                         |
-| `pool`                | object               | —             | Connection pool — see [Connection pool](#connection-pool)                |
-| `rateLimit`           | object               | —             | Per-route rate limit — see [Rate limiting](#rate-limiting)               |
-| `upstreamTls`         | object               | —             | TLS for HTTPS upstreams — see [Upstream TLS](#upstream-tls-verification) |
-| `mirror`              | string               | —             | Shadow URL — see [Traffic mirroring](#traffic-mirroring)                 |
-| `sticky.cookie`       | string               | —             | Cookie name for sticky sessions                                          |
-| `groups`              | object[]             | —             | Two-level LB groups: `[{name, targets, strategy}]`                       |
-| `groupStrategy`       | string               | `round-robin` | Outer strategy when `groups` is set                                      |
-| `backup`              | string               | —             | Failover URL when all primaries are unhealthy                            |
+| Field                 | Type                 | Default       | Description                                                                    |
+| --------------------- | -------------------- | ------------- | ------------------------------------------------------------------------------ |
+| `targets`             | string[] or object[] | —             | Upstream URLs (plain strings or `{url, weight}`)                               |
+| `strategy`            | string               | `round-robin` | Load balancing — see [Load balancing](#load-balancing)                         |
+| `stripPrefix`         | bool                 | `false`       | Remove matched path prefix before forwarding                                   |
+| `hashKey`             | string               | —             | Key for hash-based strategies: `"ip"`, `"url"`, `"header:X-Name"`              |
+| `rewrite`             | object[]             | —             | URL rewrite rules: `[{from, to}]` — first match wins                           |
+| `http2`               | bool                 | `false`       | Enable HTTP/2 for upstream connections                                         |
+| `timeout.connectMs`   | number               | `3000`        | TCP connect timeout                                                            |
+| `timeout.sendMs`      | number               | —             | Request send timeout                                                           |
+| `timeout.readMs`      | number               | `30000`       | Response read timeout                                                          |
+| `timeout.perTryMs`    | number               | —             | Per-retry timeout                                                              |
+| `retry.attempts`      | number               | `0`           | Number of retry attempts                                                       |
+| `retry.conditions`    | string[]             | —             | `connection_error`, `5xx`, `timeout`                                           |
+| `retry.backoffMs`     | number               | `0`           | Wait between retries                                                           |
+| `retry.budgetPercent` | number               | —             | Max % of active requests that may be retries                                   |
+| `healthCheck`         | object               | —             | Active health probes — see [Health checks](#health-checks)                     |
+| `backup`              | string               | —             | Fallback URL when all primaries are unhealthy                                  |
+| `cache`               | object               | —             | Response cache — see [Proxy cache](#proxy-cache)                               |
+| `pool`                | object               | —             | Connection pool — see [Connection pool](#connection-pool)                      |
+| `rateLimit`           | object               | —             | Per-route rate limit — see [Rate limiting](#rate-limiting)                     |
+| `upstreamTls`         | object               | —             | TLS for HTTPS upstreams — see [Upstream TLS](#upstream-tls-verification)       |
+| `mirror`              | string               | —             | Shadow URL — see [Traffic mirroring](#traffic-mirroring)                       |
+| `sticky.cookie`       | string               | —             | Cookie name for sticky sessions                                                |
+| `groups`              | object[]             | —             | Two-level LB groups: `[{name, targets, strategy}]`                             |
+| `groupStrategy`       | string               | `round-robin` | Outer strategy when `groups` is set                                            |
+| `backup`              | string               | —             | Failover URL when all primaries are unhealthy                                  |
 | `priority`            | number (0–100)       | `50`          | Request priority for load shedding — see [Priority routing](#priority-routing) |
 
 ---
@@ -572,8 +578,8 @@ routes:
   # Beta users via cookie → canary backend
   - match:
       cookies:
-        beta: "1"             # exact: cookie beta=1
-        experiment: "blue|green"  # regex: blue or green
+        beta: "1" # exact: cookie beta=1
+        experiment: "blue|green" # regex: blue or green
     proxy:
       targets: ["http://canary:4000"]
 
@@ -1209,8 +1215,8 @@ proxy:
       unhealthyThreshold: 3
       healthyThreshold: 1
       slowStartSecs: 30
-      unhealthyStatus: [429, 500, 502, 503, 504]  # treat these status codes as failures
-      unhealthyLatencyMs: 2000                     # treat responses slower than 2s as failures
+      unhealthyStatus: [429, 500, 502, 503, 504] # treat these status codes as failures
+      unhealthyLatencyMs: 2000 # treat responses slower than 2s as failures
 ```
 
 ```json
@@ -1251,19 +1257,19 @@ healthCheck:
 
 ### Health check field reference
 
-| Field                       | Type     | Default       | Description                                       |
-| --------------------------- | -------- | ------------- | ------------------------------------------------- |
-| `path`                      | string   | `/__health__` | Probe URL path                                    |
-| `intervalSecs`              | number   | `10`          | Probe interval                                    |
-| `timeoutMs`                 | number   | `2000`        | Probe timeout                                     |
-| `unhealthyThreshold`        | number   | `3`           | Consecutive failures before removal               |
-| `healthyThreshold`          | number   | `1`           | Consecutive passes before re-adding               |
+| Field                       | Type     | Default       | Description                                                                                                                                          |
+| --------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `path`                      | string   | `/__health__` | Probe URL path                                                                                                                                       |
+| `intervalSecs`              | number   | `10`          | Probe interval                                                                                                                                       |
+| `timeoutMs`                 | number   | `2000`        | Probe timeout                                                                                                                                        |
+| `unhealthyThreshold`        | number   | `3`           | Consecutive failures before removal                                                                                                                  |
+| `healthyThreshold`          | number   | `1`           | Consecutive passes before re-adding                                                                                                                  |
 | `unhealthyStatus`           | number[] | —             | HTTP status codes from the health-check probe that count as failures (e.g. `[429, 500, 502, 503, 504]`). Only non-2xx/3xx codes are meaningful here. |
-| `unhealthyLatencyMs`        | number   | —             | Health-check probe responses slower than this (ms) count as failures, even if the status code is 2xx |
-| `slowStartSecs`             | number   | `0`           | Traffic ramp-up period after recovery             |
-| `maxConnectionsPerUpstream` | number   | —             | [Circuit breaker](#circuit-breaker) threshold     |
-| `prewarmConnections`        | number   | `0`           | Pre-establish N keepalive connections at startup (max 8) |
-| `includeUpstreams`          | bool     | `false`       | Include upstream health in `/__health__` response |
+| `unhealthyLatencyMs`        | number   | —             | Health-check probe responses slower than this (ms) count as failures, even if the status code is 2xx                                                 |
+| `slowStartSecs`             | number   | `0`           | Traffic ramp-up period after recovery                                                                                                                |
+| `maxConnectionsPerUpstream` | number   | —             | [Circuit breaker](#circuit-breaker) threshold                                                                                                        |
+| `prewarmConnections`        | number   | `0`           | Pre-establish N keepalive connections at startup (max 8)                                                                                             |
+| `includeUpstreams`          | bool     | `false`       | Include upstream health in `/__health__` response                                                                                                    |
 
 ---
 
@@ -1397,14 +1403,14 @@ the probe are blocked until the probe completes.
 ```yaml
 # YAML
 limits:
-  maxBodyBytes: 10485760        # reject request bodies over 10 MB (413)
-  maxHeaderBytes: 65536         # reject headers over 64 KB
-  timeoutSecs: 30               # global request timeout (seconds)
-  maxInflightRequests: 1000     # return 503 when 1000 requests are in flight
-  maxBodyBufferBytes: 1048576   # buffer up to 1 MB per request for retry replay
-  maxConnectionsPerIp: 50       # max simultaneous connections from one IP (429)
-  keepaliveRequestLimit: 1000   # recycle connections after this many requests
-  priorityThreshold: 0.8        # shed low-priority routes above 80% concurrency
+  maxBodyBytes: 10485760 # reject request bodies over 10 MB (413)
+  maxHeaderBytes: 65536 # reject headers over 64 KB
+  timeoutSecs: 30 # global request timeout (seconds)
+  maxInflightRequests: 1000 # return 503 when 1000 requests are in flight
+  maxBodyBufferBytes: 1048576 # buffer up to 1 MB per request for retry replay
+  maxConnectionsPerIp: 50 # max simultaneous connections from one IP (429)
+  keepaliveRequestLimit: 1000 # recycle connections after this many requests
+  priorityThreshold: 0.8 # shed low-priority routes above 80% concurrency
 ```
 
 ```json
@@ -1423,15 +1429,15 @@ limits:
 }
 ```
 
-| Field                   | Type   | Default | Description                                                                         |
-| ----------------------- | ------ | ------- | ----------------------------------------------------------------------------------- |
-| `maxBodyBytes`          | number | —       | Max request body size — returns `413` if exceeded                                   |
-| `maxHeaderBytes`        | number | —       | Max request header size                                                             |
-| `timeoutSecs`           | number | —       | Global request timeout                                                              |
-| `maxInflightRequests`   | number | —       | Max concurrent requests — returns `503` if exceeded (must be ≥ 1)                  |
-| `maxBodyBufferBytes`    | number | —       | Max body buffered per request for retry replay                                      |
-| `maxConnectionsPerIp`   | number | —       | Max simultaneous open connections from a single client IP — returns `429` if exceeded |
-| `keepaliveRequestLimit` | number | —       | Max requests per keepalive connection; closes and recycles after. Equivalent to nginx's `keepalive_requests`. |
+| Field                   | Type   | Default | Description                                                                                                                   |
+| ----------------------- | ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `maxBodyBytes`          | number | —       | Max request body size — returns `413` if exceeded                                                                             |
+| `maxHeaderBytes`        | number | —       | Max request header size                                                                                                       |
+| `timeoutSecs`           | number | —       | Global request timeout                                                                                                        |
+| `maxInflightRequests`   | number | —       | Max concurrent requests — returns `503` if exceeded (must be ≥ 1)                                                             |
+| `maxBodyBufferBytes`    | number | —       | Max body buffered per request for retry replay                                                                                |
+| `maxConnectionsPerIp`   | number | —       | Max simultaneous open connections from a single client IP — returns `429` if exceeded                                         |
+| `keepaliveRequestLimit` | number | —       | Max requests per keepalive connection; closes and recycles after. Equivalent to nginx's `keepalive_requests`.                 |
 | `priorityThreshold`     | number | `0.8`   | Fraction of `maxInflightRequests` at which low-priority routes are shed (0.0–1.0) — see [Priority routing](#priority-routing) |
 
 ---
@@ -1451,7 +1457,7 @@ under load, while low-priority routes are shed with `503 Load Shedding`.
    effective priority is **below 50** receives `503 Load Shedding`.
 
 Requests with `priority ≥ 50` (normal or high) are never shed by this
-mechanism.  The `X-Priority: <0–100>` request header can **raise** the
+mechanism. The `X-Priority: <0–100>` request header can **raise** the
 effective priority above the configured route value (useful for trusted
 internal callers).
 
@@ -1459,20 +1465,20 @@ internal callers).
 # YAML
 limits:
   maxInflightRequests: 2000
-  priorityThreshold: 0.8   # shed low-priority at 1600+ concurrent
+  priorityThreshold: 0.8 # shed low-priority at 1600+ concurrent
 
 routes:
   - match:
       path: /api/critical/**
     proxy:
       targets: [http://api:4000]
-      priority: 90          # always served
+      priority: 90 # always served
 
   - match:
       path: /api/batch/**
     proxy:
       targets: [http://api:4000]
-      priority: 10          # shed first when overloaded
+      priority: 10 # shed first when overloaded
 
   - match:
       path: /api/**
@@ -1500,10 +1506,10 @@ routes:
 }
 ```
 
-| Field                    | Type          | Default | Description                                |
-| ------------------------ | ------------- | ------- | ------------------------------------------ |
-| `limits.priorityThreshold` | number      | `0.8`   | Load fraction at which shedding begins (0.0–1.0) |
-| `proxy.*.priority`       | number (0–100) | `50`   | Route priority; below 50 = sheddable       |
+| Field                      | Type           | Default | Description                                      |
+| -------------------------- | -------------- | ------- | ------------------------------------------------ |
+| `limits.priorityThreshold` | number         | `0.8`   | Load fraction at which shedding begins (0.0–1.0) |
+| `proxy.*.priority`         | number (0–100) | `50`    | Route priority; below 50 = sheddable             |
 
 > **Note:** Priority routing only applies when both `maxInflightRequests` **and**
 > `priorityThreshold` are configured on the site.
@@ -1512,6 +1518,8 @@ routes:
 
 ## Fault Injection
 
+> **Requires** `cargo build --features fault-injection`
+>
 > **For testing only** — do not use in production.
 
 ```yaml
@@ -1539,6 +1547,9 @@ faultInjection:
 ---
 
 ## Proxy Cache
+
+> **Requires** `cargo build --features cache`
+> For Redis-backed cache also add `--features redis`; for disk cache add `--features disk-cache`.
 
 ```yaml
 # YAML
@@ -1581,17 +1592,17 @@ proxy:
 
 ### Cache field reference
 
-| Field                      | Type     | Default       | Description                                           |
-| -------------------------- | -------- | ------------- | ----------------------------------------------------- |
+| Field                      | Type     | Default       | Description                                                                        |
+| -------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------- |
 | `store`                    | string   | —             | `"memory"`, `"redis://host:port"`, `"rediss://host:port"` (TLS), or `"disk:/path"` |
-| `ttlSecs`                  | number   | —             | Fresh cache TTL (seconds)                             |
-| `maxSizeMb`                | number   | —             | Memory budget; LRU eviction above this                |
-| `staleWhileRevalidateSecs` | number   | `0`           | Serve stale while refreshing in background (RFC 5861) |
-| `staleIfErrorSecs`         | number   | `0`           | Serve stale when upstream returns 5xx (RFC 5861)      |
-| `varyHeaders`              | string[] | —             | Vary cache key by these request headers               |
-| `skipPaths`                | string[] | —             | Paths to never cache                                  |
-| `skipIfCookie`             | bool     | `false`       | Skip caching when request has a cookie                |
-| `methods`                  | string[] | `[GET, HEAD]` | Cacheable HTTP methods                                |
+| `ttlSecs`                  | number   | —             | Fresh cache TTL (seconds)                                                          |
+| `maxSizeMb`                | number   | —             | Memory budget; LRU eviction above this                                             |
+| `staleWhileRevalidateSecs` | number   | `0`           | Serve stale while refreshing in background (RFC 5861)                              |
+| `staleIfErrorSecs`         | number   | `0`           | Serve stale when upstream returns 5xx (RFC 5861)                                   |
+| `varyHeaders`              | string[] | —             | Vary cache key by these request headers                                            |
+| `skipPaths`                | string[] | —             | Paths to never cache                                                               |
+| `skipIfCookie`             | bool     | `false`       | Skip caching when request has a cookie                                             |
+| `methods`                  | string[] | `[GET, HEAD]` | Cacheable HTTP methods                                                             |
 
 **Cache key** — `scheme + host + path + query string`. Request body is never
 part of the key, so POST responses are not cached by default (add `"POST"` to
@@ -1609,12 +1620,12 @@ caching regardless of `ttlSecs`. When the upstream returns no `Cache-Control` di
 `ttlSecs` from the route config is used. `ttlSecs` in the config always caps the
 maximum TTL — upstream headers cannot extend it beyond the configured limit.
 
-| Upstream `Cache-Control`    | Effect                                                        |
-| --------------------------- | ------------------------------------------------------------- |
-| not present                 | Use `ttlSecs` from config                                     |
-| `s-maxage=N`                | Use `min(N, ttlSecs)`                                         |
-| `s-maxage=0`                | Do not cache this response                                    |
-| `no-store` or `private`     | Do not cache this response                                    |
+| Upstream `Cache-Control` | Effect                     |
+| ------------------------ | -------------------------- |
+| not present              | Use `ttlSecs` from config  |
+| `s-maxage=N`             | Use `min(N, ttlSecs)`      |
+| `s-maxage=0`             | Do not cache this response |
+| `no-store` or `private`  | Do not cache this response |
 
 ### Cache store options
 
@@ -1665,7 +1676,7 @@ proxy:
     targets: ["http://assets:4000"]
     cache:
       store: "disk:/var/cache/conduit"
-      ttlSecs: 86400   # 1 day
+      ttlSecs: 86400 # 1 day
 ```
 
 ```json
@@ -1746,6 +1757,8 @@ parameter.
 ---
 
 ## JWT Auth
+
+> **Requires** `cargo build --features jwt`
 
 Validates `Authorization: Bearer <token>` on every request.
 
@@ -1831,6 +1844,8 @@ See [`examples/jwt-auth.yaml`](../examples/jwt-auth.yaml)
 
 ## Forward Auth
 
+> **Requires** `cargo build --features forward-auth`
+
 Delegate authentication to an external HTTP service.
 
 ```txt
@@ -1881,6 +1896,9 @@ See [`examples/forward-auth.yaml`](../examples/forward-auth.yaml)
 ---
 
 ## Consumers
+
+> **Requires** `cargo build --features consumers`
+> JWT consumers (V2 / V3) additionally require `--features jwt`.
 
 Named API clients with per-consumer credentials, rate limits, and headers.
 After identification, the consumer's username is injected as `X-Consumer-ID`.
@@ -2087,14 +2105,14 @@ proxy:
 
 ### Rate limit field reference
 
-| Field        | Type     | Default    | Description                                                                           |
-| ------------ | -------- | ---------- | ------------------------------------------------------------------------------------- |
-| `windowSecs` | number   | —          | Sliding window duration (seconds) — **required**                                      |
-| `limit`      | number   | —          | Max requests per key per window — **required**                                        |
-| `burst`      | number   | `0`        | Extra burst capacity above `limit` (see below)                                        |
-| `keyBy`      | string   | `"ip"`     | `"ip"` or `"header:<name>"`                                                           |
-| `store`      | string   | `"memory"` | `"memory"` or `"redis://host:port"`                                                   |
-| `skipPaths`  | string[] | —          | Paths that bypass rate limiting — see [skipPaths glob syntax](#skippaths-glob-syntax) |
+| Field        | Type     | Default    | Description                                                                                                 |
+| ------------ | -------- | ---------- | ----------------------------------------------------------------------------------------------------------- |
+| `windowSecs` | number   | —          | Sliding window duration (seconds) — **required**                                                            |
+| `limit`      | number   | —          | Max requests per key per window — **required**                                                              |
+| `burst`      | number   | `0`        | Extra burst capacity above `limit` (see below)                                                              |
+| `keyBy`      | string   | `"ip"`     | `"ip"` or `"header:<name>"`                                                                                 |
+| `store`      | string   | `"memory"` | `"memory"` or `"redis://host:port"`                                                                         |
+| `skipPaths`  | string[] | —          | Paths that bypass rate limiting — see [skipPaths glob syntax](#skippaths-glob-syntax)                       |
 | `dryRun`     | bool     | `false`    | Log rate-limit violations without actually rejecting requests — useful for tuning limits before enforcement |
 
 The rate limiter uses a **token-bucket** algorithm. Tokens refill at
@@ -2238,7 +2256,7 @@ Full config:
 logging:
   format: json
   file: ./logs/access.log
-  stripQuery: true    # omit query string from logged path (e.g. /search?q=... → /search)
+  stripQuery: true # omit query string from logged path (e.g. /search?q=... → /search)
   skipPaths:
     - /__health__
     - /__metrics__
@@ -2257,12 +2275,12 @@ logging:
 }
 ```
 
-| Field       | Type     | Default | Description                                                                         |
-| ----------- | -------- | ------- | ----------------------------------------------------------------------------------- |
-| `format`    | string   | `dev`   | Log format — see table below                                                        |
-| `file`      | string   | —       | Append access logs to this file path (in addition to stdout)                        |
-| `stripQuery`| bool     | `false` | Remove query string from the logged path. Useful when queries contain PII or tokens |
-| `skipPaths` | string[] | —       | Glob patterns — requests matching these paths are not logged                        |
+| Field        | Type     | Default | Description                                                                         |
+| ------------ | -------- | ------- | ----------------------------------------------------------------------------------- |
+| `format`     | string   | `dev`   | Log format — see table below                                                        |
+| `file`       | string   | —       | Append access logs to this file path (in addition to stdout)                        |
+| `stripQuery` | bool     | `false` | Remove query string from the logged path. Useful when queries contain PII or tokens |
+| `skipPaths`  | string[] | —       | Glob patterns — requests matching these paths are not logged                        |
 
 | Format     | Description                                  |
 | ---------- | -------------------------------------------- |
@@ -2327,11 +2345,11 @@ scrape_configs:
 
 In addition to the site-level metrics, Conduit exposes per-upstream URL metrics:
 
-| Metric                                  | Type      | Labels               | Description                                                  |
-| --------------------------------------- | --------- | -------------------- | ------------------------------------------------------------ |
-| `conduit_upstream_requests_total`       | counter   | `upstream`, `status` | Requests forwarded to each upstream (including retries)      |
-| `conduit_upstream_latency_seconds`      | histogram | `upstream`           | Upstream response latency (request sent → response received) |
-| `conduit_upstream_active_connections`   | gauge     | `upstream`           | In-flight requests currently being processed by each upstream |
+| Metric                                | Type      | Labels               | Description                                                   |
+| ------------------------------------- | --------- | -------------------- | ------------------------------------------------------------- |
+| `conduit_upstream_requests_total`     | counter   | `upstream`, `status` | Requests forwarded to each upstream (including retries)       |
+| `conduit_upstream_latency_seconds`    | histogram | `upstream`           | Upstream response latency (request sent → response received)  |
+| `conduit_upstream_active_connections` | gauge     | `upstream`           | In-flight requests currently being processed by each upstream |
 
 These complement `conduit_upstream_errors_total{route}` for diagnosing which
 specific backend is slow or returning errors.
@@ -2456,26 +2474,26 @@ Full example with all fields:
 ```yaml
 securityHeaders:
   hstsMaxAgeSecs: 63072000
-  hstsIncludeSubDomains: true        # add includeSubDomains to HSTS header
-  hstsPreload: true                  # add preload to HSTS (see hstspreload.org)
+  hstsIncludeSubDomains: true # add includeSubDomains to HSTS header
+  hstsPreload: true # add preload to HSTS (see hstspreload.org)
   csp: "default-src 'self'"
   xFrameOptions: DENY
   referrerPolicy: "no-referrer"
   permissionsPolicy: "geolocation=(), microphone=()"
-  allowedHosts:                      # reject Host headers not in this list (→ 421)
+  allowedHosts: # reject Host headers not in this list (→ 421)
     - "example.com"
     - "www.example.com"
 ```
 
-| Field                   | Type     | Default (object form)             | Sets HTTP header / action                                     |
-| ----------------------- | -------- | --------------------------------- | ------------------------------------------------------------- |
-| `hstsMaxAgeSecs`        | number   | — (not set)                       | `Strict-Transport-Security: max-age=<N>`                      |
-| `hstsIncludeSubDomains` | bool     | `true` when hstsMaxAgeSecs is set | Append `; includeSubDomains` to HSTS header                   |
-| `hstsPreload`           | bool     | `false`                           | Append `; preload` to HSTS header (see [hstspreload.org](https://hstspreload.org)) |
-| `csp`                   | string   | — (not set)                       | `Content-Security-Policy`                                     |
-| `xFrameOptions`         | string   | `SAMEORIGIN`                      | `X-Frame-Options`                                             |
-| `referrerPolicy`        | string   | `strict-origin-when-cross-origin` | `Referrer-Policy`                                             |
-| `permissionsPolicy`     | string   | — (not set)                       | `Permissions-Policy` — restrict browser feature access        |
+| Field                   | Type     | Default (object form)             | Sets HTTP header / action                                                            |
+| ----------------------- | -------- | --------------------------------- | ------------------------------------------------------------------------------------ |
+| `hstsMaxAgeSecs`        | number   | — (not set)                       | `Strict-Transport-Security: max-age=<N>`                                             |
+| `hstsIncludeSubDomains` | bool     | `true` when hstsMaxAgeSecs is set | Append `; includeSubDomains` to HSTS header                                          |
+| `hstsPreload`           | bool     | `false`                           | Append `; preload` to HSTS header (see [hstspreload.org](https://hstspreload.org))   |
+| `csp`                   | string   | — (not set)                       | `Content-Security-Policy`                                                            |
+| `xFrameOptions`         | string   | `SAMEORIGIN`                      | `X-Frame-Options`                                                                    |
+| `referrerPolicy`        | string   | `strict-origin-when-cross-origin` | `Referrer-Policy`                                                                    |
+| `permissionsPolicy`     | string   | — (not set)                       | `Permissions-Policy` — restrict browser feature access                               |
 | `allowedHosts`          | string[] | — (not set)                       | Reject requests with a `Host` header not in this list with `421 Misdirected Request` |
 
 > **Always set:** `X-Content-Type-Options: nosniff` and `X-XSS-Protection: 1; mode=block`
@@ -2568,11 +2586,11 @@ ipFilter:
 }
 ```
 
-| Field        | Type     | Default | Description                                                                    |
-| ------------ | -------- | ------- | ------------------------------------------------------------------------------ |
-| `allow`      | string[] | —       | Allowed CIDRs — deny all others                                                |
-| `deny`       | string[] | —       | Denied CIDRs — allow all others                                                |
-| `trustProxy` | bool     | `false` | Trust `X-Forwarded-For` for client IP                                          |
+| Field        | Type     | Default | Description                                                                               |
+| ------------ | -------- | ------- | ----------------------------------------------------------------------------------------- |
+| `allow`      | string[] | —       | Allowed CIDRs — deny all others                                                           |
+| `deny`       | string[] | —       | Denied CIDRs — allow all others                                                           |
+| `trustProxy` | bool     | `false` | Trust `X-Forwarded-For` for client IP                                                     |
 | `dryRun`     | bool     | `false` | Log blocks without enforcing them — useful for auditing a new deny list before going live |
 
 When both `allow` and `deny` are set, `allow` takes precedence.
@@ -2667,7 +2685,7 @@ See [`examples/mtls.yaml`](../examples/mtls.yaml)
 
 ## Rhai Script Middleware
 
-> **No build feature required** — Rhai is always included in the standard binary.
+> **Requires** `cargo build --features rhai`
 
 Execute custom Rhai scripts per request. Scripts run in order; any script can
 reject the request or read headers to make decisions.
@@ -2841,18 +2859,20 @@ sites:
 
 ### Global field reference
 
-| Field                 | Type   | Default          | Description                                     |
-| --------------------- | ------ | ---------------- | ----------------------------------------------- |
-| `workers`             | number | CPU count        | Worker threads — cold restart to change         |
-| `backlog`             | number | `1024`           | TCP accept backlog                              |
-| `shutdownTimeoutSecs` | number | —                | Grace period for in-flight requests on shutdown |
-| `admin.bind`          | string | — (not started)  | Admin API address. **Required to enable the Admin API.** Omit to disable it entirely |
-| `admin.token`         | string | —                | Bearer token required for every Admin API request (strongly recommended) |
-| `otlp`                | object | —                | OpenTelemetry tracing config                    |
+| Field                 | Type   | Default         | Description                                                                          |
+| --------------------- | ------ | --------------- | ------------------------------------------------------------------------------------ |
+| `workers`             | number | CPU count       | Worker threads — cold restart to change                                              |
+| `backlog`             | number | `1024`          | TCP accept backlog                                                                   |
+| `shutdownTimeoutSecs` | number | —               | Grace period for in-flight requests on shutdown                                      |
+| `admin.bind`          | string | — (not started) | Admin API address. **Required to enable the Admin API.** Omit to disable it entirely |
+| `admin.token`         | string | —               | Bearer token required for every Admin API request (strongly recommended)             |
+| `otlp`                | object | —               | OpenTelemetry tracing config                                                         |
 
 ---
 
 ## TCP Proxy
+
+> **Requires** `cargo build --features tcp`
 
 Forward raw TCP connections without HTTP parsing. Useful for MySQL, PostgreSQL,
 Redis, SMTP, and any other non-HTTP protocol.
@@ -2865,8 +2885,8 @@ sites:
       targets:
         - "mysql-primary:3306"
         - "mysql-replica:3306"
-      strategy: round-robin      # or "random" (default: round-robin)
-      connectTimeoutMs: 5000     # upstream connect timeout (default: 5000)
+      strategy: round-robin # or "random" (default: round-robin)
+      connectTimeoutMs: 5000 # upstream connect timeout (default: 5000)
 ```
 
 ```json
@@ -2885,11 +2905,11 @@ sites:
 }
 ```
 
-| Field              | Type     | Default        | Description |
-| ------------------ | -------- | -------------- | ----------- |
-| `targets`          | string[] | —              | Upstream `host:port` addresses — **required** |
-| `strategy`         | string   | `round-robin`  | `"round-robin"` or `"random"` |
-| `connectTimeoutMs` | number   | `5000`         | Upstream connect timeout (ms) |
+| Field              | Type     | Default       | Description                                   |
+| ------------------ | -------- | ------------- | --------------------------------------------- |
+| `targets`          | string[] | —             | Upstream `host:port` addresses — **required** |
+| `strategy`         | string   | `round-robin` | `"round-robin"` or `"random"`                 |
+| `connectTimeoutMs` | number   | `5000`        | Upstream connect timeout (ms)                 |
 
 > **Note:** `tcp` cannot be combined with `proxy`, `static`, or other HTTP
 > features on the same site. Use a separate port/site for HTTP traffic.
@@ -2897,6 +2917,8 @@ sites:
 ---
 
 ## Upload
+
+> **Requires** `cargo build --features upload`
 
 Enable multipart file upload. The upload handler is only started when this
 section is present in the config.
@@ -2962,19 +2984,19 @@ cache purge, and runtime IP deny-list.
 
 All metrics are at the [`metrics.path`](#metrics) endpoint.
 
-| Metric                                  | Type      | Labels                | Description                                      |
-| --------------------------------------- | --------- | --------------------- | ------------------------------------------------ |
-| `conduit_requests_total`                | counter   | `method`, `status`    | Total HTTP requests handled                      |
-| `conduit_request_duration_seconds`      | histogram | `method`, `status`    | Full request latency (accept → response sent)    |
-| `conduit_active_connections`            | gauge     | —                     | Requests currently in-flight (site-wide)         |
-| `conduit_upstream_errors_total`         | counter   | `route`, `status`     | Upstream 5xx responses per route                 |
-| `conduit_upstream_requests_total`       | counter   | `upstream`, `status`  | Requests forwarded to each upstream URL          |
-| `conduit_upstream_latency_seconds`      | histogram | `upstream`            | Upstream response latency per URL                |
-| `conduit_upstream_active_connections`   | gauge     | `upstream`            | In-flight requests per upstream URL              |
-| `conduit_retry_attempts_total`          | counter   | `route`, `condition`  | Retry attempts by trigger (`5xx`, `connection_error`, `timeout`) |
-| `conduit_rate_limit_rejected_total`     | counter   | `site`                | Rate-limited (429) requests per site             |
-| `conduit_cache_hits_total`              | counter   | `route`               | Proxy cache hits                                 |
-| `conduit_cache_misses_total`            | counter   | `route`               | Proxy cache misses                               |
+| Metric                                | Type      | Labels               | Description                                                      |
+| ------------------------------------- | --------- | -------------------- | ---------------------------------------------------------------- |
+| `conduit_requests_total`              | counter   | `method`, `status`   | Total HTTP requests handled                                      |
+| `conduit_request_duration_seconds`    | histogram | `method`, `status`   | Full request latency (accept → response sent)                    |
+| `conduit_active_connections`          | gauge     | —                    | Requests currently in-flight (site-wide)                         |
+| `conduit_upstream_errors_total`       | counter   | `route`, `status`    | Upstream 5xx responses per route                                 |
+| `conduit_upstream_requests_total`     | counter   | `upstream`, `status` | Requests forwarded to each upstream URL                          |
+| `conduit_upstream_latency_seconds`    | histogram | `upstream`           | Upstream response latency per URL                                |
+| `conduit_upstream_active_connections` | gauge     | `upstream`           | In-flight requests per upstream URL                              |
+| `conduit_retry_attempts_total`        | counter   | `route`, `condition` | Retry attempts by trigger (`5xx`, `connection_error`, `timeout`) |
+| `conduit_rate_limit_rejected_total`   | counter   | `site`               | Rate-limited (429) requests per site                             |
+| `conduit_cache_hits_total`            | counter   | `route`              | Proxy cache hits                                                 |
+| `conduit_cache_misses_total`          | counter   | `route`              | Proxy cache misses                                               |
 
 **Example Grafana queries:**
 

@@ -4,7 +4,7 @@ Performance measurements for Conduit v1.0.0 — standard build (no optional
 features) and full build (`--features full`).
 
 > **Methodology:** raw wrk output is measured data; cells marked ¹ are
-> extrapolated or estimated from first principles.  Reproduce with the
+> extrapolated or estimated from first principles. Reproduce with the
 > commands in [Running Benchmarks Yourself](#running-benchmarks-yourself).
 
 ---
@@ -58,20 +58,23 @@ target — the production deployment target used by the Docker images.
 > the same level of dead-code elimination as ELF + `strip`, and because
 > Cranelift (wasmtime JIT) emits larger Windows unwind tables.
 
-| Build                     | Linux musl (stripped) | Windows MSVC (unstripped) | Features included |
-| ------------------------- | --------------------: | ------------------------: | -------------------------------------------- |
-| `default` (standard)      | **14.3 MB**           | ~17 MB                    | Core proxy, routing, static files, TLS, auth (basic + API-key), rate limiting, compression, cache, redirect, health, metrics, hot-reload |
-| `--features full`         | **28.6 MB**           | ~52 MB                    | All of the above + JWT, consumers, forward-auth, Rhai, **WASM** (wasmtime ~11 MB), TCP proxy, upload, Redis, disk-cache, ACME, fault-injection, OTLP, Kubernetes |
+| Build                | Linux musl (stripped) | Windows MSVC (unstripped) | Features included                                                                                                                                                |
+| -------------------- | --------------------: | ------------------------: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `default` (standard) |           **14.3 MB** |                **17.0 MB**| Core proxy, routing, static files, TLS, auth (basic + API-key), rate limiting, compression, redirect, health, metrics, hot-reload                               |
+| `--features full`    |           **28.6 MB** |               **40.0 MB** | All of the above + JWT, consumers, forward-auth, Rhai, **WASM** (wasmtime ~11 MB), TCP proxy, upload, Redis, disk-cache, ACME, fault-injection, OTLP, Kubernetes |
 
-> **wasmtime dominates the size delta.**  The full build without `--features wasm`
-> is ~17 MB.  If you need JWT, scripting, or OTLP but not WASM plugins, a
-> selective build is significantly leaner.
+> Windows binaries are unstripped (PE format; `strip` is less effective than ELF strip).
+> Linux musl numbers are from the production Docker image target with `strip = true`.
+
+> **wasmtime dominates the size delta.** The full build without `--features wasm`
+> is ~17 MB (Linux musl) / ~20 MB (Windows). If you need JWT, scripting, or OTLP
+> but not WASM plugins, a selective build is significantly leaner.
 
 ```bash
-# Selective build — JWT + Rhai + OTLP only (~16.8 MB)
+# Selective build — JWT + Rhai + OTLP only (~16.8 MB musl)
 cargo build --release --features "jwt,rhai,otlp"
 
-# Full minus WASM (~17.1 MB)
+# Full minus WASM (~17.1 MB musl / ~20 MB Windows)
 cargo build --release --features "jwt,consumers,forward-auth,rhai,tcp,upload,redis,cache,disk-cache,acme,fault-injection,otlp,kubernetes"
 ```
 
@@ -82,22 +85,22 @@ cargo build --release --features "jwt,consumers,forward-auth,rhai,tcp,upload,red
 All measurements: `wrk -t8 -c200 -d30s`, Go echo upstream, 200-byte JSON body.
 **Baseline** is the standard build with no optional features active in config.
 
-| Scenario | Req/s | P50 | P99 | Notes |
-|---|---:|---:|---:|---|
-| **Baseline** (standard build, passthrough) | **84,200** | 1.9 ms | 4.1 ms | — |
-| Full build, no optional config | **84,100** | 1.9 ms | 4.1 ms | Feature flags are compile-time; unused features add ~0% overhead |
-| + `rateLimit` (in-memory, DashMap) | **82,600** | 1.9 ms | 4.3 ms | DashMap lookup ~1.5 µs per request |
-| + `jwtAuth` HS256 (shared secret) | **78,400** | 2.1 ms | 5.2 ms | HMAC-SHA256 ~5 µs per request |
-| + `jwtAuth` RS256 (JWKS, cached key) | **71,800** | 2.4 ms | 6.1 ms | RSA-2048 verify ~18 µs; key already in JWKS cache |
-| + `jwtAuth` ES256 (JWKS, cached key) | **75,900** | 2.2 ms | 5.6 ms | ECDSA-P256 verify ~12 µs |
-| + Rhai `type: "script"` (trivial script) | **73,200** | 2.3 ms | 6.8 ms | Rhai VM init ~20 µs per request; script: `response.set_header("X-Via", "conduit")` |
-| + WASM `type: "wasm"` (trivial plugin) | **68,500** | 2.5 ms | 7.4 ms | Wasmtime call overhead ~35 µs; plugin: read one header |
-| + `compression` (gzip, 200 B body) | **61,300** | 2.8 ms | 9.1 ms | Small bodies compress poorly; overhead visible only when body < 1 KB |
-| + `compression` (gzip, 10 KB body) | **38,900** | 4.4 ms | 14 ms | CPU-bound; use `minBytes: 2048` to skip small responses |
-| + `mirror` (fire-and-forget) | **83,400** | 1.9 ms | 4.2 ms | Mirroring is async; ~0.8% overhead from tokio::spawn |
+| Scenario                                   |      Req/s |    P50 |    P99 | Notes                                                                              |
+| ------------------------------------------ | ---------: | -----: | -----: | ---------------------------------------------------------------------------------- |
+| **Baseline** (standard build, passthrough) | **84,200** | 1.9 ms | 4.1 ms | —                                                                                  |
+| Full build, no optional config             | **84,100** | 1.9 ms | 4.1 ms | Feature flags are compile-time; unused features add ~0% overhead                   |
+| + `rateLimit` (in-memory, DashMap)         | **82,600** | 1.9 ms | 4.3 ms | DashMap lookup ~1.5 µs per request                                                 |
+| + `jwtAuth` HS256 (shared secret)          | **78,400** | 2.1 ms | 5.2 ms | HMAC-SHA256 ~5 µs per request                                                      |
+| + `jwtAuth` RS256 (JWKS, cached key)       | **71,800** | 2.4 ms | 6.1 ms | RSA-2048 verify ~18 µs; key already in JWKS cache                                  |
+| + `jwtAuth` ES256 (JWKS, cached key)       | **75,900** | 2.2 ms | 5.6 ms | ECDSA-P256 verify ~12 µs                                                           |
+| + Rhai `type: "script"` (trivial script)   | **73,200** | 2.3 ms | 6.8 ms | Rhai VM init ~20 µs per request; script: `response.set_header("X-Via", "conduit")` |
+| + WASM `type: "wasm"` (trivial plugin)     | **68,500** | 2.5 ms | 7.4 ms | Wasmtime call overhead ~35 µs; plugin: read one header                             |
+| + `compression` (gzip, 200 B body)         | **61,300** | 2.8 ms | 9.1 ms | Small bodies compress poorly; overhead visible only when body < 1 KB               |
+| + `compression` (gzip, 10 KB body)         | **38,900** | 4.4 ms |  14 ms | CPU-bound; use `minBytes: 2048` to skip small responses                            |
+| + `mirror` (fire-and-forget)               | **83,400** | 1.9 ms | 4.2 ms | Mirroring is async; ~0.8% overhead from tokio::spawn                               |
 
 > **Key takeaway:** optional features compiled in but not configured in YAML/JSON
-> add **zero measurable overhead**.  The full binary costs more disk space but is
+> add **zero measurable overhead**. The full binary costs more disk space but is
 > identical at runtime until a feature is actively configured.
 
 ---
@@ -118,15 +121,15 @@ staticOptions:
 
 | Metric            | express-reverse-proxy | express-reverse-proxy + PM2 ¹ | Conduit standard | Conduit full ¹ |
 | ----------------- | --------------------: | ----------------------------: | ---------------: | -------------: |
-| **Requests/sec**  | ~8,200                | ~82,000 ¹                     | **~142,000**     | **~141,800** ¹ |
-| **Latency P50**   | ~22 ms                | ~5 ms ¹                       | **~1.1 ms**      | **~1.1 ms** ¹  |
-| **Latency P99**   | ~48 ms                | ~32 ms ¹                      | **~2.3 ms**      | **~2.3 ms** ¹  |
-| **Memory (idle)** | ~58 MB                | ~960 MB ¹                     | **~8 MB**        | **~18 MB** ¹   |
-| **Binary size**   | ~82 MB (node_modules) | ~82 MB (node_modules)         | **14.3 MB**      | **28.6 MB**    |
-| **Startup time**  | ~420 ms               | ~2,500 ms ¹                   | **~28 ms**       | **~31 ms** ¹   |
+| **Requests/sec**  |                ~8,200 |                     ~82,000 ¹ |     **~142,000** | **~141,800** ¹ |
+| **Latency P50**   |                ~22 ms |                       ~5 ms ¹ |      **~1.1 ms** |  **~1.1 ms** ¹ |
+| **Latency P99**   |                ~48 ms |                      ~32 ms ¹ |      **~2.3 ms** |  **~2.3 ms** ¹ |
+| **Memory (idle)** |                ~58 MB |                     ~960 MB ¹ |        **~8 MB** |   **~18 MB** ¹ |
+| **Binary size**   | ~82 MB (node_modules) |         ~82 MB (node_modules) |      **14.3 MB** |    **28.6 MB** |
+| **Startup time**  |               ~420 ms |                   ~2,500 ms ¹ |       **~28 ms** |   **~31 ms** ¹ |
 
 > ¹ **Standard vs Full — static serving:** the full build routes requests through
-> the same Pingora static-file handler.  Performance is identical; the memory delta
+> the same Pingora static-file handler. Performance is identical; the memory delta
 > (~10 MB) comes from wasmtime's JIT and OTLP runtime being initialised at startup
 > even when no WASM plugins or OTLP endpoint are configured.
 
@@ -162,9 +165,9 @@ proxy:
 
 | Metric           | express-reverse-proxy | express-reverse-proxy + PM2 ¹ | Conduit standard | Conduit full ¹ |
 | ---------------- | --------------------: | ----------------------------: | ---------------: | -------------: |
-| **Requests/sec** | ~6,100                | ~61,000 ¹                     | **~84,200**      | **~84,100** ¹  |
-| **Latency P50**  | ~28 ms                | ~8 ms ¹                       | **~1.9 ms**      | **~1.9 ms** ¹  |
-| **Latency P99**  | ~62 ms                | ~42 ms ¹                      | **~4.1 ms**      | **~4.1 ms** ¹  |
+| **Requests/sec** |                ~6,100 |                     ~61,000 ¹ |      **~84,200** |  **~84,100** ¹ |
+| **Latency P50**  |                ~28 ms |                       ~8 ms ¹ |      **~1.9 ms** |  **~1.9 ms** ¹ |
+| **Latency P99**  |                ~62 ms |                      ~42 ms ¹ |      **~4.1 ms** |  **~4.1 ms** ¹ |
 
 ```text
 # Conduit standard — wrk raw output
@@ -179,7 +182,7 @@ Latency P99:    4.12 ms
 ## Proxy with JWT Authentication (RS256 + JWKS)
 
 JWKS endpoint served locally (no network round-trip for key refresh — keys
-are cached in memory after the first fetch).  Tokens pre-generated; each
+are cached in memory after the first fetch). Tokens pre-generated; each
 request carries a valid RS256 Bearer token.
 
 ### Config
@@ -190,7 +193,7 @@ proxy:
   targets: ["http://localhost:4000"]
 jwtAuth:
   jwksUrl: "http://localhost:9999/.well-known/jwks.json"
-  issuer:  "https://auth.example.com/"
+  issuer: "https://auth.example.com/"
   audience: ["my-api"]
 ```
 
@@ -198,14 +201,14 @@ jwtAuth:
 
 | Metric           | No auth (baseline) | + JWT HS256 | + JWT RS256 | + JWT ES256 |
 | ---------------- | -----------------: | ----------: | ----------: | ----------: |
-| **Requests/sec** | 84,200             | 78,400      | 71,800      | 75,900      |
-| **Latency P50**  | 1.9 ms             | 2.1 ms      | 2.4 ms      | 2.2 ms      |
-| **Latency P99**  | 4.1 ms             | 5.2 ms      | 6.1 ms      | 5.6 ms      |
-| **Overhead**     | —                  | **−7%**     | **−15%**    | **−10%**    |
+| **Requests/sec** |             84,200 |      78,400 |      71,800 |      75,900 |
+| **Latency P50**  |             1.9 ms |      2.1 ms |      2.4 ms |      2.2 ms |
+| **Latency P99**  |             4.1 ms |      5.2 ms |      6.1 ms |      5.6 ms |
+| **Overhead**     |                  — |     **−7%** |    **−15%** |    **−10%** |
 
 > **Throughput drop is dominated by cryptographic verification**, not by
-> Conduit's guard pipeline overhead (~0.5 µs).  ES256 (P-256) is the best
-> balance of security and speed for JWT workloads.  All three algorithms
+> Conduit's guard pipeline overhead (~0.5 µs). ES256 (P-256) is the best
+> balance of security and speed for JWT workloads. All three algorithms
 > are far below the threshold where JWT auth would become a bottleneck in
 > practice — at 70–80 k req/s, the upstream itself is the bottleneck in
 > almost every real deployment.
@@ -219,15 +222,15 @@ Token-bucket, in-memory DashMap, keyed by client IP.
 ```yaml
 rateLimit:
   windowSecs: 60
-  limit: 10000      # high limit — nearly all benchmark requests pass
+  limit: 10000 # high limit — nearly all benchmark requests pass
   burst: 2000
 ```
 
 | Metric           | No rate limit | + rate limit (all pass) | + rate limit (50% rejected) ¹ |
 | ---------------- | ------------: | ----------------------: | ----------------------------: |
-| **Requests/sec** | 84,200        | 82,600                  | ~91,000 ¹                     |
-| **Latency P50**  | 1.9 ms        | 1.9 ms                  | ~1.0 ms ¹                     |
-| **P99**          | 4.1 ms        | 4.3 ms                  | ~2.1 ms ¹                     |
+| **Requests/sec** |        84,200 |                  82,600 |                     ~91,000 ¹ |
+| **Latency P50**  |        1.9 ms |                  1.9 ms |                     ~1.0 ms ¹ |
+| **P99**          |        4.1 ms |                  4.3 ms |                     ~2.1 ms ¹ |
 
 > ¹ **Rate-limited requests return `429` before upstream I/O** — they complete
 > faster than proxied requests, so heavy rejection actually raises overall
@@ -250,12 +253,12 @@ proxy:
     staleWhileRevalidateSecs: 300
 ```
 
-| Metric           | No cache (live upstream) | Cache HIT  | Cache HIT + stale-while-revalidate |
-| ---------------- | -----------------------: | ---------: | ---------------------------------: |
-| **Requests/sec** | 84,200                   | **198,400** | **196,100**                        |
-| **Latency P50**  | 1.9 ms                   | **0.38 ms** | **0.39 ms**                        |
-| **Latency P99**  | 4.1 ms                   | **0.91 ms** | **0.93 ms**                        |
-| **Upstream load**| 84,200 req/s             | **~0 req/s** (1 req/60 s) | **~0 req/s** (background refresh) |
+| Metric            | No cache (live upstream) |                 Cache HIT | Cache HIT + stale-while-revalidate |
+| ----------------- | -----------------------: | ------------------------: | ---------------------------------: |
+| **Requests/sec**  |                   84,200 |               **198,400** |                        **196,100** |
+| **Latency P50**   |                   1.9 ms |               **0.38 ms** |                        **0.39 ms** |
+| **Latency P99**   |                   4.1 ms |               **0.91 ms** |                        **0.93 ms** |
+| **Upstream load** |             84,200 req/s | **~0 req/s** (1 req/60 s) |  **~0 req/s** (background refresh) |
 
 > **Cache hit path removes upstream I/O entirely.** The remaining latency
 > (~0.38 ms P50) is Conduit's own routing + response-pipeline overhead.
@@ -266,55 +269,55 @@ proxy:
 
 ## Proxy with Rhai Middleware
 
-Trivial Rhai script that sets one response header.  Measures Rhai engine + VM
+Trivial Rhai script that sets one response header. Measures Rhai engine + VM
 overhead independent of script complexity.
 
 ```yaml
 middleware:
   - type: script
-    path: ./bench/set-header.rhai  # response.set_header("X-Via", "conduit")
+    path: ./bench/set-header.rhai # response.set_header("X-Via", "conduit")
     phase: response
 proxy:
   targets: ["http://localhost:4000"]
 ```
 
-| Script complexity      | Req/s  | P50     | P99     | vs baseline |
-| ---------------------- | -----: | ------: | ------: | ----------: |
-| Baseline (no script)   | 84,200 | 1.9 ms  | 4.1 ms  | —           |
-| Set one header         | 73,200 | 2.3 ms  | 6.8 ms  | **−13%**    |
-| Read 5 headers + set 2 | 68,900 | 2.5 ms  | 7.9 ms  | **−18%**    |
-| Complex logic (50 ops) | 61,400 | 2.9 ms  | 9.4 ms  | **−27%**    |
+| Script complexity      |  Req/s |    P50 |    P99 | vs baseline |
+| ---------------------- | -----: | -----: | -----: | ----------: |
+| Baseline (no script)   | 84,200 | 1.9 ms | 4.1 ms |           — |
+| Set one header         | 73,200 | 2.3 ms | 6.8 ms |    **−13%** |
+| Read 5 headers + set 2 | 68,900 | 2.5 ms | 7.9 ms |    **−18%** |
+| Complex logic (50 ops) | 61,400 | 2.9 ms | 9.4 ms |    **−27%** |
 
 > Rhai overhead is dominated by VM initialisation per request (~20 µs).
 > Script execution time is proportional to operation count but small relative
-> to VM init.  For workloads where scripting overhead matters, consider moving
+> to VM init. For workloads where scripting overhead matters, consider moving
 > logic to a WASM plugin compiled to native code (see next section).
 
 ---
 
 ## Proxy with WASM Middleware
 
-WAT plugin compiled to WASM, loaded once and cached.  Wasmtime JIT-compiles
+WAT plugin compiled to WASM, loaded once and cached. Wasmtime JIT-compiles
 the module at startup; per-request cost is function call + host-function I/O.
 
 ```yaml
 middleware:
   - type: wasm
-    path: ./bench/set-header.wasm  # calls conduit_set_response_header once
+    path: ./bench/set-header.wasm # calls conduit_set_response_header once
 proxy:
   targets: ["http://localhost:4000"]
 ```
 
-| Plugin complexity         | Req/s  | P50     | P99      | vs Rhai (same task) |
-| ------------------------- | -----: | ------: | -------: | ------------------: |
-| Baseline (no plugin)      | 84,200 | 1.9 ms  | 4.1 ms   | —                   |
-| Set one header            | 68,500 | 2.5 ms  | 7.4 ms   | −6% vs Rhai         |
-| Read 5 headers + set 2    | 64,100 | 2.6 ms  | 8.1 ms   | −7% vs Rhai         |
-| Compiled Rust plugin ¹    | 71,200 | 2.3 ms  | 6.9 ms   | +3% vs Rhai         |
+| Plugin complexity      |  Req/s |    P50 |    P99 | vs Rhai (same task) |
+| ---------------------- | -----: | -----: | -----: | ------------------: |
+| Baseline (no plugin)   | 84,200 | 1.9 ms | 4.1 ms |                   — |
+| Set one header         | 68,500 | 2.5 ms | 7.4 ms |         −6% vs Rhai |
+| Read 5 headers + set 2 | 64,100 | 2.6 ms | 8.1 ms |         −7% vs Rhai |
+| Compiled Rust plugin ¹ | 71,200 | 2.3 ms | 6.9 ms |         +3% vs Rhai |
 
 > ¹ A plugin written in Rust and compiled to `wasm32-wasip1` outperforms an
 > equivalent WAT plugin because the Rust compiler generates better Wasm bytecode
-> for loops and struct access patterns.  For compute-heavy plugins (JSON parsing,
+> for loops and struct access patterns. For compute-heavy plugins (JSON parsing,
 > regex), Rust WASM is significantly faster than equivalent Rhai scripts.
 >
 > WASM overhead vs Rhai is lower for simple tasks (single host-function calls)
@@ -327,49 +330,49 @@ proxy:
 
 > ¹ **nginx and Traefik numbers are estimated** from published benchmarks
 > (cloudflare.com/learning/performance/reverse-proxy, traefik.io/benchmarks, and
-> various community wrk runs) normalised to similar hardware.  They are provided
-> as a sanity-check reference, not as a head-to-head competitive claim.  Run
+> various community wrk runs) normalised to similar hardware. They are provided
+> as a sanity-check reference, not as a head-to-head competitive claim. Run
 > your own benchmarks on representative workloads.
 
 ### Static file serving (1 KB, keep-alive)
 
-| Proxy | Req/s | P50 | P99 | Memory |
-|---|---:|---:|---:|---:|
-| **Conduit standard** | **~142,000** | **~1.1 ms** | **~2.3 ms** | **~8 MB** |
-| nginx 1.26 (worker_processes auto) | ~185,000 ¹ | ~0.9 ms ¹ | ~1.8 ms ¹ | ~5 MB ¹ |
-| Traefik v3.1 | ~68,000 ¹ | ~2.4 ms ¹ | ~6.1 ms ¹ | ~28 MB ¹ |
+| Proxy                              |        Req/s |         P50 |         P99 |    Memory |
+| ---------------------------------- | -----------: | ----------: | ----------: | --------: |
+| **Conduit standard**               | **~142,000** | **~1.1 ms** | **~2.3 ms** | **~8 MB** |
+| nginx 1.26 (worker_processes auto) |   ~185,000 ¹ |   ~0.9 ms ¹ |   ~1.8 ms ¹ |   ~5 MB ¹ |
+| Traefik v3.1                       |    ~68,000 ¹ |   ~2.4 ms ¹ |   ~6.1 ms ¹ |  ~28 MB ¹ |
 
 ### Reverse proxy passthrough (200-byte JSON, keep-alive)
 
-| Proxy | Req/s | P50 | P99 | Auth overhead |
-|---|---:|---:|---:|---|
-| **Conduit standard** | **~84,000** | **~1.9 ms** | **~4.1 ms** | built-in JWT ~15% |
-| nginx (+ lua-resty-jwt) | ~71,000 ¹ | ~2.3 ms ¹ | ~5.8 ms ¹ | OpenResty plugin ¹ |
-| Traefik (forward-auth) | ~42,000 ¹ | ~3.8 ms ¹ | ~11 ms ¹ | external subrequest |
+| Proxy                   |       Req/s |         P50 |         P99 | Auth overhead       |
+| ----------------------- | ----------: | ----------: | ----------: | ------------------- |
+| **Conduit standard**    | **~84,000** | **~1.9 ms** | **~4.1 ms** | built-in JWT ~15%   |
+| nginx (+ lua-resty-jwt) |   ~71,000 ¹ |   ~2.3 ms ¹ |   ~5.8 ms ¹ | OpenResty plugin ¹  |
+| Traefik (forward-auth)  |   ~42,000 ¹ |   ~3.8 ms ¹ |    ~11 ms ¹ | external subrequest |
 
 > **Context:** nginx leads on static files because it uses `sendfile(2)` / OS
-> page-cache with no userspace copy.  Conduit uses Pingora's async I/O path
-> which adds one userspace copy.  For proxy workloads the gap narrows because
+> page-cache with no userspace copy. Conduit uses Pingora's async I/O path
+> which adds one userspace copy. For proxy workloads the gap narrows because
 > both tools are network I/O bound, not disk I/O bound.
 >
 > Traefik's higher latency for auth reflects its forward-auth architecture
-> (external HTTP call per request).  Conduit's JWT guard runs in-process with
+> (external HTTP call per request). Conduit's JWT guard runs in-process with
 > no network round-trip.
 
 ---
 
 ## Performance Targets vs Actual Results
 
-| Metric                       | Target     | Standard build | Full build ¹ | Status |
-| ---------------------------- | ---------: | -------------: | -----------: | ------ |
-| Static file req/s            | ≥ 150,000  | ~142,000       | ~141,800 ¹   | ✅ within 5% of target |
-| Proxy passthrough req/s      | ≥ 80,000   | ~84,200        | ~84,100 ¹    | ✅ exceeds target |
-| Cache hit req/s              | ≥ 180,000  | ~198,400       | ~197,900 ¹   | ✅ exceeds target |
-| P99 proxy latency            | ≤ 5 ms     | ~4.1 ms        | ~4.1 ms ¹    | ✅ |
-| P99 JWT RS256 latency        | ≤ 8 ms     | n/a            | ~6.1 ms      | ✅ |
-| Memory (idle, 1 site)        | ≤ 10 MB    | ~8 MB          | ~18 MB ¹     | ✅ / ⚠️ full build |
-| Binary size (stripped)       | ≤ 15 MB    | 14.3 MB        | 28.6 MB      | ✅ / ℹ️ wasmtime |
-| Cold start time              | ≤ 50 ms    | ~28 ms         | ~31 ms       | ✅ |
+| Metric                  |    Target | Standard build | Full build ¹ | Status                 |
+| ----------------------- | --------: | -------------: | -----------: | ---------------------- |
+| Static file req/s       | ≥ 150,000 |       ~142,000 |   ~141,800 ¹ | ✅ within 5% of target |
+| Proxy passthrough req/s |  ≥ 80,000 |        ~84,200 |    ~84,100 ¹ | ✅ exceeds target      |
+| Cache hit req/s         | ≥ 180,000 |       ~198,400 |   ~197,900 ¹ | ✅ exceeds target      |
+| P99 proxy latency       |    ≤ 5 ms |        ~4.1 ms |    ~4.1 ms ¹ | ✅                     |
+| P99 JWT RS256 latency   |    ≤ 8 ms |            n/a |      ~6.1 ms | ✅                     |
+| Memory (idle, 1 site)   |   ≤ 10 MB |          ~8 MB |     ~18 MB ¹ | ✅ / ⚠️ full build     |
+| Binary size (stripped)  |   ≤ 15 MB |        14.3 MB |      28.6 MB | ✅ / ℹ️ wasmtime       |
+| Cold start time         |   ≤ 50 ms |         ~28 ms |       ~31 ms | ✅                     |
 
 > **Full build memory note:** ~18 MB idle is still dramatically lower than
 > alternatives (Traefik ~28 MB, nginx with Lua ~45 MB, Node.js proxy ~60 MB).
@@ -548,13 +551,13 @@ Conduit was originally designed as a faster drop-in replacement for
 [express-reverse-proxy](https://github.com/lopatnov/express-reverse-proxy).
 The comparison below is retained for historical context.
 
-| Metric            | express-reverse-proxy | express-reverse-proxy + PM2 ¹ | Conduit standard |
-| ----------------- | --------------------: | ----------------------------: | ---------------: |
-| **Req/s (static)**| ~8,200                | ~82,000 ¹                     | **~142,000**     |
-| **Latency P50**   | ~22 ms                | ~5 ms ¹                       | **~1.1 ms**      |
-| **Latency P99**   | ~48 ms                | ~32 ms ¹                      | **~2.3 ms**      |
-| **Memory (idle)** | ~58 MB                | ~960 MB ¹ (16 × ~60 MB)       | **~8 MB**        |
-| **Startup**       | ~420 ms               | ~2,500 ms ¹                   | **~28 ms**       |
+| Metric             | express-reverse-proxy | express-reverse-proxy + PM2 ¹ | Conduit standard |
+| ------------------ | --------------------: | ----------------------------: | ---------------: |
+| **Req/s (static)** |                ~8,200 |                     ~82,000 ¹ |     **~142,000** |
+| **Latency P50**    |                ~22 ms |                       ~5 ms ¹ |      **~1.1 ms** |
+| **Latency P99**    |                ~48 ms |                      ~32 ms ¹ |      **~2.3 ms** |
+| **Memory (idle)**  |                ~58 MB |       ~960 MB ¹ (16 × ~60 MB) |        **~8 MB** |
+| **Startup**        |               ~420 ms |                   ~2,500 ms ¹ |       **~28 ms** |
 
 > ¹ PM2 cluster numbers are estimated (see original note in methodology).
 
@@ -563,7 +566,7 @@ The comparison below is retained for historical context.
 ## Submitting Results
 
 If you run Conduit on different hardware and get reproducible numbers, please
-open a PR editing this file.  Include:
+open a PR editing this file. Include:
 
 - OS, CPU model, RAM
 - `wrk` version and exact flags used

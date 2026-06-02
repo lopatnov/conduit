@@ -69,10 +69,10 @@ jobs:
         continue-on-error: true
 
       - name: clippy (all features)
-        run: cargo clippy --features otlp,wasm,kubernetes -- -D warnings
+        run: cargo clippy --features full -- -D warnings
 
       - name: test (all features)
-        run: cargo test --features otlp,wasm,kubernetes
+        run: cargo test --features full
 
   # ── ACME integration tests (Linux only, requires Docker for Pebble) ─────────
   acme:
@@ -133,3 +133,31 @@ jobs:
           # Account::builder_with_root() is used when this env var is set.
           CONDUIT_ACME_EXTRA_ROOT: /tmp/pebble-ca.pem
         run: cargo test --test acme -- --nocapture
+
+  # ── Cross-compile check for RISC-V ──────────────────────────────────────────
+  cross-riscv:
+    name: Cross-compile RISC-V 64
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
+          targets: riscv64gc-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: riscv64
+        continue-on-error: true
+
+      - name: Install cross
+        uses: taiki-e/install-action@50b4a718b59c718df4ef27a3b445f86cd57b9f00  # v2.80.0
+        with:
+          tool: cross
+
+      - name: Build (cross, standard)
+        run: cross build --release --target riscv64gc-unknown-linux-gnu

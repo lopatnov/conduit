@@ -38,12 +38,12 @@ conduit [OPTIONS] [COMMAND]
 
 These flags are accepted by every command.
 
-| Flag | Short | Default | Description |
-| ---- | ----- | ------- | ----------- |
-| `--config FILE` | `-c` | `conduit.json` | Config file path |
-| `--version` | `-V` | — | Print version and exit |
-| `--help` | `-h` | — | Print help and exit |
-| `--kubernetes-namespace NS` | — | — | Read config from Kubernetes `ConduitSite` CRDs instead of a file. `"*"` watches all namespaces. Requires `--features kubernetes`. See [Kubernetes CRD mode](#kubernetes-crd-mode). |
+| Flag                        | Short | Default        | Description                                                                                                                                                                        |
+| --------------------------- | ----- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--config FILE`             | `-c`  | `conduit.json` | Config file path                                                                                                                                                                   |
+| `--version`                 | `-V`  | —              | Print version and exit                                                                                                                                                             |
+| `--help`                    | `-h`  | —              | Print help and exit                                                                                                                                                                |
+| `--kubernetes-namespace NS` | —     | —              | Read config from Kubernetes `ConduitSite` CRDs instead of a file. `"*"` watches all namespaces. Requires `--features kubernetes`. See [Kubernetes CRD mode](#kubernetes-crd-mode). |
 
 ---
 
@@ -75,6 +75,7 @@ conduit -c /etc/conduit.yaml  # explicit config path
 ```
 
 On startup, Conduit:
+
 1. Loads and validates the config — exits 1 with a field-level error message on failure
 2. Binds all configured ports
 3. Starts the Admin API on `127.0.0.1:2019` (if `global.admin` is set)
@@ -165,33 +166,33 @@ conduit init -o conduit.json   # JSON
 
 **`--yes` defaults:**
 
-| Setting | Default |
-| ------- | ------- |
-| format | yaml |
-| port | 8080 |
-| static | `./dist` (enabled) |
-| proxy | disabled |
-| TLS | disabled |
-| health check | enabled |
-| log format | dev |
+| Setting      | Default            |
+| ------------ | ------------------ |
+| format       | yaml               |
+| port         | 8080               |
+| static       | `./dist` (enabled) |
+| proxy        | disabled           |
+| TLS          | disabled           |
+| health check | enabled            |
+| log format   | dev                |
 
 **All flags:**
 
-| Flag | Short | Description |
-| ---- | ----- | ----------- |
-| `--output FILE` | `-o` | Output file path (format inferred from extension) |
-| `--yes` | `-y` | Non-interactive: accept all defaults, no prompts |
-| `--format <yaml\|json>` | — | Output format (overrides extension inference) |
-| `--port N` | — | Port number [default: 8080] |
-| `--static-dir DIR` | — | Serve static files from `DIR` |
-| `--no-static` | — | Disable static file serving |
-| `--proxy URL` | — | Proxy requests to upstream `URL` |
-| `--no-proxy` | — | Disable proxy |
-| `--log <dev\|json\|combined\|none>` | — | Log format [default: dev] |
-| `--no-health` | — | Disable `/__health__` endpoint |
-| `--tls-cert FILE` | — | TLS certificate file (enables manual TLS) |
-| `--tls-key FILE` | — | TLS private key file (required with `--tls-cert`) |
-| `--tls-acme EMAIL` | — | ACME email (enables Let's Encrypt auto-TLS) |
+| Flag                                | Short | Description                                       |
+| ----------------------------------- | ----- | ------------------------------------------------- |
+| `--output FILE`                     | `-o`  | Output file path (format inferred from extension) |
+| `--yes`                             | `-y`  | Non-interactive: accept all defaults, no prompts  |
+| `--format <yaml\|json>`             | —     | Output format (overrides extension inference)     |
+| `--port N`                          | —     | Port number [default: 8080]                       |
+| `--static-dir DIR`                  | —     | Serve static files from `DIR`                     |
+| `--no-static`                       | —     | Disable static file serving                       |
+| `--proxy URL`                       | —     | Proxy requests to upstream `URL`                  |
+| `--no-proxy`                        | —     | Disable proxy                                     |
+| `--log <dev\|json\|combined\|none>` | —     | Log format [default: dev]                         |
+| `--no-health`                       | —     | Disable `/__health__` endpoint                    |
+| `--tls-cert FILE`                   | —     | TLS certificate file (enables manual TLS)         |
+| `--tls-key FILE`                    | —     | TLS private key file (required with `--tls-cert`) |
+| `--tls-acme EMAIL`                  | —     | ACME email (enables Let's Encrypt auto-TLS)       |
 
 When both `--yes` and individual flags are given, the flags override the
 defaults. Any setting not covered by a flag is silently set to its default
@@ -228,6 +229,7 @@ Results are sorted so failures appear first. Exits **1** if any upstream is
 unhealthy (status ≥ 500 or connection failure), **0** if all pass.
 
 **Notes:**
+
 - `https://` upstreams get a **TCP connect check** (not a full TLS handshake),
   so they appear as "connected" even with an invalid certificate.
 - The probe path defaults to `/` — adjust the upstream URL if a different
@@ -324,10 +326,10 @@ URL                      Healthy  Latency     Ejected  5xx
 1/2 upstreams healthy
 ```
 
-| Flag | Description |
-| ---- | ----------- |
-| `--admin ADDR` | Admin API address |
-| `--upstream` | Show upstream health table instead of server JSON |
+| Flag           | Description                                       |
+| -------------- | ------------------------------------------------- |
+| `--admin ADDR` | Admin API address                                 |
+| `--upstream`   | Show upstream health table instead of server JSON |
 
 ---
 
@@ -380,12 +382,12 @@ conduit upstreams add --route /api --target http://api-3:4000 --weight 2
 conduit upstreams add --route /api --target http://api-3:4000 --site api.example.com:443
 ```
 
-| Flag | Required | Description |
-| ---- | -------- | ----------- |
-| `--route PATH` | ✅ | Route path (e.g. `/api`) |
-| `--target URL` | ✅ | Upstream URL to add |
-| `--weight N` | — | Weight for weighted-round-robin (default: 1) |
-| `--site LABEL` | — | Limit to a specific site (e.g. `api.example.com:443`). Omit to apply to all sites with this route |
+| Flag           | Required | Description                                                                                       |
+| -------------- | -------- | ------------------------------------------------------------------------------------------------- |
+| `--route PATH` | ✅       | Route path (e.g. `/api`)                                                                          |
+| `--target URL` | ✅       | Upstream URL to add                                                                               |
+| `--weight N`   | —        | Weight for weighted-round-robin (default: 1)                                                      |
+| `--site LABEL` | —        | Limit to a specific site (e.g. `api.example.com:443`). Omit to apply to all sites with this route |
 
 #### Remove an upstream
 
@@ -394,11 +396,11 @@ conduit upstreams remove --route /api --target http://api-3:4000
 conduit upstreams remove --route /api --target http://api-3:4000 --site api.example.com:443
 ```
 
-| Flag | Required | Description |
-| ---- | -------- | ----------- |
-| `--route PATH` | ✅ | Route path |
-| `--target URL` | ✅ | Upstream URL to remove |
-| `--site LABEL` | — | Limit to a specific site |
+| Flag           | Required | Description              |
+| -------------- | -------- | ------------------------ |
+| `--route PATH` | ✅       | Route path               |
+| `--target URL` | ✅       | Upstream URL to remove   |
+| `--site LABEL` | —        | Limit to a specific site |
 
 #### Change upstream weight
 
@@ -409,12 +411,12 @@ conduit upstreams weight --route /api --target http://api-1:4000 --weight 3
 conduit upstreams weight --route /api --target http://api-2:4000 --weight 1
 ```
 
-| Flag | Required | Description |
-| ---- | -------- | ----------- |
-| `--route PATH` | ✅ | Route path |
-| `--target URL` | ✅ | Upstream URL |
-| `--weight N`   | ✅ | New weight value |
-| `--site LABEL` | — | Limit to a specific site |
+| Flag           | Required | Description              |
+| -------------- | -------- | ------------------------ |
+| `--route PATH` | ✅       | Route path               |
+| `--target URL` | ✅       | Upstream URL             |
+| `--weight N`   | ✅       | New weight value         |
+| `--site LABEL` | —        | Limit to a specific site |
 
 ---
 
@@ -436,13 +438,13 @@ conduit completions zsh >> ~/.zshrc
 conduit completions fish > ~/.config/fish/completions/conduit.fish
 
 # PowerShell
-conduit completions powershell >> $PROFILE
+conduit completions power-shell >> $PROFILE
 
 # Elvish
 conduit completions elvish >> ~/.config/elvish/rc.elv
 ```
 
-Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`.
+Supported shells: `bash`, `zsh`, `fish`, `power-shell`, `elvish`.
 
 Completions cover all subcommands, flags, and (where statically known) their
 accepted values.
@@ -466,10 +468,10 @@ mandb
 
 ## Environment variables
 
-| Variable                  | Default          | Description |
-| ------------------------- | ---------------- | ----------- |
-| `RUST_LOG`                | `warn`           | Log level for the server process. Format: `error\|warn\|info\|debug\|trace` or per-crate: `conduit=debug,pingora=warn` |
-| `CONDUIT_ADMIN`           | `127.0.0.1:2019` | Admin API address used by `reload`, `status`, `shutdown`, and `upstreams` commands |
+| Variable                  | Default          | Description                                                                                                                                                                          |
+| ------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `RUST_LOG`                | `warn`           | Log level for the server process. Format: `error\|warn\|info\|debug\|trace` or per-crate: `conduit=debug,pingora=warn`                                                               |
+| `CONDUIT_ADMIN`           | `127.0.0.1:2019` | Admin API address used by `reload`, `status`, `shutdown`, and `upstreams` commands                                                                                                   |
 | `CONDUIT_ACME_EXTRA_ROOT` | —                | Path to a PEM CA file trusted for ACME HTTP client. For CI environments using test ACME servers (e.g. [Pebble](https://github.com/letsencrypt/pebble)) with self-signed certificates |
 
 Config files also support `$VAR` interpolation — any environment variable can
@@ -478,7 +480,7 @@ be referenced in field values:
 ```yaml
 tls:
   cert: $TLS_CERT_PATH
-  key:  $TLS_KEY_PATH
+  key: $TLS_KEY_PATH
 apiKey:
   keys: ["$API_KEY_1", "$API_KEY_2"]
 ```
@@ -490,9 +492,9 @@ are expanded at startup; hot-reload re-expands them from the current environment
 
 ## Exit codes
 
-| Code | Meaning |
-| ---- | ------- |
-| `0`  | Success |
+| Code | Meaning                                                                                                             |
+| ---- | ------------------------------------------------------------------------------------------------------------------- |
+| `0`  | Success                                                                                                             |
 | `1`  | Error — config parse failure, validation error, upstream probe failure, Admin API unreachable, or other fatal error |
 
 The server process itself only exits with `1` on startup errors. Once running,
@@ -528,8 +530,8 @@ for the CRD schema and `kubectl apply` instructions.
 ## Build features
 
 Conduit uses compile-time feature flags to keep the default binary lean and
-its attack surface small.  The **standard build** (`cargo build --release`)
-contains only the core proxy engine.  Optional capabilities are added with
+its attack surface small. The **standard build** (`cargo build --release`)
+contains only the core proxy engine. Optional capabilities are added with
 `--features`.
 
 ```bash
@@ -550,22 +552,22 @@ cargo build --release --features "jwt,rhai,redis"
 
 ### Feature overview
 
-| Feature | What it enables | Dependencies added |
-|---------|----------------|-------------------|
-| `jwt` | JWT Bearer-token auth + JWKS URL | `jsonwebtoken` |
-| `consumers` | Per-consumer credentials + rate limits | — |
-| `forward-auth` | ForwardAuth subrequest middleware | — |
-| `rhai` | Rhai scripting middleware (`type: "script"`) | `rhai` |
-| `wasm` | WASM plugin middleware (`type: "wasm"`) | `wasmtime` |
-| `tcp` | TCP passthrough proxy (`type: "tcp"` site) | — |
-| `upload` | File upload handler (`upload:` site config) | `multer` |
-| `redis` | Redis-backed rate limiting & caching | `redis` |
-| `cache` | Response caching (stub; pingora-cache always a dep) | — |
-| `acme` | Auto-TLS / Let's Encrypt (`tls.acme`) | `instant-acme`, `rcgen` |
-| `fault-injection` | Fault injection for chaos testing | — |
-| `otlp` | OpenTelemetry OTLP tracing | `opentelemetry` stack |
-| `kubernetes` | Kubernetes CRD config provider | `kube`, `k8s-openapi` |
-| `full` | All of the above | all of the above |
+| Feature           | What it enables                                     | Dependencies added      |
+| ----------------- | --------------------------------------------------- | ----------------------- |
+| `jwt`             | JWT Bearer-token auth + JWKS URL                    | `jsonwebtoken`          |
+| `consumers`       | Per-consumer credentials + rate limits              | —                       |
+| `forward-auth`    | ForwardAuth subrequest middleware                   | —                       |
+| `rhai`            | Rhai scripting middleware (`type: "script"`)        | `rhai`                  |
+| `wasm`            | WASM plugin middleware (`type: "wasm"`)             | `wasmtime`              |
+| `tcp`             | TCP passthrough proxy (`type: "tcp"` site)          | —                       |
+| `upload`          | File upload handler (`upload:` site config)         | `multer`                |
+| `redis`           | Redis-backed rate limiting & caching                | `redis`                 |
+| `cache`           | Response caching (stub; pingora-cache always a dep) | —                       |
+| `acme`            | Auto-TLS / Let's Encrypt (`tls.acme`)               | `instant-acme`, `rcgen` |
+| `fault-injection` | Fault injection for chaos testing                   | —                       |
+| `otlp`            | OpenTelemetry OTLP tracing                          | `opentelemetry` stack   |
+| `kubernetes`      | Kubernetes CRD config provider                      | `kube`, `k8s-openapi`   |
+| `full`            | All of the above                                    | all of the above        |
 
 When a feature is off but its config field is set, Conduit logs a warning at
 startup and continues with that feature disabled (fail-open, no crash).
@@ -574,8 +576,8 @@ startup and continues with that feature disabled (fail-open, no crash).
 
 ### `jwt` — JWT Bearer-token authentication
 
-Enables `jwtAuth` site config.  Supports HS256 (shared secret) and RS256/ES256
-(remote JWKS URL).  When disabled, `jwtAuth` config is ignored with a warning.
+Enables `jwtAuth` site config. Supports HS256 (shared secret) and RS256/ES256
+(remote JWKS URL). When disabled, `jwtAuth` config is ignored with a warning.
 
 ```yaml
 jwtAuth:
@@ -610,7 +612,7 @@ Dependencies: `rhai = "1"` (sync feature)
 ### `acme` — Auto-TLS / Let's Encrypt
 
 Enables `tls.acme` site config for automatic certificate provisioning via the
-ACME protocol (Let's Encrypt).  Certificates are fetched at startup, cached to
+ACME protocol (Let's Encrypt). Certificates are fetched at startup, cached to
 disk, and renewed automatically.
 
 ```yaml
@@ -666,13 +668,13 @@ Basic Auth, JWT) with per-consumer rate limits and header injection.
 ### `forward-auth` — ForwardAuth middleware
 
 Enables `forwardAuth:` site config to delegate authentication decisions
-to an external HTTP service.  2xx = allow, 4xx/5xx = deny.
+to an external HTTP service. 2xx = allow, 4xx/5xx = deny.
 
 ---
 
 ### `fault-injection` — Chaos testing
 
-Enables `faultInjection:` site config.  **Not for production.**  Used
+Enables `faultInjection:` site config. **Not for production.** Used
 to test circuit-breaker and retry behaviour by injecting delays and errors.
 
 ---
@@ -688,7 +690,7 @@ global:
   otlp:
     endpoint: "http://tempo:4317"
     serviceName: "my-api"
-    sampleRate: 0.1       # sample 10 % in production
+    sampleRate: 0.1 # sample 10 % in production
     timeoutMs: 5000
 ```
 

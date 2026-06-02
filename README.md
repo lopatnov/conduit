@@ -82,7 +82,11 @@ GET /api/users   → proxied to http://localhost:4000/api/users
 With `stripPrefix: true` the matched prefix is removed before forwarding:
 
 ```json
-{ "proxy": { "/api": { "targets": ["http://localhost:4000"], "stripPrefix": true } } }
+{
+  "proxy": {
+    "/api": { "targets": ["http://localhost:4000"], "stripPrefix": true }
+  }
+}
 ```
 
 ```text
@@ -94,15 +98,16 @@ GET /api/users   → proxied to http://localhost:4000/users
 ## Installation
 
 > **Standard vs full binary:** All installation options below install the
-> **standard** binary — no optional features (`otlp`, `wasm`, `kubernetes`).
-> If you need OTLP tracing, WASM plugins, or Kubernetes CRD mode, use the
-> **full binary** from [GitHub Releases](#option-3--pre-built-binaries) or
-> [build from source](#optional-features) with `--features otlp,wasm,kubernetes`.
+> **standard** binary — no optional features.
+> If you need JWT auth, scripting (Rhai/WASM), OTLP tracing, ACME, Redis,
+> or Kubernetes CRD mode, use the **full binary** from
+> [GitHub Releases](#option-3--pre-built-binaries) or
+> [build from source](#optional-features) with `--features full`.
 
 ### Option 1 — npx (no installation, always latest)
 
 ```bash
-npx @lopatnov/conduit           # start the server
+npx @lopatnov/conduit           # start the server using `conduit.json/.yaml/.yml` configuration file by default.
 npx @lopatnov/conduit init      # interactive setup wizard
 npx @lopatnov/conduit validate  # validate config
 ```
@@ -126,21 +131,25 @@ Download from [GitHub Releases](https://github.com/lopatnov/conduit/releases).
 
 Each release ships two variants per platform:
 
-| Platform            | Standard                                   | Full (otlp + wasm + kubernetes)                 |
-| ------------------- | ------------------------------------------ | ----------------------------------------------- |
-| Linux x86-64        | `conduit-x86_64-unknown-linux-gnu.tar.gz`  | `conduit-x86_64-unknown-linux-gnu-full.tar.gz`  |
-| Linux x86-64 musl   | `conduit-x86_64-unknown-linux-musl.tar.gz` | `conduit-x86_64-unknown-linux-musl-full.tar.gz` |
-| Linux ARM64         | `conduit-aarch64-unknown-linux-gnu.tar.gz` | `conduit-aarch64-unknown-linux-gnu-full.tar.gz` |
-| macOS Intel         | `conduit-x86_64-apple-darwin.tar.gz`       | `conduit-x86_64-apple-darwin-full.tar.gz`       |
-| macOS Apple Silicon | `conduit-aarch64-apple-darwin.tar.gz`      | `conduit-aarch64-apple-darwin-full.tar.gz`      |
-| Windows x86-64      | `conduit-x86_64-pc-windows-msvc.exe.zip`   | `conduit-x86_64-pc-windows-msvc-full.exe.zip`   |
+| Platform             | Standard                                    | Full (all 13 features)                           |
+| -------------------- | ------------------------------------------- | ------------------------------------------------ |
+| Linux x86-64         | `conduit-x86_64-unknown-linux-gnu.tar.gz`   | `conduit-x86_64-unknown-linux-gnu-full.tar.gz`   |
+| Linux x86-64 musl    | `conduit-x86_64-unknown-linux-musl.tar.gz`  | `conduit-x86_64-unknown-linux-musl-full.tar.gz`  |
+| Linux ARM64          | `conduit-aarch64-unknown-linux-gnu.tar.gz`  | `conduit-aarch64-unknown-linux-gnu-full.tar.gz`  |
+| Linux RISC-V 64      | `conduit-riscv64gc-unknown-linux-gnu.tar.gz`| —                                                |
+| macOS Intel          | `conduit-x86_64-apple-darwin.tar.gz`        | `conduit-x86_64-apple-darwin-full.tar.gz`        |
+| macOS Apple Silicon  | `conduit-aarch64-apple-darwin.tar.gz`       | `conduit-aarch64-apple-darwin-full.tar.gz`       |
+| Windows x86-64       | `conduit-x86_64-pc-windows-msvc.exe.zip`    | `conduit-x86_64-pc-windows-msvc-full.exe.zip`    |
+
+> **RISC-V:** standard build only — the full build with `--features wasm` can be
+> built from source on a RISC-V host with `cargo build --release --features full`.
 
 ```bash
 # Linux — standard
 curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu.tar.gz \
   | tar xz && ./conduit --version
 
-# Linux — full (OTLP + WASM + Kubernetes)
+# Linux — full (with all features like: OTLP, WASM, Kubernetes, etc.)
 curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu-full.tar.gz \
   | tar xz && ./conduit --version
 ```
@@ -151,8 +160,11 @@ curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86
 # Standard binary (no optional features)
 cargo install lopatnov-conduit
 
-# Full binary — enables OTLP tracing, WASM plugins, Kubernetes CRD mode
+# Custom binary — enables OTLP tracing, WASM plugins, Kubernetes CRD mode
 cargo install lopatnov-conduit --features otlp,wasm,kubernetes
+
+# Full binary — enables all features
+cargo install lopatnov-conduit --features full
 ```
 
 ---
@@ -185,28 +197,40 @@ cargo build --release
 
 ### Optional features
 
-The default binary includes everything except three optional features that add
-compile-time dependencies:
+The default build (`default = []`) is the minimal standard proxy.
+Thirteen optional features add compile-time dependencies:
 
-| Feature      | Flag                    | What it enables                                           |
-| ------------ | ----------------------- | --------------------------------------------------------- |
-| `otlp`       | `--features otlp`       | OpenTelemetry OTLP tracing (`global.otlp` config)         |
-| `wasm`       | `--features wasm`       | WebAssembly plugin middleware (`type: "wasm"`)            |
-| `kubernetes` | `--features kubernetes` | Kubernetes CRD config provider (`--kubernetes-namespace`) |
+| Feature         | Flag                         | What it enables                                                          |
+| --------------- | ---------------------------- | ------------------------------------------------------------------------ |
+| `jwt`           | `--features jwt`             | JWT Bearer-token auth + JWKS URL (`jwtAuth`)                             |
+| `consumers`     | `--features consumers`       | Named API clients with per-consumer credentials and rate limits          |
+| `forward-auth`  | `--features forward-auth`    | Delegate auth to an external HTTP service (`forwardAuth`)                |
+| `rhai`          | `--features rhai`            | Rhai scripting middleware (`type: "script"`)                             |
+| `wasm`          | `--features wasm`            | WebAssembly plugin middleware (`type: "wasm"`) via Wasmtime              |
+| `tcp`           | `--features tcp`             | Raw TCP proxy mode (`type: "tcp"` site)                                  |
+| `upload`        | `--features upload`          | Multipart file upload handler (`upload:` site config)                    |
+| `redis`         | `--features redis`           | Redis-backed rate limiting and caching                                   |
+| `cache`         | `--features cache`           | Response caching (`proxy.*.cache`)                                       |
+| `disk-cache`    | `--features disk-cache`      | Disk-backed cache store (`cache.store: "disk:/path"`)                    |
+| `acme`          | `--features acme`            | Auto-TLS via Let's Encrypt (`tls.acme`)                                  |
+| `fault-injection` | `--features fault-injection` | Fault injection for chaos testing (`faultInjection`)                   |
+| `otlp`          | `--features otlp`            | OpenTelemetry OTLP distributed tracing (`global.otlp`)                   |
+| `kubernetes`    | `--features kubernetes`      | Kubernetes CRD config provider (`--kubernetes-namespace`)                |
+| `full`          | `--features full`            | All of the above                                                         |
 
 ```bash
 # One feature
-cargo build --release --features otlp
+cargo build --release --features jwt
 
-# Multiple features
-cargo build --release --features otlp,wasm
+# Common production set — JWT + Rhai + Redis + OTLP
+cargo build --release --features "jwt,rhai,redis,otlp"
 
 # All optional features
-cargo build --release --features otlp,wasm,kubernetes
+cargo build --release --features full
 ```
 
-See **[docs/cli.md — Build features](docs/cli.md#build-features)** for full
-documentation of each feature.
+See **[docs/cli.md — Build features](docs/cli.md#build-features)** for detailed
+documentation and per-feature dependency sizes.
 
 ### Cross-compilation
 
@@ -218,12 +242,22 @@ cargo install cross
 # Linux musl — smallest binary, runs in Docker FROM scratch
 cross build --release --target x86_64-unknown-linux-musl
 
-# Linux ARM64 — for Raspberry Pi, AWS Graviton, etc.
+# Linux ARM64 — Raspberry Pi, AWS Graviton, Apple M-series VMs
 cross build --release --target aarch64-unknown-linux-gnu
+
+# Linux RISC-V 64 (standard build)
+cross build --release --target riscv64gc-unknown-linux-gnu
+
+# Linux RISC-V 64 — full build (on riscv64 host, no cross needed)
+cargo build --release --features full --target riscv64gc-unknown-linux-gnu
 ```
 
 > macOS targets can only be built on macOS. The [release workflow](.github/workflows/release.yml)
 > handles them using GitHub-hosted runners.
+>
+> RISC-V full builds with `--features wasm` are best compiled natively on a
+> RISC-V host; wasmtime cross-compilation from x86 to riscv64 requires
+> additional toolchain setup.
 
 ### Release profile
 
@@ -372,8 +406,8 @@ runtime traffic management — without restarting.
 ```yaml
 global:
   admin:
-    bind: "127.0.0.1:2019"   # loopback only
-    token: "$ADMIN_TOKEN"     # optional Bearer token
+    bind: "127.0.0.1:2019" # loopback only
+    token: "$ADMIN_TOKEN" # optional Bearer token
 ```
 
 ```bash
@@ -391,16 +425,16 @@ Full reference with request/response examples: **[docs/admin.md](docs/admin.md)*
 
 Two image variants are published on every release:
 
-| Image    | Tag                           | Features                       |
-| -------- | ----------------------------- | ------------------------------ |
-| Standard | `:latest`, `:1.0.0`           | No optional features           |
-| Full     | `:latest-full`, `:1.0.0-full` | `otlp` + `wasm` + `kubernetes` |
+| Image    | Tag                           | Features                                         |
+| -------- | ----------------------------- | ------------------------------------------------ |
+| Standard | `:latest`, `:1.0.0`           | No optional features (~14 MB)                    |
+| Full     | `:latest-full`, `:1.0.0-full` | All 13 optional features (~29 MB)                |
 
 ```bash
-# Standard (~14 MB)
+# Standard (~14 MB musl)
 docker pull ghcr.io/lopatnov/conduit:latest
 
-# Full — with OTLP tracing, WASM plugins, Kubernetes CRD support
+# Full — JWT, Rhai, WASM, OTLP, ACME, Redis, TCP, upload, Kubernetes, etc.
 docker pull ghcr.io/lopatnov/conduit:latest-full
 
 docker run -p 8080:8080 \

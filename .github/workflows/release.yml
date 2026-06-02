@@ -48,6 +48,14 @@ jobs:
             asset_name: conduit-aarch64-unknown-linux-gnu
             archive_ext: tar.gz
 
+          # Linux RISC-V 64 (standard build only)
+          - target: riscv64gc-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+            features: ""
+            asset_name: conduit-riscv64gc-unknown-linux-gnu
+            archive_ext: tar.gz
+
           # macOS x86-64
           - target: x86_64-apple-darwin
             os: macos-latest
@@ -72,47 +80,47 @@ jobs:
             asset_name: conduit-x86_64-pc-windows-msvc.exe
             archive_ext: zip
 
-          # ── Full builds (otlp + wasm + kubernetes) ──────────────────────────
+          # ── Full builds (all 13 optional features) ──────────────────────────
           # Identical targets, asset_name gains a "-full" suffix.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             use_cross: false
-            features: "otlp,wasm,kubernetes"
+            features: "full"
             asset_name: conduit-x86_64-unknown-linux-gnu-full
             archive_ext: tar.gz
 
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             use_cross: true
-            features: "otlp,wasm,kubernetes"
+            features: "full"
             asset_name: conduit-x86_64-unknown-linux-musl-full
             archive_ext: tar.gz
 
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             use_cross: true
-            features: "otlp,wasm,kubernetes"
+            features: "full"
             asset_name: conduit-aarch64-unknown-linux-gnu-full
             archive_ext: tar.gz
 
           - target: x86_64-apple-darwin
             os: macos-latest
             use_cross: false
-            features: "otlp,wasm,kubernetes"
+            features: "full"
             asset_name: conduit-x86_64-apple-darwin-full
             archive_ext: tar.gz
 
           - target: aarch64-apple-darwin
             os: macos-latest
             use_cross: false
-            features: "otlp,wasm,kubernetes"
+            features: "full"
             asset_name: conduit-aarch64-apple-darwin-full
             archive_ext: tar.gz
 
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             use_cross: false
-            features: "otlp,wasm,kubernetes"
+            features: "full"
             asset_name: conduit-x86_64-pc-windows-msvc-full.exe
             archive_ext: zip
 
@@ -349,7 +357,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            FEATURES=otlp,wasm,kubernetes
+            FEATURES=full
 
   # ── 4b. Vulnerability scan (Trivy) ───────────────────────────────────────
   docker-scan:
