@@ -142,7 +142,7 @@ pub async fn handle_static(
     // compression for assets that were pre-compressed at build time.
     if options.pre_compressed.unwrap_or(false) {
         if let Some((pre_path, encoding)) = find_pre_compressed(&file_path, accept_enc).await {
-            let pre_meta = tokio::fs::metadata(&pre_path).await.ok();
+            let pre_meta = stat_no_symlink(&pre_path).await;
             let pre_size = pre_meta.map(|m| m.len()).unwrap_or(0);
             serve_pre_compressed(
                 session,
@@ -322,7 +322,7 @@ async fn find_pre_compressed(
         let mut pre = path.as_os_str().to_owned();
         pre.push(suffix);
         let pre_path = PathBuf::from(pre);
-        if tokio::fs::metadata(&pre_path)
+        if stat_no_symlink(&pre_path)
             .await
             .map(|m| m.is_file())
             .unwrap_or(false)

@@ -69,6 +69,66 @@ fn static_symlink_traversal_blocked() {
     );
 }
 
+// ── Pre-compressed file symlink ───────────────────────────────────────────────
+
+/// A .br or .gz symlink in the static root must NOT be served as pre-compressed.
+/// Otherwise an attacker could create `file.html.br` → `/etc/shadow.gz` and
+/// retrieve the compressed system file as if it were legitimate static content.
+#[test]
+#[serial]
+#[cfg(unix)]
+fn precompressed_symlink_is_not_served() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("www");
+    std::fs::create_dir(&root).unwrap();
+
+    // Legitimate file.
+    std::fs::write(root.join("index.html"), "<h1>ok</h1>").unwrap();
+
+    // Secret file outside the root (pretend it's already gzip-compressed).
+    let secret = dir.path().join("secret.gz");
+    std::fs::write(&secret, b"\x1f\x8b secret data").unwrap();
+
+    // Symlink inside the root: index.html.gz → /path/to/secret.gz
+    #[cfg(unix)]
+    {
+        let link = root.join("index.html.gz");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+    }
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "static": root.to_str().unwrap(),
+                "staticOptions": { "preCompressed": true }
+            }]
+        }),
+    );
+
+    let resp = reqwest::blocking::Client::new()
+        .get(srv.url("/index.html"))
+        .header("accept-encoding", "gzip")
+        .send()
+        .unwrap();
+
+    // Must serve the real file, not the symlinked .gz.
+    let body = resp.text().unwrap_or_default();
+    assert!(
+        !body.contains("secret data"),
+        "pre-compressed symlink must not expose secret file"
+    );
+    assert!(
+        body.contains("ok") || body.is_empty() || body.contains("not found"),
+        "response should be the real file or 404, got: {body:.50}"
+    );
+}
+
 // ── Static-file path traversal ────────────────────────────────────────────────
 
 /// Helper: start a static-file server rooted at `dir`.

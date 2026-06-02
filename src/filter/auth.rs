@@ -1,10 +1,26 @@
 use base64::Engine as _;
 use pingora_proxy::Session;
+use subtle::ConstantTimeEq as _;
 
 use crate::config::schema::{
     ApiKeyConfig, BasicAuthConfig, Consumer, ConsumersConfig, JwtAuthConfig,
 };
 use crate::filter::jwt;
+
+/// Constant-time byte-string equality for credential comparisons.
+///
+/// Using `==` for password/API-key matching leaks timing information: the
+/// comparison short-circuits on the first differing byte, letting an attacker
+/// determine how many leading bytes of a guessed credential are correct.
+///
+/// This helper always inspects every byte regardless of where a difference
+/// occurs.  Length is checked first (NOT constant-time) — a length mismatch
+/// still reveals the correct length, but the set of lengths that need to be
+/// tried is already known (API keys are fixed-length by convention).
+#[inline]
+fn ct_eq_str(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.as_bytes().ct_eq(b.as_bytes()).into()
+}
 
 /// Build a [`JwtAuthConfig`] from raw credential parts.
 ///
@@ -89,7 +105,7 @@ pub(crate) fn check_credentials(
     };
 
     match users.get(username) {
-        Some(expected) if expected == password => BasicAuthResult::Allowed,
+        Some(expected) if ct_eq_str(expected, password) => BasicAuthResult::Allowed,
         _ => BasicAuthResult::Denied { challenge, realm },
     }
 }
@@ -132,7 +148,9 @@ pub fn check_api_key(cfg: &ApiKeyConfig, session: &Session) -> bool {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    cfg.keys.iter().any(|k| k == provided)
+    // Use constant-time comparison so an attacker cannot brute-force API keys
+    // by observing which prefix of a guess matches.
+    cfg.keys.iter().any(|k| ct_eq_str(k, provided))
 }
 
 #[cfg(test)]
@@ -330,7 +348,7 @@ pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Opt
                 .get(api_key_header)
                 .and_then(|v| v.to_str().ok())
             {
-                if provided == expected_key.as_str() {
+                if ct_eq_str(provided, expected_key.as_str()) {
                     return Some(consumer);
                 }
             }
@@ -396,5 +414,5 @@ fn check_consumer_basic(username: &str, password: &str, session: &Session) -> bo
         None => return false,
     };
 
-    provided_user == username && provided_pass == password
+    ct_eq_str(provided_user, username) && ct_eq_str(provided_pass, password)
 }
