@@ -212,7 +212,7 @@ async fn open_no_follow(path: &Path) -> std::io::Result<tokio::fs::File> {
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
-        return Ok(tokio::fs::File::from_std(std_file));
+        Ok(tokio::fs::File::from_std(std_file))
     }
     #[cfg(not(unix))]
     {

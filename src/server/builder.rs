@@ -124,7 +124,7 @@ fn bind_upload_listener_if_needed(
                  --features upload — file upload is disabled."
             );
         }
-        return Ok((None, None));
+        Ok((None, None))
     }
     #[cfg(feature = "upload")]
     {
