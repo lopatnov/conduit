@@ -22,6 +22,7 @@ use crate::proxy::service::{AppState, ConduitProxy};
 #[cfg(feature = "acme")]
 use crate::server::acme as acme_util;
 use crate::server::tls as tls_util;
+#[cfg(feature = "upload")]
 use crate::upload::UploadService;
 
 /// Maps a TCP port to `(cert_path, key_path, h2_enabled)` for TLS-enabled ports.
@@ -114,18 +115,32 @@ fn classify_site_port(
 fn bind_upload_listener_if_needed(
     config: &AppConfig,
 ) -> anyhow::Result<(Option<std::net::SocketAddr>, Option<std::net::TcpListener>)> {
-    if !config.sites.iter().any(|s| s.upload.is_some()) {
+    #[cfg(not(feature = "upload"))]
+    {
+        // When upload feature is disabled, warn if any site configures upload.
+        if config.sites.iter().any(|s| s.upload.is_some()) {
+            tracing::warn!(
+                "One or more sites configure 'upload' but Conduit was compiled without \
+                 --features upload — file upload is disabled."
+            );
+        }
         return Ok((None, None));
     }
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| anyhow::anyhow!("failed to bind upload server: {e}"))?;
-    let addr = listener
-        .local_addr()
-        .map_err(|e| anyhow::anyhow!("upload listener local_addr: {e}"))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| anyhow::anyhow!("upload listener set_nonblocking: {e}"))?;
-    Ok((Some(addr), Some(listener)))
+    #[cfg(feature = "upload")]
+    {
+        if !config.sites.iter().any(|s| s.upload.is_some()) {
+            return Ok((None, None));
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| anyhow::anyhow!("failed to bind upload server: {e}"))?;
+        let addr = listener
+            .local_addr()
+            .map_err(|e| anyhow::anyhow!("upload listener local_addr: {e}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| anyhow::anyhow!("upload listener set_nonblocking: {e}"))?;
+        Ok((Some(addr), Some(listener)))
+    }
 }
 
 /// Connect to Redis for rate limiting if any site has a `redis://` store configured.
@@ -206,6 +221,7 @@ pub fn run_server(
 
     // Bind the upload server listener before creating AppState so the router
     // can forward matching requests to the loopback address immediately.
+    #[cfg_attr(not(feature = "upload"), allow(unused_variables))]
     let (upload_addr, upload_std_listener) = bind_upload_listener_if_needed(&config)?;
 
     // Create AppState. When redis feature is enabled, also connect to Redis
@@ -378,7 +394,8 @@ pub fn run_server(
     };
     server.add_service(background_service("admin-api", admin));
 
-    // ── Upload server background service ─────────────────────────────────────
+    // ── Upload server background service (feature: upload) ───────────────────
+    #[cfg(feature = "upload")]
     if let Some(std_listener) = upload_std_listener {
         let upload_svc = UploadService::new(state, std_listener);
         server.add_service(background_service("upload-server", upload_svc));

@@ -389,11 +389,25 @@ compression:
 }
 ```
 
+The `types` field filters which response Content-Types are compressed:
+
+```yaml
+compression:
+  algorithms: [br, gzip]
+  types:
+    - "text/"
+    - "application/json"
+    - "application/xml"
+    - "application/javascript"
+    - "image/svg"
+```
+
 | Field        | Type     | Default          | Description                               |
 | ------------ | -------- | ---------------- | ----------------------------------------- |
 | `algorithms` | string[] | `["br", "zstd", "gzip"]` | Compression algorithms to offer. Supported: `"br"` (Brotli), `"zstd"` (Zstandard), `"gzip"`, `"deflate"` |
 | `level`      | number   | `6`              | Compression level (1–9)                   |
 | `minBytes`   | number   | `1024`           | Minimum response size to compress (bytes) |
+| `types`      | string[] | `["text/", "application/json", "application/xml", "application/javascript", "application/xhtml", "image/svg"]` | Content-Type prefixes to compress. Use `["*"]` to compress all types (not recommended for binary content) |
 
 ---
 
@@ -1195,6 +1209,8 @@ proxy:
       unhealthyThreshold: 3
       healthyThreshold: 1
       slowStartSecs: 30
+      unhealthyStatus: [429, 500, 502, 503, 504]  # treat these status codes as failures
+      unhealthyLatencyMs: 2000                     # treat responses slower than 2s as failures
 ```
 
 ```json
@@ -1208,7 +1224,9 @@ proxy:
         "intervalSecs": 10,
         "unhealthyThreshold": 3,
         "healthyThreshold": 1,
-        "slowStartSecs": 30
+        "slowStartSecs": 30,
+        "unhealthyStatus": [429, 500, 502, 503, 504],
+        "unhealthyLatencyMs": 2000
       }
     }
   }
@@ -1233,17 +1251,19 @@ healthCheck:
 
 ### Health check field reference
 
-| Field                       | Type   | Default       | Description                                       |
-| --------------------------- | ------ | ------------- | ------------------------------------------------- |
-| `path`                      | string | `/__health__` | Probe URL path                                    |
-| `intervalSecs`              | number | `10`          | Probe interval                                    |
-| `timeoutMs`                 | number | `2000`        | Probe timeout                                     |
-| `unhealthyThreshold`        | number | `3`           | Consecutive failures before removal               |
-| `healthyThreshold`          | number | `1`           | Consecutive passes before re-adding               |
-| `slowStartSecs`             | number | `0`           | Traffic ramp-up period after recovery             |
-| `maxConnectionsPerUpstream` | number | —             | [Circuit breaker](#circuit-breaker) threshold     |
-| `prewarmConnections`        | number | `0`           | Pre-establish N keepalive connections at startup (max 8) |
-| `includeUpstreams`          | bool   | `false`       | Include upstream health in `/__health__` response |
+| Field                       | Type     | Default       | Description                                       |
+| --------------------------- | -------- | ------------- | ------------------------------------------------- |
+| `path`                      | string   | `/__health__` | Probe URL path                                    |
+| `intervalSecs`              | number   | `10`          | Probe interval                                    |
+| `timeoutMs`                 | number   | `2000`        | Probe timeout                                     |
+| `unhealthyThreshold`        | number   | `3`           | Consecutive failures before removal               |
+| `healthyThreshold`          | number   | `1`           | Consecutive passes before re-adding               |
+| `unhealthyStatus`           | number[] | —             | HTTP status codes from the health-check probe that count as failures (e.g. `[429, 500, 502, 503, 504]`). Only non-2xx/3xx codes are meaningful here. |
+| `unhealthyLatencyMs`        | number   | —             | Health-check probe responses slower than this (ms) count as failures, even if the status code is 2xx |
+| `slowStartSecs`             | number   | `0`           | Traffic ramp-up period after recovery             |
+| `maxConnectionsPerUpstream` | number   | —             | [Circuit breaker](#circuit-breaker) threshold     |
+| `prewarmConnections`        | number   | `0`           | Pre-establish N keepalive connections at startup (max 8) |
+| `includeUpstreams`          | bool     | `false`       | Include upstream health in `/__health__` response |
 
 ---
 
@@ -1377,11 +1397,14 @@ the probe are blocked until the probe completes.
 ```yaml
 # YAML
 limits:
-  maxBodyBytes: 10485760 # reject request bodies over 10 MB (413)
-  maxHeaderBytes: 65536 # reject headers over 64 KB
-  timeoutSecs: 30 # global request timeout (seconds)
-  maxInflightRequests: 1000 # return 503 when 1000 requests are in flight
-  maxBodyBufferBytes: 1048576 # buffer up to 1 MB per request for retry replay
+  maxBodyBytes: 10485760        # reject request bodies over 10 MB (413)
+  maxHeaderBytes: 65536         # reject headers over 64 KB
+  timeoutSecs: 30               # global request timeout (seconds)
+  maxInflightRequests: 1000     # return 503 when 1000 requests are in flight
+  maxBodyBufferBytes: 1048576   # buffer up to 1 MB per request for retry replay
+  maxConnectionsPerIp: 50       # max simultaneous connections from one IP (429)
+  keepaliveRequestLimit: 1000   # recycle connections after this many requests
+  priorityThreshold: 0.8        # shed low-priority routes above 80% concurrency
 ```
 
 ```json
@@ -1392,20 +1415,24 @@ limits:
     "maxHeaderBytes": 65536,
     "timeoutSecs": 30,
     "maxInflightRequests": 1000,
-    "maxBodyBufferBytes": 1048576
+    "maxBodyBufferBytes": 1048576,
+    "maxConnectionsPerIp": 50,
+    "keepaliveRequestLimit": 1000,
+    "priorityThreshold": 0.8
   }
 }
 ```
 
-| Field                 | Type   | Default | Description                                                       |
-| --------------------- | ------ | ------- | ----------------------------------------------------------------- |
-| `maxBodyBytes`          | number | —    | Max request body size — returns `413` if exceeded                   |
-| `maxHeaderBytes`        | number | —    | Max request header size                                             |
-| `timeoutSecs`           | number | —    | Global request timeout                                              |
-| `maxInflightRequests`   | number | —    | Max concurrent requests — returns `503` if exceeded (must be ≥ 1)  |
-| `maxBodyBufferBytes`    | number | —    | Max body buffered per request for retry replay                      |
-| `keepaliveRequestLimit` | number | —    | Max requests per keepalive connection; closes and recycles after. Equivalent to nginx's `keepalive_requests`. |
-| `priorityThreshold`     | number | `0.8` | Fraction of `maxInflightRequests` at which low-priority routes are shed (0.0–1.0) — see [Priority routing](#priority-routing) |
+| Field                   | Type   | Default | Description                                                                         |
+| ----------------------- | ------ | ------- | ----------------------------------------------------------------------------------- |
+| `maxBodyBytes`          | number | —       | Max request body size — returns `413` if exceeded                                   |
+| `maxHeaderBytes`        | number | —       | Max request header size                                                             |
+| `timeoutSecs`           | number | —       | Global request timeout                                                              |
+| `maxInflightRequests`   | number | —       | Max concurrent requests — returns `503` if exceeded (must be ≥ 1)                  |
+| `maxBodyBufferBytes`    | number | —       | Max body buffered per request for retry replay                                      |
+| `maxConnectionsPerIp`   | number | —       | Max simultaneous open connections from a single client IP — returns `429` if exceeded |
+| `keepaliveRequestLimit` | number | —       | Max requests per keepalive connection; closes and recycles after. Equivalent to nginx's `keepalive_requests`. |
+| `priorityThreshold`     | number | `0.8`   | Fraction of `maxInflightRequests` at which low-priority routes are shed (0.0–1.0) — see [Priority routing](#priority-routing) |
 
 ---
 
@@ -1575,6 +1602,19 @@ responses by `Accept-Language` or `Accept-Encoding`.
 returns the stale response immediately while a background request refreshes the
 cache. Zero latency penalty for users. A built-in cache lock prevents thundering
 herd — only one background fetch goes to the upstream at a time.
+
+**`s-maxage` handling**: Conduit respects the upstream `Cache-Control: s-maxage=N` directive
+as the effective TTL when the upstream returns it. `s-maxage=0` explicitly prevents
+caching regardless of `ttlSecs`. When the upstream returns no `Cache-Control` directive,
+`ttlSecs` from the route config is used. `ttlSecs` in the config always caps the
+maximum TTL — upstream headers cannot extend it beyond the configured limit.
+
+| Upstream `Cache-Control`    | Effect                                                        |
+| --------------------------- | ------------------------------------------------------------- |
+| not present                 | Use `ttlSecs` from config                                     |
+| `s-maxage=N`                | Use `min(N, ttlSecs)`                                         |
+| `s-maxage=0`                | Do not cache this response                                    |
+| `no-store` or `private`     | Do not cache this response                                    |
 
 ### Cache store options
 
@@ -2055,6 +2095,7 @@ proxy:
 | `keyBy`      | string   | `"ip"`     | `"ip"` or `"header:<name>"`                                                           |
 | `store`      | string   | `"memory"` | `"memory"` or `"redis://host:port"`                                                   |
 | `skipPaths`  | string[] | —          | Paths that bypass rate limiting — see [skipPaths glob syntax](#skippaths-glob-syntax) |
+| `dryRun`     | bool     | `false`    | Log rate-limit violations without actually rejecting requests — useful for tuning limits before enforcement |
 
 The rate limiter uses a **token-bucket** algorithm. Tokens refill at
 `limit / windowSecs` per second. Without `burst`, the bucket holds `limit` tokens.
@@ -2197,6 +2238,7 @@ Full config:
 logging:
   format: json
   file: ./logs/access.log
+  stripQuery: true    # omit query string from logged path (e.g. /search?q=... → /search)
   skipPaths:
     - /__health__
     - /__metrics__
@@ -2209,10 +2251,18 @@ logging:
   "logging": {
     "format": "json",
     "file": "./logs/access.log",
+    "stripQuery": true,
     "skipPaths": ["/__health__", "/__metrics__", "/favicon.ico"]
   }
 }
 ```
+
+| Field       | Type     | Default | Description                                                                         |
+| ----------- | -------- | ------- | ----------------------------------------------------------------------------------- |
+| `format`    | string   | `dev`   | Log format — see table below                                                        |
+| `file`      | string   | —       | Append access logs to this file path (in addition to stdout)                        |
+| `stripQuery`| bool     | `false` | Remove query string from the logged path. Useful when queries contain PII or tokens |
+| `skipPaths` | string[] | —       | Glob patterns — requests matching these paths are not logged                        |
 
 | Format     | Description                                  |
 | ---------- | -------------------------------------------- |
@@ -2400,18 +2450,44 @@ securityHeaders:
 }
 ```
 
-| Field            | Type   | Default (object form)             | Sets HTTP header                                            |
-| ---------------- | ------ | --------------------------------- | ----------------------------------------------------------- |
-| `hstsMaxAgeSecs` | number | — (not set)                       | `Strict-Transport-Security: max-age=<N>; includeSubDomains` |
-| `csp`            | string | — (not set)                       | `Content-Security-Policy`                                   |
-| `xFrameOptions`  | string | `SAMEORIGIN`                      | `X-Frame-Options`                                           |
-| `referrerPolicy` | string | `strict-origin-when-cross-origin` | `Referrer-Policy`                                           |
+Full example with all fields:
+
+```yaml
+securityHeaders:
+  hstsMaxAgeSecs: 63072000
+  hstsIncludeSubDomains: true        # add includeSubDomains to HSTS header
+  hstsPreload: true                  # add preload to HSTS (see hstspreload.org)
+  csp: "default-src 'self'"
+  xFrameOptions: DENY
+  referrerPolicy: "no-referrer"
+  permissionsPolicy: "geolocation=(), microphone=()"
+  allowedHosts:                      # reject Host headers not in this list (→ 421)
+    - "example.com"
+    - "www.example.com"
+```
+
+| Field                   | Type     | Default (object form)             | Sets HTTP header / action                                     |
+| ----------------------- | -------- | --------------------------------- | ------------------------------------------------------------- |
+| `hstsMaxAgeSecs`        | number   | — (not set)                       | `Strict-Transport-Security: max-age=<N>`                      |
+| `hstsIncludeSubDomains` | bool     | `true` when hstsMaxAgeSecs is set | Append `; includeSubDomains` to HSTS header                   |
+| `hstsPreload`           | bool     | `false`                           | Append `; preload` to HSTS header (see [hstspreload.org](https://hstspreload.org)) |
+| `csp`                   | string   | — (not set)                       | `Content-Security-Policy`                                     |
+| `xFrameOptions`         | string   | `SAMEORIGIN`                      | `X-Frame-Options`                                             |
+| `referrerPolicy`        | string   | `strict-origin-when-cross-origin` | `Referrer-Policy`                                             |
+| `permissionsPolicy`     | string   | — (not set)                       | `Permissions-Policy` — restrict browser feature access        |
+| `allowedHosts`          | string[] | — (not set)                       | Reject requests with a `Host` header not in this list with `421 Misdirected Request` |
 
 > **Always set:** `X-Content-Type-Options: nosniff` and `X-XSS-Protection: 1; mode=block`
 > are added in both `true` and object forms — they cannot be disabled.
 >
 > **HSTS and CSP** are only set when explicitly configured.
 > HSTS should only be used on HTTPS sites — omit it for HTTP-only configs.
+>
+> **Permissions-Policy** restricts access to browser APIs (geolocation, camera, microphone, etc.).
+> See the [Permissions Policy spec](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy).
+>
+> **`allowedHosts`** prevents host-header injection attacks where an attacker sends a request with
+> a forged `Host` header to bypass routing or cache-keying logic.
 
 ---
 
@@ -2473,6 +2549,12 @@ ipFilter:
 ipFilter:
   deny:
     - "192.0.2.0/24"
+
+# Dry-run mode — log violations without blocking
+ipFilter:
+  deny:
+    - "192.0.2.0/24"
+  dryRun: true
 ```
 
 ```json
@@ -2485,13 +2567,17 @@ ipFilter:
 }
 ```
 
-| Field        | Type     | Default | Description                           |
-| ------------ | -------- | ------- | ------------------------------------- |
-| `allow`      | string[] | —       | Allowed CIDRs — deny all others       |
-| `deny`       | string[] | —       | Denied CIDRs — allow all others       |
-| `trustProxy` | bool     | `false` | Trust `X-Forwarded-For` for client IP |
+| Field        | Type     | Default | Description                                                                    |
+| ------------ | -------- | ------- | ------------------------------------------------------------------------------ |
+| `allow`      | string[] | —       | Allowed CIDRs — deny all others                                                |
+| `deny`       | string[] | —       | Denied CIDRs — allow all others                                                |
+| `trustProxy` | bool     | `false` | Trust `X-Forwarded-For` for client IP                                          |
+| `dryRun`     | bool     | `false` | Log blocks without enforcing them — useful for auditing a new deny list before going live |
 
 When both `allow` and `deny` are set, `allow` takes precedence.
+
+> **Dynamic CIDR management:** use the Admin API to add or remove deny entries at runtime
+> without a configuration reload — see [Admin API — IP deny list](#admin-api).
 
 ---
 

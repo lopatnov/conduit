@@ -166,6 +166,42 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
         }
     }
 
+    // ── Cache (feature: cache) ────────────────────────────────────────────────
+    #[cfg(not(feature = "cache"))]
+    for (i, site) in config.sites.iter().enumerate() {
+        let has_cache = match &site.proxy {
+            Some(crate::config::schema::ProxyConfig::Routes(routes)) => {
+                routes.values().any(|t| {
+                    if let crate::config::schema::ProxyRouteTarget::Full(cfg) = t {
+                        cfg.cache.is_some()
+                    } else {
+                        false
+                    }
+                })
+            }
+            _ => false,
+        };
+        if has_cache {
+            warnings.push(format!(
+                "sites[{i}] has proxy routes with cache configured but Conduit was compiled \
+                 without the `cache` feature — response caching will be disabled. \
+                 Recompile with `--features cache` to enable."
+            ));
+        }
+    }
+
+    // ── Upload (feature: upload) ──────────────────────────────────────────────
+    #[cfg(not(feature = "upload"))]
+    for (i, site) in config.sites.iter().enumerate() {
+        if site.upload.is_some() {
+            warnings.push(format!(
+                "sites[{i}].upload is configured but Conduit was compiled without the `upload` \
+                 feature — file upload will be disabled. \
+                 Recompile with `--features upload` to enable."
+            ));
+        }
+    }
+
     // ── Fault injection (feature: fault-injection) ────────────────────────────
     #[cfg(not(feature = "fault-injection"))]
     for (i, site) in config.sites.iter().enumerate() {

@@ -8,6 +8,7 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
+#[cfg(feature = "cache")]
 use pingora_cache::storage::Storage as CacheStorage;
 use pingora_cache::{CacheKey, NoCacheReason, RespCacheable};
 use pingora_core::upstreams::peer::HttpPeer;
@@ -21,10 +22,6 @@ use crate::config::schema::{
     HealthCheckConfig, IpFilterConfig, LimitsConfig, MiddlewareEntry,
     ProxyTimeout, RateLimitConfig,
 };
-#[cfg(feature = "consumers")]
-use crate::config::schema::ConsumersConfig;
-#[cfg(feature = "forward-auth")]
-use crate::config::schema::ForwardAuthConfig;
 use crate::filter::chain::{
     ApiKeyGuard, BasicAuthGuard, CorsPreflight, FilterChain,
     FilterContext, HealthBypass, IpGuard,
@@ -53,6 +50,7 @@ use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, Up
 use crate::proxy::health::UpstreamRegistry;
 #[cfg(feature = "redis")]
 use crate::proxy::cache_redis;
+#[cfg(feature = "cache")]
 use crate::proxy::cache_disk;
 use crate::proxy::{router, upstream};
 use crate::util::log_writer::LogWriter;
@@ -1482,64 +1480,72 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
-        let Some(req_ctx) = ctx.as_ref() else {
-            return Ok(());
-        };
-        let Some(ref cfg) = req_ctx.proxy_cache_cfg else {
-            return Ok(());
-        };
+        // The full cache implementation is only compiled when --features cache is active.
+        #[cfg(feature = "cache")]
+        {
+            let Some(req_ctx) = ctx.as_ref() else {
+                return Ok(());
+            };
+            let Some(ref cfg) = req_ctx.proxy_cache_cfg else {
+                return Ok(());
+            };
 
-        // Select storage backend based on store string.
-        let storage: &'static (dyn CacheStorage + Sync) = if cfg.store == "memory" {
-            proxy_cache::cache_storage()
-        } else if cfg.store.starts_with("redis://") || cfg.store.starts_with("rediss://") {
-            #[cfg(feature = "redis")]
-            {
-                match cache_redis::get_or_create(&cfg.store) {
-                    Some(s) => s,
-                    None => {
-                        tracing::warn!(
-                            store = %cfg.store,
-                            "Redis cache unavailable — caching disabled for this request"
-                        );
-                        return Ok(());
+            // Select storage backend based on store string.
+            let storage: &'static (dyn CacheStorage + Sync) = if cfg.store == "memory" {
+                proxy_cache::cache_storage()
+            } else if cfg.store.starts_with("redis://") || cfg.store.starts_with("rediss://") {
+                #[cfg(feature = "redis")]
+                {
+                    match cache_redis::get_or_create(&cfg.store) {
+                        Some(s) => s,
+                        None => {
+                            tracing::warn!(
+                                store = %cfg.store,
+                                "Redis cache unavailable — caching disabled for this request"
+                            );
+                            return Ok(());
+                        }
                     }
                 }
-            }
-            #[cfg(not(feature = "redis"))]
-            {
+                #[cfg(not(feature = "redis"))]
+                {
+                    tracing::warn!(
+                        store = %cfg.store,
+                        "Redis cache requires --features redis — caching disabled"
+                    );
+                    return Ok(());
+                }
+            } else if let Some(dir) = cfg.store.strip_prefix("disk:") {
+                cache_disk::get_or_create(dir)
+            } else {
                 tracing::warn!(
                     store = %cfg.store,
-                    "Redis cache requires --features redis — caching disabled"
+                    "unsupported cache store — caching disabled for this route"
                 );
                 return Ok(());
+            };
+
+            // Check request-side policy (method, cookies, authorization, skip-paths).
+            let method = session.req_header().method.as_str();
+            let path = session.req_header().uri.path();
+            let has_cookie = session.req_header().headers.contains_key("cookie");
+            let has_authorization = session.req_header().headers.contains_key("authorization");
+
+            if !proxy_cache::should_cache_request(cfg, method, has_cookie, has_authorization, path)
+            {
+                return Ok(());
             }
-        } else if let Some(dir) = cfg.store.strip_prefix("disk:") {
-            cache_disk::get_or_create(dir)
-        } else {
-            tracing::warn!(
-                store = %cfg.store,
-                "unsupported cache store — caching disabled for this route"
-            );
-            return Ok(());
-        };
 
-        // Check request-side policy (method, cookies, authorization, skip-paths).
-        let method = session.req_header().method.as_str();
-        let path = session.req_header().uri.path();
-        let has_cookie = session.req_header().headers.contains_key("cookie");
-        let has_authorization = session.req_header().headers.contains_key("authorization");
-
-        if !proxy_cache::should_cache_request(cfg, method, has_cookie, has_authorization, path) {
-            return Ok(());
+            // Pass the cache-key lock to prevent thundering herd on cache miss:
+            // only one request fetches from upstream; concurrent requests wait for
+            // the cached response instead of all hitting the upstream at once.
+            session
+                .cache
+                .enable(storage, None, None, Some(proxy_cache::cache_lock()), None);
         }
-
-        // Pass the cache-key lock to prevent thundering herd on cache miss:
-        // only one request fetches from upstream; concurrent requests wait for
-        // the cached response instead of all hitting the upstream at once.
-        session
-            .cache
-            .enable(storage, None, None, Some(proxy_cache::cache_lock()), None);
+        // Without --features cache the entire block above is absent and we fall through.
+        #[cfg(not(feature = "cache"))]
+        let _ = (session, ctx);
         Ok(())
     }
 
@@ -2301,6 +2307,7 @@ fn apply_upstream_path_transforms(
                 upstream_request.set_uri(new_uri);
             }
         }
+        #[cfg(feature = "upload")]
         UpstreamTarget::Upload { .. } => {
             upstream_request.insert_header("x-conduit-site-idx", ctx_ref.site_idx.to_string())?;
         }

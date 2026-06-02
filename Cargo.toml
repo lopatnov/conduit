@@ -45,6 +45,8 @@ pingora-http = "0.8"
 
 # --- Async runtime & HTTP ---
 tokio = { version = "1", features = ["full"] }
+# axum: Admin API always needs axum; multipart feature only needed for file upload.
+# The multipart feature wraps `multer`; gated behind the upload feature.
 axum  = { version = "0.8", features = ["multipart"] }
 
 # --- Compression ---
@@ -63,7 +65,7 @@ dashmap  = "6"  # v7 is RC as of 2026-05 — upgrade after stable release
 mime_guess = "2"
 notify     = "8"
 regex      = "1"
-multer     = "3"
+multer     = { version = "3", optional = true }  # file upload multipart parsing
 uuid       = { version = "1", features = ["v4"] }
 
 # --- TLS (always needed) ---
@@ -155,7 +157,7 @@ wasm = ["dep:wasmtime"]
 # TCP passthrough proxy (type: "tcp" site config).
 tcp = []
 # File upload handler (upload: { path, dir } site config).
-upload = []
+upload = ["dep:multer"]
 
 # ── Storage backends ───────────────────────────────────────────────────────────
 # Redis-backed rate limiting (rateLimit.store: "redis://...") and caching.

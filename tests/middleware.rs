@@ -605,6 +605,34 @@ fn forward_auth_without_feature_generates_warning() {
     );
 }
 
+/// When upload feature is off, configuring upload generates a warning.
+#[test]
+#[cfg(not(feature = "upload"))]
+fn upload_without_feature_generates_warning() {
+    let config = conduit::config::from_str(
+        r#"{ "port": 8080, "upload": { "path": "/upload", "dir": "/tmp/uploads" } }"#
+    ).expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("upload")),
+        "missing upload without feature warning: {warnings:?}"
+    );
+}
+
+/// When cache feature is off, configuring cache generates a warning.
+#[test]
+#[cfg(not(feature = "cache"))]
+fn cache_without_feature_generates_warning() {
+    let config = conduit::config::from_str(
+        r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://api:4000"], "cache": { "store": "memory", "ttlSecs": 60 } } } }"#
+    ).expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("cache")),
+        "missing cache without feature warning: {warnings:?}"
+    );
+}
+
 /// A middleware entry with an unknown type is rejected during validation.
 #[test]
 fn validate_rejects_unknown_middleware_type() {

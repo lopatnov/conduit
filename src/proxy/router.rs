@@ -138,10 +138,12 @@ fn route_site(
     client_ip: &str,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
+    #[cfg_attr(not(feature = "upload"), allow(unused_variables))]
     upload_addr: Option<SocketAddr>,
 ) -> RouteResult {
     let site_label = crate::proxy::health::site_label(&site.host, site.port);
 
+    #[cfg(feature = "upload")]
     if let Some(result) = match_upload_route(site, path, upload_addr) {
         return result;
     }
@@ -176,6 +178,7 @@ fn route_site(
 ///
 /// Upload path takes priority — it is a precise prefix configured by the
 /// operator and must not be shadowed by a catch-all proxy route.
+#[cfg(feature = "upload")]
 fn match_upload_route(
     site: &SiteConfig,
     path: &str,
