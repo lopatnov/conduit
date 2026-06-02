@@ -93,9 +93,13 @@ pub async fn handle_static(
         return Ok(false);
     };
 
-    let meta = match tokio::fs::metadata(&file_path).await {
-        Ok(m) => m,
-        Err(_) => return Ok(false),
+    // Re-check with symlink_metadata to guard against a TOCTOU race:
+    // between find_file() rejecting symlinks and this point, another process
+    // could have replaced the file with a symlink.  Reject if it's now
+    // a symlink or has disappeared.
+    let meta = match tokio::fs::symlink_metadata(&file_path).await {
+        Ok(m) if !m.file_type().is_symlink() => m,
+        _ => return Ok(false),
     };
 
     let file_size = meta.len();
