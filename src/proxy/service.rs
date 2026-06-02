@@ -93,6 +93,11 @@ pub struct ConduitMetrics {
     ///
     /// Label: `upstream` (full URL).
     pub upstream_latency_seconds: HistogramVec,
+    /// Current active (in-flight) connections to each upstream URL.
+    ///
+    /// Incremented when a request is forwarded to an upstream; decremented in
+    /// `logging()`.  Label: `upstream` (full URL).
+    pub upstream_active_connections: prometheus::GaugeVec,
 }
 
 impl ConduitMetrics {
@@ -170,6 +175,13 @@ impl ConduitMetrics {
                 )
                 .expect("register conduit_upstream_latency_seconds");
 
+                let upstream_active_connections = prometheus::register_gauge_vec!(
+                    "conduit_upstream_active_connections",
+                    "Current number of in-flight requests to each upstream URL",
+                    &["upstream"]
+                )
+                .expect("register conduit_upstream_active_connections");
+
                 Arc::new(Self {
                     requests_total,
                     request_duration_seconds,
@@ -181,6 +193,7 @@ impl ConduitMetrics {
                     rate_limit_rejected_total,
                     upstream_requests_total,
                     upstream_latency_seconds,
+                    upstream_active_connections,
                 })
             })
             .clone()
@@ -1345,8 +1358,16 @@ impl ProxyHttp for ConduitProxy {
     {
         // Record the moment we start forwarding to the upstream so that
         // `logging()` can compute upstream_response_time_ms.
+        // Also increment the per-upstream active-connections gauge.
         if let Some(req_ctx) = ctx.as_mut() {
             req_ctx.upstream_start = Some(std::time::Instant::now());
+            if let Some(url) = req_ctx.proxy_upstream_url.as_deref() {
+                self.state
+                    .metrics
+                    .upstream_active_connections
+                    .with_label_values(&[url])
+                    .inc();
+            }
         }
 
         append_forwarded_headers(session, upstream_request, &self.state, ctx)?;
@@ -1903,8 +1924,15 @@ impl ProxyHttp for ConduitProxy {
             }
         }
 
-        // Per-upstream metrics: requests_total and latency_seconds.
+        // Per-upstream metrics: active_connections decrement, requests_total, latency_seconds.
         if let Some(url) = ctx.as_ref().and_then(|c| c.proxy_upstream_url.as_deref()) {
+            // Decrement the active-connections gauge now that this request finished.
+            self.state
+                .metrics
+                .upstream_active_connections
+                .with_label_values(&[url])
+                .dec();
+
             self.state
                 .metrics
                 .upstream_requests_total

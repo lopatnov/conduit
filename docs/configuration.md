@@ -2327,10 +2327,11 @@ scrape_configs:
 
 In addition to the site-level metrics, Conduit exposes per-upstream URL metrics:
 
-| Metric                             | Type      | Labels               | Description                                                  |
-| ---------------------------------- | --------- | -------------------- | ------------------------------------------------------------ |
-| `conduit_upstream_requests_total`  | counter   | `upstream`, `status` | Requests forwarded to each upstream (including retries)      |
-| `conduit_upstream_latency_seconds` | histogram | `upstream`           | Upstream response latency (request sent → response received) |
+| Metric                                  | Type      | Labels               | Description                                                  |
+| --------------------------------------- | --------- | -------------------- | ------------------------------------------------------------ |
+| `conduit_upstream_requests_total`       | counter   | `upstream`, `status` | Requests forwarded to each upstream (including retries)      |
+| `conduit_upstream_latency_seconds`      | histogram | `upstream`           | Upstream response latency (request sent → response received) |
+| `conduit_upstream_active_connections`   | gauge     | `upstream`           | In-flight requests currently being processed by each upstream |
 
 These complement `conduit_upstream_errors_total{route}` for diagnosing which
 specific backend is slow or returning errors.
@@ -2961,16 +2962,19 @@ cache purge, and runtime IP deny-list.
 
 All metrics are at the [`metrics.path`](#metrics) endpoint.
 
-| Metric                              | Type      | Labels               | Description                |
-| ----------------------------------- | --------- | -------------------- | -------------------------- |
-| `conduit_requests_total`            | counter   | `method`, `status`   | Total HTTP requests        |
-| `conduit_request_duration_seconds`  | histogram | `method`, `status`   | Request latency            |
-| `conduit_active_connections`        | gauge     | —                    | Current active connections |
-| `conduit_upstream_errors_total`     | counter   | `route`, `status`    | Upstream error responses   |
-| `conduit_retry_attempts_total`      | counter   | `route`, `condition` | Retry attempts by trigger  |
-| `conduit_rate_limit_rejected_total` | counter   | `site`               | Rate-limited requests      |
-| `conduit_cache_hits_total`          | counter   | `route`              | Proxy cache hits           |
-| `conduit_cache_misses_total`        | counter   | `route`              | Proxy cache misses         |
+| Metric                                  | Type      | Labels                | Description                                      |
+| --------------------------------------- | --------- | --------------------- | ------------------------------------------------ |
+| `conduit_requests_total`                | counter   | `method`, `status`    | Total HTTP requests handled                      |
+| `conduit_request_duration_seconds`      | histogram | `method`, `status`    | Full request latency (accept → response sent)    |
+| `conduit_active_connections`            | gauge     | —                     | Requests currently in-flight (site-wide)         |
+| `conduit_upstream_errors_total`         | counter   | `route`, `status`     | Upstream 5xx responses per route                 |
+| `conduit_upstream_requests_total`       | counter   | `upstream`, `status`  | Requests forwarded to each upstream URL          |
+| `conduit_upstream_latency_seconds`      | histogram | `upstream`            | Upstream response latency per URL                |
+| `conduit_upstream_active_connections`   | gauge     | `upstream`            | In-flight requests per upstream URL              |
+| `conduit_retry_attempts_total`          | counter   | `route`, `condition`  | Retry attempts by trigger (`5xx`, `connection_error`, `timeout`) |
+| `conduit_rate_limit_rejected_total`     | counter   | `site`                | Rate-limited (429) requests per site             |
+| `conduit_cache_hits_total`              | counter   | `route`               | Proxy cache hits                                 |
+| `conduit_cache_misses_total`            | counter   | `route`               | Proxy cache misses                               |
 
 **Example Grafana queries:**
 
