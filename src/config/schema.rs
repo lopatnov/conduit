@@ -394,6 +394,21 @@ pub struct LoggingOptions {
     /// ```
     #[serde(rename = "skipPaths", skip_serializing_if = "Option::is_none")]
     pub skip_paths: Option<Vec<String>>,
+    /// Strip the query string from logged request paths.
+    ///
+    /// When `true`, the access log records only the path component (e.g.
+    /// `/api/login`) rather than the full `path?query` string.  This prevents
+    /// API tokens or session IDs passed as query parameters from appearing in
+    /// plaintext log files.
+    ///
+    /// Default: `false` (query string is logged, matching standard access-log
+    /// behaviour).
+    ///
+    /// ```json
+    /// { "format": "json", "stripQuery": true }
+    /// ```
+    #[serde(rename = "stripQuery", skip_serializing_if = "Option::is_none")]
+    pub strip_query: Option<bool>,
 }
 
 // ── Compression ────────────────────────────────────────────────────────────

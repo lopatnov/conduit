@@ -34,13 +34,14 @@ pub fn write_access_log(
 ) {
     let logging_cfg = site_config.and_then(|s| s.logging.as_ref());
 
-    let (format, file_path, skip_paths) = match logging_cfg {
+    let (format, file_path, skip_paths, strip_query) = match logging_cfg {
         None | Some(LoggingConfig::Enabled(false)) => return,
-        Some(LoggingConfig::Enabled(true)) => (&LogFormat::Combined, None, None),
-        Some(LoggingConfig::Format(f)) => (f, None, None),
+        Some(LoggingConfig::Enabled(true)) => (&LogFormat::Combined, None, None, false),
+        Some(LoggingConfig::Format(f)) => (f, None, None, false),
         Some(LoggingConfig::Options(opts)) => {
             let fmt = opts.format.as_ref().unwrap_or(&LogFormat::Combined);
-            (fmt, opts.file.as_deref(), opts.skip_paths.as_deref())
+            (fmt, opts.file.as_deref(), opts.skip_paths.as_deref(),
+             opts.strip_query.unwrap_or(false))
         }
     };
 
@@ -54,7 +55,6 @@ pub fn write_access_log(
     }
 
     // Lazily switch the writer to the configured file when needed.
-    // The switch is idempotent — LogWriter compares the path and skips re-opens.
     match file_path {
         Some(path) if log_writer.current_path().as_deref() != Some(path) => {
             if let Err(e) = log_writer.switch_file(path) {
@@ -67,7 +67,7 @@ pub fn write_access_log(
         _ => {}
     }
 
-    let line = format_line(session, start_time, format, extra);
+    let line = format_line(session, start_time, format, extra, strip_query);
     log_writer.write_line(&line);
 }
 
@@ -99,16 +99,23 @@ fn format_line(
     start_time: Instant,
     format: &LogFormat,
     extra: &AccessLogContext<'_>,
+    strip_query: bool,
 ) -> String {
     // Sanitize user-controlled fields in text formats to prevent log injection
     // (CR/LF in a URL or User-Agent would let an attacker forge log entries).
     let method = session.req_header().method.as_str();
-    let raw_path = session
-        .req_header()
-        .uri
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or_else(|| session.req_header().uri.path());
+    // When stripQuery is enabled, only log the path component — query strings
+    // may contain API tokens (?access_token=…) that must not appear in logs.
+    let raw_path = if strip_query {
+        session.req_header().uri.path()
+    } else {
+        session
+            .req_header()
+            .uri
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or_else(|| session.req_header().uri.path())
+    };
     let path = sanitize_log_field(raw_path);
     let status = session
         .response_written()

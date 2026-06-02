@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
+use url::Url as ParsedUrl;
+
 use crate::config::schema::{
     AppConfig, FallbackConfig, IpFilterConfig, LoadBalanceStrategy, MetricsConfig, MiddlewareEntry,
     ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig, RedirectRule,
@@ -84,6 +86,29 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
         }
     }
 
+    // ── Proxy loop detection ─────────────────────────────────────────────────
+    // Warn when a proxy target URL points back to a port this same Conduit
+    // instance is listening on — that creates an infinite request loop.
+    let listening_ports: Vec<u16> = config
+        .sites
+        .iter()
+        .map(|s| effective_port(s))
+        .collect();
+    for (i, site) in config.sites.iter().enumerate() {
+        let targets = collect_proxy_targets(site);
+        for target in &targets {
+            if let Some(port) = loopback_port(target) {
+                if listening_ports.contains(&port) {
+                    warnings.push(format!(
+                        "sites[{i}] proxies to '{target}' which appears to point back to \
+                         Conduit itself (loopback + port {port} is a configured listening port) \
+                         — this will create an infinite request loop."
+                    ));
+                }
+            }
+        }
+    }
+
     // ── Weak JWT secrets ─────────────────────────────────────────────────────
     // JWT HMAC secrets shorter than 32 bytes can be brute-forced or guessed.
     // RFC 7518 requires secrets be at least as long as the hash output
@@ -137,6 +162,82 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
     }
 
     warnings
+}
+
+// ── Proxy-loop helpers ─────────────────────────────────────────────────────
+
+/// Collect every proxy upstream URL configured for a site (from all proxy modes).
+fn collect_proxy_targets(site: &SiteConfig) -> Vec<String> {
+    use crate::config::schema::{ProxyConfig, ProxyRouteTarget};
+    let mut out = Vec::new();
+
+    if let Some(proxy) = &site.proxy {
+        match proxy {
+            ProxyConfig::Single(url) => out.push(url.clone()),
+            ProxyConfig::Routes(routes) => {
+                for target in routes.values() {
+                    match target {
+                        ProxyRouteTarget::Url(u) => out.push(u.clone()),
+                        ProxyRouteTarget::RoundRobin(urls) => out.extend(urls.iter().cloned()),
+                        ProxyRouteTarget::Full(cfg) => {
+                            for t in &cfg.targets {
+                                match t {
+                                    crate::config::schema::ProxyTarget::Simple(u) => {
+                                        out.push(u.clone())
+                                    }
+                                    crate::config::schema::ProxyTarget::Weighted(w) => {
+                                        out.push(w.url.clone())
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Also check routes[] array targets (same type: ProxyRouteTarget).
+    if let Some(routes) = &site.routes {
+        for route in routes {
+            if let Some(target) = &route.proxy {
+                match target {
+                    ProxyRouteTarget::Url(u) => out.push(u.clone()),
+                    ProxyRouteTarget::RoundRobin(urls) => out.extend(urls.iter().cloned()),
+                    ProxyRouteTarget::Full(cfg) => {
+                        for t in &cfg.targets {
+                            match t {
+                                crate::config::schema::ProxyTarget::Simple(u) => out.push(u.clone()),
+                                crate::config::schema::ProxyTarget::Weighted(w) => {
+                                    out.push(w.url.clone())
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// If `url` has a loopback host (127.x.x.x, ::1, localhost), return its port.
+fn loopback_port(url: &str) -> Option<u16> {
+    let parsed = ParsedUrl::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let is_loopback = host == "localhost"
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host == "[::1]"
+        || host.starts_with("127.");
+    if is_loopback {
+        parsed.port().or_else(|| match parsed.scheme() {
+            "https" => Some(443),
+            _ => Some(80),
+        })
+    } else {
+        None
+    }
 }
 
 // ── Cross-site checks ──────────────────────────────────────────────────────
@@ -373,11 +474,33 @@ fn validate_forward_auth(
             format!("{prefix}.url"),
             "forwardAuth.url must not be empty",
         ));
+        return;
     } else if !cfg.url.starts_with("http://") && !cfg.url.starts_with("https://") {
         errors.push(ValidationError::new(
             format!("{prefix}.url"),
             "forwardAuth.url must be an http:// or https:// URL",
         ));
+        return;
+    }
+
+    // Warn if the URL targets the Conduit Admin API (default 127.0.0.1:2019).
+    // A misconfigured forwardAuth pointing to the admin API would allow an
+    // attacker to exploit the proxy's own admin endpoint as the auth server.
+    if let Ok(parsed) = ParsedUrl::parse(&cfg.url) {
+        let host = parsed.host_str().unwrap_or("");
+        let port = parsed.port().unwrap_or(80);
+        let is_loopback = host == "localhost"
+            || host == "127.0.0.1"
+            || host == "::1"
+            || host.starts_with("127.");
+        if is_loopback && port == 2019 {
+            errors.push(ValidationError::new(
+                format!("{prefix}.url"),
+                "forwardAuth.url points to 127.0.0.1:2019 — this is the Conduit Admin API. \
+                 Routing external auth requests through the admin API is a security risk. \
+                 Use a dedicated auth service instead.",
+            ));
+        }
     }
     if let Some(0) = cfg.timeout_ms {
         errors.push(ValidationError::new(
@@ -1624,5 +1747,100 @@ mod tests {
                  "sites": [{ "port": 8080 }] }"#,
         );
         assert!(w.is_empty(), "otlp feature active → no warning: {w:?}");
+    }
+
+    // ── proxy loop detection ──────────────────────────────────────────────────
+
+    #[test]
+    fn proxy_loop_on_own_port_warns() {
+        // Port 8080 listens AND is the proxy target → loop.
+        let w = warns(r#"{ "port": 8080, "proxy": "http://127.0.0.1:8080" }"#);
+        assert!(!w.is_empty(), "self-referencing target must warn: {w:?}");
+        assert!(
+            w.iter().any(|m| m.contains("loop")),
+            "warning must mention loop: {w:?}"
+        );
+    }
+
+    #[test]
+    fn proxy_to_different_port_no_warn() {
+        let w = warns(r#"{ "port": 8080, "proxy": "http://127.0.0.1:4000" }"#);
+        assert!(
+            w.iter().all(|m| !m.contains("loop")),
+            "proxy to different port must not warn about loop: {w:?}"
+        );
+    }
+
+    #[test]
+    fn proxy_to_external_host_no_warn() {
+        let w = warns(r#"{ "port": 8080, "proxy": "http://api.example.com:8080" }"#);
+        assert!(
+            w.iter().all(|m| !m.contains("loop")),
+            "proxy to external host must not warn: {w:?}"
+        );
+    }
+
+    // ── weak JWT secret ───────────────────────────────────────────────────────
+
+    #[test]
+    fn short_jwt_secret_warns() {
+        let w = warns(r#"{ "port": 8080, "jwtAuth": { "secret": "short" } }"#);
+        assert!(!w.is_empty(), "short secret must warn");
+        assert!(w[0].contains("32 bytes"), "warning must mention 32 bytes: {}", w[0]);
+    }
+
+    #[test]
+    fn adequate_jwt_secret_no_warn() {
+        let secret = "a".repeat(32);
+        let w = warns(&format!(
+            r#"{{ "port": 8080, "jwtAuth": {{ "secret": "{secret}" }} }}"#
+        ));
+        assert!(
+            w.iter().all(|m| !m.contains("secret")),
+            "32-byte secret must not warn: {w:?}"
+        );
+    }
+
+    // ── metrics without auth ─────────────────────────────────────────────────
+
+    #[test]
+    fn metrics_without_token_warns() {
+        let w = warns(r#"{ "port": 8080, "metrics": {} }"#);
+        assert!(
+            w.iter().any(|m| m.contains("metrics")),
+            "metrics without token must warn: {w:?}"
+        );
+    }
+
+    #[test]
+    fn metrics_with_token_no_warn() {
+        let w = warns(r#"{ "port": 8080, "metrics": { "token": "secret" } }"#);
+        assert!(
+            w.iter().all(|m| !m.contains("publicly")),
+            "metrics with token must not warn about access: {w:?}"
+        );
+    }
+
+    // ── forwardAuth SSRF to admin API ─────────────────────────────────────────
+
+    #[test]
+    fn forward_auth_to_admin_api_port_is_error() {
+        let e = errs(
+            r#"{ "port": 8080, "forwardAuth": { "url": "http://127.0.0.1:2019/auth" } }"#,
+        );
+        assert!(
+            e.iter().any(|err| err.message.contains("Admin API")),
+            "forwardAuth pointing to admin port must be an error: {e:?}"
+        );
+    }
+
+    #[test]
+    fn forward_auth_to_normal_service_ok() {
+        assert!(
+            errs(r#"{ "port": 8080, "forwardAuth": { "url": "http://auth-service:4000/verify" } }"#)
+                .iter()
+                .all(|e| !e.message.contains("Admin API")),
+            "forwardAuth to external service must not warn about admin API"
+        );
     }
 }
