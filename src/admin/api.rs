@@ -45,19 +45,38 @@ pub enum AdminError {
     BadRequest(String),
     /// 500 Internal Server Error — config parse / validation failure.
     ServerError(String),
+    /// 400 — reload rejected because cold fields changed; includes the list of
+    /// fields as a top-level JSON array so callers can inspect them without
+    /// parsing the human-readable `message` string.
+    ColdFieldsChanged {
+        message: String,
+        fields: Vec<String>,
+    },
 }
 
 impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            AdminError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
-            AdminError::ServerError(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
-        };
-        (
-            status,
-            Json(json!({ "status": "error", "message": message })),
-        )
-            .into_response()
+        match self {
+            AdminError::BadRequest(m) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "status": "error", "message": m })),
+            )
+                .into_response(),
+            AdminError::ServerError(m) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "status": "error", "message": m })),
+            )
+                .into_response(),
+            AdminError::ColdFieldsChanged { message, fields } => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "status":      "error",
+                    "message":     message,
+                    "cold_fields": fields,
+                })),
+            )
+                .into_response(),
+        }
     }
 }
 
@@ -291,19 +310,15 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
     // reload as success.
     let cold_fields = detect_cold_changes(&state.config.load(), &new_config);
     if !cold_fields.is_empty() {
-        // Include cold_fields as a JSON array so callers can inspect which
-        // fields require a restart, in addition to the human-readable message.
-        // Note: AdminError::BadRequest produces 400 Bad Request.
-        return Err(AdminError::BadRequest(
-            json!({
-                "message": format!(
-                    "cold fields changed — restart required: {}",
-                    cold_fields.join(", ")
-                ),
-                "cold_fields": cold_fields,
-            })
-            .to_string(),
-        ));
+        // HTTP 400 so callers get a non-2xx status; cold_fields is a separate
+        // JSON array so callers can inspect fields without parsing the message.
+        return Err(AdminError::ColdFieldsChanged {
+            message: format!(
+                "cold fields changed — restart required: {}",
+                cold_fields.join(", ")
+            ),
+            fields: cold_fields,
+        });
     }
 
     // Switch log writer if any site's logging.file path changed.
