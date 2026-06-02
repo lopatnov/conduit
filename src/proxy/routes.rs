@@ -308,6 +308,15 @@ fn full_cfg_to_result(
         proxy_http2: cfg.http2.unwrap_or(false),
         proxy_upstream_url: upstream_url_for_lc,
         proxy_cache_cfg: cfg.cache.clone(),
+        passive_unhealthy_status: cfg
+            .health_check
+            .as_ref()
+            .and_then(|hc| hc.unhealthy_status.clone())
+            .unwrap_or_default(),
+        passive_unhealthy_latency_ms: cfg
+            .health_check
+            .as_ref()
+            .and_then(|hc| hc.unhealthy_latency_ms),
     }
 }
 

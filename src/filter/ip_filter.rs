@@ -253,6 +253,7 @@ mod tests {
             allow: Some(cidrs.iter().map(|s| s.to_string()).collect()),
             deny: None,
             trust_proxy: None,
+            dry_run: None,
         }
     }
 
@@ -261,6 +262,7 @@ mod tests {
             allow: None,
             deny: Some(cidrs.iter().map(|s| s.to_string()).collect()),
             trust_proxy: None,
+            dry_run: None,
         }
     }
 
@@ -269,6 +271,7 @@ mod tests {
             allow: None,
             deny: None,
             trust_proxy: None,
+            dry_run: None,
         }
     }
 
@@ -373,6 +376,7 @@ mod tests {
             allow: None,
             deny: Some(vec!["192.168.1.0/24".to_owned()]),
             trust_proxy: None,
+            dry_run: None,
         };
         // IP in denied range → blocked
         assert!(!apply_ip_filter(
@@ -392,6 +396,7 @@ mod tests {
             allow: None,
             deny: Some(vec!["203.0.113.5".to_owned()]),
             trust_proxy: None,
+            dry_run: None,
         };
         assert!(!apply_ip_filter(
             Some("203.0.113.5".parse().unwrap()),

@@ -34,6 +34,12 @@ pub struct RouteResolution {
     pub proxy_upstream_url: Option<String>,
     /// Per-route cache config, if caching is enabled.
     pub proxy_cache_cfg: Option<CacheConfig>,
+    /// Passive health: HTTP status codes that count as upstream failures.
+    /// Populated from `healthCheck.unhealthyStatus`.
+    pub passive_unhealthy_status: Vec<u16>,
+    /// Passive health: latency threshold in ms above which response counts as failure.
+    /// Populated from `healthCheck.unhealthyLatencyMs`.
+    pub passive_unhealthy_latency_ms: Option<u64>,
 }
 
 impl RouteResolution {
@@ -48,6 +54,8 @@ impl RouteResolution {
             proxy_http2: false,
             proxy_upstream_url: None,
             proxy_cache_cfg: None,
+            passive_unhealthy_status: Vec::new(),
+            passive_unhealthy_latency_ms: None,
         }
     }
 }
@@ -103,7 +111,7 @@ pub fn route_request(
     };
 
     let response_transform = site.and_then(|s| s.response_transform.clone());
-    RequestCtx::new(
+    let mut ctx = RequestCtx::new(
         site_idx,
         res.upstream,
         res.retry,
@@ -113,7 +121,11 @@ pub fn route_request(
         res.proxy_upstream_url,
         res.proxy_cache_cfg,
         response_transform,
-    )
+    );
+    // Populate passive health thresholds so logging() can apply them.
+    ctx.passive_unhealthy_status = res.passive_unhealthy_status;
+    ctx.passive_unhealthy_latency_ms = res.passive_unhealthy_latency_ms;
+    ctx
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -303,6 +315,26 @@ fn resolve_proxy(
                 ),
             };
 
+            // Passive health thresholds — extracted after the match via a separate
+            // if-let so cfg is in scope.
+            let passive_unhealthy_status: Vec<u16> =
+                if let ProxyRouteTarget::Full(cfg) = route_target {
+                    cfg.health_check
+                        .as_ref()
+                        .and_then(|hc| hc.unhealthy_status.clone())
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+            let passive_unhealthy_latency_ms: Option<u64> =
+                if let ProxyRouteTarget::Full(cfg) = route_target {
+                    cfg.health_check
+                        .as_ref()
+                        .and_then(|hc| hc.unhealthy_latency_ms)
+                } else {
+                    None
+                };
+
             // Failover: when a backup URL is configured and all primary upstreams
             // are unhealthy, route to the backup instead.
             let backup_url: Option<String> = if let ProxyRouteTarget::Full(cfg) = route_target {
@@ -459,6 +491,8 @@ fn resolve_proxy(
                 proxy_http2,
                 proxy_upstream_url,
                 proxy_cache_cfg: cache_cfg,
+                passive_unhealthy_status,
+                passive_unhealthy_latency_ms,
             })
         }
     }
@@ -596,6 +630,8 @@ fn resolve_grouped(
         proxy_http2,
         proxy_upstream_url,
         proxy_cache_cfg: cache_cfg,
+        passive_unhealthy_status: Vec::new(), // groups don't have per-route healthCheck
+        passive_unhealthy_latency_ms: None,
     })
 }
 

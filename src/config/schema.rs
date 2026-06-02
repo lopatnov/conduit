@@ -585,6 +585,16 @@ pub struct RateLimitConfig {
     ///   in-memory bucket when Redis is unavailable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<String>,
+    /// Dry-run mode — log violations but allow requests through.
+    ///
+    /// **nginx `limit_req_dry_run` pattern.**  When `true`, requests that would
+    /// normally be rejected with `429 Too Many Requests` are logged as warnings
+    /// instead and forwarded to the upstream.  Useful for testing rate-limit
+    /// configuration in production without impacting real traffic.
+    ///
+    /// Default: `false` (enforcement active).
+    #[serde(rename = "dryRun", skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -865,6 +875,14 @@ pub struct IpFilterConfig {
     /// reverse proxy that sets this header.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_proxy: Option<bool>,
+    /// Dry-run mode — log blocked IPs but allow requests through.
+    ///
+    /// **nginx `ngx_http_limit_conn_module` dry_run pattern.**  When `true`,
+    /// requests from denied IPs (or outside the allowlist) are logged as warnings
+    /// but forwarded.  Safe rollout: enable dry-run first, review logs, then
+    /// disable dry-run to enforce.
+    #[serde(rename = "dryRun", skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
 }
 
 // ── Request limits ─────────────────────────────────────────────────────────
@@ -919,6 +937,26 @@ pub struct LimitsConfig {
     /// configures a `priority`.
     #[serde(rename = "priorityThreshold", skip_serializing_if = "Option::is_none")]
     pub priority_threshold: Option<f64>,
+    /// Maximum concurrent in-flight requests from a single client IP.
+    ///
+    /// **nginx `limit_conn` pattern.**  Unlike `rateLimit` (requests per second),
+    /// this limits the number of *simultaneous* open requests from the same IP.
+    /// Protects against connection-flooding attacks that bypass per-second rate
+    /// limits by opening many slow/hung connections at once.
+    ///
+    /// When the limit is reached, new requests from that IP receive `429 Too Many
+    /// Requests` until an existing connection completes.  The counter is incremented
+    /// at request entry and decremented in the `logging()` hook.
+    ///
+    /// Uses the same IP-trust logic as `ipFilter.trustProxy`.
+    ///
+    /// Default: unlimited (`None`).
+    ///
+    /// ```json
+    /// { "maxConnectionsPerIp": 20 }
+    /// ```
+    #[serde(rename = "maxConnectionsPerIp", skip_serializing_if = "Option::is_none")]
+    pub max_connections_per_ip: Option<u64>,
 }
 
 // ── Redirects ──────────────────────────────────────────────────────────────
@@ -1269,14 +1307,38 @@ pub struct UpstreamHealthCheck {
     pub max_connections_per_upstream: Option<u64>,
     /// Number of keepalive connections to pre-establish at server startup.
     ///
-    /// When set, Conduit sends this many sequential HEAD requests to the
-    /// `healthCheck.path` of each target URL immediately after startup, warming
-    /// Pingora's connection pool so the first real requests don't pay the
-    /// TCP-handshake cost.
-    ///
     /// Defaults to `0` (disabled).  Values above 8 are clamped to 8.
     #[serde(rename = "prewarmConnections", skip_serializing_if = "Option::is_none")]
     pub prewarm_connections: Option<u8>,
+
+    /// HTTP status codes from real proxy traffic counted as upstream failures.
+    ///
+    /// **Passive health check** — Caddy `unhealthy_status` pattern.  Each time an
+    /// upstream returns one of these status codes, `consecutive_5xx` is incremented
+    /// (same counter used by `outlierDetection`).  After `consecutive5xx` failures
+    /// the upstream is ejected.
+    ///
+    /// Default: `[500, 502, 503, 504]`.  Set `[]` to disable.
+    ///
+    /// ```json
+    /// { "unhealthyStatus": [429, 500, 502, 503, 504] }
+    /// ```
+    #[serde(rename = "unhealthyStatus", skip_serializing_if = "Option::is_none")]
+    pub unhealthy_status: Option<Vec<u16>>,
+
+    /// Response latency threshold (ms) above which the request counts as a
+    /// passive upstream failure.
+    ///
+    /// **Passive health check** — Caddy `unhealthy_latency` pattern.  When an
+    /// upstream takes longer than this to return the first response byte,
+    /// `consecutive_5xx` is incremented.  Use with `outlierDetection` to eject
+    /// persistently slow backends.  Default: disabled (`None`).
+    ///
+    /// ```json
+    /// { "unhealthyLatencyMs": 2000 }
+    /// ```
+    #[serde(rename = "unhealthyLatencyMs", skip_serializing_if = "Option::is_none")]
+    pub unhealthy_latency_ms: Option<u64>,
 }
 
 // ── Cache ──────────────────────────────────────────────────────────────────

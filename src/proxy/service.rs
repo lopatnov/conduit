@@ -23,7 +23,7 @@ use crate::config::schema::{
 };
 use crate::filter::chain::{
     ApiKeyGuard, BasicAuthGuard, ConsumersGuard, CorsPreflight, FaultInjectionGuard, FilterChain,
-    AllowedHostsGuard, FilterContext, ForwardAuthGuard, HealthBypass, IpGuard, JwtGuard,
+    FilterContext, ForwardAuthGuard, HealthBypass, IpGuard, JwtGuard,
     LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard, XRequestIdGuard,
 };
 use crate::filter::rate_limit::{self, RateLimiter};
@@ -221,6 +221,15 @@ pub struct AppState {
     /// Checked by `IpGuard` in addition to `ipFilter.deny` from the config.
     /// Entries are plain CIDR strings (e.g. `"1.2.3.0/24"`).
     pub dynamic_deny: Arc<std::sync::RwLock<Vec<String>>>,
+    /// Per-client-IP concurrent in-flight request counts.
+    ///
+    /// Used by `LimitsGuard` when `limits.maxConnectionsPerIp` is set.
+    /// Incremented at request entry, decremented in `logging()`.
+    /// Key: client IP string.  Value: active concurrent request count.
+    ///
+    /// nginx `ngx_http_limit_conn_module` pattern — limits simultaneous open
+    /// requests from a single IP, complementing the per-second rate limit.
+    pub ip_conn_counts: Arc<DashMap<String, AtomicUsize>>,
 }
 
 impl AppState {
@@ -250,6 +259,7 @@ impl AppState {
             redis_rate_limiter,
             retry_inflight: Arc::new(AtomicUsize::new(0)),
             dynamic_deny: Arc::new(std::sync::RwLock::new(Vec::new())),
+            ip_conn_counts: Arc::new(DashMap::new()),
         }
     }
 }
@@ -537,6 +547,24 @@ impl ConduitProxy {
             return Ok(true);
         }
 
+        // If per-IP connection limiting is configured and the request was allowed,
+        // store the client IP so logging() can decrement the counter on completion.
+        {
+            let config = self.state.config.load();
+            if let Some(site) = config.sites.get(req_ctx.site_idx) {
+                if site.limits.as_ref().and_then(|l| l.max_connections_per_ip).is_some() {
+                    let ip = session
+                        .client_addr()
+                        .and_then(|a| a.as_inet())
+                        .map(|a| a.ip().to_string())
+                        .unwrap_or_default();
+                    if !ip.is_empty() {
+                        req_ctx.client_ip_for_conn_limit = Some(ip);
+                    }
+                }
+            }
+        }
+
         // ── Per-route rate limiting (applied after site-level guard chain) ──────
         // Checked here — after routing — so we know which route was matched.
         {
@@ -782,7 +810,7 @@ impl ConduitProxy {
             method: guards.script_method,
             query: guards.script_query,
             headers: guards.script_headers,
-            client_ip: guards.client_ip,
+            client_ip: guards.client_ip.clone(),
         });
 
         let mut ctx = FilterContext {
@@ -791,6 +819,8 @@ impl ConduitProxy {
             inflight: &self.state.inflight,
             rate_limiter: &self.state.rate_limiter,
             redis_rate_limiter: self.state.redis_rate_limiter.as_ref(),
+            ip_conn_counts: &self.state.ip_conn_counts,
+            client_ip: guards.client_ip,
         };
 
         chain.run(&mut ctx).await
@@ -1624,6 +1654,16 @@ impl ProxyHttp for ConduitProxy {
     {
         // Decrement inflight for proxy requests (local handlers decrement inline).
         self.state.metrics.active_connections.dec();
+        // Release per-IP connection slot (nginx limit_conn pattern).
+        if let Some(ip) = ctx.as_ref().and_then(|c| c.client_ip_for_conn_limit.as_deref()) {
+            if let Some(counter) = self.state.ip_conn_counts.get(ip) {
+                let prev = counter.fetch_sub(1, Ordering::Relaxed);
+                if prev == 0 {
+                    // Prevent wrap-around if there was a race.
+                    counter.store(0, Ordering::Relaxed);
+                }
+            }
+        }
         if let Some(req_ctx) = ctx.as_ref() {
             if !matches!(req_ctx.upstream, UpstreamTarget::Local(_)) {
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
@@ -1646,11 +1686,38 @@ impl ProxyHttp for ConduitProxy {
                         .response_written()
                         .map(|h| h.status.as_u16())
                         .unwrap_or(0);
+
+                    // Passive health check (Caddy pattern):
+                    // Count response as failure when it matches unhealthyStatus or
+                    // exceeds unhealthyLatencyMs — even if the HTTP status is 2xx.
+                    // We signal a failure to record_request_latency by passing 503.
+                    let effective_status = {
+                        let latency_ms = elapsed_us / 1000;
+                        let unhealthy_by_status = !req_ctx.passive_unhealthy_status.is_empty()
+                            && req_ctx.passive_unhealthy_status.contains(&status);
+                        let unhealthy_by_latency = req_ctx
+                            .passive_unhealthy_latency_ms
+                            .map(|t| latency_ms > t)
+                            .unwrap_or(false);
+                        if (unhealthy_by_status || unhealthy_by_latency) && status < 500 {
+                            // Override: treat as server error for consecutive_5xx tracking.
+                            tracing::debug!(
+                                upstream = %url, status, latency_ms,
+                                "passive health: counting response as failure \
+                                 (unhealthyStatus={unhealthy_by_status}, \
+                                  unhealthyLatency={unhealthy_by_latency})"
+                            );
+                            503
+                        } else {
+                            status
+                        }
+                    };
+
                     crate::proxy::health::record_request_latency(
                         &self.state.upstream_health,
                         url,
                         elapsed_us,
-                        status,
+                        effective_status,
                     );
 
                     // Outlier Detection: eject upstream after threshold 5xx responses.

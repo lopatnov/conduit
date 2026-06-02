@@ -80,6 +80,23 @@ pub struct RequestCtx {
     /// the request and receiving the first byte of the upstream response.
     /// `None` for local handlers (health, static, metrics, …).
     pub upstream_start: Option<Instant>,
+
+    /// Client IP, used by logging() to decrement the per-IP connection counter
+    /// when `limits.maxConnectionsPerIp` is set.
+    pub client_ip_for_conn_limit: Option<String>,
+
+    /// Passive health check: HTTP status codes that count as upstream failures.
+    ///
+    /// Populated from `healthCheck.unhealthyStatus` during routing.
+    /// If the response status matches, `consecutive_5xx` is incremented.
+    /// Default (empty) falls back to the standard 5xx-only detection.
+    pub passive_unhealthy_status: Vec<u16>,
+
+    /// Passive health check: latency threshold in milliseconds.
+    ///
+    /// Populated from `healthCheck.unhealthyLatencyMs` during routing.
+    /// If the upstream response time exceeds this, it counts as a failure.
+    pub passive_unhealthy_latency_ms: Option<u64>,
 }
 
 impl RequestCtx {
@@ -115,6 +132,9 @@ impl RequestCtx {
             actual_body_bytes: 0,
             jwt_claims: None,
             upstream_start: None,
+            client_ip_for_conn_limit: None,
+            passive_unhealthy_status: Vec::new(),
+            passive_unhealthy_latency_ms: None,
             #[cfg(feature = "otlp")]
             otel_span: None,
         }

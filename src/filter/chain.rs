@@ -61,6 +61,10 @@ pub struct FilterContext<'a> {
     pub rate_limiter: &'a RateLimiter,
     /// Optional Redis-backed rate limiter (may be `None` at startup).
     pub redis_rate_limiter: Option<&'a Arc<RedisRateLimiter>>,
+    /// Per-client-IP concurrent connection counts (nginx limit_conn pattern).
+    pub ip_conn_counts: &'a dashmap::DashMap<String, AtomicUsize>,
+    /// Extracted client IP used for per-IP connection limiting.
+    pub client_ip: String,
 }
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
@@ -165,6 +169,21 @@ impl RequestFilter for IpGuard {
         let blocked = !ip_filter::is_allowed(&self.cfg, ctx.session)
             || self.is_dynamic_denied(ctx.session);
         if blocked {
+            // Dry-run mode (nginx `limit_conn_module dry_run` pattern):
+            // log the violation but allow the request through.
+            if self.cfg.dry_run.unwrap_or(false) {
+                let client_ip = ctx
+                    .session
+                    .client_addr()
+                    .and_then(|a| a.as_inet())
+                    .map(|a| a.ip().to_string())
+                    .unwrap_or_else(|| "unknown".to_owned());
+                tracing::warn!(
+                    ip = %client_ip,
+                    "[dry-run] IP filter blocked — request allowed through (dryRun: true)"
+                );
+                return Ok(FilterOutcome::Continue);
+            }
             response::write_response(
                 ctx.session,
                 403,
@@ -193,6 +212,7 @@ impl IpGuard {
             allow: None,
             deny: Some(deny_list.clone()),
             trust_proxy: self.cfg.trust_proxy,
+            dry_run: None, // dynamic deny always enforces
         };
         !ip_filter::is_allowed(&cfg, session)
     }
@@ -311,6 +331,44 @@ impl RequestFilter for LimitsGuard {
             ctx.inflight.fetch_sub(1, Ordering::Relaxed);
             return Ok(FilterOutcome::Handled);
         }
+
+        // Per-IP concurrent connection limit (nginx limit_conn pattern).
+        // Checked after the inflight cap so the DashMap lookup only runs when
+        // the server is accepting new connections.
+        if let Some(max_per_ip) = self.cfg.max_connections_per_ip {
+            let ip = &ctx.client_ip;
+            if !ip.is_empty() {
+                let current = ctx
+                    .ip_conn_counts
+                    .entry(ip.clone())
+                    .or_insert_with(|| AtomicUsize::new(0))
+                    .fetch_add(1, Ordering::Relaxed)
+                    + 1;
+                if current as u64 > max_per_ip {
+                    // Undo the increment — this request is not allowed.
+                    if let Some(counter) = ctx.ip_conn_counts.get(ip) {
+                        counter.fetch_sub(1, Ordering::Relaxed);
+                    }
+                    response::write_response(
+                        ctx.session,
+                        429,
+                        "text/plain",
+                        Bytes::from_static(b"Too Many Connections"),
+                        ctx.extra_headers,
+                    )
+                    .await?;
+                    ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+                    return Ok(FilterOutcome::Handled);
+                }
+                // Request is allowed — mark the IP so logging() can decrement the counter.
+                // We need to propagate this to RequestCtx; the LimitsGuard doesn't have
+                // direct access to RequestCtx here. We store it on the session via the
+                // ctx extra_headers note — actually we'll handle this in service.rs by
+                // checking max_connections_per_ip in do_request_filter and setting
+                // req_ctx.client_ip_for_conn_limit.
+            }
+        }
+
         Ok(FilterOutcome::Continue)
     }
 }
@@ -339,6 +397,17 @@ impl RequestFilter for RateLimitGuard {
                 .rate_limit_rejected_total
                 .with_label_values(&[&self.site_label])
                 .inc();
+
+            // Dry-run mode (nginx `limit_req_dry_run` pattern):
+            // log the violation but forward the request instead of rejecting.
+            if self.cfg.dry_run.unwrap_or(false) {
+                tracing::warn!(
+                    site = %self.site_label,
+                    "[dry-run] rate limit exceeded — request allowed through (dryRun: true)"
+                );
+                return Ok(FilterOutcome::Continue);
+            }
+
             response::write_response(
                 ctx.session,
                 429,
