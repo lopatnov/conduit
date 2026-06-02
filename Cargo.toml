@@ -206,6 +206,9 @@ time        = { version = "0.3", features = ["std"] }
 wat         = "1"
 # rcgen is used in tests for cert generation even without the acme feature.
 rcgen       = "0.14"
+# jsonwebtoken is used in auth integration tests to generate test tokens.
+# Listed as dev-dep so tests compile without --features jwt.
+jsonwebtoken = "9"
 
 [profile.release]
 lto           = true
