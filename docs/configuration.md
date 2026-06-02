@@ -43,6 +43,10 @@ See [docs/cli.md — Build features](cli.md#build-features) for binary sizes and
 
 ## Table of Contents
 
+**Background**
+
+- [Concepts](#concepts) — request pipeline, forwarded headers, skipPaths glob
+
 **Essentials**
 
 - [Port and host](#port-and-host)
@@ -253,10 +257,13 @@ host: api.example.com # optional — virtual hosting
 { "port": 8080, "host": "api.example.com" }
 ```
 
-| Field  | Type   | Default | Description                                                    |
-| ------ | ------ | ------- | -------------------------------------------------------------- |
-| `port` | number | `3000`  | TCP port to listen on                                          |
-| `host` | string | —       | Virtual hostname. Omit to match all `Host` headers (catch-all) |
+| Field  | Type   | Default          | Description                                                    |
+| ------ | ------ | ---------------- | -------------------------------------------------------------- |
+| `port` | number | `80` / `443` ¹   | TCP port to listen on                                          |
+| `host` | string | —                | Virtual hostname. Omit to match all `Host` headers (catch-all) |
+
+> ¹ Default port is `443` when `tls` is configured, `80` otherwise.
+> When no sites are configured at all, Conduit listens on `8080` as a fallback.
 
 Use `host` when running [multiple sites](#multi-site) on the same process.
 
@@ -359,12 +366,24 @@ http2: {} # enable HTTP/2 with defaults
 }
 ```
 
-Full config:
+Full config with all fields:
 
 ```yaml
 http2:
   maxConcurrentStreams: 100
   initialWindowSize: 65535
+  h2c: false   # HTTP/2 cleartext (internal gRPC without TLS)
+```
+
+```json
+// JSON
+{
+  "http2": {
+    "maxConcurrentStreams": 100,
+    "initialWindowSize": 65535,
+    "h2c": false
+  }
+}
 ```
 
 | Field                  | Type   | Default | Description                                                                                                                                            |
@@ -380,23 +399,21 @@ http2:
 Add `Content-Encoding: br` / `zstd` / `gzip` / `deflate` to responses.
 
 ```yaml
-# YAML — enable with defaults
+# YAML — shorthand (enable with defaults)
 compression: true
 
-# Fine-grained
+# YAML — fine-grained
 compression:
   algorithms: [br, zstd, gzip]  # Brotli first, then Zstd, then gzip
-  level: 6                  # compression level (1=fast, 9=smallest)
-  minBytes: 1024            # don't compress responses smaller than 1 KB
+  level: 6                       # 1 = fastest, 9 = smallest
+  minBytes: 1024                 # skip responses smaller than 1 KB
 ```
 
 ```json
-// JSON
+// JSON — shorthand
 { "compression": true }
-```
 
-```json
-// JSON
+// JSON — fine-grained
 {
   "compression": {
     "algorithms": ["br", "zstd", "gzip"],
@@ -543,10 +560,11 @@ proxy:
 | `timeout.sendMs`      | number               | —             | Request send timeout                                                           |
 | `timeout.readMs`      | number               | `30000`       | Response read timeout                                                          |
 | `timeout.perTryMs`    | number               | —             | Per-retry timeout                                                              |
-| `retry.attempts`      | number               | `0`           | Number of retry attempts                                                       |
+| `retry.attempts`      | number               | `0`           | Number of retry attempts (0 = disabled)                                        |
 | `retry.conditions`    | string[]             | —             | `connection_error`, `5xx`, `timeout`                                           |
-| `retry.backoffMs`     | number               | `0`           | Wait between retries                                                           |
-| `retry.budgetPercent` | number               | —             | Max % of active requests that may be retries                                   |
+| `retry.backoffMs`     | number               | `0`           | Wait between retries (ms)                                                      |
+| `retry.backoffJitter` | bool                 | `false`       | ±50% random spread on `backoffMs` to avoid thundering herd                     |
+| `retry.budgetPercent` | number               | —             | Soft cap: max % of in-flight requests that may be retries                      |
 | `healthCheck`         | object               | —             | Active health probes — see [Health checks](#health-checks)                     |
 | `backup`              | string               | —             | Fallback URL when all primaries are unhealthy                                  |
 | `cache`               | object               | —             | Response cache — see [Proxy cache](#proxy-cache)                               |
@@ -557,7 +575,6 @@ proxy:
 | `sticky.cookie`       | string               | —             | Cookie name for sticky sessions                                                |
 | `groups`              | object[]             | —             | Two-level LB groups: `[{name, targets, strategy}]`                             |
 | `groupStrategy`       | string               | `round-robin` | Outer strategy when `groups` is set                                            |
-| `backup`              | string               | —             | Failover URL when all primaries are unhealthy                                  |
 | `priority`            | number (0–100)       | `50`          | Request priority for load shedding — see [Priority routing](#priority-routing) |
 
 ---
@@ -1275,7 +1292,7 @@ healthCheck:
 | `timeoutMs`                 | number   | `2000`        | Probe timeout                                                                                                                                        |
 | `unhealthyThreshold`        | number   | `3`           | Consecutive failures before removal                                                                                                                  |
 | `healthyThreshold`          | number   | `1`           | Consecutive passes before re-adding                                                                                                                  |
-| `unhealthyStatus`           | number[] | —             | HTTP status codes from the health-check probe that count as failures (e.g. `[429, 500, 502, 503, 504]`). Only non-2xx/3xx codes are meaningful here. |
+| `unhealthyStatus`           | number[] | any non-2xx   | HTTP status codes from the health-check probe that count as failures. Default: any non-2xx response. Example: `[429, 500, 502, 503, 504]` |
 | `unhealthyLatencyMs`        | number   | —             | Health-check probe responses slower than this (ms) count as failures, even if the status code is 2xx                                                 |
 | `slowStartSecs`             | number   | `0`           | Traffic ramp-up period after recovery                                                                                                                |
 | `maxConnectionsPerUpstream` | number   | —             | [Circuit breaker](#circuit-breaker) threshold                                                                                                        |
@@ -1346,6 +1363,7 @@ proxy:
         "attempts": 3,
         "conditions": ["connection_error", "5xx", "timeout"],
         "backoffMs": 100,
+        "backoffJitter": true,
         "budgetPercent": 20
       },
       "timeout": { "perTryMs": 2000 }
@@ -1354,15 +1372,19 @@ proxy:
 }
 ```
 
-**Retry budget** prevents retry storms. With `budgetPercent: 20`, at most 20% of
-active requests may be retries at any moment.
+### Retry field reference
 
-**Retry jitter** (`backoffJitter: true`): applies ±50% random spread to `backoffMs`
-so retries from many concurrent failures are distributed in time rather than
-hitting the upstream in a synchronized wave. Effective delay is in `[ms/2, ms*3/2)`.
+| Field            | Type     | Default | Description                                                                                                |
+| ---------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------- |
+| `attempts`       | number   | `0`     | Number of retry attempts (0 = disabled)                                                                    |
+| `conditions`     | string[] | —       | Triggers: `"connection_error"`, `"5xx"`, `"timeout"`. Retries only happen when at least one matches.      |
+| `backoffMs`      | number   | `0`     | Fixed wait between attempts (ms). `0` = immediate retry.                                                   |
+| `backoffJitter`  | bool     | `false` | Apply ±50% random spread to `backoffMs` to avoid thundering herd. Effective delay: `[ms/2, ms*3/2)`       |
+| `budgetPercent`  | number   | —       | Soft cap: at most this fraction of in-flight requests may be retries. Prevents retry storms under mass failure. |
 
-**Body buffering for retry** — set `limits.maxBodyBufferBytes` to enable retries
-on POST/PUT/PATCH. Requests whose body exceeds the limit are not retried.
+> **Body buffering for retry** — POST/PUT/PATCH requests are only retried when
+> `limits.maxBodyBufferBytes` is set. Without it, request bodies are not buffered and
+> `connection_error` retries on non-GET methods are skipped silently.
 
 ---
 
@@ -2040,7 +2062,7 @@ consumers:
 | `idHeader`     | string   | `x-consumer-id` | Header injected into upstream with consumer username |
 | `apiKeyHeader` | string   | `x-api-key`     | Header to read API keys from                         |
 | `skipPaths`    | string[] | —               | Paths that bypass consumer auth                      |
-| `sharedJwt`    | object   | —               | Single JWKS for all consumers (V3)                   |
+| `sharedJwt`    | object   | —               | Single JWKS for all consumers, identified by `sub` claim — Auth0/Cognito/Keycloak pattern (`--features jwt` required) |
 
 ### Per-consumer fields
 
@@ -2049,7 +2071,7 @@ consumers:
 | `username`  | string | Required — unique name, injected as `X-Consumer-ID`         |
 | `apiKey`    | string | API key credential                                          |
 | `basicAuth` | object | `{ password }` — username is taken from `consumer.username` |
-| `jwt`       | object | `{ secret? jwksUrl? audience? issuer? }` (V2)               |
+| `jwt`       | object | `{ secret? jwksUrl? audience? issuer? }` — per-consumer JWT identification (`--features jwt` required) |
 | `rateLimit` | object | Per-consumer rate limit (global, not per-IP)                |
 | `headers`   | object | Additional headers to inject into upstream request          |
 
@@ -2226,7 +2248,8 @@ proxy:
 The mirrored request includes all original headers plus `X-Mirrored-From: <host>`.
 Mirror failures do not affect clients.
 
-> **V1 limitation:** request body is not mirrored (headers only).
+> **Note:** request body is not mirrored — only headers are forwarded to the shadow
+> backend. This is sufficient for observability and shadow testing of read workloads.
 
 ---
 
