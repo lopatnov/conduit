@@ -2,10 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use pingora_core::apps::HttpServerOptions;
 use pingora_core::server::configuration::Opt;
 use pingora_core::server::Server;
 use pingora_core::services::background::background_service;
-use pingora_core::apps::HttpServerOptions;
 use pingora_core::services::listening::Service as ListeningService;
 use pingora_proxy::{http_proxy_service, HttpProxy};
 
@@ -230,7 +230,12 @@ pub fn run_server(
         #[cfg(feature = "redis")]
         {
             let redis_rl = connect_redis_rate_limiter_if_configured(&config)?;
-            Arc::new(AppState::new_with_redis(config.clone(), config_path, upload_addr, redis_rl))
+            Arc::new(AppState::new_with_redis(
+                config.clone(),
+                config_path,
+                upload_addr,
+                redis_rl,
+            ))
         }
         #[cfg(not(feature = "redis"))]
         Arc::new(AppState::new(config.clone(), config_path, upload_addr))
@@ -294,7 +299,9 @@ pub fn run_server(
         s.http2
             .as_ref()
             .and_then(|h| match h {
-                crate::config::schema::Http2Config { h2c: Some(true), .. } => Some(true),
+                crate::config::schema::Http2Config {
+                    h2c: Some(true), ..
+                } => Some(true),
                 _ => None,
             })
             .unwrap_or(false)
@@ -346,17 +353,16 @@ pub fn run_server(
     // ── Raw TCP proxy services (requires --features tcp) ─────────────────────
     #[cfg(feature = "tcp")]
     for site in &config.sites {
-        let Some(ref tcp_cfg) = site.tcp else { continue };
+        let Some(ref tcp_cfg) = site.tcp else {
+            continue;
+        };
         if tcp_cfg.targets.is_empty() {
             tracing::warn!("TCP site on port {:?} has no targets — skipped", site.port);
             continue;
         }
         let port = site.port.unwrap_or(80);
         let proxy = crate::proxy::tcp::TcpProxy::new(tcp_cfg);
-        let mut tcp_svc = ListeningService::new(
-            format!("Conduit TCP Proxy :{port}"),
-            proxy,
-        );
+        let mut tcp_svc = ListeningService::new(format!("Conduit TCP Proxy :{port}"), proxy);
         tcp_svc.add_tcp(&format!("0.0.0.0:{port}"));
         server.add_service(tcp_svc);
         tracing::info!(

@@ -424,7 +424,7 @@ response.remove_header("X-Powered-By");
 if upstream.status >= 500 {
     print(`upstream error: ${upstream.status} for path`);
     // Add debug header for internal use
-    response.set_header("X-Upstream-Error", upstream.status);
+    response.set_header("X-Upstream-Error", upstream.status.to_string());
 }
 ```
 

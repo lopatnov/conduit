@@ -351,7 +351,9 @@ impl ResponseFilter for MiddlewareResponseFilter {
             .headers
             .iter()
             .filter_map(|(k, v)| {
-                v.to_str().ok().map(|vs| (k.as_str().to_ascii_lowercase(), vs.to_owned()))
+                v.to_str()
+                    .ok()
+                    .map(|vs| (k.as_str().to_ascii_lowercase(), vs.to_owned()))
             })
             .collect();
 

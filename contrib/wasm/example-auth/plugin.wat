@@ -65,7 +65,8 @@
                 (return (i32.const 1))))
 
         ;; 3. If key == "redirect" (8 bytes), issue 302
-        ;; (Simplified comparison: check first 8 bytes match "redirect")
+        ;; (Demo only: checks length==8 and first 4 bytes == "redi" via i32.load;
+        ;;  a production plugin should compare all 8 bytes with two i32.load checks.)
         (if (i32.and
                 (i32.eq (local.get $key_len) (i32.const 8))
                 (i32.eq

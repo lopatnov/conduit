@@ -28,7 +28,7 @@
           "type": "object",
           "properties": {
             "bind":  { "type": "string", "examples": ["127.0.0.1:2019"] },
-            "token": { "type": "string", "description": "Bearer token for Admin API auth. When set, all requests must include Authorization: Bearer <token>." }
+            "token": { "type": "string", "minLength": 16, "description": "Bearer token for Admin API auth. When set, all requests must include Authorization: Bearer <token>. Minimum 16 characters; 32+ recommended." }
           }
         },
         "otlp": {

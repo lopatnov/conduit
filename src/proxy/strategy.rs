@@ -206,7 +206,11 @@ impl LoadBalancingStrategy for P2cChoice {
                     .map(|e| e.ewma_latency_us)
                     .unwrap_or(P2C_DEFAULT_LATENCY_US);
                 // Pick the lower latency; break ties in favour of `a`.
-                let chosen = if latency_a <= latency_b { &urls[a] } else { &urls[b] };
+                let chosen = if latency_a <= latency_b {
+                    &urls[a]
+                } else {
+                    &urls[b]
+                };
                 Some((chosen.clone(), false))
             }
         }

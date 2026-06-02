@@ -114,9 +114,9 @@ pub fn best_encoding(
     }
     for algo in &opts.algorithms {
         match algo.as_str() {
-            "br"      if accept.brotli  => return Some("br"),
-            "zstd"    if accept.zstd    => return Some("zstd"),
-            "gzip"    if accept.gzip    => return Some("gzip"),
+            "br" if accept.brotli => return Some("br"),
+            "zstd" if accept.zstd => return Some("zstd"),
+            "gzip" if accept.gzip => return Some("gzip"),
             "deflate" if accept.deflate => return Some("deflate"),
             _ => {}
         }
@@ -200,7 +200,7 @@ mod tests {
             algorithms: Some(vec![]),
             level: None,
             min_bytes: None,
-                    types: None,
+            types: None,
         });
         assert!(effective(&cfg).is_none());
     }
@@ -213,7 +213,8 @@ mod tests {
             min_bytes: 1024,
             types: Vec::new(),
         };
-        let accept = AcceptEncoding { zstd: false,
+        let accept = AcceptEncoding {
+            zstd: false,
             gzip: true,
             ..Default::default()
         };
@@ -228,7 +229,8 @@ mod tests {
             min_bytes: 0,
             types: Vec::new(),
         };
-        let accept = AcceptEncoding { zstd: false,
+        let accept = AcceptEncoding {
+            zstd: false,
             brotli: true,
             gzip: true,
             deflate: false,
@@ -243,7 +245,7 @@ mod tests {
             algorithms: Some(vec!["gzip".to_owned()]),
             level: Some(9),
             min_bytes: Some(512),
-                    types: None,
+            types: None,
         });
         let opts = effective(&cfg).unwrap();
         assert_eq!(opts.algorithms, vec!["gzip"]);
@@ -258,7 +260,7 @@ mod tests {
             algorithms: None,
             level: None,
             min_bytes: None,
-                    types: None,
+            types: None,
         });
         let opts = effective(&cfg).unwrap();
         assert!(!opts.algorithms.is_empty());
@@ -275,7 +277,8 @@ mod tests {
             types: Vec::new(),
         };
         // brotli NOT accepted — should fall back to gzip.
-        let accept = AcceptEncoding { zstd: false,
+        let accept = AcceptEncoding {
+            zstd: false,
             brotli: false,
             gzip: true,
             deflate: false,
@@ -291,7 +294,8 @@ mod tests {
             min_bytes: 0,
             types: Vec::new(),
         };
-        let accept = AcceptEncoding { zstd: false,
+        let accept = AcceptEncoding {
+            zstd: false,
             brotli: false,
             gzip: false,
             deflate: true,
@@ -308,7 +312,8 @@ mod tests {
             types: Vec::new(),
         };
         // Client accepts nothing.
-        let accept = AcceptEncoding { zstd: false,
+        let accept = AcceptEncoding {
+            zstd: false,
             brotli: false,
             gzip: false,
             deflate: false,
@@ -406,7 +411,10 @@ mod tests {
             types: Vec::new(),
         };
         // Only zstd accepted.
-        let accept = AcceptEncoding { zstd: true, ..Default::default() };
+        let accept = AcceptEncoding {
+            zstd: true,
+            ..Default::default()
+        };
         assert_eq!(best_encoding(&opts, &accept, 2000), Some("zstd"));
     }
 
@@ -419,19 +427,31 @@ mod tests {
             types: Vec::new(),
         };
         // Both br and zstd accepted — br wins (listed first).
-        let accept = AcceptEncoding { brotli: true, zstd: true, ..Default::default() };
+        let accept = AcceptEncoding {
+            brotli: true,
+            zstd: true,
+            ..Default::default()
+        };
         assert_eq!(best_encoding(&opts, &accept, 2000), Some("br"));
     }
 
     // ── is_compressible_type ──────────────────────────────────────────────────
 
     fn opts_no_types() -> CompressOptions {
-        CompressOptions { algorithms: vec![], level: 6, min_bytes: 0, types: Vec::new() }
+        CompressOptions {
+            algorithms: vec![],
+            level: 6,
+            min_bytes: 0,
+            types: Vec::new(),
+        }
     }
 
     #[test]
     fn text_html_is_compressible() {
-        assert!(is_compressible_type("text/html; charset=utf-8", &opts_no_types()));
+        assert!(is_compressible_type(
+            "text/html; charset=utf-8",
+            &opts_no_types()
+        ));
     }
 
     #[test]

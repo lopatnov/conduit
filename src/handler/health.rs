@@ -88,7 +88,13 @@ impl LocalHandlerImpl for HealthHandler {
 mod tests {
     use super::*;
 
-    fn info(url: &str, healthy: bool, latency_ms: Option<u64>, ejected: bool, consec_5xx: u32) -> UpstreamHealthInfo {
+    fn info(
+        url: &str,
+        healthy: bool,
+        latency_ms: Option<u64>,
+        ejected: bool,
+        consec_5xx: u32,
+    ) -> UpstreamHealthInfo {
         UpstreamHealthInfo {
             url: url.to_owned(),
             healthy,
@@ -107,8 +113,8 @@ mod tests {
     #[test]
     fn upstreams_included_in_body() {
         let infos = [
-            info("http://a:4000", true,  Some(12), false, 0),
-            info("http://b:4000", false, None,     true,  5),
+            info("http://a:4000", true, Some(12), false, 0),
+            info("http://b:4000", false, None, true, 5),
         ];
         let body = build_health_body(&infos);
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();

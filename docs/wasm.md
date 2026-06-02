@@ -173,9 +173,16 @@ Any language that compiles to `wasm32-unknown-unknown` (no OS dependencies) work
 | ------------------ | --------------------------------------------------------- | ----------------------------------------------------------------------- |
 | **Rust**           | `cargo build --target wasm32-unknown-unknown`             | Best ecosystem for WASM; zero-cost abstractions                         |
 | **C / C++**        | `clang --target=wasm32 -nostdlib`                         | Low-level, minimal binary size                                          |
-| **Go**             | [TinyGo](https://tinygo.org/) `tinygo build -target=wasi` | Full Go syntax; TinyGo required (standard `go` produces too-large WASM) |
+| **Go**             | [TinyGo](https://tinygo.org/) `tinygo build -target=wasip1` | Full Go syntax; TinyGo required. Use `wasip1` (not `wasi`) target — see note below |
 | **AssemblyScript** | `asc` (AssemblyScript compiler)                           | TypeScript-like syntax; designed for WASM                               |
 | **Zig**            | `zig build-lib -target wasm32-freestanding`               | Systems language with excellent WASM support                            |
+
+> **TinyGo / WASI note:** Conduit only registers imports under the `"conduit"`
+> namespace — it does **not** implement `wasi_snapshot_preview1`. TinyGo's
+> `-target=wasi` produces modules that import WASI functions; these will fail
+> to link at instantiation time with "unknown import" errors. Use
+> `-target=wasip1` (TinyGo ≥ 0.28) or `-target=wasm` (freestanding) instead,
+> and declare host functions with `//go:wasmimport conduit <funcname>`.
 
 ---
 
@@ -604,7 +611,7 @@ func main() {}
 
 ```bash
 # Install TinyGo: https://tinygo.org/getting-started/install/
-tinygo build -o api_key_check.wasm -target=wasi ./plugin.go
+tinygo build -o api_key_check.wasm -target=wasip1 ./plugin.go
 # Output: api_key_check.wasm  ← you choose the name in -o
 ```
 
@@ -944,7 +951,7 @@ clang --target=wasm32 -nostdlib \
 
 ```bash
 # Install TinyGo: https://tinygo.org/getting-started/install/
-tinygo build -o plugin.wasm -target=wasi ./plugin.go
+tinygo build -o plugin.wasm -target=wasip1 ./plugin.go
 ```
 
 ### AssemblyScript — build
@@ -974,7 +981,8 @@ wasm-opt -Os -o plugin-opt.wasm plugin.wasm
   between requests, no global variables visible across calls.
 - WASM execution is **synchronous** and runs in the request-handling thread.
 - There is **no network or filesystem access** from within the WASM sandbox —
-  only the 17 host functions listed above.
+  only the host functions listed above (17 in the request phase, plus 3
+  additional response-phase functions available in `on_response`).
 - **Fuel limit:** 10,000,000 Wasmtime fuel units per invocation (both
   `on_request` and `on_response`). Each WASM instruction consumes one unit.
   A plugin that exceeds the limit is terminated and fails open (request

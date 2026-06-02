@@ -51,13 +51,13 @@ The smallest useful configuration.
 
 ```yaml
 # examples/minimal.yaml
-port: 3000
+port: 8080
 static: ./dist
 proxy:
   /api: "http://localhost:4000"
 ```
 
-```
+```text
 GET /            → serves ./dist/index.html
 GET /styles.css  → serves ./dist/styles.css
 GET /api/users   → proxied to http://localhost:4000/api/users

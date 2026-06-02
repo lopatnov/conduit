@@ -483,7 +483,10 @@ pub struct SecurityHeadersOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hsts_max_age_secs: Option<u64>,
     /// Add `includeSubDomains` to the HSTS header (default: `true` when `hstsMaxAgeSecs` is set).
-    #[serde(rename = "hstsIncludeSubDomains", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "hstsIncludeSubDomains",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub hsts_include_subdomains: Option<bool>,
     /// Add `preload` directive to the HSTS header for submission to the preload list.
     #[serde(rename = "hstsPreload", skip_serializing_if = "Option::is_none")]
@@ -938,7 +941,10 @@ pub struct LimitsConfig {
     /// memory is reclaimed.  `None` means unlimited (default Pingora behaviour).
     ///
     /// Equivalent to nginx's `keepalive_requests`.
-    #[serde(rename = "keepaliveRequestLimit", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "keepaliveRequestLimit",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub keepalive_request_limit: Option<u32>,
     /// Inflight load fraction at which low-priority routes are shed (0.0–1.0).
     ///
@@ -973,7 +979,10 @@ pub struct LimitsConfig {
     /// ```json
     /// { "maxConnectionsPerIp": 20 }
     /// ```
-    #[serde(rename = "maxConnectionsPerIp", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "maxConnectionsPerIp",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub max_connections_per_ip: Option<u64>,
 }
 

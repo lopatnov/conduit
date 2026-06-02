@@ -138,8 +138,7 @@ fn route_site(
     client_ip: &str,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
-    #[cfg_attr(not(feature = "upload"), allow(unused_variables))]
-    upload_addr: Option<SocketAddr>,
+    #[cfg_attr(not(feature = "upload"), allow(unused_variables))] upload_addr: Option<SocketAddr>,
 ) -> RouteResult {
     let site_label = crate::proxy::health::site_label(&site.host, site.port);
 
@@ -1178,7 +1177,7 @@ mod tests {
             conditions: vec!["5xx".to_string()],
             backoff_ms: None,
             budget_percent: None,
-                backoff_jitter: None,
+            backoff_jitter: None,
         };
         let (url, state) = pick_with_retry(urls, "r", &counters, &retry).unwrap();
         assert_eq!(url, "http://a:4000");
@@ -1196,7 +1195,7 @@ mod tests {
             conditions: vec!["connection_error".to_string()],
             backoff_ms: Some(50),
             budget_percent: None,
-                backoff_jitter: None,
+            backoff_jitter: None,
         };
         let (url, state) = pick_with_retry(urls.clone(), "r", &counters, &retry).unwrap();
         assert!(urls.contains(&url));
@@ -1212,7 +1211,7 @@ mod tests {
             conditions: vec![],
             backoff_ms: None,
             budget_percent: None,
-                backoff_jitter: None,
+            backoff_jitter: None,
         };
         assert!(pick_with_retry(vec![], "r", &counters, &retry).is_none());
     }
@@ -1292,7 +1291,7 @@ mod tests {
             conditions: vec!["5xx".to_string()],
             backoff_ms: None,
             budget_percent: None,
-                backoff_jitter: None,
+            backoff_jitter: None,
         };
         let (url, retry, is_lc) = pick_url_by_strategy(
             urls.clone(),

@@ -83,10 +83,9 @@ pub fn validate_cert_key_pem(cert_pem: &str, key_pem: &str) -> anyhow::Result<()
     use rustls_pemfile::Item;
 
     // Parse certificates
-    let cert_items: Vec<Item> =
-        rustls_pemfile::read_all(&mut BufReader::new(cert_pem.as_bytes()))
-            .collect::<Result<_, _>>()
-            .map_err(|e| anyhow::anyhow!("failed to parse cert PEM: {e}"))?;
+    let cert_items: Vec<Item> = rustls_pemfile::read_all(&mut BufReader::new(cert_pem.as_bytes()))
+        .collect::<Result<_, _>>()
+        .map_err(|e| anyhow::anyhow!("failed to parse cert PEM: {e}"))?;
 
     let certs: Vec<CertificateDer<'static>> = cert_items
         .into_iter()
@@ -104,17 +103,16 @@ pub fn validate_cert_key_pem(cert_pem: &str, key_pem: &str) -> anyhow::Result<()
     }
 
     // Parse private key
-    let key_items: Vec<Item> =
-        rustls_pemfile::read_all(&mut BufReader::new(key_pem.as_bytes()))
-            .collect::<Result<_, _>>()
-            .map_err(|e| anyhow::anyhow!("failed to parse key PEM: {e}"))?;
+    let key_items: Vec<Item> = rustls_pemfile::read_all(&mut BufReader::new(key_pem.as_bytes()))
+        .collect::<Result<_, _>>()
+        .map_err(|e| anyhow::anyhow!("failed to parse key PEM: {e}"))?;
 
     let key: PrivateKeyDer<'static> = key_items
         .into_iter()
         .find_map(|item| match item {
             Item::Pkcs1Key(k) => Some(PrivateKeyDer::Pkcs1(k.clone_key())),
             Item::Pkcs8Key(k) => Some(PrivateKeyDer::Pkcs8(k.clone_key())),
-            Item::Sec1Key(k)  => Some(PrivateKeyDer::Sec1(k.clone_key())),
+            Item::Sec1Key(k) => Some(PrivateKeyDer::Sec1(k.clone_key())),
             _ => None,
         })
         .ok_or_else(|| anyhow::anyhow!("no private key found in key PEM"))?;
@@ -172,9 +170,10 @@ mod tests {
         let (_, key) = generate_self_signed();
         let result = validate_cert_key_pem("", &key);
         assert!(result.is_err(), "empty cert PEM must be rejected");
-        assert!(
-            result.unwrap_err().to_string().contains("no X.509 certificates"),
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no X.509 certificates"),);
     }
 
     #[test]
@@ -182,9 +181,7 @@ mod tests {
         let (cert, _) = generate_self_signed();
         let result = validate_cert_key_pem(&cert, "");
         assert!(result.is_err(), "empty key PEM must be rejected");
-        assert!(
-            result.unwrap_err().to_string().contains("no private key"),
-        );
+        assert!(result.unwrap_err().to_string().contains("no private key"),);
     }
 
     #[test]

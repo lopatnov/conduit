@@ -147,7 +147,11 @@ fn certs_reload_accepts_valid_pair() {
         .send()
         .expect("POST /certs/reload");
 
-    assert_eq!(resp.status().as_u16(), 200, "valid cert/key must return 200");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "valid cert/key must return 200"
+    );
     let body: serde_json::Value = resp.json().unwrap();
     assert_eq!(body["status"], "ok");
     assert!(body["cert_path"].is_string());
@@ -158,7 +162,11 @@ fn certs_reload_accepts_valid_pair() {
     let written = std::fs::read_to_string(&cert_path).unwrap();
     assert_eq!(written.trim(), new_cert.trim(), "cert file must be updated");
     let written_key = std::fs::read_to_string(&key_path).unwrap();
-    assert_eq!(written_key.trim(), new_key.trim(), "key file must be updated");
+    assert_eq!(
+        written_key.trim(),
+        new_key.trim(),
+        "key file must be updated"
+    );
 }
 
 #[test]
@@ -174,7 +182,11 @@ fn certs_reload_rejects_mismatched_pair() {
         .send()
         .expect("POST /certs/reload mismatched");
 
-    assert_eq!(resp.status().as_u16(), 400, "mismatched pair must return 400");
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "mismatched pair must return 400"
+    );
     let body: serde_json::Value = resp.json().unwrap();
     assert_eq!(body["status"], "error");
 }

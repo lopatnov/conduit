@@ -294,7 +294,7 @@ compile-time feature-flag system so the binary stays lean for simple deployments
 - **Kubernetes CRD provider** (`--features kubernetes`) — `ConduitSite` custom
   resource via `kube::CustomResource`.  `KubernetesProvider`: list + watch pattern.
   `--kubernetes-namespace` CLI flag; `"*"` watches all namespaces.
-  CRD manifest: `contrib/k8s/conduit.io_conduitsites.yaml`.
+  CRD manifest: `contrib/k8s/conduitsite-crd.yaml`.
 
 - **Feature flag startup warnings** — When a config field requires a feature
   that was not compiled in (e.g. `jwtAuth` without `--features jwt`), Conduit
@@ -326,7 +326,7 @@ compile-time feature-flag system so the binary stays lean for simple deployments
 
 ### Added — Build system
 
-- **13 optional compile-time features** — `jwt`, `consumers`, `forward-auth`,
+- **14 optional compile-time features** — `jwt`, `consumers`, `forward-auth`,
   `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`,
   `fault-injection`, `otlp`, `kubernetes`.  Default build (`default = []`) is
   the minimal standard proxy.  `--features full` enables everything.  Binary

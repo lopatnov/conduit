@@ -839,10 +839,7 @@ fn print_upstream_table(addr: &str) {
     println!("{}", "─".repeat(url_w + 42)); // println! used to avoid format! overhead
 
     for entry in &flat {
-        let url = entry
-            .get("url")
-            .and_then(|v| v.as_str())
-            .unwrap_or("?");
+        let url = entry.get("url").and_then(|v| v.as_str()).unwrap_or("?");
         let healthy = entry
             .get("healthy")
             .and_then(|v| v.as_bool())
@@ -871,11 +868,7 @@ fn print_upstream_table(addr: &str) {
     println!();
     let healthy_count = flat
         .iter()
-        .filter(|e| {
-            e.get("healthy")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-        })
+        .filter(|e| e.get("healthy").and_then(|v| v.as_bool()).unwrap_or(false))
         .count();
     println!("{}/{} upstreams healthy", healthy_count, flat.len());
 }

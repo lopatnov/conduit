@@ -771,12 +771,31 @@ struct IpDenyBody {
     cidr: String,
 }
 
+/// Validate that a string is a valid IP address or CIDR notation.
+fn validate_cidr(s: &str) -> bool {
+    if let Some((addr_str, prefix_str)) = s.split_once('/') {
+        if let Ok(prefix) = prefix_str.parse::<u32>() {
+            if let Ok(addr) = addr_str.parse::<std::net::IpAddr>() {
+                let max_prefix = if addr.is_ipv4() { 32 } else { 128 };
+                return prefix <= max_prefix;
+            }
+        }
+        return false;
+    }
+    s.parse::<std::net::IpAddr>().is_ok()
+}
+
 /// `POST /ip-deny` — add a CIDR to the runtime deny-list.
 async fn ip_deny_add_handler(
     State(state): State<Arc<AppState>>,
     Json(body): Json<IpDenyBody>,
 ) -> Json<Value> {
     let cidr = body.cidr.trim().to_owned();
+    if !validate_cidr(&cidr) {
+        return Json(
+            json!({ "status": "error", "message": format!("invalid CIDR or IP address: {cidr:?}") }),
+        );
+    }
     {
         let mut list = state
             .dynamic_deny

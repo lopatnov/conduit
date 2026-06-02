@@ -213,8 +213,11 @@ fn compile_wat_to_file(dir: &tempfile::TempDir, name: &str, wat_src: &str) -> St
 
 /// Helper: build a gate config where all requests go to an echo upstream.
 fn api_gate_config(
-    port: u16, admin_port: u16, echo_port: u16,
-    script: &str, api_key: &str,
+    port: u16,
+    admin_port: u16,
+    echo_port: u16,
+    script: &str,
+    api_key: &str,
 ) -> serde_json::Value {
     serde_json::json!({
         "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
@@ -238,7 +241,8 @@ fn api_gate_config(
 fn demo_rhai_api_gate_missing_key_returns_401() {
     let dir = tempfile::tempdir().unwrap();
     let script = write_script(
-        &dir, "api-gate.rhai",
+        &dir,
+        "api-gate.rhai",
         include_str!("../examples/middleware-demo/api-gate.rhai"),
     );
     let echo_port = free_port();
@@ -260,7 +264,8 @@ fn demo_rhai_api_gate_missing_key_returns_401() {
 fn demo_rhai_api_gate_wrong_key_returns_403() {
     let dir = tempfile::tempdir().unwrap();
     let script = write_script(
-        &dir, "api-gate.rhai",
+        &dir,
+        "api-gate.rhai",
         include_str!("../examples/middleware-demo/api-gate.rhai"),
     );
     let echo_port = free_port();
@@ -284,7 +289,8 @@ fn demo_rhai_api_gate_wrong_key_returns_403() {
 fn demo_rhai_api_gate_correct_key_reaches_upstream() {
     let dir = tempfile::tempdir().unwrap();
     let script = write_script(
-        &dir, "api-gate.rhai",
+        &dir,
+        "api-gate.rhai",
         include_str!("../examples/middleware-demo/api-gate.rhai"),
     );
     let echo_port = free_port();
@@ -299,10 +305,17 @@ fn demo_rhai_api_gate_correct_key_reaches_upstream() {
         .header("x-api-key", "correct-key")
         .send()
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 200, "correct key must reach upstream (200)");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "correct key must reach upstream (200)"
+    );
     let body: serde_json::Value = resp.json().unwrap_or_default();
     // Echo returns the request headers it received.
-    assert!(body.get("headers").is_some(), "echo must return headers object");
+    assert!(
+        body.get("headers").is_some(),
+        "echo must return headers object"
+    );
 }
 
 // ── Rhai response-enricher demo ───────────────────────────────────────────────
@@ -341,7 +354,9 @@ fn demo_rhai_response_enricher_adds_served_by() {
     let resp = reqwest::blocking::get(srv.url("/")).unwrap();
     assert_eq!(resp.status().as_u16(), 200);
     assert_eq!(
-        resp.headers().get("x-served-by").and_then(|v| v.to_str().ok()),
+        resp.headers()
+            .get("x-served-by")
+            .and_then(|v| v.to_str().ok()),
         Some("test-api"),
         "response enricher must inject X-Served-By: test-api"
     );
@@ -386,9 +401,13 @@ fn demo_wasm_header_injector_injects_x_wasm_plugin() {
     // The upstream echo returns the headers it received.
     // We check that X-Wasm-Plugin arrived at the echo server.
     let body: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
-    let headers = body.get("headers").cloned().unwrap_or(serde_json::Value::Null);
+    let headers = body
+        .get("headers")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     assert_eq!(
-        headers.get("x-wasm-plugin")
+        headers
+            .get("x-wasm-plugin")
             .or_else(|| headers.get("X-Wasm-Plugin"))
             .and_then(|v| v.as_str()),
         Some("header-injector/1.0"),
@@ -427,7 +446,9 @@ fn demo_wasm_response_tagger_adds_processed_by() {
     let srv = common::TestServer::start_with_config(port, admin_port, cfg);
     let resp = reqwest::blocking::get(srv.url("/")).unwrap();
     assert_eq!(
-        resp.headers().get("x-processed-by").and_then(|v| v.to_str().ok()),
+        resp.headers()
+            .get("x-processed-by")
+            .and_then(|v| v.to_str().ok()),
         Some("wasm"),
         "WASM response tagger must inject X-Processed-By: wasm"
     );
@@ -465,7 +486,10 @@ fn rhai_infinite_loop_aborts_gracefully() {
         .build()
         .unwrap();
     let resp = client.get(srv.url("/__health__")).send();
-    assert!(resp.is_ok(), "server must still respond after aborting infinite loop script");
+    assert!(
+        resp.is_ok(),
+        "server must still respond after aborting infinite loop script"
+    );
 }
 
 /// A Rhai script allocating a huge string is bounded by the engine's
@@ -514,8 +538,11 @@ true
         .send()
         .expect("server must respond");
     // fail-open: script errors → request passes through
-    assert_eq!(resp.status().as_u16(), 200,
-        "script resource limit error must be fail-open (request passes)");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "script resource limit error must be fail-open (request passes)"
+    );
 }
 
 // ── Feature-flag warning tests ────────────────────────────────────────────────
@@ -525,8 +552,9 @@ true
 #[cfg(not(feature = "rhai"))]
 fn rhai_without_feature_generates_warning() {
     let config = conduit::config::from_str(
-        r#"{ "port": 8080, "middleware": [{ "type": "script", "path": "x.rhai" }] }"#
-    ).expect("parse ok");
+        r#"{ "port": 8080, "middleware": [{ "type": "script", "path": "x.rhai" }] }"#,
+    )
+    .expect("parse ok");
     let warnings = conduit::config::validate::feature_warnings(&config);
     assert!(
         warnings.iter().any(|w| w.contains("rhai")),
@@ -538,9 +566,9 @@ fn rhai_without_feature_generates_warning() {
 #[test]
 #[cfg(not(feature = "tcp"))]
 fn tcp_without_feature_generates_warning() {
-    let config = conduit::config::from_str(
-        r#"{ "port": 8080, "tcp": { "targets": ["db:5432"] } }"#
-    ).expect("parse ok");
+    let config =
+        conduit::config::from_str(r#"{ "port": 8080, "tcp": { "targets": ["db:5432"] } }"#)
+            .expect("parse ok");
     let warnings = conduit::config::validate::feature_warnings(&config);
     assert!(
         warnings.iter().any(|w| w.contains("tcp")),
@@ -554,8 +582,9 @@ fn tcp_without_feature_generates_warning() {
 fn acme_without_feature_generates_warning() {
     // AcmeConfig requires email field
     let config = conduit::config::from_str(
-        r#"{ "port": 443, "tls": { "acme": { "email": "admin@example.com" } } }"#
-    ).expect("parse ok");
+        r#"{ "port": 443, "tls": { "acme": { "email": "admin@example.com" } } }"#,
+    )
+    .expect("parse ok");
     let warnings = conduit::config::validate::feature_warnings(&config);
     assert!(
         warnings.iter().any(|w| w.contains("acme")),
@@ -582,8 +611,9 @@ fn redis_without_feature_generates_warning() {
 #[cfg(not(feature = "fault-injection"))]
 fn fault_injection_without_feature_generates_warning() {
     let config = conduit::config::from_str(
-        r#"{ "port": 8080, "faultInjection": { "abort": { "percent": 10, "status": 503 } } }"#
-    ).expect("parse ok");
+        r#"{ "port": 8080, "faultInjection": { "abort": { "percent": 10, "status": 503 } } }"#,
+    )
+    .expect("parse ok");
     let warnings = conduit::config::validate::feature_warnings(&config);
     assert!(
         warnings.iter().any(|w| w.contains("fault")),
@@ -596,8 +626,9 @@ fn fault_injection_without_feature_generates_warning() {
 #[cfg(not(feature = "forward-auth"))]
 fn forward_auth_without_feature_generates_warning() {
     let config = conduit::config::from_str(
-        r#"{ "port": 8080, "forwardAuth": { "url": "http://auth:4000/verify" } }"#
-    ).expect("parse ok");
+        r#"{ "port": 8080, "forwardAuth": { "url": "http://auth:4000/verify" } }"#,
+    )
+    .expect("parse ok");
     let warnings = conduit::config::validate::feature_warnings(&config);
     assert!(
         warnings.iter().any(|w| w.contains("forward-auth")),
@@ -610,8 +641,9 @@ fn forward_auth_without_feature_generates_warning() {
 #[cfg(not(feature = "upload"))]
 fn upload_without_feature_generates_warning() {
     let config = conduit::config::from_str(
-        r#"{ "port": 8080, "upload": { "path": "/upload", "dir": "/tmp/uploads" } }"#
-    ).expect("parse ok");
+        r#"{ "port": 8080, "upload": { "path": "/upload", "dir": "/tmp/uploads" } }"#,
+    )
+    .expect("parse ok");
     let warnings = conduit::config::validate::feature_warnings(&config);
     assert!(
         warnings.iter().any(|w| w.contains("upload")),

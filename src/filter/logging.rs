@@ -40,8 +40,12 @@ pub fn write_access_log(
         Some(LoggingConfig::Format(f)) => (f, None, None, false),
         Some(LoggingConfig::Options(opts)) => {
             let fmt = opts.format.as_ref().unwrap_or(&LogFormat::Combined);
-            (fmt, opts.file.as_deref(), opts.skip_paths.as_deref(),
-             opts.strip_query.unwrap_or(false))
+            (
+                fmt,
+                opts.file.as_deref(),
+                opts.skip_paths.as_deref(),
+                opts.strip_query.unwrap_or(false),
+            )
         }
     };
 
@@ -340,7 +344,10 @@ mod tests {
         if let Some(ms) = upstream_ms {
             obj["upstream_ms"] = serde_json::Value::from(ms);
         }
-        assert!(obj.get("upstream_ms").is_none(), "upstream_ms must be absent when None");
+        assert!(
+            obj.get("upstream_ms").is_none(),
+            "upstream_ms must be absent when None"
+        );
     }
 
     // ── sanitize_log_field ────────────────────────────────────────────────────
@@ -361,7 +368,10 @@ mod tests {
         let out = sanitize_log_field(malicious);
         assert!(!out.contains('\r'), "\\r must be removed");
         assert!(!out.contains('\n'), "\\n must be removed");
-        assert!(out.contains("Fake-Log-Entry"), "rest of string must survive");
+        assert!(
+            out.contains("Fake-Log-Entry"),
+            "rest of string must survive"
+        );
     }
 
     #[test]

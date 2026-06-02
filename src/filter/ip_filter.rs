@@ -401,10 +401,7 @@ mod tests {
             &cfg
         ));
         // IP outside denied range → allowed
-        assert!(apply_ip_filter(
-            Some("10.0.0.1".parse().unwrap()),
-            &cfg
-        ));
+        assert!(apply_ip_filter(Some("10.0.0.1".parse().unwrap()), &cfg));
     }
 
     #[test]
@@ -415,22 +412,13 @@ mod tests {
             trust_proxy: None,
             dry_run: None,
         };
-        assert!(!apply_ip_filter(
-            Some("203.0.113.5".parse().unwrap()),
-            &cfg
-        ));
-        assert!(apply_ip_filter(
-            Some("203.0.113.6".parse().unwrap()),
-            &cfg
-        ));
+        assert!(!apply_ip_filter(Some("203.0.113.5".parse().unwrap()), &cfg));
+        assert!(apply_ip_filter(Some("203.0.113.6".parse().unwrap()), &cfg));
     }
 
     #[test]
     fn empty_dynamic_deny_allows_all() {
         let cfg = IpFilterConfig::default();
-        assert!(apply_ip_filter(
-            Some("1.2.3.4".parse().unwrap()),
-            &cfg
-        ));
+        assert!(apply_ip_filter(Some("1.2.3.4".parse().unwrap()), &cfg));
     }
 }

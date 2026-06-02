@@ -330,7 +330,10 @@ fn fmt_yaml_outputs_yaml() {
         !stdout.trim_start().starts_with('{'),
         "fmt of a .yaml file should output YAML, got: {stdout:.200}"
     );
-    assert!(stdout.contains("sites"), "YAML output should contain 'sites'");
+    assert!(
+        stdout.contains("sites"),
+        "YAML output should contain 'sites'"
+    );
 }
 
 // ── conduit init ─────────────────────────────────────────────────────────────
@@ -339,7 +342,14 @@ fn fmt_yaml_outputs_yaml() {
 fn init_yes_generates_valid_config() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out = conduit()
-        .args(["init", "--yes", "--port", "8080", "--proxy", "http://127.0.0.1:4000"])
+        .args([
+            "init",
+            "--yes",
+            "--port",
+            "8080",
+            "--proxy",
+            "http://127.0.0.1:4000",
+        ])
         .current_dir(dir.path())
         .output()
         .expect("run");
@@ -365,9 +375,15 @@ fn init_yes_format_json_generates_json() {
         .current_dir(dir.path())
         .output()
         .expect("run");
-    assert!(out.status.success(), "init --yes --format json should exit 0");
+    assert!(
+        out.status.success(),
+        "init --yes --format json should exit 0"
+    );
     let path = dir.path().join("conduit.json");
-    assert!(path.exists(), "conduit.json should be created with --format json");
+    assert!(
+        path.exists(),
+        "conduit.json should be created with --format json"
+    );
     // Verify the file is valid JSON
     let contents = std::fs::read_to_string(&path).expect("read config");
     serde_json::from_str::<serde_json::Value>(&contents)
@@ -386,8 +402,7 @@ fn init_yes_output_flag_writes_to_specified_path() {
     assert!(out.status.success(), "init --yes --output should exit 0");
     assert!(out_path.exists(), "output file should be created");
     let contents = std::fs::read_to_string(&out_path).expect("read");
-    serde_json::from_str::<serde_json::Value>(&contents)
-        .expect("output file should be valid JSON");
+    serde_json::from_str::<serde_json::Value>(&contents).expect("output file should be valid JSON");
 }
 
 // ── conduit probe ───────────────────────────────────────────────────────────
@@ -609,14 +624,20 @@ fn upstreams_remove_no_server_exits_nonzero() {
     let out = conduit()
         .args([
             "upstreams",
-            "--admin", "127.0.0.1:19881",
+            "--admin",
+            "127.0.0.1:19881",
             "remove",
-            "--route", "/api",
-            "--target", "http://127.0.0.1:4000",
+            "--route",
+            "/api",
+            "--target",
+            "http://127.0.0.1:4000",
         ])
         .output()
         .expect("run");
-    assert!(!out.status.success(), "upstreams remove with no server should exit nonzero");
+    assert!(
+        !out.status.success(),
+        "upstreams remove with no server should exit nonzero"
+    );
 }
 
 #[test]
@@ -624,15 +645,22 @@ fn upstreams_weight_no_server_exits_nonzero() {
     let out = conduit()
         .args([
             "upstreams",
-            "--admin", "127.0.0.1:19882",
+            "--admin",
+            "127.0.0.1:19882",
             "weight",
-            "--route", "/api",
-            "--target", "http://127.0.0.1:4000",
-            "--weight", "2",
+            "--route",
+            "/api",
+            "--target",
+            "http://127.0.0.1:4000",
+            "--weight",
+            "2",
         ])
         .output()
         .expect("run");
-    assert!(!out.status.success(), "upstreams weight with no server should exit nonzero");
+    assert!(
+        !out.status.success(),
+        "upstreams weight with no server should exit nonzero"
+    );
 }
 
 #[test]

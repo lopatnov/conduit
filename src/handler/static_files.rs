@@ -1,8 +1,8 @@
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt as _;
 
 use async_compression::tokio::bufread::{BrotliEncoder, DeflateEncoder, GzipEncoder};
 use async_compression::Level;
@@ -263,7 +263,11 @@ async fn find_index(dir: &Path, options: &StaticOptions) -> Option<PathBuf> {
     let indices = options.index.as_deref().unwrap_or(&defaults);
     for name in indices {
         let p = dir.join(name);
-        if stat_no_symlink(&p).await.map(|m| m.is_file()).unwrap_or(false) {
+        if stat_no_symlink(&p)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+        {
             return Some(p);
         }
     }
@@ -742,7 +746,10 @@ mod tests {
             "null byte must not appear in decoded path: {decoded:?}"
         );
         // The literal `%00` should remain undecoded, not become NUL.
-        assert_eq!(decoded, "file%00.txt", "undecoded %00 must be preserved as-is");
+        assert_eq!(
+            decoded, "file%00.txt",
+            "undecoded %00 must be preserved as-is"
+        );
     }
 
     #[test]

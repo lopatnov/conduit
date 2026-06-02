@@ -677,7 +677,11 @@ fn allowed_hosts_rejects_bad_host() {
         .header("host", "evil.com")
         .send()
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 400, "disallowed Host must return 400");
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "disallowed Host must return 400"
+    );
 }
 
 /// When `allowedHosts` is configured, requests with an allowed Host pass through.
@@ -706,9 +710,13 @@ fn allowed_hosts_passes_good_host() {
 
     let resp = Client::new()
         .get(srv.url("/"))
-        .send()   // reqwest sends Host: 127.0.0.1:<port>
+        .send() // reqwest sends Host: 127.0.0.1:<port>
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 200, "allowed Host must pass through");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "allowed Host must pass through"
+    );
 }
 
 // ── maxBodyBytes chunked bypass ───────────────────────────────────────────────
@@ -732,7 +740,8 @@ fn max_body_bytes_enforced_without_content_length() {
                 let body = format!("received {} bytes", n);
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(), body
+                    body.len(),
+                    body
                 );
                 let _ = s.write_all(resp.as_bytes());
             }
@@ -849,17 +858,21 @@ fn cache_does_not_serve_authorized_responses() {
     let client = Client::new();
 
     // Request 1: with Authorization — must hit upstream.
-    let r1 = client.get(srv.url("/"))
+    let r1 = client
+        .get(srv.url("/"))
         .header("authorization", "Bearer token-user-a")
-        .send().unwrap();
+        .send()
+        .unwrap();
     assert_eq!(r1.status().as_u16(), 200);
     let body1 = r1.text().unwrap();
 
     // Request 2: different user, with Authorization — must ALSO hit upstream,
     // not receive user A's cached response.
-    let r2 = client.get(srv.url("/"))
+    let r2 = client
+        .get(srv.url("/"))
         .header("authorization", "Bearer token-user-b")
-        .send().unwrap();
+        .send()
+        .unwrap();
     let body2 = r2.text().unwrap();
 
     // Both requests must reach the upstream (call count = 2, not 1).
@@ -881,7 +894,10 @@ fn cache_does_not_serve_authorized_responses() {
 #[serial]
 fn post_requests_are_not_retried_on_5xx() {
     use std::io::{Read, Write};
-    use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    };
 
     let call_count = Arc::new(AtomicU32::new(0));
     let cc2 = call_count.clone();
@@ -929,8 +945,10 @@ fn post_requests_are_not_retried_on_5xx() {
 
     // POST must be forwarded exactly ONCE — no retries.
     let calls = call_count.load(Ordering::Relaxed);
-    assert_eq!(calls, 1,
-        "POST must not be retried on 5xx — upstream was called {calls} times");
+    assert_eq!(
+        calls, 1,
+        "POST must not be retried on 5xx — upstream was called {calls} times"
+    );
 }
 
 /// GET requests ARE retried on 5xx (safe, idempotent method).
@@ -938,7 +956,10 @@ fn post_requests_are_not_retried_on_5xx() {
 #[serial]
 fn get_requests_are_retried_on_5xx() {
     use std::io::{Read, Write};
-    use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    };
 
     let call_count = Arc::new(AtomicU32::new(0));
     let cc2 = call_count.clone();
@@ -953,7 +974,8 @@ fn get_requests_are_retried_on_5xx() {
             let (status, body) = if n == 0 { (500, "error") } else { (200, "ok") };
             let resp = format!(
                 "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(), body
+                body.len(),
+                body
             );
             let _ = s.write_all(resp.as_bytes());
         }
@@ -981,8 +1003,11 @@ fn get_requests_are_retried_on_5xx() {
 
     let resp = Client::new().get(srv.url("/")).send().unwrap();
     // First call returns 500 → retried → second call returns 200.
-    assert_eq!(resp.status().as_u16(), 200,
-        "GET should be retried and succeed on second attempt");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "GET should be retried and succeed on second attempt"
+    );
     let calls = call_count.load(Ordering::Relaxed);
     assert_eq!(calls, 2, "upstream must be called twice (1 fail + 1 retry)");
 }
@@ -1025,7 +1050,10 @@ fn rate_limit_burst_allows_burst_requests() {
     let allowed = statuses.iter().filter(|&&s| s == 200).count();
     let rejected = statuses.iter().filter(|&&s| s == 429).count();
     // burst=3 + limit=2 → first 5 requests pass, 6th is rejected.
-    assert!(allowed >= 5, "burst must allow at least 5 requests: {statuses:?}");
+    assert!(
+        allowed >= 5,
+        "burst must allow at least 5 requests: {statuses:?}"
+    );
     assert!(rejected >= 1, "must rate-limit after burst: {statuses:?}");
 }
 
@@ -1064,14 +1092,22 @@ fn reload_returns_warnings_for_wasm_without_feature() {
         srv.rewrite_config(new_cfg);
         let reload_resp = srv.reload();
 
-        assert_eq!(reload_resp["status"], "ok", "reload must succeed: {reload_resp}");
-        let warnings = reload_resp["warnings"].as_array().cloned().unwrap_or_default();
+        assert_eq!(
+            reload_resp["status"], "ok",
+            "reload must succeed: {reload_resp}"
+        );
+        let warnings = reload_resp["warnings"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         assert!(
             !warnings.is_empty(),
             "reload of a config with wasm middleware must include a warning when wasm is not compiled in"
         );
         assert!(
-            warnings.iter().any(|w| w.as_str().unwrap_or("").contains("wasm")),
+            warnings
+                .iter()
+                .any(|w| w.as_str().unwrap_or("").contains("wasm")),
             "warning must mention 'wasm': {warnings:?}"
         );
     }

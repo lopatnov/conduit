@@ -2,11 +2,11 @@ use base64::Engine as _;
 use pingora_proxy::Session;
 use subtle::ConstantTimeEq as _;
 
+#[cfg(feature = "jwt")]
+use crate::config::schema::JwtAuthConfig;
 use crate::config::schema::{ApiKeyConfig, BasicAuthConfig};
 #[cfg(feature = "consumers")]
 use crate::config::schema::{Consumer, ConsumersConfig};
-#[cfg(feature = "jwt")]
-use crate::config::schema::JwtAuthConfig;
 #[cfg(feature = "jwt")]
 use crate::filter::jwt;
 
@@ -152,9 +152,11 @@ pub fn check_api_key(cfg: &ApiKeyConfig, session: &Session) -> bool {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    // Use constant-time comparison so an attacker cannot brute-force API keys
-    // by observing which prefix of a guess matches.
-    cfg.keys.iter().any(|k| ct_eq_str(k, provided))
+    // Compare against ALL keys without early exit — prevents an attacker from
+    // inferring the key's position in the list via response-time differences.
+    cfg.keys
+        .iter()
+        .fold(false, |found, k| found | ct_eq_str(k, provided))
 }
 
 #[cfg(test)]
@@ -413,5 +415,10 @@ fn check_consumer_basic(username: &str, password: &str, session: &Session) -> bo
         None => return false,
     };
 
-    ct_eq_str(provided_user, username) && ct_eq_str(provided_pass, password)
+    // Evaluate both comparisons unconditionally (bitwise AND, not &&) to prevent
+    // username-validity leakage via timing: `&&` would skip the password check
+    // when the username fails, creating a measurable timing difference.
+    let user_ok = ct_eq_str(provided_user, username);
+    let pass_ok = ct_eq_str(provided_pass, password);
+    user_ok & pass_ok
 }

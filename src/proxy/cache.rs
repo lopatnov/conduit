@@ -206,8 +206,8 @@ pub fn response_cacheable(cfg: &CacheConfig, resp: &ResponseHeader) -> RespCache
     let effective_ttl = {
         match parse_cc_directive_opt(resp, "s-maxage") {
             Some(0) => return RespCacheable::Uncacheable(NoCacheReason::OriginNotCache), // s-maxage=0 → don't cache
-            Some(s) => s as u64,  // use upstream's s-maxage value
-            None    => ttl_secs,  // not present → use configured TTL
+            Some(s) => s as u64, // use upstream's s-maxage value
+            None => ttl_secs,    // not present → use configured TTL
         }
     };
     if effective_ttl == 0 {
@@ -399,7 +399,13 @@ mod tests {
 
     #[test]
     fn post_is_not_cached_by_default() {
-        assert!(!should_cache_request(&cfg(60), "POST", false, false, "/api"));
+        assert!(!should_cache_request(
+            &cfg(60),
+            "POST",
+            false,
+            false,
+            "/api"
+        ));
     }
 
     #[test]
@@ -434,7 +440,13 @@ mod tests {
         let mut c = cfg(60);
         c.skip_paths = Some(vec!["/api/auth".into()]);
         assert!(!should_cache_request(&c, "GET", false, false, "/api/auth"));
-        assert!(!should_cache_request(&c, "GET", false, false, "/api/auth/login"));
+        assert!(!should_cache_request(
+            &c,
+            "GET",
+            false,
+            false,
+            "/api/auth/login"
+        ));
     }
 
     #[test]
@@ -628,7 +640,8 @@ mod tests {
     fn set_cookie_response_is_not_cached() {
         use pingora_http::ResponseHeader;
         let mut resp = ResponseHeader::build(200, None).unwrap();
-        resp.insert_header("set-cookie", "session=abc; HttpOnly").unwrap();
+        resp.insert_header("set-cookie", "session=abc; HttpOnly")
+            .unwrap();
         assert!(
             matches!(
                 response_cacheable(&cfg(60), &resp),
@@ -663,7 +676,10 @@ mod tests {
     fn no_store_prevents_caching() {
         let resp = resp_with_cc("no-store");
         assert!(
-            matches!(response_cacheable(&cfg(60), &resp), RespCacheable::Uncacheable(_)),
+            matches!(
+                response_cacheable(&cfg(60), &resp),
+                RespCacheable::Uncacheable(_)
+            ),
             "Cache-Control: no-store must not be cached"
         );
     }
@@ -672,7 +688,10 @@ mod tests {
     fn private_prevents_caching() {
         let resp = resp_with_cc("private");
         assert!(
-            matches!(response_cacheable(&cfg(60), &resp), RespCacheable::Uncacheable(_)),
+            matches!(
+                response_cacheable(&cfg(60), &resp),
+                RespCacheable::Uncacheable(_)
+            ),
             "Cache-Control: private must not be cached by shared proxy"
         );
     }
@@ -681,7 +700,10 @@ mod tests {
     fn no_cache_prevents_caching() {
         let resp = resp_with_cc("no-cache");
         assert!(
-            matches!(response_cacheable(&cfg(60), &resp), RespCacheable::Uncacheable(_)),
+            matches!(
+                response_cacheable(&cfg(60), &resp),
+                RespCacheable::Uncacheable(_)
+            ),
             "Cache-Control: no-cache must not be stored by proxy without revalidation"
         );
     }
@@ -713,7 +735,10 @@ mod tests {
     fn s_maxage_zero_prevents_caching() {
         let resp = resp_with_cc("s-maxage=0");
         assert!(
-            matches!(response_cacheable(&cfg(60), &resp), RespCacheable::Uncacheable(_)),
+            matches!(
+                response_cacheable(&cfg(60), &resp),
+                RespCacheable::Uncacheable(_)
+            ),
             "s-maxage=0 must not be cached"
         );
     }

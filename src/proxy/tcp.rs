@@ -53,8 +53,7 @@ impl TcpProxy {
             .as_deref()
             .map(|s| s.eq_ignore_ascii_case("random"))
             .unwrap_or(false);
-        let connect_timeout =
-            Duration::from_millis(cfg.connect_timeout_ms.unwrap_or(5_000));
+        let connect_timeout = Duration::from_millis(cfg.connect_timeout_ms.unwrap_or(5_000));
         Self {
             targets: cfg.targets.clone(),
             counter: AtomicUsize::new(0),
@@ -103,11 +102,8 @@ impl ServerApp for TcpProxy {
             }
         };
 
-        let upstream_result = tokio::time::timeout(
-            self.connect_timeout,
-            TcpStream::connect(&target),
-        )
-        .await;
+        let upstream_result =
+            tokio::time::timeout(self.connect_timeout, TcpStream::connect(&target)).await;
 
         let mut upstream = match upstream_result {
             Ok(Ok(stream)) => stream,
@@ -166,7 +162,9 @@ mod tests {
     #[test]
     fn round_robin_cycles_through_targets() {
         let proxy = make_proxy(&["a:1", "b:2", "c:3"], None);
-        let picks: Vec<_> = (0..6).map(|_| proxy.pick_target().unwrap().to_owned()).collect();
+        let picks: Vec<_> = (0..6)
+            .map(|_| proxy.pick_target().unwrap().to_owned())
+            .collect();
         // Should cycle: a, b, c, a, b, c
         assert_eq!(picks[0], picks[3]);
         assert_eq!(picks[1], picks[4]);

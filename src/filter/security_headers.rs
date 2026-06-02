@@ -106,8 +106,12 @@ mod tests {
     #[test]
     fn enabled_returns_defaults() {
         let h = header_entries(&SecurityHeadersConfig::Enabled(true));
-        assert!(h.iter().any(|(k, v)| k == "X-Content-Type-Options" && v == "nosniff"));
-        assert!(h.iter().any(|(k, v)| k == "X-Frame-Options" && v == "SAMEORIGIN"));
+        assert!(h
+            .iter()
+            .any(|(k, v)| k == "X-Content-Type-Options" && v == "nosniff"));
+        assert!(h
+            .iter()
+            .any(|(k, v)| k == "X-Frame-Options" && v == "SAMEORIGIN"));
         assert!(h.iter().any(|(k, _)| k == "Referrer-Policy"));
         assert!(h.iter().any(|(k, _)| k == "X-XSS-Protection"));
     }
@@ -119,8 +123,14 @@ mod tests {
             ..Default::default()
         };
         let h = header_entries(&SecurityHeadersConfig::Options(opts));
-        let sts = h.iter().find(|(k, _)| k == "Strict-Transport-Security").unwrap();
-        assert!(sts.1.contains("includeSubDomains"), "includeSubDomains must be on by default");
+        let sts = h
+            .iter()
+            .find(|(k, _)| k == "Strict-Transport-Security")
+            .unwrap();
+        assert!(
+            sts.1.contains("includeSubDomains"),
+            "includeSubDomains must be on by default"
+        );
         assert!(!sts.1.contains("preload"), "preload must be off by default");
     }
 
@@ -133,7 +143,10 @@ mod tests {
             ..Default::default()
         };
         let h = header_entries(&SecurityHeadersConfig::Options(opts));
-        let sts = h.iter().find(|(k, _)| k == "Strict-Transport-Security").unwrap();
+        let sts = h
+            .iter()
+            .find(|(k, _)| k == "Strict-Transport-Security")
+            .unwrap();
         assert!(!sts.1.contains("includeSubDomains"));
         assert!(sts.1.contains("preload"));
     }
@@ -145,9 +158,9 @@ mod tests {
             ..Default::default()
         };
         let h = header_entries(&SecurityHeadersConfig::Options(opts));
-        assert!(h.iter().any(|(k, v)| {
-            k == "Permissions-Policy" && v.contains("geolocation=()")
-        }));
+        assert!(h
+            .iter()
+            .any(|(k, v)| { k == "Permissions-Policy" && v.contains("geolocation=()") }));
     }
 
     #[test]
@@ -159,8 +172,12 @@ mod tests {
             ..Default::default()
         };
         let h = header_entries(&SecurityHeadersConfig::Options(opts));
-        assert!(h.iter().any(|(k, v)| k == "Strict-Transport-Security" && v.starts_with("max-age=31536000")));
-        assert!(h.iter().any(|(k, v)| k == "Content-Security-Policy" && v == "default-src 'self'"));
+        assert!(h
+            .iter()
+            .any(|(k, v)| k == "Strict-Transport-Security" && v.starts_with("max-age=31536000")));
+        assert!(h
+            .iter()
+            .any(|(k, v)| k == "Content-Security-Policy" && v == "default-src 'self'"));
         assert!(h.iter().any(|(k, v)| k == "X-Frame-Options" && v == "DENY"));
     }
 

@@ -159,7 +159,11 @@ pub fn run_init(opts: InitOptions<'_>) -> anyhow::Result<()> {
                     .default(0)
                     .interact()
                     .unwrap_or(0);
-                if choice == 0 { Format::Yaml } else { Format::Json }
+                if choice == 0 {
+                    Format::Yaml
+                } else {
+                    Format::Json
+                }
             }
         });
 
@@ -262,11 +266,11 @@ pub fn run_init(opts: InitOptions<'_>) -> anyhow::Result<()> {
     // ── Logging ──────────────────────────────────────────────────────────────
     let logging_value: Option<Value> = if let Some(fmt) = opts.log {
         match fmt {
-            "dev"      => Some(json!("dev")),
-            "json"     => Some(json!("json")),
+            "dev" => Some(json!("dev")),
+            "json" => Some(json!("json")),
             "combined" => Some(json!("combined")),
-            "none"     => None,
-            other      => {
+            "none" => None,
+            other => {
                 eprintln!("warning: unknown log format '{other}', defaulting to 'dev'");
                 Some(json!("dev"))
             }

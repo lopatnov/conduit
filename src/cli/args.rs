@@ -112,11 +112,11 @@ pub struct InitArgs {
     pub no_health: bool,
 
     /// TLS certificate file (enables manual-cert TLS)
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", requires = "tls_key")]
     pub tls_cert: Option<String>,
 
     /// TLS private key file (required with --tls-cert)
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", requires = "tls_cert")]
     pub tls_key: Option<String>,
 
     /// ACME / Let's Encrypt email (enables auto-TLS)

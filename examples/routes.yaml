@@ -59,12 +59,12 @@
 
   # Only allow connections from private/loopback networks.
   # Any other source IP gets 403 immediately (before auth is checked).
+  # Note: when 'allow' is set, 'deny' is ignored — the allowlist is sufficient.
   ipFilter:
     allow:
       - "127.0.0.1"
       - "10.0.0.0/8"
       - "172.16.0.0/12"
       - "192.168.0.0/16"
-    deny: ["0.0.0.0/0"]
 
   proxy: "http://admin-service:6000"

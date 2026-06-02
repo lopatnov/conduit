@@ -366,7 +366,13 @@ pub fn run_script_response(
 
     // Expose upstream headers as a read-only map via a simple wrapper.
     // Scripts access: upstream.header("Name")
-    scope.push("upstream", ScriptUpstreamView { status: status as i64, headers });
+    scope.push(
+        "upstream",
+        ScriptUpstreamView {
+            status: status as i64,
+            headers,
+        },
+    );
 
     let config_dynamic = plugin_config
         .map(json_to_dynamic)
@@ -723,11 +729,25 @@ mod tests {
         std::fs::write(&p, script).unwrap();
         let path = p.to_str().unwrap().to_owned();
         ast_cache().remove(&path);
-        let ok = run_script(&path, "/", "GET", "", headers(&[("x-api-key", "secret-123")]), Some(&cfg));
+        let ok = run_script(
+            &path,
+            "/",
+            "GET",
+            "",
+            headers(&[("x-api-key", "secret-123")]),
+            Some(&cfg),
+        );
         assert!(matches!(ok, ScriptOutcome::Continue));
         // Wrong key → abort 403.
         ast_cache().remove(&path);
-        let denied = run_script(&path, "/", "GET", "", headers(&[("x-api-key", "wrong")]), Some(&cfg));
+        let denied = run_script(
+            &path,
+            "/",
+            "GET",
+            "",
+            headers(&[("x-api-key", "wrong")]),
+            Some(&cfg),
+        );
         assert!(matches!(denied, ScriptOutcome::Abort { status: 403, .. }));
     }
 
@@ -745,7 +765,10 @@ mod tests {
             if config.max_len > 5 { return true; }
             false
         "#;
-        assert!(matches!(run_with_config(script, cfg), ScriptOutcome::Continue));
+        assert!(matches!(
+            run_with_config(script, cfg),
+            ScriptOutcome::Continue
+        ));
     }
 
     #[test]
@@ -756,6 +779,9 @@ mod tests {
             response.status = 405;
             false
         "#;
-        assert!(matches!(run_with_config(script, cfg), ScriptOutcome::Continue));
+        assert!(matches!(
+            run_with_config(script, cfg),
+            ScriptOutcome::Continue
+        ));
     }
 }

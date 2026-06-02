@@ -94,10 +94,9 @@ sites:
         targets: ["http://admin-ui:3000"]
         stripPrefix: true
 
-    # ── Admin panel: extra Basic Auth layer ───────────────────────────────────
-    # The /admin route is also protected by the site-level apiKey above.
-    # Add Basic Auth as a second factor for the admin panel.
-    # (In routes array this would be per-route; here it's site-wide.)
+    # The /admin route above is protected by the site-level apiKey.
+    # For an additional Basic Auth layer, add basicAuth: at the site level
+    # or use a separate site with its own auth config.
 
     healthCheck: true
     metrics:

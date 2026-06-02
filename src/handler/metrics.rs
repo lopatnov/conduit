@@ -39,8 +39,7 @@ pub async fn handle_metrics(
             .and_then(|v| v.strip_prefix("Bearer "))
             .unwrap_or("");
         // Constant-time comparison — same reasoning as admin API token.
-        let ok = provided.len() == tok.len()
-            && provided.as_bytes().ct_eq(tok.as_bytes()).into();
+        let ok = provided.len() == tok.len() && provided.as_bytes().ct_eq(tok.as_bytes()).into();
         if !ok {
             let mut resp = ResponseHeader::build(401, Some(2 + extra.len()))?;
             resp.insert_header("content-length", "0")?;

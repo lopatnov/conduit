@@ -21,26 +21,26 @@ use bytes::Bytes;
 use pingora_core::Result;
 use pingora_proxy::Session;
 
-use crate::config::schema::{
-    ApiKeyConfig, BasicAuthConfig, CorsConfig, IpFilterConfig,
-    LimitsConfig, MiddlewareEntry, RateLimitConfig,
-};
-#[cfg(feature = "jwt")]
-use crate::config::schema::JwtAuthConfig;
 #[cfg(feature = "consumers")]
 use crate::config::schema::ConsumersConfig;
 #[cfg(feature = "fault-injection")]
 use crate::config::schema::FaultInjectionConfig;
 #[cfg(feature = "forward-auth")]
 use crate::config::schema::ForwardAuthConfig;
+#[cfg(feature = "jwt")]
+use crate::config::schema::JwtAuthConfig;
+use crate::config::schema::{
+    ApiKeyConfig, BasicAuthConfig, CorsConfig, IpFilterConfig, LimitsConfig, MiddlewareEntry,
+    RateLimitConfig,
+};
+#[cfg(feature = "jwt")]
+use crate::filter::jwt;
 use crate::filter::rate_limit::RateLimiter;
 #[cfg(feature = "redis")]
 use crate::filter::rate_limit_redis::RedisRateLimiter;
-use crate::filter::{auth, cors, ip_filter, limits, rate_limit};
-#[cfg(feature = "jwt")]
-use crate::filter::jwt;
 #[cfg(feature = "rhai")]
 use crate::filter::script;
+use crate::filter::{auth, cors, ip_filter, limits, rate_limit};
 use crate::handler::response;
 use uuid::Uuid;
 
@@ -180,8 +180,8 @@ impl RequestFilter for IpGuard {
             return Ok(FilterOutcome::Continue);
         }
 
-        let blocked = !ip_filter::is_allowed(&self.cfg, ctx.session)
-            || self.is_dynamic_denied(ctx.session);
+        let blocked =
+            !ip_filter::is_allowed(&self.cfg, ctx.session) || self.is_dynamic_denied(ctx.session);
         if blocked {
             // Dry-run mode (nginx `limit_conn_module dry_run` pattern):
             // log the violation but allow the request through.
@@ -254,7 +254,8 @@ impl RequestFilter for CorsPreflight {
         }
         let origin = self.origin.as_deref().unwrap_or("");
         let allow_pna = cors::requests_private_network_access(ctx.session);
-        cors::handle_preflight(ctx.session, &self.cfg, origin, &self.sec_headers, allow_pna).await?;
+        cors::handle_preflight(ctx.session, &self.cfg, origin, &self.sec_headers, allow_pna)
+            .await?;
         ctx.inflight.fetch_sub(1, Ordering::Relaxed);
         Ok(FilterOutcome::Handled)
     }
@@ -472,11 +473,7 @@ impl RequestFilter for ConsumersGuard {
         // and send it to upstream to impersonate a privileged consumer.  We
         // always overwrite this header with the identity we compute ourselves,
         // but stripping it first ensures it is absent on skip-paths too.
-        let id_header_name = self
-            .cfg
-            .id_header
-            .as_deref()
-            .unwrap_or("x-consumer-id");
+        let id_header_name = self.cfg.id_header.as_deref().unwrap_or("x-consumer-id");
         let _ = ctx.session.req_header_mut().remove_header(id_header_name);
 
         // Identify consumer from credentials in the request.
@@ -494,7 +491,11 @@ impl RequestFilter for ConsumersGuard {
                 .rate_limiter
                 .entry(key)
                 .or_insert_with(|| {
-                    crate::filter::rate_limit::TokenBucket::new(rl_cfg.limit, rl_cfg.burst.unwrap_or(0), rl_cfg.window_secs)
+                    crate::filter::rate_limit::TokenBucket::new(
+                        rl_cfg.limit,
+                        rl_cfg.burst.unwrap_or(0),
+                        rl_cfg.window_secs,
+                    )
                 })
                 .try_consume();
             if !allowed {
@@ -637,7 +638,7 @@ fn forward_auth_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(3)) // TCP+TLS max
-            .timeout(std::time::Duration::from_secs(10))        // total request max
+            .timeout(std::time::Duration::from_secs(10)) // total request max
             .build()
             .unwrap_or_default()
     })
@@ -852,7 +853,11 @@ pub type ScriptGuard = MiddlewareGuard;
 
 #[async_trait]
 impl RequestFilter for MiddlewareGuard {
-    async fn apply<'a>(&self, #[cfg_attr(not(any(feature = "rhai", feature = "wasm")), allow(unused_variables))] ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
+    async fn apply<'a>(
+        &self,
+        #[cfg_attr(not(any(feature = "rhai", feature = "wasm")), allow(unused_variables))]
+        ctx: &mut FilterContext<'a>,
+    ) -> Result<FilterOutcome> {
         for entry in &self.middleware {
             match entry.r#type.as_str() {
                 // ── Rhai scripting ────────────────────────────────────────────
@@ -867,14 +872,16 @@ impl RequestFilter for MiddlewareGuard {
                     // call (subsequent calls use the AST cache).  Use
                     // `block_in_place` so the Tokio scheduler knows this thread
                     // may block and can temporarily move other tasks elsewhere.
-                    let outcome = tokio::task::block_in_place(|| script::run_script(
-                        path,
-                        &self.req_path,
-                        &self.method,
-                        &self.query,
-                        self.headers.clone(),
-                        entry.config.as_ref(),
-                    ));
+                    let outcome = tokio::task::block_in_place(|| {
+                        script::run_script(
+                            path,
+                            &self.req_path,
+                            &self.method,
+                            &self.query,
+                            self.headers.clone(),
+                            entry.config.as_ref(),
+                        )
+                    });
                     match outcome {
                         script::ScriptOutcome::Continue => {}
                         script::ScriptOutcome::Abort {

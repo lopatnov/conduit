@@ -200,13 +200,18 @@ pub fn start_echo_upstream(port: u16) -> std::thread::JoinHandle<()> {
             let first = lines.next().unwrap_or("");
             let mut parts = first.split_whitespace();
             let method = parts.next().unwrap_or("GET").to_owned();
-            let path   = parts.next().unwrap_or("/").to_owned();
+            let path = parts.next().unwrap_or("/").to_owned();
 
             let mut headers = serde_json::Map::new();
             for line in &mut lines {
-                if line.is_empty() { break; }
+                if line.is_empty() {
+                    break;
+                }
                 if let Some((k, v)) = line.split_once(": ") {
-                    headers.insert(k.to_ascii_lowercase(), serde_json::Value::String(v.to_owned()));
+                    headers.insert(
+                        k.to_ascii_lowercase(),
+                        serde_json::Value::String(v.to_owned()),
+                    );
                 }
             }
 

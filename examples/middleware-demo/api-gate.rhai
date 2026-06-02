@@ -32,6 +32,6 @@ if provided != expected {
     return false;
 }
 
-// Key is valid — tag the request so upstream knows it passed the gate.
-// (upstream sees X-Authenticated: 1 in request headers via requestTransform)
+// Key is valid — allow the request through.
+// Header injection (X-Authenticated) happens via requestTransform in conduit.yaml, not here.
 true

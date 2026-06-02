@@ -135,10 +135,7 @@ fn query_params_match(
 /// Parses the `Cookie` header value (e.g. `"a=1; b=2"`) and matches each
 /// named cookie against the given pattern using the same regex semantics as
 /// header and query matching.
-fn cookies_match(
-    predicates: &indexmap::IndexMap<String, String>,
-    cookie_header: &str,
-) -> bool {
+fn cookies_match(predicates: &indexmap::IndexMap<String, String>, cookie_header: &str) -> bool {
     for (name, pattern) in predicates {
         let value = cookie_value(cookie_header, name).unwrap_or("");
         if !regex_match(pattern, value) {
@@ -1324,7 +1321,13 @@ mod tests {
         assert!(route_matches(&m, "/any", "GET", &req_headers, None));
 
         // Cookie absent.
-        assert!(!route_matches(&m, "/any", "GET", &http::HeaderMap::new(), None));
+        assert!(!route_matches(
+            &m,
+            "/any",
+            "GET",
+            &http::HeaderMap::new(),
+            None
+        ));
 
         // Cookie present with wrong value.
         let mut wrong_headers = http::HeaderMap::new();

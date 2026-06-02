@@ -2662,7 +2662,6 @@ dependencies = [
  "kube",
  "libc",
  "mime_guess",
- "multer",
  "notify",
  "opentelemetry",
  "opentelemetry-otlp",

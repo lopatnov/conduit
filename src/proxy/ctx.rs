@@ -262,10 +262,10 @@ impl AcceptEncoding {
                 continue;
             }
             match token.as_str() {
-                "br"   => enc.brotli = true,
-                "gzip" => enc.gzip   = true,
+                "br" => enc.brotli = true,
+                "gzip" => enc.gzip = true,
                 "deflate" => enc.deflate = true,
-                "zstd" => enc.zstd   = true,
+                "zstd" => enc.zstd = true,
                 _ => {}
             }
         }

@@ -467,11 +467,27 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
                     format!("{prefix}.tcp.targets[{i}]"),
                     format!("TCP target \"{t}\" must be a plain host:port — no http:// prefix"),
                 ));
-            } else if !t.contains(':') {
-                errors.push(ValidationError::new(
-                    format!("{prefix}.tcp.targets[{i}]"),
-                    format!("TCP target \"{t}\" must include a port, e.g. \"host:3306\""),
-                ));
+            } else {
+                // Validate host:port — use SocketAddr parsing which handles both
+                // IPv4 ("host:port") and IPv6 ("[::1]:port") correctly.
+                // We add a dummy scheme so the string can be parsed as a socket addr.
+                let valid = t.parse::<std::net::SocketAddr>().is_ok()
+                    || t.rsplit_once(':')
+                        .map(|(host, port)| {
+                            !host.is_empty()
+                                && !port.is_empty()
+                                && port.chars().all(|c| c.is_ascii_digit())
+                        })
+                        .unwrap_or(false);
+                if !valid {
+                    errors.push(ValidationError::new(
+                        format!("{prefix}.tcp.targets[{i}]"),
+                        format!(
+                            "TCP target \"{t}\" must include a port, e.g. \"host:3306\" \
+                             or \"[::1]:3306\" for IPv6"
+                        ),
+                    ));
+                }
             }
         }
         // TCP sites cannot be combined with HTTP features.

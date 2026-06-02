@@ -118,7 +118,7 @@ impl Default for UpstreamEntry {
             consecutive_successes: 0,
             latency_ms: None,
             recovery_time_secs: None,
-            ewma_latency_us: 30_000.0,  // default: 30 ms (matches linkerd DEFAULT_RTT)
+            ewma_latency_us: 30_000.0, // default: 30 ms (matches linkerd DEFAULT_RTT)
             ewma_last_sample_secs: 0.0, // will be set on first sample
             consecutive_5xx: 0,
             ejected_until_secs: None,
@@ -190,8 +190,7 @@ pub fn record_request_latency(
             // Probe failed: re-eject with the next exponential-backoff level.
             const BASE_SECS: u64 = 30;
             const MAX_SECS: u64 = 300;
-            let duration =
-                (BASE_SECS * (1u64 << entry.ejection_count.min(10))).min(MAX_SECS);
+            let duration = (BASE_SECS * (1u64 << entry.ejection_count.min(10))).min(MAX_SECS);
             let now = now_secs();
             entry.ejected_until_secs = Some(now + duration);
             entry.ejection_count = entry.ejection_count.saturating_add(1);
@@ -493,7 +492,10 @@ impl UpstreamRegistry {
         }
         // We are the probe request.
         e.half_open = true;
-        tracing::info!(url, "ejection period expired — half-open probe request dispatched");
+        tracing::info!(
+            url,
+            "ejection period expired — half-open probe request dispatched"
+        );
         true
     }
 
@@ -678,10 +680,7 @@ pub fn spawn_connection_warmup(config: &AppConfig) {
                 Some(0) | None => continue,
                 Some(n) => n.min(8) as usize, // clamp to 8
             };
-            let path = hc
-                .path
-                .clone()
-                .unwrap_or_else(|| "/".to_string());
+            let path = hc.path.clone().unwrap_or_else(|| "/".to_string());
             let urls = crate::proxy::upstream::target_urls(route_target);
             for url in urls {
                 let path = path.clone();
@@ -692,18 +691,20 @@ pub fn spawn_connection_warmup(config: &AppConfig) {
                             .timeout(std::time::Duration::from_secs(5))
                             .build()
                         {
-                            Ok(client) => {
-                                match client.head(&target).send().await {
-                                    Ok(_) => tracing::debug!(
-                                        url, attempt = i + 1, total = n,
-                                        "connection warmup request succeeded"
-                                    ),
-                                    Err(e) => tracing::debug!(
-                                        url, attempt = i + 1, total = n,
-                                        "connection warmup request failed: {e}"
-                                    ),
-                                }
-                            }
+                            Ok(client) => match client.head(&target).send().await {
+                                Ok(_) => tracing::debug!(
+                                    url,
+                                    attempt = i + 1,
+                                    total = n,
+                                    "connection warmup request succeeded"
+                                ),
+                                Err(e) => tracing::debug!(
+                                    url,
+                                    attempt = i + 1,
+                                    total = n,
+                                    "connection warmup request failed: {e}"
+                                ),
+                            },
                             Err(e) => tracing::warn!("connection warmup client build error: {e}"),
                         }
                     }
@@ -1204,8 +1205,10 @@ mod tests {
     fn ejected_upstream_is_not_healthy() {
         let reg = UpstreamRegistry::new();
         let url = "http://u:4000";
-        reg.statuses.entry(url.to_owned()).or_default().ejected_until_secs =
-            Some(now_secs() + 300);
+        reg.statuses
+            .entry(url.to_owned())
+            .or_default()
+            .ejected_until_secs = Some(now_secs() + 300);
         assert!(!reg.is_healthy(url), "ejected upstream must not be healthy");
     }
 
@@ -1214,10 +1217,15 @@ mod tests {
         let reg = UpstreamRegistry::new();
         let url = "http://u:4000";
         // Set an expired ejection (in the past).
-        reg.statuses.entry(url.to_owned()).or_default().ejected_until_secs =
-            Some(now_secs().saturating_sub(1));
+        reg.statuses
+            .entry(url.to_owned())
+            .or_default()
+            .ejected_until_secs = Some(now_secs().saturating_sub(1));
         // First call should return true (probe allowed) and set half_open.
-        assert!(reg.is_healthy(url), "first call after ejection must be allowed as probe");
+        assert!(
+            reg.is_healthy(url),
+            "first call after ejection must be allowed as probe"
+        );
         assert!(
             reg.statuses.get(url).unwrap().half_open,
             "half_open must be set after probe dispatch"
@@ -1228,12 +1236,17 @@ mod tests {
     fn second_call_while_half_open_is_blocked() {
         let reg = UpstreamRegistry::new();
         let url = "http://u:4000";
-        reg.statuses.entry(url.to_owned()).or_default().ejected_until_secs =
-            Some(now_secs().saturating_sub(1));
+        reg.statuses
+            .entry(url.to_owned())
+            .or_default()
+            .ejected_until_secs = Some(now_secs().saturating_sub(1));
         // First call = probe.
         let _ = reg.is_healthy(url);
         // Second call = must be blocked.
-        assert!(!reg.is_healthy(url), "second call while half_open must be blocked");
+        assert!(
+            !reg.is_healthy(url),
+            "second call while half_open must be blocked"
+        );
     }
 
     #[test]
@@ -1251,8 +1264,14 @@ mod tests {
         record_request_latency(&reg, url, 10_000, 200);
         let e = reg.statuses.get(url).unwrap();
         assert!(!e.half_open, "half_open must be cleared after success");
-        assert!(e.ejected_until_secs.is_none(), "ejection must be lifted after success");
-        assert_eq!(e.ejection_count, 0, "ejection_count must be reset after success");
+        assert!(
+            e.ejected_until_secs.is_none(),
+            "ejection must be lifted after success"
+        );
+        assert_eq!(
+            e.ejection_count, 0,
+            "ejection_count must be reset after success"
+        );
     }
 
     #[test]

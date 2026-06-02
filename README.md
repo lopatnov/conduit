@@ -148,7 +148,7 @@ conduit
 
 Download from [GitHub Releases](https://github.com/lopatnov/conduit/releases):
 
-| Platform             | Standard                                    | Full (all 13 features)                           |
+| Platform             | Standard                                    | Full (all 14 features)                           |
 | -------------------- | ------------------------------------------- | ------------------------------------------------ |
 | Linux x86-64         | `conduit-x86_64-unknown-linux-gnu.tar.gz`   | `conduit-x86_64-unknown-linux-gnu-full.tar.gz`   |
 | Linux x86-64 musl    | `conduit-x86_64-unknown-linux-musl.tar.gz`  | `conduit-x86_64-unknown-linux-musl-full.tar.gz`  |

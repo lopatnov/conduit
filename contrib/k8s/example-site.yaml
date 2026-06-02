@@ -76,9 +76,9 @@ spec:
       serviceAccountName: conduit
       containers:
         - name: conduit
-          image: ghcr.io/lopatnov/conduit:latest
+          image: ghcr.io/lopatnov/conduit:latest-full  # kubernetes feature requires full image
           args:
-            - --k8s-namespace=default   # watch this namespace for ConduitSite CRDs
+            - --kubernetes-namespace=default   # watch this namespace for ConduitSite CRDs
           ports:
             - name: http
               containerPort: 8080

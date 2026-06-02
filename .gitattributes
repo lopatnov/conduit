@@ -9,7 +9,7 @@
 #
 # References:
 #   https://git-scm.com/docs/gitattributes
-#   https://github.com/rust-lang/rust-analyzer/issues/XXXX
+#   https://github.com/rust-lang/rust-analyzer/issues/11006
 
 # Default: auto-detect text files and normalize to LF
 * text=auto eol=lf
