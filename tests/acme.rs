@@ -124,6 +124,9 @@ fn acme_obtains_certificate_and_serves_https() {
 
 /// ACME challenge handler: /.well-known/acme-challenge/<token> is served
 /// without auth, rate-limiting, or other filters.
+/// Requires --features acme: without it the challenge handler is not compiled
+/// in and the endpoint returns 500 instead of 404.
+#[cfg(feature = "acme")]
 #[test]
 #[serial]
 fn acme_challenge_endpoint_is_accessible() {
