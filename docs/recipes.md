@@ -1,7 +1,8 @@
 # Configuration Recipes
 
-Ready-to-use configs for common scenarios. All examples are in **YAML** — comments
-explain every decision. For the JSON equivalent, see the linked file in [`examples/`](../examples/).
+Ready-to-use configs for common scenarios. Each recipe shows the **YAML** version
+with inline comments. Where a JSON equivalent exists in [`examples/`](../examples/),
+a link appears after the code block.
 
 For the full field reference see [configuration.md](configuration.md).
 
@@ -49,7 +50,7 @@ For the full field reference see [configuration.md](configuration.md).
 The smallest useful configuration.
 
 ```yaml
-# conduit.yaml
+# examples/minimal.yaml
 port: 3000
 static: ./dist
 proxy:
@@ -62,7 +63,7 @@ GET /styles.css  → serves ./dist/styles.css
 GET /api/users   → proxied to http://localhost:4000/api/users
 ```
 
-→ [`examples/minimal.yaml`](../examples/minimal.yaml)
+→ JSON: [`examples/minimal.json`](../examples/minimal.json)
 
 ---
 
@@ -71,7 +72,7 @@ GET /api/users   → proxied to http://localhost:4000/api/users
 Browser hot reload, open CORS, colorized logs, SPA fallback.
 
 ```yaml
-# conduit.yaml
+# examples/dev-hot-reload.yaml
 port: 3000
 logging: dev
 cors: true
@@ -85,7 +86,7 @@ fallback:
   status: 200
 ```
 
-→ [`examples/dev-hot-reload.yaml`](../examples/dev-hot-reload.yaml)
+→ JSON: [`examples/dev-hot-reload.json`](../examples/dev-hot-reload.json)
 
 ---
 
@@ -94,7 +95,7 @@ fallback:
 Pre-compressed assets, least-conn balancing, API cache, content-aware fallback.
 
 ```yaml
-# conduit.yaml
+# examples/spa-with-api.yaml
 port: 443
 tls:
   cert: /etc/tls/cert.pem
@@ -153,7 +154,7 @@ fallback:
     json: { body: { error: "Not Found", status: 404 }, status: 404 }
 ```
 
-→ [`examples/spa-with-api.yaml`](../examples/spa-with-api.yaml)
+→ JSON: [`examples/spa-with-api.json`](../examples/spa-with-api.json)
 
 ---
 
@@ -164,6 +165,7 @@ fallback:
 TLS with your own certificate files — from Let's Encrypt CLI, Certbot, or a CA.
 
 ```yaml
+# examples/tls-h2.yaml
 port: 443
 tls:
   cert: /etc/tls/fullchain.pem
@@ -176,7 +178,7 @@ proxy:
   /: "http://localhost:4000"
 ```
 
-→ [`examples/tls-h2.yaml`](../examples/tls-h2.yaml)
+→ JSON: [`examples/tls-h2.json`](../examples/tls-h2.json)
 
 ---
 
@@ -188,6 +190,7 @@ Conduit obtains and renews certificates automatically.
 The domain must point to this server and port 80 must be reachable for the HTTP-01 challenge.
 
 ```yaml
+# examples/tls-acme.yaml
 port: 443
 tls:
   acme:
@@ -203,7 +206,7 @@ proxy:
   /: "http://localhost:4000"
 ```
 
-→ [`examples/tls-acme.yaml`](../examples/tls-acme.yaml)
+→ JSON: [`examples/tls-acme.json`](../examples/tls-acme.json)
 
 ---
 
@@ -213,6 +216,7 @@ Every client must present a certificate signed by your CA. Useful for
 service-to-service auth, B2B APIs, and IoT devices.
 
 ```yaml
+# examples/mtls.yaml
 port: 443
 tls:
   cert: /etc/tls/server.crt
@@ -226,7 +230,7 @@ proxy:
     stripPrefix: true
 ```
 
-→ [`examples/mtls.yaml`](../examples/mtls.yaml) — includes certificate generation commands.
+→ JSON: [`examples/mtls.json`](../examples/mtls.json) — includes certificate generation commands.
 
 ---
 
@@ -240,6 +244,7 @@ Validates `Authorization: Bearer <token>` on every request. Inject validated
 claims as upstream headers so backends don't need to re-validate.
 
 ```yaml
+# examples/jwt-auth.yaml
 port: 8080
 
 jwtAuth:
@@ -260,7 +265,7 @@ proxy:
 healthCheck: true
 ```
 
-→ [`examples/jwt-auth.yaml`](../examples/jwt-auth.yaml)
+→ JSON: [`examples/jwt-auth.json`](../examples/jwt-auth.json)
 
 ---
 
@@ -292,6 +297,7 @@ Each API client gets its own credentials, rate limit, and upstream headers.
 Useful for developer portals and partner APIs.
 
 ```yaml
+# examples/consumers.yaml
 port: 8080
 
 consumers:
@@ -316,7 +322,7 @@ proxy:
   /api: "http://backend:4000"
 ```
 
-→ [`examples/consumers.yaml`](../examples/consumers.yaml)
+→ JSON: [`examples/consumers.json`](../examples/consumers.json)
 
 ---
 
@@ -329,6 +335,7 @@ Oathkeeper, custom SSO middleware). The auth service's response headers
 (`X-User-ID`, `X-Role`, …) are forwarded to the upstream.
 
 ```yaml
+# examples/forward-auth.yaml
 port: 8080
 
 forwardAuth:
@@ -342,7 +349,7 @@ proxy:
   /api: "http://backend:4000"
 ```
 
-→ [`examples/forward-auth.yaml`](../examples/forward-auth.yaml)
+→ JSON: [`examples/forward-auth.json`](../examples/forward-auth.json)
 
 ---
 
@@ -354,6 +361,7 @@ Send more traffic to powerful instances, or gradually shift traffic during a
 canary deployment.
 
 ```yaml
+# examples/load-balanced.yaml (excerpt)
 proxy:
   /api:
     targets:
@@ -362,9 +370,10 @@ proxy:
     strategy: weighted-round-robin
 ```
 
-> Adjust weights at runtime without a reload: `conduit upstreams weight --route /api --target http://canary:4000 --weight 2`
+> Adjust weights at runtime without a reload:
+> `conduit upstreams weight --route /api --target http://canary:4000 --weight 2`
 
-→ [`examples/load-balanced.yaml`](../examples/load-balanced.yaml)
+→ JSON: [`examples/load-balanced.json`](../examples/load-balanced.json)
 
 ---
 
@@ -374,6 +383,7 @@ Routes each request to the backend with the fewest active connections.
 Removes unhealthy backends automatically; ramps traffic back slowly after recovery.
 
 ```yaml
+# examples/load-balanced.yaml (excerpt)
 proxy:
   /api:
     targets:
@@ -388,7 +398,7 @@ proxy:
       slowStartSecs: 30   # ramp recovered upstream over 30 s
 ```
 
-→ [`examples/load-balanced.yaml`](../examples/load-balanced.yaml)
+→ JSON: [`examples/load-balanced.json`](../examples/load-balanced.json)
 
 ---
 
@@ -421,6 +431,7 @@ Outer strategy (`ip-hash`) pins each client to a region; inner strategy
 (`least-conn`) balances within the region.
 
 ```yaml
+# examples/upstream-groups.yaml
 proxy:
   /api:
     groups:
@@ -433,7 +444,7 @@ proxy:
     groupStrategy: ip-hash   # same client IP always hits the same region
 ```
 
-→ [`examples/upstream-groups.yaml`](../examples/upstream-groups.yaml)
+→ JSON: [`examples/upstream-groups.json`](../examples/upstream-groups.json)
 
 ---
 
@@ -445,6 +456,7 @@ proxy:
 Outlier detection passively ejects backends that return too many 5xx responses.
 
 ```yaml
+# examples/circuit-breaker.yaml
 proxy:
   /api:
     targets: ["http://a:4000", "http://b:4000", "http://c:4000"]
@@ -474,7 +486,7 @@ outlierDetection:
 maskErrors: true             # replace 5xx bodies with generic JSON
 ```
 
-→ [`examples/circuit-breaker.yaml`](../examples/circuit-breaker.yaml)
+→ JSON: [`examples/circuit-breaker.json`](../examples/circuit-breaker.json)
 
 ---
 
@@ -486,6 +498,7 @@ Zero-latency cache expiry: stale content is served immediately while a
 background request fetches fresh data.
 
 ```yaml
+# examples/stale-while-revalidate.yaml
 proxy:
   /api:
     targets: ["http://backend:4000"]
@@ -503,7 +516,7 @@ proxy:
 For shared cache across multiple Conduit instances, use `store: "redis://host:6379"`
 (`--features redis` required).
 
-→ [`examples/stale-while-revalidate.yaml`](../examples/stale-while-revalidate.yaml)
+→ JSON: [`examples/stale-while-revalidate.json`](../examples/stale-while-revalidate.json)
 
 ---
 
@@ -514,6 +527,7 @@ For shared cache across multiple Conduit instances, use `store: "redis://host:63
 ### Accept multipart file uploads
 
 ```yaml
+# examples/file-upload.yaml
 port: 8080
 
 upload:
@@ -543,7 +557,7 @@ curl -X POST http://localhost:8080/files/my-doc \
 Files are saved with UUID v4 names (preserving extension) to prevent path
 traversal and name collisions.
 
-→ [`examples/file-upload.yaml`](../examples/file-upload.yaml)
+→ JSON: [`examples/file-upload.json`](../examples/file-upload.json)
 
 ---
 
@@ -599,6 +613,7 @@ Route traffic to individual services by path. One place for rate limiting,
 IP filtering, auth, and metrics.
 
 ```yaml
+# examples/api-gateway.yaml
 port: 8080
 logging: json
 
@@ -629,7 +644,7 @@ metrics:
 maskErrors: true
 ```
 
-→ [`examples/api-gateway.yaml`](../examples/api-gateway.yaml)
+→ JSON: [`examples/api-gateway.json`](../examples/api-gateway.json)
 
 ---
 
@@ -693,6 +708,7 @@ Defence-in-depth: TLS hardening, security headers, CORS, IP allowlist, rate
 limit, API key, error masking, admin token, upstream TLS verification.
 
 ```yaml
+# examples/security-hardened.yaml
 global:
   admin:
     bind: "127.0.0.1:2019"
@@ -750,7 +766,7 @@ sites:
       token: "$METRICS_TOKEN"
 ```
 
-→ [`examples/security-hardened.yaml`](../examples/security-hardened.yaml)
+→ JSON: [`examples/security-hardened.json`](../examples/security-hardened.json)
 
 ---
 
@@ -762,6 +778,7 @@ Prometheus metrics, OTLP tracing (Grafana Tempo / Jaeger), structured JSON
 logs with upstream timing, and passive outlier detection.
 
 ```yaml
+# examples/observability.yaml
 global:
   otlp:
     endpoint: "http://tempo:4317"
@@ -831,7 +848,7 @@ rate(conduit_cache_hits_total[5m])
   / (rate(conduit_cache_hits_total[5m]) + rate(conduit_cache_misses_total[5m]))
 ```
 
-→ [`examples/observability.yaml`](../examples/observability.yaml)
+→ JSON: [`examples/observability.json`](../examples/observability.json)
 
 ---
 
@@ -843,6 +860,7 @@ rate(conduit_cache_hits_total[5m])
 Three virtual hosts from one process — each with its own auth, TLS, and backends.
 
 ```yaml
+# examples/multi-site.yaml
 global:
   workers: 4
   admin:
@@ -887,7 +905,7 @@ sites:
     healthCheck: true
 ```
 
-→ [`examples/multi-site.yaml`](../examples/multi-site.yaml)
+→ JSON: [`examples/multi-site.json`](../examples/multi-site.json)
 
 ---
 
