@@ -14,8 +14,8 @@ Full pipeline: Rhai API gate → WASM header injector → Rhai response enricher
 ## Running the demo
 
 ```bash
-# Build with WASM support
-cargo build --features wasm
+# Build with WASM + Rhai support (both are used in this demo)
+cargo build --features "wasm,rhai"
 
 # Compile WAT → WASM (run once)
 # Using wasm-tools (install: cargo install wasm-tools):

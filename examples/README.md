@@ -19,28 +19,33 @@ conduit init
 
 ## Quick start
 
-| Goal                                  | Example                                |
-| ------------------------------------- | -------------------------------------- |
-| Serve files + proxy locally           | `minimal.yaml`                         |
-| React / Vue / Angular SPA             | `spa-with-api.yaml`                    |
-| Local dev with hot reload             | `dev-hot-reload.yaml`                  |
-| HTTPS with manual certificates        | `tls-h2.yaml`                          |
-| Auto-TLS via Let's Encrypt            | `tls-acme.yaml`                        |
-| mTLS — require client certificates    | `mtls.yaml`                            |
-| Multiple backends, load balancing     | `load-balanced.yaml`                   |
-| Geo-regional / two-level balancing    | `upstream-groups.yaml`                 |
-| Multiple apps on one server           | `multi-site.yaml`                      |
-| JWT / external auth                   | `jwt-auth.yaml` or `forward-auth.yaml` |
-| Named API clients (consumer model)    | `consumers.yaml`                       |
-| Full API gateway                      | `api-gateway.yaml`                     |
-| Resilience (circuit breaker, retries) | `circuit-breaker.yaml`                 |
-| Priority-based load shedding          | `priority-routing.yaml`                |
-| Response cache + stale-while-revalidate | `stale-while-revalidate.yaml`        |
-| Metrics + tracing                     | `observability.yaml`                   |
-| Security hardening                    | `security-hardened.yaml`               |
-| URL rewriting                         | `path-rewrite.yaml`                    |
-| Custom Rhai middleware                | `rhai-middleware.yaml`                 |
-| Redis rate limiting                   | `redis-rate-limit.yaml`                |
+Cells marked with a feature badge require `cargo build --features <name>` (or the full binary).
+
+| Goal                                    | Example                                  | Requires          |
+| --------------------------------------- | ---------------------------------------- | ----------------- |
+| Serve files + proxy locally             | `minimal.yaml`                           | standard          |
+| React / Vue / Angular SPA               | `spa-with-api.yaml`                      | standard          |
+| Local dev with hot reload               | `dev-hot-reload.yaml`                    | standard          |
+| HTTPS with manual certificates          | `tls-h2.yaml`                            | standard          |
+| Auto-TLS via Let's Encrypt              | `tls-acme.yaml`                          | `--features acme` |
+| mTLS — require client certificates      | `mtls.yaml`                              | standard          |
+| Multiple backends, load balancing       | `load-balanced.yaml`                     | standard          |
+| Geo-regional / two-level balancing      | `upstream-groups.yaml`                   | standard          |
+| Multiple apps on one server             | `multi-site.yaml`                        | standard          |
+| JWT authentication                      | `jwt-auth.yaml`                          | `--features jwt`  |
+| External auth service (ForwardAuth)     | `forward-auth.yaml`                      | `--features forward-auth` |
+| Named API clients (consumer model)      | `consumers.yaml`                         | `--features consumers` |
+| Full API gateway                        | `api-gateway.yaml`                       | `--features "jwt,otlp"` |
+| Resilience (circuit breaker, retries)   | `circuit-breaker.yaml`                   | standard          |
+| Priority-based load shedding            | `priority-routing.yaml`                  | standard          |
+| Response cache + stale-while-revalidate | `stale-while-revalidate.yaml`            | `--features cache` |
+| Disk cache                              | `with-cache.yaml` (`store: "disk:/…"`)   | `--features disk-cache` |
+| Redis rate limiting                     | `redis-rate-limit.yaml`                  | `--features redis` |
+| Metrics + OTLP tracing                  | `observability.yaml`                     | `--features otlp` |
+| Security hardening                      | `security-hardened.yaml`                 | standard          |
+| URL rewriting                           | `path-rewrite.yaml`                      | standard          |
+| Custom Rhai middleware                  | `rhai-middleware.yaml`                   | `--features rhai` |
+| File upload                             | `file-upload.yaml`                       | `--features upload` |
 
 For each scenario with both YAML and JSON side by side, and explanations, see
 **[docs/recipes.md](../docs/recipes.md)**.
@@ -274,7 +279,21 @@ reject requests.
 Rate limiting backed by Redis for consistent limits across multiple Conduit
 instances.
 
+> **Requires** `--features redis`
+
 **Features:** `rateLimit.store: redis://`, multi-instance rate limiting
+
+---
+
+### [file-upload.yaml](file-upload.yaml) / [file-upload.json](file-upload.json)
+
+Multipart file upload with MIME-type allowlist, per-file and total size limits,
+and a proxy fallback for all non-upload traffic.
+
+> **Requires** `--features upload`
+
+**Features:** `upload.path`, `upload.dir`, `upload.allowedMimeTypes`,
+`upload.maxFileSizeBytes`, `upload.maxTotalSizeBytes`
 
 ---
 
