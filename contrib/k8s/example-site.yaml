@@ -79,6 +79,12 @@ spec:
           image: ghcr.io/lopatnov/conduit:latest-full  # kubernetes feature requires full image
           args:
             - --kubernetes-namespace=default   # watch this namespace for ConduitSite CRDs
+          securityContext:
+            runAsNonRoot: true          # conduit image runs as UID 65534 (nobody)
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           ports:
             - name: http
               containerPort: 8080
