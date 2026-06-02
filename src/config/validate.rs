@@ -1154,7 +1154,7 @@ fn validate_cache_config(
         ));
     }
     if let (Some(swr), Some(ttl)) = (cache.stale_while_revalidate_secs, cache.ttl_secs) {
-        if swr as u64 > (ttl as u64).saturating_mul(10) {
+        if swr as u64 > ttl.saturating_mul(10) {
             // Not a hard error, just a suspicious config.
             tracing::debug!(
                 "{prefix}.staleWhileRevalidateSecs ({swr}) is more than 10× ttlSecs ({ttl})"
