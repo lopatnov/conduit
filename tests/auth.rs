@@ -913,8 +913,10 @@ mod consumers_tests {
         );
     }
 
-    // ── Consumer JWT V2 tests ─────────────────────────────────────────────────────
+    // ── Consumer JWT V2 tests (also require --features jwt) ──────────────────────
+    // These tests use JWT tokens and require both consumers AND jwt features.
 
+    #[cfg(feature = "jwt")]
     fn server_with_jwt_consumer(secret: &str) -> common::TestServer {
         let port = common::free_port();
         let admin_port = common::free_port();
@@ -940,6 +942,7 @@ mod consumers_tests {
         )
     }
 
+    #[cfg(feature = "jwt")]
     #[test]
     fn consumers_jwt_hs256_correct_passes() {
         let secret = "consumers-jwt-test-secret";
@@ -958,6 +961,7 @@ mod consumers_tests {
         );
     }
 
+    #[cfg(feature = "jwt")]
     #[test]
     fn consumers_jwt_hs256_wrong_secret_returns_401() {
         let srv = server_with_jwt_consumer("correct-secret");
@@ -974,6 +978,7 @@ mod consumers_tests {
         );
     }
 
+    #[cfg(feature = "jwt")]
     #[test]
     fn consumers_jwt_expired_returns_401() {
         let secret = "expired-test-secret";
@@ -992,6 +997,7 @@ mod consumers_tests {
         );
     }
 
+    #[cfg(feature = "jwt")]
     #[test]
     fn consumers_jwt_x_consumer_id_injected() {
         use std::io::{Read, Write};
@@ -1052,6 +1058,7 @@ mod consumers_tests {
         );
     }
 
+    #[cfg(feature = "jwt")]
     #[test]
     fn consumers_jwt_no_bearer_returns_401() {
         let srv = server_with_jwt_consumer("some-secret");
@@ -1064,8 +1071,9 @@ mod consumers_tests {
         );
     }
 
-    // ── Consumer sharedJwt V3 tests ───────────────────────────────────────────────
+    // ── Consumer sharedJwt V3 tests (also require --features jwt) ────────────────
 
+    #[cfg(feature = "jwt")]
     fn server_with_shared_jwt(secret: &str) -> common::TestServer {
         let port = common::free_port();
         let admin_port = common::free_port();
@@ -1101,6 +1109,7 @@ mod consumers_tests {
         )
     }
 
+    #[cfg(feature = "jwt")]
     #[test]
     fn consumers_shared_jwt_identifies_by_sub() {
         let secret = "shared-jwt-test-secret";
@@ -1139,6 +1148,7 @@ mod consumers_tests {
         let _ = token; // suppress unused warning
     }
 
+    #[cfg(feature = "jwt")]
     #[test]
     fn consumers_shared_jwt_unknown_sub_returns_401() {
         let secret = "shared-jwt-test-secret";
@@ -1172,6 +1182,7 @@ mod consumers_tests {
         );
     }
 
+    #[cfg(feature = "jwt")]
     #[test]
     fn consumers_shared_jwt_wrong_secret_returns_401() {
         let srv = server_with_shared_jwt("correct-shared-secret");
@@ -1189,6 +1200,7 @@ mod consumers_tests {
         );
     }
 
+    #[cfg(feature = "jwt")]
     #[test]
     fn consumers_shared_jwt_skip_path_bypasses() {
         let srv = server_with_shared_jwt("any-secret");
