@@ -808,6 +808,63 @@ proxy:
 
 ---
 
+## File Upload
+
+> **Requires** `cargo build --features upload`
+
+### Accept multipart file uploads
+
+```yaml
+port: 8080
+
+upload:
+  path: /files              # POST /files/<anything> → handled by upload server
+  dir: ./uploads            # destination directory (created if absent)
+  fieldName: file           # multipart field name (default: "file")
+  maxFileSizeBytes: 10485760   # 10 MB per file
+  maxTotalSizeBytes: 20971520  # 20 MB per request
+  maxFiles: 5
+  allowedMimeTypes:
+    - "image/jpeg"
+    - "image/png"
+    - "image/pdf"
+    - "application/pdf"
+
+proxy:
+  targets: ["http://api:4000"]  # remaining traffic goes to backend
+```
+
+**Upload a file with curl:**
+
+```bash
+curl -X POST http://localhost:8080/files/my-doc \
+  -F "file=@document.pdf;type=application/pdf"
+```
+
+**Success response:**
+
+```json
+{
+  "status": "ok",
+  "files": [
+    {
+      "name": "a1b2c3d4-e5f6-7890-abcd-ef1234567890.pdf",
+      "originalName": "document.pdf",
+      "size": 204800,
+      "mimeType": "application/pdf"
+    }
+  ]
+}
+```
+
+Files are saved with a UUID v4 name (preserving the extension) to prevent
+path traversal and name collisions. The original filename is returned in
+`originalName` for logging.
+
+See [`examples/file-upload.yaml`](../examples/file-upload.yaml)
+
+---
+
 ## API gateway
 
 ### Microservices gateway

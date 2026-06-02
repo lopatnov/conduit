@@ -22,16 +22,22 @@ Two image variants are published to the GitHub Container Registry on every relea
 
 | Variant | Tags | Includes |
 | ------- | ---- | -------- |
-| Standard | `:latest`, `:1.0.0`, `:1.0` | Core proxy, no optional features |
-| Full | `:latest-full`, `:1.0.0-full`, `:1.0-full` | + `otlp` (OTLP tracing) + `wasm` (WASM plugins) + `kubernetes` (CRD provider) |
+| Standard | `:latest`, `:1.0.0`, `:1.0` | Core proxy — no optional features. Smallest binary (~14 MB) |
+| Full | `:latest-full`, `:1.0.0-full`, `:1.0-full` | All 13 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `acme`, `fault-injection`, `otlp`, `kubernetes` |
 
 ```bash
 # Standard (~14 MB)
 docker pull ghcr.io/lopatnov/conduit:latest
 
-# Full — with OTLP tracing, WASM middleware, and Kubernetes CRD support
+# Full — all optional features enabled
 docker pull ghcr.io/lopatnov/conduit:latest-full
 ```
+
+> **Standard vs Full:** the standard image covers the majority of production use
+> cases — TLS, proxying, routing, rate limiting, basic/API-key auth, metrics,
+> hot-reload.  Use the full image (or build from source with `--features`) when
+> you need JWT validation, scripting middleware (Rhai/WASM), auto-TLS (ACME),
+> file uploads, Redis-backed rate limiting, or Kubernetes CRD config.
 
 Both images are multi-stage musl builds packaged into `FROM scratch`.
 They run as UID 65534 (`nobody`) with no shell or OS userland.
