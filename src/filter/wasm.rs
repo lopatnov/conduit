@@ -291,7 +291,7 @@ fn register_host_functions(linker: &mut Linker<WasmState>) -> anyhow::Result<()>
         "conduit",
         "conduit_set_response_status",
         |mut c: Caller<'_, WasmState>, status: i32| {
-            c.data_mut().response_status = (status.max(100).min(999)) as u32;
+            c.data_mut().response_status = status.clamp(100, 999) as u32;
         },
     )?;
 
@@ -514,9 +514,7 @@ pub struct WasmResponseOutcome {
     pub body: Option<bytes::Bytes>,
 }
 
-fn register_response_host_functions(
-    linker: &mut Linker<WasmResponseState>,
-) -> anyhow::Result<()> {
+fn register_response_host_functions(linker: &mut Linker<WasmResponseState>) -> anyhow::Result<()> {
     // conduit_get_response_status — read upstream status code
     linker.func_wrap(
         "conduit",
@@ -1105,15 +1103,21 @@ mod tests {
                     .iter()
                     .find(|(k, _)| k == "x-wasm-plugin")
                     .map(|(_, v)| v.as_str());
-                assert_eq!(plugin, Some("header-injector/1.0"),
-                    "must inject X-Wasm-Plugin");
+                assert_eq!(
+                    plugin,
+                    Some("header-injector/1.0"),
+                    "must inject X-Wasm-Plugin"
+                );
 
                 let trace = added_headers
                     .iter()
                     .find(|(k, _)| k == "x-trace-id")
                     .map(|(_, v)| v.as_str());
-                assert_eq!(trace, Some("req-001"),
-                    "must forward X-Request-ID as X-Trace-Id");
+                assert_eq!(
+                    trace,
+                    Some("req-001"),
+                    "must forward X-Request-ID as X-Trace-Id"
+                );
             }
             other => panic!("expected Continue, got {other:?}"),
         }
@@ -1134,8 +1138,11 @@ mod tests {
                     .iter()
                     .find(|(k, _)| k == "x-wasm-plugin")
                     .map(|(_, v)| v.as_str());
-                assert_eq!(plugin, Some("header-injector/1.0"),
-                    "X-Wasm-Plugin must always be injected");
+                assert_eq!(
+                    plugin,
+                    Some("header-injector/1.0"),
+                    "X-Wasm-Plugin must always be injected"
+                );
             }
             other => panic!("expected Continue, got {other:?}"),
         }
@@ -1158,7 +1165,10 @@ mod tests {
             .iter()
             .find(|(k, _)| k == "x-processed-by")
             .map(|(_, v)| v.as_str());
-        assert_eq!(hdr, Some("wasm"),
-            "response phase must inject X-Processed-By: wasm");
+        assert_eq!(
+            hdr,
+            Some("wasm"),
+            "response phase must inject X-Processed-By: wasm"
+        );
     }
 }

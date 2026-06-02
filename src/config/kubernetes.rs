@@ -214,7 +214,16 @@ impl Provider for KubernetesProvider {
                     };
                     match api2.list(&Default::default()).await {
                         Ok(list) => {
-                            let cfg = build_app_config(list.items.iter(), &self.admin_bind)?;
+                            let cfg = match build_app_config(list.items.iter(), &self.admin_bind) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "failed to rebuild config from ConduitSite CRDs — keeping current config"
+                                    );
+                                    continue;
+                                }
+                            };
                             tracing::info!(
                                 provider = "kubernetes",
                                 sites = list.items.len(),

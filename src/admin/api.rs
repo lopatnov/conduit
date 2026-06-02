@@ -3,10 +3,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::body::Body;
+use axum::extract::Query;
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
-use axum::extract::Query;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -53,7 +53,11 @@ impl IntoResponse for AdminError {
             AdminError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             AdminError::ServerError(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
         };
-        (status, Json(json!({ "status": "error", "message": message }))).into_response()
+        (
+            status,
+            Json(json!({ "status": "error", "message": message })),
+        )
+            .into_response()
     }
 }
 
@@ -260,16 +264,19 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
 
 async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<Value>> {
     // Re-parse the config file.
-    let new_config = config::load_config(&state.config_path).map_err(|e| {
-        AdminError::ServerError(format!("failed to parse config: {e}"))
-    })?;
+    let new_config = config::load_config(&state.config_path)
+        .map_err(|e| AdminError::ServerError(format!("failed to parse config: {e}")))?;
 
     // Validate the new config before applying it.
     let errors = validate::validate(&new_config);
     if !errors.is_empty() {
         return Err(AdminError::ServerError(format!(
             "config validation failed: {}",
-            errors.iter().map(|e| format!("{}: {}", e.path, e.message)).collect::<Vec<_>>().join("; ")
+            errors
+                .iter()
+                .map(|e| format!("{}: {}", e.path, e.message))
+                .collect::<Vec<_>>()
+                .join("; ")
         )));
     }
     for w in validate::feature_warnings(&new_config) {
@@ -711,43 +718,37 @@ struct CachePurgeParams {
 /// Returns `{"status":"ok","purged":true}` when an entry was found and removed,
 /// `{"status":"ok","purged":false}` when no matching entry existed, or an error
 /// JSON on bad input.
-async fn cache_purge_handler(
-    Query(params): Query<CachePurgeParams>,
-) -> AdminResult<Json<Value>> {
+async fn cache_purge_handler(Query(params): Query<CachePurgeParams>) -> AdminResult<Json<Value>> {
     use pingora_cache::storage::{PurgeType, Storage};
     use pingora_cache::trace::Span;
 
     let raw = params.url.trim();
 
-    // Parse scheme, host, path, query from the URL.
-    let (scheme, rest) = if let Some(r) = raw.strip_prefix("https://") {
-        ("https", r)
-    } else if let Some(r) = raw.strip_prefix("http://") {
-        ("http", r)
-    } else {
+    // Use the url crate for robust parsing (handles IPv6, query-only URLs, etc.)
+    let parsed =
+        url::Url::parse(raw).map_err(|e| AdminError::BadRequest(format!("invalid url: {e}")))?;
+
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
         return Err(AdminError::BadRequest(
             "url must start with http:// or https://".to_owned(),
         ));
+    }
+
+    let authority = parsed
+        .host_str()
+        .ok_or_else(|| AdminError::BadRequest("url has no host".to_owned()))?;
+    let authority = if let Some(port) = parsed.port() {
+        format!("{authority}:{port}")
+    } else {
+        authority.to_owned()
     };
 
-    let (authority, path_query) = rest
-        .find('/')
-        .map(|i| (&rest[..i], &rest[i..]))
-        .unwrap_or((rest, "/"));
+    let path = parsed.path();
+    let query = parsed.query();
 
-    let (path, query) = path_query
-        .find('?')
-        .map(|i| (&path_query[..i], Some(&path_query[i + 1..])))
-        .unwrap_or((path_query, None));
-
-    let cache_key = crate::proxy::cache::build_cache_key(
-        authority,
-        scheme,
-        path,
-        query,
-        None,
-        None,
-    );
+    let cache_key =
+        crate::proxy::cache::build_cache_key(&authority, scheme, path, query, None, None);
     let compact = cache_key.to_compact();
     let storage = crate::proxy::cache::cache_storage();
 
@@ -757,7 +758,9 @@ async fn cache_purge_handler(
         .await
         .unwrap_or(false);
 
-    Ok(Json(json!({ "status": "ok", "purged": purged, "url": raw })))
+    Ok(Json(
+        json!({ "status": "ok", "purged": purged, "url": raw }),
+    ))
 }
 
 // ── Dynamic IP deny-list ──────────────────────────────────────────────────────
@@ -775,7 +778,10 @@ async fn ip_deny_add_handler(
 ) -> Json<Value> {
     let cidr = body.cidr.trim().to_owned();
     {
-        let mut list = state.dynamic_deny.write().unwrap_or_else(|e| e.into_inner());
+        let mut list = state
+            .dynamic_deny
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         if !list.contains(&cidr) {
             list.push(cidr.clone());
         }
@@ -790,7 +796,10 @@ async fn ip_deny_remove_handler(
 ) -> Json<Value> {
     let cidr = body.cidr.trim().to_owned();
     {
-        let mut list = state.dynamic_deny.write().unwrap_or_else(|e| e.into_inner());
+        let mut list = state
+            .dynamic_deny
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         list.retain(|c| c != &cidr);
     }
     Json(json!({ "status": "ok", "action": "removed", "cidr": cidr }))
@@ -859,8 +868,9 @@ async fn certs_reload_handler(
 
     // Write cert atomically: write to a temp file next to the destination,
     // then rename so readers never see a partial write.
-    atomic_write(&cert_path, body.cert.as_bytes())
-        .map_err(|e| AdminError::ServerError(format!("failed to write cert to {cert_path}: {e}")))?;
+    atomic_write(&cert_path, body.cert.as_bytes()).map_err(|e| {
+        AdminError::ServerError(format!("failed to write cert to {cert_path}: {e}"))
+    })?;
     atomic_write(&key_path, body.key.as_bytes())
         .map_err(|e| AdminError::ServerError(format!("failed to write key to {key_path}: {e}")))?;
 

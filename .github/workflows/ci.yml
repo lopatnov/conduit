@@ -124,7 +124,7 @@ jobs:
           openssl x509 -in /tmp/pebble-ca.pem -noout -subject
 
       - name: Build (debug for faster CI)
-        run: cargo build
+        run: cargo build --features acme
 
       - name: Run ACME tests
         env:
@@ -132,7 +132,7 @@ jobs:
           # server certificate when connecting to https://localhost:14000/dir.
           # Account::builder_with_root() is used when this env var is set.
           CONDUIT_ACME_EXTRA_ROOT: /tmp/pebble-ca.pem
-        run: cargo test --test acme -- --nocapture
+        run: cargo test --test acme --features acme -- --nocapture
 
   # ── Cross-compile check for RISC-V ──────────────────────────────────────────
   cross-riscv:

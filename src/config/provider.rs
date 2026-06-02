@@ -103,10 +103,21 @@ impl Provider for FileProvider {
         // notify callbacks are sync, so we bridge to async via a tokio channel.
         let (change_tx, mut change_rx) = tokio::sync::mpsc::channel::<()>(8);
 
+        // Watch the *parent directory* rather than the file itself.
+        // Many editors and config-management tools perform atomic saves by writing
+        // to a temporary file and then renaming it over the target. On Linux inotify,
+        // watching the file directly loses the watch descriptor on rename/unlink;
+        // watching the directory captures all events and we filter by filename.
+        let target_path = self.path.clone();
         let mut watcher =
             notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
                 if let Ok(event) = res {
                     use notify::EventKind::*;
+                    // Only fire when the event involves the watched file specifically.
+                    let involves_target = event.paths.iter().any(|p| p == &target_path);
+                    if !involves_target {
+                        return;
+                    }
                     match event.kind {
                         Modify(_) | Create(_) | Remove(_) => {
                             // blocking_send is safe here: the callback runs on a
@@ -120,7 +131,9 @@ impl Provider for FileProvider {
 
         {
             use notify::Watcher as _;
-            watcher.watch(&self.path, notify::RecursiveMode::NonRecursive)?;
+            // Watch the parent directory to survive atomic saves (editor temp-file + rename).
+            let dir = self.path.parent().unwrap_or(&self.path);
+            watcher.watch(dir, notify::RecursiveMode::NonRecursive)?;
         }
 
         while let Some(()) = change_rx.recv().await {

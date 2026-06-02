@@ -18,8 +18,12 @@ struct VersionProbe {
 pub fn load_config(path: &Path) -> Result<AppConfig> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("Cannot read config file: {}", path.display()))?;
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("json");
-    match ext {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_lowercase)
+        .unwrap_or_else(|| "json".to_owned());
+    match ext.as_str() {
         "yaml" | "yml" => {
             from_yaml(&raw).with_context(|| format!("Cannot parse config file: {}", path.display()))
         }

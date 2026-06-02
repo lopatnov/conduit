@@ -18,14 +18,8 @@ use pingora_proxy::{ProxyHttp, Session};
 use prometheus::{CounterVec, HistogramVec};
 
 use crate::config::schema::{
-    ApiKeyConfig, AppConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig,
-    HealthCheckConfig, IpFilterConfig, LimitsConfig, MiddlewareEntry,
-    ProxyTimeout, RateLimitConfig,
-};
-use crate::filter::chain::{
-    ApiKeyGuard, BasicAuthGuard, CorsPreflight, FilterChain,
-    FilterContext, HealthBypass, IpGuard,
-    LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard, XRequestIdGuard,
+    ApiKeyConfig, AppConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig, HealthCheckConfig,
+    IpFilterConfig, LimitsConfig, MiddlewareEntry, ProxyTimeout, RateLimitConfig,
 };
 use crate::filter::chain::AllowedHostsGuard;
 #[cfg(feature = "consumers")]
@@ -34,24 +28,28 @@ use crate::filter::chain::ConsumersGuard;
 use crate::filter::chain::FaultInjectionGuard;
 #[cfg(feature = "forward-auth")]
 use crate::filter::chain::ForwardAuthGuard;
+use crate::filter::chain::{
+    ApiKeyGuard, BasicAuthGuard, CorsPreflight, FilterChain, FilterContext, HealthBypass, IpGuard,
+    LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard, XRequestIdGuard,
+};
 use crate::filter::rate_limit::{self, RateLimiter};
 #[cfg(feature = "redis")]
 use crate::filter::rate_limit_redis::RedisRateLimiter;
 use crate::filter::{compression, cors, logging, redirects, response_time, security_headers};
-use crate::handler::response;
-use crate::handler::{
-    fallback, health, hot_reload as hot_reload_handler,
-    metrics as metrics_handler, static_files, LocalHandlerImpl,
-};
 #[cfg(feature = "acme")]
 use crate::handler::acme_challenge as acme_handler;
+use crate::handler::response;
+use crate::handler::{
+    fallback, health, hot_reload as hot_reload_handler, metrics as metrics_handler, static_files,
+    LocalHandlerImpl,
+};
 use crate::proxy::cache as proxy_cache;
-use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
-use crate::proxy::health::UpstreamRegistry;
-#[cfg(feature = "redis")]
-use crate::proxy::cache_redis;
 #[cfg(feature = "cache")]
 use crate::proxy::cache_disk;
+#[cfg(feature = "redis")]
+use crate::proxy::cache_redis;
+use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
+use crate::proxy::health::UpstreamRegistry;
 use crate::proxy::{router, upstream};
 use crate::util::log_writer::LogWriter;
 
@@ -289,11 +287,7 @@ impl AppState {
         state
     }
 
-    fn new_inner(
-        config: AppConfig,
-        config_path: PathBuf,
-        upload_addr: Option<SocketAddr>,
-    ) -> Self {
+    fn new_inner(config: AppConfig, config_path: PathBuf, upload_addr: Option<SocketAddr>) -> Self {
         let (hot_reload_tx, _) = tokio::sync::broadcast::channel(16);
         Self {
             config: Arc::new(ArcSwap::new(Arc::new(config))),
@@ -637,7 +631,12 @@ impl ConduitProxy {
         {
             let config = self.state.config.load();
             if let Some(site) = config.sites.get(req_ctx.site_idx) {
-                if site.limits.as_ref().and_then(|l| l.max_connections_per_ip).is_some() {
+                if site
+                    .limits
+                    .as_ref()
+                    .and_then(|l| l.max_connections_per_ip)
+                    .is_some()
+                {
                     let ip = session
                         .client_addr()
                         .and_then(|a| a.as_inet())
@@ -666,7 +665,11 @@ impl ConduitProxy {
                             .rate_limiter
                             .entry(key)
                             .or_insert_with(|| {
-                                rate_limit::TokenBucket::new(rl_cfg.limit, rl_cfg.burst.unwrap_or(0), rl_cfg.window_secs)
+                                rate_limit::TokenBucket::new(
+                                    rl_cfg.limit,
+                                    rl_cfg.burst.unwrap_or(0),
+                                    rl_cfg.window_secs,
+                                )
                             })
                             .try_consume()
                     };
@@ -711,12 +714,10 @@ impl ConduitProxy {
             let path = session.req_header().uri.path().to_owned();
             if let Some(site) = config.sites.get(req_ctx.site_idx) {
                 if let Some(limits) = &site.limits {
-                    if let (Some(max_inflight), Some(threshold)) = (
-                        limits.max_inflight_requests,
-                        limits.priority_threshold,
-                    ) {
-                        let current =
-                            self.state.inflight.load(Ordering::Relaxed) as f64;
+                    if let (Some(max_inflight), Some(threshold)) =
+                        (limits.max_inflight_requests, limits.priority_threshold)
+                    {
+                        let current = self.state.inflight.load(Ordering::Relaxed) as f64;
                         let load_fraction = current / max_inflight as f64;
                         if load_fraction >= threshold {
                             // Priority comes exclusively from the route config.
@@ -989,11 +990,11 @@ impl ConduitProxy {
                     } else {
                         unreachable!()
                     };
-                    return Some(Box::new(acme_handler::AcmeChallengeHandler {
+                    Some(Box::new(acme_handler::AcmeChallengeHandler {
                         token,
                         challenges: self.state.acme_challenges.clone(),
                         extra_headers: extra,
-                    }));
+                    }))
                 }
                 #[cfg(not(feature = "acme"))]
                 None
@@ -1439,9 +1440,7 @@ impl ProxyHttp for ConduitProxy {
         // The response chain may execute WASM plugins whose .wasm file is
         // read from disk on first load.  Use block_in_place to signal Tokio
         // that this synchronous chain execution may block.
-        let run_result = tokio::task::block_in_place(|| {
-            chain.run(upstream_response, req_ctx)
-        });
+        let run_result = tokio::task::block_in_place(|| chain.run(upstream_response, req_ctx));
 
         match run_result? {
             ResponseFilterOutcome::Continue => {}
@@ -1779,7 +1778,10 @@ impl ProxyHttp for ConduitProxy {
         // Decrement inflight for proxy requests (local handlers decrement inline).
         self.state.metrics.active_connections.dec();
         // Release per-IP connection slot (nginx limit_conn pattern).
-        if let Some(ip) = ctx.as_ref().and_then(|c| c.client_ip_for_conn_limit.as_deref()) {
+        if let Some(ip) = ctx
+            .as_ref()
+            .and_then(|c| c.client_ip_for_conn_limit.as_deref())
+        {
             if let Some(counter) = self.state.ip_conn_counts.get(ip) {
                 let prev = counter.fetch_sub(1, Ordering::Relaxed);
                 if prev == 0 {

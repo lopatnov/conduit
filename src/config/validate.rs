@@ -55,7 +55,12 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
 
     // ── global.otlp ───────────────────────────────────────────────────────────
     #[cfg(not(feature = "otlp"))]
-    if config.global.as_ref().and_then(|g| g.otlp.as_ref()).is_some() {
+    if config
+        .global
+        .as_ref()
+        .and_then(|g| g.otlp.as_ref())
+        .is_some()
+    {
         warnings.push(
             "global.otlp is configured but Conduit was compiled without the `otlp` feature \
              — OpenTelemetry tracing will be disabled. \
@@ -153,7 +158,9 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
     // ── Redis (feature: redis) ────────────────────────────────────────────────
     #[cfg(not(feature = "redis"))]
     for (i, site) in config.sites.iter().enumerate() {
-        let uses_redis = site.rate_limit.as_ref()
+        let uses_redis = site
+            .rate_limit
+            .as_ref()
             .and_then(|rl| rl.store.as_deref())
             .map(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
             .unwrap_or(false);
@@ -170,15 +177,13 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
     #[cfg(not(feature = "cache"))]
     for (i, site) in config.sites.iter().enumerate() {
         let has_cache = match &site.proxy {
-            Some(crate::config::schema::ProxyConfig::Routes(routes)) => {
-                routes.values().any(|t| {
-                    if let crate::config::schema::ProxyRouteTarget::Full(cfg) = t {
-                        cfg.cache.is_some()
-                    } else {
-                        false
-                    }
-                })
-            }
+            Some(crate::config::schema::ProxyConfig::Routes(routes)) => routes.values().any(|t| {
+                if let crate::config::schema::ProxyRouteTarget::Full(cfg) = t {
+                    cfg.cache.is_some()
+                } else {
+                    false
+                }
+            }),
             _ => false,
         };
         if has_cache {
@@ -217,11 +222,7 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
     // ── Proxy loop detection ─────────────────────────────────────────────────
     // Warn when a proxy target URL points back to a port this same Conduit
     // instance is listening on — that creates an infinite request loop.
-    let listening_ports: Vec<u16> = config
-        .sites
-        .iter()
-        .map(effective_port)
-        .collect();
+    let listening_ports: Vec<u16> = config.sites.iter().map(effective_port).collect();
     for (i, site) in config.sites.iter().enumerate() {
         let targets = collect_proxy_targets(site);
         for target in &targets {
@@ -335,7 +336,9 @@ fn collect_proxy_targets(site: &SiteConfig) -> Vec<String> {
                     ProxyRouteTarget::Full(cfg) => {
                         for t in &cfg.targets {
                             match t {
-                                crate::config::schema::ProxyTarget::Simple(u) => out.push(u.clone()),
+                                crate::config::schema::ProxyTarget::Simple(u) => {
+                                    out.push(u.clone())
+                                }
                                 crate::config::schema::ProxyTarget::Weighted(w) => {
                                     out.push(w.url.clone())
                                 }
@@ -376,15 +379,49 @@ fn effective_port(site: &SiteConfig) -> u16 {
 }
 
 fn validate_no_duplicate_host_port(config: &AppConfig, errors: &mut Vec<ValidationError>) {
+    // Track ports claimed by TCP proxy sites — TCP binds the OS port regardless of host,
+    // so no other site (HTTP or TCP) may use the same port number.
+    let mut tcp_ports: HashMap<u16, usize> = HashMap::new();
     let mut seen: HashMap<(String, u16), usize> = HashMap::new();
+
     for (i, site) in config.sites.iter().enumerate() {
-        let host = site.host.clone().unwrap_or_else(|| "*".to_string());
         let port = effective_port(site);
-        if let Some(prev) = seen.insert((host.clone(), port), i) {
-            errors.push(ValidationError::new(
-                format!("sites[{i}]"),
-                format!("Duplicate host+port '{host}:{port}' — already defined at sites[{prev}]"),
-            ));
+
+        if site.tcp.is_some() {
+            // TCP site: port must be completely unique.
+            if let Some(prev) = tcp_ports.insert(port, i) {
+                errors.push(ValidationError::new(
+                    format!("sites[{i}].port"),
+                    format!("Port {port} is already used by a TCP proxy site at sites[{prev}]"),
+                ));
+            }
+            // Also check against any previously registered HTTP sites on this port.
+            for key in seen.keys().filter(|(_, p)| *p == port) {
+                errors.push(ValidationError::new(
+                    format!("sites[{i}].port"),
+                    format!(
+                        "TCP proxy port {port} conflicts with HTTP site '{}:{port}'",
+                        key.0
+                    ),
+                ));
+            }
+        } else {
+            // HTTP site: check against TCP ports first.
+            if let Some(tcp_idx) = tcp_ports.get(&port) {
+                errors.push(ValidationError::new(
+                    format!("sites[{i}].port"),
+                    format!("Port {port} is already used by a TCP proxy site at sites[{tcp_idx}]"),
+                ));
+            }
+            let host = site.host.clone().unwrap_or_else(|| "*".to_string());
+            if let Some(prev) = seen.insert((host.clone(), port), i) {
+                errors.push(ValidationError::new(
+                    format!("sites[{i}]"),
+                    format!(
+                        "Duplicate host+port '{host}:{port}' — already defined at sites[{prev}]"
+                    ),
+                ));
+            }
         }
     }
 }
@@ -428,9 +465,7 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
             if t.starts_with("http://") || t.starts_with("https://") {
                 errors.push(ValidationError::new(
                     format!("{prefix}.tcp.targets[{i}]"),
-                    format!(
-                        "TCP target \"{t}\" must be a plain host:port — no http:// prefix"
-                    ),
+                    format!("TCP target \"{t}\" must be a plain host:port — no http:// prefix"),
                 ));
             } else if !t.contains(':') {
                 errors.push(ValidationError::new(
@@ -644,10 +679,8 @@ fn validate_forward_auth(
     if let Ok(parsed) = ParsedUrl::parse(&cfg.url) {
         let host = parsed.host_str().unwrap_or("");
         let port = parsed.port().unwrap_or(80);
-        let is_loopback = host == "localhost"
-            || host == "127.0.0.1"
-            || host == "::1"
-            || host.starts_with("127.");
+        let is_loopback =
+            host == "localhost" || host == "127.0.0.1" || host == "::1" || host.starts_with("127.");
         if is_loopback && port == 2019 {
             errors.push(ValidationError::new(
                 format!("{prefix}.url"),
@@ -1105,7 +1138,7 @@ fn validate_cache_config(
         ));
     }
     if let (Some(swr), Some(ttl)) = (cache.stale_while_revalidate_secs, cache.ttl_secs) {
-        if swr as u64 > ttl * 10 {
+        if swr as u64 > (ttl as u64).saturating_mul(10) {
             // Not a hard error, just a suspicious config.
             tracing::debug!(
                 "{prefix}.staleWhileRevalidateSecs ({swr}) is more than 10× ttlSecs ({ttl})"
@@ -1627,7 +1660,10 @@ mod tests {
     #[test]
     fn tcp_proxy_http_prefix_rejected() {
         let e = errs(r#"{ "port": 3306, "tcp": { "targets": ["http://mysql:3306"] } }"#);
-        assert!(!e.is_empty(), "http:// prefix must be rejected for TCP targets");
+        assert!(
+            !e.is_empty(),
+            "http:// prefix must be rejected for TCP targets"
+        );
     }
 
     #[test]
@@ -1855,7 +1891,11 @@ mod tests {
                  "middleware": [{ "type": "wasm", "path": "plugin.wasm" }] }"#,
         );
         assert_eq!(w.len(), 1, "expected exactly one warning: {w:?}");
-        assert!(w[0].contains("wasm"), "warning must mention 'wasm': {}", w[0]);
+        assert!(
+            w[0].contains("wasm"),
+            "warning must mention 'wasm': {}",
+            w[0]
+        );
         assert!(
             w[0].contains("--features wasm"),
             "warning must mention compile flag: {}",
@@ -1889,7 +1929,11 @@ mod tests {
                  "sites": [{ "port": 8080 }] }"#,
         );
         assert_eq!(w.len(), 1, "expected exactly one otlp warning: {w:?}");
-        assert!(w[0].contains("otlp"), "warning must mention 'otlp': {}", w[0]);
+        assert!(
+            w[0].contains("otlp"),
+            "warning must mention 'otlp': {}",
+            w[0]
+        );
         assert!(
             w[0].contains("--features otlp"),
             "warning must mention compile flag: {}",
@@ -1941,7 +1985,7 @@ mod tests {
     // ── weak JWT secret ───────────────────────────────────────────────────────
 
     #[test]
-    #[cfg(feature = "jwt")]  // secret-length warning only fires when jwt feature is enabled
+    #[cfg(feature = "jwt")] // secret-length warning only fires when jwt feature is enabled
     fn short_jwt_secret_warns() {
         let w = warns(r#"{ "port": 8080, "jwtAuth": { "secret": "short" } }"#);
         assert!(!w.is_empty(), "short secret must warn");
@@ -1950,11 +1994,14 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "jwt"))]  // when jwt feature is off, generates a different warning
+    #[cfg(not(feature = "jwt"))] // when jwt feature is off, generates a different warning
     fn jwt_without_feature_warns() {
         let w = warns(r#"{ "port": 8080, "jwtAuth": { "secret": "short" } }"#);
         assert!(!w.is_empty(), "jwtAuth without jwt feature must warn");
-        assert!(w.iter().any(|m| m.contains("jwt")), "warning must mention jwt: {w:?}");
+        assert!(
+            w.iter().any(|m| m.contains("jwt")),
+            "warning must mention jwt: {w:?}"
+        );
     }
 
     #[test]
@@ -1993,9 +2040,7 @@ mod tests {
 
     #[test]
     fn forward_auth_to_admin_api_port_is_error() {
-        let e = errs(
-            r#"{ "port": 8080, "forwardAuth": { "url": "http://127.0.0.1:2019/auth" } }"#,
-        );
+        let e = errs(r#"{ "port": 8080, "forwardAuth": { "url": "http://127.0.0.1:2019/auth" } }"#);
         assert!(
             e.iter().any(|err| err.message.contains("Admin API")),
             "forwardAuth pointing to admin port must be an error: {e:?}"
@@ -2005,9 +2050,11 @@ mod tests {
     #[test]
     fn forward_auth_to_normal_service_ok() {
         assert!(
-            errs(r#"{ "port": 8080, "forwardAuth": { "url": "http://auth-service:4000/verify" } }"#)
-                .iter()
-                .all(|e| !e.message.contains("Admin API")),
+            errs(
+                r#"{ "port": 8080, "forwardAuth": { "url": "http://auth-service:4000/verify" } }"#
+            )
+            .iter()
+            .all(|e| !e.message.contains("Admin API")),
             "forwardAuth to external service must not warn about admin API"
         );
     }
@@ -2042,10 +2089,12 @@ mod tests {
 
     #[test]
     fn consumer_empty_api_key_is_rejected() {
-        let e = errs(r#"{
+        let e = errs(
+            r#"{
             "port": 8080,
             "consumers": { "consumers": [{ "username": "bob", "apiKey": "" }] }
-        }"#);
+        }"#,
+        );
         assert!(
             e.iter().any(|err| err.message.contains("empty")),
             "consumer empty apiKey must be rejected: {e:?}"

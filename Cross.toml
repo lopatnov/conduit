@@ -1,0 +1,11 @@
+# Cross-compilation configuration for `cross`.
+# See https://github.com/cross-rs/cross/wiki/Configuration
+
+[target.riscv64gc-unknown-linux-gnu]
+# The default cross image for riscv64 does not include cmake, which is
+# required by libz-ng-sys (a transitive dep from async-compression/zstd).
+# Install it via pre-build commands.
+pre-build = [
+    "apt-get update -q",
+    "apt-get install -y --no-install-recommends cmake",
+]
