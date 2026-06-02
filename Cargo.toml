@@ -230,10 +230,6 @@ required-features = ["forward-auth"]
 name = "upload"
 required-features = ["upload"]
 
-[[test]]
-name = "auth"
-required-features = ["jwt"]
-
 [profile.release]
 lto           = true
 codegen-units = 1

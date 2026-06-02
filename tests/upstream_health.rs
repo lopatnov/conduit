@@ -182,8 +182,8 @@ fn health_include_upstreams_shows_status() {
     let body: serde_json::Value = resp.json().expect("parse JSON");
     assert_eq!(body["status"], "ok", "status must be ok");
     assert!(
-        body["upstreams"].is_object(),
-        "upstreams field must be present and be an object, got: {body}"
+        body["upstreams"].is_array(),
+        "upstreams field must be present and be an array, got: {body}"
     );
 }
 
