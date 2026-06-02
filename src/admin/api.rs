@@ -288,10 +288,16 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
     // Detect fields that require a restart (cold changes).
     let cold_fields = detect_cold_changes(&state.config.load(), &new_config);
     if !cold_fields.is_empty() {
-        return Err(AdminError::BadRequest(format!(
-            "cold fields changed — restart required: {}",
-            cold_fields.join(", ")
-        )));
+        // Return cold_fields as a JSON array so callers can inspect which
+        // fields require a restart, in addition to the human-readable message.
+        return Ok(Json(json!({
+            "status": "error",
+            "message": format!(
+                "cold fields changed — restart required: {}",
+                cold_fields.join(", ")
+            ),
+            "cold_fields": cold_fields,
+        })));
     }
 
     // Switch log writer if any site's logging.file path changed.
