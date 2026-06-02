@@ -168,7 +168,11 @@ pub async fn handle_static(
     }
 
     // Pick an on-the-fly encoding if the config and client both support it.
+    // Also check content-type: don't compress binary formats (nginx gzip_types pattern).
     let compress = compress_opts.and_then(|opts| {
+        if !crate::filter::compression::is_compressible_type(&content_type, opts) {
+            return None;
+        }
         crate::filter::compression::best_encoding(opts, accept_enc, file_size)
             .map(|enc| (enc, opts.level))
     });

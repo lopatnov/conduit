@@ -172,9 +172,45 @@ pub fn response_cacheable(cfg: &CacheConfig, resp: &ResponseHeader) -> RespCache
         return RespCacheable::Uncacheable(NoCacheReason::OriginNotCache);
     }
 
-    // RFC 7234 § 3: Never cache responses that set session cookies — sharing
-    // a cached Set-Cookie response across clients would hijack their sessions.
+    // RFC 7234 § 3: Never cache responses that set session cookies.
     if resp.headers.contains_key("set-cookie") {
+        return RespCacheable::Uncacheable(NoCacheReason::OriginNotCache);
+    }
+
+    // RFC 7234 § 3 — respect Cache-Control directives from the upstream response.
+    // A well-behaved proxy MUST obey these even when the operator configures a TTL.
+    //
+    // • no-store: MUST NOT store the response in any cache.
+    // • private: shared caches (like Conduit) MUST NOT cache this response.
+    // • no-cache: may store but must revalidate before each use; we treat it as
+    //   uncacheable since we don't implement per-request revalidation.
+    //
+    // Pattern: nginx proxy_cache_bypass, RFC 7234 § 3.
+    if let Some(cc) = resp
+        .headers
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())
+    {
+        let cc_lower = cc.to_ascii_lowercase();
+        if cc_lower.contains("no-store")
+            || cc_lower.contains("private")
+            || cc_lower.contains("no-cache")
+        {
+            return RespCacheable::Uncacheable(NoCacheReason::OriginNotCache);
+        }
+    }
+
+    // RFC 7234 § 5.2.2.9: s-maxage overrides max-age for shared caches.
+    // Respect the upstream's preference over our config TTL.
+    // nginx proxy_cache also honours s-maxage.
+    let effective_ttl = {
+        match parse_cc_directive_opt(resp, "s-maxage") {
+            Some(0) => return RespCacheable::Uncacheable(NoCacheReason::OriginNotCache), // s-maxage=0 → don't cache
+            Some(s) => s as u64,  // use upstream's s-maxage value
+            None    => ttl_secs,  // not present → use configured TTL
+        }
+    };
+    if effective_ttl == 0 {
         return RespCacheable::Uncacheable(NoCacheReason::OriginNotCache);
     }
 
@@ -187,9 +223,31 @@ pub fn response_cacheable(cfg: &CacheConfig, resp: &ResponseHeader) -> RespCache
         .unwrap_or_else(|| parse_cc_directive(resp, "stale-if-error"));
 
     let now = SystemTime::now();
-    let fresh_until = now + Duration::from_secs(ttl_secs);
+    let fresh_until = now + Duration::from_secs(effective_ttl);
     let meta = CacheMeta::new(fresh_until, now, swr, sie, resp.clone());
     RespCacheable::Cacheable(meta)
+}
+
+/// Parse a `Cache-Control` directive that has an integer value.
+/// Returns `Some(n)` when the directive is present (0 is valid), `None` when absent.
+fn parse_cc_directive_opt(resp: &ResponseHeader, directive: &str) -> Option<u32> {
+    let cc = resp
+        .headers
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())?;
+    // Scan comma-separated directives.
+    for part in cc.split(',') {
+        let part = part.trim();
+        if let Some(value_str) = part
+            .strip_prefix(directive)
+            .and_then(|s| s.strip_prefix('='))
+        {
+            if let Ok(v) = value_str.trim().parse::<u32>() {
+                return Some(v);
+            }
+        }
+    }
+    None
 }
 
 /// Parse a `Cache-Control` directive value like `stale-while-revalidate=300`.
@@ -590,6 +648,73 @@ mod tests {
                 RespCacheable::Cacheable(_)
             ),
             "response without Set-Cookie should be cacheable"
+        );
+    }
+
+    // ── RFC 7234 Cache-Control compliance ─────────────────────────────────────
+
+    fn resp_with_cc(cc: &str) -> pingora_http::ResponseHeader {
+        let mut r = pingora_http::ResponseHeader::build(200, None).unwrap();
+        r.insert_header("cache-control", cc).unwrap();
+        r
+    }
+
+    #[test]
+    fn no_store_prevents_caching() {
+        let resp = resp_with_cc("no-store");
+        assert!(
+            matches!(response_cacheable(&cfg(60), &resp), RespCacheable::Uncacheable(_)),
+            "Cache-Control: no-store must not be cached"
+        );
+    }
+
+    #[test]
+    fn private_prevents_caching() {
+        let resp = resp_with_cc("private");
+        assert!(
+            matches!(response_cacheable(&cfg(60), &resp), RespCacheable::Uncacheable(_)),
+            "Cache-Control: private must not be cached by shared proxy"
+        );
+    }
+
+    #[test]
+    fn no_cache_prevents_caching() {
+        let resp = resp_with_cc("no-cache");
+        assert!(
+            matches!(response_cacheable(&cfg(60), &resp), RespCacheable::Uncacheable(_)),
+            "Cache-Control: no-cache must not be stored by proxy without revalidation"
+        );
+    }
+
+    #[test]
+    fn s_maxage_overrides_configured_ttl() {
+        // RFC 7234 § 5.2.2.9: s-maxage takes precedence for shared caches.
+        let resp = resp_with_cc("s-maxage=120");
+        let cacheable = response_cacheable(&cfg(60), &resp);
+        assert!(
+            matches!(cacheable, RespCacheable::Cacheable(_)),
+            "valid s-maxage should be cacheable"
+        );
+        // The freshness duration should be 120s (s-maxage) not 60s (config ttl).
+        if let RespCacheable::Cacheable(meta) = cacheable {
+            let fresh_secs = meta
+                .fresh_until()
+                .duration_since(std::time::SystemTime::now())
+                .unwrap_or_default()
+                .as_secs();
+            assert!(
+                fresh_secs >= 115 && fresh_secs <= 125,
+                "s-maxage=120 must override config ttl=60; got ~{fresh_secs}s"
+            );
+        }
+    }
+
+    #[test]
+    fn s_maxage_zero_prevents_caching() {
+        let resp = resp_with_cc("s-maxage=0");
+        assert!(
+            matches!(response_cacheable(&cfg(60), &resp), RespCacheable::Uncacheable(_)),
+            "s-maxage=0 must not be cached"
         );
     }
 }
