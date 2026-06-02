@@ -342,6 +342,18 @@ impl RequestFilter for ConsumersGuard {
             }
         }
 
+        // Strip any existing consumer-identity header from the incoming request
+        // BEFORE identification.  A client could forge `X-Consumer-ID: admin`
+        // and send it to upstream to impersonate a privileged consumer.  We
+        // always overwrite this header with the identity we compute ourselves,
+        // but stripping it first ensures it is absent on skip-paths too.
+        let id_header_name = self
+            .cfg
+            .id_header
+            .as_deref()
+            .unwrap_or("x-consumer-id");
+        let _ = ctx.session.req_header_mut().remove_header(id_header_name);
+
         // Identify consumer from credentials in the request.
         let consumer = auth::identify_consumer(&self.cfg, ctx.session);
         let Some(consumer) = consumer else {
@@ -486,12 +498,17 @@ pub struct ForwardAuthGuard {
 }
 
 /// Process-wide reqwest client for forward-auth and JWKS fetching.
+///
+/// Uses separate `connect_timeout` (TCP SYN + TLS handshake) and overall
+/// `timeout` (from connect to last body byte) so that both hung TCP
+/// connections AND slow auth servers are bounded.
 fn forward_auth_client() -> &'static reqwest::Client {
     use std::sync::OnceLock;
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .connect_timeout(std::time::Duration::from_secs(3)) // TCP+TLS max
+            .timeout(std::time::Duration::from_secs(10))        // total request max
             .build()
             .unwrap_or_default()
     })

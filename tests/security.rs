@@ -412,6 +412,142 @@ fn priority_routing_above_threshold_sheds_low_priority() {
     );
 }
 
+// ── X-Priority header must not be trusted from clients ───────────────────────
+
+/// A client sending X-Priority: 100 must not bypass load shedding.
+/// The header must be stripped before the priority check.
+#[test]
+#[serial]
+fn x_priority_header_from_client_does_not_bypass_load_shedding() {
+    let echo_port = common::free_port();
+    let _echo = common::start_echo_upstream(echo_port);
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    // maxInflight=1, threshold=0.0 → always sheds low-priority.
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "limits": { "maxInflightRequests": 1, "priorityThreshold": 0.0 },
+                "proxy": {
+                    "/batch": {
+                        "targets": [format!("http://127.0.0.1:{echo_port}")],
+                        "priority": 10
+                    },
+                    "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] }
+                }
+            }]
+        }),
+    );
+
+    // Attacker sends X-Priority: 100 to try to bypass shedding on /batch.
+    let resp = Client::new()
+        .get(srv.url("/batch/jobs"))
+        .header("x-priority", "100")
+        .send()
+        .unwrap();
+
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "X-Priority: 100 from client must NOT bypass load shedding — priority routing \
+         must only use route config, not client-supplied headers"
+    );
+}
+
+/// X-Priority must be stripped from the request before forwarding to upstream.
+#[test]
+#[serial]
+fn x_priority_header_stripped_before_upstream() {
+    let echo_port = common::free_port();
+    let _echo = common::start_echo_upstream(echo_port);
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": { "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] } }
+            }]
+        }),
+    );
+
+    let resp = Client::new()
+        .get(srv.url("/"))
+        .header("x-priority", "90")
+        .send()
+        .unwrap();
+
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: serde_json::Value = resp.json().unwrap_or_default();
+    let headers = body.get("headers").cloned().unwrap_or_default();
+    assert!(
+        headers.get("x-priority").is_none(),
+        "X-Priority must be stripped before reaching upstream, got: {headers}"
+    );
+}
+
+// ── X-Consumer-ID header injection ───────────────────────────────────────────
+
+/// A client forging X-Consumer-ID must not have it reach the upstream.
+/// ConsumersGuard strips the header first, then sets it to the real consumer.
+#[test]
+#[serial]
+fn x_consumer_id_from_client_is_stripped() {
+    let echo_port = common::free_port();
+    let _echo = common::start_echo_upstream(echo_port);
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    // Configure a consumer with a known API key.
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "consumers": {
+                    "consumers": [
+                        { "username": "alice", "apiKey": "alice-key" }
+                    ]
+                },
+                "proxy": { "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] } }
+            }]
+        }),
+    );
+
+    // Attacker sends a forged X-Consumer-ID with their own key.
+    let resp = Client::new()
+        .get(srv.url("/"))
+        .header("x-api-key", "alice-key")
+        .header("x-consumer-id", "admin-user") // forged!
+        .send()
+        .unwrap();
+
+    assert_eq!(resp.status().as_u16(), 200, "valid key must reach upstream");
+    let body: serde_json::Value = resp.json().unwrap_or_default();
+    let headers = body.get("headers").cloned().unwrap_or_default();
+
+    // Upstream must see "alice", not "admin-user".
+    let consumer_id = headers
+        .get("x-consumer-id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(
+        consumer_id, "alice",
+        "upstream must receive the real consumer ID, not the forged one: got {consumer_id:?}"
+    );
+}
+
 // ── maxBodyBytes chunked bypass ───────────────────────────────────────────────
 
 /// Clients that use chunked transfer encoding (no Content-Length) must not

@@ -571,9 +571,18 @@ impl ConduitProxy {
 
         // ── Priority-based load shedding (post-routing) ───────────────────────
         // When the site is above its priority threshold, low-priority routes
-        // are shed with 503.  Priority can be overridden upward by the
-        // X-Priority request header (0-100).
+        // are shed with 503.  Priority is determined solely by the route config
+        // (proxy.*.priority).
+        //
+        // SECURITY: We intentionally do NOT trust the `X-Priority` header from
+        // downstream clients — an attacker could send `X-Priority: 100` to
+        // bypass load shedding entirely.  The header is stripped below to
+        // prevent it from leaking to the upstream as well.
         {
+            // Strip X-Priority from the incoming request so it cannot be used
+            // by the upstream to grant itself elevated priority on retries.
+            let _ = session.req_header_mut().remove_header("x-priority");
+
             let config = self.state.config.load();
             let path = session.req_header().uri.path().to_owned();
             if let Some(site) = config.sites.get(req_ctx.site_idx) {
@@ -586,17 +595,10 @@ impl ConduitProxy {
                             self.state.inflight.load(Ordering::Relaxed) as f64;
                         let load_fraction = current / max_inflight as f64;
                         if load_fraction >= threshold {
-                            // Determine effective priority: route config OR X-Priority header.
+                            // Priority comes exclusively from the route config.
                             let route_priority =
                                 router::find_route_priority(site, &path).unwrap_or(50);
-                            let header_priority = session
-                                .req_header()
-                                .headers
-                                .get("x-priority")
-                                .and_then(|v| v.to_str().ok())
-                                .and_then(|s| s.parse::<u8>().ok())
-                                .unwrap_or(0);
-                            let effective_priority = route_priority.max(header_priority);
+                            let effective_priority = route_priority;
                             if effective_priority < 50 {
                                 let extra = req_ctx.extra_headers.clone();
                                 response::write_response(
