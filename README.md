@@ -67,6 +67,16 @@ GET /logo.png  → ./dist/logo.png
 GET /api/users → http://localhost:4000/api/users
 ```
 
+Verify it's running:
+
+```bash
+curl http://localhost:8080/__health__
+# {"status":"ok"}
+
+curl http://localhost:8080/api/users
+# proxied to http://localhost:4000/api/users
+```
+
 **→ Full examples:** [`examples/`](examples/) · **→ Configuration reference:** [docs/configuration.md](docs/configuration.md)
 
 ---
@@ -369,9 +379,9 @@ Both images run as `nobody` (UID 65534), no shell, no OS userland.
 ## Editor Integration (JSON Schema)
 
 Conduit ships a [JSON Schema](schema/conduit.schema.json) for autocompletion,
-hover docs, and inline validation.
+hover docs, and inline validation in both JSON and YAML configs.
 
-**VS Code — add one line to your config:**
+**VS Code — JSON: add one line to your config:**
 
 ```json
 {
@@ -380,7 +390,7 @@ hover docs, and inline validation.
 }
 ```
 
-**VS Code — workspace-wide (all `conduit*.json` files):**
+**VS Code — JSON: workspace-wide (all `conduit*.json` files):**
 
 ```json
 // .vscode/settings.json
@@ -392,9 +402,22 @@ hover docs, and inline validation.
 }
 ```
 
+**VS Code — YAML: add to `.vscode/settings.json`** (requires the
+[YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)):
+
+```json
+// .vscode/settings.json
+{
+  "yaml.schemas": {
+    "https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json":
+      ["conduit.yaml", "conduit.yml", "conduit.*.yaml"]
+  }
+}
+```
+
 **IntelliJ / WebStorm:** Settings → Languages & Frameworks → Schemas and DTDs → JSON Schema Mappings
 → add URL `https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json`,
-file pattern `conduit*.json`.
+file pattern `conduit*.json, conduit*.yaml`.
 
 ---
 
