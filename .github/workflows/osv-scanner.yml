@@ -12,9 +12,13 @@ on:
     # Daily scan at 07:00 UTC to catch newly published vulnerabilities.
     - cron: "0 7 * * *"
 
+concurrency:
+  group: osv-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
-  security-events: write
+  security-events: write  # required to upload SARIF to GitHub Security tab
   actions: read
 
 jobs:

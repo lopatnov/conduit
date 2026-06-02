@@ -47,9 +47,9 @@ jobs:
             --lcov \
             --output-path coverage.lcov \
             --ignore-filename-regex '(tests/|build\.rs)'
+            # ↑ --ignore-filename-regex excludes test files and build scripts from coverage
         env:
-          # Exclude generated/test-only code from coverage metrics.
-          RUST_LOG: "error"
+          RUST_LOG: "error"  # silence tracing output so coverage stats stay clean
 
       - name: SonarCloud scan
         uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995  # v8.1.0
@@ -59,4 +59,4 @@ jobs:
           SONAR_HOST_URL: https://sonarcloud.io
         with:
           args: >
-            -Dsonar.coverageReportPaths=coverage.lcov
+            -Dsonar.rust.lcov.reportPaths=coverage.lcov

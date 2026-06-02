@@ -301,6 +301,8 @@ pub extern "C" fn on_request() -> i32 {
         return 1;
     }
     let value = unsafe { &BUF[..n as usize] };
+    // NOTE: For production, use constant-time comparison (e.g. subtle::ConstantTimeEq)
+    // to prevent timing attacks. The direct != leaks key prefix information.
     if value != b"my-secret" {
         reject(403, b"invalid API key");
         return 1;
@@ -531,7 +533,7 @@ int on_request(void) {
     const char *expected = "my-secret";
     if (n != 9) { conduit_set_response_status(403); return 1; }
     for (int i = 0; i < 9; i++) {
-        if (buf[i] != expected[i]) { conduit_set_response_status(403); return 1; }
+        if (buf[i] != expected[i]) { conduit_set_response_status(403); return 1; }  // NOTE: use XOR-fold for constant-time
     }
     return 0;
 }
@@ -602,6 +604,7 @@ func onRequest() int32 {
         conduitSetResponseStatus(401)
         return 1
     }
+    // NOTE: For production, use crypto/subtle.ConstantTimeCompare to prevent timing attacks.
     if string(buf[:n]) != "my-secret" {
         conduitSetResponseStatus(403)
         return 1
@@ -691,6 +694,7 @@ export function on_request(): i32 {
     return 1;
   }
   const received = String.UTF8.decodeUnsafe(bufPtr, n);
+  // NOTE: For production, use constant-time comparison (XOR-fold) to prevent timing attacks.
   if (received != "my-secret") {
     conduit_set_response_status(403);
     return 1;

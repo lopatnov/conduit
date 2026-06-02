@@ -225,7 +225,7 @@ jobs:
         run: chmod +x dist/conduit-*-linux-* dist/conduit-*-darwin* 2>/dev/null || true
 
       - name: Attest all binaries
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45  # v2
         with:
           subject-path: "dist/*"
 
@@ -405,7 +405,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Scan image
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8  # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ needs.docker.outputs.version }}
           format: table
@@ -431,7 +431,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Scan full image
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8  # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ needs.docker-full.outputs.version }}-full
           format: table

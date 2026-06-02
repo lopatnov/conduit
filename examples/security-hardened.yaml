@@ -64,7 +64,7 @@ sites:
       skipPaths: [/__health__]
 
     # ── API key auth ──────────────────────────────────────────────────────────
-    # All /api/* requests must include X-API-Key: <key>
+    # Site-wide API-key auth — applies to ALL routes unless listed in skipPaths.
     apiKey:
       keys:
         - "$API_KEY_PRIMARY"

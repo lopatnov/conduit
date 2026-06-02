@@ -181,7 +181,7 @@ otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
 # Kubernetes CRD watching (--kubernetes-namespace flag).
-kubernetes = ["dep:kube", "k8s-openapi/v1_30", "dep:schemars", "dep:futures"]
+kubernetes = ["dep:kube", "dep:k8s-openapi", "k8s-openapi/v1_30", "dep:schemars", "dep:futures"]
 
 # ── Convenience bundles ────────────────────────────────────────────────────────
 # Full build: every optional feature enabled.

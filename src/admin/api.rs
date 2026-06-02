@@ -180,45 +180,45 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/ip-deny", delete(ip_deny_remove_handler))
         .route("/certs/reload", post(certs_reload_handler));
 
-    // Wrap with bearer-token auth middleware if a token is configured.
-    let token: Option<String> = state
-        .config
-        .load()
-        .global
-        .as_ref()
-        .and_then(|g| g.admin.as_ref())
-        .and_then(|a| a.token.clone());
+    // Wrap with bearer-token auth middleware.
+    // Read the token from the live config on every request so that POST /reload
+    // can add, remove, or rotate the admin token without a process restart.
+    let auth_state = state.clone();
+    protected
+        .layer(axum::middleware::from_fn(
+            move |request: Request<Body>, next: Next| {
+                let state = auth_state.clone();
+                async move {
+                    // Read the current token from the live (ArcSwap) config.
+                    let required_token = state
+                        .config
+                        .load()
+                        .global
+                        .as_ref()
+                        .and_then(|g| g.admin.as_ref())
+                        .and_then(|a| a.token.clone());
 
-    if let Some(required_token) = token {
-        // Use a closure that captures the token string so we avoid Axum state
-        // type conflicts (the router state is Arc<AppState>, not Arc<String>).
-        protected
-            .layer(axum::middleware::from_fn(
-                move |request: Request<Body>, next: Next| {
-                    let token = required_token.clone();
-                    async move {
-                        let auth = request
-                            .headers()
-                            .get("authorization")
-                            .and_then(|v| v.to_str().ok())
-                            .unwrap_or("");
-                        let provided = auth.strip_prefix("Bearer ").map(str::trim).unwrap_or("");
-                        // Use constant-time comparison to prevent timing attacks.
-                        // A variable-time `==` leaks whether a prefix of the token
-                        // is correct, enabling character-by-character brute force.
-                        let ok = subtle_eq(provided.as_bytes(), token.as_bytes());
-                        if ok {
-                            Ok(next.run(request).await)
-                        } else {
-                            Err(StatusCode::UNAUTHORIZED)
-                        }
+                    let Some(token) = required_token else {
+                        // No token configured — allow all requests.
+                        return Ok(next.run(request).await);
+                    };
+
+                    let auth = request
+                        .headers()
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("");
+                    let provided = auth.strip_prefix("Bearer ").map(str::trim).unwrap_or("");
+                    // Constant-time comparison prevents timing-based brute force.
+                    if subtle_eq(provided.as_bytes(), token.as_bytes()) {
+                        Ok(next.run(request).await)
+                    } else {
+                        Err(StatusCode::UNAUTHORIZED)
                     }
-                },
-            ))
-            .with_state(state)
-    } else {
-        protected.with_state(state)
-    }
+                }
+            },
+        ))
+        .with_state(state)
 }
 
 async fn status_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
@@ -286,18 +286,24 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
     }
 
     // Detect fields that require a restart (cold changes).
+    // Return 400 so callers get a non-2xx status — returning 200 with
+    // "status":"error" in the body would let automated tools treat a rejected
+    // reload as success.
     let cold_fields = detect_cold_changes(&state.config.load(), &new_config);
     if !cold_fields.is_empty() {
-        // Return cold_fields as a JSON array so callers can inspect which
+        // Include cold_fields as a JSON array so callers can inspect which
         // fields require a restart, in addition to the human-readable message.
-        return Ok(Json(json!({
-            "status": "error",
-            "message": format!(
-                "cold fields changed — restart required: {}",
-                cold_fields.join(", ")
-            ),
-            "cold_fields": cold_fields,
-        })));
+        // Note: AdminError::BadRequest produces 400 Bad Request.
+        return Err(AdminError::BadRequest(
+            json!({
+                "message": format!(
+                    "cold fields changed — restart required: {}",
+                    cold_fields.join(", ")
+                ),
+                "cold_fields": cold_fields,
+            })
+            .to_string(),
+        ));
     }
 
     // Switch log writer if any site's logging.file path changed.
@@ -761,7 +767,7 @@ async fn cache_purge_handler(Query(params): Query<CachePurgeParams>) -> AdminRes
     let purged = storage
         .purge(&compact, PurgeType::Invalidation, &span)
         .await
-        .unwrap_or(false);
+        .map_err(|e| AdminError::ServerError(format!("cache purge failed: {e}")))?;
 
     Ok(Json(
         json!({ "status": "ok", "purged": purged, "url": raw }),

@@ -41,9 +41,9 @@ jobs:
             p/rust
             p/secrets
             p/default
-        env:
-          # Uncomment and set this secret to use managed rules from semgrep.dev:
-          # SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        # To use managed rules from semgrep.dev, add the env block:
+        # env:
+        #   SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
 
       - name: Upload SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@ff0a06e83cb2de871e5a09832bc6a81e7276941f  # v3

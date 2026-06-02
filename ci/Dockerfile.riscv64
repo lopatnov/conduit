@@ -3,6 +3,9 @@ FROM ghcr.io/cross-rs/riscv64gc-unknown-linux-gnu:0.2.5
 # Install a modern cmake from Kitware's official APT repository.
 # The Ubuntu 18.04 (bionic) base only ships cmake 3.10.2, but libz-ng-sys
 # (transitive dep of async-compression) requires cmake >= 3.14.
+# Use pipefail so wget failures abort the build rather than producing a
+# bogus empty keyring that silently causes later package installation to fail.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update -q && \
     apt-get install -y --no-install-recommends ca-certificates gpg wget && \
     wget -qO - https://apt.kitware.com/keys/kitware-archive-latest.asc \
