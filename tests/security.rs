@@ -643,6 +643,72 @@ fn x_consumer_id_from_client_is_stripped() {
     );
 }
 
+// ── Host header allowlist (AllowedHosts) ─────────────────────────────────────
+
+/// When `allowedHosts` is configured, requests with a disallowed Host return 400.
+#[test]
+#[serial]
+fn allowed_hosts_rejects_bad_host() {
+    let echo_port = common::free_port();
+    let _echo = common::start_echo_upstream(echo_port);
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "securityHeaders": {
+                    "allowedHosts": ["api.example.com"]
+                },
+                "proxy": { "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] } }
+            }]
+        }),
+    );
+
+    // Bad host → 400
+    let resp = Client::new()
+        .get(srv.url("/"))
+        .header("host", "evil.com")
+        .send()
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400, "disallowed Host must return 400");
+}
+
+/// When `allowedHosts` is configured, requests with an allowed Host pass through.
+#[test]
+#[serial]
+fn allowed_hosts_passes_good_host() {
+    let echo_port = common::free_port();
+    let _echo = common::start_echo_upstream(echo_port);
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "securityHeaders": {
+                    "allowedHosts": ["127.0.0.1"]
+                },
+                "proxy": { "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] } }
+            }]
+        }),
+    );
+
+    let resp = Client::new()
+        .get(srv.url("/"))
+        .send()   // reqwest sends Host: 127.0.0.1:<port>
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200, "allowed Host must pass through");
+}
+
 // ── maxBodyBytes chunked bypass ───────────────────────────────────────────────
 
 /// Clients that use chunked transfer encoding (no Content-Length) must not

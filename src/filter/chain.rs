@@ -218,7 +218,8 @@ impl RequestFilter for CorsPreflight {
             return Ok(FilterOutcome::Continue);
         }
         let origin = self.origin.as_deref().unwrap_or("");
-        cors::handle_preflight(ctx.session, &self.cfg, origin, &self.sec_headers).await?;
+        let allow_pna = cors::requests_private_network_access(ctx.session);
+        cors::handle_preflight(ctx.session, &self.cfg, origin, &self.sec_headers, allow_pna).await?;
         ctx.inflight.fetch_sub(1, Ordering::Relaxed);
         Ok(FilterOutcome::Handled)
     }
@@ -238,6 +239,41 @@ impl RequestFilter for HealthBypass {
         } else {
             Ok(FilterOutcome::Continue)
         }
+    }
+}
+
+/// Validates the `Host` request header against a configured allowlist.
+///
+/// Runs immediately after `HealthBypass` so health/ACME/hot-reload endpoints
+/// are always reachable regardless of the allowlist.  All other requests with
+/// a disallowed Host receive `400 Bad Request`.
+///
+/// Pattern from traefik `AllowedHosts` — prevents HTTP Host header injection
+/// where an application generates absolute URLs from an untrusted Host header.
+pub struct AllowedHostsGuard {
+    pub security_cfg: Option<crate::config::schema::SecurityHeadersConfig>,
+    pub host: String,
+}
+
+#[async_trait]
+impl RequestFilter for AllowedHostsGuard {
+    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
+        let Some(ref cfg) = self.security_cfg else {
+            return Ok(FilterOutcome::Continue);
+        };
+        if crate::filter::security_headers::is_host_allowed(cfg, &self.host) {
+            return Ok(FilterOutcome::Continue);
+        }
+        crate::handler::response::write_response(
+            ctx.session,
+            400,
+            "text/plain",
+            bytes::Bytes::from_static(b"Bad Request: host not in allowedHosts"),
+            ctx.extra_headers,
+        )
+        .await?;
+        ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+        Ok(FilterOutcome::Handled)
     }
 }
 

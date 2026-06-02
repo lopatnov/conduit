@@ -60,7 +60,7 @@
         "logging":        { "$ref": "#/$defs/LoggingConfig" },
         "compression":    { "$ref": "#/$defs/CompressionConfig" },
         "responseTime":   { "$ref": "#/$defs/BoolOrObject" },
-        "securityHeaders":{ "$ref": "#/$defs/BoolOrObject" },
+        "securityHeaders":{ "$ref": "#/$defs/SecurityHeadersConfig" },
         "cors":           { "$ref": "#/$defs/CorsConfig" },
         "hotReload":      { "$ref": "#/$defs/HotReloadConfig" },
         "healthCheck":    { "$ref": "#/$defs/HealthCheckConfig" },
@@ -250,6 +250,24 @@
             "algorithms": { "type": "array", "items": { "type": "string", "enum": ["br", "gzip", "deflate"] } },
             "level":      { "type": "integer", "minimum": 0, "maximum": 9 },
             "minBytes":   { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "SecurityHeadersConfig": {
+      "oneOf": [
+        { "type": "boolean" },
+        {
+          "type": "object",
+          "properties": {
+            "hstsMaxAgeSecs":        { "type": "integer", "minimum": 0, "description": "max-age for Strict-Transport-Security (seconds). 0 disables HSTS." },
+            "hstsIncludeSubDomains": { "type": "boolean", "description": "Add includeSubDomains to HSTS. Default: true when hstsMaxAgeSecs is set." },
+            "hstsPreload":           { "type": "boolean", "description": "Add preload directive to HSTS for preload list submission." },
+            "csp":                   { "type": "string", "description": "Content-Security-Policy header value." },
+            "xFrameOptions":         { "type": "string", "enum": ["DENY", "SAMEORIGIN"], "description": "X-Frame-Options value." },
+            "referrerPolicy":        { "type": "string", "description": "Referrer-Policy header value." },
+            "permissionsPolicy":     { "type": "string", "description": "Permissions-Policy header value (replaces Feature-Policy). E.g. 'geolocation=(), microphone=()'." },
+            "allowedHosts":          { "type": "array", "items": { "type": "string" }, "description": "Allowlist of Host header values. Requests with disallowed Host return 400. Use '*' to allow any." }
           }
         }
       ]

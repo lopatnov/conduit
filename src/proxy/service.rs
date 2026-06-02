@@ -23,8 +23,8 @@ use crate::config::schema::{
 };
 use crate::filter::chain::{
     ApiKeyGuard, BasicAuthGuard, ConsumersGuard, CorsPreflight, FaultInjectionGuard, FilterChain,
-    FilterContext, ForwardAuthGuard, HealthBypass, IpGuard, JwtGuard, LimitsGuard, MiddlewareGuard,
-    RateLimitGuard, RedirectGuard, XRequestIdGuard,
+    AllowedHostsGuard, FilterContext, ForwardAuthGuard, HealthBypass, IpGuard, JwtGuard,
+    LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard, XRequestIdGuard,
 };
 use crate::filter::rate_limit::{self, RateLimiter};
 use crate::filter::rate_limit_redis::RedisRateLimiter;
@@ -497,9 +497,20 @@ impl ConduitProxy {
         let handler_kind = handler_kind_of(&req_ctx.upstream);
 
         // ── Guard filters (ip, cors, limits, auth, redirects, scripts) ──────────
+        // Extract Host header once for AllowedHostsGuard.
+        let incoming_host = session
+            .req_header()
+            .headers
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
+
         let guards = GuardCtx {
             ip_cfg,
             limits_cfg,
+            security_cfg: security_cfg.clone(),
+            host: incoming_host,
             rate_limit_cfg,
             basic_auth_cfg,
             api_key_cfg,
@@ -700,6 +711,12 @@ impl ConduitProxy {
 
         // 3. Health / ACME / hot-reload bypass — skips all remaining guards.
         chain = chain.push(HealthBypass { bypass: is_bypass });
+
+        // 3a. AllowedHosts: Host header allowlist (after bypass so health is exempt).
+        chain = chain.push(crate::filter::chain::AllowedHostsGuard {
+            security_cfg: guards.security_cfg.clone(),
+            host: guards.host.clone(),
+        });
 
         // 4. Request size / header limits.
         if let Some(cfg) = guards.limits_cfg {
@@ -1978,6 +1995,10 @@ enum HandlerKind {
 struct GuardCtx {
     ip_cfg: Option<IpFilterConfig>,
     limits_cfg: Option<LimitsConfig>,
+    /// Security headers config — used by `AllowedHostsGuard`.
+    security_cfg: Option<crate::config::schema::SecurityHeadersConfig>,
+    /// Incoming `Host` header value — checked against `allowedHosts`.
+    host: String,
     rate_limit_cfg: Option<RateLimitConfig>,
     basic_auth_cfg: Option<BasicAuthConfig>,
     api_key_cfg: Option<ApiKeyConfig>,
