@@ -5,24 +5,31 @@ write `.rhai` files — plain text files in Rhai syntax — and Conduit runs the
 for every request that passes through the middleware. No build step, no
 compiler, no toolchain required.
 
-> **No compile-time feature needed** — Rhai is always available.
+> **Requires** `cargo build --features rhai`
 
 **When to use Rhai vs WASM:**
 
-| | Rhai | WASM |
-|-|------|------|
-| Language | Rhai only | Rust, C, Go, AssemblyScript, … |
-| Build step | None — edit and reload | Compile to `.wasm` |
-| Read request headers | ✅ | ✅ |
-| **Write** request headers | ❌ | ✅ |
-| Read client IP | ❌ | ✅ |
-| Plugin `config` access | ✅ | ✅ |
-| **Response phase** (`phase: "response"`) | ✅ | ✅ (`on_response` export) |
-| Best for | Simple guards, path checks, auth decisions | Header mutation, high performance, complex logic |
+|                                          | Rhai                                       | WASM                                             |
+| ---------------------------------------- | ------------------------------------------ | ------------------------------------------------ |
+| Language                                 | Rhai only                                  | Rust, C, Go, AssemblyScript, …                   |
+| Build step                               | None — edit and reload                     | Compile to `.wasm`                               |
+| Read request headers                     | ✅ `request.header("Name")`                | ✅                                               |
+| **Write** request headers (to upstream)  | ❌ ¹                                       | ✅ `conduit_set_request_header`                  |
+| Read client IP                           | ❌ ²                                       | ✅ `conduit_get_client_ip`                       |
+| Plugin `config` access                   | ✅                                         | ✅                                               |
+| **Response phase**                       | ✅ `phase: "response"`                     | ✅ `on_response` export                          |
+| Best for                                 | Guards, path checks, allow/deny decisions  | Header mutation, high performance, complex logic |
+
+> ¹ Rhai can set headers on the **abort response** (`response.header()`), but
+> cannot add headers to the request forwarded to the upstream. Use WASM or
+> `requestTransform.setHeaders` in config for that.
+>
+> ² Client IP is not exposed to Rhai scripts. Use `ipFilter` in config or a
+> WASM plugin for IP-based decisions.
 
 Use **Rhai** when you want to inspect headers and allow/deny requests without
-a build step. Switch to [WASM](wasm.md) when you need to add or remove headers,
-or when the logic is complex enough to benefit from a compiled language.
+a build step. Switch to [WASM](wasm.md) when you need to add or modify
+forwarded request headers, or access the client IP.
 
 ---
 
@@ -58,7 +65,7 @@ any text editor — no compiler needed.
 # conduit.yaml
 middleware:
   - type: script
-    path: ./scripts/my-check.rhai    # path relative to working directory
+    path: ./scripts/my-check.rhai # path relative to working directory
 
   # Multiple scripts run in order — first false wins
   - type: script
@@ -86,19 +93,6 @@ middleware:
 }
 ```
 
-```json
-{
-  "middleware": [
-    { "type": "script", "path": "./scripts/my-check.rhai" },
-    {
-      "type": "script",
-      "path": "./scripts/auth.rhai",
-      "config": { "allowed_token": "secret-123" }
-    }
-  ]
-}
-```
-
 > Scripts are loaded from the path relative to the **working directory** where
 > `conduit` is started. Paths starting with `/` are absolute.
 
@@ -112,30 +106,30 @@ Every script receives two pre-populated variables: `request` and `response`.
 
 Read-only view of the incoming HTTP request.
 
-| Property / Method | Type | Description |
-| ----------------- | ---- | ----------- |
-| `request.path` | `String` | Request path, e.g. `"/api/users"` |
-| `request.method` | `String` | HTTP method, e.g. `"GET"`, `"POST"` |
-| `request.query` | `String` | Raw query string, e.g. `"page=1&size=10"` (empty when absent) |
-| `request.header("Name")` | `String` | Header value — case-insensitive; empty string when absent |
+| Property / Method        | Type     | Description                                                   |
+| ------------------------ | -------- | ------------------------------------------------------------- |
+| `request.path`           | `String` | Request path, e.g. `"/api/users"`                             |
+| `request.method`         | `String` | HTTP method, e.g. `"GET"`, `"POST"`                           |
+| `request.query`          | `String` | Raw query string, e.g. `"page=1&size=10"` (empty when absent) |
+| `request.header("Name")` | `String` | Header value — case-insensitive; empty string when absent     |
 
 ### `response` object
 
 Used to build the response when aborting the pipeline.
 
-| Property / Method | Type | Description |
-| ----------------- | ---- | ----------- |
-| `response.status` | `int` | HTTP status code to send (default: `200`) |
-| `response.body` | `String` | Response body text (default: `""`) |
-| `response.header("Name", "Value")` | — | Append a response header |
+| Property / Method                  | Type     | Description                               |
+| ---------------------------------- | -------- | ----------------------------------------- |
+| `response.status`                  | `int`    | HTTP status code to send (default: `200`) |
+| `response.body`                    | `String` | Response body text (default: `""`)        |
+| `response.header("Name", "Value")` | —        | Append a response header                  |
 
 ### Return value
 
-| Return | Effect |
-| ------ | ------ |
+| Return                       | Effect                                             |
+| ---------------------------- | -------------------------------------------------- |
 | `true` (or any truthy value) | Pipeline continues — request forwarded to upstream |
-| *(no explicit return)* | Treated as `true` — pipeline continues |
-| `false` | Pipeline stops — `response` is sent to the client |
+| _(no explicit return)_       | Treated as `true` — pipeline continues             |
+| `false`                      | Pipeline stops — `response` is sent to the client  |
 
 ---
 
@@ -284,8 +278,8 @@ true
 
 ### Log and pass through
 
-Scripts have full access to Rhai's standard library. Use `print` to write to
-the process stdout (not the access log):
+Scripts have access to Rhai's standard library. Use `print` to write a line
+to the process stdout (captured by journald/Docker logs, not the access log):
 
 ```rhai
 // debug-log.rhai
@@ -293,8 +287,9 @@ print(`[debug] ${request.method} ${request.path}`);
 true
 ```
 
-> For production logging, prefer structured JSON logs via `logging: json`.
-> `print` is useful for development debugging only.
+> `print` outputs to **stdout** at the process level — it does not appear in
+> structured JSON access logs and has no log level. For production observability,
+> prefer `logging: json` and OTLP tracing. Use `print` for local development only.
 
 ---
 
@@ -353,14 +348,14 @@ true
 
 Config types:
 
-| YAML / JSON value | Rhai type |
-| ----------------- | --------- |
-| `"string"` | `String` |
-| `42` | `i64` |
-| `3.14` | `f64` |
-| `true` / `false` | `bool` |
-| `[1, 2, 3]` | `Array` |
-| `{ key: val }` | `Map` — access as `config.key` |
+| YAML / JSON value     | Rhai type                               |
+| --------------------- | --------------------------------------- |
+| `"string"`            | `String`                                |
+| `42`                  | `i64`                                   |
+| `3.14`                | `f64`                                   |
+| `true` / `false`      | `bool`                                  |
+| `[1, 2, 3]`           | `Array`                                 |
+| `{ key: val }`        | `Map` — access as `config.key`          |
 | absent (no `config:`) | `()` (unit) — check with `config == ()` |
 
 ---
@@ -389,19 +384,32 @@ middleware:
 {
   "middleware": [
     { "type": "script", "path": "./scripts/auth-check.rhai" },
-    { "type": "script", "path": "./scripts/add-response-headers.rhai", "phase": "response" }
+    {
+      "type": "script",
+      "path": "./scripts/add-response-headers.rhai",
+      "phase": "response"
+    }
   ]
 }
 ```
 
-In a response-phase script, two variables are available instead of `request`:
+In a response-phase script, the available variables differ from request phase:
 
-| Variable | Properties / Methods | Description |
-| -------- | -------------------- | ----------- |
-| `upstream` | `.status` | HTTP status returned by upstream (e.g. `200`, `404`) |
-| | `.header("Name")` | Read an upstream response header |
-| `response` | `.set_header("Name", "Value")` | Add/overwrite a header on the client response |
-| | `.remove_header("Name")` | Remove a header from the client response |
+| Variable   | Properties / Methods           | Description                                          |
+| ---------- | ------------------------------ | ---------------------------------------------------- |
+| `upstream` | `.status`                      | HTTP status returned by upstream (e.g. `200`, `404`) |
+|            | `.header("Name")`              | Read an upstream response header (empty if absent)   |
+| `response` | `.set_header("Name", "Value")` | Add/overwrite a header on the client response        |
+|            | `.remove_header("Name")`       | Remove a header from the client response             |
+| `config`   | same as request phase          | Per-script config object (or `()` if not set)        |
+
+> **`request` is not available** in response-phase scripts.
+
+> **`response` methods differ between phases:**
+> - Request phase: `response.header("Name", "Value")` — appends a header to
+>   the *abort* response (only used when `return false`)
+> - Response phase: `response.set_header("Name", "Value")` — modifies the
+>   upstream response forwarded to the client
 
 Return value is ignored — response scripts always continue.
 
@@ -440,13 +448,25 @@ if upstream.header("Access-Control-Allow-Origin") == "" {
 
 ## Execution model
 
-- Scripts are **compiled once** (on first request) and the AST is cached for
-  the lifetime of the process. Hot-reload (`conduit reload`) clears the cache.
+- Scripts are **compiled once** (on first use) and the AST is cached for
+  the lifetime of the process. Hot-reload (`conduit reload`) clears the cache
+  so the next request picks up the new file.
 - Scripts execute **synchronously** in the request-handling thread.
 - Each request gets its own `request` and `response` scope — there is **no
   shared mutable state** between requests.
-- The Rhai engine runs in **safe mode** — file I/O and system calls are not
-  available.
+- The Rhai engine runs in **safe mode** — file I/O, network, and system calls
+  are not available.
+
+**Resource limits** (hard limits enforced by the engine):
+
+| Limit | Value |
+|---|---|
+| Max operations per script execution | 500,000 |
+| Max string size | 1 MiB (1,048,576 bytes) |
+| Max array / map size | 65,536 elements |
+
+A script that exceeds any limit terminates with a runtime error and fails open
+(request passes through). Loops in middleware scripts should be short or bounded.
 
 ---
 
