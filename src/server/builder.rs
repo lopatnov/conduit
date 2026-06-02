@@ -161,12 +161,12 @@ fn connect_redis_rate_limiter_if_configured(
 
 /// Start the Conduit server.
 ///
-/// * `config`         — initial [`AppConfig`] to serve
-/// * `config_path`    — path used by `POST /reload`; pass [`PathBuf::new()`]
-///                      when configuration comes from a live provider (e.g. Kubernetes)
-/// * `config_updates` — optional live-update channel; when `Some`, a background
-///                      thread watches the receiver and hot-swaps the config on
-///                      every received [`AppConfig`] (used by the Kubernetes provider)
+/// - `config` — initial [`AppConfig`] to serve
+/// - `config_path` — path used by `POST /reload`; pass [`PathBuf::new()`]
+///   when configuration comes from a live provider (e.g. Kubernetes)
+/// - `config_updates` — optional live-update channel; when `Some`, a background
+///   thread watches the receiver and hot-swaps the config on every received
+///   [`AppConfig`] (used by the Kubernetes provider)
 pub fn run_server(
     config: AppConfig,
     config_path: PathBuf,

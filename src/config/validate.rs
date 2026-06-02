@@ -92,7 +92,7 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
     let listening_ports: Vec<u16> = config
         .sites
         .iter()
-        .map(|s| effective_port(s))
+        .map(effective_port)
         .collect();
     for (i, site) in config.sites.iter().enumerate() {
         let targets = collect_proxy_targets(site);

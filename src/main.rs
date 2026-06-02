@@ -833,10 +833,10 @@ fn print_upstream_table(addr: &str) {
         .max(3);
 
     println!(
-        "{:<url_w$}  {:<7}  {:<10}  {:<7}  {}",
-        "URL", "Healthy", "Latency", "Ejected", "5xx"
+        "{:<url_w$}  {:<7}  {:<10}  {:<7}  5xx",
+        "URL", "Healthy", "Latency", "Ejected"
     );
-    println!("{}", "─".repeat(url_w + 42));
+    println!("{}", "─".repeat(url_w + 42)); // println! used to avoid format! overhead
 
     for entry in &flat {
         let url = entry

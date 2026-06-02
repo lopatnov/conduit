@@ -53,7 +53,9 @@ pub(crate) fn apply_ip_filter(ip: Option<IpAddr>, config: &IpFilterConfig) -> bo
 ///
 /// Extracted for unit testability — `client_ip` calls this when `trust_proxy` is enabled.
 pub(crate) fn parse_xff(xff: &str) -> Option<IpAddr> {
-    xff.split(',').last()?.trim().parse().ok()
+    // Use `next_back()` directly — `split(',')` is a `DoubleEndedIterator` so
+    // this avoids needlessly traversing all elements to find the last.
+    xff.split(',').next_back()?.trim().parse().ok()
 }
 
 /// Public wrapper for testability — returns the effective client IP.
