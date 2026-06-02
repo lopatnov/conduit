@@ -214,6 +214,81 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`
 
 ---
 
+## Dependencies
+
+### Core runtime
+
+| Crate                                                           | Role                       |
+| --------------------------------------------------------------- | -------------------------- |
+| [Cloudflare Pingora 0.8](https://github.com/cloudflare/pingora) | Async HTTP proxy framework |
+| [Tokio](https://tokio.rs)                                       | Async runtime              |
+| [Axum 0.8](https://github.com/tokio-rs/axum)                    | Admin API HTTP server      |
+
+### TLS & certificates
+
+| Crate                                                        | Role                           |
+| ------------------------------------------------------------ | ------------------------------ |
+| [rustls](https://github.com/rustls/rustls)                   | TLS implementation             |
+| [rcgen](https://github.com/rustls/rcgen)                     | Certificate generation (tests) |
+| [instant-acme](https://github.com/instant-labs/instant-acme) | ACME / Let's Encrypt client    |
+
+### Configuration & parsing
+
+| Crate                                                                      | Role                         |
+| -------------------------------------------------------------------------- | ---------------------------- |
+| [serde](https://serde.rs) + [serde_json](https://github.com/serde-rs/json) | Serialization                |
+| [serde_yaml](https://github.com/dtolnay/serde-yaml)                        | YAML config format           |
+| [serde_path_to_error](https://github.com/dtolnay/path-to-error)            | Precise parse error messages |
+| [indexmap](https://github.com/bluss/indexmap)                              | Ordered map for route config |
+
+### Performance & concurrency
+
+| Crate                                                             | Role                        |
+| ----------------------------------------------------------------- | --------------------------- |
+| [arc-swap](https://github.com/vorner/arc-swap)                    | Lock-free hot reload        |
+| [dashmap](https://github.com/xacrimon/dashmap)                    | Concurrent rate-limit state |
+| [async-compression](https://github.com/Nemo157/async-compression) | Brotli / gzip / zstd        |
+
+### Middleware & scripting
+
+| Crate                                             | Role                            |
+| ------------------------------------------------- | ------------------------------- |
+| [rhai](https://rhai.rs)                           | Embedded scripting engine       |
+| [wasmtime](https://wasmtime.dev)                  | WASM plugin host                |
+| [regex](https://github.com/rust-lang/regex)       | URL rewriting, header routing   |
+| [reqwest](https://github.com/seanmonstar/reqwest) | Forward auth, JWKS, mirroring   |
+| [redis](https://github.com/redis-rs/redis-rs)     | Distributed rate-limit / cache  |
+
+### Auth & security
+
+| Crate                                                 | Role                                 |
+| ----------------------------------------------------- | ------------------------------------ |
+| [jsonwebtoken](https://github.com/Keats/jsonwebtoken) | JWT validation (HS256, RS256, ES256) |
+| [subtle](https://github.com/dalek-cryptography/subtle) | Constant-time credential comparison |
+| [ipnet](https://github.com/krisprice/ipnet)           | CIDR-based IP filtering              |
+
+### Observability
+
+| Crate                                                                                      | Role                             |
+| ------------------------------------------------------------------------------------------ | -------------------------------- |
+| [tracing](https://github.com/tokio-rs/tracing) + tracing-subscriber                        | Structured logging               |
+| [prometheus](https://github.com/tikv/rust-prometheus)                                      | Metrics exposition               |
+| [opentelemetry](https://github.com/open-telemetry/opentelemetry-rust) + opentelemetry-otlp | OTLP tracing (`--features otlp`) |
+
+### File handling & CLI
+
+| Crate                                                 | Role                            |
+| ----------------------------------------------------- | ------------------------------- |
+| [notify](https://github.com/notify-rs/notify)         | Filesystem watcher (hot reload) |
+| [uuid](https://github.com/uuid-rs/uuid)               | X-Request-ID generation         |
+| [mime_guess](https://github.com/abonander/mime_guess) | Content-Type detection          |
+| [clap 4](https://github.com/clap-rs/clap)             | CLI argument parsing            |
+| [clap_complete](https://github.com/clap-rs/clap)      | Shell completion scripts        |
+| [dialoguer](https://github.com/console-rs/dialoguer)  | `conduit init` wizard           |
+| [indicatif](https://github.com/console-rs/indicatif)  | Progress bars (`conduit probe`) |
+
+---
+
 ## Reporting Bugs
 
 Open an issue at <https://github.com/lopatnov/conduit/issues>.
