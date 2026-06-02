@@ -68,7 +68,7 @@ regex      = "1"
 uuid       = { version = "1", features = ["v4"] }
 
 # --- TLS (always needed) ---
-x509-parser  = "0.17"
+x509-parser  = "0.18"
 
 # --- ACME / auto-TLS (feature: acme) ---
 instant-acme = { version = "0.8", features = ["rcgen"], optional = true }

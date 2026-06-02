@@ -2,12 +2,13 @@ name: SonarCloud
 
 on:
   push:
-    branches: [main]
+    branches: [main, phase-next]
   pull_request:
     branches: [main]
 
 permissions:
   contents: read
+  pull-requests: read   # required for PR decoration
 
 env:
   CARGO_TERM_COLOR: always
@@ -26,17 +27,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
         with:
           toolchain: stable
+          components: llvm-tools-preview  # required by cargo-llvm-cov
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        continue-on-error: true
 
-      - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin --locked --version 0.35.4
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538  # v2.81.1
+        with:
+          tool: cargo-llvm-cov
 
-      # Unit tests only: integration tests spawn child processes which confuse
-      # tarpaulin's instrumentation. Coverage of the library code is what
-      # SonarCloud uses for the quality gate anyway.
-      - name: Generate coverage (unit tests)
-        run: cargo tarpaulin --lib --out Lcov --output-dir coverage --timeout 120
+      # Generate LCOV coverage using cargo-llvm-cov.
+      # Runs unit + integration tests; all features enabled for maximum coverage.
+      # LCOV format is what SonarCloud accepts for Rust coverage data.
+      - name: Generate coverage (LCOV)
+        run: |
+          cargo llvm-cov \
+            --features full \
+            --lcov \
+            --output-path coverage.lcov \
+            --ignore-filename-regex '(tests/|build\.rs)'
+        env:
+          # Exclude generated/test-only code from coverage metrics.
+          RUST_LOG: "error"
 
       - name: SonarCloud scan
         uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995  # v8.1.0
@@ -44,3 +57,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          args: >
+            -Dsonar.coverageReportPaths=coverage.lcov

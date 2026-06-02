@@ -1,0 +1,66 @@
+name: CodeQL Analysis
+
+on:
+  push:
+    branches: [main, phase-next]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly scan: Monday 08:00 UTC
+    - cron: "0 8 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  packages: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # GitHub Actions workflow files
+          - language: actions
+            build-mode: none
+
+          # Rust source — must be compiled for accurate analysis
+          - language: rust
+            build-mode: manual
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        if: matrix.language == 'rust'
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build artifacts
+        if: matrix.language == 'rust'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        continue-on-error: true
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@ff0a06e83cb2de871e5a09832bc6a81e7276941f  # v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # Extended security suite: covers more CWEs than the default pack.
+          queries: security-extended,security-and-quality
+
+      - name: Build Rust (manual build for CodeQL)
+        if: matrix.language == 'rust'
+        run: cargo build --features full
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@ff0a06e83cb2de871e5a09832bc6a81e7276941f  # v3
+        with:
+          category: "/language:${{ matrix.language }}"

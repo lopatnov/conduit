@@ -1,0 +1,43 @@
+name: OSV Scanner
+
+# OSV-Scanner checks Cargo.lock against the OSV vulnerability database.
+# Finds known CVEs in dependencies before they affect production.
+
+on:
+  push:
+    branches: [main, phase-next]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Daily scan at 07:00 UTC to catch newly published vulnerabilities.
+    - cron: "0 7 * * *"
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  osv-scan:
+    name: OSV Dependency Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run OSV-Scanner
+        uses: google/osv-scanner-action@v1
+        with:
+          scan-args: |-
+            --lockfile=Cargo.lock
+            --format=sarif
+            --output=osv-results.sarif
+        continue-on-error: true  # Don't block CI — report findings to Security tab
+
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@ff0a06e83cb2de871e5a09832bc6a81e7276941f  # v3
+        if: always()
+        with:
+          sarif_file: osv-results.sarif

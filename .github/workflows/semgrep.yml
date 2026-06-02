@@ -1,0 +1,52 @@
+name: Semgrep
+
+# Semgrep scans for security vulnerabilities, bugs, and code quality issues.
+# Results appear in the GitHub Security tab (SARIF upload).
+# No Semgrep account required — public rule packs are used by default.
+# Optional: set SEMGREP_APP_TOKEN secret for managed rules from semgrep.dev.
+
+on:
+  push:
+    branches: [main, phase-next]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly scan: Tuesday 08:00 UTC
+    - cron: "0 8 * * 2"
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    # Skip dependabot PRs — no secrets available.
+    if: github.actor != 'dependabot[bot]'
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@fcd5ab7459e8d91cb1777481980d1b18b4fc6735
+        with:
+          generateSarif: "1"
+          # Run Rust-specific rules plus secrets detection.
+          # No SEMGREP_APP_TOKEN needed for public rule packs.
+          config: >-
+            p/rust
+            p/secrets
+            p/default
+        env:
+          # Uncomment and set this secret to use managed rules from semgrep.dev:
+          # SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@ff0a06e83cb2de871e5a09832bc6a81e7276941f  # v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
