@@ -108,13 +108,24 @@ impl Provider for FileProvider {
         // to a temporary file and then renaming it over the target. On Linux inotify,
         // watching the file directly loses the watch descriptor on rename/unlink;
         // watching the directory captures all events and we filter by filename.
-        let target_path = self.path.clone();
+        //
+        // Canonicalize the path so symlinks are resolved before comparison.
+        // On macOS /tmp is a symlink to /private/tmp; notify returns canonical paths,
+        // so comparing without canonicalization would silently drop all events.
+        let target_path = self
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| self.path.clone());
         let mut watcher =
             notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
                 if let Ok(event) = res {
                     use notify::EventKind::*;
                     // Only fire when the event involves the watched file specifically.
-                    let involves_target = event.paths.iter().any(|p| p == &target_path);
+                    // Also canonicalize event paths to handle symlink differences.
+                    let involves_target = event
+                        .paths
+                        .iter()
+                        .any(|p| p.canonicalize().unwrap_or_else(|_| p.clone()) == target_path);
                     if !involves_target {
                         return;
                     }
