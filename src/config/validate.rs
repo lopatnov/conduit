@@ -45,7 +45,7 @@ pub fn validate(config: &AppConfig) -> Vec<ValidationError> {
 /// The server still starts — all warnings describe things that will be silently
 /// ignored at runtime.  Callers should log each entry with `tracing::warn!`.
 ///
-/// ```
+/// ```text
 /// for w in feature_warnings(&config) {
 ///     tracing::warn!("{w}");
 /// }
