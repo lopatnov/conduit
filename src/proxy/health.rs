@@ -1018,6 +1018,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn outlier_skipped_when_max_ejection_percent_reached() {
+        use crate::config::schema::OutlierDetectionConfig;
+        let reg = UpstreamRegistry::new();
+
+        // Two upstreams: b is already ejected, a hits the threshold.
+        // With max_ejection_percent=50 and 2 total upstreams → max 1 ejected.
+        // Since b is already ejected, a cannot be ejected.
+        for _ in 0..5 {
+            record_request_latency(&reg, "http://a:4000", 10_000, 503);
+        }
+        // Mark b as already ejected (far future).
+        {
+            let mut e = reg.statuses.entry("http://b:4000".to_owned()).or_default();
+            e.ejected_until_secs = Some(u64::MAX);
+            e.ejection_count = 1;
+        }
+        let cfg = OutlierDetectionConfig {
+            consecutive_5xx: Some(5),
+            base_ejection_time_secs: Some(30),
+            max_ejection_time_secs: Some(300),
+            max_ejection_percent: Some(50),
+        };
+        // Try to eject a — should be skipped because b is already ejected (50% of 2).
+        maybe_eject(&reg, "http://a:4000", &cfg);
+        assert!(
+            reg.is_healthy("http://a:4000"),
+            "ejection must be skipped when max_ejection_percent is reached"
+        );
+    }
+
     // ── probe_http ────────────────────────────────────────────────────────────
 
     #[tokio::test]
