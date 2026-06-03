@@ -3,12 +3,9 @@ name: SonarCloud
 on:
   push:
     branches: [main, phase-next]
-  pull_request:
-    branches: [main]
 
 permissions:
   contents: read
-  pull-requests: read   # required for PR decoration
 
 env:
   CARGO_TERM_COLOR: always
