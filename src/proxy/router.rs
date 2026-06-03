@@ -2020,6 +2020,49 @@ mod tests {
         ));
     }
 
+    // ── find_route_rate_limit ─────────────────────────────────────────────────
+
+    #[test]
+    fn find_route_rate_limit_returns_none_when_no_proxy() {
+        let site = SiteConfig::default();
+        assert!(find_route_rate_limit(&site, "/api").is_none());
+    }
+
+    #[test]
+    fn find_route_rate_limit_returns_rl_when_configured() {
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig,
+        };
+        use indexmap::IndexMap;
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/api".to_owned(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://b:4000".to_owned())],
+                rate_limit: Some(RateLimitConfig {
+                    limit: 100,
+                    window_secs: 60,
+                    burst: None,
+                    key_by: None,
+                    skip_paths: None,
+                    dry_run: None,
+                    store: None,
+                    algorithm: None,
+                }),
+                ..Default::default()
+            })),
+        );
+        let site = SiteConfig {
+            proxy: Some(ProxyConfig::Routes(routes)),
+            ..Default::default()
+        };
+        let result = find_route_rate_limit(&site, "/api/users");
+        assert!(result.is_some(), "rate limit must be found for /api prefix");
+        let (rl, key) = result.unwrap();
+        assert_eq!(rl.limit, 100);
+        assert!(key.contains("api"), "route key must contain 'api': {key}");
+    }
+
     // ── match_static_or_fallback ──────────────────────────────────────────────
 
     #[test]
