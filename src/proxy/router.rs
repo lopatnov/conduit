@@ -2020,6 +2020,38 @@ mod tests {
         ));
     }
 
+    // ── match_static_or_fallback ──────────────────────────────────────────────
+
+    #[test]
+    fn static_site_returns_static_file_handler() {
+        use crate::config::schema::StaticConfig;
+        let site = SiteConfig {
+            static_files: Some(StaticConfig::Single("./dist".to_owned())),
+            ..Default::default()
+        };
+        let result = match_static_or_fallback(&site, "/index.html");
+        assert!(
+            matches!(
+                result.upstream,
+                UpstreamTarget::Local(LocalHandler::StaticFile { .. })
+            ),
+            "static site must return StaticFile handler"
+        );
+    }
+
+    #[test]
+    fn no_static_returns_fallback() {
+        let site = SiteConfig::default();
+        let result = match_static_or_fallback(&site, "/");
+        assert!(
+            matches!(
+                result.upstream,
+                UpstreamTarget::Local(LocalHandler::Fallback)
+            ),
+            "site without static must return Fallback handler"
+        );
+    }
+
     // ── grouped upstream routing ──────────────────────────────────────────────
 
     #[test]
