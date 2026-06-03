@@ -1082,4 +1082,114 @@ mod tests {
         let label = make_site_label(&None, Some(8080));
         assert!(label.contains("8080"));
     }
+
+    #[test]
+    fn site_label_both_none() {
+        let label = make_site_label(&None, None);
+        // Must not panic; some placeholder is returned.
+        assert!(!label.is_empty());
+    }
+
+    // ── detect_cold_changes — more scenarios ──────────────────────────────────
+
+    #[test]
+    fn tls_cert_change_is_cold() {
+        let old = cfg(r#"{"sites":[{"port":443,"tls":{"cert":"old.pem","key":"server.key"}}]}"#);
+        let new = cfg(r#"{"sites":[{"port":443,"tls":{"cert":"new.pem","key":"server.key"}}]}"#);
+        let cold = detect_cold_changes(&old, &new);
+        assert!(
+            cold.iter().any(|f| f.contains("tls.cert")),
+            "cert change must be cold: {cold:?}"
+        );
+    }
+
+    #[test]
+    fn tls_key_change_is_cold() {
+        let old = cfg(r#"{"sites":[{"port":443,"tls":{"cert":"server.pem","key":"old.key"}}]}"#);
+        let new = cfg(r#"{"sites":[{"port":443,"tls":{"cert":"server.pem","key":"new.key"}}]}"#);
+        let cold = detect_cold_changes(&old, &new);
+        assert!(
+            cold.iter().any(|f| f.contains("tls.key")),
+            "key change must be cold: {cold:?}"
+        );
+    }
+
+    #[test]
+    fn admin_bind_change_is_cold() {
+        let old = cfg(r#"{"global":{"admin":{"bind":"127.0.0.1:2019"}},"sites":[{"port":8080}]}"#);
+        let new = cfg(r#"{"global":{"admin":{"bind":"127.0.0.1:2020"}},"sites":[{"port":8080}]}"#);
+        let cold = detect_cold_changes(&old, &new);
+        assert!(
+            cold.iter().any(|f| f.contains("admin.bind")),
+            "admin bind change must be cold: {cold:?}"
+        );
+    }
+
+    #[test]
+    fn backlog_change_is_cold() {
+        let old = cfg(r#"{"global":{"backlog":128},"sites":[{"port":8080}]}"#);
+        let new = cfg(r#"{"global":{"backlog":256},"sites":[{"port":8080}]}"#);
+        let cold = detect_cold_changes(&old, &new);
+        assert!(
+            cold.iter().any(|f| f.contains("backlog")),
+            "backlog change must be cold: {cold:?}"
+        );
+    }
+
+    #[test]
+    fn proxy_change_is_not_cold() {
+        let old = cfg(r#"{"sites":[{"port":8080,"proxy":"http://a:4000"}]}"#);
+        let new = cfg(r#"{"sites":[{"port":8080,"proxy":"http://b:4000"}]}"#);
+        let cold = detect_cold_changes(&old, &new);
+        assert!(
+            cold.iter().all(|f| !f.contains("proxy")),
+            "proxy change should be hot-reloadable: {cold:?}"
+        );
+    }
+
+    #[test]
+    fn adding_a_new_site_detects_port_change() {
+        // Old: 1 site; New: 2 sites — the new site's port would be detected.
+        let old = cfg(r#"{"sites":[{"port":8080}]}"#);
+        let new = cfg(r#"{"sites":[{"port":8080},{"port":9090}]}"#);
+        let cold = detect_cold_changes(&old, &new);
+        assert!(
+            cold.iter().any(|f| f.contains("sites[1]")),
+            "extra site should produce cold change: {cold:?}"
+        );
+    }
+
+    // ── validate_cidr — additional edge cases ─────────────────────────────────
+
+    #[test]
+    fn validate_cidr_ipv4_prefix_32_valid() {
+        assert!(validate_cidr("192.168.1.1/32"), "/32 is valid for IPv4");
+    }
+
+    #[test]
+    fn validate_cidr_ipv4_prefix_33_invalid() {
+        assert!(!validate_cidr("10.0.0.0/33"), "/33 is invalid for IPv4");
+    }
+
+    #[test]
+    fn validate_cidr_ipv6_prefix_128_valid() {
+        assert!(validate_cidr("::1/128"), "/128 is valid for IPv6");
+    }
+
+    #[test]
+    fn validate_cidr_ipv6_prefix_129_invalid() {
+        assert!(!validate_cidr("::1/129"), "/129 is invalid for IPv6");
+    }
+
+    #[test]
+    fn validate_cidr_whitespace_invalid() {
+        assert!(
+            !validate_cidr(" 192.168.1.0/24"),
+            "leading space is invalid"
+        );
+        assert!(
+            !validate_cidr("192.168.1.0/24 "),
+            "trailing space is invalid"
+        );
+    }
 }
