@@ -189,6 +189,43 @@ mod tests {
         let result = validate_cert_key_pem("not a cert", "not a key");
         assert!(result.is_err(), "garbage input must be rejected");
     }
+
+    #[test]
+    fn cert_with_non_cert_pem_item_is_rejected() {
+        // A key PEM passed where the cert PEM is expected.
+        let (_, key) = generate_self_signed();
+        // Pass the key PEM as the cert PEM → no X.509 certificate found.
+        let result = validate_cert_key_pem(&key, &key);
+        assert!(result.is_err(), "key-as-cert must be rejected");
+    }
+
+    #[test]
+    fn valid_pair_accepted_twice() {
+        // Calling validate twice on the same pair must both succeed
+        // (no global state mutation that would break the second call).
+        let (cert, key) = generate_self_signed();
+        assert!(validate_cert_key_pem(&cert, &key).is_ok());
+        assert!(validate_cert_key_pem(&cert, &key).is_ok());
+    }
+
+    #[test]
+    fn two_different_valid_pairs_both_accepted() {
+        let (cert1, key1) = generate_self_signed();
+        let (cert2, key2) = generate_self_signed();
+        assert!(validate_cert_key_pem(&cert1, &key1).is_ok());
+        assert!(validate_cert_key_pem(&cert2, &key2).is_ok());
+    }
+
+    #[test]
+    fn cert_with_extra_whitespace_accepted() {
+        let (cert, key) = generate_self_signed();
+        let cert_with_ws = format!("\n{cert}\n");
+        // Rustls should tolerate leading/trailing whitespace in PEM input.
+        assert!(
+            validate_cert_key_pem(&cert_with_ws, &key).is_ok(),
+            "cert with surrounding whitespace must be accepted"
+        );
+    }
 }
 
 /// Load CA certificates from a PEM file and build a `WebPkiClientVerifier`.

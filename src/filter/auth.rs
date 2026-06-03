@@ -293,6 +293,102 @@ mod tests {
         assert!(!is_path_skipped(Some(&paths), "/private"));
         assert!(!is_path_skipped(Some(&paths), "/__health__/sub"));
     }
+
+    // ── ct_eq_str (timing-safe comparison) ────────────────────────────────────
+
+    #[test]
+    fn ct_eq_identical_strings() {
+        assert!(ct_eq_str("secret", "secret"));
+    }
+
+    #[test]
+    fn ct_eq_different_strings() {
+        assert!(!ct_eq_str("secret", "wrong"));
+    }
+
+    #[test]
+    fn ct_eq_different_lengths() {
+        assert!(!ct_eq_str("short", "longer-value"));
+        assert!(!ct_eq_str("longer-value", "short"));
+    }
+
+    #[test]
+    fn ct_eq_empty_strings() {
+        assert!(ct_eq_str("", ""));
+    }
+
+    #[test]
+    fn ct_eq_empty_vs_nonempty() {
+        assert!(!ct_eq_str("", "x"));
+        assert!(!ct_eq_str("x", ""));
+    }
+
+    #[test]
+    fn ct_eq_unicode_strings() {
+        // Unicode strings — length in bytes matters, not chars.
+        assert!(ct_eq_str("café", "café"));
+        assert!(!ct_eq_str("café", "cafe"));
+    }
+
+    // ── check_credentials extended cases ─────────────────────────────────────
+
+    #[test]
+    fn credentials_empty_user_map_denied() {
+        // No users configured → always denied.
+        let users = indexmap::IndexMap::new();
+        assert!(denied(check_credentials(
+            &users,
+            "Basic YWRtaW46c2VjcmV0",
+            true,
+            "R".to_owned()
+        )));
+    }
+
+    #[test]
+    fn credentials_realm_included_in_denial() {
+        let u = users(&[("admin", "secret")]);
+        let result = check_credentials(&u, "", true, "MyRealm".to_owned());
+        if let BasicAuthResult::Denied { realm, .. } = result {
+            assert_eq!(realm, "MyRealm");
+        } else {
+            panic!("expected Denied");
+        }
+    }
+
+    #[test]
+    fn credentials_challenge_false_propagated() {
+        let u = users(&[("admin", "secret")]);
+        let result = check_credentials(&u, "", false, "R".to_owned());
+        if let BasicAuthResult::Denied { challenge, .. } = result {
+            assert!(!challenge);
+        } else {
+            panic!("expected Denied");
+        }
+    }
+
+    // ── path_matches edge cases ───────────────────────────────────────────────
+
+    #[test]
+    fn glob_matches_exactly_the_prefix() {
+        // `/foo/**` should match `/foo` itself (without trailing slash).
+        assert!(path_matches("/api/**", "/api"));
+    }
+
+    #[test]
+    fn glob_matches_prefix_with_slash() {
+        assert!(path_matches("/api/**", "/api/"));
+    }
+
+    #[test]
+    fn exact_does_not_match_subpath() {
+        assert!(!path_matches("/exact", "/exact/sub"));
+    }
+
+    #[test]
+    fn empty_pattern_matches_only_empty_path() {
+        assert!(path_matches("", ""));
+        assert!(!path_matches("", "/anything"));
+    }
 }
 
 // ── Consumer model ─────────────────────────────────────────────────────────

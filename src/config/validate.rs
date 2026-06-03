@@ -2297,4 +2297,163 @@ mod tests {
             "valid rate limit config must pass"
         );
     }
+
+    // ── validate_consumers ────────────────────────────────────────────────────
+
+    #[test]
+    fn consumer_empty_username_is_rejected() {
+        let e = errs(
+            r#"{ "port": 8080,
+                 "consumers": { "consumers": [{ "username": "", "apiKey": "key" }] } }"#,
+        );
+        assert!(
+            e.iter().any(|err| err.message.contains("username")),
+            "empty username must be rejected: {e:?}"
+        );
+    }
+
+    #[test]
+    fn consumer_duplicate_usernames_rejected() {
+        let e = errs(
+            r#"{ "port": 8080,
+                 "consumers": { "consumers": [
+                     { "username": "alice", "apiKey": "key1" },
+                     { "username": "alice", "apiKey": "key2" }
+                 ] } }"#,
+        );
+        assert!(
+            e.iter().any(|err| err.message.contains("duplicated")),
+            "duplicate username must be rejected: {e:?}"
+        );
+    }
+
+    #[test]
+    fn consumer_without_credentials_is_rejected() {
+        // No apiKey, no basicAuth, no jwt → missing credentials.
+        let e = errs(
+            r#"{ "port": 8080,
+                 "consumers": { "consumers": [{ "username": "nobody" }] } }"#,
+        );
+        assert!(
+            !e.is_empty(),
+            "consumer without any credentials must be rejected"
+        );
+    }
+
+    #[test]
+    fn consumer_empty_basic_auth_password_rejected() {
+        let e = errs(
+            r#"{ "port": 8080,
+                 "consumers": { "consumers": [
+                     { "username": "alice", "basicAuth": { "password": "" } }
+                 ] } }"#,
+        );
+        assert!(
+            e.iter().any(|err| err.path.contains("basicAuth")),
+            "empty basicAuth password must be rejected: {e:?}"
+        );
+    }
+
+    #[test]
+    fn consumer_valid_config_no_errors() {
+        let e = errs(
+            r#"{ "port": 8080,
+                 "consumers": { "consumers": [
+                     { "username": "alice", "apiKey": "valid-key" }
+                 ] } }"#,
+        );
+        assert!(e.is_empty(), "valid consumer must pass: {e:?}");
+    }
+
+    // ── validate_forward_auth extra cases ────────────────────────────────────
+
+    #[test]
+    fn forward_auth_zero_timeout_rejected() {
+        let e = errs(
+            r#"{ "port": 8080, "forwardAuth": { "url": "http://auth:4000/verify", "timeoutMs": 0 } }"#,
+        );
+        assert!(
+            e.iter().any(|err| err.path.contains("timeoutMs")),
+            "timeoutMs=0 must be rejected: {e:?}"
+        );
+    }
+
+    #[test]
+    fn forward_auth_empty_url_rejected() {
+        let e = errs(r#"{ "port": 8080, "forwardAuth": { "url": "" } }"#);
+        assert!(!e.is_empty(), "empty forwardAuth URL must be rejected");
+    }
+
+    #[test]
+    fn forward_auth_non_http_url_rejected() {
+        let e = errs(r#"{ "port": 8080, "forwardAuth": { "url": "grpc://auth:4000/verify" } }"#);
+        assert!(
+            !e.is_empty(),
+            "non-http(s) forwardAuth URL must be rejected"
+        );
+    }
+
+    // ── validate_limits ───────────────────────────────────────────────────────
+
+    #[test]
+    fn limits_zero_inflight_requests_rejected() {
+        let e = errs(r#"{ "port": 8080, "limits": { "maxInflightRequests": 0 } }"#);
+        assert!(!e.is_empty(), "maxInflightRequests=0 must be rejected");
+        assert!(
+            e.iter().any(|err| err.path.contains("maxInflightRequests")),
+            "error path must mention maxInflightRequests: {e:?}"
+        );
+    }
+
+    #[test]
+    fn limits_zero_max_body_bytes_rejected() {
+        let e = errs(r#"{ "port": 8080, "limits": { "maxBodyBytes": 0 } }"#);
+        assert!(!e.is_empty(), "maxBodyBytes=0 must be rejected");
+    }
+
+    #[test]
+    fn limits_valid_config_no_errors() {
+        let e = errs(
+            r#"{ "port": 8080, "limits": { "maxInflightRequests": 100, "maxBodyBytes": 1048576 } }"#,
+        );
+        assert!(e.is_empty(), "valid limits config must pass: {e:?}");
+    }
+
+    // ── validate_jwt_auth ─────────────────────────────────────────────────────
+
+    #[test]
+    fn jwt_auth_without_secret_or_jwks_rejected() {
+        // No secret and no jwksUrl → configuration error.
+        let e = errs(r#"{ "port": 8080, "jwtAuth": {} }"#);
+        assert!(
+            !e.is_empty(),
+            "jwtAuth without secret or jwksUrl must be rejected"
+        );
+    }
+
+    #[test]
+    fn jwt_auth_with_both_secret_and_jwks_rejected() {
+        let e = errs(
+            r#"{ "port": 8080, "jwtAuth": { "secret": "abc", "jwksUrl": "https://a.com/.well-known/jwks.json" } }"#,
+        );
+        assert!(
+            !e.is_empty(),
+            "jwtAuth with both secret and jwksUrl must be rejected"
+        );
+    }
+
+    #[test]
+    fn jwt_auth_with_only_secret_valid() {
+        // A short secret will warn but not error.
+        let e = errs(
+            r#"{ "port": 8080, "jwtAuth": { "secret": "my-secret-key-that-is-long-enough-32b" } }"#,
+        );
+        assert!(e.is_empty(), "jwtAuth with valid secret must pass: {e:?}");
+    }
+
+    #[test]
+    fn jwt_auth_with_invalid_jwks_url_rejected() {
+        let e = errs(r#"{ "port": 8080, "jwtAuth": { "jwksUrl": "not-a-url" } }"#);
+        assert!(!e.is_empty(), "invalid jwksUrl must be rejected");
+    }
 }

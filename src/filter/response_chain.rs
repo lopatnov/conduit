@@ -697,6 +697,204 @@ mod tests {
             ResponseFilterOutcome::Continue
         ));
     }
+
+    // ── ResponseTimeFilter ────────────────────────────────────────────────────
+
+    #[test]
+    fn response_time_filter_adds_header_when_enabled() {
+        use std::time::Instant;
+        let filter = ResponseTimeFilter {
+            rt_cfg: Some(crate::config::schema::ResponseTimeConfig::Enabled(true)),
+            start_time: Instant::now(),
+        };
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        filter.apply(&mut resp, &ctx).unwrap();
+        assert!(
+            resp.headers.get("x-response-time").is_some(),
+            "x-response-time header must be injected when enabled"
+        );
+        let val = resp
+            .headers
+            .get("x-response-time")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(val.ends_with("ms"), "value must end with 'ms': {val}");
+    }
+
+    #[test]
+    fn response_time_filter_skips_header_when_disabled() {
+        use std::time::Instant;
+        let filter = ResponseTimeFilter {
+            rt_cfg: Some(crate::config::schema::ResponseTimeConfig::Enabled(false)),
+            start_time: Instant::now(),
+        };
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        filter.apply(&mut resp, &ctx).unwrap();
+        assert!(
+            resp.headers.get("x-response-time").is_none(),
+            "x-response-time must NOT be added when disabled"
+        );
+    }
+
+    #[test]
+    fn response_time_filter_skips_header_when_cfg_none() {
+        use std::time::Instant;
+        let filter = ResponseTimeFilter {
+            rt_cfg: None,
+            start_time: Instant::now(),
+        };
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        filter.apply(&mut resp, &ctx).unwrap();
+        assert!(
+            resp.headers.get("x-response-time").is_none(),
+            "no cfg → no header"
+        );
+    }
+
+    #[test]
+    fn response_time_filter_with_decimal_digits() {
+        use crate::config::schema::{ResponseTimeConfig, ResponseTimeOptions};
+        use std::time::Instant;
+        let filter = ResponseTimeFilter {
+            rt_cfg: Some(ResponseTimeConfig::Options(ResponseTimeOptions {
+                digits: Some(2),
+            })),
+            start_time: Instant::now(),
+        };
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        filter.apply(&mut resp, &ctx).unwrap();
+        let val = resp
+            .headers
+            .get("x-response-time")
+            .expect("header must be present")
+            .to_str()
+            .unwrap();
+        // Must end with "ms" and contain a decimal point.
+        assert!(val.ends_with("ms"), "must end with ms: {val}");
+        // With 2 digits the value may be "0.00ms" for very fast calls.
+        assert!(val.contains('.'), "must contain decimal point: {val}");
+    }
+
+    // ── RetryOnErrorFilter edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn retry_none_config_never_retries() {
+        let filter = RetryOnErrorFilter { retry: None };
+        let mut resp = make_resp(503);
+        let ctx = dummy_ctx();
+        assert!(matches!(
+            filter.apply(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::Continue
+        ));
+    }
+
+    #[test]
+    fn mask_triggers_on_502() {
+        let filter = ErrorMaskFilter { mask_enabled: true };
+        let mut resp = make_resp(502);
+        let ctx = dummy_ctx();
+        assert!(matches!(
+            filter.apply(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::MaskBody
+        ));
+    }
+
+    #[test]
+    fn mask_triggers_on_504() {
+        let filter = ErrorMaskFilter { mask_enabled: true };
+        let mut resp = make_resp(504);
+        let ctx = dummy_ctx();
+        assert!(matches!(
+            filter.apply(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::MaskBody
+        ));
+    }
+
+    #[test]
+    fn mask_skips_on_404() {
+        // 4xx is not a server error, should not be masked.
+        let filter = ErrorMaskFilter { mask_enabled: true };
+        let mut resp = make_resp(404);
+        let ctx = dummy_ctx();
+        assert!(matches!(
+            filter.apply(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::Continue
+        ));
+    }
+
+    // ── InjectExtraHeadersFilter edge cases ───────────────────────────────────
+
+    #[test]
+    fn inject_filter_empty_headers_is_noop() {
+        let filter = InjectExtraHeadersFilter { headers: vec![] };
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        filter.apply(&mut resp, &ctx).unwrap();
+        // No extra headers added, no crash.
+        assert!(resp.headers.get("x-custom").is_none());
+    }
+
+    #[test]
+    fn inject_filter_multiple_headers_all_added() {
+        let filter = InjectExtraHeadersFilter {
+            headers: vec![
+                ("x-a".to_owned(), "1".to_owned()),
+                ("x-b".to_owned(), "2".to_owned()),
+                ("x-c".to_owned(), "3".to_owned()),
+            ],
+        };
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        filter.apply(&mut resp, &ctx).unwrap();
+        assert_eq!(resp.headers.get("x-a").unwrap(), "1");
+        assert_eq!(resp.headers.get("x-b").unwrap(), "2");
+        assert_eq!(resp.headers.get("x-c").unwrap(), "3");
+    }
+
+    // ── ResponseTransformFilter edge cases ────────────────────────────────────
+
+    #[test]
+    fn transform_filter_no_op_when_empty_config() {
+        use crate::config::schema::HeaderTransformConfig;
+        let filter = ResponseTransformFilter {
+            transform: HeaderTransformConfig {
+                set_headers: None,
+                remove_headers: None,
+            },
+        };
+        let mut resp = make_resp(200);
+        resp.insert_header("x-keep", "yes").unwrap();
+        let ctx = dummy_ctx();
+        filter.apply(&mut resp, &ctx).unwrap();
+        // Existing header should be preserved.
+        assert_eq!(resp.headers.get("x-keep").unwrap(), "yes");
+    }
+
+    #[test]
+    fn transform_filter_only_remove() {
+        use crate::config::schema::HeaderTransformConfig;
+        let filter = ResponseTransformFilter {
+            transform: HeaderTransformConfig {
+                set_headers: None,
+                remove_headers: Some(vec!["x-remove".to_owned()]),
+            },
+        };
+        let mut resp = make_resp(200);
+        resp.insert_header("x-remove", "bye").unwrap();
+        resp.insert_header("x-keep", "yes").unwrap();
+        let ctx = dummy_ctx();
+        filter.apply(&mut resp, &ctx).unwrap();
+        assert!(
+            resp.headers.get("x-remove").is_none(),
+            "x-remove must be gone"
+        );
+        assert_eq!(resp.headers.get("x-keep").unwrap(), "yes");
+    }
 }
 
 /// Apply header mutations to a Pingora response header.
