@@ -1329,6 +1329,53 @@ mod tests {
         assert_eq!(content, "v2", "second write must overwrite first");
     }
 
+    // ── format_proxy_route_targets ────────────────────────────────────────────
+
+    #[test]
+    fn format_proxy_route_targets_url_variant() {
+        use crate::config::schema::ProxyRouteTarget;
+        use crate::proxy::health::UpstreamRegistry;
+        let reg = UpstreamRegistry::new();
+        let rt = ProxyRouteTarget::Url("http://a:4000".to_owned());
+        let (strategy, targets) = format_proxy_route_targets(&rt, &reg);
+        assert_eq!(strategy, "round-robin");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0]["url"], "http://a:4000");
+    }
+
+    #[test]
+    fn format_proxy_route_targets_round_robin_variant() {
+        use crate::config::schema::ProxyRouteTarget;
+        use crate::proxy::health::UpstreamRegistry;
+        let reg = UpstreamRegistry::new();
+        let rt = ProxyRouteTarget::RoundRobin(vec![
+            "http://a:4000".to_owned(),
+            "http://b:4000".to_owned(),
+        ]);
+        let (strategy, targets) = format_proxy_route_targets(&rt, &reg);
+        assert_eq!(strategy, "round-robin");
+        assert_eq!(targets.len(), 2);
+    }
+
+    #[test]
+    fn format_full_config_targets_no_groups() {
+        use crate::config::schema::{ProxyRouteConfig, ProxyTarget};
+        use crate::proxy::health::UpstreamRegistry;
+        let reg = UpstreamRegistry::new();
+        let cfg = ProxyRouteConfig {
+            targets: vec![
+                ProxyTarget::Simple("http://a:4000".to_owned()),
+                ProxyTarget::Simple("http://b:4000".to_owned()),
+            ],
+            ..Default::default()
+        };
+        let result = format_full_config_targets(&cfg, &reg);
+        assert_eq!(result.len(), 2);
+        let urls: Vec<&str> = result.iter().filter_map(|e| e["url"].as_str()).collect();
+        assert!(urls.contains(&"http://a:4000"));
+        assert!(urls.contains(&"http://b:4000"));
+    }
+
     // ── collect_site_proxy_entries ────────────────────────────────────────────
 
     #[test]
