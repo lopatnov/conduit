@@ -416,6 +416,289 @@ impl ResponseFilter for MiddlewareResponseFilter {
     }
 }
 
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::StatusCode;
+    use pingora_http::ResponseHeader;
+
+    fn make_resp(status: u16) -> ResponseHeader {
+        ResponseHeader::build(StatusCode::from_u16(status).unwrap(), None).unwrap()
+    }
+
+    fn dummy_ctx() -> RequestCtx {
+        use crate::proxy::ctx::UpstreamTarget;
+        RequestCtx::new(
+            0,
+            UpstreamTarget::Proxy {
+                addr: "localhost:4000".to_owned(),
+                tls: false,
+                sni: String::new(),
+                strip_prefix: None,
+                rewrite: None,
+                mirror_url: None,
+                upstream_tls: None,
+            },
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+        )
+    }
+
+    // ── CrlfProtectionFilter ─────────────────────────────────────────────────
+
+    #[test]
+    fn crlf_filter_passes_clean_headers() {
+        // The CRLF filter strips headers whose values contain \r or \n.
+        // Standard http API rejects CRLF values, so we test the "no-op" path:
+        // clean headers must pass through unchanged.
+        let mut resp = make_resp(200);
+        resp.insert_header("x-custom", "clean-value").unwrap();
+        resp.insert_header("content-type", "text/html").unwrap();
+        let ctx = dummy_ctx();
+        let result = CrlfProtectionFilter.apply(&mut resp, &ctx).unwrap();
+        assert!(matches!(result, ResponseFilterOutcome::Continue));
+        assert!(resp.headers.get("x-custom").is_some());
+        assert!(resp.headers.get("content-type").is_some());
+    }
+
+    #[test]
+    fn crlf_filter_keeps_clean_headers() {
+        let mut resp = make_resp(200);
+        resp.insert_header("content-type", "application/json")
+            .unwrap();
+        resp.insert_header("x-custom", "value").unwrap();
+        let ctx = dummy_ctx();
+        CrlfProtectionFilter.apply(&mut resp, &ctx).unwrap();
+        assert!(resp.headers.get("content-type").is_some());
+        assert!(resp.headers.get("x-custom").is_some());
+    }
+
+    // ── InjectExtraHeadersFilter ─────────────────────────────────────────────
+
+    #[test]
+    fn inject_filter_adds_headers() {
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        InjectExtraHeadersFilter {
+            headers: vec![
+                ("x-served-by".to_owned(), "conduit".to_owned()),
+                ("x-version".to_owned(), "1".to_owned()),
+            ],
+        }
+        .apply(&mut resp, &ctx)
+        .unwrap();
+        assert_eq!(resp.headers.get("x-served-by").unwrap(), "conduit");
+        assert_eq!(resp.headers.get("x-version").unwrap(), "1");
+    }
+
+    #[test]
+    fn inject_filter_strips_pingora_server_banner() {
+        let mut resp = make_resp(200);
+        resp.insert_header("server", "Pingora").unwrap();
+        let ctx = dummy_ctx();
+        InjectExtraHeadersFilter { headers: vec![] }
+            .apply(&mut resp, &ctx)
+            .unwrap();
+        assert!(
+            resp.headers.get("server").is_none(),
+            "Pingora banner removed"
+        );
+    }
+
+    #[test]
+    fn inject_filter_keeps_upstream_server_header() {
+        let mut resp = make_resp(200);
+        resp.insert_header("server", "nginx/1.24").unwrap();
+        let ctx = dummy_ctx();
+        InjectExtraHeadersFilter { headers: vec![] }
+            .apply(&mut resp, &ctx)
+            .unwrap();
+        assert!(resp.headers.get("server").is_some(), "upstream server kept");
+    }
+
+    // ── ResponseTransformFilter ──────────────────────────────────────────────
+
+    #[test]
+    fn transform_filter_sets_and_removes() {
+        let mut resp = make_resp(200);
+        resp.insert_header("x-remove-me", "old").unwrap();
+        let ctx = dummy_ctx();
+        ResponseTransformFilter {
+            transform: crate::config::schema::HeaderTransformConfig {
+                set_headers: Some(
+                    [("x-added".to_owned(), "yes".to_owned())]
+                        .iter()
+                        .cloned()
+                        .collect(),
+                ),
+                remove_headers: Some(vec!["x-remove-me".to_owned()]),
+            },
+        }
+        .apply(&mut resp, &ctx)
+        .unwrap();
+        assert!(resp.headers.get("x-remove-me").is_none());
+        assert_eq!(resp.headers.get("x-added").unwrap(), "yes");
+    }
+
+    // ── RetryOnErrorFilter ───────────────────────────────────────────────────
+
+    #[test]
+    fn retry_triggers_on_5xx_with_budget_and_condition() {
+        let mut resp = make_resp(503);
+        let ctx = dummy_ctx();
+        let r = RetryOnErrorFilter {
+            retry: Some(RetrySpec {
+                has_attempts_left: true,
+                has_5xx_condition: true,
+            }),
+        };
+        assert!(matches!(
+            r.apply(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::RetryUpstream
+        ));
+    }
+
+    #[test]
+    fn retry_does_not_trigger_on_2xx() {
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        let r = RetryOnErrorFilter {
+            retry: Some(RetrySpec {
+                has_attempts_left: true,
+                has_5xx_condition: true,
+            }),
+        };
+        assert!(matches!(
+            r.apply(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::Continue
+        ));
+    }
+
+    #[test]
+    fn retry_does_not_trigger_without_budget() {
+        let mut resp = make_resp(500);
+        let ctx = dummy_ctx();
+        let r = RetryOnErrorFilter {
+            retry: Some(RetrySpec {
+                has_attempts_left: false,
+                has_5xx_condition: true,
+            }),
+        };
+        assert!(matches!(
+            r.apply(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::Continue
+        ));
+    }
+
+    #[test]
+    fn retry_does_not_trigger_without_5xx_condition() {
+        let mut resp = make_resp(500);
+        let ctx = dummy_ctx();
+        let r = RetryOnErrorFilter {
+            retry: Some(RetrySpec {
+                has_attempts_left: true,
+                has_5xx_condition: false,
+            }),
+        };
+        assert!(matches!(
+            r.apply(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::Continue
+        ));
+    }
+
+    // ── ErrorMaskFilter ──────────────────────────────────────────────────────
+
+    #[test]
+    fn mask_triggers_on_5xx_when_enabled() {
+        let mut resp = make_resp(500);
+        let ctx = dummy_ctx();
+        let r = ErrorMaskFilter { mask_enabled: true };
+        assert!(matches!(
+            r.apply(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::MaskBody
+        ));
+    }
+
+    #[test]
+    fn mask_skips_on_2xx() {
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        let r = ErrorMaskFilter { mask_enabled: true };
+        assert!(matches!(
+            r.apply(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::Continue
+        ));
+    }
+
+    #[test]
+    fn mask_skips_when_disabled() {
+        let mut resp = make_resp(500);
+        let ctx = dummy_ctx();
+        let r = ErrorMaskFilter {
+            mask_enabled: false,
+        };
+        assert!(matches!(
+            r.apply(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::Continue
+        ));
+    }
+
+    // ── ResponseFilterChain ──────────────────────────────────────────────────
+
+    #[test]
+    fn chain_stops_at_first_non_continue() {
+        struct RetryAlways;
+        impl ResponseFilter for RetryAlways {
+            fn apply(
+                &self,
+                _: &mut ResponseHeader,
+                _: &RequestCtx,
+            ) -> Result<ResponseFilterOutcome> {
+                Ok(ResponseFilterOutcome::RetryUpstream)
+            }
+        }
+        struct ShouldNotRun;
+        impl ResponseFilter for ShouldNotRun {
+            fn apply(
+                &self,
+                _: &mut ResponseHeader,
+                _: &RequestCtx,
+            ) -> Result<ResponseFilterOutcome> {
+                panic!("filter should not be called after terminal outcome")
+            }
+        }
+        let chain = ResponseFilterChain::new()
+            .push(RetryAlways)
+            .push(ShouldNotRun);
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        assert!(matches!(
+            chain.run(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::RetryUpstream
+        ));
+    }
+
+    #[test]
+    fn chain_returns_continue_when_all_pass() {
+        let chain = ResponseFilterChain::new()
+            .push(CrlfProtectionFilter)
+            .push(InjectExtraHeadersFilter { headers: vec![] });
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        assert!(matches!(
+            chain.run(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::Continue
+        ));
+    }
+}
+
 /// Apply header mutations to a Pingora response header.
 #[cfg(any(feature = "rhai", feature = "wasm"))]
 fn apply_response_mutations(

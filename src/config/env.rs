@@ -101,4 +101,37 @@ mod tests {
         let out = interpolate(r#"{"path": "$CONDUIT_TEST_BACKSLASH"}"#);
         assert_eq!(out, r#"{"path": "C:\\path\\to\\file"}"#);
     }
+
+    #[test]
+    fn var_at_end_of_string() {
+        let out = interpolate("value=$CONDUIT_NONEXISTENT_END");
+        assert_eq!(out, "value=$CONDUIT_NONEXISTENT_END");
+    }
+
+    #[test]
+    fn var_followed_by_special_char() {
+        let out = interpolate("$CONDUIT_NONEXISTENT_SPEC.");
+        assert_eq!(out, "$CONDUIT_NONEXISTENT_SPEC.");
+    }
+
+    #[test]
+    fn no_substitution_when_empty() {
+        let out = interpolate("");
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn dollar_at_end() {
+        let out = interpolate("trailing$");
+        assert_eq!(out, "trailing$");
+    }
+
+    #[test]
+    #[serial]
+    fn multiple_vars_in_one_string() {
+        std::env::set_var("CONDUIT_TEST_A", "hello");
+        std::env::set_var("CONDUIT_TEST_B", "world");
+        let out = interpolate("$CONDUIT_TEST_A $CONDUIT_TEST_B");
+        assert_eq!(out, "hello world");
+    }
 }
