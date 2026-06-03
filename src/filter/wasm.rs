@@ -1172,6 +1172,30 @@ mod tests {
         );
     }
 
+    // ── conduit_log ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn host_conduit_log_does_not_abort_plugin() {
+        // conduit_log is a fire-and-forget function — calling it must not abort
+        // the plugin or cause any side effects visible to the test.
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_log" (func $log (param i32 i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "hello from plugin")
+              (func (export "on_request") (result i32)
+                ;; level=2 (info), message at offset 0, length 17
+                (call $log (i32.const 2) (i32.const 0) (i32.const 17))
+                i32.const 0))"#,
+        );
+        match run_wasm(req(), &p) {
+            WasmOutcome::Continue { .. } => {
+                // Logging must not affect the outcome — plugin continues normally.
+            }
+            other => panic!("expected Continue after log, got {other:?}"),
+        }
+    }
+
     // ── conduit_get_query ────────────────────────────────────────────────────
 
     #[test]
