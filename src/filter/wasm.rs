@@ -1171,4 +1171,133 @@ mod tests {
             "response phase must inject X-Processed-By: wasm"
         );
     }
+
+    // ── conduit_get_method ────────────────────────────────────────────────────
+
+    #[test]
+    fn host_get_method_returns_http_method() {
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_get_method" (func $get_method (param i32 i32) (result i32)))
+              (import "conduit" "conduit_set_request_header" (func $set_hdr (param i32 i32 i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "x-method")
+              (func (export "on_request") (result i32)
+                ;; Write method into memory at offset 100.
+                (call $get_method (i32.const 100) (i32.const 20))
+                drop
+                ;; Add x-method request header with value at offset 100, len 3 ("PUT").
+                (call $set_hdr
+                  (i32.const 0) (i32.const 8)
+                  (i32.const 100) (i32.const 3))
+                i32.const 0))"#,
+        );
+        let mut r = req();
+        r.method = "PUT".into();
+        match run_wasm(r, &p) {
+            WasmOutcome::Continue { added_headers, .. } => {
+                let method = added_headers
+                    .iter()
+                    .find(|(k, _)| k == "x-method")
+                    .map(|(_, v)| v.as_str());
+                assert_eq!(method, Some("PUT"), "method must be passed to plugin");
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    // ── conduit_get_header_names ──────────────────────────────────────────────
+
+    #[test]
+    fn host_get_header_names_nonempty_when_headers_present() {
+        // Test that conduit_get_header_names returns something when headers exist.
+        // We use conduit_set_response_status to signal whether names were found.
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_get_header_names"
+                (func $get_names (param i32 i32) (result i32)))
+              (import "conduit" "conduit_set_response_status"
+                (func $set_status (param i32)))
+              (memory (export "memory") 1)
+              (func (export "on_request") (result i32)
+                (local $n i32)
+                (local.set $n
+                  (call $get_names (i32.const 0) (i32.const 4096)))
+                ;; If n > 0, set response status to 200; else 204.
+                (if (i32.gt_s (local.get $n) (i32.const 0))
+                  (then (call $set_status (i32.const 200)))
+                  (else (call $set_status (i32.const 204))))
+                i32.const 1))"#,
+        );
+        // Request with a header → get_header_names should return > 0 bytes.
+        let mut r = req();
+        r.headers.insert("x-test".into(), "val".into());
+        r.header_names.push("x-test".into());
+        match run_wasm(r, &p) {
+            WasmOutcome::Abort { status, .. } => {
+                assert_eq!(
+                    status, 200,
+                    "status 200 means header names were found (> 0 bytes)"
+                );
+            }
+            other => panic!("expected Abort(200), got {other:?}"),
+        }
+    }
+
+    // ── conduit_abort_with_redirect ───────────────────────────────────────────
+
+    #[test]
+    fn host_abort_with_redirect_sets_302_and_location() {
+        // conduit_abort_with_redirect sets status=302 + Location header.
+        // The plugin returns 0 → Abort outcome with those fields.
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_abort_with_redirect"
+                (func $redirect (param i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "https://example.com/new")
+              (func (export "on_request") (result i32)
+                (call $redirect (i32.const 0) (i32.const 23))
+                i32.const 1))"#,
+        );
+        match run_wasm(req(), &p) {
+            WasmOutcome::Abort {
+                status, headers, ..
+            } => {
+                assert_eq!(status, 302);
+                let location = headers
+                    .iter()
+                    .find(|(k, _)| k == "location")
+                    .map(|(_, v)| v.as_str());
+                assert_eq!(
+                    location,
+                    Some("https://example.com/new"),
+                    "redirect must set Location header"
+                );
+            }
+            other => panic!("expected Abort(302), got {other:?}"),
+        }
+    }
+
+    // ── conduit_set_response_body ─────────────────────────────────────────────
+
+    #[test]
+    fn host_set_response_body_sets_abort_body() {
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_set_response_body"
+                (func $set_body (param i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "custom error body")
+              (func (export "on_request") (result i32)
+                (call $set_body (i32.const 0) (i32.const 17))
+                i32.const 1))"#,
+        );
+        match run_wasm(req(), &p) {
+            WasmOutcome::Abort { body, .. } => {
+                assert_eq!(body.as_ref(), b"custom error body");
+            }
+            other => panic!("expected Abort, got {other:?}"),
+        }
+    }
 }
