@@ -103,24 +103,28 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn var_at_end_of_string() {
         let out = interpolate("value=$CONDUIT_NONEXISTENT_END");
         assert_eq!(out, "value=$CONDUIT_NONEXISTENT_END");
     }
 
     #[test]
+    #[serial]
     fn var_followed_by_special_char() {
         let out = interpolate("$CONDUIT_NONEXISTENT_SPEC.");
         assert_eq!(out, "$CONDUIT_NONEXISTENT_SPEC.");
     }
 
     #[test]
+    #[serial]
     fn no_substitution_when_empty() {
         let out = interpolate("");
         assert_eq!(out, "");
     }
 
     #[test]
+    #[serial]
     fn dollar_at_end() {
         let out = interpolate("trailing$");
         assert_eq!(out, "trailing$");

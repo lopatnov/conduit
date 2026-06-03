@@ -24,9 +24,10 @@ jobs:
   semgrep:
     name: Semgrep SAST
     runs-on: ubuntu-latest
-    # Use the official Semgrep container image (always up-to-date CLI)
+    # Pin to immutable digest to prevent supply-chain drift.
+    # linux/amd64 digest as of 2026-06-03; update periodically via Renovate/Dependabot.
     container:
-      image: semgrep/semgrep
+      image: semgrep/semgrep@sha256:40579a2e7091f09c2a2656914b1049c3635928f62f026966810a9555c659e5e7
     # Skip dependabot PRs — no secrets available.
     if: github.actor != 'dependabot[bot]'
 
