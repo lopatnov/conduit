@@ -2019,4 +2019,65 @@ mod tests {
             "/__hot-reload__/client.js?v=123"
         ));
     }
+
+    // ── failover to backup upstream ───────────────────────────────────────────
+
+    #[test]
+    fn route_to_backup_when_all_primary_unhealthy() {
+        use crate::config::schema::{ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget};
+        use indexmap::IndexMap;
+
+        // Set up a route with one primary and one backup.
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://primary:4000".to_owned())],
+                backup: Some("http://backup:4001".to_owned()),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        // Mark the primary as unhealthy.
+        {
+            let mut entry = reg
+                .statuses
+                .entry("http://primary:4000".to_owned())
+                .or_default();
+            entry.healthy = false;
+        }
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        // Must route to the backup.
+        match &ctx.upstream {
+            UpstreamTarget::Proxy { addr, .. } => {
+                assert_eq!(
+                    addr, "backup:4001",
+                    "must route to backup when primary is unhealthy"
+                );
+            }
+            other => panic!("expected Proxy upstream, got {:?}", other),
+        }
+    }
 }
