@@ -838,4 +838,77 @@ mod tests {
         let map = d.try_cast::<rhai::Map>().expect("must be map");
         assert!(map.contains_key("key"));
     }
+
+    // ── run_script_response ───────────────────────────────────────────────────
+
+    fn run_resp(script: &str, status: u16) -> ScriptResponseOutcome {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("resp.rhai");
+        std::fs::write(&p, script).unwrap();
+        let path = p.to_str().unwrap().to_owned();
+        ast_cache().remove(&path);
+        run_script_response(&path, status, HashMap::new(), None)
+    }
+
+    #[test]
+    fn response_script_adds_header() {
+        let outcome = run_resp(r#"response.set_header("x-processed", "yes")"#, 200);
+        assert!(
+            outcome
+                .added_headers
+                .iter()
+                .any(|(k, v)| k == "x-processed" && v == "yes"),
+            "response script must add header: {:?}",
+            outcome.added_headers
+        );
+    }
+
+    #[test]
+    fn response_script_removes_header() {
+        let outcome = run_resp(r#"response.remove_header("x-server")"#, 200);
+        assert!(
+            outcome.removed_headers.iter().any(|k| k == "x-server"),
+            "response script must queue header removal"
+        );
+    }
+
+    #[test]
+    fn response_script_can_read_status() {
+        // Scripts can access upstream.status.
+        let outcome = run_resp(
+            r#"
+            if upstream.status == 200 {
+                response.set_header("x-ok", "true");
+            }
+        "#,
+            200,
+        );
+        assert!(outcome
+            .added_headers
+            .iter()
+            .any(|(k, v)| k == "x-ok" && v == "true"));
+    }
+
+    #[test]
+    fn response_script_error_returns_empty_outcome() {
+        // A runtime error in a response script must be handled gracefully
+        // and return an empty outcome (fail-open).
+        let outcome = run_resp(r#"throw "response error""#, 200);
+        assert!(outcome.added_headers.is_empty());
+        assert!(outcome.removed_headers.is_empty());
+    }
+
+    #[test]
+    fn response_script_compile_error_returns_empty_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bad_resp.rhai");
+        std::fs::write(&p, r#"let x = {"#).unwrap(); // incomplete expression
+        let path = p.to_str().unwrap().to_owned();
+        ast_cache().remove(&path);
+        let outcome = run_script_response(&path, 200, HashMap::new(), None);
+        assert!(
+            outcome.added_headers.is_empty(),
+            "compile error must be fail-open"
+        );
+    }
 }
