@@ -2766,6 +2766,19 @@ mod tests {
         );
     }
 
+    // ── ConduitMetrics::global ────────────────────────────────────────────────
+
+    #[test]
+    fn conduit_metrics_global_returns_arc() {
+        let metrics = ConduitMetrics::global();
+        // Just verify it initializes without panicking and returns the same instance.
+        let metrics2 = ConduitMetrics::global();
+        assert!(
+            std::ptr::eq(metrics.as_ref(), metrics2.as_ref()),
+            "global() must return the same Arc"
+        );
+    }
+
     // ── apply_upstream_path_transforms ───────────────────────────────────────
 
     #[test]
