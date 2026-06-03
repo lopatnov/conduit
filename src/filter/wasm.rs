@@ -1172,6 +1172,97 @@ mod tests {
         );
     }
 
+    // ── conduit_get_path ─────────────────────────────────────────────────────
+
+    #[test]
+    fn host_get_path_returns_request_path() {
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_get_path" (func $get_path (param i32 i32) (result i32)))
+              (import "conduit" "conduit_set_request_header" (func $set_hdr (param i32 i32 i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "x-path")
+              (func (export "on_request") (result i32)
+                (call $get_path (i32.const 100) (i32.const 50))
+                drop
+                (call $set_hdr
+                  (i32.const 0) (i32.const 6)
+                  (i32.const 100) (i32.const 5))
+                i32.const 0))"#,
+        );
+        let mut r = req();
+        r.path = "/test".into();
+        match run_wasm(r, &p) {
+            WasmOutcome::Continue { added_headers, .. } => {
+                let path = added_headers
+                    .iter()
+                    .find(|(k, _)| k == "x-path")
+                    .map(|(_, v)| v.as_str());
+                assert_eq!(path, Some("/test"), "path must be readable by plugin");
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    // ── conduit_remove_request_header ─────────────────────────────────────────
+
+    #[test]
+    fn host_remove_request_header_queues_removal() {
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_remove_request_header"
+                (func $remove (param i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "x-remove-me")
+              (func (export "on_request") (result i32)
+                (call $remove (i32.const 0) (i32.const 11))
+                i32.const 0))"#,
+        );
+        match run_wasm(req(), &p) {
+            WasmOutcome::Continue {
+                removed_headers, ..
+            } => {
+                assert!(
+                    removed_headers.iter().any(|k| k == "x-remove-me"),
+                    "removed header must be queued"
+                );
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    // ── conduit_get_client_ip ─────────────────────────────────────────────────
+
+    #[test]
+    fn host_get_client_ip_returns_ip() {
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_get_client_ip" (func $get_ip (param i32 i32) (result i32)))
+              (import "conduit" "conduit_set_request_header" (func $set_hdr (param i32 i32 i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "x-got-ip")
+              (func (export "on_request") (result i32)
+                (call $get_ip (i32.const 100) (i32.const 50))
+                drop
+                (call $set_hdr
+                  (i32.const 0) (i32.const 8)
+                  (i32.const 100) (i32.const 9))
+                i32.const 0))"#,
+        );
+        let mut r = req();
+        r.client_ip = "127.0.0.1".into();
+        match run_wasm(r, &p) {
+            WasmOutcome::Continue { added_headers, .. } => {
+                let ip = added_headers
+                    .iter()
+                    .find(|(k, _)| k == "x-got-ip")
+                    .map(|(_, v)| v.as_str());
+                assert_eq!(ip, Some("127.0.0.1"), "IP must be readable by plugin");
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
     // ── conduit_get_method ────────────────────────────────────────────────────
 
     #[test]
