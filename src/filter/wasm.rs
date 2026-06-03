@@ -1426,6 +1426,60 @@ mod tests {
         }
     }
 
+    // ── WASM response: get/remove response headers ────────────────────────────
+
+    #[test]
+    fn response_plugin_reads_response_header() {
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_get_response_header"
+                (func $get_hdr (param i32 i32 i32 i32) (result i32)))
+              (import "conduit" "conduit_set_response_header"
+                (func $set_hdr (param i32 i32 i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "content-type")
+              (data (i32.const 50) "x-read")
+              (func (export "on_response") (param i32) (result i32)
+                ;; Read "content-type" header into memory at 100
+                (call $get_hdr (i32.const 0) (i32.const 12) (i32.const 100) (i32.const 100))
+                drop
+                ;; Copy first 5 chars to x-read header
+                (call $set_hdr (i32.const 50) (i32.const 6) (i32.const 100) (i32.const 10))
+                i32.const 0))"#,
+        );
+        let mut ctx = make_response_ctx(200);
+        ctx.headers.insert(
+            "content-type".to_owned(),
+            "text/html; charset=utf-8".to_owned(),
+        );
+        let outcome = run_wasm_response(ctx, &p);
+        // The plugin should have added x-read header with first 10 chars of content-type
+        let has_read = outcome.added_headers.iter().any(|(k, _)| k == "x-read");
+        assert!(
+            has_read,
+            "response plugin must be able to read upstream headers"
+        );
+    }
+
+    #[test]
+    fn response_plugin_removes_response_header() {
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_remove_response_header"
+                (func $rm_hdr (param i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "server")
+              (func (export "on_response") (param i32) (result i32)
+                (call $rm_hdr (i32.const 0) (i32.const 6))
+                i32.const 0))"#,
+        );
+        let outcome = run_wasm_response(make_response_ctx(200), &p);
+        assert!(
+            outcome.removed_headers.iter().any(|k| k == "server"),
+            "response plugin must queue server header for removal"
+        );
+    }
+
     // ── run_wasm_response ─────────────────────────────────────────────────────
 
     fn make_response_ctx(status: u16) -> WasmResponseContext {
