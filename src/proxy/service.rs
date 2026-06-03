@@ -2766,6 +2766,78 @@ mod tests {
         );
     }
 
+    // ── retry_budget_allows ───────────────────────────────────────────────────
+
+    fn make_proxy() -> ConduitProxy {
+        let config = crate::config::schema::AppConfig::default();
+        let state = AppState::new(config, std::path::PathBuf::from("."), None);
+        ConduitProxy {
+            state: std::sync::Arc::new(state),
+        }
+    }
+
+    #[test]
+    fn retry_budget_allows_without_budget_config() {
+        let proxy = make_proxy();
+        let mut retry = RetryState {
+            urls: vec!["http://a:4000".to_owned()],
+            attempt: 0,
+            max_attempts: 3,
+            conditions: vec!["5xx".to_owned()],
+            backoff_ms: None,
+            backoff_jitter: false,
+            budget_percent: None, // no budget limit
+            is_retrying: false,
+        };
+        // No budget configured → always allows retry.
+        assert!(proxy.retry_budget_allows(&mut retry));
+        assert!(retry.is_retrying);
+    }
+
+    #[test]
+    fn retry_budget_allows_within_budget() {
+        let proxy = make_proxy();
+        proxy.state.inflight.store(10, Ordering::Relaxed); // 10 inflight
+        proxy.state.retry_inflight.store(0, Ordering::Relaxed); // 0 retries
+        let mut retry = RetryState {
+            urls: vec!["http://a:4000".to_owned()],
+            attempt: 0,
+            max_attempts: 3,
+            conditions: vec!["5xx".to_owned()],
+            backoff_ms: None,
+            backoff_jitter: false,
+            budget_percent: Some(50.0), // 50% budget → up to 5 retries
+            is_retrying: false,
+        };
+        assert!(
+            proxy.retry_budget_allows(&mut retry),
+            "within budget must allow"
+        );
+        assert!(retry.is_retrying);
+    }
+
+    #[test]
+    fn retry_budget_denies_when_exhausted() {
+        let proxy = make_proxy();
+        proxy.state.inflight.store(10, Ordering::Relaxed); // 10 inflight
+        proxy.state.retry_inflight.store(10, Ordering::Relaxed); // already 10 retries = 100% of budget
+        let mut retry = RetryState {
+            urls: vec!["http://a:4000".to_owned()],
+            attempt: 0,
+            max_attempts: 3,
+            conditions: vec!["5xx".to_owned()],
+            backoff_ms: None,
+            backoff_jitter: false,
+            budget_percent: Some(50.0), // 50% → max 5, current=10 → denied
+            is_retrying: false,
+        };
+        assert!(
+            !proxy.retry_budget_allows(&mut retry),
+            "exhausted budget must deny"
+        );
+        assert!(!retry.is_retrying);
+    }
+
     // ── ConduitMetrics::global ────────────────────────────────────────────────
 
     #[test]
