@@ -1357,4 +1357,196 @@ mod tests {
         );
         assert_eq!(e.ejection_count, 2, "ejection_count must be incremented");
     }
+
+    // ── conn_load / conn_inc / conn_dec ───────────────────────────────────────
+
+    #[test]
+    fn conn_load_returns_zero_for_unknown_url() {
+        let reg = UpstreamRegistry::new();
+        assert_eq!(reg.conn_load("http://unknown:4000"), 0);
+    }
+
+    #[test]
+    fn conn_inc_increments_counter() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://a:4000";
+        reg.conn_inc(url);
+        assert_eq!(reg.conn_load(url), 1);
+        reg.conn_inc(url);
+        assert_eq!(reg.conn_load(url), 2);
+    }
+
+    #[test]
+    fn conn_dec_decrements_counter() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://a:4000";
+        reg.conn_inc(url);
+        reg.conn_inc(url);
+        reg.conn_dec(url);
+        assert_eq!(reg.conn_load(url), 1);
+    }
+
+    #[test]
+    fn conn_dec_saturates_at_zero() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://a:4000";
+        // No increment → dec should not underflow.
+        reg.conn_dec(url);
+        assert_eq!(reg.conn_load(url), 0);
+    }
+
+    #[test]
+    fn conn_dec_unknown_url_is_noop() {
+        let reg = UpstreamRegistry::new();
+        // Decrementing an unknown URL must not panic.
+        reg.conn_dec("http://never-seen:4000");
+    }
+
+    // ── conn_inc_if_below ─────────────────────────────────────────────────────
+
+    #[test]
+    fn conn_inc_if_below_acquires_slot_when_below_max() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://a:4000";
+        assert!(reg.conn_inc_if_below(url, 3), "first slot must be acquired");
+        assert_eq!(reg.conn_load(url), 1);
+    }
+
+    #[test]
+    fn conn_inc_if_below_rejects_when_at_max() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://a:4000";
+        reg.conn_inc(url); // count = 1
+        reg.conn_inc(url); // count = 2
+        reg.conn_inc(url); // count = 3
+        assert!(
+            !reg.conn_inc_if_below(url, 3),
+            "at max (3) must be rejected"
+        );
+        assert_eq!(reg.conn_load(url), 3, "count must not change");
+    }
+
+    // ── pick_least_conn ───────────────────────────────────────────────────────
+
+    #[test]
+    fn pick_least_conn_returns_none_for_empty_list() {
+        let reg = UpstreamRegistry::new();
+        assert!(reg.pick_least_conn(&[]).is_none());
+    }
+
+    #[test]
+    fn pick_least_conn_picks_lowest_load() {
+        let reg = UpstreamRegistry::new();
+        let a = "http://a:4000".to_owned();
+        let b = "http://b:4000".to_owned();
+        reg.conn_inc(&a);
+        reg.conn_inc(&a); // a = 2, b = 0
+        let chosen = reg.pick_least_conn(&[a.clone(), b.clone()]);
+        assert_eq!(chosen.as_deref(), Some(b.as_str()), "b has lower load");
+    }
+
+    // ── pick_least_conn_with_max ──────────────────────────────────────────────
+
+    #[test]
+    fn pick_least_conn_with_max_returns_none_when_all_at_max() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://a:4000".to_owned();
+        reg.conn_inc(&url); // = 1 = max
+        let result = reg.pick_least_conn_with_max(&[url], 1);
+        assert!(result.is_none(), "all at max → None (circuit breaker)");
+    }
+
+    #[test]
+    fn pick_least_conn_with_max_picks_below_max_url() {
+        let reg = UpstreamRegistry::new();
+        let a = "http://a:4000".to_owned();
+        let b = "http://b:4000".to_owned();
+        reg.conn_inc(&a); // a = 1, b = 0; max = 2
+        let chosen = reg.pick_least_conn_with_max(&[a.clone(), b.clone()], 2);
+        assert_eq!(chosen.as_deref(), Some(b.as_str()), "b has lower load");
+    }
+
+    // ── filter_healthy ────────────────────────────────────────────────────────
+
+    #[test]
+    fn filter_healthy_returns_all_when_no_status_known() {
+        let reg = UpstreamRegistry::new();
+        let urls = vec!["http://a:4000".to_owned(), "http://b:4000".to_owned()];
+        // No health status set → all optimistically healthy.
+        let healthy = reg.filter_healthy(&urls);
+        assert_eq!(healthy.len(), 2);
+    }
+
+    #[test]
+    fn filter_healthy_excludes_unhealthy() {
+        let reg = UpstreamRegistry::new();
+        let url_a = "http://a:4000".to_owned();
+        let url_b = "http://b:4000".to_owned();
+        reg.statuses.entry(url_a.clone()).or_default().healthy = false;
+        let urls = vec![url_a, url_b.clone()];
+        let healthy = reg.filter_healthy(&urls);
+        assert_eq!(healthy.len(), 1);
+        assert_eq!(*healthy[0], url_b);
+    }
+
+    // ── dynamic override API ──────────────────────────────────────────────────
+
+    #[test]
+    fn add_and_get_override_targets() {
+        let reg = UpstreamRegistry::new();
+        reg.add_upstream("*", "/api", "http://extra:4000", 2);
+        let targets = reg
+            .get_override_targets("*", "/api")
+            .expect("must return Some after add");
+        assert!(
+            targets
+                .iter()
+                .any(|(url, w)| url == "http://extra:4000" && *w == 2),
+            "added upstream must appear: {targets:?}"
+        );
+    }
+
+    #[test]
+    fn remove_upstream_removes_entry() {
+        let reg = UpstreamRegistry::new();
+        reg.add_upstream("*", "/api", "http://extra:4000", 1);
+        let removed = reg.remove_upstream("*", "/api", "http://extra:4000");
+        assert!(removed, "remove must return true");
+        let targets = reg.get_override_targets("*", "/api").unwrap_or_default();
+        assert!(
+            !targets.iter().any(|(url, _)| url == "http://extra:4000"),
+            "removed upstream must be gone"
+        );
+    }
+
+    #[test]
+    fn clear_overrides_removes_all() {
+        let reg = UpstreamRegistry::new();
+        reg.add_upstream("*", "/a", "http://a:4000", 1);
+        reg.add_upstream("*", "/b", "http://b:4000", 1);
+        reg.clear_overrides();
+        let a = reg.get_override_targets("*", "/a").unwrap_or_default();
+        let b = reg.get_override_targets("*", "/b").unwrap_or_default();
+        assert!(
+            a.is_empty() && b.is_empty(),
+            "all overrides must be cleared"
+        );
+    }
+
+    #[test]
+    fn set_weight_updates_existing() {
+        let reg = UpstreamRegistry::new();
+        reg.add_upstream("*", "/api", "http://a:4000", 1);
+        let ok = reg.set_weight("*", "/api", "http://a:4000", 5);
+        assert!(ok, "set_weight must return true for existing entry");
+        let targets = reg
+            .get_override_targets("*", "/api")
+            .expect("targets must exist");
+        assert!(
+            targets
+                .iter()
+                .any(|(url, w)| url == "http://a:4000" && *w == 5),
+            "weight must be updated: {targets:?}"
+        );
+    }
 }

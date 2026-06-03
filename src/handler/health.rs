@@ -142,4 +142,50 @@ mod tests {
         let ups = v["upstreams"].as_array().unwrap();
         assert!(ups.iter().all(|u| u["healthy"] == true));
     }
+
+    #[test]
+    fn single_upstream_in_body() {
+        let infos = [info("http://only:4000", true, Some(5), false, 0)];
+        let body = build_health_body(&infos);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["status"], "ok");
+        let ups = v["upstreams"].as_array().unwrap();
+        assert_eq!(ups.len(), 1);
+    }
+
+    #[test]
+    fn null_latency_preserved() {
+        // latency_ms=None should serialize as JSON null.
+        let infos = [info("http://a:4000", false, None, true, 3)];
+        let body = build_health_body(&infos);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let ups = v["upstreams"].as_array().unwrap();
+        assert!(
+            ups[0]["latency_ms"].is_null(),
+            "None latency must be null in JSON"
+        );
+    }
+
+    #[test]
+    fn body_is_valid_json() {
+        // Both empty and non-empty forms must produce valid JSON.
+        let empty = build_health_body(&[]);
+        assert!(serde_json::from_slice::<serde_json::Value>(&empty).is_ok());
+
+        let non_empty = build_health_body(&[info("http://x:4000", true, None, false, 0)]);
+        assert!(serde_json::from_slice::<serde_json::Value>(&non_empty).is_ok());
+    }
+
+    #[test]
+    fn all_unhealthy_upstreams() {
+        let infos = [
+            info("http://a:4000", false, None, true, 5),
+            info("http://b:4000", false, None, true, 3),
+        ];
+        let body = build_health_body(&infos);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let ups = v["upstreams"].as_array().unwrap();
+        assert!(ups.iter().all(|u| u["healthy"] == false));
+        assert!(ups.iter().all(|u| u["ejected"] == true));
+    }
 }
