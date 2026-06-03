@@ -569,4 +569,139 @@ mod tests {
             "output file must be written even with unknown format"
         );
     }
+
+    #[test]
+    fn run_init_with_acme_tls() {
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("conduit.yaml");
+        let opts = InitOptions {
+            output: Some(output.to_str().unwrap()),
+            yes: true,
+            format: Some("yaml"),
+            port: Some(443),
+            static_dir: None,
+            no_static: true,
+            proxy: None,
+            no_proxy: true,
+            log: Some("dev"),
+            no_health: false,
+            tls_cert: None,
+            tls_key: None,
+            tls_acme: Some("admin@example.com"),
+        };
+        run_init(opts).expect("ACME TLS init must succeed");
+        let content = std::fs::read_to_string(&output).unwrap();
+        assert!(
+            content.contains("admin@example.com"),
+            "ACME email must appear in output: {content}"
+        );
+    }
+
+    #[test]
+    fn run_init_with_static_dir() {
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("conduit.yaml");
+        let opts = InitOptions {
+            output: Some(output.to_str().unwrap()),
+            yes: true,
+            format: Some("yaml"),
+            port: Some(8080),
+            static_dir: Some("./public"),
+            no_static: false,
+            proxy: None,
+            no_proxy: true,
+            log: Some("dev"),
+            no_health: false,
+            tls_cert: None,
+            tls_key: None,
+            tls_acme: None,
+        };
+        run_init(opts).expect("init with static dir must succeed");
+        let content = std::fs::read_to_string(&output).unwrap();
+        assert!(
+            content.contains("public"),
+            "static dir must appear in output"
+        );
+    }
+
+    #[test]
+    fn run_init_log_none_omits_logging() {
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("conduit.yaml");
+        let opts = InitOptions {
+            output: Some(output.to_str().unwrap()),
+            yes: true,
+            format: Some("yaml"),
+            port: Some(8080),
+            static_dir: None,
+            no_static: true,
+            proxy: None,
+            no_proxy: true,
+            log: Some("none"),
+            no_health: true,
+            tls_cert: None,
+            tls_key: None,
+            tls_acme: None,
+        };
+        run_init(opts).expect("log: none must not error");
+        let content = std::fs::read_to_string(&output).unwrap();
+        // When logging is "none", no logging key should appear.
+        assert!(
+            !content.contains("logging"),
+            "log:none must omit logging key"
+        );
+    }
+
+    #[test]
+    fn run_init_log_combined_format() {
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("conduit.yaml");
+        let opts = InitOptions {
+            output: Some(output.to_str().unwrap()),
+            yes: true,
+            format: Some("yaml"),
+            port: Some(8080),
+            static_dir: None,
+            no_static: true,
+            proxy: None,
+            no_proxy: true,
+            log: Some("combined"),
+            no_health: true,
+            tls_cert: None,
+            tls_key: None,
+            tls_acme: None,
+        };
+        run_init(opts).expect("log: combined must not error");
+        let content = std::fs::read_to_string(&output).unwrap();
+        assert!(
+            content.contains("combined"),
+            "log:combined must appear in output"
+        );
+    }
+
+    #[test]
+    fn run_init_default_yes_uses_defaults() {
+        // With yes=true and no explicit options, should use defaults:
+        // port=8080, static=./dist, log=dev, health=true
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("out.yaml");
+        let opts = InitOptions {
+            output: Some(output.to_str().unwrap()),
+            yes: true,
+            format: Some("yaml"),
+            port: None, // should default to 8080
+            static_dir: None,
+            no_static: false, // should use default ./dist
+            proxy: None,
+            no_proxy: true,
+            log: None, // should default to "dev"
+            no_health: false,
+            tls_cert: None,
+            tls_key: None,
+            tls_acme: None,
+        };
+        run_init(opts).expect("default yes must succeed");
+        let content = std::fs::read_to_string(&output).unwrap();
+        assert!(content.contains("8080"), "default port must be 8080");
+    }
 }
