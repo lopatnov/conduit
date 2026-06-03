@@ -784,4 +784,58 @@ mod tests {
             ScriptOutcome::Continue
         ));
     }
+
+    // ── json_to_dynamic ────────────────────────────────────────────────────────
+
+    #[test]
+    fn json_null_becomes_unit() {
+        let d = json_to_dynamic(&serde_json::Value::Null);
+        assert!(d.is_unit(), "JSON null must become Dynamic::UNIT");
+    }
+
+    #[test]
+    fn json_bool_true_becomes_dynamic_bool() {
+        let d = json_to_dynamic(&serde_json::json!(true));
+        assert_eq!(d.as_bool().unwrap(), true);
+    }
+
+    #[test]
+    fn json_bool_false_becomes_dynamic_bool() {
+        let d = json_to_dynamic(&serde_json::json!(false));
+        assert_eq!(d.as_bool().unwrap(), false);
+    }
+
+    #[test]
+    fn json_integer_becomes_dynamic_i64() {
+        let d = json_to_dynamic(&serde_json::json!(42i64));
+        assert_eq!(d.as_int().unwrap(), 42);
+    }
+
+    #[test]
+    fn json_float_becomes_dynamic_float() {
+        let d = json_to_dynamic(&serde_json::json!(3.14f64));
+        // Rhai's Dynamic::as_float returns f64.
+        let f = d.as_float().unwrap();
+        assert!((f - 3.14).abs() < 0.001, "expected 3.14, got {f}");
+    }
+
+    #[test]
+    fn json_string_becomes_dynamic_string() {
+        let d = json_to_dynamic(&serde_json::json!("hello"));
+        assert_eq!(d.into_string().unwrap(), "hello");
+    }
+
+    #[test]
+    fn json_array_becomes_dynamic_array() {
+        let d = json_to_dynamic(&serde_json::json!([1, 2, 3]));
+        let arr = d.into_array().expect("must be array");
+        assert_eq!(arr.len(), 3);
+    }
+
+    #[test]
+    fn json_object_becomes_dynamic_map() {
+        let d = json_to_dynamic(&serde_json::json!({ "key": "value" }));
+        let map = d.try_cast::<rhai::Map>().expect("must be map");
+        assert!(map.contains_key("key"));
+    }
 }
