@@ -742,4 +742,54 @@ mod tests {
             "s-maxage=0 must not be cached"
         );
     }
+
+    #[test]
+    fn response_with_set_cookie_not_cached() {
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        resp.insert_header("set-cookie", "session=abc; HttpOnly")
+            .unwrap();
+        assert!(
+            matches!(
+                response_cacheable(&cfg(60), &resp),
+                RespCacheable::Uncacheable(_)
+            ),
+            "response with Set-Cookie must not be cached"
+        );
+    }
+
+    #[test]
+    fn response_with_no_store_not_cached() {
+        let resp = resp_with_cc("no-store");
+        assert!(
+            matches!(
+                response_cacheable(&cfg(60), &resp),
+                RespCacheable::Uncacheable(_)
+            ),
+            "no-store must prevent caching"
+        );
+    }
+
+    #[test]
+    fn response_with_private_not_cached() {
+        let resp = resp_with_cc("private");
+        assert!(
+            matches!(
+                response_cacheable(&cfg(60), &resp),
+                RespCacheable::Uncacheable(_)
+            ),
+            "private must prevent caching"
+        );
+    }
+
+    #[test]
+    fn response_with_no_cache_directive_not_cached() {
+        let resp = resp_with_cc("no-cache");
+        assert!(
+            matches!(
+                response_cacheable(&cfg(60), &resp),
+                RespCacheable::Uncacheable(_)
+            ),
+            "no-cache directive must prevent caching"
+        );
+    }
 }
