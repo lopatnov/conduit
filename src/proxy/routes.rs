@@ -1334,4 +1334,51 @@ mod tests {
         wrong_headers.insert("cookie", http::HeaderValue::from_static("beta=0"));
         assert!(!route_matches(&m, "/any", "GET", &wrong_headers, None));
     }
+
+    // ── cookie_value extra cases ──────────────────────────────────────────────
+
+    #[test]
+    fn cookie_value_with_whitespace() {
+        assert_eq!(cookie_value("  key = value ", "key"), Some("value"));
+    }
+
+    // ── query_param_value extra cases ─────────────────────────────────────────
+
+    #[test]
+    fn query_param_value_key_only_returns_empty() {
+        // "flag" without "=value" is a boolean parameter.
+        assert_eq!(query_param_value("flag&other=1", "flag"), Some(""));
+    }
+
+    #[test]
+    fn query_param_value_multiple_with_same_key_returns_first() {
+        // Only the first matching key is returned.
+        assert_eq!(query_param_value("a=1&a=2", "a"), Some("1"));
+    }
+
+    // ── get_anchored_regex ────────────────────────────────────────────────────
+
+    #[test]
+    fn get_anchored_regex_valid_pattern() {
+        let re = get_anchored_regex("v[12]");
+        assert!(re.is_some(), "valid pattern must compile");
+        let re = re.unwrap();
+        assert!(re.is_match("v1"));
+        assert!(re.is_match("v2"));
+        assert!(!re.is_match("v3"));
+    }
+
+    #[test]
+    fn get_anchored_regex_invalid_pattern_returns_none() {
+        let re = get_anchored_regex("[invalid");
+        assert!(re.is_none(), "invalid pattern must return None");
+    }
+
+    #[test]
+    fn get_anchored_regex_anchors_full_string() {
+        // Anchored regex must match only the full string, not substrings.
+        let re = get_anchored_regex("v1").unwrap();
+        assert!(re.is_match("v1"), "exact match must pass");
+        assert!(!re.is_match("v10"), "prefix match must not pass (anchored)");
+    }
 }
