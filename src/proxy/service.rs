@@ -2766,6 +2766,57 @@ mod tests {
         );
     }
 
+    // ── apply_peer_options ───────────────────────────────────────────────────
+
+    #[test]
+    fn apply_peer_options_sets_timeouts() {
+        use crate::config::schema::ProxyTimeout;
+        // Use IP address to avoid DNS lookup in tests
+        let addr: std::net::SocketAddr = "127.0.0.1:4000".parse().unwrap();
+        let mut peer = HttpPeer::new(addr, false, String::new());
+        let timeout = ProxyTimeout {
+            connect_ms: Some(500),
+            read_ms: Some(1000),
+            send_ms: Some(2000),
+            per_try_ms: None,
+        };
+        apply_peer_options(&mut peer, Some(&timeout), None, None);
+        assert_eq!(
+            peer.options.connection_timeout,
+            Some(std::time::Duration::from_millis(500))
+        );
+        assert_eq!(
+            peer.options.read_timeout,
+            Some(std::time::Duration::from_millis(1000))
+        );
+        assert_eq!(
+            peer.options.write_timeout,
+            Some(std::time::Duration::from_millis(2000))
+        );
+    }
+
+    #[test]
+    fn apply_peer_options_uses_fallback_timeout() {
+        let addr: std::net::SocketAddr = "127.0.0.1:4000".parse().unwrap();
+        let mut peer = HttpPeer::new(addr, false, String::new());
+        // No per-route timeout, but global limits.timeoutSecs = 5s → 5000ms fallback
+        apply_peer_options(&mut peer, None, None, Some(5));
+        assert_eq!(
+            peer.options.connection_timeout,
+            Some(std::time::Duration::from_millis(5000))
+        );
+    }
+
+    #[test]
+    fn apply_peer_options_no_timeout_leaves_defaults() {
+        let addr: std::net::SocketAddr = "127.0.0.1:4000".parse().unwrap();
+        let mut peer = HttpPeer::new(addr, false, String::new());
+        apply_peer_options(&mut peer, None, None, None);
+        // No timeout set → remains None (Pingora's default).
+        assert!(peer.options.connection_timeout.is_none());
+        assert!(peer.options.read_timeout.is_none());
+    }
+
     // ── get_rewrite_regex ─────────────────────────────────────────────────────
 
     #[test]
