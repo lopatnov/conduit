@@ -1389,6 +1389,23 @@ mod tests {
         assert_eq!(e.ejection_count, 2, "ejection_count must be incremented");
     }
 
+    // ── spawn_health_checks and spawn_connection_warmup ───────────────────────
+
+    #[test]
+    fn spawn_health_checks_empty_config_is_noop() {
+        // With no sites having health checks, spawn_health_checks must not panic.
+        let reg = std::sync::Arc::new(UpstreamRegistry::new());
+        let config = crate::config::schema::AppConfig::default();
+        // No tokio::spawn will be called since no health checks are configured.
+        spawn_health_checks(reg, &config);
+    }
+
+    #[test]
+    fn spawn_connection_warmup_empty_config_is_noop() {
+        let config = crate::config::schema::AppConfig::default();
+        spawn_connection_warmup(&config);
+    }
+
     // ── conn_load / conn_inc / conn_dec ───────────────────────────────────────
 
     #[test]
