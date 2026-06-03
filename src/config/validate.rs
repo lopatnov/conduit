@@ -2457,6 +2457,63 @@ mod tests {
         assert!(!e.is_empty(), "invalid jwksUrl must be rejected");
     }
 
+    // ── check_cert_expiry (via validate_tls) ─────────────────────────────────
+
+    #[test]
+    fn cert_expiry_valid_cert_no_error() {
+        // Generate a self-signed cert valid for 1 year and verify no expiry error.
+        let key_pair = rcgen::KeyPair::generate().expect("keygen");
+        let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+            .expect("params")
+            .self_signed(&key_pair)
+            .expect("self-signed");
+        let cert_pem = cert.pem();
+        let key_pem = key_pair.serialize_pem();
+
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        std::fs::write(&cert_path, &cert_pem).unwrap();
+        std::fs::write(&key_path, &key_pem).unwrap();
+
+        // Use forward slashes in JSON path (avoid Windows backslash escaping issues).
+        let cert_str = cert_path.to_string_lossy().replace('\\', "/");
+        let key_str = key_path.to_string_lossy().replace('\\', "/");
+        let config_json =
+            format!(r#"{{ "port": 443, "tls": {{ "cert": "{cert_str}", "key": "{key_str}" }} }}"#);
+        let e = errs(&config_json);
+        // A freshly generated cert valid for 1 year must not produce expiry errors.
+        assert!(
+            !e.iter().any(|err| err.message.contains("expired")),
+            "fresh cert must not produce expiry error: {e:?}"
+        );
+    }
+
+    // ── validate_tls mTLS clientAuth ─────────────────────────────────────────
+
+    #[test]
+    fn mtls_empty_ca_path_rejected() {
+        let e = errs(
+            r#"{ "port": 443, "tls": { "cert": "server.pem", "key": "server.key",
+                 "clientAuth": { "ca": "" } } }"#,
+        );
+        assert!(
+            e.iter().any(|err| err.path.contains("clientAuth")),
+            "empty CA path must be rejected: {e:?}"
+        );
+    }
+
+    #[test]
+    fn mtls_without_tls_rejected() {
+        // clientAuth without cert+key or acme must be rejected.
+        let e = errs(r#"{ "port": 8080, "tls": { "clientAuth": { "ca": "ca.pem" } } }"#);
+        assert!(
+            e.iter()
+                .any(|err| err.message.contains("cert") || err.path.contains("clientAuth")),
+            "clientAuth without cert/key must be rejected: {e:?}"
+        );
+    }
+
     // ── is_valid_upstream_url ─────────────────────────────────────────────────
 
     #[test]
