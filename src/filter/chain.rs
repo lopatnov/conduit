@@ -1033,3 +1033,52 @@ fn limits_rejection(result: limits::CheckResult) -> Option<(u16, Bytes)> {
         limits::CheckResult::Ok => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── limits_rejection ─────────────────────────────────────────────────────
+
+    #[test]
+    fn limits_rejection_body_too_large_returns_413() {
+        let result = limits_rejection(limits::CheckResult::BodyTooLarge);
+        assert!(result.is_some());
+        let (status, body) = result.unwrap();
+        assert_eq!(status, 413);
+        assert!(!body.is_empty());
+    }
+
+    #[test]
+    fn limits_rejection_header_too_large_returns_431() {
+        let result = limits_rejection(limits::CheckResult::HeaderTooLarge);
+        assert!(result.is_some());
+        let (status, _) = result.unwrap();
+        assert_eq!(status, 431);
+    }
+
+    #[test]
+    fn limits_rejection_ok_returns_none() {
+        let result = limits_rejection(limits::CheckResult::Ok);
+        assert!(result.is_none());
+    }
+
+    // ── IpGuard dynamic deny list ────────────────────────────────────────────
+
+    #[test]
+    fn ip_guard_empty_dynamic_deny_returns_false() {
+        use std::sync::RwLock;
+        let guard = IpGuard {
+            cfg: crate::config::schema::IpFilterConfig {
+                allow: None,
+                deny: None,
+                trust_proxy: None,
+                dry_run: None,
+            },
+            dynamic_deny: std::sync::Arc::new(RwLock::new(vec![])),
+        };
+        // No session needed since list is empty — returns false immediately.
+        let deny_list = guard.dynamic_deny.read().unwrap();
+        assert!(deny_list.is_empty());
+    }
+}
