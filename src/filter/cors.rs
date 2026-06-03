@@ -304,4 +304,150 @@ mod tests {
             "wildcard CORS must NOT emit credentials header"
         );
     }
+
+    // ── is_origin_allowed ─────────────────────────────────────────────────────
+
+    #[test]
+    fn is_origin_allowed_wildcard_entry_in_list() {
+        // An origins list containing "*" allows any origin.
+        let opts = CorsOptions {
+            origins: Some(vec!["*".to_owned()]),
+            methods: None,
+            allowed_headers: None,
+            credentials: None,
+            max_age_secs: None,
+        };
+        assert!(is_origin_allowed(&opts, "https://anything.example.com"));
+    }
+
+    #[test]
+    fn is_origin_allowed_no_origins_list_allows_all() {
+        // `origins: None` means no whitelist — every origin is allowed.
+        let opts = CorsOptions {
+            origins: None,
+            methods: None,
+            allowed_headers: None,
+            credentials: None,
+            max_age_secs: None,
+        };
+        assert!(is_origin_allowed(&opts, "https://any.example.com"));
+    }
+
+    #[test]
+    fn is_origin_allowed_specific_list_rejects_unknown() {
+        let opts = CorsOptions {
+            origins: Some(vec!["https://a.com".to_owned(), "https://b.com".to_owned()]),
+            methods: None,
+            allowed_headers: None,
+            credentials: None,
+            max_age_secs: None,
+        };
+        assert!(!is_origin_allowed(&opts, "https://c.com"));
+        assert!(is_origin_allowed(&opts, "https://a.com"));
+        assert!(is_origin_allowed(&opts, "https://b.com"));
+    }
+
+    // ── build_response_headers with custom methods / allowed_headers ──────────
+
+    #[test]
+    fn response_headers_custom_methods() {
+        let cfg = CorsConfig::Options(CorsOptions {
+            origins: None,
+            methods: Some(vec!["GET".to_owned(), "POST".to_owned()]),
+            allowed_headers: None,
+            credentials: None,
+            max_age_secs: None,
+        });
+        let h = response_headers(&cfg, Some("https://a.com"));
+        let methods = h
+            .iter()
+            .find(|(k, _)| k == "Access-Control-Allow-Methods")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(methods, Some("GET, POST"), "custom methods must be echoed");
+    }
+
+    #[test]
+    fn response_headers_custom_allowed_headers() {
+        let cfg = CorsConfig::Options(CorsOptions {
+            origins: None,
+            methods: None,
+            allowed_headers: Some(vec![
+                "X-Custom-Header".to_owned(),
+                "Authorization".to_owned(),
+            ]),
+            credentials: None,
+            max_age_secs: None,
+        });
+        let h = response_headers(&cfg, Some("https://a.com"));
+        let hdrs = h
+            .iter()
+            .find(|(k, _)| k == "Access-Control-Allow-Headers")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(
+            hdrs,
+            Some("X-Custom-Header, Authorization"),
+            "custom allowed headers must be echoed"
+        );
+    }
+
+    #[test]
+    fn response_headers_default_methods_when_none_configured() {
+        // When opts.methods is None, the DEFAULT_METHODS constant should be used.
+        let cfg = CorsConfig::Options(CorsOptions {
+            origins: None,
+            methods: None,
+            allowed_headers: None,
+            credentials: None,
+            max_age_secs: None,
+        });
+        let h = response_headers(&cfg, Some("https://a.com"));
+        let methods = h
+            .iter()
+            .find(|(k, _)| k == "Access-Control-Allow-Methods")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(
+            methods,
+            Some(DEFAULT_METHODS),
+            "should fall back to DEFAULT_METHODS"
+        );
+    }
+
+    #[test]
+    fn response_headers_default_headers_when_none_configured() {
+        let cfg = CorsConfig::Options(CorsOptions {
+            origins: None,
+            methods: None,
+            allowed_headers: None,
+            credentials: None,
+            max_age_secs: None,
+        });
+        let h = response_headers(&cfg, Some("https://a.com"));
+        let hdrs = h
+            .iter()
+            .find(|(k, _)| k == "Access-Control-Allow-Headers")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(
+            hdrs,
+            Some(DEFAULT_HEADERS),
+            "should fall back to DEFAULT_HEADERS"
+        );
+    }
+
+    #[test]
+    fn preflight_options_no_origins_wildcard_includes_max_age_default() {
+        // CorsConfig::Options with origins=None and no max_age_secs → 86400
+        let cfg = CorsConfig::Options(CorsOptions {
+            origins: None,
+            methods: None,
+            allowed_headers: None,
+            credentials: None,
+            max_age_secs: None,
+        });
+        let h = preflight_headers(&cfg, "https://any.com");
+        let max_age = h
+            .iter()
+            .find(|(k, _)| k == "Access-Control-Max-Age")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(max_age, Some("86400"), "default max-age must be 86400");
+    }
 }

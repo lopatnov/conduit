@@ -2116,4 +2116,185 @@ mod tests {
             "consumer empty apiKey must be rejected: {e:?}"
         );
     }
+
+    // ── loopback_port helper ─────────────────────────────────────────────────
+
+    #[test]
+    fn loopback_localhost_explicit_port_detected() {
+        // localhost with an explicit port should trigger loop detection.
+        let w = warns(r#"{ "port": 9000, "proxy": "http://localhost:9000" }"#);
+        assert!(
+            w.iter().any(|m| m.contains("loop")),
+            "localhost loop must warn: {w:?}"
+        );
+    }
+
+    #[test]
+    fn loopback_localhost_default_http_port() {
+        // localhost without explicit port → defaults to 80 for http.
+        let w = warns(r#"{ "port": 80, "proxy": "http://localhost" }"#);
+        assert!(
+            w.iter().any(|m| m.contains("loop")),
+            "localhost:80 loop must warn: {w:?}"
+        );
+    }
+
+    #[test]
+    fn loopback_localhost_https_default_port() {
+        // https://localhost without port → defaults to 443.
+        let w = warns(
+            r#"{ "port": 443, "tls": { "cert": "c.pem", "key": "c.key" },
+                 "proxy": "https://localhost" }"#,
+        );
+        assert!(
+            w.iter().any(|m| m.contains("loop")),
+            "https://localhost:443 loop must warn: {w:?}"
+        );
+    }
+
+    #[test]
+    fn loopback_127_x_subnet_detected() {
+        // 127.0.0.2 is still loopback.
+        let w = warns(r#"{ "port": 8080, "proxy": "http://127.0.0.2:8080" }"#);
+        assert!(
+            w.iter().any(|m| m.contains("loop")),
+            "127.0.0.2 loop must warn: {w:?}"
+        );
+    }
+
+    #[test]
+    fn non_loopback_host_no_loop_warn() {
+        let w = warns(r#"{ "port": 8080, "proxy": "http://10.0.0.1:8080" }"#);
+        assert!(
+            w.iter().all(|m| !m.contains("loop")),
+            "non-loopback must not warn: {w:?}"
+        );
+    }
+
+    // ── is_valid_ip_or_cidr ──────────────────────────────────────────────────
+
+    #[test]
+    fn ipv6_cidr_valid_max_prefix() {
+        // /128 is the maximum valid prefix for IPv6.
+        assert!(
+            errs(r#"{ "ipFilter": { "deny": ["::1/128"] } }"#).is_empty(),
+            "::1/128 must be valid"
+        );
+    }
+
+    #[test]
+    fn ipv6_cidr_too_large_prefix_invalid() {
+        let e = errs(r#"{ "ipFilter": { "deny": ["::1/129"] } }"#);
+        assert!(!e.is_empty(), "/129 is invalid for IPv6");
+    }
+
+    #[test]
+    fn ipv4_solo_address_valid() {
+        assert!(
+            errs(r#"{ "ipFilter": { "allow": ["192.168.1.100"] } }"#).is_empty(),
+            "plain IPv4 address must be valid"
+        );
+    }
+
+    #[test]
+    fn ipv6_solo_address_valid() {
+        assert!(
+            errs(r#"{ "ipFilter": { "allow": ["2001:db8::1"] } }"#).is_empty(),
+            "plain IPv6 address must be valid"
+        );
+    }
+
+    // ── feature_warnings for various features ────────────────────────────────
+
+    #[test]
+    #[cfg(not(feature = "rhai"))]
+    fn warning_for_rhai_middleware_without_feature() {
+        let w = warns(
+            r#"{ "port": 8080,
+                 "middleware": [{ "type": "script", "path": "./filter.rhai" }] }"#,
+        );
+        assert!(
+            w.iter().any(|m| m.contains("rhai")),
+            "missing rhai feature must warn: {w:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "forward-auth"))]
+    fn warning_for_forward_auth_without_feature() {
+        let w = warns(
+            r#"{ "port": 8080,
+                 "forwardAuth": { "url": "http://auth:4000/verify" } }"#,
+        );
+        assert!(
+            w.iter().any(|m| m.contains("forward-auth")),
+            "missing forward-auth feature must warn: {w:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "tcp"))]
+    fn warning_for_tcp_without_feature() {
+        let w = warns(r#"{ "port": 3306, "tcp": { "targets": ["mysql:3306"] } }"#);
+        assert!(
+            w.iter().any(|m| m.contains("tcp")),
+            "missing tcp feature must warn: {w:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "fault-injection"))]
+    fn warning_for_fault_injection_without_feature() {
+        let w = warns(
+            r#"{ "port": 8080,
+                 "faultInjection": { "abort": { "percent": 50, "status": 503 } } }"#,
+        );
+        assert!(
+            w.iter().any(|m| m.contains("fault-injection")),
+            "missing fault-injection feature must warn: {w:?}"
+        );
+    }
+
+    // ── TCP port conflict with HTTP sites ────────────────────────────────────
+
+    #[test]
+    #[cfg(feature = "tcp")]
+    fn tcp_port_conflicts_with_http_site() {
+        let e = errs(
+            r#"[
+                { "port": 8080 },
+                { "port": 8080, "tcp": { "targets": ["db:5432"] } }
+            ]"#,
+        );
+        assert!(
+            !e.is_empty(),
+            "TCP site on same port as HTTP site must error: {e:?}"
+        );
+    }
+
+    // ── validate_rate_limit edge cases ───────────────────────────────────────
+
+    #[test]
+    fn rate_limit_zero_limit_is_rejected() {
+        let e = errs(r#"{ "rateLimit": { "limit": 0, "windowSecs": 60 } }"#);
+        assert!(!e.is_empty(), "limit=0 must be rejected");
+        assert!(
+            e.iter().any(|err| err.path.contains("rateLimit")),
+            "error must point to rateLimit: {e:?}"
+        );
+    }
+
+    #[test]
+    fn rate_limit_zero_window_secs_is_rejected() {
+        let e = errs(r#"{ "rateLimit": { "limit": 100, "windowSecs": 0 } }"#);
+        assert!(!e.is_empty(), "windowSecs=0 must be rejected");
+    }
+
+    #[test]
+    fn rate_limit_valid_config_no_errors() {
+        assert!(
+            errs(r#"{ "rateLimit": { "limit": 100, "windowSecs": 60 } }"#).is_empty(),
+            "valid rate limit config must pass"
+        );
+    }
 }
