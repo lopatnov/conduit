@@ -517,4 +517,28 @@ mod tests {
             "entry and tmp must be in the same directory"
         );
     }
+
+    #[test]
+    fn hash_produces_32_hex_chars() {
+        let key = CacheKey::new("host.example", "https:/path", "");
+        let dir = TempDir::new().unwrap();
+        let storage = DiskCacheStorage::new(dir.path().to_str().unwrap());
+        let hash = DiskCacheStorage::hash(&key);
+        assert_eq!(hash.len(), 32, "hash must be 32 hex chars");
+        assert!(
+            hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "hash must be lowercase hex"
+        );
+    }
+
+    #[test]
+    fn two_different_keys_produce_different_hashes() {
+        let k1 = CacheKey::new("host1", "https:/a", "");
+        let k2 = CacheKey::new("host2", "https:/b", "");
+        assert_ne!(
+            DiskCacheStorage::hash(&k1),
+            DiskCacheStorage::hash(&k2),
+            "different cache keys must produce different hashes"
+        );
+    }
 }

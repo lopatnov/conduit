@@ -961,6 +961,31 @@ mod tests {
         );
         assert_eq!(resp.headers.get("x-keep").unwrap(), "yes");
     }
+
+    // ── apply_response_mutations ──────────────────────────────────────────────
+
+    #[test]
+    #[cfg(any(feature = "rhai", feature = "wasm"))]
+    fn apply_response_mutations_adds_and_removes() {
+        let mut resp = make_resp(200);
+        resp.insert_header("x-old", "value").unwrap();
+        apply_response_mutations(
+            &mut resp,
+            vec![("x-new".to_owned(), "injected".to_owned())],
+            vec!["x-old".to_owned()],
+        );
+        assert!(resp.headers.get("x-old").is_none(), "x-old must be removed");
+        assert_eq!(resp.headers.get("x-new").unwrap(), "injected");
+    }
+
+    #[test]
+    #[cfg(any(feature = "rhai", feature = "wasm"))]
+    fn apply_response_mutations_empty_vecs_is_noop() {
+        let mut resp = make_resp(200);
+        resp.insert_header("x-keep", "yes").unwrap();
+        apply_response_mutations(&mut resp, vec![], vec![]);
+        assert_eq!(resp.headers.get("x-keep").unwrap(), "yes");
+    }
 }
 
 /// Apply header mutations to a Pingora response header.
