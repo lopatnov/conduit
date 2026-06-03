@@ -220,6 +220,24 @@ mod tests {
         assert!(out.global.is_none());
     }
 
+    // ── from_yaml ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn from_yaml_parses_simple_config() {
+        let result = from_yaml("port: 9090\n");
+        assert!(result.is_ok(), "valid YAML must parse: {:?}", result);
+        let cfg = result.unwrap();
+        assert_eq!(cfg.sites[0].port, Some(9090));
+    }
+
+    #[test]
+    fn from_yaml_version_too_new_rejected() {
+        let result = from_yaml("version: 999\nport: 8080\n");
+        assert!(result.is_err(), "YAML version 999 must be rejected");
+    }
+
+    // ── normalize ─────────────────────────────────────────────────────────────
+
     #[test]
     fn normalize_sites_array_preserves_order() {
         let sites = vec![
