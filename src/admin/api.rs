@@ -1329,6 +1329,34 @@ mod tests {
         assert_eq!(content, "v2", "second write must overwrite first");
     }
 
+    // ── collect_site_proxy_entries ────────────────────────────────────────────
+
+    #[test]
+    fn collect_site_proxy_entries_empty_site() {
+        use crate::config::schema::SiteConfig;
+        let site = SiteConfig::default();
+        let entries = collect_site_proxy_entries(&site);
+        assert!(entries.is_empty(), "empty site must yield empty entries");
+    }
+
+    #[test]
+    fn collect_site_proxy_entries_from_routes_map() {
+        use crate::config::schema::{ProxyConfig, ProxyRouteTarget, SiteConfig};
+        use indexmap::IndexMap;
+        let mut routes = IndexMap::new();
+        routes.insert(
+            "/api".to_string(),
+            ProxyRouteTarget::Url("http://backend:4000".to_string()),
+        );
+        let site = SiteConfig {
+            proxy: Some(ProxyConfig::Routes(routes)),
+            ..Default::default()
+        };
+        let entries = collect_site_proxy_entries(&site);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "/api");
+    }
+
     // ── build_flat_upstream_list ──────────────────────────────────────────────
 
     #[test]
