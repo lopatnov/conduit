@@ -1172,6 +1172,38 @@ mod tests {
         );
     }
 
+    // ── conduit_get_query ────────────────────────────────────────────────────
+
+    #[test]
+    fn host_get_query_returns_query_string() {
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_get_query" (func $get_query (param i32 i32) (result i32)))
+              (import "conduit" "conduit_set_request_header" (func $set_hdr (param i32 i32 i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "x-query")
+              (func (export "on_request") (result i32)
+                (call $get_query (i32.const 100) (i32.const 50))
+                drop
+                (call $set_hdr
+                  (i32.const 0) (i32.const 7)
+                  (i32.const 100) (i32.const 5))
+                i32.const 0))"#,
+        );
+        let mut r = req();
+        r.query = "a=1&b=2".into(); // only first 5 chars "a=1&b" will be read
+        match run_wasm(r, &p) {
+            WasmOutcome::Continue { added_headers, .. } => {
+                let q = added_headers
+                    .iter()
+                    .find(|(k, _)| k == "x-query")
+                    .map(|(_, v)| v.as_str());
+                assert_eq!(q, Some("a=1&b"), "query string must be readable");
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
     // ── conduit_get_path ─────────────────────────────────────────────────────
 
     #[test]
