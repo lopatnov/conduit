@@ -2419,6 +2419,32 @@ mod tests {
         assert!(e.is_empty(), "valid limits config must pass: {e:?}");
     }
 
+    #[test]
+    fn limits_zero_timeout_secs_rejected() {
+        let e = errs(r#"{ "port": 8080, "limits": { "timeoutSecs": 0 } }"#);
+        assert!(!e.is_empty(), "timeoutSecs=0 must be rejected");
+        assert!(
+            e.iter().any(|err| err.path.contains("timeoutSecs")),
+            "error must mention timeoutSecs: {e:?}"
+        );
+    }
+
+    #[test]
+    fn limits_timeout_secs_valid() {
+        let e = errs(r#"{ "port": 8080, "limits": { "timeoutSecs": 30 } }"#);
+        assert!(e.is_empty(), "valid timeoutSecs must pass: {e:?}");
+    }
+
+    // ── TCP + static conflict ─────────────────────────────────────────────────
+
+    #[test]
+    #[cfg(feature = "tcp")]
+    fn tcp_combined_with_static_rejected() {
+        let e =
+            errs(r#"{ "port": 3306, "tcp": { "targets": ["mysql:3306"] }, "static": "./dist" }"#);
+        assert!(!e.is_empty(), "tcp + static must be rejected");
+    }
+
     // ── validate_jwt_auth ─────────────────────────────────────────────────────
 
     #[test]
