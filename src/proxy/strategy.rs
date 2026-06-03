@@ -422,4 +422,24 @@ mod tests {
         assert!(RANDOM.pick(&empty, &[], "r", 0, &c, &reg).is_none());
         assert!(HASH_BASED.pick(&empty, &[], "r", 0, &c, &reg).is_none());
     }
+
+    // ── gen_pair ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn gen_pair_returns_distinct_indices() {
+        // Run many times to cover both branches (b >= a and b < a).
+        for _ in 0..100 {
+            let (a, b) = gen_pair(4);
+            assert!(a < 4, "a must be in range [0, len)");
+            assert!(b < 4, "b must be in range [0, len)");
+            assert_ne!(a, b, "gen_pair must return distinct indices");
+        }
+    }
+
+    #[test]
+    fn gen_pair_works_with_two_elements() {
+        let (a, b) = gen_pair(2);
+        // With len=2, only (0,1) or (1,0) is possible.
+        assert!((a, b) == (0, 1) || (a, b) == (1, 0));
+    }
 }
