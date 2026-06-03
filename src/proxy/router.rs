@@ -2020,6 +2020,70 @@ mod tests {
         ));
     }
 
+    // ── grouped upstream routing ──────────────────────────────────────────────
+
+    #[test]
+    fn route_with_upstream_groups() {
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, UpstreamGroup,
+        };
+        use indexmap::IndexMap;
+
+        let groups = vec![
+            UpstreamGroup {
+                name: "group-a".to_owned(),
+                targets: vec![ProxyTarget::Simple("http://a1:4000".to_owned())],
+                strategy: None,
+            },
+            UpstreamGroup {
+                name: "group-b".to_owned(),
+                targets: vec![ProxyTarget::Simple("http://b1:4000".to_owned())],
+                strategy: None,
+            },
+        ];
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                groups: Some(groups),
+                targets: vec![], // groups override targets
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        // Must route to one of the group backends.
+        match &ctx.upstream {
+            UpstreamTarget::Proxy { addr, .. } => {
+                assert!(
+                    addr == "a1:4000" || addr == "b1:4000",
+                    "must pick from one of the groups: {addr}"
+                );
+            }
+            other => panic!("expected Proxy, got {:?}", other),
+        }
+    }
+
     // ── circuit breaker: all upstreams at max connections ────────────────────
 
     #[test]
