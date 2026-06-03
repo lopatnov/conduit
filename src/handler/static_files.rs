@@ -976,6 +976,31 @@ mod tests {
 }
 
 #[cfg(test)]
+mod tests_extra {
+    use super::*;
+    use pingora_http::ResponseHeader;
+
+    #[test]
+    fn insert_extra_adds_headers() {
+        let mut resp = ResponseHeader::build(200, None).unwrap();
+        let extra = vec![
+            ("x-custom".to_owned(), "value1".to_owned()),
+            ("x-another".to_owned(), "value2".to_owned()),
+        ];
+        insert_extra(&mut resp, &extra).unwrap();
+        assert_eq!(resp.headers.get("x-custom").unwrap(), "value1");
+        assert_eq!(resp.headers.get("x-another").unwrap(), "value2");
+    }
+
+    #[test]
+    fn insert_extra_empty_is_noop() {
+        let mut resp = ResponseHeader::build(200, None).unwrap();
+        insert_extra(&mut resp, &[]).unwrap();
+        assert_eq!(resp.headers.len(), 0);
+    }
+}
+
+#[cfg(test)]
 mod tests_is_not_modified {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
