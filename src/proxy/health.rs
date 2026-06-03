@@ -1537,6 +1537,26 @@ mod tests {
         assert_eq!(*healthy[0], url_b);
     }
 
+    // ── filter_healthy: all-unhealthy fail-open ───────────────────────────────
+
+    #[test]
+    fn filter_healthy_returns_all_when_all_unhealthy() {
+        let reg = UpstreamRegistry::new();
+        let url_a = "http://a:4000".to_owned();
+        let url_b = "http://b:4000".to_owned();
+        // Both explicitly marked unhealthy.
+        reg.statuses.entry(url_a.clone()).or_default().healthy = false;
+        reg.statuses.entry(url_b.clone()).or_default().healthy = false;
+        let urls = vec![url_a.clone(), url_b.clone()];
+        let result = reg.filter_healthy(&urls);
+        // All unhealthy → fail-open: return all (try anyway).
+        assert_eq!(
+            result.len(),
+            2,
+            "fail-open: all must be returned when none healthy"
+        );
+    }
+
     // ── dynamic override API ──────────────────────────────────────────────────
 
     #[test]
