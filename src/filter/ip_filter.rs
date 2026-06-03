@@ -421,4 +421,55 @@ mod tests {
         let cfg = IpFilterConfig::default();
         assert!(apply_ip_filter(Some("1.2.3.4".parse().unwrap()), &cfg));
     }
+
+    // ── is_in_deny_list ───────────────────────────────────────────────────────
+
+    #[test]
+    fn is_in_deny_list_ip_in_list() {
+        let rules = vec!["10.0.0.1".to_owned()];
+        let ip: std::net::IpAddr = "10.0.0.1".parse().unwrap();
+        assert!(is_in_deny_list(Some(ip), &rules));
+    }
+
+    #[test]
+    fn is_in_deny_list_ip_not_in_list() {
+        let rules = vec!["10.0.0.1".to_owned()];
+        let ip: std::net::IpAddr = "10.0.0.2".parse().unwrap();
+        assert!(!is_in_deny_list(Some(ip), &rules));
+    }
+
+    #[test]
+    fn is_in_deny_list_cidr_match() {
+        let rules = vec!["192.168.0.0/16".to_owned()];
+        let ip: std::net::IpAddr = "192.168.100.200".parse().unwrap();
+        assert!(is_in_deny_list(Some(ip), &rules));
+    }
+
+    #[test]
+    fn is_in_deny_list_none_ip_returns_false() {
+        // Unknown IP passes the deny list (fail-open for deny mode).
+        let rules = vec!["10.0.0.1".to_owned()];
+        assert!(!is_in_deny_list(None, &rules));
+    }
+
+    #[test]
+    fn is_in_deny_list_empty_rules_always_false() {
+        let ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
+        assert!(!is_in_deny_list(Some(ip), &[]));
+    }
+
+    // ── parse_xff extra cases ─────────────────────────────────────────────────
+
+    #[test]
+    fn xff_with_extra_whitespace() {
+        // Whitespace around IPs should be trimmed.
+        let ip = parse_xff("  203.0.113.1  ");
+        assert_eq!(ip, Some("203.0.113.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn xff_multiple_with_spaces() {
+        let ip = parse_xff("10.0.0.1 , 192.168.1.1");
+        assert_eq!(ip, Some("192.168.1.1".parse().unwrap()));
+    }
 }
