@@ -2858,6 +2858,30 @@ mod tests {
         assert!(r1.is_some() && r2.is_some(), "both calls must succeed");
     }
 
+    // ── AppState::new ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn app_state_new_initializes_correctly() {
+        let config = crate::config::schema::AppConfig::default();
+        let state = AppState::new(config, std::path::PathBuf::from("."), None);
+        // inflight starts at 0
+        assert_eq!(state.inflight.load(Ordering::Relaxed), 0);
+        // retry_inflight starts at 0
+        assert_eq!(state.retry_inflight.load(Ordering::Relaxed), 0);
+        // upload_addr is None
+        assert!(state.upload_addr.is_none());
+        // dynamic_deny starts empty
+        assert!(state.dynamic_deny.read().unwrap().is_empty());
+    }
+
+    #[test]
+    fn app_state_config_path_stored() {
+        let config = crate::config::schema::AppConfig::default();
+        let path = std::path::PathBuf::from("/etc/conduit/config.json");
+        let state = AppState::new(config, path.clone(), None);
+        assert_eq!(state.config_path, path);
+    }
+
     // ── retry_budget_allows ───────────────────────────────────────────────────
 
     fn make_proxy() -> ConduitProxy {
