@@ -891,6 +891,37 @@ mod tests {
         );
     }
 
+    // ── MiddlewareResponseFilter ──────────────────────────────────────────────
+
+    #[test]
+    fn middleware_response_filter_empty_middleware_is_noop() {
+        let filter = MiddlewareResponseFilter { middleware: vec![] };
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        let outcome = filter.apply(&mut resp, &ctx).unwrap();
+        assert!(matches!(outcome, ResponseFilterOutcome::Continue));
+    }
+
+    #[test]
+    #[cfg(feature = "rhai")]
+    fn middleware_response_filter_request_phase_script_is_skipped() {
+        use crate::config::schema::MiddlewareEntry;
+        // A script with phase="request" must be skipped in response phase.
+        let filter = MiddlewareResponseFilter {
+            middleware: vec![MiddlewareEntry {
+                r#type: "script".to_owned(),
+                path: Some("nonexistent.rhai".to_owned()),
+                phase: Some("request".to_owned()), // request phase → skip in response
+                config: None,
+            }],
+        };
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        // Must not panic even though the file doesn't exist (script skipped).
+        let outcome = filter.apply(&mut resp, &ctx).unwrap();
+        assert!(matches!(outcome, ResponseFilterOutcome::Continue));
+    }
+
     // ── ResponseTransformFilter edge cases ────────────────────────────────────
 
     #[test]
