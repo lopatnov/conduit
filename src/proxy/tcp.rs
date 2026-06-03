@@ -206,7 +206,46 @@ mod tests {
     }
 
     #[test]
+    fn pick_target_empty_returns_none() {
+        use crate::config::schema::TcpConfig;
+        let proxy = TcpProxy::new(&TcpConfig {
+            targets: vec![],
+            strategy: None,
+            connect_timeout_ms: None,
+        });
+        assert!(proxy.pick_target().is_none());
+    }
+
+    #[test]
+    fn pick_target_single_always_same() {
+        use crate::config::schema::TcpConfig;
+        let proxy = TcpProxy::new(&TcpConfig {
+            targets: vec!["db:5432".to_owned()],
+            strategy: None,
+            connect_timeout_ms: None,
+        });
+        assert_eq!(proxy.pick_target(), Some("db:5432"));
+        assert_eq!(proxy.pick_target(), Some("db:5432"));
+    }
+
+    #[test]
+    fn pick_target_random_strategy_returns_one_of_targets() {
+        use crate::config::schema::TcpConfig;
+        let proxy = TcpProxy::new(&TcpConfig {
+            targets: vec!["a:1".to_owned(), "b:2".to_owned()],
+            strategy: Some("random".to_owned()),
+            connect_timeout_ms: None,
+        });
+        // Run multiple times to cover the random branch.
+        for _ in 0..10 {
+            let t = proxy.pick_target().unwrap();
+            assert!(t == "a:1" || t == "b:2", "must pick from targets: {t}");
+        }
+    }
+
+    #[test]
     fn custom_connect_timeout() {
+        use crate::config::schema::TcpConfig;
         let proxy = TcpProxy::new(&TcpConfig {
             targets: vec!["x:1".to_owned()],
             strategy: None,
