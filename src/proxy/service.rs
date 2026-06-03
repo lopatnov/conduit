@@ -2858,6 +2858,42 @@ mod tests {
         assert!(r1.is_some() && r2.is_some(), "both calls must succeed");
     }
 
+    // ── build_handler ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn build_handler_proxy_returns_none() {
+        let proxy = make_proxy();
+        let result = proxy.build_handler(HandlerKind::Proxy, &None);
+        assert!(
+            result.is_none(),
+            "Proxy handler must return None (uses Pingora path)"
+        );
+    }
+
+    #[test]
+    fn build_handler_health_returns_some() {
+        let proxy = make_proxy();
+        let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::Health)));
+        let result = proxy.build_handler(HandlerKind::Health, &ctx);
+        assert!(result.is_some(), "Health handler must return Some");
+    }
+
+    #[test]
+    fn build_handler_fallback_returns_some() {
+        let proxy = make_proxy();
+        let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::Fallback)));
+        let result = proxy.build_handler(HandlerKind::Fallback, &ctx);
+        assert!(result.is_some(), "Fallback handler must return Some");
+    }
+
+    #[test]
+    fn build_handler_overloaded_returns_some() {
+        let proxy = make_proxy();
+        let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::Overloaded)));
+        let result = proxy.build_handler(HandlerKind::Overloaded, &ctx);
+        assert!(result.is_some(), "Overloaded handler must return Some");
+    }
+
     // ── AppState::new ─────────────────────────────────────────────────────────
 
     #[test]
