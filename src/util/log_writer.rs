@@ -167,4 +167,45 @@ mod tests {
         let inner = w.inner.lock().unwrap();
         assert!(inner.file.is_none(), "use_stdout should clear file writer");
     }
+
+    #[test]
+    fn current_path_returns_none_when_using_stdout() {
+        let w = LogWriter::new();
+        assert!(w.current_path().is_none());
+    }
+
+    #[test]
+    fn current_path_returns_path_when_file_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("access.log");
+        let w = LogWriter::new();
+        w.switch_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(w.current_path().as_deref(), Some(path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn current_path_returns_none_after_use_stdout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("access.log");
+        let w = LogWriter::new();
+        w.switch_file(path.to_str().unwrap()).unwrap();
+        w.use_stdout();
+        assert!(w.current_path().is_none());
+    }
+
+    #[test]
+    fn write_line_to_file_is_flushed() {
+        // Verify that write_line flushes the buffer so subsequent reads see the data.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("flushed.log");
+        let w = LogWriter::new();
+        w.switch_file(path.to_str().unwrap()).unwrap();
+        w.write_line("flushed line");
+        // Read back WITHOUT switching to stdout (testing that flush happened).
+        let content = std::fs::read_to_string(&path).expect("file must be readable");
+        assert!(
+            content.contains("flushed line"),
+            "written line must be flushed: {content:?}"
+        );
+    }
 }
