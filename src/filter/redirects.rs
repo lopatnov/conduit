@@ -173,4 +173,24 @@ mod tests {
             Some(("/u/42/p/7".into(), 301))
         );
     }
+
+    #[test]
+    fn query_appended_with_ampersand_when_target_has_query() {
+        // When the target URL already has a '?', the incoming query is appended
+        // with '&' to avoid "?a=1?b=2" double-question-mark.
+        let rules = vec![rule("/old", "/new?utm=source", 302)];
+        assert_eq!(
+            apply_redirects(&rules, "/old?page=2"),
+            Some(("/new?utm=source&page=2".into(), 302))
+        );
+    }
+
+    #[test]
+    fn query_appended_with_question_mark_when_target_has_no_query() {
+        let rules = vec![rule("/old", "/new", 302)];
+        assert_eq!(
+            apply_redirects(&rules, "/old?page=2"),
+            Some(("/new?page=2".into(), 302))
+        );
+    }
 }
