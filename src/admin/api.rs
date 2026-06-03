@@ -954,3 +954,132 @@ fn log_file_path(cfg: &Option<LoggingConfig>) -> Option<&str> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::from_str as parse_config;
+
+    // ── validate_cidr ────────────────────────────────────────────────────────
+
+    #[test]
+    fn valid_ipv4_cidr() {
+        assert!(validate_cidr("192.168.1.0/24"));
+        assert!(validate_cidr("10.0.0.0/8"));
+        assert!(validate_cidr("0.0.0.0/0"));
+        assert!(validate_cidr("255.255.255.255/32"));
+    }
+
+    #[test]
+    fn valid_ipv6_cidr() {
+        assert!(validate_cidr("2001:db8::/32"));
+        assert!(validate_cidr("::/0"));
+        assert!(validate_cidr("::1/128"));
+    }
+
+    #[test]
+    fn valid_single_ips() {
+        assert!(validate_cidr("192.168.1.1"));
+        assert!(validate_cidr("::1"));
+        assert!(validate_cidr("10.0.0.1"));
+    }
+
+    #[test]
+    fn invalid_cidrs() {
+        assert!(!validate_cidr("not-a-cidr"));
+        assert!(!validate_cidr("999.999.999.999"));
+        assert!(!validate_cidr("192.168.1.0/99")); // prefix > 32 for IPv4
+        assert!(!validate_cidr("192.168.1.0/abc")); // non-numeric prefix
+        assert!(!validate_cidr(""));
+    }
+
+    // ── detect_cold_changes ──────────────────────────────────────────────────
+
+    fn cfg(json: &str) -> crate::config::schema::AppConfig {
+        parse_config(json).expect("parse")
+    }
+
+    #[test]
+    fn no_changes_returns_empty() {
+        let base = cfg(r#"{"sites":[{"port":8080}]}"#);
+        let same = cfg(r#"{"sites":[{"port":8080}]}"#);
+        assert!(detect_cold_changes(&base, &same).is_empty());
+    }
+
+    #[test]
+    fn port_change_is_cold() {
+        let old = cfg(r#"{"sites":[{"port":8080}]}"#);
+        let new = cfg(r#"{"sites":[{"port":9090}]}"#);
+        let cold = detect_cold_changes(&old, &new);
+        assert!(
+            cold.iter().any(|f| f.contains("port")),
+            "port must be cold: {cold:?}"
+        );
+    }
+
+    #[test]
+    fn workers_change_is_cold() {
+        let old = cfg(r#"{"global":{"workers":2},"sites":[{"port":8080}]}"#);
+        let new = cfg(r#"{"global":{"workers":4},"sites":[{"port":8080}]}"#);
+        let cold = detect_cold_changes(&old, &new);
+        assert!(
+            cold.iter().any(|f| f.contains("workers")),
+            "workers must be cold: {cold:?}"
+        );
+    }
+
+    #[test]
+    fn rate_limit_change_is_not_cold() {
+        let old = cfg(r#"{"sites":[{"port":8080,"rateLimit":{"windowSecs":60,"limit":100}}]}"#);
+        let new = cfg(r#"{"sites":[{"port":8080,"rateLimit":{"windowSecs":60,"limit":200}}]}"#);
+        let cold = detect_cold_changes(&old, &new);
+        assert!(
+            cold.is_empty(),
+            "rateLimit change should be hot-reloadable: {cold:?}"
+        );
+    }
+
+    // ── AdminError ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn bad_request_produces_error_status_json() {
+        use axum::response::IntoResponse;
+        let err = AdminError::BadRequest("test error".to_owned());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn server_error_produces_500_status() {
+        use axum::response::IntoResponse;
+        let err = AdminError::ServerError("internal".to_owned());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn cold_fields_changed_produces_400() {
+        use axum::response::IntoResponse;
+        let err = AdminError::ColdFieldsChanged {
+            message: "restart required: sites[0].port".to_owned(),
+            fields: vec!["sites[0].port".to_owned()],
+        };
+        let resp = err.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    // ── make_site_label ──────────────────────────────────────────────────────
+
+    #[test]
+    fn site_label_with_host_and_port() {
+        let label = make_site_label(&Some("api.example.com".to_owned()), Some(443));
+        assert!(label.contains("api.example.com"));
+        assert!(label.contains("443"));
+    }
+
+    #[test]
+    fn site_label_without_host() {
+        let label = make_site_label(&None, Some(8080));
+        assert!(label.contains("8080"));
+    }
+}
