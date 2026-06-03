@@ -2856,6 +2856,62 @@ mod tests {
         ));
     }
 
+    // ── apply_header_transform_request_with_claims ────────────────────────────
+
+    #[test]
+    fn header_transform_sets_header() {
+        use pingora_http::RequestHeader;
+        use std::collections::HashMap;
+        let mut req = RequestHeader::build("GET", b"/api", None).unwrap();
+        let transform = crate::config::schema::HeaderTransformConfig {
+            set_headers: Some(
+                [("x-env".to_owned(), "production".to_owned())]
+                    .iter()
+                    .cloned()
+                    .collect(),
+            ),
+            remove_headers: None,
+        };
+        apply_header_transform_request_with_claims(&mut req, &transform, &None).unwrap();
+        assert_eq!(req.headers.get("x-env").unwrap(), "production");
+    }
+
+    #[test]
+    fn header_transform_removes_header() {
+        use pingora_http::RequestHeader;
+        let mut req = RequestHeader::build("GET", b"/api", None).unwrap();
+        req.insert_header("x-remove", "bye").unwrap();
+        let transform = crate::config::schema::HeaderTransformConfig {
+            set_headers: None,
+            remove_headers: Some(vec!["x-remove".to_owned()]),
+        };
+        apply_header_transform_request_with_claims(&mut req, &transform, &None).unwrap();
+        assert!(
+            req.headers.get("x-remove").is_none(),
+            "header must be removed"
+        );
+    }
+
+    #[test]
+    fn header_transform_with_jwt_template_substitution() {
+        use pingora_http::RequestHeader;
+        use std::collections::HashMap;
+        let mut req = RequestHeader::build("GET", b"/api", None).unwrap();
+        let transform = crate::config::schema::HeaderTransformConfig {
+            set_headers: Some(
+                [("x-user".to_owned(), "{{ jwt.sub }}".to_owned())]
+                    .iter()
+                    .cloned()
+                    .collect(),
+            ),
+            remove_headers: None,
+        };
+        let mut claims = HashMap::new();
+        claims.insert("sub".to_owned(), serde_json::json!("alice"));
+        apply_header_transform_request_with_claims(&mut req, &transform, &Some(claims)).unwrap();
+        assert_eq!(req.headers.get("x-user").unwrap(), "alice");
+    }
+
     // ── rebuild_uri ───────────────────────────────────────────────────────────
 
     #[test]
