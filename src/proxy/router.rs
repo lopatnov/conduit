@@ -2020,6 +2020,63 @@ mod tests {
         ));
     }
 
+    // ── circuit breaker: all upstreams at max connections ────────────────────
+
+    #[test]
+    fn circuit_breaker_returns_overloaded_when_all_at_max() {
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, UpstreamHealthCheck,
+        };
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://backend:4000".to_owned())],
+                health_check: Some(UpstreamHealthCheck {
+                    max_connections_per_upstream: Some(1),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        // Fill the connection slot (count = 1 = max).
+        reg.conn_inc("http://backend:4000");
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        // Circuit breaker: all upstreams at max → Overloaded.
+        assert!(
+            matches!(
+                ctx.upstream,
+                UpstreamTarget::Local(LocalHandler::Overloaded)
+            ),
+            "circuit breaker must return Overloaded when all at max: {:?}",
+            ctx.upstream
+        );
+    }
+
     // ── failover to backup upstream ───────────────────────────────────────────
 
     #[test]
