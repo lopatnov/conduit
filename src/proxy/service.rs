@@ -2607,4 +2607,113 @@ mod tests {
         // ms=1 → ms/2 = 0, jitter ∈ [0, 1) → result ∈ {0}
         assert!(result < 2, "result {result} out of range for ms=1");
     }
+
+    // ── is_safe_http_method ───────────────────────────────────────────────────
+
+    #[test]
+    fn safe_methods_are_safe() {
+        assert!(is_safe_http_method("GET"));
+        assert!(is_safe_http_method("HEAD"));
+        assert!(is_safe_http_method("OPTIONS"));
+        assert!(is_safe_http_method("TRACE"));
+    }
+
+    #[test]
+    fn unsafe_methods_are_not_safe() {
+        assert!(!is_safe_http_method("POST"));
+        assert!(!is_safe_http_method("PUT"));
+        assert!(!is_safe_http_method("DELETE"));
+        assert!(!is_safe_http_method("PATCH"));
+    }
+
+    #[test]
+    fn safe_method_case_insensitive() {
+        assert!(is_safe_http_method("get"));
+        assert!(is_safe_http_method("Get"));
+    }
+
+    // ── apply_path_strip ──────────────────────────────────────────────────────
+
+    #[test]
+    fn apply_path_strip_removes_prefix() {
+        assert_eq!(apply_path_strip("/api/v1/users", Some("/api")), "/v1/users");
+    }
+
+    #[test]
+    fn apply_path_strip_no_prefix_returns_unchanged() {
+        assert_eq!(apply_path_strip("/api/v1", None), "/api/v1");
+    }
+
+    #[test]
+    fn apply_path_strip_exact_match_returns_root() {
+        // Stripping the exact path leaves an empty string → normalize to "/".
+        assert_eq!(apply_path_strip("/api", Some("/api")), "/");
+    }
+
+    #[test]
+    fn apply_path_strip_no_match_returns_root() {
+        // Prefix doesn't match → `strip_prefix` returns None → "/" returned.
+        assert_eq!(apply_path_strip("/other", Some("/api")), "/");
+    }
+
+    // ── apply_path_rewrites ───────────────────────────────────────────────────
+
+    #[test]
+    fn apply_path_rewrites_no_rules_returns_unchanged() {
+        assert_eq!(apply_path_rewrites("/v1/users", None), "/v1/users");
+    }
+
+    #[test]
+    fn apply_path_rewrites_no_match_returns_unchanged() {
+        let rules = vec![crate::config::schema::RewriteRule {
+            from: "^/api/(.*)".to_owned(),
+            to: "/v2/$1".to_owned(),
+        }];
+        assert_eq!(
+            apply_path_rewrites("/other/path", Some(&rules)),
+            "/other/path"
+        );
+    }
+
+    #[test]
+    fn apply_path_rewrites_matching_rule_transforms_path() {
+        let rules = vec![crate::config::schema::RewriteRule {
+            from: "^/v1/(.*)".to_owned(),
+            to: "/v2/$1".to_owned(),
+        }];
+        assert_eq!(apply_path_rewrites("/v1/users", Some(&rules)), "/v2/users");
+    }
+
+    #[test]
+    fn apply_path_rewrites_first_match_wins() {
+        let rules = vec![
+            crate::config::schema::RewriteRule {
+                from: "^/v1/(.*)".to_owned(),
+                to: "/first/$1".to_owned(),
+            },
+            crate::config::schema::RewriteRule {
+                from: "^/v1/(.*)".to_owned(),
+                to: "/second/$1".to_owned(),
+            },
+        ];
+        assert_eq!(
+            apply_path_rewrites("/v1/users", Some(&rules)),
+            "/first/users"
+        );
+    }
+
+    // ── expand_jwt_templates (additional cases) ───────────────────────────────
+
+    #[test]
+    fn expand_jwt_templates_no_template_unchanged() {
+        let claims: std::collections::HashMap<String, serde_json::Value> = Default::default();
+        let result = expand_jwt_templates("plain-value", &Some(claims));
+        assert_eq!(result, "plain-value");
+    }
+
+    #[test]
+    fn expand_jwt_templates_null_claims_returns_empty() {
+        let result = expand_jwt_templates("{{ jwt.sub }}", &None);
+        assert_eq!(result, "");
+    }
 }
