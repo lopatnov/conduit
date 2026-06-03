@@ -95,3 +95,76 @@ impl Default for LogWriter {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+
+    #[test]
+    fn new_writer_uses_stdout() {
+        let w = LogWriter::new();
+        let inner = w.inner.lock().unwrap();
+        assert!(inner.file.is_none(), "new writer should write to stdout");
+        assert!(inner.path.is_none());
+    }
+
+    #[test]
+    fn write_line_to_stdout_does_not_panic() {
+        let w = LogWriter::new();
+        // Writing to stdout is fine in tests — the line just goes to test output.
+        w.write_line("test log line");
+    }
+
+    #[test]
+    fn switch_file_writes_to_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("access.log");
+        let w = LogWriter::new();
+        w.switch_file(path.to_str().unwrap()).expect("switch_file");
+        w.write_line("hello from test");
+
+        // Flush by switching back to stdout (drops the BufWriter).
+        w.use_stdout();
+        let content = std::fs::read_to_string(&path).expect("read log");
+        assert!(content.contains("hello from test"));
+    }
+
+    #[test]
+    fn switch_file_twice_keeps_last_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path1 = dir.path().join("log1.log");
+        let path2 = dir.path().join("log2.log");
+        let w = LogWriter::new();
+        w.switch_file(path1.to_str().unwrap()).unwrap();
+        w.switch_file(path2.to_str().unwrap()).unwrap();
+        let inner = w.inner.lock().unwrap();
+        assert_eq!(inner.path.as_deref(), Some(path2.to_str().unwrap()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn switch_to_symlink_returns_error() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.log");
+        let link = dir.path().join("link.log");
+        std::fs::write(&target, "").unwrap();
+        symlink(&target, &link).unwrap();
+
+        let w = LogWriter::new();
+        let result = w.switch_file(link.to_str().unwrap());
+        assert!(result.is_err(), "symlink should be rejected");
+    }
+
+    #[test]
+    fn use_stdout_resets_to_stdout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.log");
+        let w = LogWriter::new();
+        w.switch_file(path.to_str().unwrap()).unwrap();
+        w.use_stdout();
+        let inner = w.inner.lock().unwrap();
+        assert!(inner.file.is_none(), "use_stdout should clear file writer");
+    }
+}
