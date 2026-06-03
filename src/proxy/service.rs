@@ -2990,6 +2990,30 @@ mod tests {
         assert!(!retry.is_retrying);
     }
 
+    // ── collect_upstream_infos ────────────────────────────────────────────────
+
+    #[test]
+    fn collect_upstream_infos_none_ctx_returns_empty() {
+        let proxy = make_proxy();
+        let result = proxy.collect_upstream_infos(&None);
+        assert!(result.is_empty(), "None ctx must return empty list");
+    }
+
+    #[test]
+    fn collect_upstream_infos_no_include_upstreams_returns_empty() {
+        let config = crate::config::schema::AppConfig {
+            sites: vec![crate::config::schema::SiteConfig::default()],
+            ..Default::default()
+        };
+        let state = AppState::new(config, std::path::PathBuf::from("."), None);
+        let proxy = ConduitProxy {
+            state: std::sync::Arc::new(state),
+        };
+        let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::Health)));
+        let result = proxy.collect_upstream_infos(&ctx);
+        assert!(result.is_empty(), "no include_upstreams → empty list");
+    }
+
     // ── ConduitMetrics::global ────────────────────────────────────────────────
 
     #[test]

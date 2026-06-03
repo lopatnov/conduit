@@ -1120,6 +1120,22 @@ mod tests {
 
     // ── FilterOutcome variants ────────────────────────────────────────────────
 
+    // ── forward_auth_client ───────────────────────────────────────────────────
+
+    #[test]
+    #[cfg(feature = "forward-auth")]
+    fn forward_auth_client_returns_same_singleton() {
+        let c1 = forward_auth_client();
+        let c2 = forward_auth_client();
+        // Both calls must return the same static reference.
+        assert!(
+            std::ptr::eq(c1 as *const _, c2 as *const _),
+            "forward_auth_client must be a singleton"
+        );
+    }
+
+    // ── limits_rejection body/header messages ─────────────────────────────────
+
     #[test]
     fn limits_rejection_body_message_correct() {
         let result = limits_rejection(limits::CheckResult::BodyTooLarge);
