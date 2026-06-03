@@ -975,6 +975,71 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod tests_is_not_modified {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn headers_with(key: &str, value: &str) -> http::HeaderMap {
+        let mut hdrs = http::HeaderMap::new();
+        hdrs.insert(
+            http::header::HeaderName::from_bytes(key.as_bytes()).unwrap(),
+            http::header::HeaderValue::from_str(value).unwrap(),
+        );
+        hdrs
+    }
+
+    const ETAG: &str = r#""abc123""#;
+    const MTIME: std::time::SystemTime = UNIX_EPOCH; // epoch, always in past
+
+    #[test]
+    fn no_conditional_headers_returns_false() {
+        assert!(!is_not_modified(&http::HeaderMap::new(), ETAG, MTIME));
+    }
+
+    #[test]
+    fn if_none_match_exact_returns_true() {
+        let hdrs = headers_with("if-none-match", ETAG);
+        assert!(is_not_modified(&hdrs, ETAG, MTIME));
+    }
+
+    #[test]
+    fn if_none_match_wildcard_returns_true() {
+        let hdrs = headers_with("if-none-match", "*");
+        assert!(is_not_modified(&hdrs, ETAG, MTIME));
+    }
+
+    #[test]
+    fn if_none_match_different_etag_returns_false() {
+        let hdrs = headers_with("if-none-match", r#""different""#);
+        assert!(!is_not_modified(&hdrs, ETAG, MTIME));
+    }
+
+    #[test]
+    fn if_none_match_list_with_match_returns_true() {
+        let hdrs = headers_with("if-none-match", r#""other1", "abc123", "other2""#);
+        assert!(is_not_modified(&hdrs, ETAG, MTIME));
+    }
+
+    #[test]
+    fn if_modified_since_same_time_returns_true() {
+        // File was not modified since the given time.
+        let ims = httpdate::fmt_http_date(SystemTime::now() + Duration::from_secs(3600));
+        let hdrs = headers_with("if-modified-since", &ims);
+        let mtime = SystemTime::now();
+        assert!(is_not_modified(&hdrs, ETAG, mtime));
+    }
+
+    #[test]
+    fn if_modified_since_older_than_mtime_returns_false() {
+        // File was modified AFTER the If-Modified-Since header.
+        let ims = httpdate::fmt_http_date(UNIX_EPOCH);
+        let hdrs = headers_with("if-modified-since", &ims);
+        let mtime = SystemTime::now(); // very recent
+        assert!(!is_not_modified(&hdrs, ETAG, mtime));
+    }
+}
+
 /// Return `true` when the request is fresh and should receive a 304 response.
 ///
 /// Checks `If-None-Match` first (taking precedence over `If-Modified-Since`
