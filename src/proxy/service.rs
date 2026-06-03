@@ -2716,4 +2716,81 @@ mod tests {
         let result = expand_jwt_templates("{{ jwt.sub }}", &None);
         assert_eq!(result, "");
     }
+
+    // ── resolve_peer_addr ─────────────────────────────────────────────────────
+
+    fn make_ctx(upstream: UpstreamTarget) -> RequestCtx {
+        RequestCtx::new(0, upstream, None, None, None, false, None, None, None)
+    }
+
+    #[test]
+    fn resolve_peer_addr_proxy_returns_addr_tls_sni() {
+        let mut ctx = make_ctx(UpstreamTarget::Proxy {
+            addr: "backend:4000".to_owned(),
+            tls: false,
+            sni: String::new(),
+            strip_prefix: None,
+            rewrite: None,
+            mirror_url: None,
+            upstream_tls: None,
+        });
+        let (addr, tls, sni) = resolve_peer_addr(&mut ctx).unwrap();
+        assert_eq!(addr, "backend:4000");
+        assert!(!tls);
+        assert!(sni.is_empty());
+    }
+
+    #[test]
+    fn resolve_peer_addr_https_sets_tls_and_sni() {
+        let mut ctx = make_ctx(UpstreamTarget::Proxy {
+            addr: "api.example.com:443".to_owned(),
+            tls: true,
+            sni: "api.example.com".to_owned(),
+            strip_prefix: None,
+            rewrite: None,
+            mirror_url: None,
+            upstream_tls: None,
+        });
+        let (addr, tls, sni) = resolve_peer_addr(&mut ctx).unwrap();
+        assert_eq!(addr, "api.example.com:443");
+        assert!(tls);
+        assert_eq!(sni, "api.example.com");
+    }
+
+    #[test]
+    fn resolve_peer_addr_local_handler_returns_error() {
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        assert!(
+            resolve_peer_addr(&mut ctx).is_err(),
+            "local handler must return error"
+        );
+    }
+
+    #[test]
+    fn resolve_peer_addr_with_retry_returns_first_url() {
+        let retry = RetryState {
+            urls: vec!["http://a:4000".to_owned(), "http://b:4000".to_owned()],
+            attempt: 0,
+            max_attempts: 3,
+            conditions: vec!["5xx".to_owned()],
+            backoff_ms: None,
+            backoff_jitter: false,
+            budget_percent: None,
+            is_retrying: false,
+        };
+        let mut ctx = make_ctx(UpstreamTarget::Proxy {
+            addr: "original:4000".to_owned(),
+            tls: false,
+            sni: String::new(),
+            strip_prefix: None,
+            rewrite: None,
+            mirror_url: None,
+            upstream_tls: None,
+        });
+        ctx.retry = Some(retry);
+        let (addr, _, _) = resolve_peer_addr(&mut ctx).unwrap();
+        assert_eq!(addr, "a:4000");
+        // Attempt should be incremented.
+        assert_eq!(ctx.retry.unwrap().attempt, 1);
+    }
 }
