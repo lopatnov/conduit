@@ -810,6 +810,69 @@ async fn probe_http(host_port: &str, path: &str) -> (bool, u64) {
 mod tests {
     use super::*;
 
+    // ── site_label ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn site_label_with_host_and_port() {
+        assert_eq!(
+            site_label(&Some("api.example.com".to_owned()), Some(443)),
+            "api.example.com:443"
+        );
+    }
+
+    #[test]
+    fn site_label_host_only() {
+        assert_eq!(
+            site_label(&Some("example.com".to_owned()), None),
+            "example.com"
+        );
+    }
+
+    #[test]
+    fn site_label_port_only() {
+        assert_eq!(site_label(&None, Some(8080)), "*:8080");
+    }
+
+    #[test]
+    fn site_label_no_host_no_port() {
+        assert_eq!(site_label(&None, None), "*");
+    }
+
+    // ── slow_start_fraction ──────────────────────────────────────────────────
+
+    #[test]
+    fn slow_start_zero_window_returns_one() {
+        let e = UpstreamEntry::default();
+        assert_eq!(slow_start_fraction(&e, 0), 1.0);
+    }
+
+    #[test]
+    fn slow_start_no_recovery_time_returns_one() {
+        let mut e = UpstreamEntry::default();
+        e.recovery_time_secs = None;
+        assert_eq!(slow_start_fraction(&e, 30), 1.0);
+    }
+
+    #[test]
+    fn slow_start_already_elapsed_returns_one() {
+        let mut e = UpstreamEntry::default();
+        // Set recovery time far in the past so elapsed >= window.
+        e.recovery_time_secs = Some(now_secs().saturating_sub(60));
+        assert_eq!(slow_start_fraction(&e, 30), 1.0);
+    }
+
+    #[test]
+    fn slow_start_halfway_returns_roughly_half() {
+        let mut e = UpstreamEntry::default();
+        // Set recovery 15 seconds ago with a 30-second window → ~0.5
+        e.recovery_time_secs = Some(now_secs().saturating_sub(15));
+        let fraction = slow_start_fraction(&e, 30);
+        assert!(
+            fraction > 0.3 && fraction < 0.7,
+            "expected ~0.5 got {fraction}"
+        );
+    }
+
     // ── apply_probe_result ────────────────────────────────────────────────────
 
     fn fresh() -> UpstreamEntry {
