@@ -2817,6 +2817,22 @@ mod tests {
         assert!(peer.options.read_timeout.is_none());
     }
 
+    #[test]
+    fn apply_peer_options_sets_idle_timeout() {
+        use crate::config::schema::ConnectionPoolConfig;
+        let addr: std::net::SocketAddr = "127.0.0.1:4000".parse().unwrap();
+        let mut peer = HttpPeer::new(addr, false, String::new());
+        let pool = ConnectionPoolConfig {
+            max_idle: None,
+            idle_timeout_secs: Some(30),
+        };
+        apply_peer_options(&mut peer, None, Some(&pool), None);
+        assert_eq!(
+            peer.options.idle_timeout,
+            Some(std::time::Duration::from_secs(30))
+        );
+    }
+
     // ── get_rewrite_regex ─────────────────────────────────────────────────────
 
     #[test]
