@@ -389,6 +389,41 @@ mod tests {
         assert!(path_matches("", ""));
         assert!(!path_matches("", "/anything"));
     }
+
+    // ── build_jwt_auth_cfg ────────────────────────────────────────────────────
+
+    #[test]
+    #[cfg(feature = "jwt")]
+    fn build_jwt_auth_cfg_with_secret() {
+        let cfg = build_jwt_auth_cfg(Some("my-secret".to_owned()), None, None, None);
+        assert_eq!(cfg.secret.as_deref(), Some("my-secret"));
+        assert!(cfg.jwks_url.is_none());
+        assert!(cfg.audience.is_none());
+        assert!(cfg.issuer.is_none());
+        assert!(cfg.skip_paths.is_none());
+        assert!(cfg.jwks_refresh_secs.is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "jwt")]
+    fn build_jwt_auth_cfg_with_jwks_url() {
+        let cfg = build_jwt_auth_cfg(
+            None,
+            Some("https://auth.example.com/.well-known/jwks.json".to_owned()),
+            Some(vec!["my-app".to_owned()]),
+            Some("https://auth.example.com/".to_owned()),
+        );
+        assert!(cfg.secret.is_none());
+        assert_eq!(
+            cfg.jwks_url.as_deref(),
+            Some("https://auth.example.com/.well-known/jwks.json")
+        );
+        assert_eq!(
+            cfg.audience.as_deref(),
+            Some(["my-app".to_owned()].as_slice())
+        );
+        assert_eq!(cfg.issuer.as_deref(), Some("https://auth.example.com/"));
+    }
 }
 
 // ── Consumer model ─────────────────────────────────────────────────────────
