@@ -2608,4 +2608,77 @@ mod tests {
         let e = errs(r#"{ "upload": { "path": "/upload", "dir": "   " } }"#);
         assert!(!e.is_empty(), "whitespace-only dir must be rejected");
     }
+
+    // ── check_weighted_targets ────────────────────────────────────────────────
+
+    #[test]
+    fn weighted_round_robin_with_simple_target_rejected() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": {
+                "/": {
+                    "targets": ["http://b:4000"],
+                    "strategy": "weighted-round-robin"
+                }
+            } }"#,
+        );
+        assert!(
+            !e.is_empty(),
+            "simple target with weighted-round-robin must be rejected: {e:?}"
+        );
+        assert!(
+            e.iter().any(|err| err.message.contains("weighted")),
+            "error must mention weighted: {e:?}"
+        );
+    }
+
+    #[test]
+    fn weighted_round_robin_with_weighted_target_passes() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": {
+                "/": {
+                    "targets": [{ "url": "http://b:4000", "weight": 3 }],
+                    "strategy": "weighted-round-robin"
+                }
+            } }"#,
+        );
+        assert!(
+            e.is_empty(),
+            "weighted target with weighted-round-robin must pass: {e:?}"
+        );
+    }
+
+    // ── validate_groups_config ────────────────────────────────────────────────
+
+    #[test]
+    fn group_with_empty_targets_rejected() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": {
+                "/": {
+                    "targets": [],
+                    "groups": [{ "name": "empty-group", "targets": [] }]
+                }
+            } }"#,
+        );
+        assert!(
+            !e.is_empty(),
+            "group with no targets must be rejected: {e:?}"
+        );
+        assert!(
+            e.iter().any(|err| err.path.contains("groups")),
+            "error must mention groups: {e:?}"
+        );
+    }
+
+    #[test]
+    fn group_with_targets_passes() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": {
+                "/": {
+                    "targets": [],
+                    "groups": [{ "name": "g1", "targets": [{ "url": "http://b:4000", "weight": 1 }] }]
+                }
+            } }"#,
+        );
+        assert!(e.is_empty(), "group with targets must pass: {e:?}");
+    }
 }
