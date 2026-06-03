@@ -1279,6 +1279,77 @@ mod tests {
         }
     }
 
+    // ── run_wasm_response ─────────────────────────────────────────────────────
+
+    fn make_response_ctx(status: u16) -> WasmResponseContext {
+        WasmResponseContext {
+            status,
+            headers: HashMap::new(),
+            plugin_config: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn response_plugin_without_on_response_export_is_noop() {
+        // A plugin without `on_response` must silently skip (fail-open).
+        let (_f, p) = compile_wat(
+            "(module (memory (export \"memory\") 1) \
+             (func (export \"on_request\") (result i32) i32.const 0))",
+        );
+        let outcome = run_wasm_response(make_response_ctx(200), &p);
+        assert!(
+            outcome.added_headers.is_empty(),
+            "no on_response → no headers added"
+        );
+        assert!(outcome.body.is_none());
+    }
+
+    #[test]
+    fn response_plugin_sets_response_header() {
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_set_response_header"
+                (func $set_hdr (param i32 i32 i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "x-processed")
+              (data (i32.const 100) "yes")
+              (func (export "on_response") (param i32) (result i32)
+                (call $set_hdr (i32.const 0) (i32.const 11) (i32.const 100) (i32.const 3))
+                i32.const 0))"#,
+        );
+        let outcome = run_wasm_response(make_response_ctx(200), &p);
+        let val = outcome
+            .added_headers
+            .iter()
+            .find(|(k, _)| k == "x-processed")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(
+            val,
+            Some("yes"),
+            "response plugin must add x-processed header"
+        );
+    }
+
+    #[test]
+    fn response_plugin_reads_status_code() {
+        // Plugin aborts (no-op in response phase, just returns the status it received).
+        // We use conduit_get_response_status to read it and abort with it.
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_get_response_status"
+                (func $get_status (result i32)))
+              (memory (export "memory") 1)
+              (func (export "on_response") (param i32) (result i32)
+                ;; Just read the status (we can't assert here, but cover the code path).
+                call $get_status
+                drop
+                i32.const 0))"#,
+        );
+        // Status 404 — must not panic, response phase is fail-open.
+        let outcome = run_wasm_response(make_response_ctx(404), &p);
+        assert!(outcome.added_headers.is_empty());
+    }
+
     // ── conduit_set_response_body ─────────────────────────────────────────────
 
     #[test]
