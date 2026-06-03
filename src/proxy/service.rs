@@ -2766,6 +2766,52 @@ mod tests {
         );
     }
 
+    // ── handler_kind_of ───────────────────────────────────────────────────────
+
+    #[test]
+    fn handler_kind_health() {
+        let upstream = UpstreamTarget::Local(LocalHandler::Health);
+        assert!(matches!(handler_kind_of(&upstream), HandlerKind::Health));
+    }
+
+    #[test]
+    fn handler_kind_overloaded() {
+        let upstream = UpstreamTarget::Local(LocalHandler::Overloaded);
+        assert!(matches!(
+            handler_kind_of(&upstream),
+            HandlerKind::Overloaded
+        ));
+    }
+
+    #[test]
+    fn handler_kind_proxy() {
+        let upstream = UpstreamTarget::Proxy {
+            addr: "backend:4000".to_owned(),
+            tls: false,
+            sni: String::new(),
+            strip_prefix: None,
+            rewrite: None,
+            mirror_url: None,
+            upstream_tls: None,
+        };
+        assert!(matches!(handler_kind_of(&upstream), HandlerKind::Proxy));
+    }
+
+    #[test]
+    fn handler_kind_fallback_for_unknown_local() {
+        let upstream = UpstreamTarget::Local(LocalHandler::Fallback);
+        assert!(matches!(handler_kind_of(&upstream), HandlerKind::Fallback));
+    }
+
+    #[test]
+    fn handler_kind_hot_reload_sse() {
+        let upstream = UpstreamTarget::Local(LocalHandler::HotReloadSse);
+        assert!(matches!(
+            handler_kind_of(&upstream),
+            HandlerKind::HotReloadSse
+        ));
+    }
+
     // ── rebuild_uri ───────────────────────────────────────────────────────────
 
     #[test]
