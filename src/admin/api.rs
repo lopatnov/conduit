@@ -1328,4 +1328,63 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "v2", "second write must overwrite first");
     }
+
+    // ── build_flat_upstream_list ──────────────────────────────────────────────
+
+    #[test]
+    fn build_flat_upstream_list_empty_registry() {
+        let reg = crate::proxy::health::UpstreamRegistry::new();
+        let list = build_flat_upstream_list(&reg);
+        assert!(list.is_empty(), "empty registry must return empty list");
+    }
+
+    #[test]
+    fn build_flat_upstream_list_includes_known_urls() {
+        use crate::proxy::health::UpstreamRegistry;
+        let reg = UpstreamRegistry::new();
+        reg.statuses.entry("http://a:4000".to_owned()).or_default();
+        reg.statuses.entry("http://b:4000".to_owned()).or_default();
+        let list = build_flat_upstream_list(&reg);
+        assert_eq!(list.len(), 2);
+        let urls: Vec<&str> = list.iter().filter_map(|e| e["url"].as_str()).collect();
+        assert!(urls.contains(&"http://a:4000"));
+        assert!(urls.contains(&"http://b:4000"));
+    }
+
+    #[test]
+    fn build_flat_upstream_list_sorted_by_url() {
+        use crate::proxy::health::UpstreamRegistry;
+        let reg = UpstreamRegistry::new();
+        reg.statuses.entry("http://z:4000".to_owned()).or_default();
+        reg.statuses.entry("http://a:4000".to_owned()).or_default();
+        let list = build_flat_upstream_list(&reg);
+        assert_eq!(list[0]["url"], "http://a:4000");
+        assert_eq!(list[1]["url"], "http://z:4000");
+    }
+
+    // ── resolve_runtime_targets ───────────────────────────────────────────────
+
+    #[test]
+    fn resolve_runtime_targets_no_overrides_returns_config() {
+        use crate::proxy::health::UpstreamRegistry;
+        let reg = UpstreamRegistry::new();
+        let config_targets = vec![serde_json::json!({"url": "http://config:4000"})];
+        let result = resolve_runtime_targets(&reg, "*", "/api", config_targets.clone());
+        assert_eq!(
+            result, config_targets,
+            "no overrides → config targets returned"
+        );
+    }
+
+    #[test]
+    fn resolve_runtime_targets_with_overrides_returns_overrides() {
+        use crate::proxy::health::UpstreamRegistry;
+        let reg = UpstreamRegistry::new();
+        reg.add_upstream("*", "/api", "http://override:4000", 2);
+        let config_targets = vec![serde_json::json!({"url": "http://config:4000"})];
+        let result = resolve_runtime_targets(&reg, "*", "/api", config_targets);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["url"], "http://override:4000");
+        assert_eq!(result[0]["runtime"], true);
+    }
 }
