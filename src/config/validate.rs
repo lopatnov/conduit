@@ -2707,4 +2707,49 @@ mod tests {
         );
         assert!(e.is_empty(), "group with targets must pass: {e:?}");
     }
+
+    // ── validate_proxy_route_target: RoundRobin ───────────────────────────────
+
+    #[test]
+    fn round_robin_with_invalid_url_rejected() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": {
+                "/": ["not-a-url", "http://valid:4000"]
+            } }"#,
+        );
+        assert!(
+            !e.is_empty(),
+            "RoundRobin with invalid URL must be rejected: {e:?}"
+        );
+    }
+
+    #[test]
+    fn round_robin_all_valid_passes() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": {
+                "/": ["http://a:4000", "http://b:4000"]
+            } }"#,
+        );
+        assert!(e.is_empty(), "valid RoundRobin must pass: {e:?}");
+    }
+
+    // ── validate_proxy: Single with invalid URL ────────────────────────────────
+
+    #[test]
+    fn single_proxy_invalid_url_rejected() {
+        let e = errs(r#"{ "port": 8080, "proxy": "not-a-url" }"#);
+        assert!(
+            !e.is_empty(),
+            "Single proxy with invalid URL must be rejected: {e:?}"
+        );
+    }
+
+    // ── IPv6 TCP targets ──────────────────────────────────────────────────────
+
+    #[test]
+    #[cfg(feature = "tcp")]
+    fn ipv6_tcp_target_valid() {
+        let e = errs(r#"{ "port": 3306, "tcp": { "targets": ["[::1]:3306"] } }"#);
+        assert!(e.is_empty(), "IPv6 TCP target must pass: {e:?}");
+    }
 }
