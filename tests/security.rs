@@ -788,12 +788,21 @@ fn max_body_bytes_enforced_without_content_length() {
     // We can't trivially send chunked with reqwest, but we can send a body
     // without explicitly setting Content-Length by using streaming:
     // reqwest will add Content-Length for a known-size body, so we use raw TCP.
+    //
+    // IMPORTANT: We send `Connection: close` so the proxy closes the TCP connection
+    // after responding.  Without it the proxy keeps the HTTP/1.1 connection alive
+    // and `read_to_string` would block forever waiting for EOF.
     let raw_req = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
-        200, // chunk size in hex
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+        200usize, // chunk size in hex
         "B".repeat(200)
     );
     let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    // Safety timeout: prevent the test from hanging indefinitely if the proxy
+    // somehow keeps the connection open despite Connection: close.
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
     use std::io::{Read, Write};
     stream.write_all(raw_req.as_bytes()).unwrap();
     let mut response = String::new();

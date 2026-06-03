@@ -140,6 +140,16 @@ fn to_yaml_string(value: &Value) -> anyhow::Result<String> {
 /// of the `yes` flag.
 pub fn run_init(opts: InitOptions<'_>) -> anyhow::Result<()> {
     // ── Format ───────────────────────────────────────────────────────────────
+    // Warn when --format is provided but not recognised (mirrors the --log
+    // behaviour that warns and falls back to dev).
+    if let Some(fmt_str) = opts.format {
+        if Format::from_str(fmt_str).is_none() {
+            eprintln!(
+                "warning: unknown output format '{fmt_str}' — falling back to yaml. \
+                 Valid values: yaml, json"
+            );
+        }
+    }
     let format = opts
         .format
         .and_then(Format::from_str)
@@ -528,5 +538,35 @@ mod tests {
         };
         // Unknown log format should not panic; falls back to "dev".
         run_init(opts).expect("unknown log format must not error");
+    }
+
+    #[test]
+    fn run_init_unknown_format_flag_falls_back_to_yaml() {
+        // An unrecognised --format value warns (mirroring --log behavior) and
+        // falls back to YAML instead of silently dropping the input.
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("conduit.yaml");
+        let opts = InitOptions {
+            output: Some(output.to_str().unwrap()),
+            yes: true,
+            format: Some("xml"), // unknown format
+            port: Some(8080),
+            static_dir: None,
+            no_static: true,
+            proxy: None,
+            no_proxy: true,
+            log: Some("dev"),
+            no_health: true,
+            tls_cert: None,
+            tls_key: None,
+            tls_acme: None,
+        };
+        // Must not error — falls back gracefully to yaml.
+        run_init(opts).expect("unknown format must not error");
+        // Output file should exist (written as yaml since output has .yaml extension).
+        assert!(
+            output.exists(),
+            "output file must be written even with unknown format"
+        );
     }
 }
