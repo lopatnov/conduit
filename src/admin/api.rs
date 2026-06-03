@@ -1329,6 +1329,48 @@ mod tests {
         assert_eq!(content, "v2", "second write must overwrite first");
     }
 
+    // ── url_health_entry ──────────────────────────────────────────────────────
+
+    #[test]
+    fn url_health_entry_unknown_url_returns_null_health() {
+        let reg = crate::proxy::health::UpstreamRegistry::new();
+        let entry = url_health_entry(&reg, "http://unknown:4000", 1, None);
+        assert_eq!(entry["url"], "http://unknown:4000");
+        assert_eq!(entry["weight"], 1);
+        assert!(
+            entry["healthy"].is_null(),
+            "unknown URL must have null health"
+        );
+    }
+
+    #[test]
+    fn url_health_entry_known_url_includes_health_data() {
+        let reg = crate::proxy::health::UpstreamRegistry::new();
+        {
+            let mut e = reg
+                .statuses
+                .entry("http://backend:4000".to_owned())
+                .or_default();
+            e.healthy = true;
+            e.latency_ms = Some(15);
+            e.consecutive_failures = 0;
+            e.consecutive_successes = 5;
+        }
+        let entry = url_health_entry(&reg, "http://backend:4000", 2, None);
+        assert_eq!(entry["healthy"], true);
+        assert_eq!(entry["latency_ms"], 15);
+        assert_eq!(entry["consecutive_failures"], 0);
+        assert_eq!(entry["consecutive_successes"], 5);
+        assert_eq!(entry["weight"], 2);
+    }
+
+    #[test]
+    fn url_health_entry_with_group_includes_group_field() {
+        let reg = crate::proxy::health::UpstreamRegistry::new();
+        let entry = url_health_entry(&reg, "http://a:4000", 1, Some("primary"));
+        assert_eq!(entry["group"], "primary");
+    }
+
     // ── format_proxy_route_targets ────────────────────────────────────────────
 
     #[test]
