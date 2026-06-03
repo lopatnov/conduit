@@ -224,4 +224,43 @@ mod tests {
         let cfg = SecurityHeadersConfig::Options(opts);
         assert!(is_host_allowed(&cfg, "anything.example.com"));
     }
+
+    // ── HSTS edge cases ───────────────────────────────────────────────────────
+
+    #[test]
+    fn hsts_without_subdomains() {
+        use crate::config::schema::SecurityHeadersOptions;
+        let opts = SecurityHeadersOptions {
+            hsts_max_age_secs: Some(31536000),
+            hsts_include_subdomains: Some(false), // explicitly disabled
+            hsts_preload: None,
+            ..Default::default()
+        };
+        let cfg = SecurityHeadersConfig::Options(opts);
+        let h = header_entries(&cfg);
+        let hsts = h.iter().find(|(k, _)| k == "Strict-Transport-Security");
+        assert!(hsts.is_some(), "HSTS header must be present");
+        assert!(
+            !hsts.unwrap().1.contains("includeSubDomains"),
+            "hsts_include_subdomains=false must omit directive"
+        );
+    }
+
+    #[test]
+    fn hsts_with_preload() {
+        use crate::config::schema::SecurityHeadersOptions;
+        let opts = SecurityHeadersOptions {
+            hsts_max_age_secs: Some(31536000),
+            hsts_preload: Some(true),
+            ..Default::default()
+        };
+        let cfg = SecurityHeadersConfig::Options(opts);
+        let h = header_entries(&cfg);
+        let hsts = h.iter().find(|(k, _)| k == "Strict-Transport-Security");
+        assert!(hsts.is_some());
+        assert!(
+            hsts.unwrap().1.contains("preload"),
+            "preload=true must include 'preload'"
+        );
+    }
 }
