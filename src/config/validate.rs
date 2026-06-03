@@ -2456,4 +2456,99 @@ mod tests {
         let e = errs(r#"{ "port": 8080, "jwtAuth": { "jwksUrl": "not-a-url" } }"#);
         assert!(!e.is_empty(), "invalid jwksUrl must be rejected");
     }
+
+    // ── is_valid_upstream_url ─────────────────────────────────────────────────
+
+    #[test]
+    fn upstream_url_http_valid() {
+        let e =
+            errs(r#"{ "port": 8080, "proxy": { "/": { "targets": ["http://backend:4000"] } } }"#);
+        assert!(e.is_empty(), "valid http upstream must pass: {e:?}");
+    }
+
+    #[test]
+    fn upstream_url_no_scheme_rejected() {
+        let e = errs(r#"{ "port": 8080, "proxy": { "/": { "targets": ["backend:4000"] } } }"#);
+        assert!(
+            !e.is_empty(),
+            "upstream without scheme must be rejected: {e:?}"
+        );
+    }
+
+    #[test]
+    fn upstream_url_https_valid() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/": { "targets": ["https://api.example.com:443"] } } }"#,
+        );
+        assert!(e.is_empty(), "valid https upstream must pass: {e:?}");
+    }
+
+    // ── validate_rewrite_rules ────────────────────────────────────────────────
+
+    #[test]
+    fn rewrite_rule_invalid_regex_rejected() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": {
+                "/": { "targets": ["http://b:4000"],
+                        "rewrite": [{ "from": "[invalid", "to": "/v2/$1" }] } } }"#,
+        );
+        assert!(
+            !e.is_empty(),
+            "invalid rewrite regex must be rejected: {e:?}"
+        );
+    }
+
+    #[test]
+    fn rewrite_rule_valid_regex_passes() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": {
+                "/": { "targets": ["http://b:4000"],
+                        "rewrite": [{ "from": "^/v1/(.*)", "to": "/v2/$1" }] } } }"#,
+        );
+        assert!(e.is_empty(), "valid rewrite regex must pass: {e:?}");
+    }
+
+    // ── validate_route_config: mirror URL ────────────────────────────────────
+
+    #[test]
+    fn mirror_url_http_valid() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": {
+                "/": { "targets": ["http://b:4000"],
+                        "mirror": "http://mirror:4001" } } }"#,
+        );
+        assert!(e.is_empty(), "valid mirror URL must pass: {e:?}");
+    }
+
+    #[test]
+    fn mirror_url_no_scheme_rejected() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": {
+                "/": { "targets": ["http://b:4000"],
+                        "mirror": "mirror:4001" } } }"#,
+        );
+        assert!(
+            !e.is_empty(),
+            "mirror URL without scheme must be rejected: {e:?}"
+        );
+    }
+
+    // ── loopback_port with IPv6 ───────────────────────────────────────────────
+
+    #[test]
+    fn loopback_ipv6_loop_detected() {
+        let w = warns(r#"{ "port": 8080, "proxy": "http://[::1]:8080" }"#);
+        assert!(
+            w.iter().any(|m| m.contains("loop")),
+            "IPv6 loopback loop must warn: {w:?}"
+        );
+    }
+
+    // ── validate_upload: empty dir ───────────────────────────────────────────
+
+    #[test]
+    fn upload_whitespace_dir_rejected() {
+        let e = errs(r#"{ "upload": { "path": "/upload", "dir": "   " } }"#);
+        assert!(!e.is_empty(), "whitespace-only dir must be rejected");
+    }
 }
