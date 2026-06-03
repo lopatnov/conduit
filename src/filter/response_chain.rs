@@ -856,6 +856,41 @@ mod tests {
         assert_eq!(resp.headers.get("x-c").unwrap(), "3");
     }
 
+    // ── ResponseFilterChain::build ────────────────────────────────────────────
+
+    #[test]
+    fn build_basic_chain_works_without_site() {
+        use crate::config::schema::AppConfig;
+        // build() with no matching site (site_idx=999) must not panic.
+        let ctx = dummy_ctx();
+        let config = AppConfig::default();
+        let chain = ResponseFilterChain::build(&ctx, &config);
+        let mut resp = make_resp(200);
+        // Must run without panicking.
+        chain.run(&mut resp, &ctx).unwrap();
+    }
+
+    #[test]
+    fn build_chain_with_mask_errors_enabled() {
+        use crate::config::schema::AppConfig;
+        use crate::config::schema::SiteConfig;
+        let mut config = AppConfig::default();
+        config.sites.push(SiteConfig {
+            mask_errors: Some(true),
+            ..Default::default()
+        });
+        let mut ctx = dummy_ctx();
+        ctx.site_idx = 0;
+        let chain = ResponseFilterChain::build(&ctx, &config);
+        // A 500 response should be masked.
+        let mut resp = make_resp(500);
+        let outcome = chain.run(&mut resp, &ctx).unwrap();
+        assert!(
+            matches!(outcome, ResponseFilterOutcome::MaskBody),
+            "mask_errors=true + 5xx → MaskBody"
+        );
+    }
+
     // ── ResponseTransformFilter edge cases ────────────────────────────────────
 
     #[test]
