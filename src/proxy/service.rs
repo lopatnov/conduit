@@ -2766,6 +2766,50 @@ mod tests {
         );
     }
 
+    // ── apply_upstream_path_transforms ───────────────────────────────────────
+
+    #[test]
+    fn apply_upstream_path_transforms_strips_prefix() {
+        use pingora_http::RequestHeader;
+        let mut req = RequestHeader::build("GET", b"/api/v1/users", None).unwrap();
+        let ctx = Some(make_ctx(UpstreamTarget::Proxy {
+            addr: "backend:4000".to_owned(),
+            tls: false,
+            sni: String::new(),
+            strip_prefix: Some("/api".to_owned()),
+            rewrite: None,
+            mirror_url: None,
+            upstream_tls: None,
+        }));
+        apply_upstream_path_transforms(&mut req, &ctx).unwrap();
+        assert_eq!(req.uri.path(), "/v1/users");
+    }
+
+    #[test]
+    fn apply_upstream_path_transforms_no_prefix_unchanged() {
+        use pingora_http::RequestHeader;
+        let mut req = RequestHeader::build("GET", b"/api/v1/users", None).unwrap();
+        let ctx = Some(make_ctx(UpstreamTarget::Proxy {
+            addr: "backend:4000".to_owned(),
+            tls: false,
+            sni: String::new(),
+            strip_prefix: None,
+            rewrite: None,
+            mirror_url: None,
+            upstream_tls: None,
+        }));
+        apply_upstream_path_transforms(&mut req, &ctx).unwrap();
+        assert_eq!(req.uri.path(), "/api/v1/users");
+    }
+
+    #[test]
+    fn apply_upstream_path_transforms_none_ctx_noop() {
+        use pingora_http::RequestHeader;
+        let mut req = RequestHeader::build("GET", b"/original", None).unwrap();
+        apply_upstream_path_transforms(&mut req, &None).unwrap();
+        assert_eq!(req.uri.path(), "/original");
+    }
+
     // ── handler_kind_of ───────────────────────────────────────────────────────
 
     #[test]
