@@ -2766,6 +2766,33 @@ mod tests {
         );
     }
 
+    // ── rebuild_uri ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn rebuild_uri_replaces_path() {
+        let original: http::Uri = "/old/path".parse().unwrap();
+        let new_uri = rebuild_uri(&original, "/new/path").unwrap();
+        assert_eq!(new_uri.path(), "/new/path");
+    }
+
+    #[test]
+    fn rebuild_uri_preserves_query() {
+        let original: http::Uri = "/old/path?foo=bar".parse().unwrap();
+        let new_uri = rebuild_uri(&original, "/new/path").unwrap();
+        assert_eq!(new_uri.path(), "/new/path");
+        assert_eq!(new_uri.query(), Some("foo=bar"));
+    }
+
+    #[test]
+    fn rebuild_uri_no_query_keeps_no_query() {
+        let original: http::Uri = "/path".parse().unwrap();
+        let new_uri = rebuild_uri(&original, "/v2").unwrap();
+        assert_eq!(new_uri.path(), "/v2");
+        assert!(new_uri.query().is_none());
+    }
+
+    // ── resolve_peer_addr ─────────────────────────────────────────────────────
+
     #[test]
     fn resolve_peer_addr_with_retry_returns_first_url() {
         let retry = RetryState {
