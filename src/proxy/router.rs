@@ -1890,4 +1890,133 @@ mod tests {
             ctx.upstream
         );
     }
+
+    // ── extract_cookie ────────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_cookie_found() {
+        let mut hdrs = http::HeaderMap::new();
+        hdrs.insert("cookie", "session=abc123; lang=en".parse().unwrap());
+        assert_eq!(extract_cookie(&hdrs, "session"), Some("abc123".to_owned()));
+    }
+
+    #[test]
+    fn extract_cookie_second_value() {
+        let mut hdrs = http::HeaderMap::new();
+        hdrs.insert("cookie", "a=1; b=2; c=3".parse().unwrap());
+        assert_eq!(extract_cookie(&hdrs, "b"), Some("2".to_owned()));
+        assert_eq!(extract_cookie(&hdrs, "c"), Some("3".to_owned()));
+    }
+
+    #[test]
+    fn extract_cookie_missing_returns_none() {
+        let mut hdrs = http::HeaderMap::new();
+        hdrs.insert("cookie", "a=1; b=2".parse().unwrap());
+        assert!(extract_cookie(&hdrs, "missing").is_none());
+    }
+
+    #[test]
+    fn extract_cookie_no_cookie_header_returns_none() {
+        let hdrs = http::HeaderMap::new();
+        assert!(extract_cookie(&hdrs, "session").is_none());
+    }
+
+    #[test]
+    fn extract_cookie_strips_whitespace() {
+        let mut hdrs = http::HeaderMap::new();
+        hdrs.insert("cookie", "key = value ".parse().unwrap());
+        assert_eq!(extract_cookie(&hdrs, "key"), Some("value".to_owned()));
+    }
+
+    // ── acme_challenge_token ──────────────────────────────────────────────────
+
+    #[test]
+    fn acme_challenge_token_extracts_token() {
+        assert_eq!(
+            acme_challenge_token("/.well-known/acme-challenge/abc123"),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn acme_challenge_token_none_for_other_paths() {
+        assert!(acme_challenge_token("/").is_none());
+        assert!(acme_challenge_token("/__health__").is_none());
+        assert!(acme_challenge_token("/.well-known/other").is_none());
+    }
+
+    #[test]
+    fn acme_challenge_token_empty_token() {
+        // Edge case: empty token after the challenge prefix.
+        let result = acme_challenge_token("/.well-known/acme-challenge/");
+        assert_eq!(result, Some(""));
+    }
+
+    // ── is_hot_reload_sse_path and is_hot_reload_js_path ─────────────────────
+
+    #[test]
+    fn hot_reload_sse_path_when_enabled() {
+        let site = SiteConfig {
+            hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
+            ..Default::default()
+        };
+        assert!(is_hot_reload_sse_path(Some(&site), "/__hot-reload__"));
+        assert!(!is_hot_reload_sse_path(
+            Some(&site),
+            "/__hot-reload__/client.js"
+        ));
+        assert!(!is_hot_reload_sse_path(Some(&site), "/other"));
+    }
+
+    #[test]
+    fn hot_reload_sse_path_when_disabled() {
+        let site = SiteConfig {
+            hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(false)),
+            ..Default::default()
+        };
+        assert!(!is_hot_reload_sse_path(Some(&site), "/__hot-reload__"));
+    }
+
+    #[test]
+    fn hot_reload_sse_path_no_site_returns_false() {
+        assert!(!is_hot_reload_sse_path(None, "/__hot-reload__"));
+    }
+
+    #[test]
+    fn hot_reload_js_path_when_enabled() {
+        let site = SiteConfig {
+            hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
+            ..Default::default()
+        };
+        assert!(is_hot_reload_js_path(
+            Some(&site),
+            "/__hot-reload__/client.js"
+        ));
+        assert!(!is_hot_reload_js_path(Some(&site), "/__hot-reload__"));
+    }
+
+    #[test]
+    fn hot_reload_js_path_when_disabled() {
+        let site = SiteConfig {
+            hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(false)),
+            ..Default::default()
+        };
+        assert!(!is_hot_reload_js_path(
+            Some(&site),
+            "/__hot-reload__/client.js"
+        ));
+    }
+
+    #[test]
+    fn hot_reload_js_path_with_query_string() {
+        let site = SiteConfig {
+            hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
+            ..Default::default()
+        };
+        // Query string should be stripped before comparison.
+        assert!(is_hot_reload_js_path(
+            Some(&site),
+            "/__hot-reload__/client.js?v=123"
+        ));
+    }
 }
