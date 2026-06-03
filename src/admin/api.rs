@@ -1192,4 +1192,140 @@ mod tests {
             "trailing space is invalid"
         );
     }
+
+    // ── subtle_eq ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn subtle_eq_equal_slices() {
+        assert!(subtle_eq(b"secret", b"secret"));
+    }
+
+    #[test]
+    fn subtle_eq_different_slices() {
+        assert!(!subtle_eq(b"secret", b"wrong!"));
+    }
+
+    #[test]
+    fn subtle_eq_different_lengths() {
+        assert!(!subtle_eq(b"short", b"longer-value"));
+    }
+
+    #[test]
+    fn subtle_eq_empty_slices() {
+        assert!(subtle_eq(b"", b""));
+    }
+
+    // ── strategy_label ────────────────────────────────────────────────────────
+
+    #[test]
+    fn strategy_label_all_variants() {
+        use crate::config::schema::LoadBalanceStrategy as S;
+        assert_eq!(strategy_label(&S::RoundRobin), "round-robin");
+        assert_eq!(
+            strategy_label(&S::WeightedRoundRobin),
+            "weighted-round-robin"
+        );
+        assert_eq!(strategy_label(&S::Random), "random");
+        assert_eq!(strategy_label(&S::LeastConn), "least-conn");
+        assert_eq!(strategy_label(&S::LeastResponseTime), "least-response-time");
+        assert_eq!(strategy_label(&S::IpHash), "ip-hash");
+        assert_eq!(strategy_label(&S::ConsistentHash), "consistent-hash");
+        assert_eq!(strategy_label(&S::P2c), "p2c");
+    }
+
+    // ── proxy_target_url_weight ───────────────────────────────────────────────
+
+    #[test]
+    fn proxy_target_simple_has_weight_one() {
+        use crate::config::schema::ProxyTarget;
+        let t = ProxyTarget::Simple("http://backend:4000".to_owned());
+        let (url, weight) = proxy_target_url_weight(&t);
+        assert_eq!(url, "http://backend:4000");
+        assert_eq!(weight, 1);
+    }
+
+    #[test]
+    fn proxy_target_weighted_uses_configured_weight() {
+        use crate::config::schema::{ProxyTarget, WeightedTarget};
+        let t = ProxyTarget::Weighted(WeightedTarget {
+            url: "http://backend:4000".to_owned(),
+            weight: 5,
+        });
+        let (url, weight) = proxy_target_url_weight(&t);
+        assert_eq!(url, "http://backend:4000");
+        assert_eq!(weight, 5);
+    }
+
+    // ── log_file_path ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn log_file_path_none_when_no_config() {
+        assert!(log_file_path(&None).is_none());
+    }
+
+    #[test]
+    fn log_file_path_none_when_enabled_true() {
+        use crate::config::schema::LoggingConfig;
+        assert!(log_file_path(&Some(LoggingConfig::Enabled(true))).is_none());
+    }
+
+    #[test]
+    fn log_file_path_none_when_enabled_false() {
+        use crate::config::schema::LoggingConfig;
+        assert!(log_file_path(&Some(LoggingConfig::Enabled(false))).is_none());
+    }
+
+    #[test]
+    fn log_file_path_returns_file_when_options_set() {
+        use crate::config::schema::{LoggingConfig, LoggingOptions};
+        let opts = LoggingOptions {
+            file: Some("/var/log/conduit/access.log".to_owned()),
+            ..Default::default()
+        };
+        let cfg = Some(LoggingConfig::Options(opts));
+        let result = log_file_path(&cfg);
+        assert_eq!(result, Some("/var/log/conduit/access.log"));
+    }
+
+    #[test]
+    fn log_file_path_none_when_options_no_file() {
+        use crate::config::schema::{LoggingConfig, LoggingOptions};
+        let opts = LoggingOptions {
+            file: None,
+            ..Default::default()
+        };
+        let cfg = Some(LoggingConfig::Options(opts));
+        let result = log_file_path(&cfg);
+        assert!(result.is_none());
+    }
+
+    // ── atomic_write ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn atomic_write_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.txt");
+        atomic_write(path.to_str().unwrap(), b"hello atomic").expect("atomic_write must succeed");
+        let content = std::fs::read_to_string(&path).expect("file must exist");
+        assert_eq!(content, "hello atomic");
+    }
+
+    #[test]
+    fn atomic_write_no_tmp_file_left_on_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.txt");
+        atomic_write(path.to_str().unwrap(), b"data").expect("must succeed");
+        let tmp = dir.path().join("output.txt.tmp");
+        assert!(!tmp.exists(), ".tmp file must be removed after rename");
+    }
+
+    #[test]
+    fn atomic_write_overwrites_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.txt");
+        atomic_write(path.to_str().unwrap(), b"v1").unwrap();
+        atomic_write(path.to_str().unwrap(), b"v2").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "v2", "second write must overwrite first");
+    }
 }
