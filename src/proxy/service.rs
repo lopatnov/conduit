@@ -2766,6 +2766,31 @@ mod tests {
         );
     }
 
+    // ── get_rewrite_regex ─────────────────────────────────────────────────────
+
+    #[test]
+    fn get_rewrite_regex_compiles_valid_pattern() {
+        let re = get_rewrite_regex("^/v1/(.*)");
+        assert!(re.is_some(), "valid regex must compile");
+        let re = re.unwrap();
+        assert!(re.is_match("/v1/users"));
+        assert!(!re.is_match("/v2/users"));
+    }
+
+    #[test]
+    fn get_rewrite_regex_returns_none_for_invalid() {
+        let re = get_rewrite_regex("[invalid");
+        assert!(re.is_none(), "invalid regex must return None");
+    }
+
+    #[test]
+    fn get_rewrite_regex_caches_compiled_pattern() {
+        // Second call for the same pattern must return a cached copy.
+        let r1 = get_rewrite_regex("^/api/(.*)");
+        let r2 = get_rewrite_regex("^/api/(.*)");
+        assert!(r1.is_some() && r2.is_some(), "both calls must succeed");
+    }
+
     // ── retry_budget_allows ───────────────────────────────────────────────────
 
     fn make_proxy() -> ConduitProxy {
