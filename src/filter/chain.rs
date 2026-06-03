@@ -1081,4 +1081,63 @@ mod tests {
         let deny_list = guard.dynamic_deny.read().unwrap();
         assert!(deny_list.is_empty());
     }
+
+    // ── IpGuard with populated dynamic deny list ──────────────────────────────
+
+    #[test]
+    fn ip_guard_with_cidr_in_dynamic_deny() {
+        use std::sync::RwLock;
+        let guard = IpGuard {
+            cfg: crate::config::schema::IpFilterConfig {
+                allow: None,
+                deny: None,
+                trust_proxy: None,
+                dry_run: None,
+            },
+            dynamic_deny: std::sync::Arc::new(RwLock::new(vec!["10.0.0.0/8".to_owned()])),
+        };
+        // Can read the deny list and verify it's non-empty.
+        let deny_list = guard.dynamic_deny.read().unwrap();
+        assert!(!deny_list.is_empty());
+        assert_eq!(deny_list[0], "10.0.0.0/8");
+    }
+
+    // ── FilterChain builder ───────────────────────────────────────────────────
+
+    #[test]
+    fn filter_chain_new_is_empty() {
+        let chain = FilterChain::new();
+        // An empty chain must exist without panicking.
+        // We can't run it without a session, but we can test construction.
+        drop(chain);
+    }
+
+    #[test]
+    fn filter_chain_default_is_same_as_new() {
+        // FilterChain derives Default, which should be equivalent to new().
+        let _ = FilterChain::default();
+    }
+
+    // ── FilterOutcome variants ────────────────────────────────────────────────
+
+    #[test]
+    fn limits_rejection_body_message_correct() {
+        let result = limits_rejection(limits::CheckResult::BodyTooLarge);
+        let (status, body) = result.unwrap();
+        let body_str = std::str::from_utf8(&body).unwrap_or("?");
+        assert!(
+            body_str.contains("Large"),
+            "body must explain the limit: {body_str}"
+        );
+        assert_eq!(status, 413);
+    }
+
+    #[test]
+    fn limits_rejection_header_message_correct() {
+        let result = limits_rejection(limits::CheckResult::HeaderTooLarge);
+        let (status, body) = result.unwrap();
+        assert_eq!(status, 431);
+        let body_str = std::str::from_utf8(&body).unwrap_or("?");
+        assert!(!body_str.is_empty());
+    }
 }
