@@ -769,6 +769,210 @@ mod tests {
         assert_eq!(sanitize_path("../etc/passwd"), "etc/passwd");
         assert_eq!(sanitize_path("a/../../b"), "b");
     }
+
+    // ── sanitize_path extra cases ─────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_path_removes_backslash_traversal() {
+        // Backslashes are normalized to forward slashes first.
+        assert_eq!(sanitize_path("a\\..\\b"), "b");
+    }
+
+    #[test]
+    fn sanitize_path_collapses_empty_segments() {
+        assert_eq!(sanitize_path("a//b"), "a/b");
+    }
+
+    #[test]
+    fn sanitize_path_removes_single_dot_segments() {
+        assert_eq!(sanitize_path("a/./b"), "a/b");
+    }
+
+    #[test]
+    fn sanitize_path_empty_input() {
+        assert_eq!(sanitize_path(""), "");
+    }
+
+    #[test]
+    fn sanitize_path_root_slash() {
+        assert_eq!(sanitize_path("/"), "");
+    }
+
+    #[test]
+    fn sanitize_path_normal_path() {
+        assert_eq!(sanitize_path("images/logo.png"), "images/logo.png");
+    }
+
+    // ── has_dotfile ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn has_dotfile_hidden_file() {
+        assert!(has_dotfile(".hidden"), "leading dot must be a dotfile");
+    }
+
+    #[test]
+    fn has_dotfile_hidden_dir() {
+        assert!(has_dotfile(".git/config"), "hidden dir must be a dotfile");
+    }
+
+    #[test]
+    fn has_dotfile_normal_file() {
+        assert!(!has_dotfile("images/logo.png"));
+    }
+
+    #[test]
+    fn has_dotfile_double_dot_is_dotfile() {
+        // ".." starts with '.' so has_dotfile returns true — this is intentional
+        // since dotfile blocking should also reject ".." segments (sanitize_path
+        // handles the actual traversal prevention separately).
+        assert!(has_dotfile(".."));
+    }
+
+    #[test]
+    fn has_dotfile_empty_string() {
+        assert!(!has_dotfile(""));
+    }
+
+    // ── parse_range ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_range_simple() {
+        // bytes=100-200 with total=1000 → (100, 200)
+        assert_eq!(parse_range("bytes=100-200", 1000), Some((100, 200)));
+    }
+
+    #[test]
+    fn parse_range_open_end() {
+        // bytes=100- → (100, total-1)
+        assert_eq!(parse_range("bytes=100-", 1000), Some((100, 999)));
+    }
+
+    #[test]
+    fn parse_range_suffix() {
+        // bytes=-200 → (800, 999)
+        assert_eq!(parse_range("bytes=-200", 1000), Some((800, 999)));
+    }
+
+    #[test]
+    fn parse_range_invalid_no_bytes_prefix() {
+        assert!(parse_range("0-100", 1000).is_none());
+    }
+
+    #[test]
+    fn parse_range_start_beyond_end() {
+        // bytes=500-100 (start > end) → invalid
+        assert!(parse_range("bytes=500-100", 1000).is_none());
+    }
+
+    #[test]
+    fn parse_range_end_beyond_total() {
+        // bytes=0-9999 with total=1000 → invalid (end >= total)
+        assert!(parse_range("bytes=0-9999", 1000).is_none());
+    }
+
+    #[test]
+    fn parse_range_suffix_zero_invalid() {
+        // bytes=-0 → zero suffix length is invalid
+        assert!(parse_range("bytes=-0", 1000).is_none());
+    }
+
+    // ── make_cache_control ────────────────────────────────────────────────────
+
+    #[test]
+    fn make_cache_control_no_max_age_returns_no_cache() {
+        use crate::config::schema::StaticOptions;
+        let opts = StaticOptions::default();
+        assert_eq!(make_cache_control(&opts), "no-cache");
+    }
+
+    #[test]
+    fn make_cache_control_with_max_age_returns_public() {
+        use crate::config::schema::StaticOptions;
+        let mut opts = StaticOptions::default();
+        opts.max_age = Some("1h".to_owned());
+        let cc = make_cache_control(&opts);
+        assert!(
+            cc.starts_with("public, max-age="),
+            "expected public max-age: {cc}"
+        );
+        assert!(cc.contains("3600"), "1h = 3600s: {cc}");
+    }
+
+    #[test]
+    fn make_cache_control_invalid_duration_returns_no_cache() {
+        use crate::config::schema::StaticOptions;
+        let mut opts = StaticOptions::default();
+        opts.max_age = Some("not-a-duration".to_owned());
+        assert_eq!(make_cache_control(&opts), "no-cache");
+    }
+
+    // ── try_decode_percent_seq ────────────────────────────────────────────────
+
+    #[test]
+    fn try_decode_percent_seq_normal_char() {
+        // %41 = 'A'
+        assert_eq!(try_decode_percent_seq(b"41"), Some(b'A'));
+    }
+
+    #[test]
+    fn try_decode_percent_seq_space() {
+        // %20 = space
+        assert_eq!(try_decode_percent_seq(b"20"), Some(b' '));
+    }
+
+    #[test]
+    fn try_decode_percent_seq_slash_rejected() {
+        // %2F = '/' — must NOT be decoded
+        assert!(try_decode_percent_seq(b"2F").is_none());
+        assert!(try_decode_percent_seq(b"2f").is_none());
+    }
+
+    #[test]
+    fn try_decode_percent_seq_backslash_rejected() {
+        // %5C = '\' — must NOT be decoded
+        assert!(try_decode_percent_seq(b"5C").is_none());
+    }
+
+    #[test]
+    fn try_decode_percent_seq_null_rejected() {
+        // %00 = NUL — must NOT be decoded
+        assert!(try_decode_percent_seq(b"00").is_none());
+    }
+
+    #[test]
+    fn try_decode_percent_seq_invalid_hex_returns_none() {
+        assert!(try_decode_percent_seq(b"ZZ").is_none());
+        assert!(try_decode_percent_seq(b"GG").is_none());
+    }
+
+    // ── decode_rel_path ───────────────────────────────────────────────────────
+
+    #[test]
+    fn decode_rel_path_no_prefix() {
+        assert_eq!(decode_rel_path("/images/logo.png", None), "images/logo.png");
+    }
+
+    #[test]
+    fn decode_rel_path_strips_prefix() {
+        assert_eq!(
+            decode_rel_path("/api/images/logo.png", Some("/api")),
+            "images/logo.png"
+        );
+    }
+
+    #[test]
+    fn decode_rel_path_percent_decoded() {
+        assert_eq!(
+            decode_rel_path("/files/hello%20world.txt", None),
+            "files/hello world.txt"
+        );
+    }
+
+    #[test]
+    fn decode_rel_path_traversal_prevented() {
+        // Even after percent-decoding, .. should be removed by sanitize_path.
+        assert_eq!(decode_rel_path("/../etc/passwd", None), "etc/passwd");
+    }
 }
 
 /// Return `true` when the request is fresh and should receive a 304 response.
