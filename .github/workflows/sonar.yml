@@ -17,6 +17,9 @@ jobs:
   sonar:
     name: SonarCloud analysis
     runs-on: ubuntu-latest
+    # Hard cap: coverage generation + sonar scan should finish well within 20 min.
+    # Without this the job can hang for GitHub's default 6-hour timeout.
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -37,17 +40,18 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
-      # Generate LCOV coverage using cargo-llvm-cov.
-      # Runs unit + integration tests; all features enabled for maximum coverage.
-      # LCOV format is what SonarCloud accepts for Rust coverage data.
-      - name: Generate coverage (LCOV)
+      # Generate LCOV coverage from unit tests only (--lib).
+      # Integration tests spawn servers and make network calls — they take too
+      # long under instrumentation and can hang the job for hours.
+      # Unit tests alone give reliable coverage data in < 2 minutes.
+      - name: Generate coverage (LCOV, unit tests only)
         run: |
           cargo llvm-cov \
+            --lib \
             --features full \
             --lcov \
             --output-path coverage.lcov \
             --ignore-filename-regex '(tests/|build\.rs)'
-            # ↑ --ignore-filename-regex excludes test files and build scripts from coverage
         env:
           RUST_LOG: "error"  # silence tracing output so coverage stats stay clean
 
