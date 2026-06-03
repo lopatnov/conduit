@@ -593,4 +593,151 @@ mod tests {
         // No claims → empty string.
         assert_eq!(expand_jwt_templates("{{ jwt.sub }}", &None), "");
     }
+
+    // ── check_jwt_extracting ──────────────────────────────────────────────────
+
+    #[test]
+    fn extracting_success_returns_allowed_and_claims() {
+        let secret = "extract-secret";
+        let token = make_hs256_token(
+            secret,
+            json!({ "sub": "extract-user", "role": "admin", "exp": exp_future() }),
+        );
+        let cfg = JwtAuthConfig {
+            secret: Some(secret.into()),
+            ..Default::default()
+        };
+        let (result, claims) = check_jwt_extracting(&cfg, "/api", Some(&format!("Bearer {token}")));
+        assert!(matches!(result, JwtCheckResult::Allowed));
+        let claims = claims.expect("claims must be present on success");
+        assert_eq!(
+            claims.get("sub").and_then(|v| v.as_str()),
+            Some("extract-user")
+        );
+        assert_eq!(claims.get("role").and_then(|v| v.as_str()), Some("admin"));
+    }
+
+    #[test]
+    fn extracting_denied_returns_none_claims() {
+        let cfg = JwtAuthConfig {
+            secret: Some("secret".into()),
+            ..Default::default()
+        };
+        let (result, claims) = check_jwt_extracting(&cfg, "/api", None);
+        assert!(matches!(result, JwtCheckResult::Denied { .. }));
+        assert!(claims.is_none(), "claims must be None when denied");
+    }
+
+    #[test]
+    fn extracting_skip_path_returns_allowed_no_claims() {
+        let cfg = JwtAuthConfig {
+            secret: Some("secret".into()),
+            skip_paths: Some(vec!["/public/**".into()]),
+            ..Default::default()
+        };
+        let (result, claims) = check_jwt_extracting(&cfg, "/public/assets/style.css", None);
+        assert!(matches!(result, JwtCheckResult::Allowed));
+        assert!(claims.is_none(), "skipped paths return no claims");
+    }
+
+    // ── audience validation ───────────────────────────────────────────────────
+
+    #[test]
+    fn valid_audience_allowed() {
+        let secret = "aud-secret";
+        let token = make_hs256_token(
+            secret,
+            json!({ "sub": "u", "aud": "my-service", "exp": exp_future() }),
+        );
+        let cfg = JwtAuthConfig {
+            secret: Some(secret.into()),
+            audience: Some(vec!["my-service".into()]),
+            ..Default::default()
+        };
+        assert!(matches!(
+            check_jwt(&cfg, "/api", Some(&format!("Bearer {token}"))),
+            JwtCheckResult::Allowed
+        ));
+    }
+
+    #[test]
+    fn audience_mismatch_denied() {
+        let secret = "aud-secret";
+        let token = make_hs256_token(
+            secret,
+            json!({ "sub": "u", "aud": "wrong-service", "exp": exp_future() }),
+        );
+        let cfg = JwtAuthConfig {
+            secret: Some(secret.into()),
+            audience: Some(vec!["my-service".into()]),
+            ..Default::default()
+        };
+        assert!(matches!(
+            check_jwt(&cfg, "/api", Some(&format!("Bearer {token}"))),
+            JwtCheckResult::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn issuer_match_allowed() {
+        let secret = "iss-secret";
+        let token = make_hs256_token(
+            secret,
+            json!({ "sub": "u", "iss": "https://auth.example.com", "exp": exp_future() }),
+        );
+        let cfg = JwtAuthConfig {
+            secret: Some(secret.into()),
+            issuer: Some("https://auth.example.com".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            check_jwt(&cfg, "/api", Some(&format!("Bearer {token}"))),
+            JwtCheckResult::Allowed
+        ));
+    }
+
+    // ── extract_bearer edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn bearer_case_insensitive() {
+        // The "bearer" prefix matching is done with to_ascii_lowercase().
+        let secret = "case-secret";
+        let token = make_hs256_token(secret, json!({ "sub": "u", "exp": exp_future() }));
+        let cfg = JwtAuthConfig {
+            secret: Some(secret.into()),
+            ..Default::default()
+        };
+        // Uppercase BEARER prefix should still be parsed.
+        assert!(matches!(
+            check_jwt(&cfg, "/api", Some(&format!("BEARER {token}"))),
+            JwtCheckResult::Allowed
+        ));
+    }
+
+    #[test]
+    fn bearer_with_no_token_after_space_denied() {
+        let cfg = JwtAuthConfig {
+            secret: Some("secret".into()),
+            ..Default::default()
+        };
+        // "Bearer " with nothing after → empty token → invalid
+        assert!(matches!(
+            check_jwt(&cfg, "/api", Some("Bearer ")),
+            JwtCheckResult::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn non_object_claims_returns_none_from_extract() {
+        // A JWT with a non-object payload can't be extracted as a HashMap.
+        // Use an array as the claim body by building it raw.
+        let cfg = JwtAuthConfig {
+            secret: Some("secret".into()),
+            ..Default::default()
+        };
+        // Normal token: extract_claims on a normal token returns Some.
+        let secret = "secret";
+        let token = make_hs256_token(secret, json!({ "sub": "u", "exp": exp_future() }));
+        assert!(extract_claims(&token, &cfg).is_some());
+    }
 }

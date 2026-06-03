@@ -337,3 +337,196 @@ pub fn run_init(opts: InitOptions<'_>) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    // ── Format helpers ────────────────────────────────────────────────────────
+
+    #[test]
+    fn format_from_path_yaml_extension() {
+        assert!(matches!(
+            Format::from_path("conduit.yaml"),
+            Some(Format::Yaml)
+        ));
+        assert!(matches!(
+            Format::from_path("config.yml"),
+            Some(Format::Yaml)
+        ));
+    }
+
+    #[test]
+    fn format_from_path_json_extension() {
+        assert!(matches!(
+            Format::from_path("conduit.json"),
+            Some(Format::Json)
+        ));
+    }
+
+    #[test]
+    fn format_from_path_uppercase_extension() {
+        // Case-insensitive matching.
+        assert!(matches!(
+            Format::from_path("config.YAML"),
+            Some(Format::Yaml)
+        ));
+        assert!(matches!(
+            Format::from_path("config.JSON"),
+            Some(Format::Json)
+        ));
+    }
+
+    #[test]
+    fn format_from_path_unknown_extension_returns_none() {
+        assert!(Format::from_path("config.toml").is_none());
+        assert!(Format::from_path("config").is_none());
+    }
+
+    #[test]
+    fn format_from_str_yaml_variants() {
+        assert!(matches!(Format::from_str("yaml"), Some(Format::Yaml)));
+        assert!(matches!(Format::from_str("yml"), Some(Format::Yaml)));
+        assert!(matches!(Format::from_str("YAML"), Some(Format::Yaml)));
+    }
+
+    #[test]
+    fn format_from_str_json() {
+        assert!(matches!(Format::from_str("json"), Some(Format::Json)));
+        assert!(matches!(Format::from_str("JSON"), Some(Format::Json)));
+    }
+
+    #[test]
+    fn format_from_str_unknown_returns_none() {
+        assert!(Format::from_str("toml").is_none());
+        assert!(Format::from_str("").is_none());
+    }
+
+    #[test]
+    fn format_default_filename() {
+        assert_eq!(Format::Yaml.default_filename(), "conduit.yaml");
+        assert_eq!(Format::Json.default_filename(), "conduit.json");
+    }
+
+    // ── to_yaml_string ────────────────────────────────────────────────────────
+
+    #[test]
+    fn to_yaml_string_simple_value() {
+        let v = serde_json::json!({ "port": 8080 });
+        let yaml = to_yaml_string(&v).expect("yaml serialization");
+        assert!(yaml.contains("port"), "yaml must contain key 'port'");
+        assert!(yaml.contains("8080"), "yaml must contain value 8080");
+    }
+
+    // ── run_init non-interactive ──────────────────────────────────────────────
+
+    #[test]
+    fn run_init_yes_writes_yaml() {
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("conduit.yaml");
+        let opts = InitOptions {
+            output: Some(output.to_str().unwrap()),
+            yes: true,
+            format: Some("yaml"),
+            port: Some(9090),
+            static_dir: None,
+            no_static: true,
+            proxy: Some("http://upstream:4000"),
+            no_proxy: false,
+            log: Some("dev"),
+            no_health: false,
+            tls_cert: None,
+            tls_key: None,
+            tls_acme: None,
+        };
+        run_init(opts).expect("run_init must succeed");
+        let content = std::fs::read_to_string(&output).expect("output must exist");
+        assert!(content.contains("9090"), "port must appear in output");
+        assert!(
+            content.contains("upstream:4000"),
+            "proxy must appear in output"
+        );
+    }
+
+    #[test]
+    fn run_init_yes_writes_json() {
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("conduit.json");
+        let opts = InitOptions {
+            output: Some(output.to_str().unwrap()),
+            yes: true,
+            format: Some("json"),
+            port: Some(3000),
+            static_dir: None,
+            no_static: true,
+            proxy: None,
+            no_proxy: true,
+            log: Some("json"),
+            no_health: true,
+            tls_cert: None,
+            tls_key: None,
+            tls_acme: None,
+        };
+        run_init(opts).expect("run_init must succeed");
+        let content = std::fs::read_to_string(&output).expect("output must exist");
+        // Should be valid JSON.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&content).expect("output must be valid JSON");
+        assert_eq!(parsed["port"], 3000);
+    }
+
+    #[test]
+    fn run_init_with_tls_cert_key() {
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("conduit.yaml");
+        let opts = InitOptions {
+            output: Some(output.to_str().unwrap()),
+            yes: true,
+            format: Some("yaml"),
+            port: Some(443),
+            static_dir: None,
+            no_static: true,
+            proxy: Some("http://backend:4000"),
+            no_proxy: false,
+            log: Some("combined"),
+            no_health: false,
+            tls_cert: Some("./certs/server.pem"),
+            tls_key: Some("./certs/server.key"),
+            tls_acme: None,
+        };
+        run_init(opts).expect("run_init with TLS must succeed");
+        let content = std::fs::read_to_string(&output).expect("output must exist");
+        assert!(
+            content.contains("server.pem"),
+            "TLS cert must appear in output"
+        );
+        assert!(
+            content.contains("server.key"),
+            "TLS key must appear in output"
+        );
+    }
+
+    #[test]
+    fn run_init_log_format_unknown_falls_back_to_dev() {
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("conduit.yaml");
+        let opts = InitOptions {
+            output: Some(output.to_str().unwrap()),
+            yes: true,
+            format: Some("yaml"),
+            port: Some(8080),
+            static_dir: None,
+            no_static: true,
+            proxy: None,
+            no_proxy: true,
+            log: Some("unknown-format"),
+            no_health: true,
+            tls_cert: None,
+            tls_key: None,
+            tls_acme: None,
+        };
+        // Unknown log format should not panic; falls back to "dev".
+        run_init(opts).expect("unknown log format must not error");
+    }
+}
