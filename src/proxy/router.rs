@@ -2276,4 +2276,86 @@ mod tests {
             other => panic!("expected Proxy upstream, got {:?}", other),
         }
     }
+
+    // ── pick_url_by_strategy direct tests ─────────────────────────────────────
+
+    #[test]
+    fn pick_url_by_strategy_round_robin_picks_url() {
+        let urls = vec!["http://a:4000".to_owned(), "http://b:4000".to_owned()];
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let hash_ctx = HashCtx {
+            weighted: &[],
+            hash_val: 0,
+        };
+        let result = pick_url_by_strategy(
+            urls.clone(),
+            "route",
+            &counters,
+            None,
+            Some(&LoadBalanceStrategy::RoundRobin),
+            &reg,
+            &hash_ctx,
+        );
+        assert!(result.is_some(), "must pick a URL");
+        let (url, retry, _) = result.unwrap();
+        assert!(
+            url == "http://a:4000" || url == "http://b:4000",
+            "must pick from list: {url}"
+        );
+        assert!(retry.is_none(), "no retry config → no retry state");
+    }
+
+    #[test]
+    fn pick_url_by_strategy_empty_list_returns_none() {
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let hash_ctx = HashCtx {
+            weighted: &[],
+            hash_val: 0,
+        };
+        let result = pick_url_by_strategy(
+            vec![],
+            "route",
+            &counters,
+            None,
+            Some(&LoadBalanceStrategy::RoundRobin),
+            &reg,
+            &hash_ctx,
+        );
+        assert!(result.is_none(), "empty URL list must return None");
+    }
+
+    #[test]
+    fn pick_url_by_strategy_with_retry_returns_retry_state() {
+        let urls = vec!["http://a:4000".to_owned()];
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let hash_ctx = HashCtx {
+            weighted: &[],
+            hash_val: 0,
+        };
+        let retry = RetryConfig {
+            attempts: 3,
+            conditions: vec!["5xx".to_owned()],
+            backoff_ms: None,
+            budget_percent: None,
+            backoff_jitter: None,
+        };
+        let result = pick_url_by_strategy(
+            urls,
+            "route",
+            &counters,
+            Some(&retry),
+            None,
+            &reg,
+            &hash_ctx,
+        );
+        assert!(result.is_some());
+        let (_, retry_state, _) = result.unwrap();
+        assert!(
+            retry_state.is_some(),
+            "retry config must produce retry state"
+        );
+    }
 }
