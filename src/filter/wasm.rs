@@ -1480,6 +1480,56 @@ mod tests {
         );
     }
 
+    // ── response-phase set_response_body and get_plugin_config ───────────────
+
+    #[test]
+    fn response_plugin_sets_body() {
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_set_response_body"
+                (func $set_body (param i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "rewritten body")
+              (func (export "on_response") (param i32) (result i32)
+                (call $set_body (i32.const 0) (i32.const 14))
+                i32.const 0))"#,
+        );
+        let outcome = run_wasm_response(make_response_ctx(200), &p);
+        assert!(
+            outcome.body.is_some(),
+            "response plugin must set body via conduit_set_response_body"
+        );
+        assert_eq!(outcome.body.unwrap().as_ref(), b"rewritten body");
+    }
+
+    #[test]
+    fn response_plugin_reads_plugin_config() {
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_get_plugin_config"
+                (func $get_cfg (param i32 i32) (result i32)))
+              (import "conduit" "conduit_set_response_header"
+                (func $set_hdr (param i32 i32 i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "x-has-config")
+              (func (export "on_response") (param i32) (result i32)
+                (local $n i32)
+                (local.set $n (call $get_cfg (i32.const 100) (i32.const 50)))
+                (if (i32.gt_s (local.get $n) (i32.const 0))
+                  (then
+                    (call $set_hdr (i32.const 0) (i32.const 12) (i32.const 100) (local.get $n))))
+                i32.const 0))"#,
+        );
+        let mut ctx = make_response_ctx(200);
+        ctx.plugin_config = b"test-config".to_vec();
+        let outcome = run_wasm_response(ctx, &p);
+        let has_config_hdr = outcome
+            .added_headers
+            .iter()
+            .any(|(k, _)| k == "x-has-config");
+        assert!(has_config_hdr, "response plugin must read plugin config");
+    }
+
     // ── run_wasm_response ─────────────────────────────────────────────────────
 
     fn make_response_ctx(status: u16) -> WasmResponseContext {
