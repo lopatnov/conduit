@@ -2879,6 +2879,44 @@ mod tests {
     }
 
     #[test]
+    fn build_handler_metrics_returns_some() {
+        let proxy = make_proxy();
+        let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::Metrics {
+            token: None,
+        })));
+        let result = proxy.build_handler(HandlerKind::Metrics, &ctx);
+        assert!(result.is_some(), "Metrics handler must return Some");
+    }
+
+    #[test]
+    fn build_handler_hot_reload_js_returns_some() {
+        let proxy = make_proxy();
+        let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::HotReloadJs)));
+        let result = proxy.build_handler(HandlerKind::HotReloadJs, &ctx);
+        assert!(result.is_some(), "HotReloadJs handler must return Some");
+    }
+
+    #[test]
+    fn build_handler_hot_reload_sse_returns_some() {
+        let proxy = make_proxy();
+        let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::HotReloadSse)));
+        let result = proxy.build_handler(HandlerKind::HotReloadSse, &ctx);
+        assert!(result.is_some(), "HotReloadSse handler must return Some");
+    }
+
+    #[test]
+    fn build_handler_static_file_returns_some() {
+        let proxy = make_proxy();
+        let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::StaticFile {
+            roots: vec![std::path::PathBuf::from("./dist")],
+            options: std::sync::Arc::new(Default::default()),
+            strip_prefix: None,
+        })));
+        let result = proxy.build_handler(HandlerKind::StaticFile, &ctx);
+        assert!(result.is_some(), "StaticFile handler must return Some");
+    }
+
+    #[test]
     fn build_handler_fallback_returns_some() {
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::Fallback)));
