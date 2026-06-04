@@ -706,4 +706,16 @@ mod tests {
         let result = url_to_host_port("https://[::1]/path");
         assert_eq!(result, Some("[::1]:443".to_owned()));
     }
+
+    // ── url_host edge cases ───────────────────────────────────────────────────
+
+    #[test]
+    fn url_host_simple_no_port() {
+        assert_eq!(url_host("http://example.com"), "example.com");
+    }
+
+    #[test]
+    fn url_host_with_fragment() {
+        assert_eq!(url_host("http://example.com:4000#section"), "example.com");
+    }
 }

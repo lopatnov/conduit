@@ -1389,6 +1389,34 @@ mod tests {
         assert_eq!(e.ejection_count, 2, "ejection_count must be incremented");
     }
 
+    // ── override_key ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn override_key_format_uses_nul_separator() {
+        let key = override_key("mysite:8080", "/api");
+        assert_eq!(key, "mysite:8080\0/api");
+    }
+
+    #[test]
+    fn override_key_wildcard_site() {
+        let key = override_key("*", "/api");
+        assert_eq!(key, "*\0/api");
+    }
+
+    // ── UpstreamEntry default values ──────────────────────────────────────────
+
+    #[test]
+    fn upstream_entry_default_is_healthy_and_not_ejected() {
+        let e = UpstreamEntry::default();
+        assert!(e.healthy, "new entry must be healthy by default");
+        assert!(e.ejected_until_secs.is_none());
+        assert!(!e.half_open);
+        assert_eq!(e.ejection_count, 0);
+        assert_eq!(e.consecutive_5xx, 0);
+        // Default EWMA latency matches linkerd's DEFAULT_RTT (30ms = 30000 µs)
+        assert_eq!(e.ewma_latency_us, 30_000.0);
+    }
+
     // ── spawn_health_checks and spawn_connection_warmup ───────────────────────
 
     #[test]
