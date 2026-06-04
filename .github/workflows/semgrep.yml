@@ -11,7 +11,7 @@ on:
   pull_request: {}
   workflow_dispatch: {}
   push:
-    branches: [main, phase-next]
+    branches: [main]   # post-merge scan on main only; PR already covers feature branches
   schedule:
     # Weekly scan: Tuesday 08:00 UTC
     - cron: "0 8 * * 2"

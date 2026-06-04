@@ -5,7 +5,7 @@ name: OSV Scanner
 
 on:
   push:
-    branches: [main, phase-next]
+    branches: [main]   # post-merge scan on main only; PR already covers feature branches
   pull_request:
     branches: [main]
   schedule:

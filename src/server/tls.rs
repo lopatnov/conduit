@@ -229,9 +229,18 @@ mod tests {
 
     // ── build_client_verifier ─────────────────────────────────────────────────
 
+    /// Ensure the rustls crypto provider is installed before any test that
+    /// uses WebPkiClientVerifier.  `validate_cert_key_pem` does this too, but
+    /// when tests run in parallel the order is non-deterministic; calling here
+    /// guarantees the provider is ready regardless of execution order.
+    fn ensure_crypto_provider() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
     #[test]
     fn build_client_verifier_with_valid_ca_required() {
         use super::build_client_verifier;
+        ensure_crypto_provider();
         // Generate a self-signed cert to use as CA.
         let key_pair = rcgen::KeyPair::generate().expect("keygen");
         let cert = rcgen::CertificateParams::new(vec!["ca.example.com".to_string()])
@@ -252,6 +261,7 @@ mod tests {
     #[test]
     fn build_client_verifier_with_valid_ca_optional() {
         use super::build_client_verifier;
+        ensure_crypto_provider();
         let key_pair = rcgen::KeyPair::generate().expect("keygen");
         let cert = rcgen::CertificateParams::new(vec!["ca.example.com".to_string()])
             .expect("params")
@@ -274,6 +284,7 @@ mod tests {
     #[test]
     fn build_client_verifier_missing_file_returns_error() {
         use super::build_client_verifier;
+        ensure_crypto_provider();
         let result = build_client_verifier("/nonexistent/ca.pem", false);
         assert!(result.is_err(), "missing CA file must return error");
     }
@@ -281,6 +292,7 @@ mod tests {
     #[test]
     fn build_client_verifier_empty_pem_returns_error() {
         use super::build_client_verifier;
+        ensure_crypto_provider();
         let dir = tempfile::tempdir().unwrap();
         let ca_path = dir.path().join("empty.pem");
         std::fs::write(&ca_path, "").unwrap();
