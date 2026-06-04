@@ -9,7 +9,7 @@
 
 **Production-grade reverse proxy and API gateway** built on [Cloudflare Pingora](https://github.com/cloudflare/pingora).
 
-A **single binary, single config file** that replaces nginx + Traefik + a rate-limiter + a JWT validator + a file server — with a 14 MB footprint, ~28 ms cold start, and zero runtime dependencies.
+A **single binary, single config file** that handles proxying, static files, auth, rate limiting, caching, scripting, and TLS — with a 14 MB footprint, ~28 ms cold start, and zero runtime dependencies.
 
 ```bash
 npx @lopatnov/conduit init   # generate config interactively
@@ -100,22 +100,19 @@ curl http://localhost:8080/api/users
 
 ### When to choose Conduit
 
-| | Conduit | nginx | Traefik | Caddy |
-|---|---|---|---|---|
-| Config format | YAML / JSON file | Custom DSL | YAML / TOML / CLI | Caddyfile / JSON |
-| JWT validation | ✅ built-in | ⚠️ plugin (Lua) | ⚠️ forward-auth only | ⚠️ plugin |
-| Rate limiting | ✅ built-in | ⚠️ module | ✅ built-in | ⚠️ plugin |
-| Scripting middleware | ✅ Rhai + WASM | ✅ Lua (OpenResty) | ❌ | ❌ |
-| Binary size | **14 MB** | ~1 MB | ~110 MB | ~50 MB |
-| Memory (idle) | **~8 MB** | ~5 MB | ~28 MB | ~15 MB |
-| Hot reload | ✅ zero-drop | ⚠️ reload signal | ✅ | ✅ |
-| Auto-TLS | ✅ ACME built-in | ❌ (certbot) | ✅ | ✅ |
-| WASM plugins | ✅ | ❌ | ❌ | ❌ |
+Conduit is a good fit when you want **everything in one tool** — routing, auth, rate limiting, caching, and scripting — without separate sidecars, plugins, or configuration DSLs. One binary, one config file, one process to operate.
 
-> Conduit is a good fit when you want **a single tool** that handles proxying,
-> auth, rate limiting, and basic scripting without separate sidecars or plugins.
-> For very high traffic (>100 k req/s static files) or complex Layer 4 routing,
-> nginx or Envoy scale better.
+| Capability | Conduit |
+|---|---|
+| Config format | Plain YAML or JSON — readable, diff-friendly, version-controlled |
+| JWT validation | Built-in (HS256 / RS256 / ES256 + JWKS rotation) |
+| Rate limiting | Built-in — per IP, per header, per route, Redis for multi-instance |
+| Scripting middleware | Rhai (embedded, sandboxed) + WebAssembly (Wasmtime, any language) |
+| Binary size | **14 MB** standard · **29 MB** full (all 14 optional features) |
+| Memory (idle) | **~8 MB** |
+| Hot reload | Zero dropped connections |
+| Auto-TLS | ACME / Let's Encrypt built-in |
+| WASM plugins | ✅ — bring your own logic, any compile-to-WASM language |
 
 ---
 
