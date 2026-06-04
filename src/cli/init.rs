@@ -704,4 +704,57 @@ mod tests {
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("8080"), "default port must be 8080");
     }
+
+    #[test]
+    fn run_init_log_json_format() {
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("conduit.yaml");
+        let opts = InitOptions {
+            output: Some(output.to_str().unwrap()),
+            yes: true,
+            format: Some("yaml"),
+            port: Some(8080),
+            static_dir: None,
+            no_static: true,
+            proxy: None,
+            no_proxy: true,
+            log: Some("json"),
+            no_health: false,
+            tls_cert: None,
+            tls_key: None,
+            tls_acme: None,
+        };
+        run_init(opts).expect("log: json must not error");
+        let content = std::fs::read_to_string(&output).unwrap();
+        assert!(content.contains("json"), "log: json must appear in output");
+    }
+
+    #[test]
+    fn run_init_overrides_format_from_output_extension() {
+        // When --format is omitted, the output extension determines format.
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("config.json");
+        let opts = InitOptions {
+            output: Some(output.to_str().unwrap()),
+            yes: true,
+            format: None, // no explicit format
+            port: Some(9000),
+            static_dir: None,
+            no_static: true,
+            proxy: None,
+            no_proxy: true,
+            log: Some("dev"),
+            no_health: true,
+            tls_cert: None,
+            tls_key: None,
+            tls_acme: None,
+        };
+        run_init(opts).expect("extension-inferred format must succeed");
+        // Output must be valid JSON (config.json → JSON format).
+        let content = std::fs::read_to_string(&output).unwrap();
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&content).is_ok(),
+            "output inferred as JSON must be valid JSON: {content:.50}"
+        );
+    }
 }
