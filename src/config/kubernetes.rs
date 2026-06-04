@@ -179,12 +179,7 @@ impl Provider for KubernetesProvider {
 
     async fn run(&self, tx: mpsc::Sender<AppConfig>) -> Result<()> {
         let client = Client::try_default().await?;
-
-        let api: Api<ConduitSite> = if self.namespace == "*" {
-            Api::all(client.clone())
-        } else {
-            Api::namespaced(client.clone(), &self.namespace)
-        };
+        let api: Api<ConduitSite> = make_api(&client, &self.namespace);
 
         // Build and send the initial config from the current list of CRDs.
         let list = api.list(&Default::default()).await?;
@@ -204,38 +199,8 @@ impl Provider for KubernetesProvider {
         while let Some(event) = stream.next().await {
             match event {
                 Ok(_) => {
-                    // Re-list to get a consistent snapshot after any change.
-                    // In production this could be optimised to maintain an
-                    // in-memory cache updated by the events.
-                    let api2: Api<ConduitSite> = if self.namespace == "*" {
-                        Api::all(client.clone())
-                    } else {
-                        Api::namespaced(client.clone(), &self.namespace)
-                    };
-                    match api2.list(&Default::default()).await {
-                        Ok(list) => {
-                            let cfg = match build_app_config(list.items.iter(), &self.admin_bind) {
-                                Ok(c) => c,
-                                Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "failed to rebuild config from ConduitSite CRDs — keeping current config"
-                                    );
-                                    continue;
-                                }
-                            };
-                            tracing::info!(
-                                provider = "kubernetes",
-                                sites = list.items.len(),
-                                "config updated from ConduitSite CRDs"
-                            );
-                            if tx.send(cfg).await.is_err() {
-                                return Ok(());
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to re-list ConduitSite CRDs after event");
-                        }
+                    if !handle_watch_event(&client, &self.namespace, &self.admin_bind, &tx).await {
+                        return Ok(());
                     }
                 }
                 Err(e) => {
@@ -245,6 +210,58 @@ impl Provider for KubernetesProvider {
         }
 
         Ok(())
+    }
+}
+
+// ── Internal watch helpers ────────────────────────────────────────────────────
+
+/// Create a typed API client scoped to the given namespace.
+/// Use `"*"` to watch all namespaces.
+fn make_api(client: &Client, namespace: &str) -> Api<ConduitSite> {
+    if namespace == "*" {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), namespace)
+    }
+}
+
+/// Re-list all `ConduitSite` CRDs and send a fresh [`AppConfig`] on the channel.
+///
+/// Returns `true` if the update was sent (or was a no-op), `false` when the
+/// receiver has been dropped and the caller should shut down.
+async fn handle_watch_event(
+    client: &Client,
+    namespace: &str,
+    admin_bind: &str,
+    tx: &mpsc::Sender<AppConfig>,
+) -> bool {
+    // Re-list to get a consistent snapshot after any change.
+    // In production this could be optimised to maintain an in-memory cache
+    // updated by the events.
+    let api: Api<ConduitSite> = make_api(client, namespace);
+    match api.list(&Default::default()).await {
+        Ok(list) => {
+            let cfg = match build_app_config(list.items.iter(), admin_bind) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to rebuild config from ConduitSite CRDs — keeping current config"
+                    );
+                    return true;
+                }
+            };
+            tracing::info!(
+                provider = "kubernetes",
+                sites = list.items.len(),
+                "config updated from ConduitSite CRDs"
+            );
+            tx.send(cfg).await.is_ok()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to re-list ConduitSite CRDs after event");
+            true
+        }
     }
 }
 

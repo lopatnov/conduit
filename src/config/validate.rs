@@ -4,9 +4,10 @@ use std::time::{Duration, SystemTime};
 use url::Url as ParsedUrl;
 
 use crate::config::schema::{
-    AppConfig, FallbackConfig, IpFilterConfig, LoadBalanceStrategy, MetricsConfig, MiddlewareEntry,
-    ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig, RedirectRule,
-    RewriteRule, SiteConfig, TlsConfig, UploadConfig,
+    ApiKeyConfig, AppConfig, Consumer, ConsumerJwtConfig, ConsumersSharedJwtConfig, FallbackConfig,
+    IpFilterConfig, LoadBalanceStrategy, MetricsConfig, MiddlewareEntry, ProxyConfig,
+    ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig, RedirectRule, RewriteRule,
+    SiteConfig, TcpConfig, TlsClientAuth, TlsConfig, UploadConfig,
 };
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -53,6 +54,17 @@ pub fn validate(config: &AppConfig) -> Vec<ValidationError> {
 pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
     let mut warnings: Vec<String> = Vec::new();
 
+    check_global_feature_warnings(config, &mut warnings);
+    check_per_site_feature_warnings(config, &mut warnings);
+    check_proxy_loop_warnings(config, &mut warnings);
+    check_jwt_secret_warnings(config, &mut warnings);
+    check_metrics_auth_warnings(config, &mut warnings);
+
+    warnings
+}
+
+/// Check warnings for global-level feature flags (e.g. OTLP).
+fn check_global_feature_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
     // ── global.otlp ───────────────────────────────────────────────────────────
     #[cfg(not(feature = "otlp"))]
     if config
@@ -68,96 +80,92 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
                 .to_owned(),
         );
     }
+    #[cfg(feature = "otlp")]
+    let _ = (config, &warnings);
+}
 
-    // ── middleware type: "wasm" ───────────────────────────────────────────────
-    #[cfg(not(feature = "wasm"))]
-    {
-        for (i, site) in config.sites.iter().enumerate() {
-            if let Some(middleware) = &site.middleware {
-                let wasm_entries: Vec<usize> = middleware
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, e)| e.r#type == "wasm")
-                    .map(|(j, _)| j)
-                    .collect();
-                for j in wasm_entries {
-                    warnings.push(format!(
-                        "sites[{i}].middleware[{j}] has type \"wasm\" but Conduit was compiled \
-                         without the `wasm` feature — this middleware entry will be ignored. \
-                         Recompile with `--features wasm` to enable."
-                    ));
-                }
-            }
-        }
-    }
-
-    // ── Rhai scripting (feature: rhai) ───────────────────────────────────────
-    #[cfg(not(feature = "rhai"))]
+/// Check per-site feature-gated option warnings.
+fn check_per_site_feature_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
     for (i, site) in config.sites.iter().enumerate() {
-        if let Some(middleware) = &site.middleware {
-            for (j, e) in middleware.iter().enumerate() {
-                if e.r#type == "script" {
-                    warnings.push(format!(
-                        "sites[{i}].middleware[{j}] has type \"script\" but Conduit was compiled \
-                         without the `rhai` feature — this entry will be ignored. \
-                         Recompile with `--features rhai` to enable."
-                    ));
-                }
-            }
-        }
+        check_site_middleware_feature_warnings(i, site, warnings);
+        check_site_simple_feature_warnings(i, site, warnings);
     }
+}
 
-    // ── JWT authentication (feature: jwt) ────────────────────────────────────
-    #[cfg(not(feature = "jwt"))]
-    for (i, site) in config.sites.iter().enumerate() {
-        if site.jwt_auth.is_some() {
+/// Check middleware-level feature warnings (wasm, rhai) for a single site.
+fn check_site_middleware_feature_warnings(i: usize, site: &SiteConfig, warnings: &mut Vec<String>) {
+    let Some(middleware) = &site.middleware else {
+        return;
+    };
+    for (j, entry) in middleware.iter().enumerate() {
+        // ── middleware type: "wasm" ───────────────────────────────────────────
+        #[cfg(not(feature = "wasm"))]
+        if entry.r#type == "wasm" {
             warnings.push(format!(
-                "sites[{i}].jwtAuth is configured but Conduit was compiled without the `jwt` \
-                 feature — JWT authentication will be disabled. \
-                 Recompile with `--features jwt` to enable."
+                "sites[{i}].middleware[{j}] has type \"wasm\" but Conduit was compiled \
+                 without the `wasm` feature — this middleware entry will be ignored. \
+                 Recompile with `--features wasm` to enable."
             ));
         }
+        // ── Rhai scripting (feature: rhai) ────────────────────────────────────
+        #[cfg(not(feature = "rhai"))]
+        if entry.r#type == "script" {
+            warnings.push(format!(
+                "sites[{i}].middleware[{j}] has type \"script\" but Conduit was compiled \
+                 without the `rhai` feature — this entry will be ignored. \
+                 Recompile with `--features rhai` to enable."
+            ));
+        }
+        #[cfg(all(feature = "wasm", feature = "rhai"))]
+        let _ = (i, j, entry, &warnings);
+    }
+}
+
+/// Check simple (non-middleware) per-site feature warnings.
+fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mut Vec<String>) {
+    // ── JWT authentication (feature: jwt) ────────────────────────────────────
+    #[cfg(not(feature = "jwt"))]
+    if site.jwt_auth.is_some() {
+        warnings.push(format!(
+            "sites[{i}].jwtAuth is configured but Conduit was compiled without the `jwt` \
+             feature — JWT authentication will be disabled. \
+             Recompile with `--features jwt` to enable."
+        ));
     }
 
     // ── ForwardAuth (feature: forward-auth) ──────────────────────────────────
     #[cfg(not(feature = "forward-auth"))]
-    for (i, site) in config.sites.iter().enumerate() {
-        if site.forward_auth.is_some() {
-            warnings.push(format!(
-                "sites[{i}].forwardAuth is configured but Conduit was compiled without the \
-                 `forward-auth` feature — ForwardAuth will be disabled. \
-                 Recompile with `--features forward-auth` to enable."
-            ));
-        }
+    if site.forward_auth.is_some() {
+        warnings.push(format!(
+            "sites[{i}].forwardAuth is configured but Conduit was compiled without the \
+             `forward-auth` feature — ForwardAuth will be disabled. \
+             Recompile with `--features forward-auth` to enable."
+        ));
     }
 
     // ── ACME / auto-TLS (feature: acme) ──────────────────────────────────────
     #[cfg(not(feature = "acme"))]
-    for (i, site) in config.sites.iter().enumerate() {
-        if site.tls.as_ref().and_then(|t| t.acme.as_ref()).is_some() {
-            warnings.push(format!(
-                "sites[{i}].tls.acme is configured but Conduit was compiled without the `acme` \
-                 feature — automatic TLS certificate provisioning will be disabled. \
-                 Recompile with `--features acme` to enable."
-            ));
-        }
+    if site.tls.as_ref().and_then(|t| t.acme.as_ref()).is_some() {
+        warnings.push(format!(
+            "sites[{i}].tls.acme is configured but Conduit was compiled without the `acme` \
+             feature — automatic TLS certificate provisioning will be disabled. \
+             Recompile with `--features acme` to enable."
+        ));
     }
 
     // ── TCP proxy (feature: tcp) ──────────────────────────────────────────────
     #[cfg(not(feature = "tcp"))]
-    for (i, site) in config.sites.iter().enumerate() {
-        if site.tcp.is_some() {
-            warnings.push(format!(
-                "sites[{i}].tcp is configured but Conduit was compiled without the `tcp` \
-                 feature — TCP proxy mode will be disabled. \
-                 Recompile with `--features tcp` to enable."
-            ));
-        }
+    if site.tcp.is_some() {
+        warnings.push(format!(
+            "sites[{i}].tcp is configured but Conduit was compiled without the `tcp` \
+             feature — TCP proxy mode will be disabled. \
+             Recompile with `--features tcp` to enable."
+        ));
     }
 
     // ── Redis (feature: redis) ────────────────────────────────────────────────
     #[cfg(not(feature = "redis"))]
-    for (i, site) in config.sites.iter().enumerate() {
+    {
         let uses_redis = site
             .rate_limit
             .as_ref()
@@ -175,17 +183,8 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
 
     // ── Cache (feature: cache) ────────────────────────────────────────────────
     #[cfg(not(feature = "cache"))]
-    for (i, site) in config.sites.iter().enumerate() {
-        let has_cache = match &site.proxy {
-            Some(crate::config::schema::ProxyConfig::Routes(routes)) => routes.values().any(|t| {
-                if let crate::config::schema::ProxyRouteTarget::Full(cfg) = t {
-                    cfg.cache.is_some()
-                } else {
-                    false
-                }
-            }),
-            _ => false,
-        };
+    {
+        let has_cache = site_has_cache_config(site);
         if has_cache {
             warnings.push(format!(
                 "sites[{i}] has proxy routes with cache configured but Conduit was compiled \
@@ -197,31 +196,54 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
 
     // ── Upload (feature: upload) ──────────────────────────────────────────────
     #[cfg(not(feature = "upload"))]
-    for (i, site) in config.sites.iter().enumerate() {
-        if site.upload.is_some() {
-            warnings.push(format!(
-                "sites[{i}].upload is configured but Conduit was compiled without the `upload` \
-                 feature — file upload will be disabled. \
-                 Recompile with `--features upload` to enable."
-            ));
-        }
+    if site.upload.is_some() {
+        warnings.push(format!(
+            "sites[{i}].upload is configured but Conduit was compiled without the `upload` \
+             feature — file upload will be disabled. \
+             Recompile with `--features upload` to enable."
+        ));
     }
 
     // ── Fault injection (feature: fault-injection) ────────────────────────────
     #[cfg(not(feature = "fault-injection"))]
-    for (i, site) in config.sites.iter().enumerate() {
-        if site.fault_injection.is_some() {
-            warnings.push(format!(
-                "sites[{i}].faultInjection is configured but Conduit was compiled without the \
-                 `fault-injection` feature — fault injection will be disabled. \
-                 Recompile with `--features fault-injection` to enable."
-            ));
-        }
+    if site.fault_injection.is_some() {
+        warnings.push(format!(
+            "sites[{i}].faultInjection is configured but Conduit was compiled without the \
+             `fault-injection` feature — fault injection will be disabled. \
+             Recompile with `--features fault-injection` to enable."
+        ));
     }
 
-    // ── Proxy loop detection ─────────────────────────────────────────────────
-    // Warn when a proxy target URL points back to a port this same Conduit
-    // instance is listening on — that creates an infinite request loop.
+    // Suppress unused-variable warning when all per-site features are enabled.
+    #[cfg(all(
+        feature = "jwt",
+        feature = "forward-auth",
+        feature = "acme",
+        feature = "tcp",
+        feature = "redis",
+        feature = "cache",
+        feature = "upload",
+        feature = "fault-injection"
+    ))]
+    let _ = (i, site, warnings);
+}
+
+/// Return `true` when any proxy route in the site has a `cache` config block.
+#[cfg(not(feature = "cache"))]
+fn site_has_cache_config(site: &SiteConfig) -> bool {
+    match &site.proxy {
+        Some(crate::config::schema::ProxyConfig::Routes(routes)) => routes.values().any(|t| {
+            matches!(
+                t,
+                crate::config::schema::ProxyRouteTarget::Full(cfg) if cfg.cache.is_some()
+            )
+        }),
+        _ => false,
+    }
+}
+
+/// Warn when a proxy target points back to a port Conduit itself is listening on.
+fn check_proxy_loop_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
     let listening_ports: Vec<u16> = config.sites.iter().map(effective_port).collect();
     for (i, site) in config.sites.iter().enumerate() {
         let targets = collect_proxy_targets(site);
@@ -237,12 +259,10 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
             }
         }
     }
+}
 
-    // ── Weak JWT secrets ─────────────────────────────────────────────────────
-    // JWT HMAC secrets shorter than 32 bytes can be brute-forced or guessed.
-    // RFC 7518 requires secrets be at least as long as the hash output
-    // (32 bytes for HS256, 48 for HS384, 64 for HS512).  32 bytes minimum is
-    // the practical floor.
+/// Warn when JWT HMAC secrets are shorter than the 32-byte minimum.
+fn check_jwt_secret_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
     for (i, site) in config.sites.iter().enumerate() {
         if let Some(jwt) = &site.jwt_auth {
             if let Some(secret) = &jwt.secret {
@@ -256,28 +276,32 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
                 }
             }
         }
-        // Check consumer-level JWT secrets.
-        if let Some(consumers_cfg) = &site.consumers {
-            for (j, consumer) in consumers_cfg.consumers.iter().enumerate() {
-                if let Some(jwt) = &consumer.jwt {
-                    if let Some(secret) = &jwt.secret {
-                        if secret.len() < 32 {
-                            warnings.push(format!(
-                                "sites[{i}].consumers.consumers[{j}].jwt.secret is only {} bytes \
-                                 — minimum recommended length is 32 bytes.",
-                                secret.len()
-                            ));
-                        }
-                    }
+        check_consumer_jwt_secret_warnings(i, site, warnings);
+    }
+}
+
+/// Warn when consumer-level JWT secrets are too short.
+fn check_consumer_jwt_secret_warnings(i: usize, site: &SiteConfig, warnings: &mut Vec<String>) {
+    let Some(consumers_cfg) = &site.consumers else {
+        return;
+    };
+    for (j, consumer) in consumers_cfg.consumers.iter().enumerate() {
+        if let Some(jwt) = &consumer.jwt {
+            if let Some(secret) = &jwt.secret {
+                if secret.len() < 32 {
+                    warnings.push(format!(
+                        "sites[{i}].consumers.consumers[{j}].jwt.secret is only {} bytes \
+                         — minimum recommended length is 32 bytes.",
+                        secret.len()
+                    ));
                 }
             }
         }
     }
+}
 
-    // ── Metrics endpoint without authentication ───────────────────────────────
-    // The /__metrics__ endpoint exposes internal counters (upstreams, routes,
-    // error rates, etc.) that help attackers map the system topology.
-    // A token should always be configured in production.
+/// Warn when a metrics endpoint has no auth token configured.
+fn check_metrics_auth_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
     for (i, site) in config.sites.iter().enumerate() {
         if let Some(metrics) = &site.metrics {
             if metrics.token.is_none() {
@@ -289,15 +313,30 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
             }
         }
     }
-
-    warnings
 }
 
 // ── Proxy-loop helpers ─────────────────────────────────────────────────────
 
+/// Extract all URLs from a single `ProxyRouteTarget` into `out`.
+fn collect_route_target_urls(target: &ProxyRouteTarget, out: &mut Vec<String>) {
+    match target {
+        ProxyRouteTarget::Url(u) => out.push(u.clone()),
+        ProxyRouteTarget::RoundRobin(urls) => out.extend(urls.iter().cloned()),
+        ProxyRouteTarget::Full(cfg) => {
+            for t in &cfg.targets {
+                let url = match t {
+                    crate::config::schema::ProxyTarget::Simple(u) => u.clone(),
+                    crate::config::schema::ProxyTarget::Weighted(w) => w.url.clone(),
+                };
+                out.push(url);
+            }
+        }
+    }
+}
+
 /// Collect every proxy upstream URL configured for a site (from all proxy modes).
 fn collect_proxy_targets(site: &SiteConfig) -> Vec<String> {
-    use crate::config::schema::{ProxyConfig, ProxyRouteTarget};
+    use crate::config::schema::ProxyConfig;
     let mut out = Vec::new();
 
     if let Some(proxy) = &site.proxy {
@@ -305,22 +344,7 @@ fn collect_proxy_targets(site: &SiteConfig) -> Vec<String> {
             ProxyConfig::Single(url) => out.push(url.clone()),
             ProxyConfig::Routes(routes) => {
                 for target in routes.values() {
-                    match target {
-                        ProxyRouteTarget::Url(u) => out.push(u.clone()),
-                        ProxyRouteTarget::RoundRobin(urls) => out.extend(urls.iter().cloned()),
-                        ProxyRouteTarget::Full(cfg) => {
-                            for t in &cfg.targets {
-                                match t {
-                                    crate::config::schema::ProxyTarget::Simple(u) => {
-                                        out.push(u.clone())
-                                    }
-                                    crate::config::schema::ProxyTarget::Weighted(w) => {
-                                        out.push(w.url.clone())
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    collect_route_target_urls(target, &mut out);
                 }
             }
         }
@@ -330,22 +354,7 @@ fn collect_proxy_targets(site: &SiteConfig) -> Vec<String> {
     if let Some(routes) = &site.routes {
         for route in routes {
             if let Some(target) = &route.proxy {
-                match target {
-                    ProxyRouteTarget::Url(u) => out.push(u.clone()),
-                    ProxyRouteTarget::RoundRobin(urls) => out.extend(urls.iter().cloned()),
-                    ProxyRouteTarget::Full(cfg) => {
-                        for t in &cfg.targets {
-                            match t {
-                                crate::config::schema::ProxyTarget::Simple(u) => {
-                                    out.push(u.clone())
-                                }
-                                crate::config::schema::ProxyTarget::Weighted(w) => {
-                                    out.push(w.url.clone())
-                                }
-                            }
-                        }
-                    }
-                }
+                collect_route_target_urls(target, &mut out);
             }
         }
     }
@@ -378,6 +387,53 @@ fn effective_port(site: &SiteConfig) -> u16 {
         .unwrap_or(if site.tls.is_some() { 443 } else { 80 })
 }
 
+fn check_tcp_site_port_conflicts(
+    i: usize,
+    port: u16,
+    tcp_ports: &mut HashMap<u16, usize>,
+    seen: &HashMap<(String, u16), usize>,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let Some(prev) = tcp_ports.insert(port, i) {
+        errors.push(ValidationError::new(
+            format!("sites[{i}].port"),
+            format!("Port {port} is already used by a TCP proxy site at sites[{prev}]"),
+        ));
+    }
+    for key in seen.keys().filter(|(_, p)| *p == port) {
+        errors.push(ValidationError::new(
+            format!("sites[{i}].port"),
+            format!(
+                "TCP proxy port {port} conflicts with HTTP site '{}:{port}'",
+                key.0
+            ),
+        ));
+    }
+}
+
+fn check_http_site_port_conflicts(
+    i: usize,
+    site: &SiteConfig,
+    port: u16,
+    tcp_ports: &HashMap<u16, usize>,
+    seen: &mut HashMap<(String, u16), usize>,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let Some(tcp_idx) = tcp_ports.get(&port) {
+        errors.push(ValidationError::new(
+            format!("sites[{i}].port"),
+            format!("Port {port} is already used by a TCP proxy site at sites[{tcp_idx}]"),
+        ));
+    }
+    let host = site.host.clone().unwrap_or_else(|| "*".to_string());
+    if let Some(prev) = seen.insert((host.clone(), port), i) {
+        errors.push(ValidationError::new(
+            format!("sites[{i}]"),
+            format!("Duplicate host+port '{host}:{port}' — already defined at sites[{prev}]"),
+        ));
+    }
+}
+
 fn validate_no_duplicate_host_port(config: &AppConfig, errors: &mut Vec<ValidationError>) {
     // Track ports claimed by TCP proxy sites — TCP binds the OS port regardless of host,
     // so no other site (HTTP or TCP) may use the same port number.
@@ -386,42 +442,10 @@ fn validate_no_duplicate_host_port(config: &AppConfig, errors: &mut Vec<Validati
 
     for (i, site) in config.sites.iter().enumerate() {
         let port = effective_port(site);
-
         if site.tcp.is_some() {
-            // TCP site: port must be completely unique.
-            if let Some(prev) = tcp_ports.insert(port, i) {
-                errors.push(ValidationError::new(
-                    format!("sites[{i}].port"),
-                    format!("Port {port} is already used by a TCP proxy site at sites[{prev}]"),
-                ));
-            }
-            // Also check against any previously registered HTTP sites on this port.
-            for key in seen.keys().filter(|(_, p)| *p == port) {
-                errors.push(ValidationError::new(
-                    format!("sites[{i}].port"),
-                    format!(
-                        "TCP proxy port {port} conflicts with HTTP site '{}:{port}'",
-                        key.0
-                    ),
-                ));
-            }
+            check_tcp_site_port_conflicts(i, port, &mut tcp_ports, &seen, errors);
         } else {
-            // HTTP site: check against TCP ports first.
-            if let Some(tcp_idx) = tcp_ports.get(&port) {
-                errors.push(ValidationError::new(
-                    format!("sites[{i}].port"),
-                    format!("Port {port} is already used by a TCP proxy site at sites[{tcp_idx}]"),
-                ));
-            }
-            let host = site.host.clone().unwrap_or_else(|| "*".to_string());
-            if let Some(prev) = seen.insert((host.clone(), port), i) {
-                errors.push(ValidationError::new(
-                    format!("sites[{i}]"),
-                    format!(
-                        "Duplicate host+port '{host}:{port}' — already defined at sites[{prev}]"
-                    ),
-                ));
-            }
+            check_http_site_port_conflicts(i, site, port, &tcp_ports, &mut seen, errors);
         }
     }
 }
@@ -451,64 +475,12 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
     if let Some(tls) = &site.tls {
         validate_tls(tls, &format!("{prefix}.tls"), errors);
     }
-
-    // TCP proxy site validation.
     if let Some(tcp) = &site.tcp {
-        if tcp.targets.is_empty() {
-            errors.push(ValidationError::new(
-                format!("{prefix}.tcp.targets"),
-                "at least one target is required for a TCP proxy site",
-            ));
-        }
-        for (i, t) in tcp.targets.iter().enumerate() {
-            // Targets must be "host:port" — no http:// prefix.
-            if t.starts_with("http://") || t.starts_with("https://") {
-                errors.push(ValidationError::new(
-                    format!("{prefix}.tcp.targets[{i}]"),
-                    format!("TCP target \"{t}\" must be a plain host:port — no http:// prefix"),
-                ));
-            } else {
-                // Validate host:port — use SocketAddr parsing which handles both
-                // IPv4 ("host:port") and IPv6 ("[::1]:port") correctly.
-                // We add a dummy scheme so the string can be parsed as a socket addr.
-                let valid = t.parse::<std::net::SocketAddr>().is_ok()
-                    || t.rsplit_once(':')
-                        .map(|(host, port)| {
-                            !host.is_empty()
-                                && !port.is_empty()
-                                && port.chars().all(|c| c.is_ascii_digit())
-                        })
-                        .unwrap_or(false);
-                if !valid {
-                    errors.push(ValidationError::new(
-                        format!("{prefix}.tcp.targets[{i}]"),
-                        format!(
-                            "TCP target \"{t}\" must include a port, e.g. \"host:3306\" \
-                             or \"[::1]:3306\" for IPv6"
-                        ),
-                    ));
-                }
-            }
-        }
-        // TCP sites cannot be combined with HTTP features.
-        if site.proxy.is_some() {
-            errors.push(ValidationError::new(
-                format!("{prefix}.tcp"),
-                "tcp cannot be combined with proxy on the same site",
-            ));
-        }
-        if site.static_files.is_some() {
-            errors.push(ValidationError::new(
-                format!("{prefix}.tcp"),
-                "tcp cannot be combined with static on the same site",
-            ));
-        }
+        validate_tcp_site(tcp, site, prefix, errors);
     }
-
     if let Some(proxy) = &site.proxy {
         validate_proxy(proxy, &format!("{prefix}.proxy"), errors);
     }
-    // Validate each entry in the `routes` array (Phase 3.6).
     if let Some(routes) = &site.routes {
         for (i, route) in routes.iter().enumerate() {
             if let Some(ProxyRouteTarget::Full(cfg)) = &route.proxy {
@@ -538,22 +510,7 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
         validate_middleware(middleware, prefix, errors);
     }
     if let Some(api_key_cfg) = &site.api_key {
-        // Empty strings in the key list create a bypass: when a client sends
-        // no X-Api-Key header, `provided` defaults to "", which matches "".
-        for (i, key) in api_key_cfg.keys.iter().enumerate() {
-            if key.is_empty() {
-                errors.push(ValidationError::new(
-                    format!("{prefix}.apiKey.keys[{i}]"),
-                    "API key must not be empty — an empty key allows unauthenticated access",
-                ));
-            }
-        }
-        if api_key_cfg.keys.is_empty() {
-            errors.push(ValidationError::new(
-                format!("{prefix}.apiKey.keys"),
-                "apiKey.keys must contain at least one key",
-            ));
-        }
+        validate_api_key(api_key_cfg, prefix, errors);
     }
     if let Some(jwt) = &site.jwt_auth {
         validate_jwt_auth(jwt, &format!("{prefix}.jwtAuth"), errors);
@@ -569,103 +526,207 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
     }
 }
 
+/// Validate a TCP proxy site configuration.
+fn validate_tcp_site(
+    tcp: &TcpConfig,
+    site: &SiteConfig,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    if tcp.targets.is_empty() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.tcp.targets"),
+            "at least one target is required for a TCP proxy site",
+        ));
+    }
+    for (i, t) in tcp.targets.iter().enumerate() {
+        // Targets must be "host:port" — no http:// prefix.
+        if t.starts_with("http://") || t.starts_with("https://") {
+            errors.push(ValidationError::new(
+                format!("{prefix}.tcp.targets[{i}]"),
+                format!("TCP target \"{t}\" must be a plain host:port — no http:// prefix"),
+            ));
+        } else {
+            // Validate host:port using SocketAddr parsing (handles IPv4 and IPv6).
+            let valid = t.parse::<std::net::SocketAddr>().is_ok()
+                || t.rsplit_once(':')
+                    .map(|(host, port)| {
+                        !host.is_empty()
+                            && !port.is_empty()
+                            && port.chars().all(|c| c.is_ascii_digit())
+                    })
+                    .unwrap_or(false);
+            if !valid {
+                errors.push(ValidationError::new(
+                    format!("{prefix}.tcp.targets[{i}]"),
+                    format!(
+                        "TCP target \"{t}\" must include a port, e.g. \"host:3306\" \
+                         or \"[::1]:3306\" for IPv6"
+                    ),
+                ));
+            }
+        }
+    }
+    // TCP sites cannot be combined with HTTP features.
+    if site.proxy.is_some() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.tcp"),
+            "tcp cannot be combined with proxy on the same site",
+        ));
+    }
+    if site.static_files.is_some() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.tcp"),
+            "tcp cannot be combined with static on the same site",
+        ));
+    }
+}
+
+/// Validate an API key configuration block.
+///
+/// Empty strings in the key list create a bypass: when a client sends no
+/// X-Api-Key header, `provided` defaults to `""` which matches `""`.
+fn validate_api_key(api_key_cfg: &ApiKeyConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
+    for (i, key) in api_key_cfg.keys.iter().enumerate() {
+        if key.is_empty() {
+            errors.push(ValidationError::new(
+                format!("{prefix}.apiKey.keys[{i}]"),
+                "API key must not be empty — an empty key allows unauthenticated access",
+            ));
+        }
+    }
+    if api_key_cfg.keys.is_empty() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.apiKey.keys"),
+            "apiKey.keys must contain at least one key",
+        ));
+    }
+}
+
 fn validate_consumers(
     cfg: &crate::config::schema::ConsumersConfig,
     prefix: &str,
     errors: &mut Vec<ValidationError>,
 ) {
-    // Validate sharedJwt config if present.
     if let Some(ref sj) = cfg.shared_jwt {
-        let sj_prefix = format!("{prefix}.sharedJwt");
-        let has_secret = sj.secret.is_some();
-        let has_jwks = sj.jwks_url.is_some();
-        if !has_secret && !has_jwks {
-            errors.push(ValidationError::new(
-                sj_prefix.clone(),
-                "consumers.sharedJwt requires either \"secret\" (HS256) or \"jwksUrl\" (RS256/ES256)",
-            ));
-        }
-        if has_secret && has_jwks {
-            errors.push(ValidationError::new(
-                sj_prefix.clone(),
-                "consumers.sharedJwt.secret and sharedJwt.jwksUrl are mutually exclusive",
-            ));
-        }
-        if let Some(url) = &sj.jwks_url {
-            if !url.starts_with("http://") && !url.starts_with("https://") {
-                errors.push(ValidationError::new(
-                    format!("{sj_prefix}.jwksUrl"),
-                    "consumers.sharedJwt.jwksUrl must be an http:// or https:// URL",
-                ));
-            }
-        }
+        validate_shared_jwt(sj, prefix, errors);
     }
-
+    let has_shared_jwt = cfg.shared_jwt.is_some();
     let mut seen_usernames = std::collections::HashSet::new();
     for (i, c) in cfg.consumers.iter().enumerate() {
-        let entry_prefix = format!("{prefix}.consumers[{i}]");
-        if c.username.is_empty() {
+        validate_consumer_entry(c, i, prefix, has_shared_jwt, &mut seen_usernames, errors);
+    }
+}
+
+/// Validate the `consumers.sharedJwt` block.
+fn validate_shared_jwt(
+    sj: &ConsumersSharedJwtConfig,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let sj_prefix = format!("{prefix}.sharedJwt");
+    let has_secret = sj.secret.is_some();
+    let has_jwks = sj.jwks_url.is_some();
+    if !has_secret && !has_jwks {
+        errors.push(ValidationError::new(
+            sj_prefix.clone(),
+            "consumers.sharedJwt requires either \"secret\" (HS256) or \"jwksUrl\" (RS256/ES256)",
+        ));
+    }
+    if has_secret && has_jwks {
+        errors.push(ValidationError::new(
+            sj_prefix.clone(),
+            "consumers.sharedJwt.secret and sharedJwt.jwksUrl are mutually exclusive",
+        ));
+    }
+    if let Some(url) = &sj.jwks_url {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
             errors.push(ValidationError::new(
-                format!("{entry_prefix}.username"),
-                "consumer username must not be empty",
+                format!("{sj_prefix}.jwksUrl"),
+                "consumers.sharedJwt.jwksUrl must be an http:// or https:// URL",
             ));
         }
-        // When sharedJwt is configured at the ConsumersConfig level, individual
-        // consumers don't need their own credentials — they're identified by the
-        // sharedJwt sub claim.  A credential is only required when sharedJwt is absent.
-        let has_shared_jwt = cfg.shared_jwt.is_some();
-        // Empty consumer API key creates bypass (same as site-level).
-        if let Some(ref key) = c.api_key {
-            if key.is_empty() {
-                errors.push(ValidationError::new(
-                    format!("{entry_prefix}.apiKey"),
-                    "consumer apiKey must not be empty — an empty key allows unauthenticated access",
-                ));
-            }
-        }
-        if !has_shared_jwt && c.api_key.is_none() && c.basic_auth.is_none() && c.jwt.is_none() {
+    }
+}
+
+/// Validate a single consumer entry.
+fn validate_consumer_entry(
+    c: &Consumer,
+    i: usize,
+    prefix: &str,
+    has_shared_jwt: bool,
+    seen_usernames: &mut std::collections::HashSet<String>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let entry_prefix = format!("{prefix}.consumers[{i}]");
+    if c.username.is_empty() {
+        errors.push(ValidationError::new(
+            format!("{entry_prefix}.username"),
+            "consumer username must not be empty",
+        ));
+    }
+    // Empty consumer API key creates a bypass (same as site-level).
+    if let Some(ref key) = c.api_key {
+        if key.is_empty() {
             errors.push(ValidationError::new(
-                entry_prefix.clone(),
-                "consumer requires at least one credential: apiKey, basicAuth, jwt (or configure consumers.sharedJwt)",
+                format!("{entry_prefix}.apiKey"),
+                "consumer apiKey must not be empty — an empty key allows unauthenticated access",
             ));
         }
-        if let Some(ref jwt_cfg) = c.jwt {
-            let has_secret = jwt_cfg.secret.is_some();
-            let has_jwks = jwt_cfg.jwks_url.is_some();
-            if !has_secret && !has_jwks {
-                errors.push(ValidationError::new(
-                    format!("{entry_prefix}.jwt"),
-                    "consumer jwt requires either \"secret\" (HS256) or \"jwksUrl\" (RS256/ES256)",
-                ));
-            }
-            if has_secret && has_jwks {
-                errors.push(ValidationError::new(
-                    format!("{entry_prefix}.jwt"),
-                    "consumer jwt.secret and jwt.jwksUrl are mutually exclusive",
-                ));
-            }
-            if let Some(url) = &jwt_cfg.jwks_url {
-                if !url.starts_with("http://") && !url.starts_with("https://") {
-                    errors.push(ValidationError::new(
-                        format!("{entry_prefix}.jwt.jwksUrl"),
-                        "consumer jwt.jwksUrl must be an http:// or https:// URL",
-                    ));
-                }
-            }
-        }
-        if !seen_usernames.insert(c.username.clone()) {
+    }
+    // When sharedJwt is configured, individual consumers are identified by the
+    // sharedJwt sub claim and don't need their own credentials.
+    if !has_shared_jwt && c.api_key.is_none() && c.basic_auth.is_none() && c.jwt.is_none() {
+        errors.push(ValidationError::new(
+            entry_prefix.clone(),
+            "consumer requires at least one credential: apiKey, basicAuth, jwt (or configure consumers.sharedJwt)",
+        ));
+    }
+    if let Some(ref jwt_cfg) = c.jwt {
+        validate_consumer_jwt(jwt_cfg, &entry_prefix, errors);
+    }
+    if !seen_usernames.insert(c.username.clone()) {
+        errors.push(ValidationError::new(
+            format!("{entry_prefix}.username"),
+            format!("consumer username {:?} is duplicated", c.username),
+        ));
+    }
+    if let Some(ref ba) = c.basic_auth {
+        if ba.password.is_empty() {
             errors.push(ValidationError::new(
-                format!("{entry_prefix}.username"),
-                format!("consumer username {:?} is duplicated", c.username),
+                format!("{entry_prefix}.basicAuth.password"),
+                "consumer basicAuth.password must not be empty",
             ));
         }
-        if let Some(ref ba) = c.basic_auth {
-            if ba.password.is_empty() {
-                errors.push(ValidationError::new(
-                    format!("{entry_prefix}.basicAuth.password"),
-                    "consumer basicAuth.password must not be empty",
-                ));
-            }
+    }
+}
+
+/// Validate a consumer-level JWT config block.
+fn validate_consumer_jwt(
+    jwt_cfg: &ConsumerJwtConfig,
+    entry_prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let has_secret = jwt_cfg.secret.is_some();
+    let has_jwks = jwt_cfg.jwks_url.is_some();
+    if !has_secret && !has_jwks {
+        errors.push(ValidationError::new(
+            format!("{entry_prefix}.jwt"),
+            "consumer jwt requires either \"secret\" (HS256) or \"jwksUrl\" (RS256/ES256)",
+        ));
+    }
+    if has_secret && has_jwks {
+        errors.push(ValidationError::new(
+            format!("{entry_prefix}.jwt"),
+            "consumer jwt.secret and jwt.jwksUrl are mutually exclusive",
+        ));
+    }
+    if let Some(url) = &jwt_cfg.jwks_url {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            errors.push(ValidationError::new(
+                format!("{entry_prefix}.jwt.jwksUrl"),
+                "consumer jwt.jwksUrl must be an http:// or https:// URL",
+            ));
         }
     }
 }
@@ -956,21 +1017,8 @@ fn validate_tls(tls: &TlsConfig, prefix: &str, errors: &mut Vec<ValidationError>
         ));
     }
 
-    // mTLS client auth — ca path must be non-empty; file existence checked at startup.
     if let Some(ref ca) = tls.client_auth {
-        if ca.ca.is_empty() {
-            errors.push(ValidationError::new(
-                format!("{prefix}.clientAuth.ca"),
-                "tls.clientAuth.ca must be a path to a PEM CA file",
-            ));
-        }
-        // clientAuth requires cert+key (or acme) to make sense.
-        if !has_cert && !has_acme {
-            errors.push(ValidationError::new(
-                format!("{prefix}.clientAuth"),
-                "tls.clientAuth requires tls.cert+tls.key or tls.acme to be configured",
-            ));
-        }
+        validate_tls_client_auth(ca, prefix, has_cert, has_acme, errors);
     }
 
     // Cert expiry check — only for manual certificates (ACME manages renewal itself).
@@ -978,6 +1026,29 @@ fn validate_tls(tls: &TlsConfig, prefix: &str, errors: &mut Vec<ValidationError>
         if let Some(ref cert_path) = tls.cert {
             check_cert_expiry(cert_path, &format!("{prefix}.cert"), errors);
         }
+    }
+}
+
+/// Validate the `tls.clientAuth` (mTLS) configuration block.
+fn validate_tls_client_auth(
+    ca: &TlsClientAuth,
+    prefix: &str,
+    has_cert: bool,
+    has_acme: bool,
+    errors: &mut Vec<ValidationError>,
+) {
+    if ca.ca.is_empty() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.clientAuth.ca"),
+            "tls.clientAuth.ca must be a path to a PEM CA file",
+        ));
+    }
+    // clientAuth requires cert+key (or acme) to make sense.
+    if !has_cert && !has_acme {
+        errors.push(ValidationError::new(
+            format!("{prefix}.clientAuth"),
+            "tls.clientAuth requires tls.cert+tls.key or tls.acme to be configured",
+        ));
     }
 }
 

@@ -203,7 +203,6 @@ pub fn run_server(
     );
 
     // Initialise OpenTelemetry OTLP tracing if configured.
-    // The function is a no-op when the `otlp` feature is disabled.
     if let Some(otlp_cfg) = config.global.as_ref().and_then(|g| g.otlp.as_ref()) {
         if let Err(e) = crate::server::otel::init_tracer(otlp_cfg) {
             tracing::warn!(error = %e, "failed to initialise OTLP tracing — continuing without traces");
@@ -211,7 +210,6 @@ pub fn run_server(
     }
 
     // Only bind the Admin HTTP server when global.admin is explicitly configured.
-    // Background tasks (health checks, rate-limiter cleanup, hot-reload) always run.
     let admin_bind: Option<String> = config
         .global
         .as_ref()
@@ -219,13 +217,11 @@ pub fn run_server(
         .and_then(|a| a.bind.as_deref())
         .map(str::to_owned);
 
-    // Bind the upload server listener before creating AppState so the router
-    // can forward matching requests to the loopback address immediately.
+    // Bind the upload server listener before creating AppState.
     #[cfg_attr(not(feature = "upload"), allow(unused_variables))]
     let (upload_addr, upload_std_listener) = bind_upload_listener_if_needed(&config)?;
 
-    // Create AppState. When redis feature is enabled, also connect to Redis
-    // if any site uses a Redis-backed rate limiter.
+    // Create AppState.
     let state = {
         #[cfg(feature = "redis")]
         {
@@ -241,36 +237,12 @@ pub fn run_server(
         Arc::new(AppState::new(config.clone(), config_path, upload_addr))
     };
 
-    // ── Live config updates (e.g. Kubernetes CRD provider) ───────────────────
-    // When a live-update channel is provided, spawn a background thread that
-    // hot-swaps the config whenever a new AppConfig arrives on the channel.
-    // This is the same mechanism as `POST /reload`, but driven by an external
-    // provider rather than an explicit admin API call.
-    if let Some(mut rx) = config_updates {
-        let state_clone = state.clone();
-        std::thread::Builder::new()
-            .name("config-update-watcher".into())
-            .spawn(move || {
-                // Run a minimal Tokio runtime for the async channel receiver.
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("tokio runtime for config-update-watcher");
-                rt.block_on(async move {
-                    while let Some(new_cfg) = rx.recv().await {
-                        tracing::info!(
-                            sites = new_cfg.sites.len(),
-                            "live config update received — hot-swapping"
-                        );
-                        state_clone.config.store(Arc::new(new_cfg));
-                    }
-                    tracing::warn!("config update channel closed; live updates stopped");
-                });
-            })
-            .expect("failed to spawn config-update-watcher thread");
+    // Spawn a background thread to hot-swap config from a live provider channel.
+    if let Some(rx) = config_updates {
+        spawn_config_update_watcher(rx, state.clone());
     }
 
-    // ── Phase 3.1: ACME certificate procurement (feature: acme) ─────────────
+    // Phase 3.1: ACME certificate procurement.
     #[cfg(feature = "acme")]
     let acme_certs = obtain_acme_certs(&config, &state.acme_challenges)?;
     #[cfg(not(feature = "acme"))]
@@ -287,39 +259,11 @@ pub fn run_server(
     let mut server = Server::new(Some(opt))?;
     server.bootstrap();
 
-    // ── Proxy service ────────────────────────────────────────────────────────
     let proxy = ConduitProxy {
         state: state.clone(),
     };
 
-    // Build HttpServerOptions from site configs.
-    // h2c: enable if any site has http2.h2c = true.
-    // keepalive_request_limit: use the smallest non-None value across sites.
-    let h2c = config.sites.iter().any(|s| {
-        s.http2
-            .as_ref()
-            .and_then(|h| match h {
-                crate::config::schema::Http2Config {
-                    h2c: Some(true), ..
-                } => Some(true),
-                _ => None,
-            })
-            .unwrap_or(false)
-    });
-    let keepalive_request_limit: Option<u32> = config
-        .sites
-        .iter()
-        .filter_map(|s| s.limits.as_ref()?.keepalive_request_limit)
-        .min();
-
-    let server_options = if h2c || keepalive_request_limit.is_some() {
-        let mut opts = HttpServerOptions::default();
-        opts.h2c = h2c;
-        opts.keepalive_request_limit = keepalive_request_limit;
-        Some(opts)
-    } else {
-        None
-    };
+    let server_options = build_http_server_options(&config.sites);
 
     // Create HttpProxy with options, then wrap in a listening service.
     let mut inner_proxy = HttpProxy::new(proxy, server.configuration.clone());
@@ -328,18 +272,7 @@ pub fn run_server(
     let mut proxy_service = ListeningService::new("Conduit HTTP Proxy".to_owned(), inner_proxy);
 
     let (port_tls, port_plain) = classify_ports(&config.sites, &acme_certs);
-
-    // Add TLS listeners.
-    for (port, (cert, key, enable_h2, client_auth)) in &port_tls {
-        let addr = format!("0.0.0.0:{port}");
-        let settings = if let Some(ref ca_cfg) = client_auth {
-            tls_util::make_tls_settings_with_client_auth(cert, key, *enable_h2, ca_cfg)
-        } else {
-            tls_util::make_tls_settings(cert, key, *enable_h2)
-        }
-        .map_err(|e| anyhow::anyhow!("TLS setup failed for port {port}: {e}"))?;
-        proxy_service.add_tls_with_settings(&addr, None, settings);
-    }
+    add_tls_listeners(&mut proxy_service, &port_tls)?;
 
     // Add plain TCP listeners for ports that are not TLS.
     for port in &port_plain {
@@ -350,8 +283,104 @@ pub fn run_server(
 
     server.add_service(proxy_service);
 
-    // ── Raw TCP proxy services (requires --features tcp) ─────────────────────
+    // Raw TCP proxy services.
     #[cfg(feature = "tcp")]
+    register_tcp_proxy_services(&config, &mut server);
+
+    // HTTP → HTTPS redirect services.
+    register_http_redirect_services(&config, &state, &mut server);
+
+    let admin = AdminApiService {
+        state: state.clone(),
+        bind: admin_bind,
+    };
+    server.add_service(background_service("admin-api", admin));
+
+    // Upload server background service.
+    #[cfg(feature = "upload")]
+    if let Some(std_listener) = upload_std_listener {
+        let upload_svc = UploadService::new(state, std_listener);
+        server.add_service(background_service("upload-server", upload_svc));
+    }
+
+    server.run_forever()
+}
+
+/// Spawn a background thread that hot-swaps config from a live provider channel.
+fn spawn_config_update_watcher(
+    mut rx: tokio::sync::mpsc::Receiver<AppConfig>,
+    state: Arc<AppState>,
+) {
+    std::thread::Builder::new()
+        .name("config-update-watcher".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime for config-update-watcher");
+            rt.block_on(async move {
+                while let Some(new_cfg) = rx.recv().await {
+                    tracing::info!(
+                        sites = new_cfg.sites.len(),
+                        "live config update received — hot-swapping"
+                    );
+                    state.config.store(Arc::new(new_cfg));
+                }
+                tracing::warn!("config update channel closed; live updates stopped");
+            });
+        })
+        .expect("failed to spawn config-update-watcher thread");
+}
+
+/// Build `HttpServerOptions` from site configs (h2c + keepalive limit).
+fn build_http_server_options(sites: &[SiteConfig]) -> Option<HttpServerOptions> {
+    let h2c = sites.iter().any(|s| {
+        s.http2
+            .as_ref()
+            .and_then(|h| match h {
+                crate::config::schema::Http2Config {
+                    h2c: Some(true), ..
+                } => Some(true),
+                _ => None,
+            })
+            .unwrap_or(false)
+    });
+    let keepalive_request_limit: Option<u32> = sites
+        .iter()
+        .filter_map(|s| s.limits.as_ref()?.keepalive_request_limit)
+        .min();
+
+    if h2c || keepalive_request_limit.is_some() {
+        let mut opts = HttpServerOptions::default();
+        opts.h2c = h2c;
+        opts.keepalive_request_limit = keepalive_request_limit;
+        Some(opts)
+    } else {
+        None
+    }
+}
+
+/// Add TLS listeners to the proxy service for every TLS-enabled port.
+fn add_tls_listeners(
+    proxy_service: &mut ListeningService<HttpProxy<ConduitProxy>>,
+    port_tls: &TlsPortMap,
+) -> anyhow::Result<()> {
+    for (port, (cert, key, enable_h2, client_auth)) in port_tls {
+        let addr = format!("0.0.0.0:{port}");
+        let settings = if let Some(ref ca_cfg) = client_auth {
+            tls_util::make_tls_settings_with_client_auth(cert, key, *enable_h2, ca_cfg)
+        } else {
+            tls_util::make_tls_settings(cert, key, *enable_h2)
+        }
+        .map_err(|e| anyhow::anyhow!("TLS setup failed for port {port}: {e}"))?;
+        proxy_service.add_tls_with_settings(&addr, None, settings);
+    }
+    Ok(())
+}
+
+/// Register raw TCP proxy services for sites with `tcp` config.
+#[cfg(feature = "tcp")]
+fn register_tcp_proxy_services(config: &AppConfig, server: &mut Server) {
     for site in &config.sites {
         let Some(ref tcp_cfg) = site.tcp else {
             continue;
@@ -371,12 +400,10 @@ pub fn run_server(
             "TCP proxy service registered"
         );
     }
+}
 
-    // ── HTTP → HTTPS redirect services ───────────────────────────────────────
-    // For each site that has `tls.httpRedirectPort`, spin up a tiny Pingora
-    // service that 308-redirects to the HTTPS equivalent.  The redirect service
-    // also serves ACME HTTP-01 challenges so that certificate renewal works
-    // without a separate listener.
+/// Register HTTP → HTTPS redirect services for sites with `tls.httpRedirectPort`.
+fn register_http_redirect_services(config: &AppConfig, state: &Arc<AppState>, server: &mut Server) {
     for site in &config.sites {
         let tls_port = site
             .port
@@ -389,25 +416,6 @@ pub fn run_server(
             server.add_service(redirect_svc);
         }
     }
-
-    // ── Admin API background service ─────────────────────────────────────────
-    // Always registered so that health checks, rate-limiter cleanup, and the
-    // hot-reload watcher run regardless of admin config.  The HTTP server
-    // itself only binds when admin_bind is Some.
-    let admin = AdminApiService {
-        state: state.clone(),
-        bind: admin_bind,
-    };
-    server.add_service(background_service("admin-api", admin));
-
-    // ── Upload server background service (feature: upload) ───────────────────
-    #[cfg(feature = "upload")]
-    if let Some(std_listener) = upload_std_listener {
-        let upload_svc = UploadService::new(state, std_listener);
-        server.add_service(background_service("upload-server", upload_svc));
-    }
-
-    server.run_forever()
 }
 
 /// Obtain ACME certificates for every site that has `tls.acme` configured.

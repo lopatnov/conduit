@@ -103,12 +103,6 @@ impl Provider for FileProvider {
         // notify callbacks are sync, so we bridge to async via a tokio channel.
         let (change_tx, mut change_rx) = tokio::sync::mpsc::channel::<()>(8);
 
-        // Watch the *parent directory* rather than the file itself.
-        // Many editors and config-management tools perform atomic saves by writing
-        // to a temporary file and then renaming it over the target. On Linux inotify,
-        // watching the file directly loses the watch descriptor on rename/unlink;
-        // watching the directory captures all events and we filter by filename.
-        //
         // Canonicalize the path so symlinks are resolved before comparison.
         // On macOS /tmp is a symlink to /private/tmp; notify returns canonical paths,
         // so comparing without canonicalization would silently drop all events.
@@ -116,29 +110,9 @@ impl Provider for FileProvider {
             .path
             .canonicalize()
             .unwrap_or_else(|_| self.path.clone());
-        let mut watcher =
-            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-                if let Ok(event) = res {
-                    use notify::EventKind::*;
-                    // Only fire when the event involves the watched file specifically.
-                    // Also canonicalize event paths to handle symlink differences.
-                    let involves_target = event
-                        .paths
-                        .iter()
-                        .any(|p| p.canonicalize().unwrap_or_else(|_| p.clone()) == target_path);
-                    if !involves_target {
-                        return;
-                    }
-                    match event.kind {
-                        Modify(_) | Create(_) | Remove(_) => {
-                            // blocking_send is safe here: the callback runs on a
-                            // notify thread pool, not inside an async context.
-                            let _ = change_tx.blocking_send(());
-                        }
-                        _ => {}
-                    }
-                }
-            })?;
+
+        // Build the watcher using a helper to keep CC low.
+        let mut watcher = build_file_watcher(target_path, change_tx)?;
 
         {
             use notify::Watcher as _;
@@ -148,23 +122,8 @@ impl Provider for FileProvider {
         }
 
         while let Some(()) = change_rx.recv().await {
-            match load_and_validate(&self.path) {
-                Ok(cfg) => {
-                    if tx.send(cfg).await.is_err() {
-                        break; // Server shutting down.
-                    }
-                    tracing::info!(
-                        path = %self.path.display(),
-                        "config auto-reloaded from file"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        path = %self.path.display(),
-                        error = %e,
-                        "config file changed but reload failed — keeping current config"
-                    );
-                }
+            if !reload_on_change(&self.path, &tx).await {
+                break; // Server shutting down.
             }
         }
 
@@ -173,6 +132,68 @@ impl Provider for FileProvider {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Create a [`notify`] watcher that fires on the given `target_path`.
+///
+/// Only `Modify`, `Create`, and `Remove` events for `target_path` are forwarded
+/// to `tx`.  All other events (and events for unrelated files in the same
+/// directory) are silently dropped.
+///
+/// Watching the *parent directory* rather than the file itself handles atomic
+/// saves (temp-file + rename pattern used by many editors and config-management
+/// tools).
+fn build_file_watcher(
+    target_path: std::path::PathBuf,
+    tx: tokio::sync::mpsc::Sender<()>,
+) -> Result<impl notify::Watcher> {
+    let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        let Ok(event) = res else { return };
+        use notify::EventKind::*;
+        let involves_target = event
+            .paths
+            .iter()
+            .any(|p| p.canonicalize().unwrap_or_else(|_| p.clone()) == target_path);
+        if !involves_target {
+            return;
+        }
+        if matches!(event.kind, Modify(_) | Create(_) | Remove(_)) {
+            // blocking_send is safe here: the callback runs on a notify
+            // thread pool, not inside an async context.
+            let _ = tx.blocking_send(());
+        }
+    })?;
+    Ok(watcher)
+}
+
+/// Reload the config from `path` and send it on `tx`.
+///
+/// Returns `true` if the reload was successful or failed gracefully.
+/// Returns `false` when the receiver has been dropped (server shutting down).
+async fn reload_on_change(
+    path: &std::path::Path,
+    tx: &tokio::sync::mpsc::Sender<AppConfig>,
+) -> bool {
+    match load_and_validate(path) {
+        Ok(cfg) => {
+            if tx.send(cfg).await.is_err() {
+                return false; // Server shutting down.
+            }
+            tracing::info!(
+                path = %path.display(),
+                "config auto-reloaded from file"
+            );
+            true
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "config file changed but reload failed — keeping current config"
+            );
+            true
+        }
+    }
+}
 
 /// Load a config file, validate it, and return the [`AppConfig`].
 ///

@@ -444,77 +444,106 @@ pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Opt
     let api_key_header = cfg.api_key_header.as_deref().unwrap_or("x-api-key");
 
     // ── V3: Shared JWT — validate once, identify by claim value ───────────────
-    // Requires the `jwt` feature.
     #[cfg(feature = "jwt")]
     if let Some(ref shared) = cfg.shared_jwt {
+        if let Some(consumer) = check_shared_jwt_consumer(shared, &cfg.consumers, session) {
+            return Some(consumer);
+        }
+    }
+
+    for consumer in &cfg.consumers {
+        if check_consumer_credentials(consumer, api_key_header, session) {
+            return Some(consumer);
+        }
+    }
+    None
+}
+
+/// Try to identify a consumer via the shared JWT (V3 / Auth0 / Cognito pattern).
+///
+/// Returns `Some(&Consumer)` when the JWT is valid and a matching consumer is
+/// found by the configured `username_claim` (default: `"sub"`).
+#[cfg(all(feature = "consumers", feature = "jwt"))]
+fn check_shared_jwt_consumer<'a>(
+    shared: &crate::config::schema::ConsumersSharedJwtConfig,
+    consumers: &'a [Consumer],
+    session: &Session,
+) -> Option<&'a Consumer> {
+    let jwt_cfg = build_jwt_auth_cfg(
+        shared.secret.clone(),
+        shared.jwks_url.clone(),
+        shared.audience.clone(),
+        shared.issuer.clone(),
+    );
+    let auth_hdr = session
+        .req_header()
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok());
+
+    let (jwt_result, maybe_claims) = jwt::check_jwt_extracting(&jwt_cfg, "", auth_hdr);
+    if let jwt::JwtCheckResult::Allowed = jwt_result {
+        if let Some(claims) = maybe_claims {
+            let claim_key = shared.username_claim.as_deref().unwrap_or("sub");
+            if let Some(serde_json::Value::String(sub)) = claims.get(claim_key) {
+                let sub = sub.clone();
+                return consumers.iter().find(|c| c.username == sub);
+            }
+        }
+    }
+    None
+}
+
+/// Check whether a request matches a single consumer's credentials.
+///
+/// Returns `true` when any credential matches (API key, Basic Auth, or JWT V2).
+#[cfg(feature = "consumers")]
+fn check_consumer_credentials(
+    consumer: &Consumer,
+    api_key_header: &str,
+    session: &Session,
+) -> bool {
+    // ── API key check ─────────────────────────────────────────────────────────
+    if let Some(ref expected_key) = consumer.api_key {
+        if let Some(provided) = session
+            .req_header()
+            .headers
+            .get(api_key_header)
+            .and_then(|v| v.to_str().ok())
+        {
+            if ct_eq_str(provided, expected_key.as_str()) {
+                return true;
+            }
+        }
+    }
+
+    // ── Basic Auth check ──────────────────────────────────────────────────────
+    if let Some(ref basic) = consumer.basic_auth {
+        if check_consumer_basic(&consumer.username, &basic.password, session) {
+            return true;
+        }
+    }
+
+    // ── JWT check (V2) — requires `jwt` feature ───────────────────────────────
+    #[cfg(feature = "jwt")]
+    if let Some(ref consumer_jwt) = consumer.jwt {
         let jwt_cfg = build_jwt_auth_cfg(
-            shared.secret.clone(),
-            shared.jwks_url.clone(),
-            shared.audience.clone(),
-            shared.issuer.clone(),
+            consumer_jwt.secret.clone(),
+            consumer_jwt.jwks_url.clone(),
+            consumer_jwt.audience.clone(),
+            consumer_jwt.issuer.clone(),
         );
         let auth_hdr = session
             .req_header()
             .headers
             .get("authorization")
             .and_then(|v| v.to_str().ok());
-
-        let (jwt_result, maybe_claims) = jwt::check_jwt_extracting(&jwt_cfg, "", auth_hdr);
-        if let jwt::JwtCheckResult::Allowed = jwt_result {
-            if let Some(claims) = maybe_claims {
-                let claim_key = shared.username_claim.as_deref().unwrap_or("sub");
-                if let Some(serde_json::Value::String(sub)) = claims.get(claim_key) {
-                    let sub = sub.clone();
-                    if let Some(consumer) = cfg.consumers.iter().find(|c| c.username == sub) {
-                        return Some(consumer);
-                    }
-                }
-            }
+        if let jwt::JwtCheckResult::Allowed = jwt::check_jwt(&jwt_cfg, "", auth_hdr) {
+            return true;
         }
     }
 
-    for consumer in &cfg.consumers {
-        // ── API key check ─────────────────────────────────────────────────
-        if let Some(ref expected_key) = consumer.api_key {
-            if let Some(provided) = session
-                .req_header()
-                .headers
-                .get(api_key_header)
-                .and_then(|v| v.to_str().ok())
-            {
-                if ct_eq_str(provided, expected_key.as_str()) {
-                    return Some(consumer);
-                }
-            }
-        }
-
-        // ── Basic Auth check ──────────────────────────────────────────────
-        if let Some(ref basic) = consumer.basic_auth {
-            if check_consumer_basic(&consumer.username, &basic.password, session) {
-                return Some(consumer);
-            }
-        }
-
-        // ── JWT check (V2) — requires `jwt` feature ──────────────────────
-        #[cfg(feature = "jwt")]
-        if let Some(ref consumer_jwt) = consumer.jwt {
-            let jwt_cfg = build_jwt_auth_cfg(
-                consumer_jwt.secret.clone(),
-                consumer_jwt.jwks_url.clone(),
-                consumer_jwt.audience.clone(),
-                consumer_jwt.issuer.clone(),
-            );
-            let auth_hdr = session
-                .req_header()
-                .headers
-                .get("authorization")
-                .and_then(|v| v.to_str().ok());
-            if let jwt::JwtCheckResult::Allowed = jwt::check_jwt(&jwt_cfg, "", auth_hdr) {
-                return Some(consumer);
-            }
-        }
-    }
-    None
+    false
 }
 
 /// Validate `Authorization: Basic <b64>` against a consumer's username and password.

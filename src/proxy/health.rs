@@ -678,41 +678,44 @@ pub fn spawn_connection_warmup(config: &AppConfig) {
             };
             let n = match hc.prewarm_connections {
                 Some(0) | None => continue,
-                Some(n) => n.min(8) as usize, // clamp to 8
+                Some(n) => n.min(8) as usize,
             };
             let path = hc.path.clone().unwrap_or_else(|| "/".to_string());
             let urls = crate::proxy::upstream::target_urls(route_target);
             for url in urls {
                 let path = path.clone();
-                tokio::spawn(async move {
-                    for i in 0..n {
-                        let target = format!("{url}{path}");
-                        match reqwest::Client::builder()
-                            .timeout(std::time::Duration::from_secs(5))
-                            .build()
-                        {
-                            Ok(client) => match client.head(&target).send().await {
-                                Ok(_) => tracing::debug!(
-                                    url,
-                                    attempt = i + 1,
-                                    total = n,
-                                    "connection warmup request succeeded"
-                                ),
-                                Err(e) => tracing::debug!(
-                                    url,
-                                    attempt = i + 1,
-                                    total = n,
-                                    "connection warmup request failed: {e}"
-                                ),
-                            },
-                            Err(e) => tracing::warn!("connection warmup client build error: {e}"),
-                        }
-                    }
-                    tracing::info!(url, n, "connection warmup complete");
-                });
+                tokio::spawn(warmup_url(url, path, n));
             }
         }
     }
+}
+
+/// Perform `n` sequential HEAD requests to warm up the connection pool for `url`.
+async fn warmup_url(url: String, path: String, n: usize) {
+    for i in 0..n {
+        let target = format!("{url}{path}");
+        match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+        {
+            Ok(client) => match client.head(&target).send().await {
+                Ok(_) => tracing::debug!(
+                    url,
+                    attempt = i + 1,
+                    total = n,
+                    "connection warmup request succeeded"
+                ),
+                Err(e) => tracing::debug!(
+                    url,
+                    attempt = i + 1,
+                    total = n,
+                    "connection warmup request failed: {e}"
+                ),
+            },
+            Err(e) => tracing::warn!("connection warmup client build error: {e}"),
+        }
+    }
+    tracing::info!(url, n, "connection warmup complete");
 }
 
 /// Spawn a single background health-check task for a set of upstream URLs.

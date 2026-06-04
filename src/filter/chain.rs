@@ -661,7 +661,7 @@ impl RequestFilter for ForwardAuthGuard {
         let timeout_ms = self.cfg.timeout_ms.unwrap_or(5000);
         let client = forward_auth_client();
 
-        // Build the subrequest: only forward allowed headers.
+        // Build the subrequest.
         let method = ctx.session.req_header().method.as_str();
         let uri = ctx
             .session
@@ -686,13 +686,7 @@ impl RequestFilter for ForwardAuthGuard {
 
         // Forward specific request headers if configured.
         if let Some(fwd_hdrs) = &self.cfg.request_headers {
-            for name in fwd_hdrs {
-                if let Some(val) = ctx.session.req_header().headers.get(name.as_str()) {
-                    if let Ok(v) = val.to_str() {
-                        req = req.header(name.as_str(), v);
-                    }
-                }
-            }
+            req = forward_auth_add_headers(req, fwd_hdrs, ctx.session);
         }
 
         // Make the subrequest.
@@ -711,24 +705,10 @@ impl RequestFilter for ForwardAuthGuard {
         if status.is_success() {
             // Inject auth service response headers into the upstream request.
             if let Some(copy_hdrs) = &self.cfg.response_headers {
-                // Collect into owned (name, value) pairs to avoid lifetime issues.
-                let to_inject: Vec<(String, String)> = copy_hdrs
-                    .iter()
-                    .filter_map(|name| {
-                        auth_resp
-                            .headers()
-                            .get(name.as_str())
-                            .and_then(|val| val.to_str().ok())
-                            .map(|v| (name.clone(), v.to_owned()))
-                    })
-                    .collect();
-                for (name, value) in to_inject {
-                    let _ = ctx.session.req_header_mut().insert_header(name, value);
-                }
+                forward_auth_inject_response_headers(&auth_resp, copy_hdrs, ctx.session);
             }
             Ok(FilterOutcome::Continue)
         } else {
-            // Return the auth service's status to the client.
             let status_code = status.as_u16();
             let body = bytes::Bytes::from_static(if status_code == 403 {
                 b"Forbidden"
@@ -746,6 +726,45 @@ impl RequestFilter for ForwardAuthGuard {
             ctx.inflight.fetch_sub(1, Ordering::Relaxed);
             Ok(FilterOutcome::Handled)
         }
+    }
+}
+
+/// Add configured request headers to a forward-auth subrequest.
+#[cfg(feature = "forward-auth")]
+fn forward_auth_add_headers(
+    mut req: reqwest::RequestBuilder,
+    fwd_hdrs: &[String],
+    session: &Session,
+) -> reqwest::RequestBuilder {
+    for name in fwd_hdrs {
+        if let Some(val) = session.req_header().headers.get(name.as_str()) {
+            if let Ok(v) = val.to_str() {
+                req = req.header(name.as_str(), v);
+            }
+        }
+    }
+    req
+}
+
+/// Copy configured response headers from a forward-auth response into the session.
+#[cfg(feature = "forward-auth")]
+fn forward_auth_inject_response_headers(
+    auth_resp: &reqwest::Response,
+    copy_hdrs: &[String],
+    session: &mut Session,
+) {
+    let to_inject: Vec<(String, String)> = copy_hdrs
+        .iter()
+        .filter_map(|name| {
+            auth_resp
+                .headers()
+                .get(name.as_str())
+                .and_then(|val| val.to_str().ok())
+                .map(|v| (name.clone(), v.to_owned()))
+        })
+        .collect();
+    for (name, value) in to_inject {
+        let _ = session.req_header_mut().insert_header(name, value);
     }
 }
 
@@ -863,45 +882,12 @@ impl RequestFilter for MiddlewareGuard {
                 // ── Rhai scripting ────────────────────────────────────────────
                 #[cfg(feature = "rhai")]
                 "script" => {
-                    // Skip scripts explicitly configured for the response phase.
                     if entry.phase.as_deref() == Some("response") {
                         continue;
                     }
                     let Some(ref path) = entry.path else { continue };
-                    // `run_script` may read the script file from disk on first
-                    // call (subsequent calls use the AST cache).  Use
-                    // `block_in_place` so the Tokio scheduler knows this thread
-                    // may block and can temporarily move other tasks elsewhere.
-                    let outcome = tokio::task::block_in_place(|| {
-                        script::run_script(
-                            path,
-                            &self.req_path,
-                            &self.method,
-                            &self.query,
-                            self.headers.clone(),
-                            entry.config.as_ref(),
-                        )
-                    });
-                    match outcome {
-                        script::ScriptOutcome::Continue => {}
-                        script::ScriptOutcome::Abort {
-                            status,
-                            body,
-                            extra_headers,
-                        } => {
-                            let mut all = ctx.extra_headers.to_vec();
-                            all.extend(extra_headers);
-                            response::write_response(
-                                ctx.session,
-                                status,
-                                "text/plain",
-                                Bytes::from(body),
-                                &all,
-                            )
-                            .await?;
-                            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                            return Ok(FilterOutcome::Handled);
-                        }
+                    if apply_rhai_entry(self, path, entry, ctx).await? {
+                        return Ok(FilterOutcome::Handled);
                     }
                 }
 
@@ -909,71 +895,8 @@ impl RequestFilter for MiddlewareGuard {
                 #[cfg(feature = "wasm")]
                 "wasm" => {
                     let Some(ref path) = entry.path else { continue };
-                    let plugin_config = entry
-                        .config
-                        .as_ref()
-                        .and_then(|v| serde_json::to_vec(v).ok())
-                        .unwrap_or_default();
-
-                    // Build sorted header names list for conduit_get_header_names.
-                    let header_names: Vec<String> = self.headers.keys().cloned().collect();
-                    // Extract X-Request-ID (injected by XRequestIdGuard earlier).
-                    let request_id = ctx
-                        .session
-                        .req_header()
-                        .headers
-                        .get("x-request-id")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("")
-                        .to_owned();
-
-                    let request = crate::filter::wasm::WasmRequest {
-                        method: self.method.clone(),
-                        path: self.req_path.clone(),
-                        query: self.query.clone(),
-                        client_ip: self.client_ip.clone(),
-                        headers: self.headers.clone(),
-                        header_names,
-                        request_id,
-                        plugin_config,
-                    };
-
-                    // `run_wasm` reads the .wasm file from disk on first call.
-                    // Use block_in_place so Tokio can schedule around the I/O.
-                    let wasm_outcome = tokio::task::block_in_place(|| {
-                        crate::filter::wasm::run_wasm(request, path)
-                    });
-                    match wasm_outcome {
-                        crate::filter::wasm::WasmOutcome::Continue {
-                            added_headers,
-                            removed_headers,
-                        } => {
-                            // Apply requested header mutations to the session.
-                            for (name, val) in added_headers {
-                                let _ = ctx.session.req_header_mut().insert_header(name, val);
-                            }
-                            for name in removed_headers {
-                                ctx.session.req_header_mut().remove_header(&name);
-                            }
-                        }
-                        crate::filter::wasm::WasmOutcome::Abort {
-                            status,
-                            body,
-                            headers,
-                        } => {
-                            let mut all = ctx.extra_headers.to_vec();
-                            all.extend(headers);
-                            response::write_response(
-                                ctx.session,
-                                status,
-                                "application/octet-stream",
-                                body,
-                                &all,
-                            )
-                            .await?;
-                            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                            return Ok(FilterOutcome::Handled);
-                        }
+                    if apply_wasm_entry(self, path, entry, ctx).await? {
+                        return Ok(FilterOutcome::Handled);
                     }
                 }
 
@@ -991,6 +914,109 @@ impl RequestFilter for MiddlewareGuard {
             }
         }
         Ok(FilterOutcome::Continue)
+    }
+}
+
+/// Run a Rhai script entry and return `true` if the request was aborted.
+#[cfg(feature = "rhai")]
+async fn apply_rhai_entry<'a>(
+    guard: &MiddlewareGuard,
+    path: &str,
+    entry: &crate::config::schema::MiddlewareEntry,
+    ctx: &mut FilterContext<'a>,
+) -> Result<bool> {
+    // `run_script` may read the script file from disk on first call (subsequent
+    // calls use the AST cache).  Use `block_in_place` so the Tokio scheduler
+    // knows this thread may block and can temporarily move other tasks elsewhere.
+    let outcome = tokio::task::block_in_place(|| {
+        script::run_script(
+            path,
+            &guard.req_path,
+            &guard.method,
+            &guard.query,
+            guard.headers.clone(),
+            entry.config.as_ref(),
+        )
+    });
+    match outcome {
+        script::ScriptOutcome::Continue => Ok(false),
+        script::ScriptOutcome::Abort {
+            status,
+            body,
+            extra_headers,
+        } => {
+            let mut all = ctx.extra_headers.to_vec();
+            all.extend(extra_headers);
+            response::write_response(ctx.session, status, "text/plain", Bytes::from(body), &all)
+                .await?;
+            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+            Ok(true)
+        }
+    }
+}
+
+/// Run a WASM plugin entry and return `true` if the request was aborted.
+#[cfg(feature = "wasm")]
+async fn apply_wasm_entry<'a>(
+    guard: &MiddlewareGuard,
+    path: &str,
+    entry: &crate::config::schema::MiddlewareEntry,
+    ctx: &mut FilterContext<'a>,
+) -> Result<bool> {
+    let plugin_config = entry
+        .config
+        .as_ref()
+        .and_then(|v| serde_json::to_vec(v).ok())
+        .unwrap_or_default();
+    let header_names: Vec<String> = guard.headers.keys().cloned().collect();
+    let request_id = ctx
+        .session
+        .req_header()
+        .headers
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+
+    let request = crate::filter::wasm::WasmRequest {
+        method: guard.method.clone(),
+        path: guard.req_path.clone(),
+        query: guard.query.clone(),
+        client_ip: guard.client_ip.clone(),
+        headers: guard.headers.clone(),
+        header_names,
+        request_id,
+        plugin_config,
+    };
+
+    // `run_wasm` reads the .wasm file from disk on first call.
+    // Use block_in_place so Tokio can schedule around the I/O.
+    let wasm_outcome = tokio::task::block_in_place(|| crate::filter::wasm::run_wasm(request, path));
+    match wasm_outcome {
+        crate::filter::wasm::WasmOutcome::Continue {
+            added_headers,
+            removed_headers,
+        } => {
+            for (name, val) in added_headers {
+                let _ = ctx.session.req_header_mut().insert_header(name, val);
+            }
+            for name in removed_headers {
+                ctx.session.req_header_mut().remove_header(&name);
+            }
+            Ok(false)
+        }
+        crate::filter::wasm::WasmOutcome::Abort {
+            status,
+            body,
+            headers,
+        } => {
+            let mut all = ctx.extra_headers.to_vec();
+            all.extend(headers);
+            response::write_response(ctx.session, status, "application/octet-stream", body, &all)
+                .await?;
+            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+            Ok(true)
+        }
     }
 }
 

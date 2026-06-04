@@ -131,32 +131,14 @@ fn to_yaml_string(value: &Value) -> anyhow::Result<String> {
     Ok(serde_yaml::to_string(value)?)
 }
 
-// ── Main entry point ──────────────────────────────────────────────────────────
+// ── Per-field helpers ─────────────────────────────────────────────────────────
 
-/// Run the `conduit init` wizard with the given options.
-///
-/// In non-interactive mode (`yes == true`) every unspecified option uses its
-/// built-in default. Any flag that was explicitly set takes priority regardless
-/// of the `yes` flag.
-pub fn run_init(opts: InitOptions<'_>) -> anyhow::Result<()> {
-    // ── Format ───────────────────────────────────────────────────────────────
-    // Warn when --format is provided but not recognised (mirrors the --log
-    // behaviour that warns and falls back to dev).
-    if let Some(fmt_str) = opts.format {
-        if Format::from_str(fmt_str).is_none() {
-            eprintln!(
-                "warning: unknown output format '{fmt_str}' — falling back to yaml. \
-                 Valid values: yaml, json"
-            );
-        }
-    }
-    let format = opts
-        .format
+fn resolve_format(opts: &InitOptions<'_>) -> Format {
+    opts.format
         .and_then(Format::from_str)
         .or_else(|| opts.output.and_then(Format::from_path))
         .unwrap_or_else(|| {
             if opts.yes {
-                // Non-interactive default: YAML (recommended format).
                 Format::Yaml
             } else {
                 let format_options = [
@@ -175,7 +157,138 @@ pub fn run_init(opts: InitOptions<'_>) -> anyhow::Result<()> {
                     Format::Json
                 }
             }
+        })
+}
+
+fn ask_port(opts: &InitOptions<'_>) -> anyhow::Result<u16> {
+    if let Some(p) = opts.port {
+        return Ok(p);
+    }
+    if opts.yes {
+        return Ok(8080);
+    }
+    Ok(Input::new()
+        .with_prompt("Port")
+        .default(8080u16)
+        .interact_text()?)
+}
+
+fn ask_static_dir(opts: &InitOptions<'_>) -> anyhow::Result<Option<String>> {
+    if opts.no_static {
+        return Ok(None);
+    }
+    if let Some(dir) = opts.static_dir {
+        return Ok(Some(dir.to_owned()));
+    }
+    if opts.yes {
+        return Ok(Some("./dist".to_owned()));
+    }
+    let want = Confirm::new()
+        .with_prompt("Serve static files?")
+        .default(true)
+        .interact()?;
+    if want {
+        let dir: String = Input::new()
+            .with_prompt("Static files directory")
+            .default("./dist".to_owned())
+            .interact_text()?;
+        Ok(Some(dir))
+    } else {
+        Ok(None)
+    }
+}
+
+fn ask_proxy_url(opts: &InitOptions<'_>) -> anyhow::Result<Option<String>> {
+    if opts.no_proxy {
+        return Ok(None);
+    }
+    if let Some(url) = opts.proxy {
+        return Ok(Some(url.to_owned()));
+    }
+    if opts.yes {
+        return Ok(None);
+    }
+    let want = Confirm::new()
+        .with_prompt("Proxy to an upstream server?")
+        .default(false)
+        .interact()?;
+    if want {
+        let url: String = Input::new()
+            .with_prompt("Upstream URL")
+            .default("http://localhost:4000".to_owned())
+            .interact_text()?;
+        Ok(Some(url))
+    } else {
+        Ok(None)
+    }
+}
+
+fn ask_health(opts: &InitOptions<'_>) -> anyhow::Result<bool> {
+    if opts.no_health {
+        return Ok(false);
+    }
+    if opts.yes {
+        return Ok(true);
+    }
+    Ok(Confirm::new()
+        .with_prompt("Enable health check endpoint (GET /__health__)?")
+        .default(true)
+        .interact()?)
+}
+
+fn ask_logging(opts: &InitOptions<'_>) -> anyhow::Result<Option<Value>> {
+    if let Some(fmt) = opts.log {
+        return Ok(match fmt {
+            "dev" => Some(json!("dev")),
+            "json" => Some(json!("json")),
+            "combined" => Some(json!("combined")),
+            "none" => None,
+            other => {
+                eprintln!("warning: unknown log format '{other}', defaulting to 'dev'");
+                Some(json!("dev"))
+            }
         });
+    }
+    if opts.yes {
+        return Ok(Some(json!("dev")));
+    }
+    let log_formats = [
+        "dev (human-readable)",
+        "json (structured)",
+        "combined (Apache)",
+        "none",
+    ];
+    let choice = Select::new()
+        .with_prompt("Log format")
+        .items(log_formats)
+        .default(0)
+        .interact()?;
+    Ok(match choice {
+        0 => Some(json!("dev")),
+        1 => Some(json!("json")),
+        2 => Some(json!("combined")),
+        _ => None,
+    })
+}
+
+// ── Main entry point ──────────────────────────────────────────────────────────
+
+/// Run the `conduit init` wizard with the given options.
+///
+/// In non-interactive mode (`yes == true`) every unspecified option uses its
+/// built-in default. Any flag that was explicitly set takes priority regardless
+/// of the `yes` flag.
+pub fn run_init(opts: InitOptions<'_>) -> anyhow::Result<()> {
+    // Warn when --format is provided but not recognised.
+    if let Some(fmt_str) = opts.format {
+        if Format::from_str(fmt_str).is_none() {
+            eprintln!(
+                "warning: unknown output format '{fmt_str}' — falling back to yaml. \
+                 Valid values: yaml, json"
+            );
+        }
+    }
+    let format = resolve_format(&opts);
 
     if !opts.yes {
         println!("Welcome to conduit init! Answer a few questions to get started.\n");
@@ -198,114 +311,12 @@ pub fn run_init(opts: InitOptions<'_>) -> anyhow::Result<()> {
         }
     }
 
-    // ── Port ─────────────────────────────────────────────────────────────────
-    let port: u16 = if let Some(p) = opts.port {
-        p
-    } else if opts.yes {
-        8080
-    } else {
-        Input::new()
-            .with_prompt("Port")
-            .default(8080u16)
-            .interact_text()?
-    };
-
-    // ── Static files ─────────────────────────────────────────────────────────
-    let static_dir: Option<String> = if opts.no_static {
-        None
-    } else if let Some(dir) = opts.static_dir {
-        Some(dir.to_owned())
-    } else if opts.yes {
-        // Default: serve ./dist
-        Some("./dist".to_owned())
-    } else {
-        let want = Confirm::new()
-            .with_prompt("Serve static files?")
-            .default(true)
-            .interact()?;
-        if want {
-            let dir: String = Input::new()
-                .with_prompt("Static files directory")
-                .default("./dist".to_owned())
-                .interact_text()?;
-            Some(dir)
-        } else {
-            None
-        }
-    };
-
-    // ── Proxy ────────────────────────────────────────────────────────────────
-    let proxy_url: Option<String> = if opts.no_proxy {
-        None
-    } else if let Some(url) = opts.proxy {
-        Some(url.to_owned())
-    } else if opts.yes {
-        // Default: no proxy
-        None
-    } else {
-        let want = Confirm::new()
-            .with_prompt("Proxy to an upstream server?")
-            .default(false)
-            .interact()?;
-        if want {
-            let url: String = Input::new()
-                .with_prompt("Upstream URL")
-                .default("http://localhost:4000".to_owned())
-                .interact_text()?;
-            Some(url)
-        } else {
-            None
-        }
-    };
-
-    // ── TLS ──────────────────────────────────────────────────────────────────
+    let port = ask_port(&opts)?;
+    let static_dir = ask_static_dir(&opts)?;
+    let proxy_url = ask_proxy_url(&opts)?;
     let tls_config = ask_tls_config(&opts)?;
-
-    // ── Health check ─────────────────────────────────────────────────────────
-    let want_health: bool = if opts.no_health {
-        false
-    } else if opts.yes {
-        true
-    } else {
-        Confirm::new()
-            .with_prompt("Enable health check endpoint (GET /__health__)?")
-            .default(true)
-            .interact()?
-    };
-
-    // ── Logging ──────────────────────────────────────────────────────────────
-    let logging_value: Option<Value> = if let Some(fmt) = opts.log {
-        match fmt {
-            "dev" => Some(json!("dev")),
-            "json" => Some(json!("json")),
-            "combined" => Some(json!("combined")),
-            "none" => None,
-            other => {
-                eprintln!("warning: unknown log format '{other}', defaulting to 'dev'");
-                Some(json!("dev"))
-            }
-        }
-    } else if opts.yes {
-        Some(json!("dev"))
-    } else {
-        let log_formats = [
-            "dev (human-readable)",
-            "json (structured)",
-            "combined (Apache)",
-            "none",
-        ];
-        let choice = Select::new()
-            .with_prompt("Log format")
-            .items(log_formats)
-            .default(0)
-            .interact()?;
-        match choice {
-            0 => Some(json!("dev")),
-            1 => Some(json!("json")),
-            2 => Some(json!("combined")),
-            _ => None,
-        }
-    };
+    let want_health = ask_health(&opts)?;
+    let logging_value = ask_logging(&opts)?;
 
     // ── Assemble ─────────────────────────────────────────────────────────────
     let mut site = json!({ "port": port });

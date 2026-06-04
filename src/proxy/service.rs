@@ -1159,6 +1159,73 @@ impl ConduitProxy {
             })
             .collect()
     }
+
+    /// Evaluate whether a connect-phase error should trigger a retry.
+    fn try_retry_connect_error(
+        &self,
+        session: &Session,
+        retry: &mut crate::proxy::ctx::RetryState,
+        e: &mut Box<pingora_core::Error>,
+    ) {
+        use pingora_core::ErrorType::*;
+        let is_conn_err = matches!(
+            e.etype(),
+            ConnectRefused
+                | ConnectNoRoute
+                | ConnectError
+                | ConnectProxyFailure
+                | BindError
+                | SocketError
+        );
+        let is_timeout = matches!(e.etype(), ConnectTimedout);
+        let condition = if is_conn_err {
+            "connection_error"
+        } else {
+            "timeout"
+        };
+        // Only retry safe/idempotent HTTP methods — RFC 7231 § 4.2.2.
+        let method = session.req_header().method.as_str();
+        if is_safe_http_method(method)
+            && ((is_conn_err && retry.has_condition("connection_error"))
+                || (is_timeout && retry.has_condition("timeout")))
+            && self.retry_budget_allows(retry)
+        {
+            e.set_retry(true);
+            self.state
+                .metrics
+                .retry_attempts_total
+                .with_label_values(&["<connect>", condition])
+                .inc();
+        }
+    }
+
+    /// Evaluate whether a proxy-phase error should trigger a retry.
+    fn try_retry_proxy_error(
+        &self,
+        session: &Session,
+        retry: &mut crate::proxy::ctx::RetryState,
+        e: &mut Box<pingora_core::Error>,
+    ) {
+        use pingora_core::ErrorType::*;
+        let is_timeout = matches!(e.etype(), ReadTimedout | WriteTimedout);
+        let is_5xx_retry = matches!(e.etype(), Custom("5xx_retry"));
+        let condition = if is_timeout { "timeout" } else { "5xx" };
+        // Only retry safe/idempotent methods.
+        let method = session.req_header().method.as_str();
+        if is_safe_http_method(method)
+            && ((is_timeout && retry.has_condition("timeout"))
+                || (is_5xx_retry && retry.has_condition("5xx")))
+            && self.retry_budget_allows(retry)
+        {
+            e.set_retry(true);
+            let route = session.req_header().uri.path().to_owned();
+            self.state
+                .metrics
+                .retry_attempts_total
+                .with_label_values(&[&route, condition])
+                .inc();
+        }
+    }
 }
 
 // ── ProxyHttp trait implementation ────────────────────────────────────────────
@@ -1272,49 +1339,26 @@ impl ProxyHttp for ConduitProxy {
             return Ok(());
         };
 
-        {
-            let chunk_len = body.as_ref().map(|c| c.len()).unwrap_or(0);
-            req_ctx.actual_body_bytes += chunk_len as u64;
+        let chunk_len = body.as_ref().map(|c| c.len()).unwrap_or(0);
+        req_ctx.actual_body_bytes += chunk_len as u64;
 
-            // ── Enforce maxBodyBytes on the ACTUAL received bytes ─────────────
-            // The LimitsGuard (request_filter phase) only checks the declared
-            // Content-Length header.  A client using chunked encoding or sending
-            // more bytes than declared would bypass that check entirely.
-            // Here we count actual bytes and drop the chunk (+ all future chunks)
-            // once the limit is exceeded, preventing large bodies from reaching
-            // the upstream.
-            if chunk_len > 0 {
-                let max_body = {
-                    let config = self.state.config.load();
-                    config
-                        .sites
-                        .get(req_ctx.site_idx)
-                        .and_then(|s| s.limits.as_ref())
-                        .and_then(|l| l.max_body_bytes)
-                };
-                if let Some(max) = max_body {
-                    if req_ctx.actual_body_bytes > max {
-                        // Drop this chunk — prevents forwarding to upstream.
-                        *body = None;
-                        let prev = req_ctx.actual_body_bytes - chunk_len as u64;
-                        if prev <= max {
-                            // Log only on first violation.
-                            tracing::warn!(
-                                actual = req_ctx.actual_body_bytes,
-                                max,
-                                "request body exceeded maxBodyBytes (chunked/no Content-Length) \
-                                 — body dropped, upstream will receive truncated request"
-                            );
-                        }
-                        req_ctx.body_buffer.clear();
-                        req_ctx.body_too_large = true;
-                        return Ok(());
-                    }
-                }
+        // Enforce maxBodyBytes on the ACTUAL received bytes.
+        // The LimitsGuard only checks the Content-Length header; chunked clients bypass it.
+        if chunk_len > 0 {
+            let max_body = {
+                let config = self.state.config.load();
+                config
+                    .sites
+                    .get(req_ctx.site_idx)
+                    .and_then(|s| s.limits.as_ref())
+                    .and_then(|l| l.max_body_bytes)
+            };
+            if enforce_max_body_bytes(req_ctx, body, chunk_len, max_body) {
+                return Ok(());
             }
         }
 
-        // ── Retry body buffering (separate from size enforcement) ────────────
+        // Retry body buffering (separate from size enforcement).
         // Only buffer when retry is configured (otherwise wasteful).
         if req_ctx.retry.is_none() || req_ctx.body_too_large {
             return Ok(());
@@ -1330,20 +1374,7 @@ impl ProxyHttp for ConduitProxy {
                     .and_then(|l| l.max_body_buffer_bytes)
                     .unwrap_or(1_048_576) // default 1 MiB
             };
-            let current_size: usize = req_ctx.body_buffer.iter().map(|b| b.len()).sum();
-            if current_size + chunk.len() > max_bytes as usize {
-                // Discard buffer — linkerd pattern: clear on overflow.
-                req_ctx.body_buffer.clear();
-                req_ctx.body_too_large = true;
-                tracing::debug!(
-                    size = current_size + chunk.len(),
-                    max = max_bytes,
-                    "request body exceeded buffer limit — retry will not replay body"
-                );
-            } else {
-                // Cheap clone: Bytes is reference-counted.
-                req_ctx.body_buffer.push(chunk.clone());
-            }
+            buffer_body_chunk(req_ctx, chunk, max_bytes);
         }
         Ok(())
     }
@@ -1684,42 +1715,10 @@ impl ProxyHttp for ConduitProxy {
         ctx: &mut Self::CTX,
         mut e: Box<pingora_core::Error>,
     ) -> Box<pingora_core::Error> {
-        use pingora_core::ErrorType::*;
         if let Some(req_ctx) = ctx.as_mut() {
             if let Some(retry) = &mut req_ctx.retry {
                 if retry.has_attempts_left() {
-                    let is_conn_err = matches!(
-                        e.etype(),
-                        ConnectRefused
-                            | ConnectNoRoute
-                            | ConnectError
-                            | ConnectProxyFailure
-                            | BindError
-                            | SocketError
-                    );
-                    let is_timeout = matches!(e.etype(), ConnectTimedout);
-                    let condition = if is_conn_err {
-                        "connection_error"
-                    } else {
-                        "timeout"
-                    };
-                    // Only retry safe/idempotent HTTP methods to prevent
-                    // double-submission of POST/PUT/DELETE/PATCH requests.
-                    // RFC 7231 § 4.2.2 defines idempotent methods.
-                    let method = session.req_header().method.as_str();
-                    let is_safe_method = is_safe_http_method(method);
-                    if is_safe_method
-                        && ((is_conn_err && retry.has_condition("connection_error"))
-                            || (is_timeout && retry.has_condition("timeout")))
-                        && self.retry_budget_allows(retry)
-                    {
-                        e.set_retry(true);
-                        self.state
-                            .metrics
-                            .retry_attempts_total
-                            .with_label_values(&["<connect>", condition])
-                            .inc();
-                    }
+                    self.try_retry_connect_error(session, retry, &mut e);
                 }
             }
         }
@@ -1734,8 +1733,6 @@ impl ProxyHttp for ConduitProxy {
         ctx: &mut Self::CTX,
         client_reused: bool,
     ) -> Box<pingora_core::Error> {
-        use pingora_core::ErrorType::*;
-
         let mut e = e.more_context(format!("Peer: {peer}"));
         e.retry
             .decide_reuse(client_reused && !session.as_ref().retry_buffer_truncated());
@@ -1743,24 +1740,7 @@ impl ProxyHttp for ConduitProxy {
         if let Some(req_ctx) = ctx.as_mut() {
             if let Some(retry) = &mut req_ctx.retry {
                 if retry.has_attempts_left() {
-                    let is_timeout = matches!(e.etype(), ReadTimedout | WriteTimedout);
-                    let is_5xx_retry = matches!(e.etype(), Custom("5xx_retry"));
-                    let condition = if is_timeout { "timeout" } else { "5xx" };
-                    // Only retry safe/idempotent methods — see fail_to_connect.
-                    let method = session.req_header().method.as_str();
-                    if is_safe_http_method(method)
-                        && ((is_timeout && retry.has_condition("timeout"))
-                            || (is_5xx_retry && retry.has_condition("5xx")))
-                        && self.retry_budget_allows(retry)
-                    {
-                        e.set_retry(true);
-                        let route = session.req_header().uri.path().to_owned();
-                        self.state
-                            .metrics
-                            .retry_attempts_total
-                            .with_label_values(&[&route, condition])
-                            .inc();
-                    }
+                    self.try_retry_proxy_error(session, retry, &mut e);
                 }
             }
         }
@@ -2061,6 +2041,65 @@ fn is_safe_http_method(method: &str) -> bool {
         method.to_ascii_uppercase().as_str(),
         "GET" | "HEAD" | "OPTIONS" | "TRACE"
     )
+}
+
+/// Enforce the `maxBodyBytes` hard limit on actual received bytes.
+///
+/// Returns `true` when the limit was exceeded (caller should return early).
+/// Mutates `body` to `None` to drop the chunk and sets `body_too_large` on the
+/// context.  Logs a warning only on the first violation.
+fn enforce_max_body_bytes(
+    req_ctx: &mut crate::proxy::ctx::RequestCtx,
+    body: &mut Option<bytes::Bytes>,
+    chunk_len: usize,
+    max_body: Option<u64>,
+) -> bool {
+    let Some(max) = max_body else {
+        return false;
+    };
+    if req_ctx.actual_body_bytes > max {
+        // Drop this chunk — prevents forwarding to upstream.
+        *body = None;
+        let prev = req_ctx.actual_body_bytes - chunk_len as u64;
+        if prev <= max {
+            // Log only on first violation.
+            tracing::warn!(
+                actual = req_ctx.actual_body_bytes,
+                max,
+                "request body exceeded maxBodyBytes (chunked/no Content-Length) \
+                 — body dropped, upstream will receive truncated request"
+            );
+        }
+        req_ctx.body_buffer.clear();
+        req_ctx.body_too_large = true;
+        return true;
+    }
+    false
+}
+
+/// Buffer a body chunk for retry replay (linkerd ReplayBody pattern).
+///
+/// Clears the buffer and sets `body_too_large` when adding the chunk would
+/// exceed `max_bytes`.
+fn buffer_body_chunk(
+    req_ctx: &mut crate::proxy::ctx::RequestCtx,
+    chunk: &bytes::Bytes,
+    max_bytes: u64,
+) {
+    let current_size: usize = req_ctx.body_buffer.iter().map(|b| b.len()).sum();
+    if current_size + chunk.len() > max_bytes as usize {
+        // Discard buffer — linkerd pattern: clear on overflow.
+        req_ctx.body_buffer.clear();
+        req_ctx.body_too_large = true;
+        tracing::debug!(
+            size = current_size + chunk.len(),
+            max = max_bytes,
+            "request body exceeded buffer limit — retry will not replay body"
+        );
+    } else {
+        // Cheap clone: Bytes is reference-counted.
+        req_ctx.body_buffer.push(chunk.clone());
+    }
 }
 
 async fn apply_backoff(retry: &RetryState) {
