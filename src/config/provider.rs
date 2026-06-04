@@ -347,26 +347,37 @@ mod tests {
         let handle = tokio::spawn(async move { provider.run(tx).await });
 
         // 1. Receive initial config.
-        let initial = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
+        let initial = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
             .await
             .expect("timeout on initial config")
             .expect("initial config");
         assert_eq!(initial.sites[0].port, Some(0));
 
         // 2. Change the file and wait for the reload.
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        // Wait longer before writing so any spurious watcher events (common on
+        // macOS FSEvents) from the initial file creation settle first.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         let updated = r#"{"global":{"admin":{"bind":"127.0.0.1:0"}},"sites":[{"port":7777}]}"#;
         overwrite(&path, updated);
 
-        let reloaded = tokio::time::timeout(std::time::Duration::from_secs(4), rx.recv())
-            .await
-            .expect("timeout waiting for reloaded config")
-            .expect("reloaded config");
-        assert_eq!(
-            reloaded.sites[0].port,
-            Some(7777),
-            "auto-reload must send updated config"
-        );
+        // Retry-receive: on macOS the watcher may fire a spurious reload with the
+        // old config before delivering the actual change event.  Keep draining
+        // the channel until we see port 7777 or the overall deadline expires.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                panic!("timeout waiting for reloaded config with port 7777");
+            }
+            let cfg = tokio::time::timeout(remaining, rx.recv())
+                .await
+                .expect("timeout waiting for reloaded config")
+                .expect("channel closed before reload");
+            if cfg.sites[0].port == Some(7777) {
+                break; // got the expected update
+            }
+            // Spurious event with old config — keep waiting.
+        }
 
         handle.abort();
     }
