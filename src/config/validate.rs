@@ -2752,4 +2752,43 @@ mod tests {
         let e = errs(r#"{ "port": 3306, "tcp": { "targets": ["[::1]:3306"] } }"#);
         assert!(e.is_empty(), "IPv6 TCP target must pass: {e:?}");
     }
+
+    // ── proxy loop detection via routes[] array ───────────────────────────────
+
+    #[test]
+    fn proxy_loop_detection_via_routes_array() {
+        let w = warns(
+            r#"{ "port": 8080, "routes": [{ "match": { "path": "/**" }, "proxy": "http://127.0.0.1:8080" }] }"#,
+        );
+        assert!(
+            w.iter().any(|m| m.contains("loop")),
+            "routes array pointing back to self must warn: {w:?}"
+        );
+    }
+
+    #[test]
+    fn proxy_loop_detection_routes_array_external_no_warn() {
+        let w = warns(
+            r#"{ "port": 8080, "routes": [{ "match": { "path": "/**" }, "proxy": "http://api.example.com:8080" }] }"#,
+        );
+        assert!(
+            w.iter().all(|m| !m.contains("loop")),
+            "external host must not warn: {w:?}"
+        );
+    }
+
+    // ── consumers.sharedJwt validation ───────────────────────────────────────
+
+    #[test]
+    fn consumers_shared_jwt_no_secret_or_jwks_rejected() {
+        let e = errs(
+            r#"{ "port": 8080,
+                 "consumers": { "consumers": [{ "username": "u", "apiKey": "k" }],
+                                "sharedJwt": {} } }"#,
+        );
+        assert!(
+            !e.is_empty(),
+            "sharedJwt without secret or jwksUrl must error: {e:?}"
+        );
+    }
 }
