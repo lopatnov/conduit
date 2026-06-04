@@ -714,6 +714,15 @@ mod tests {
         run_init(opts).expect("default yes must succeed");
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("8080"), "default port must be 8080");
+        assert!(
+            content.contains("dist"),
+            "default static dir must be ./dist"
+        );
+        assert!(content.contains("dev"), "default log format must be dev");
+        assert!(
+            content.contains("healthCheck"),
+            "health check must be enabled by default"
+        );
     }
 
     #[test]

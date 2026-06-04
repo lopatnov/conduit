@@ -68,18 +68,21 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn keeps_unknown_var() {
         let out = interpolate(r#"{"token": "$CONDUIT_NONEXISTENT_XYZ_987"}"#);
         assert_eq!(out, r#"{"token": "$CONDUIT_NONEXISTENT_XYZ_987"}"#);
     }
 
     #[test]
+    #[serial]
     fn ignores_bare_dollar() {
         let out = interpolate("price: $42");
         assert_eq!(out, "price: $42");
     }
 
     #[test]
+    #[serial]
     fn ignores_double_dollar() {
         let out = interpolate("$$VAR");
         assert_eq!(out, "$$VAR");
