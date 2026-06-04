@@ -24,10 +24,12 @@ jobs:
   semgrep:
     name: Semgrep SAST
     runs-on: ubuntu-latest
-    # Pin to immutable digest to prevent supply-chain drift.
-    # linux/amd64 digest as of 2026-06-03; update periodically via Renovate/Dependabot.
+    # Use the official Semgrep container image.
+    # NOTE: Digest pinning was attempted but the digest provided by CodeRabbit
+    # was invalid ("manifest unknown"). Reverting to :latest until a valid digest
+    # can be verified. Track via: docker pull semgrep/semgrep; docker inspect ...
     container:
-      image: semgrep/semgrep@sha256:40579a2e7091f09c2a2656914b1049c3635928f62f026966810a9555c659e5e7
+      image: semgrep/semgrep
     # Skip dependabot PRs — no secrets available.
     if: github.actor != 'dependabot[bot]'
 
