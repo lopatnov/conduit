@@ -451,12 +451,9 @@ pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Opt
         }
     }
 
-    for consumer in &cfg.consumers {
-        if check_consumer_credentials(consumer, api_key_header, session) {
-            return Some(consumer);
-        }
-    }
-    None
+    cfg.consumers
+        .iter()
+        .find(|consumer| check_consumer_credentials(consumer, api_key_header, session))
 }
 
 /// Try to identify a consumer via the shared JWT (V3 / Auth0 / Cognito pattern).
