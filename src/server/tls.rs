@@ -226,6 +226,67 @@ mod tests {
             "cert with surrounding whitespace must be accepted"
         );
     }
+
+    // ── build_client_verifier ─────────────────────────────────────────────────
+
+    #[test]
+    fn build_client_verifier_with_valid_ca_required() {
+        use super::build_client_verifier;
+        // Generate a self-signed cert to use as CA.
+        let key_pair = rcgen::KeyPair::generate().expect("keygen");
+        let cert = rcgen::CertificateParams::new(vec!["ca.example.com".to_string()])
+            .expect("params")
+            .self_signed(&key_pair)
+            .expect("cert");
+        let cert_pem = cert.pem();
+
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("ca.pem");
+        std::fs::write(&ca_path, &cert_pem).unwrap();
+
+        // Required (not optional) client auth.
+        let result = build_client_verifier(ca_path.to_str().unwrap(), false);
+        assert!(result.is_ok(), "valid CA must build verifier: {result:?}");
+    }
+
+    #[test]
+    fn build_client_verifier_with_valid_ca_optional() {
+        use super::build_client_verifier;
+        let key_pair = rcgen::KeyPair::generate().expect("keygen");
+        let cert = rcgen::CertificateParams::new(vec!["ca.example.com".to_string()])
+            .expect("params")
+            .self_signed(&key_pair)
+            .expect("cert");
+        let cert_pem = cert.pem();
+
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("ca.pem");
+        std::fs::write(&ca_path, &cert_pem).unwrap();
+
+        // Optional client auth.
+        let result = build_client_verifier(ca_path.to_str().unwrap(), true);
+        assert!(
+            result.is_ok(),
+            "optional CA must build verifier: {result:?}"
+        );
+    }
+
+    #[test]
+    fn build_client_verifier_missing_file_returns_error() {
+        use super::build_client_verifier;
+        let result = build_client_verifier("/nonexistent/ca.pem", false);
+        assert!(result.is_err(), "missing CA file must return error");
+    }
+
+    #[test]
+    fn build_client_verifier_empty_pem_returns_error() {
+        use super::build_client_verifier;
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("empty.pem");
+        std::fs::write(&ca_path, "").unwrap();
+        let result = build_client_verifier(ca_path.to_str().unwrap(), false);
+        assert!(result.is_err(), "empty CA file must return error");
+    }
 }
 
 /// Load CA certificates from a PEM file and build a `WebPkiClientVerifier`.
