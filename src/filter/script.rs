@@ -911,4 +911,49 @@ mod tests {
             "compile error must be fail-open"
         );
     }
+
+    // ── ScriptResponseBuilder ─────────────────────────────────────────────────
+
+    #[test]
+    fn script_response_builder_new_has_correct_status() {
+        let builder = ScriptResponseBuilder::new(404);
+        assert_eq!(builder.status, 404);
+        assert!(builder.added_headers.is_empty());
+        assert!(builder.removed_headers.is_empty());
+    }
+
+    #[test]
+    fn script_response_builder_set_header_queues_header() {
+        let mut builder = ScriptResponseBuilder::new(200);
+        builder.set_header("x-custom", "value1");
+        assert_eq!(
+            builder.added_headers,
+            vec![("x-custom".to_owned(), "value1".to_owned())]
+        );
+    }
+
+    #[test]
+    fn script_response_builder_remove_header_queues_removal() {
+        let mut builder = ScriptResponseBuilder::new(200);
+        builder.remove_header("x-server");
+        assert_eq!(builder.removed_headers, vec!["x-server".to_owned()]);
+    }
+
+    // ── ScriptUpstreamView ────────────────────────────────────────────────────
+
+    #[test]
+    fn script_upstream_view_header_case_insensitive() {
+        let mut view = ScriptUpstreamView {
+            status: 200,
+            headers: {
+                let mut m = HashMap::new();
+                m.insert("content-type".to_owned(), "application/json".to_owned());
+                m
+            },
+        };
+        // Case-insensitive lookup.
+        assert_eq!(view.header("Content-Type"), "application/json");
+        assert_eq!(view.header("content-type"), "application/json");
+        assert_eq!(view.header("missing"), "");
+    }
 }
