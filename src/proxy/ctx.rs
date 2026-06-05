@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::config::schema::{
-    CacheConfig, ConnectionPoolConfig, ProxyTimeout, RewriteRule, StaticOptions,
+    CacheConfig, ConnectionPoolConfig, HeaderTransformConfig, ProxyTimeout, RewriteRule,
+    StaticOptions, UpstreamTlsConfig as UpstreamTlsCfg,
 };
 
 #[derive(Debug)]
@@ -36,6 +37,66 @@ pub struct RequestCtx {
     /// `None` means the route has no cache config and caching is disabled for
     /// this request.
     pub proxy_cache_cfg: Option<CacheConfig>,
+    /// Set to `true` by `upstream_response_filter` when the upstream returns a
+    /// 5xx status and the site has `maskErrors: true`.  The
+    /// `upstream_response_body_filter` hook replaces the body with a generic
+    /// JSON error so internal stack traces don't leak to clients.
+    pub mask_upstream_body: bool,
+    /// Static header transform applied to every upstream response.
+    /// Populated from `SiteConfig.response_transform`.
+    pub response_transform: Option<HeaderTransformConfig>,
+    /// JWT claims extracted by `JwtGuard` — available for template substitution
+    /// in `requestTransform.setHeaders` values using `{{ jwt.<claim> }}` syntax.
+    ///
+    /// Only populated when `jwtAuth` is configured and a valid token is present.
+    pub jwt_claims: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// Active OpenTelemetry span for this request.
+    ///
+    /// Created at the start of `do_request_filter` and ended in `logging()`.
+    /// Only populated when the `otlp` feature is enabled AND `global.otlp` is
+    /// configured.  Otherwise `None` (zero overhead).
+    #[cfg(feature = "otlp")]
+    pub otel_span: Option<opentelemetry::global::BoxedSpan>,
+    /// Buffered request body chunks for retry replay (linkerd ReplayBody pattern).
+    ///
+    /// Populated incrementally by `request_body_filter` when the route has
+    /// `retry` configured.  Cloning `Bytes` is cheap (reference-counted), so
+    /// accumulation cost is minimal.  Empty when buffering is not needed.
+    pub body_buffer: Vec<bytes::Bytes>,
+    /// `true` when the accumulated body exceeded `limits.maxBodyBufferBytes`
+    /// (default 1 MiB).  Retries are still attempted but without body replay —
+    /// only safe for idempotent methods (GET/HEAD) in that case.
+    pub body_too_large: bool,
+    /// Running tally of actual body bytes received so far.
+    ///
+    /// Incremented in `request_body_filter` for every chunk regardless of
+    /// whether retry buffering is active.  Used to enforce `limits.maxBodyBytes`
+    /// against clients that omit `Content-Length` or use chunked encoding.
+    pub actual_body_bytes: u64,
+    /// Timestamp recorded at the start of `upstream_request_filter` — i.e. the
+    /// moment the proxied request was forwarded to the upstream.
+    ///
+    /// Used to compute `upstream_response_time`: the duration between sending
+    /// the request and receiving the first byte of the upstream response.
+    /// `None` for local handlers (health, static, metrics, …).
+    pub upstream_start: Option<Instant>,
+
+    /// Client IP, used by logging() to decrement the per-IP connection counter
+    /// when `limits.maxConnectionsPerIp` is set.
+    pub client_ip_for_conn_limit: Option<String>,
+
+    /// Passive health check: HTTP status codes that count as upstream failures.
+    ///
+    /// Populated from `healthCheck.unhealthyStatus` during routing.
+    /// If the response status matches, `consecutive_5xx` is incremented.
+    /// Default (empty) falls back to the standard 5xx-only detection.
+    pub passive_unhealthy_status: Vec<u16>,
+
+    /// Passive health check: latency threshold in milliseconds.
+    ///
+    /// Populated from `healthCheck.unhealthyLatencyMs` during routing.
+    /// If the upstream response time exceeds this, it counts as a failure.
+    pub passive_unhealthy_latency_ms: Option<u64>,
 }
 
 impl RequestCtx {
@@ -49,6 +110,7 @@ impl RequestCtx {
         proxy_http2: bool,
         proxy_upstream_url: Option<String>,
         proxy_cache_cfg: Option<CacheConfig>,
+        response_transform: Option<HeaderTransformConfig>,
     ) -> Self {
         Self {
             site_idx,
@@ -62,6 +124,18 @@ impl RequestCtx {
             proxy_http2,
             proxy_upstream_url,
             proxy_cache_cfg,
+            mask_upstream_body: false,
+            response_transform,
+            body_buffer: Vec::new(),
+            body_too_large: false,
+            actual_body_bytes: 0,
+            jwt_claims: None,
+            upstream_start: None,
+            client_ip_for_conn_limit: None,
+            passive_unhealthy_status: Vec::new(),
+            passive_unhealthy_latency_ms: None,
+            #[cfg(feature = "otlp")]
+            otel_span: None,
         }
     }
 }
@@ -84,6 +158,19 @@ pub struct RetryState {
     pub conditions: Vec<String>,
     /// Optional delay between retries in milliseconds.
     pub backoff_ms: Option<u64>,
+    /// When `true`, jitter ±50% is applied to `backoff_ms` to avoid retry storms.
+    pub backoff_jitter: bool,
+    /// Maximum percentage of in-flight requests that may be retries (0.0–100.0).
+    ///
+    /// Prevents retry storms: when many requests fail simultaneously, an
+    /// unconstrained retry budget multiplies load by `1 + attempts`.
+    /// `None` means unlimited retries are allowed (legacy behaviour).
+    pub budget_percent: Option<f64>,
+    /// Set to `true` once this request has been promoted to a retry.
+    ///
+    /// The `logging()` hook reads this flag to decrement `AppState.retry_inflight`
+    /// after the retry response is delivered.
+    pub is_retrying: bool,
 }
 
 impl RetryState {
@@ -110,6 +197,11 @@ pub enum UpstreamTarget {
         strip_prefix: Option<String>,
         /// Path rewrite rules applied before forwarding — first matching rule wins.
         rewrite: Option<Vec<RewriteRule>>,
+        /// Optional traffic mirror URL.  When `Some`, `upstream_request_filter`
+        /// fires a fire-and-forget copy of the request to this backend.
+        mirror_url: Option<String>,
+        /// Per-route upstream TLS settings (cert verification, custom SNI).
+        upstream_tls: Option<UpstreamTlsCfg>,
     },
     Upload {
         addr: SocketAddr,
@@ -139,6 +231,12 @@ pub enum LocalHandler {
     /// Client-side JavaScript served at `/__hot-reload__/client.js`.
     /// Connects to the SSE stream and reloads the page on events.
     HotReloadJs,
+    /// All upstream connections for this route are at the configured
+    /// `maxConnectionsPerUpstream` limit — circuit open.
+    ///
+    /// The handler returns `503 Service Unavailable` immediately without
+    /// forwarding the request to any upstream.
+    Overloaded,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -146,6 +244,7 @@ pub struct AcceptEncoding {
     pub brotli: bool,
     pub gzip: bool,
     pub deflate: bool,
+    pub zstd: bool,
 }
 
 impl AcceptEncoding {
@@ -166,6 +265,7 @@ impl AcceptEncoding {
                 "br" => enc.brotli = true,
                 "gzip" => enc.gzip = true,
                 "deflate" => enc.deflate = true,
+                "zstd" => enc.zstd = true,
                 _ => {}
             }
         }
@@ -202,10 +302,19 @@ mod tests {
 
     #[test]
     fn parse_multiple_encodings() {
-        let enc = AcceptEncoding::parse("br, gzip, deflate");
+        let enc = AcceptEncoding::parse("br, gzip, deflate, zstd");
         assert!(enc.brotli);
         assert!(enc.gzip);
         assert!(enc.deflate);
+        assert!(enc.zstd);
+    }
+
+    #[test]
+    fn parse_zstd_only() {
+        let enc = AcceptEncoding::parse("zstd");
+        assert!(enc.zstd);
+        assert!(!enc.brotli);
+        assert!(!enc.gzip);
     }
 
     #[test]
@@ -245,6 +354,9 @@ mod tests {
             max_attempts: max,
             conditions: conditions.iter().map(|s| s.to_string()).collect(),
             backoff_ms: None,
+            backoff_jitter: false,
+            budget_percent: None,
+            is_retrying: false,
         }
     }
 

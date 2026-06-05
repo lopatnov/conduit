@@ -1,0 +1,50 @@
+# Conduit .gitattributes
+#
+# Normalize line endings: all text files are stored as LF in the repository
+# and checked out as LF on all platforms (including Windows).
+#
+# This prevents CRLF-specific false-positive diagnostics in rust-analyzer
+# where string continuations like "\r\n\" at end of line are incorrectly
+# flagged as "unknown character escape" when the file has CRLF endings.
+#
+# References:
+#   https://git-scm.com/docs/gitattributes
+#   https://github.com/rust-lang/rust-analyzer/issues/11006
+
+# Default: auto-detect text files and normalize to LF
+* text=auto eol=lf
+
+# Rust source files — always LF
+*.rs        text eol=lf
+
+# Config, docs, YAML, TOML, JSON — always LF
+*.toml      text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.txt       text eol=lf
+
+# Scripts — always LF (shebang scripts must be LF on Unix)
+*.sh        text eol=lf
+Makefile    text eol=lf
+
+# WAT (WebAssembly Text Format)
+*.wat       text eol=lf
+
+# Windows-only files that legitimately use CRLF
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# Binary files — no line ending normalization
+*.wasm      binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.pdf       binary
+*.zip       binary
+*.gz        binary
+*.br        binary

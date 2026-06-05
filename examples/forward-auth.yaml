@@ -1,0 +1,59 @@
+# ── Forward Auth — External Authentication Service ───────────────────────────
+#
+# Delegates every request to an external auth service before forwarding to
+# the upstream.  The auth service decides who can access what:
+#
+#   Client → Conduit → Auth service (GET /verify)
+#                      ↑ 2xx: inject headers, continue
+#                      ↑ 401/403: return to client, stop
+#                      ↑ unreachable: 401 (fail closed — safe default)
+#
+# This pattern is used by:
+#   • Traefik forwardAuth middleware
+#   • Kubernetes admission webhooks
+#   • Custom SSO / OAuth2 proxy (Oathkeeper, oauth2-proxy, ory/oathkeeper)
+#
+# Run: conduit -c examples/forward-auth.yaml
+
+port: 8080
+
+# Delegate auth decisions to an external service.
+forwardAuth:
+  # The auth service receives a GET request with:
+  #   X-Forwarded-Method: GET
+  #   X-Forwarded-Uri: /api/orders/42
+  #   X-Forwarded-For: 192.168.1.1
+  #   + any headers listed in requestHeaders
+  url: "http://auth-service:9000/verify"
+
+  # Forward these headers from the original request to the auth service.
+  # Typically the Authorization header (Bearer token, session cookie, etc.)
+  requestHeaders:
+    - Authorization
+    - Cookie
+    - X-Tenant-ID
+
+  # When the auth service returns 2xx, copy these response headers into the
+  # upstream request.  This lets the auth service inject user identity:
+  #   X-User-ID: user_abc123
+  #   X-Role: admin
+  #   X-Scope: read:orders write:orders
+  responseHeaders:
+    - X-User-ID
+    - X-Role
+    - X-Scope
+
+  # Give the auth service 3 seconds to respond.
+  timeoutMs: 3000
+
+  # These paths skip forward-auth entirely — no auth check needed.
+  skipPaths:
+    - /__health__
+    - /public/**
+    - /v1/auth/login     # the login endpoint itself must be reachable without auth
+
+proxy:
+  /api: "http://api-backend:4000"
+  /public: "http://public-content:5000"
+
+healthCheck: true

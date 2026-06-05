@@ -1,0 +1,22 @@
+{
+  "port": 8080,
+  "host": "localhost",
+  "upload": {
+    "path": "/files",
+    "dir": "./uploads",
+    "fieldName": "file",
+    "maxFileSizeBytes": 10485760,
+    "maxTotalSizeBytes": 20971520,
+    "maxFiles": 5,
+    "allowedMimeTypes": [
+      "image/jpeg",
+      "image/png",
+      "image/gif",
+      "image/webp",
+      "application/pdf"
+    ]
+  },
+  "proxy": {
+    "targets": ["http://api:4000"]
+  }
+}

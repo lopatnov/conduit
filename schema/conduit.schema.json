@@ -27,7 +27,19 @@
         "admin": {
           "type": "object",
           "properties": {
-            "bind": { "type": "string", "examples": ["127.0.0.1:2019"] }
+            "bind":  { "type": "string", "examples": ["127.0.0.1:2019"] },
+            "token": { "type": "string", "minLength": 16, "description": "Bearer token for Admin API auth. When set, all requests must include Authorization: Bearer <token>. Minimum 16 characters; 32+ recommended." }
+          }
+        },
+        "otlp": {
+          "type": "object",
+          "required": ["endpoint"],
+          "description": "OpenTelemetry OTLP tracing. Requires --features otlp.",
+          "properties": {
+            "endpoint":    { "type": "string", "format": "uri", "examples": ["http://localhost:4317", "https://api.honeycomb.io:443"] },
+            "serviceName": { "type": "string", "default": "conduit" },
+            "sampleRate":  { "type": "number", "minimum": 0, "maximum": 1, "default": 1.0 },
+            "timeoutMs":   { "type": "integer", "minimum": 1, "default": 5000 }
           }
         }
       }
@@ -48,7 +60,7 @@
         "logging":        { "$ref": "#/$defs/LoggingConfig" },
         "compression":    { "$ref": "#/$defs/CompressionConfig" },
         "responseTime":   { "$ref": "#/$defs/BoolOrObject" },
-        "securityHeaders":{ "$ref": "#/$defs/BoolOrObject" },
+        "securityHeaders":{ "$ref": "#/$defs/SecurityHeadersConfig" },
         "cors":           { "$ref": "#/$defs/CorsConfig" },
         "hotReload":      { "$ref": "#/$defs/HotReloadConfig" },
         "healthCheck":    { "$ref": "#/$defs/HealthCheckConfig" },
@@ -98,9 +110,14 @@
         "limits": {
           "type": "object",
           "properties": {
-            "maxBodyBytes":   { "type": "integer", "minimum": 0 },
-            "maxHeaderBytes": { "type": "integer", "minimum": 0 },
-            "timeoutSecs":    { "type": "integer", "minimum": 0 }
+            "maxBodyBytes":          { "type": "integer", "minimum": 0 },
+            "maxHeaderBytes":        { "type": "integer", "minimum": 0 },
+            "timeoutSecs":           { "type": "integer", "minimum": 0 },
+            "maxInflightRequests":   { "type": "integer", "minimum": 1 },
+            "maxBodyBufferBytes":    { "type": "integer", "minimum": 0 },
+            "keepaliveRequestLimit": { "type": "integer", "minimum": 1 },
+            "priorityThreshold":     { "type": "number", "minimum": 0, "maximum": 1,
+                                       "description": "Fraction of maxInflightRequests at which low-priority routes (priority < 50) are shed (0.0–1.0). Default 0.8." }
           }
         },
         "headers":   { "type": "object", "additionalProperties": { "type": "string" } },
@@ -155,6 +172,14 @@
           }
         },
         "fallback": { "$ref": "#/$defs/FallbackConfig" },
+        "consumers": { "$ref": "#/$defs/ConsumersConfig" },
+        "outlierDetection": { "$ref": "#/$defs/OutlierDetectionConfig" },
+        "maskErrors": { "type": "boolean", "description": "Replace upstream 5xx bodies with a generic JSON error." },
+        "faultInjection": { "$ref": "#/$defs/FaultInjectionConfig" },
+        "jwtAuth": { "$ref": "#/$defs/JwtAuthConfig" },
+        "forwardAuth": { "$ref": "#/$defs/ForwardAuthConfig" },
+        "requestTransform": { "$ref": "#/$defs/HeaderTransformConfig" },
+        "responseTransform": { "$ref": "#/$defs/HeaderTransformConfig" },
         "middleware": {
           "type": "array",
           "description": "Ordered middleware chain executed after built-in filters.",
@@ -209,8 +234,9 @@
         {
           "type": "object",
           "properties": {
-            "format": { "type": "string", "enum": ["dev", "json", "combined", "common", "short"] },
-            "file":   { "type": "string" }
+            "format":    { "type": "string", "enum": ["dev", "json", "combined", "common", "short"] },
+            "file":      { "type": "string" },
+            "skipPaths": { "type": "array", "items": { "type": "string" }, "description": "Paths to suppress from access logs." }
           }
         }
       ]
@@ -224,6 +250,24 @@
             "algorithms": { "type": "array", "items": { "type": "string", "enum": ["br", "gzip", "deflate"] } },
             "level":      { "type": "integer", "minimum": 0, "maximum": 9 },
             "minBytes":   { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "SecurityHeadersConfig": {
+      "oneOf": [
+        { "type": "boolean" },
+        {
+          "type": "object",
+          "properties": {
+            "hstsMaxAgeSecs":        { "type": "integer", "minimum": 0, "description": "max-age for Strict-Transport-Security (seconds). 0 disables HSTS." },
+            "hstsIncludeSubDomains": { "type": "boolean", "description": "Add includeSubDomains to HSTS. Default: true when hstsMaxAgeSecs is set." },
+            "hstsPreload":           { "type": "boolean", "description": "Add preload directive to HSTS for preload list submission." },
+            "csp":                   { "type": "string", "description": "Content-Security-Policy header value." },
+            "xFrameOptions":         { "type": "string", "enum": ["DENY", "SAMEORIGIN"], "description": "X-Frame-Options value." },
+            "referrerPolicy":        { "type": "string", "description": "Referrer-Policy header value." },
+            "permissionsPolicy":     { "type": "string", "description": "Permissions-Policy header value (replaces Feature-Policy). E.g. 'geolocation=(), microphone=()'." },
+            "allowedHosts":          { "type": "array", "items": { "type": "string" }, "description": "Allowlist of Host header values. Requests with disallowed Host return 400. Use '*' to allow any." }
           }
         }
       ]
@@ -352,9 +396,10 @@
           "type": "object",
           "required": ["attempts", "conditions"],
           "properties": {
-            "attempts":   { "type": "integer", "minimum": 1 },
-            "conditions": { "type": "array", "items": { "type": "string", "enum": ["connection_error", "5xx", "timeout"] } },
-            "backoffMs":  { "type": "integer", "minimum": 0 }
+            "attempts":       { "type": "integer", "minimum": 1 },
+            "conditions":     { "type": "array", "items": { "type": "string", "enum": ["connection_error", "5xx", "timeout"] } },
+            "backoffMs":      { "type": "integer", "minimum": 0 },
+            "budgetPercent":  { "type": "number", "minimum": 0, "maximum": 100, "description": "Retry budget: max % of active requests that may be retries." }
           }
         },
         "healthCheck": {
@@ -363,8 +408,35 @@
             "path":               { "type": "string" },
             "intervalSecs":       { "type": "integer", "minimum": 1 },
             "unhealthyThreshold": { "type": "integer", "minimum": 1 },
-            "healthyThreshold":   { "type": "integer", "minimum": 1 }
+            "healthyThreshold":   { "type": "integer", "minimum": 1 },
+            "slowStartSecs":      { "type": "integer", "minimum": 0, "description": "Slow-start ramp-up window in seconds after recovery." },
+            "maxConnectionsPerUpstream": { "type": "integer", "minimum": 1, "description": "Circuit breaker: max concurrent connections per upstream. Returns 503 when all upstreams are at this limit." }
           }
+        },
+        "mirror": { "type": "string", "format": "uri", "description": "Fire-and-forget mirror URL. V1: headers only." },
+        "upstreamTls": {
+          "type": "object",
+          "properties": {
+            "verify":     { "type": "boolean", "description": "Verify upstream TLS certificate (default true)." },
+            "serverName": { "type": "string", "description": "Override SNI hostname for cert verification." }
+          }
+        },
+        "rateLimit": {
+          "type": "object",
+          "required": ["windowSecs", "limit"],
+          "properties": {
+            "windowSecs": { "type": "integer", "minimum": 1 },
+            "limit":      { "type": "integer", "minimum": 1 },
+            "keyBy":      { "type": "string" },
+            "skipPaths":  { "type": "array", "items": { "type": "string" } }
+          },
+          "description": "Per-route rate limit (in addition to site-level rateLimit)."
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Route priority for load shedding (0=lowest, 100=highest, default 50). When the site exceeds limits.priorityThreshold, requests to routes with priority < 50 receive 503 Load Shedding."
         },
         "cache": {
           "type": "object",
@@ -477,6 +549,127 @@
           "additionalProperties": { "type": "string" },
           "description": "Query parameter values that must be present and match (exact or regex)."
         }
+      }
+    },
+    "OutlierDetectionConfig": {
+      "type": "object",
+      "description": "Passive health checking via consecutive 5xx tracking.",
+      "properties": {
+        "consecutive5xx":       { "type": "integer", "minimum": 1, "default": 5, "description": "Consecutive 5xx responses before ejection." },
+        "baseEjectionTimeSecs": { "type": "integer", "minimum": 1, "default": 30 },
+        "maxEjectionTimeSecs":  { "type": "integer", "minimum": 1, "default": 300 },
+        "maxEjectionPercent":   { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 }
+      }
+    },
+    "FaultInjectionConfig": {
+      "type": "object",
+      "description": "Inject artificial faults for chaos testing. Not for production.",
+      "properties": {
+        "abort": {
+          "type": "object",
+          "properties": {
+            "percent": { "type": "number", "minimum": 0, "maximum": 100 },
+            "status":  { "type": "integer", "minimum": 100, "maximum": 999 },
+            "body":    { "type": "string" }
+          }
+        },
+        "delay": {
+          "type": "object",
+          "properties": {
+            "percent":   { "type": "number", "minimum": 0, "maximum": 100 },
+            "durationMs":{ "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "JwtAuthConfig": {
+      "type": "object",
+      "description": "JWT bearer-token authentication. Requires either secret (HS256) or jwksUrl (RS256/ES256).",
+      "properties": {
+        "secret":          { "type": "string", "description": "HMAC-SHA256 secret for HS256 tokens." },
+        "jwksUrl":         { "type": "string", "format": "uri", "description": "Remote JWKS URL for RS256/ES256 tokens." },
+        "jwksRefreshSecs": { "type": "integer", "minimum": 60, "default": 3600 },
+        "audience":        { "type": "array", "items": { "type": "string" } },
+        "issuer":          { "type": "string" },
+        "skipPaths":       { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "ForwardAuthConfig": {
+      "type": "object",
+      "required": ["url"],
+      "description": "Delegate auth to an external service. 2xx=allow, 4xx/5xx=deny, unreachable=fail closed.",
+      "properties": {
+        "url":             { "type": "string", "format": "uri" },
+        "requestHeaders":  { "type": "array", "items": { "type": "string" }, "description": "Request headers to forward to auth service." },
+        "responseHeaders": { "type": "array", "items": { "type": "string" }, "description": "Auth service response headers to inject into upstream request." },
+        "timeoutMs":       { "type": "integer", "minimum": 1, "default": 5000 },
+        "skipPaths":       { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "HeaderTransformConfig": {
+      "type": "object",
+      "description": "Static header injection/removal applied to every upstream request or response.",
+      "properties": {
+        "setHeaders":    { "type": "object", "additionalProperties": { "type": "string" } },
+        "removeHeaders": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "ConsumersConfig": {
+      "type": "object",
+      "description": "Named-consumer authentication model. Each consumer has its own credentials and per-consumer policies.",
+      "properties": {
+        "consumers":    { "type": "array", "items": { "$ref": "#/$defs/Consumer" }, "description": "List of named consumers (evaluated in order; first match wins)." },
+        "idHeader":     { "type": "string", "default": "x-consumer-id", "description": "Header injected with the consumer's username into the upstream request." },
+        "apiKeyHeader": { "type": "string", "default": "x-api-key", "description": "Request header that carries the API key." },
+        "skipPaths":    { "type": "array", "items": { "type": "string" }, "description": "Paths that bypass consumers auth." },
+        "sharedJwt":    { "$ref": "#/$defs/ConsumersSharedJwtConfig", "description": "V3: shared JWKS for all consumers. Identifies consumer by matching jwt.sub (or usernameClaim) to consumer.username." }
+      }
+    },
+    "ConsumersSharedJwtConfig": {
+      "type": "object",
+      "description": "Shared JWT config (V3): one JWKS/secret for all consumers. Consumer is identified by matching usernameClaim (default: sub) to consumer.username.",
+      "properties": {
+        "jwksUrl":       { "type": "string", "format": "uri", "description": "Remote JWKS URL for RS256/ES256 tokens." },
+        "secret":        { "type": "string", "description": "HS256 shared secret. Mutually exclusive with jwksUrl." },
+        "audience":      { "type": "array", "items": { "type": "string" } },
+        "issuer":        { "type": "string" },
+        "usernameClaim": { "type": "string", "default": "sub", "description": "JWT claim matched against consumer.username. Default: \"sub\"." }
+      }
+    },
+    "Consumer": {
+      "type": "object",
+      "required": ["username"],
+      "description": "A named API client with credentials and per-consumer policies.",
+      "properties": {
+        "username":  { "type": "string", "description": "Unique consumer name. Injected as X-Consumer-ID into the upstream request." },
+        "apiKey":    { "type": "string", "description": "API key credential." },
+        "basicAuth": {
+          "type": "object",
+          "required": ["password"],
+          "properties": { "password": { "type": "string" } },
+          "description": "Basic Auth credential. Username comes from Consumer.username."
+        },
+        "jwt": { "$ref": "#/$defs/ConsumerJwtConfig", "description": "JWT Bearer token credential (V2). Consumer is identified when the token validates." },
+        "rateLimit": { "$ref": "#/$defs/RateLimitConfigInline", "description": "Per-consumer rate limit (independent of site-level rateLimit)." },
+        "headers":   { "type": "object", "additionalProperties": { "type": "string" }, "description": "Additional headers injected into the upstream request for this consumer." }
+      }
+    },
+    "ConsumerJwtConfig": {
+      "type": "object",
+      "description": "JWT credential for a consumer. Requires either secret (HS256) or jwksUrl (RS256/ES256).",
+      "properties": {
+        "secret":   { "type": "string", "description": "HS256 shared secret." },
+        "jwksUrl":  { "type": "string", "format": "uri", "description": "Remote JWKS URL for RS256/ES256 tokens." },
+        "audience": { "type": "array", "items": { "type": "string" } },
+        "issuer":   { "type": "string" }
+      }
+    },
+    "RateLimitConfigInline": {
+      "type": "object",
+      "required": ["windowSecs", "limit"],
+      "properties": {
+        "windowSecs": { "type": "integer", "minimum": 1 },
+        "limit":      { "type": "integer", "minimum": 1 }
       }
     }
   }

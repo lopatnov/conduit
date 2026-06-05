@@ -1,3 +1,4 @@
+#![cfg(feature = "redis")]
 //! Redis-backed rate limiting with graceful fallback to in-process memory.
 //!
 //! Both `redis://` (plaintext) and `rediss://` (TLS) URLs are supported.
@@ -108,7 +109,7 @@ impl RedisRateLimiter {
         let key = format!("{client_key}:{limit}:{window_secs}");
         self.fallback
             .entry(key)
-            .or_insert_with(|| TokenBucket::new(limit, window_secs))
+            .or_insert_with(|| TokenBucket::new(limit, 0, window_secs))
             .try_consume()
     }
 

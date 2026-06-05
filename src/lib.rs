@@ -5,5 +5,6 @@ pub mod filter;
 pub mod handler;
 pub mod proxy;
 pub mod server;
+#[cfg(feature = "upload")]
 pub mod upload;
 pub mod util;

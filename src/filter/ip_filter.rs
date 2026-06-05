@@ -33,11 +33,44 @@ pub(crate) fn apply_ip_filter(ip: Option<IpAddr>, config: &IpFilterConfig) -> bo
     }
 }
 
-/// Parse the first (leftmost) IP address from an `X-Forwarded-For` header value.
+/// Parse the trusted client IP from an `X-Forwarded-For` header value.
+///
+/// Takes the **rightmost** entry — the IP appended by the immediately adjacent
+/// trusted proxy.  This is the only entry a trusted proxy can vouch for.
+///
+/// The leftmost entry is **attacker-controlled**: a client behind a real proxy
+/// can forge `X-Forwarded-For: 1.1.1.1` and the proxy will prepend it, making
+/// the leftmost entry `1.1.1.1` (spoofed).  The rightmost entry is added by
+/// the trusted proxy itself and cannot be forged by the downstream client.
+///
+/// ```text
+/// Attacker sends:   X-Forwarded-For: 1.1.1.1
+/// Trusted proxy adds its view of the client IP (e.g. 5.5.5.5):
+///   X-Forwarded-For: 1.1.1.1, 5.5.5.5
+/// Leftmost = 1.1.1.1  ← FORGED
+/// Rightmost = 5.5.5.5 ← added by trusted proxy, safe to use
+/// ```
 ///
 /// Extracted for unit testability — `client_ip` calls this when `trust_proxy` is enabled.
 pub(crate) fn parse_xff(xff: &str) -> Option<IpAddr> {
-    xff.split(',').next()?.trim().parse().ok()
+    // Use `next_back()` directly — `split(',')` is a `DoubleEndedIterator` so
+    // this avoids needlessly traversing all elements to find the last.
+    xff.split(',').next_back()?.trim().parse().ok()
+}
+
+/// Public wrapper for testability — returns the effective client IP.
+pub(crate) fn client_ip_for_check(session: &Session, trust_proxy: bool) -> Option<IpAddr> {
+    client_ip(session, trust_proxy)
+}
+
+/// Check whether `ip` is blocked by any rule in `rules` (deny-list mode).
+///
+/// Used by `IpGuard::is_dynamic_denied` to avoid cloning the deny list Vec.
+pub(crate) fn is_in_deny_list(ip: Option<IpAddr>, rules: &[String]) -> bool {
+    match ip {
+        None => false, // unknown IP passes
+        Some(ip) => rules.iter().any(|r| matches_rule(&ip, r)),
+    }
 }
 
 fn client_ip(session: &Session, trust_proxy: bool) -> Option<IpAddr> {
@@ -237,6 +270,7 @@ mod tests {
             allow: Some(cidrs.iter().map(|s| s.to_string()).collect()),
             deny: None,
             trust_proxy: None,
+            dry_run: None,
         }
     }
 
@@ -245,6 +279,7 @@ mod tests {
             allow: None,
             deny: Some(cidrs.iter().map(|s| s.to_string()).collect()),
             trust_proxy: None,
+            dry_run: None,
         }
     }
 
@@ -253,6 +288,7 @@ mod tests {
             allow: None,
             deny: None,
             trust_proxy: None,
+            dry_run: None,
         }
     }
 
@@ -308,9 +344,29 @@ mod tests {
     }
 
     #[test]
-    fn xff_first_of_multiple_ips() {
+    fn xff_rightmost_of_multiple() {
+        // Security: rightmost is added by the trusted proxy, cannot be forged.
+        // A client behind a proxy could send "X-Forwarded-For: 1.1.1.1" and the
+        // proxy appends ", real_client_ip" — we must trust the rightmost, not the left.
         let ip = parse_xff("203.0.113.1, 10.0.0.1, 192.168.1.1");
-        assert_eq!(ip, Some("203.0.113.1".parse().unwrap()));
+        assert_eq!(
+            ip,
+            Some("192.168.1.1".parse().unwrap()),
+            "must return rightmost (trusted-proxy-appended) IP"
+        );
+    }
+
+    #[test]
+    fn xff_spoof_protection() {
+        // Attacker forges: X-Forwarded-For: 8.8.8.8
+        // Trusted proxy appends real client IP: 5.5.5.5
+        // Result: "8.8.8.8, 5.5.5.5" — rightmost is safe
+        let ip = parse_xff("8.8.8.8, 5.5.5.5");
+        assert_eq!(
+            ip,
+            Some("5.5.5.5".parse().unwrap()),
+            "forged leftmost must not be used"
+        );
     }
 
     #[test]
@@ -325,7 +381,95 @@ mod tests {
 
     #[test]
     fn xff_ipv6() {
-        let ip = parse_xff("2001:db8::1");
+        let ip = parse_xff("203.0.113.1, 2001:db8::1");
         assert_eq!(ip, Some("2001:db8::1".parse().unwrap()));
+    }
+
+    // ── dynamic deny-list (IpFilterConfig denylist) ───────────────────────────
+
+    #[test]
+    fn dynamic_deny_blocks_matching_cidr() {
+        let cfg = IpFilterConfig {
+            allow: None,
+            deny: Some(vec!["192.168.1.0/24".to_owned()]),
+            trust_proxy: None,
+            dry_run: None,
+        };
+        // IP in denied range → blocked
+        assert!(!apply_ip_filter(
+            Some("192.168.1.42".parse().unwrap()),
+            &cfg
+        ));
+        // IP outside denied range → allowed
+        assert!(apply_ip_filter(Some("10.0.0.1".parse().unwrap()), &cfg));
+    }
+
+    #[test]
+    fn dynamic_deny_blocks_exact_ip() {
+        let cfg = IpFilterConfig {
+            allow: None,
+            deny: Some(vec!["203.0.113.5".to_owned()]),
+            trust_proxy: None,
+            dry_run: None,
+        };
+        assert!(!apply_ip_filter(Some("203.0.113.5".parse().unwrap()), &cfg));
+        assert!(apply_ip_filter(Some("203.0.113.6".parse().unwrap()), &cfg));
+    }
+
+    #[test]
+    fn empty_dynamic_deny_allows_all() {
+        let cfg = IpFilterConfig::default();
+        assert!(apply_ip_filter(Some("1.2.3.4".parse().unwrap()), &cfg));
+    }
+
+    // ── is_in_deny_list ───────────────────────────────────────────────────────
+
+    #[test]
+    fn is_in_deny_list_ip_in_list() {
+        let rules = vec!["10.0.0.1".to_owned()];
+        let ip: std::net::IpAddr = "10.0.0.1".parse().unwrap();
+        assert!(is_in_deny_list(Some(ip), &rules));
+    }
+
+    #[test]
+    fn is_in_deny_list_ip_not_in_list() {
+        let rules = vec!["10.0.0.1".to_owned()];
+        let ip: std::net::IpAddr = "10.0.0.2".parse().unwrap();
+        assert!(!is_in_deny_list(Some(ip), &rules));
+    }
+
+    #[test]
+    fn is_in_deny_list_cidr_match() {
+        let rules = vec!["192.168.0.0/16".to_owned()];
+        let ip: std::net::IpAddr = "192.168.100.200".parse().unwrap();
+        assert!(is_in_deny_list(Some(ip), &rules));
+    }
+
+    #[test]
+    fn is_in_deny_list_none_ip_returns_false() {
+        // Unknown IP passes the deny list (fail-open for deny mode).
+        let rules = vec!["10.0.0.1".to_owned()];
+        assert!(!is_in_deny_list(None, &rules));
+    }
+
+    #[test]
+    fn is_in_deny_list_empty_rules_always_false() {
+        let ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
+        assert!(!is_in_deny_list(Some(ip), &[]));
+    }
+
+    // ── parse_xff extra cases ─────────────────────────────────────────────────
+
+    #[test]
+    fn xff_with_extra_whitespace() {
+        // Whitespace around IPs should be trimmed.
+        let ip = parse_xff("  203.0.113.1  ");
+        assert_eq!(ip, Some("203.0.113.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn xff_multiple_with_spaces() {
+        let ip = parse_xff("10.0.0.1 , 192.168.1.1");
+        assert_eq!(ip, Some("192.168.1.1".parse().unwrap()));
     }
 }

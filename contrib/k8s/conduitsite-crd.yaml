@@ -1,0 +1,145 @@
+# ConduitSite CustomResourceDefinition
+#
+# Install with:  kubectl apply -f contrib/k8s/conduitsite-crd.yaml
+# Remove with:   kubectl delete -f contrib/k8s/conduitsite-crd.yaml
+#
+# Each ConduitSite resource maps to one virtual host in a Conduit process.
+# The Conduit controller (conduit --features kubernetes) watches for changes
+# and automatically reloads its configuration.
+#
+# Example usage:
+#
+#   kubectl apply -f contrib/k8s/conduitsite-crd.yaml
+#   kubectl apply -f - <<EOF
+#   apiVersion: conduit.io/v1
+#   kind: ConduitSite
+#   metadata:
+#     name: my-app
+#   spec:
+#     port: 8080
+#     proxy: "http://my-svc:4000"
+#     healthCheck: true
+#   EOF
+
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: conduitsites.conduit.io
+  labels:
+    app.kubernetes.io/name: conduit
+    app.kubernetes.io/component: crd
+spec:
+  group: conduit.io
+  scope: Namespaced
+  names:
+    plural: conduitsites
+    singular: conduitsite
+    kind: ConduitSite
+    shortNames:
+      - cs
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Port
+          type: integer
+          jsonPath: .spec.port
+        - name: Host
+          type: string
+          jsonPath: .spec.host
+        - name: Ready
+          type: boolean
+          jsonPath: .status.ready
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              description: |
+                ConduitSite spec. Field names match the Conduit JSON config schema.
+                See https://github.com/lopatnov/conduit/blob/main/docs/configuration.md
+              properties:
+                port:
+                  type: integer
+                  minimum: 1
+                  maximum: 65535
+                  description: TCP port to listen on (default 80 or 443).
+                host:
+                  type: string
+                  description: Virtual host for request matching. Omit for catch-all.
+                proxy:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: |
+                    Upstream proxy target(s). String, array of strings, or
+                    route map object — same as `proxy` in conduit.json.
+                static:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: Static file directory path or mapping.
+                healthCheck:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: Health-check endpoint config (true/false/object).
+                tls:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: TLS configuration (cert, key, acme, httpRedirectPort).
+                headers:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: Custom response headers.
+                fallback:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: Fallback response when no route matches.
+                logging:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: Access logging (true/false/"dev"/"json"/object).
+                compression:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: Response compression (true/false/object).
+                rateLimit:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: Token-bucket rate limiting.
+                basicAuth:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: HTTP Basic authentication.
+                apiKey:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: API-key authentication.
+                ipFilter:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: IP allow/deny filter.
+                cors:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: CORS configuration.
+                metrics:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: Prometheus metrics endpoint.
+                upload:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: Multipart file upload endpoint.
+                redirects:
+                  type: array
+                  items:
+                    x-kubernetes-preserve-unknown-fields: true
+                  description: URL redirect rules.
+                middleware:
+                  type: array
+                  items:
+                    x-kubernetes-preserve-unknown-fields: true
+                  description: Rhai scripting middleware chain.
+                routes:
+                  type: array
+                  items:
+                    x-kubernetes-preserve-unknown-fields: true
+                  description: Advanced route table (glob path + method + header matching).
+            status:
+              type: object
+              properties:
+                message:
+                  type: string
+                ready:
+                  type: boolean

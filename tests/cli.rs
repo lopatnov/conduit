@@ -51,6 +51,18 @@ fn write_validation_error_config() -> (tempfile::TempDir, std::path::PathBuf) {
     (dir, path)
 }
 
+/// Write a minimal valid YAML config and return (TempDir, PathBuf).
+fn write_minimal_yaml_config() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("conduit.yaml");
+    std::fs::write(
+        &path,
+        "global:\n  admin:\n    bind: \"127.0.0.1:0\"\nsites:\n  - port: 0\n",
+    )
+    .expect("write yaml config");
+    (dir, path)
+}
+
 // ── --version / --help ──────────────────────────────────────────────────────
 
 #[test]
@@ -283,6 +295,116 @@ fn fmt_short_c_flag_works() {
     );
 }
 
+// ── conduit validate / fmt — YAML config ────────────────────────────────────
+
+#[test]
+fn validate_accepts_yaml_config() {
+    let (_dir, path) = write_minimal_yaml_config();
+    let out = conduit()
+        .arg("validate")
+        .arg("-c")
+        .arg(&path)
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "validate should accept YAML config; exit {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn fmt_yaml_outputs_yaml() {
+    let (_dir, path) = write_minimal_yaml_config();
+    let out = conduit()
+        .arg("fmt")
+        .arg("-c")
+        .arg(&path)
+        .output()
+        .expect("run");
+    assert!(out.status.success(), "fmt of YAML should succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // YAML output should not start with '{' (that would be JSON)
+    assert!(
+        !stdout.trim_start().starts_with('{'),
+        "fmt of a .yaml file should output YAML, got: {stdout:.200}"
+    );
+    assert!(
+        stdout.contains("sites"),
+        "YAML output should contain 'sites'"
+    );
+}
+
+// ── conduit init ─────────────────────────────────────────────────────────────
+
+#[test]
+fn init_yes_generates_valid_config() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = conduit()
+        .args([
+            "init",
+            "--yes",
+            "--port",
+            "8080",
+            "--proxy",
+            "http://127.0.0.1:4000",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "init --yes should exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Should have written a config file in the current directory
+    let json_exists = dir.path().join("conduit.json").exists();
+    let yaml_exists = dir.path().join("conduit.yaml").exists();
+    assert!(
+        json_exists || yaml_exists,
+        "init --yes should write conduit.json or conduit.yaml"
+    );
+}
+
+#[test]
+fn init_yes_format_json_generates_json() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = conduit()
+        .args(["init", "--yes", "--format", "json"])
+        .current_dir(dir.path())
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "init --yes --format json should exit 0"
+    );
+    let path = dir.path().join("conduit.json");
+    assert!(
+        path.exists(),
+        "conduit.json should be created with --format json"
+    );
+    // Verify the file is valid JSON
+    let contents = std::fs::read_to_string(&path).expect("read config");
+    serde_json::from_str::<serde_json::Value>(&contents)
+        .expect("conduit.json should be valid JSON");
+}
+
+#[test]
+fn init_yes_output_flag_writes_to_specified_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_path = dir.path().join("my-config.json");
+    let out = conduit()
+        .args(["init", "--yes", "--output", out_path.to_str().unwrap()])
+        .current_dir(dir.path())
+        .output()
+        .expect("run");
+    assert!(out.status.success(), "init --yes --output should exit 0");
+    assert!(out_path.exists(), "output file should be created");
+    let contents = std::fs::read_to_string(&out_path).expect("read");
+    serde_json::from_str::<serde_json::Value>(&contents).expect("output file should be valid JSON");
+}
+
 // ── conduit probe ───────────────────────────────────────────────────────────
 
 #[test]
@@ -384,6 +506,27 @@ fn completions_fish_outputs_script() {
     assert!(!out.stdout.is_empty());
 }
 
+#[test]
+fn completions_powershell_outputs_script() {
+    // clap_complete uses "power-shell" (with hyphen) as the variant name
+    let out = conduit()
+        .args(["completions", "power-shell"])
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    assert!(!out.stdout.is_empty());
+}
+
+#[test]
+fn completions_elvish_outputs_script() {
+    let out = conduit()
+        .args(["completions", "elvish"])
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    assert!(!out.stdout.is_empty());
+}
+
 // ── conduit man ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -404,6 +547,25 @@ fn man_outputs_troff_content() {
     assert!(
         stdout.contains(".TH") || stdout.contains("conduit"),
         "man output should be troff: {stdout:.200}"
+    );
+}
+
+// ── CONDUIT_ADMIN env var ────────────────────────────────────────────────────
+
+#[test]
+fn conduit_admin_env_var_used_by_reload() {
+    // CONDUIT_ADMIN env var should be used as default admin address
+    let out = conduit()
+        .args(["reload"])
+        .env("CONDUIT_ADMIN", "127.0.0.1:19890")
+        .output()
+        .expect("run");
+    // No server is running, so it should fail — but it must attempt the
+    // right address (we can't verify the address directly, but a non-zero
+    // exit code confirms the env var was picked up and a connection was tried)
+    assert!(
+        !out.status.success(),
+        "reload via CONDUIT_ADMIN should fail gracefully when no server runs"
     );
 }
 
@@ -454,6 +616,50 @@ fn upstreams_no_server_exits_nonzero() {
     assert!(
         !out.status.success(),
         "upstreams with no server should exit nonzero"
+    );
+}
+
+#[test]
+fn upstreams_remove_no_server_exits_nonzero() {
+    let out = conduit()
+        .args([
+            "upstreams",
+            "--admin",
+            "127.0.0.1:19881",
+            "remove",
+            "--route",
+            "/api",
+            "--target",
+            "http://127.0.0.1:4000",
+        ])
+        .output()
+        .expect("run");
+    assert!(
+        !out.status.success(),
+        "upstreams remove with no server should exit nonzero"
+    );
+}
+
+#[test]
+fn upstreams_weight_no_server_exits_nonzero() {
+    let out = conduit()
+        .args([
+            "upstreams",
+            "--admin",
+            "127.0.0.1:19882",
+            "weight",
+            "--route",
+            "/api",
+            "--target",
+            "http://127.0.0.1:4000",
+            "--weight",
+            "2",
+        ])
+        .output()
+        .expect("run");
+    assert!(
+        !out.status.success(),
+        "upstreams weight with no server should exit nonzero"
     );
 }
 

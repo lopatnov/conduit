@@ -1,0 +1,51 @@
+# ── Development server with hot reload ───────────────────────────────────────
+#
+# Ideal for local frontend development:
+#   • Browser reloads automatically when HTML/CSS/JS files change on disk
+#   • CORS is open (no credential restrictions)
+#   • Dev-format access log (colorized, human-readable)
+#   • Graceful fallback so HTML5 history-mode routing works locally
+#
+# Run: conduit -c examples/dev-hot-reload.yaml
+
+port: 3000
+
+# ── Hot reload ────────────────────────────────────────────────────────────────
+# Conduit injects a tiny <script> into HTML pages that opens an SSE connection.
+# When watched files change, the script calls window.location.reload().
+hotReload:
+  # Watch these directories for file changes.
+  watch:
+    - ./src
+    - ./public
+  # Reload the browser when these file extensions change.
+  extensions: [html, css, js, ts, jsx, tsx, json, svg]
+
+# ── CORS ──────────────────────────────────────────────────────────────────────
+# Wide-open in development so the browser doesn't block API calls.
+# NEVER use cors: true in production — restrict to known origins instead.
+cors: true
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+# Dev format: compact, colorized, human-readable.  Switch to "json" for
+# production log aggregation.
+logging: dev
+
+# ── Static files ──────────────────────────────────────────────────────────────
+# Serve from ./public.  No cache headers in dev mode.
+static: ./public
+staticOptions:
+  index: [index.html]
+
+# ── API proxy ─────────────────────────────────────────────────────────────────
+# Forward /api/* to the local backend dev server.
+# Vite: typically port 5173;  Next.js: 3001; NestJS: 3000.
+proxy:
+  /api: "http://localhost:4000"
+
+# ── SPA fallback ──────────────────────────────────────────────────────────────
+# Any path not matched above (e.g. /dashboard, /settings/profile) returns
+# index.html with a 200 status so the SPA router can handle it.
+fallback:
+  file: ./public/index.html
+  status: 200

@@ -8,10 +8,10 @@ use clap::{CommandFactory, Parser};
 use clap_complete::Shell as ClapShell;
 use conduit::cli::args::{Cli, Command, Shell, UpstreamsCommand};
 use conduit::cli::init;
+use conduit::cli::CliCommand;
 use conduit::config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget, ProxyTarget};
 use conduit::config::{self, validate};
 use conduit::server::builder;
-use indicatif::{ProgressBar, ProgressStyle};
 
 fn main() {
     // Initialise tracing with an env-filter so that RUST_LOG controls output.
@@ -25,76 +25,257 @@ fn main() {
         .init();
 
     let cli = Cli::parse();
+    dispatch_command(cli);
+}
+
+/// Build the right [`CliCommand`] implementation from the parsed CLI and run it.
+///
+/// Adding a new command: add one arm here only — `main()` does not change.
+fn dispatch_command(cli: Cli) {
+    let config = resolve_config_path(&cli.config);
+
+    // Kubernetes CRD mode: when --kubernetes-namespace is set and no subcommand
+    // is given, start the server using the KubernetesProvider instead of a file.
+    #[cfg(feature = "kubernetes")]
+    if let (Some(ns), None) = (&cli.kubernetes_namespace, &cli.command) {
+        run_server_kubernetes(ns);
+        return;
+    }
 
     match cli.command {
-        None => run_server(&cli.config),
-        Some(Command::Validate(_)) => cmd_validate(&cli.config),
-        Some(Command::Fmt(args)) => cmd_fmt(&cli.config, args.write),
-        Some(Command::Init(args)) => {
-            let output = args.output.as_deref().unwrap_or(&cli.config);
-            if let Err(e) = init::run_init(output) {
-                eprintln!("error: {e}");
-                process::exit(1);
-            }
+        None => ServeCmd {
+            config_path: config,
         }
-        Some(Command::Probe(_)) => cmd_probe(&cli.config),
+        .execute(),
+        Some(Command::Validate(_)) => ValidateCmd {
+            config_path: config,
+        }
+        .execute(),
+        Some(Command::Fmt(args)) => FmtCmd {
+            config_path: config,
+            write: args.write,
+        }
+        .execute(),
+        Some(Command::Init(args)) => {
+            InitCmd {
+                output: args.output,
+                yes: args.yes,
+                format: args.format,
+                port: args.port,
+                static_dir: args.static_dir,
+                no_static: args.no_static,
+                proxy: args.proxy,
+                no_proxy: args.no_proxy,
+                log: args.log,
+                no_health: args.no_health,
+                tls_cert: args.tls_cert,
+                tls_key: args.tls_key,
+                tls_acme: args.tls_acme,
+            }
+            .execute();
+        }
+        Some(Command::Probe(_)) => ProbeCmd {
+            config_path: config,
+        }
+        .execute(),
         Some(Command::Reload(args)) => {
-            let addr = resolve_admin(args.admin.as_deref());
-            admin_post("reload", &addr);
+            ReloadCmd {
+                admin_addr: resolve_admin(args.admin.as_deref()),
+            }
+            .execute();
         }
         Some(Command::Status(args)) => {
-            let addr = resolve_admin(args.admin.as_deref());
-            admin_get("status", &addr);
+            StatusCmd {
+                admin_addr: resolve_admin(args.admin.as_deref()),
+                upstream: args.upstream,
+            }
+            .execute();
         }
         Some(Command::Shutdown(args)) => {
-            let addr = resolve_admin(args.admin.as_deref());
-            admin_post("shutdown", &addr);
+            ShutdownCmd {
+                admin_addr: resolve_admin(args.admin.as_deref()),
+            }
+            .execute();
         }
-        Some(Command::Completions(args)) => {
-            let clap_shell = match args.shell {
-                Shell::Bash => ClapShell::Bash,
-                Shell::Zsh => ClapShell::Zsh,
-                Shell::Fish => ClapShell::Fish,
-                Shell::PowerShell => ClapShell::PowerShell,
-                Shell::Elvish => ClapShell::Elvish,
-            };
-            clap_complete::generate(
-                clap_shell,
-                &mut Cli::command(),
-                "conduit",
-                &mut std::io::stdout(),
-            );
-        }
-        Some(Command::Man) => {
-            let cmd = Cli::command();
-            let man = clap_mangen::Man::new(cmd);
-            man.render(&mut std::io::stdout()).unwrap_or_else(|e| {
-                eprintln!("error generating man page: {e}");
-                process::exit(1);
-            });
-        }
+        Some(Command::Completions(args)) => CompletionsCmd { shell: args.shell }.execute(),
+        Some(Command::Man) => ManCmd.execute(),
         Some(Command::Upstreams(args)) => {
-            let addr = resolve_admin(args.admin.as_deref());
-            match args.command {
-                None => admin_get("upstreams", &addr),
-                Some(UpstreamsCommand::Add(a)) => {
-                    let body = upstream_json(
-                        &a.route,
-                        &a.target,
-                        Some(a.weight.unwrap_or(1)),
-                        a.site.as_deref(),
-                    );
-                    admin_post_json("upstreams/add", &addr, &body);
-                }
-                Some(UpstreamsCommand::Remove(r)) => {
-                    let body = upstream_json(&r.route, &r.target, None, r.site.as_deref());
-                    admin_post_json("upstreams/remove", &addr, &body);
-                }
-                Some(UpstreamsCommand::Weight(w)) => {
-                    let body =
-                        upstream_json(&w.route, &w.target, Some(w.weight), w.site.as_deref());
-                    admin_post_json("upstreams/weight", &addr, &body);
-                }
+            UpstreamsCmd {
+                admin_addr: resolve_admin(args.admin.as_deref()),
+                subcommand: args.command,
+            }
+            .execute();
+        }
+    }
+}
+
+// ── Command structs ────────────────────────────────────────────────────────────
+
+struct ServeCmd {
+    config_path: String,
+}
+impl CliCommand for ServeCmd {
+    fn execute(self) {
+        run_server(&self.config_path);
+    }
+}
+
+struct ValidateCmd {
+    config_path: String,
+}
+impl CliCommand for ValidateCmd {
+    fn execute(self) {
+        cmd_validate(&self.config_path);
+    }
+}
+
+struct FmtCmd {
+    config_path: String,
+    write: bool,
+}
+impl CliCommand for FmtCmd {
+    fn execute(self) {
+        cmd_fmt(&self.config_path, self.write);
+    }
+}
+
+struct InitCmd {
+    output: Option<String>,
+    yes: bool,
+    format: Option<String>,
+    port: Option<u16>,
+    static_dir: Option<String>,
+    no_static: bool,
+    proxy: Option<String>,
+    no_proxy: bool,
+    log: Option<String>,
+    no_health: bool,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+    tls_acme: Option<String>,
+}
+impl CliCommand for InitCmd {
+    fn execute(self) {
+        let opts = init::InitOptions {
+            output: self.output.as_deref(),
+            yes: self.yes,
+            format: self.format.as_deref(),
+            port: self.port,
+            static_dir: self.static_dir.as_deref(),
+            no_static: self.no_static,
+            proxy: self.proxy.as_deref(),
+            no_proxy: self.no_proxy,
+            log: self.log.as_deref(),
+            no_health: self.no_health,
+            tls_cert: self.tls_cert.as_deref(),
+            tls_key: self.tls_key.as_deref(),
+            tls_acme: self.tls_acme.as_deref(),
+        };
+        if let Err(e) = init::run_init(opts) {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+struct ProbeCmd {
+    config_path: String,
+}
+impl CliCommand for ProbeCmd {
+    fn execute(self) {
+        cmd_probe(&self.config_path);
+    }
+}
+
+struct ReloadCmd {
+    admin_addr: String,
+}
+impl CliCommand for ReloadCmd {
+    fn execute(self) {
+        admin_post("reload", &self.admin_addr);
+    }
+}
+
+struct StatusCmd {
+    admin_addr: String,
+    upstream: bool,
+}
+impl CliCommand for StatusCmd {
+    fn execute(self) {
+        if self.upstream {
+            print_upstream_table(&self.admin_addr);
+        } else {
+            admin_get("status", &self.admin_addr);
+        }
+    }
+}
+
+struct ShutdownCmd {
+    admin_addr: String,
+}
+impl CliCommand for ShutdownCmd {
+    fn execute(self) {
+        admin_post("shutdown", &self.admin_addr);
+    }
+}
+
+struct CompletionsCmd {
+    shell: Shell,
+}
+impl CliCommand for CompletionsCmd {
+    fn execute(self) {
+        let clap_shell = match self.shell {
+            Shell::Bash => ClapShell::Bash,
+            Shell::Zsh => ClapShell::Zsh,
+            Shell::Fish => ClapShell::Fish,
+            Shell::PowerShell => ClapShell::PowerShell,
+            Shell::Elvish => ClapShell::Elvish,
+        };
+        clap_complete::generate(
+            clap_shell,
+            &mut Cli::command(),
+            "conduit",
+            &mut std::io::stdout(),
+        );
+    }
+}
+
+struct ManCmd;
+impl CliCommand for ManCmd {
+    fn execute(self) {
+        let cmd = Cli::command();
+        let man = clap_mangen::Man::new(cmd);
+        man.render(&mut std::io::stdout()).unwrap_or_else(|e| {
+            eprintln!("error generating man page: {e}");
+            process::exit(1);
+        });
+    }
+}
+
+struct UpstreamsCmd {
+    admin_addr: String,
+    subcommand: Option<UpstreamsCommand>,
+}
+impl CliCommand for UpstreamsCmd {
+    fn execute(self) {
+        match self.subcommand {
+            None => admin_get("upstreams", &self.admin_addr),
+            Some(UpstreamsCommand::Add(a)) => {
+                let body = upstream_json(
+                    &a.route,
+                    &a.target,
+                    Some(a.weight.unwrap_or(1)),
+                    a.site.as_deref(),
+                );
+                admin_post_json("upstreams/add", &self.admin_addr, &body);
+            }
+            Some(UpstreamsCommand::Remove(r)) => {
+                let body = upstream_json(&r.route, &r.target, None, r.site.as_deref());
+                admin_post_json("upstreams/remove", &self.admin_addr, &body);
+            }
+            Some(UpstreamsCommand::Weight(w)) => {
+                let body = upstream_json(&w.route, &w.target, Some(w.weight), w.site.as_deref());
+                admin_post_json("upstreams/weight", &self.admin_addr, &body);
             }
         }
     }
@@ -116,10 +297,34 @@ fn upstream_json(route: &str, target: &str, weight: Option<u32>, site: Option<&s
     obj.to_string()
 }
 
+// ── Config path resolution ─────────────────────────────────────────────────
+
+/// Resolve the config path, trying YAML alternatives when the default JSON
+/// path does not exist.
+///
+/// Priority: explicit path → conduit.json → conduit.yaml → conduit.yml.
+/// Only applies when the user did not pass `-c` explicitly (i.e. the value
+/// is still the default "conduit.json" and that file is absent).
+fn resolve_config_path(config_arg: &str) -> String {
+    let path = Path::new(config_arg);
+    if path.exists() {
+        return config_arg.to_owned();
+    }
+    // Only auto-probe alternatives when the argument is the default value.
+    if config_arg == "conduit.json" {
+        for alt in &["conduit.yaml", "conduit.yml"] {
+            if Path::new(alt).exists() {
+                return (*alt).to_owned();
+            }
+        }
+    }
+    config_arg.to_owned()
+}
+
 // ── Server ─────────────────────────────────────────────────────────────────
 
 fn run_server(config_path: &str) {
-    let path = Path::new(config_path);
+    let path = Path::new(&config_path);
     let cfg = match config::load_config(path) {
         Ok(c) => c,
         Err(e) => {
@@ -134,7 +339,64 @@ fn run_server(config_path: &str) {
         }
         process::exit(1);
     }
-    if let Err(e) = builder::run_server(cfg, path.to_path_buf()) {
+    for w in validate::feature_warnings(&cfg) {
+        tracing::warn!("feature not compiled in: {w}");
+    }
+    if let Err(e) = builder::run_server(cfg, path.to_path_buf(), None) {
+        eprintln!("server error: {e}");
+        process::exit(1);
+    }
+}
+
+// ── Kubernetes provider startup ────────────────────────────────────────────
+
+/// Start Conduit using Kubernetes `ConduitSite` CRDs as the config source.
+///
+/// Spawns a background thread that runs the [`KubernetesProvider`], waits for
+/// the initial config, then starts the server. Subsequent CRD changes are
+/// received by the server's live-update watcher and hot-swapped without restart.
+///
+/// Requires: `cargo build --features kubernetes`.
+#[cfg(feature = "kubernetes")]
+fn run_server_kubernetes(namespace: &str) {
+    use conduit::config::kubernetes::KubernetesProvider;
+    use conduit::config::provider::Provider;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<conduit::config::schema::AppConfig>(4);
+    let ns = namespace.to_owned();
+
+    // Spawn the provider in its own thread with a dedicated Tokio runtime.
+    std::thread::Builder::new()
+        .name("kubernetes-provider".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime for kubernetes-provider");
+            if let Err(e) = rt.block_on(KubernetesProvider::new(ns).run(tx)) {
+                eprintln!("kubernetes provider error: {e}");
+                process::exit(1);
+            }
+        })
+        .expect("failed to spawn kubernetes-provider thread");
+
+    // Block until the provider delivers the initial config (or the channel closes).
+    let initial_config = match rx.blocking_recv() {
+        Some(cfg) => cfg,
+        None => {
+            eprintln!("error: kubernetes provider closed before sending initial config");
+            process::exit(1);
+        }
+    };
+
+    tracing::info!(
+        namespace,
+        sites = initial_config.sites.len(),
+        "initial config loaded from ConduitSite CRDs"
+    );
+
+    // Start the server; pass `rx` so CRD changes are hot-swapped automatically.
+    if let Err(e) = builder::run_server(initial_config, std::path::PathBuf::new(), Some(rx)) {
         eprintln!("server error: {e}");
         process::exit(1);
     }
@@ -143,7 +405,7 @@ fn run_server(config_path: &str) {
 // ── validate ───────────────────────────────────────────────────────────────
 
 fn cmd_validate(config_path: &str) {
-    let path = Path::new(config_path);
+    let path = Path::new(&config_path);
     let app = match config::load_config(path) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -152,6 +414,10 @@ fn cmd_validate(config_path: &str) {
         }
     };
     let errors = validate::validate(&app);
+    let warnings = validate::feature_warnings(&app);
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
     if errors.is_empty() {
         let site_count = app.sites.len();
         let route_count: usize = app
@@ -196,7 +462,7 @@ fn cmd_validate(config_path: &str) {
 // ── fmt ────────────────────────────────────────────────────────────────────
 
 fn cmd_fmt(config_path: &str, write: bool) {
-    let path = Path::new(config_path);
+    let path = Path::new(&config_path);
     let app = match config::load_config(path) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -204,13 +470,33 @@ fn cmd_fmt(config_path: &str, write: bool) {
             process::exit(1);
         }
     };
-    let formatted = match serde_json::to_string_pretty(&app) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error serializing config: {e}");
-            process::exit(1);
+
+    // Preserve the input format: YAML files stay YAML, JSON files stay JSON.
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let is_yaml = ext == "yaml" || ext == "yml";
+
+    let formatted = if is_yaml {
+        match serde_yaml::to_string(&app) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error serializing config: {e}");
+                process::exit(1);
+            }
+        }
+    } else {
+        match serde_json::to_string_pretty(&app) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error serializing config: {e}");
+                process::exit(1);
+            }
         }
     };
+
     if write {
         if let Err(e) = std::fs::write(path, &formatted) {
             eprintln!("error writing {}: {e}", path.display());
@@ -240,42 +526,67 @@ fn cmd_probe(config_path: &str) {
         return;
     }
 
-    println!("Probing {} upstream(s)...\n", urls.len());
+    println!("Probing {} upstream(s) in parallel...\n", urls.len());
 
-    let pb = ProgressBar::new(urls.len() as u64);
-    pb.set_style(
-        ProgressStyle::with_template("{bar:40.cyan/blue} {pos}/{len} {msg}")
-            .unwrap_or_else(|_| ProgressStyle::default_bar()),
-    );
+    // Probe all upstreams in parallel — each gets its own thread.
+    let handles: Vec<_> = urls
+        .iter()
+        .map(|url| {
+            let url_owned = url.clone();
+            std::thread::spawn(move || {
+                let (status_str, status_code, elapsed) = probe_url(&url_owned);
+                (url_owned, status_str, status_code, elapsed)
+            })
+        })
+        .collect();
 
-    let mut results: Vec<(String, String, Option<u16>, Duration)> = Vec::new();
+    // Collect results in original order.
+    let mut results: Vec<(String, String, Option<u16>, Duration)> =
+        handles.into_iter().filter_map(|h| h.join().ok()).collect();
 
-    for url in &urls {
-        pb.set_message(url.clone());
-        let (status_str, status_code, elapsed) = probe_url(url);
-        results.push((url.clone(), status_str, status_code, elapsed));
-        pb.inc(1);
-    }
-    pb.finish_and_clear();
+    // Sort: failures first (so they're easy to spot), then by URL.
+    results.sort_by_key(|(url, _, code, _)| {
+        let is_ok = code.is_some_and(|s| s < 500);
+        (!is_ok, url.clone())
+    });
 
     // Print aligned results table.
-    let url_width = results.iter().map(|(u, ..)| u.len()).max().unwrap_or(10);
-    let status_width = results.iter().map(|(_, s, ..)| s.len()).max().unwrap_or(10);
+    let url_width = results
+        .iter()
+        .map(|(u, ..)| u.len())
+        .max()
+        .unwrap_or(10)
+        .max(3);
+    let status_width = results
+        .iter()
+        .map(|(_, s, ..)| s.len())
+        .max()
+        .unwrap_or(10)
+        .max(6);
 
     println!(
         "{:<url_width$}  {:<status_width$}  Latency",
         "URL", "Status"
     );
-    println!("{}", "-".repeat(url_width + status_width + 12));
+    println!("{}", "─".repeat(url_width + status_width + 12));
 
     let mut any_error = false;
     for (url, status_str, status_code, elapsed) in &results {
         let ms = elapsed.as_millis();
-        println!("{url:<url_width$}  {status_str:<status_width$}  {ms} ms");
-        if status_code.is_none() || status_code.is_some_and(|s| s >= 500) {
+        let is_ok = status_code.is_some_and(|s| s < 500);
+        let indicator = if is_ok { "✓" } else { "✗" };
+        println!("{indicator} {url:<url_width$}  {status_str:<status_width$}  {ms} ms");
+        if !is_ok {
             any_error = true;
         }
     }
+
+    println!();
+    let ok_count = results
+        .iter()
+        .filter(|(.., code, _)| code.is_some_and(|s| s < 500))
+        .count();
+    println!("{ok_count}/{} upstreams healthy", results.len());
 
     if any_error {
         process::exit(1);
@@ -473,6 +784,93 @@ fn parse_upstream_url(url: &str) -> Option<(bool, String, u16, String)> {
     };
 
     Some((is_tls, host, port, path))
+}
+
+// ── conduit status --upstream ──────────────────────────────────────────────
+
+/// Fetch upstream health from the Admin API and print a formatted table.
+fn print_upstream_table(addr: &str) {
+    let body = match http_get("upstreams", addr) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+    let json: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error parsing response: {e}");
+            process::exit(1);
+        }
+    };
+    let flat = match json.get("upstreams").and_then(|v| v.as_array()) {
+        Some(arr) => arr.clone(),
+        None => {
+            // Fallback: the whole response might be an array.
+            match json.as_array() {
+                Some(arr) => arr.clone(),
+                None => {
+                    println!("{body}");
+                    return;
+                }
+            }
+        }
+    };
+
+    if flat.is_empty() {
+        println!("No upstreams registered.");
+        return;
+    }
+
+    // Compute column widths.
+    let url_w = flat
+        .iter()
+        .filter_map(|e| e.get("url").and_then(|v| v.as_str()))
+        .map(|s| s.len())
+        .max()
+        .unwrap_or(3)
+        .max(3);
+
+    println!(
+        "{:<url_w$}  {:<7}  {:<10}  {:<7}  5xx",
+        "URL", "Healthy", "Latency", "Ejected"
+    );
+    println!("{}", "─".repeat(url_w + 42)); // println! used to avoid format! overhead
+
+    for entry in &flat {
+        let url = entry.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+        let healthy = entry
+            .get("healthy")
+            .and_then(|v| v.as_bool())
+            .map(|b| if b { "✓" } else { "✗" })
+            .unwrap_or("?");
+        let latency = entry
+            .get("latency_ms")
+            .and_then(|v| v.as_u64())
+            .map(|ms| format!("{ms} ms"))
+            .unwrap_or_else(|| "—".to_owned());
+        let ejected = entry
+            .get("ejected")
+            .and_then(|v| v.as_bool())
+            .map(|b| if b { "yes" } else { "no" })
+            .unwrap_or("—");
+        let consec_5xx = entry
+            .get("consecutive_5xx")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "0".to_owned());
+        println!(
+            "{:<url_w$}  {:<7}  {:<10}  {:<7}  {}",
+            url, healthy, latency, ejected, consec_5xx
+        );
+    }
+    println!();
+    let healthy_count = flat
+        .iter()
+        .filter(|e| e.get("healthy").and_then(|v| v.as_bool()).unwrap_or(false))
+        .count();
+    println!("{}/{} upstreams healthy", healthy_count, flat.len());
 }
 
 // ── Admin API helpers ──────────────────────────────────────────────────────

@@ -1,0 +1,61 @@
+name: Semgrep
+
+# Semgrep SAST scan — follows the official recommended configuration:
+# https://semgrep.dev/docs/semgrep-ci/sample-ci-configs
+#
+# Results appear in the GitHub Security tab (SARIF upload).
+# Optional: set SEMGREP_APP_TOKEN secret for managed rules from semgrep.dev.
+# Without a token, `semgrep ci` uses auto-detected rules (--config auto).
+
+on:
+  pull_request: {}
+  workflow_dispatch: {}
+  push:
+    branches: [main]   # post-merge scan on main only; PR already covers feature branches
+  schedule:
+    # Weekly scan: Tuesday 08:00 UTC
+    - cron: "0 8 * * 2"
+
+permissions:
+  contents: read
+  security-events: write  # required to upload SARIF to GitHub Security tab
+
+jobs:
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    # Pin to verified version+digest (no supply-chain drift from floating :latest).
+    # v1.165.0, digest verified 2026-06-04 via Docker Hub registry API.
+    # Update periodically via Renovate/Dependabot.
+    container:
+      image: semgrep/semgrep:1.165.0@sha256:f4791a54c891eabe1188248135574e6e03dfc31dfd3f3b747c7bec7079bfed1b
+    # Skip dependabot PRs — no secrets available.
+    if: github.actor != 'dependabot[bot]'
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run Semgrep and generate SARIF
+        # semgrep ci requires SEMGREP_APP_TOKEN (managed deployment).
+        # Without a token use `semgrep scan` with explicit rule packs instead —
+        # this works offline and always produces a valid SARIF file.
+        run: |
+          semgrep scan \
+            --config p/rust \
+            --config p/secrets \
+            --sarif \
+            --output semgrep.sarif \
+            --no-error \
+            .
+        env:
+          SEMGREP_SEND_METRICS: "off"
+          # To use managed rules from semgrep.dev uncomment and add secret:
+          # SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@ff0a06e83cb2de871e5a09832bc6a81e7276941f  # v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif

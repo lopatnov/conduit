@@ -1,0 +1,92 @@
+# ── Circuit Breaker + Retry Budget + Failover ────────────────────────────────
+#
+# Demonstrates resilience patterns for high-traffic production services:
+#
+#   Circuit Breaker
+#     When all primary upstreams reach maxConnectionsPerUpstream, Conduit
+#     returns 503 immediately instead of queuing requests that will time out.
+#
+#   Retry Budget
+#     Limits retries to a percentage of active requests.  Without a budget,
+#     a sudden wave of errors causes each request to retry, multiplying load.
+#
+#   Service Failover
+#     When all primary upstreams are health-probe-unhealthy, traffic
+#     automatically routes to a backup (read-replica, DR site, etc.).
+#
+#   Outlier Detection
+#     Passively ejects upstreams that return too many 5xx responses from real
+#     traffic — no health probe needed for this.
+#
+# Run: conduit -c examples/circuit-breaker.yaml
+
+port: 8080
+
+logging: json
+
+proxy:
+  /api:
+    targets:
+      - "http://api-1:4000"
+      - "http://api-2:4000"
+      - "http://api-3:4000"
+    strategy: least-conn
+
+    healthCheck:
+      path: /health
+      intervalSecs: 10
+      unhealthyThreshold: 3
+      healthyThreshold: 1
+
+      # ── Circuit Breaker ─────────────────────────────────────────────────────
+      # When ALL three upstreams hit 100 concurrent connections each, Conduit
+      # stops routing new requests to them and immediately returns 503.
+      # This prevents a slow upstream from exhausting connection pools.
+      maxConnectionsPerUpstream: 100
+
+    # ── Failover ──────────────────────────────────────────────────────────────
+    # If health probes fail for all three primaries, route to the read-only
+    # replica (or a DR site) instead of returning 503.
+    backup: "http://api-read-replica:4000"
+
+    # ── Retry configuration ────────────────────────────────────────────────────
+    retry:
+      attempts: 3
+      conditions:
+        - connection_error   # upstream refused the connection
+        - "5xx"              # upstream returned 500–599
+        - timeout            # upstream timed out
+      backoffMs: 100         # wait 100 ms before each retry attempt
+
+      # ── Retry Budget ──────────────────────────────────────────────────────
+      # Max 20% of active requests may be retries.  Prevents retry storms:
+      # if 1000 concurrent requests all fail and retry, budgetPercent: 20
+      # limits to 200 retries running at any given moment.
+      budgetPercent: 20
+
+    timeout:
+      connectMs: 500    # fail fast if upstream doesn't accept in 500 ms
+      readMs: 5000      # allow 5 s for the response
+      perTryMs: 2000    # each individual retry attempt gets 2 s
+
+  /healthz: "http://health-aggregator:7000"
+
+# ── Outlier Detection ─────────────────────────────────────────────────────────
+# Track consecutive 5xx responses from real traffic.
+# After 5 in a row: eject the upstream for at least 30 s.
+# Ejection uses exponential backoff (30s, 60s, 120s, …) up to 5 min.
+outlierDetection:
+  consecutive5xx: 5
+  baseEjectionTimeSecs: 30
+  maxEjectionTimeSecs: 300
+  maxEjectionPercent: 33   # never eject more than 1/3 of the cluster at once
+
+# ── Error Masking ─────────────────────────────────────────────────────────────
+# Replace upstream 5xx bodies with a generic JSON error.
+# Clients see: {"error":"Internal Server Error","status":500}
+# instead of Python tracebacks or SQL error messages.
+maskErrors: true
+
+healthCheck: true
+metrics:
+  path: /__metrics__

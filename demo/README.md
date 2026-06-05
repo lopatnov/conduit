@@ -36,6 +36,7 @@ node demo/api/server.js
 **Terminal 2 — Conduit (two virtual sites from one process):**
 
 ```bash
+# Standard build is sufficient for this demo
 cargo run --release -- -c demo/conduit.json
 # or, if conduit is installed globally:
 conduit -c demo/conduit.json

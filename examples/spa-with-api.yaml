@@ -1,0 +1,76 @@
+# ── Production SPA + API Gateway ─────────────────────────────────────────────
+#
+# Single-Page Application setup for React / Vue / Angular:
+#   • Serves pre-compressed static assets with long TTL
+#   • Proxies /api to two backends with least-conn balancing + cache
+#   • Returns index.html for unknown browser routes (HTML5 history API)
+#   • JSON 404 for API clients (content-negotiation fallback)
+#
+# Run: conduit -c examples/spa-with-api.yaml
+
+port: 8080
+
+# Brotli + gzip compression.  min-bytes avoids wasting CPU on tiny responses.
+compression:
+  algorithms: [br, gzip]
+  level: 6
+  minBytes: 1024
+
+# Structured JSON access logs — pipe to Grafana Loki or Datadog.
+logging:
+  format: json
+  file: ./logs/access.log
+  # Suppress noisy paths that would inflate log volume.
+  skipPaths:
+    - /__health__
+    - /favicon.ico
+
+# Static files from the build output directory.
+# preCompressed: serve .br / .gz files created by the bundler (Vite/Webpack).
+static: ./dist
+staticOptions:
+  preCompressed: true   # look for file.br and file.gz before file
+  etag: true            # conditional GET support (304 Not Modified)
+  maxAge: "1y"          # long cache TTL for hashed asset filenames
+
+proxy:
+  /api:
+    targets:
+      - "http://api1:4000"
+      - "http://api2:4000"
+    strategy: least-conn
+    stripPrefix: true   # /api/users → /users
+
+    # In-memory response cache: 5-minute TTL, vary on Accept-Language.
+    cache:
+      store: memory
+      ttlSecs: 300
+      varyHeaders: [Accept-Language, Accept-Encoding]
+      skipPaths: [/api/me, /api/cart]   # never cache user-specific endpoints
+      skipIfCookie: true                 # don't cache authenticated responses
+
+    healthCheck:
+      path: /health
+      intervalSecs: 15
+
+# Upstream health endpoint for load balancers.
+healthCheck: true
+
+# Prometheus metrics.
+metrics:
+  path: /__metrics__
+  token: "$METRICS_TOKEN"   # optional bearer token for scraper auth
+
+# Fallback when no route matches:
+#   Browser (Accept: text/html) → index.html (SPA entry point)
+#   API client (Accept: application/json) → {"error": "Not Found"}
+fallback:
+  byAccept:
+    html:
+      file: ./dist/index.html   # let the SPA router handle the path
+      status: 200
+    json:
+      body: { "error": "Not Found", "status": 404 }
+      status: 404
+  status: 404
+  body: "Not Found"

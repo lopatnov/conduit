@@ -1,0 +1,95 @@
+# ── Multi-site virtual hosting ───────────────────────────────────────────────
+#
+# Three virtual hosts from a single Conduit process:
+#   app.example.com:443   — SPA with API proxy + JWT auth
+#   admin.example.com:443 — Admin panel with Basic Auth
+#   *:443                 — Catch-all: 404 for unknown hostnames
+#
+# All sites share port 443 with TLS; Conduit uses the SNI hostname to route.
+#
+# Run: conduit -c examples/multi-site.yaml
+
+global:
+  workers: 4
+  admin:
+    bind: "127.0.0.1:2019"
+
+sites:
+  # ── Site 1: public-facing SPA ──────────────────────────────────────────────
+  - host: app.example.com
+    port: 443
+    tls:
+      cert: "$CERT"
+      key:  "$KEY"
+      httpRedirectPort: 80
+
+    jwtAuth:
+      jwksUrl: "https://auth.example.com/.well-known/jwks.json"
+      audience: ["app.example.com"]
+      issuer: "https://auth.example.com"
+      skipPaths: [/__health__, /login, /public/**]
+
+    securityHeaders: true
+    compression: true
+    logging: json
+
+    proxy:
+      /api:
+        targets:
+          - "http://api1:4000"
+          - "http://api2:4000"
+        strategy: least-conn
+        stripPrefix: true
+        retry:
+          attempts: 2
+          conditions: [connection_error, "5xx"]
+
+    static: ./dist
+    staticOptions:
+      preCompressed: true
+      maxAge: "7d"
+
+    fallback:
+      file: ./dist/index.html   # HTML5 history API fallback
+      status: 200
+
+    healthCheck: true
+
+  # ── Site 2: admin panel ────────────────────────────────────────────────────
+  - host: admin.example.com
+    port: 443
+    tls:
+      cert: "$CERT"
+      key:  "$KEY"
+
+    # IP filter: admin panel is only reachable from the office network.
+    ipFilter:
+      allow:
+        - "10.0.0.0/8"
+        - "203.0.113.0/24"   # office IP range
+
+    basicAuth:
+      users:
+        admin: "$ADMIN_PASS"   # bcrypt hash in production
+      challenge: true
+      realm: "Admin Panel"
+      skipPaths: [/__health__]
+
+    securityHeaders:
+      hsts: "max-age=63072000"
+      frameOptions: DENY
+
+    proxy:
+      /: "http://admin-ui:3000"
+
+    healthCheck: true
+
+  # ── Site 3: catch-all (unknown hostnames) ──────────────────────────────────
+  - host: "*"
+    port: 443
+    tls:
+      cert: "$CERT"
+      key:  "$KEY"
+    fallback:
+      status: 404
+      body: "Unknown host"

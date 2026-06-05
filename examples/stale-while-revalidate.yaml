@@ -1,0 +1,47 @@
+# ── Stale-while-revalidate (RFC 5861) ────────────────────────────────────────
+#
+# Serve slightly stale cached content immediately while Conduit silently
+# fetches a fresh copy from the upstream in the background.
+#
+# Result: zero perceived latency for the overwhelming majority of requests.
+#
+# How it works:
+#   1. First request after TTL expires:
+#      - Client receives the stale cached response immediately
+#      - Conduit fires a background request to refresh the cache
+#   2. Next request:
+#      - Client receives the fresh copy (background fetch completed)
+#
+# Without SWR:
+#   - First request after TTL expires: client WAITS for upstream (high latency)
+#   - All subsequent requests: fast cache hit
+#
+# staleWhileRevalidateSecs: how long AFTER ttlSecs to still serve stale content
+# staleIfErrorSecs:         serve stale when upstream returns 5xx or is unreachable
+#
+# Run: conduit -c examples/stale-while-revalidate.yaml
+
+port: 8080
+
+proxy:
+  /api:
+    targets: ["http://backend:4000"]
+    stripPrefix: true
+
+    cache:
+      store: memory         # or "redis://..." for multi-instance shared cache
+      ttlSecs: 60           # fresh for 60 seconds
+      staleWhileRevalidateSecs: 300  # serve stale for up to 5 min while refreshing
+      staleIfErrorSecs: 600          # serve stale for up to 10 min if upstream fails
+
+      # Vary cache by language to avoid serving English content to French clients.
+      varyHeaders: [Accept-Language, Accept-Encoding]
+
+      # Never cache requests that carry session cookies.
+      skipIfCookie: true
+
+      methods: [GET, HEAD]
+
+healthCheck: true
+metrics:
+  path: /__metrics__

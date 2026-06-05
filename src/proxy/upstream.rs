@@ -685,4 +685,37 @@ mod tests {
             vec!["http://a:4000", "http://b:4000", "http://c:4000"]
         );
     }
+
+    // ── url_to_host_port edge cases ───────────────────────────────────────────
+
+    #[test]
+    fn url_to_host_port_empty_host_returns_none() {
+        // URL with scheme but no host — e.g. "http://" with nothing after.
+        assert!(url_to_host_port("http://").is_none());
+    }
+
+    #[test]
+    fn url_to_host_port_ipv6_no_port_adds_default() {
+        // IPv6 without port — default port should be added.
+        let result = url_to_host_port("http://[::1]/path");
+        assert_eq!(result, Some("[::1]:80".to_owned()));
+    }
+
+    #[test]
+    fn url_to_host_port_ipv6_https_no_port_uses_443() {
+        let result = url_to_host_port("https://[::1]/path");
+        assert_eq!(result, Some("[::1]:443".to_owned()));
+    }
+
+    // ── url_host edge cases ───────────────────────────────────────────────────
+
+    #[test]
+    fn url_host_simple_no_port() {
+        assert_eq!(url_host("http://example.com"), "example.com");
+    }
+
+    #[test]
+    fn url_host_with_fragment() {
+        assert_eq!(url_host("http://example.com:4000#section"), "example.com");
+    }
 }

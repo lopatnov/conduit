@@ -1,0 +1,29 @@
+# File upload example — conduit.yaml
+#
+# Requires: cargo build --features upload
+#
+# POST /files/<filename> with multipart/form-data uploads to ./uploads/ directory.
+# Accepted MIME types are restricted to images and PDFs.
+# Individual files are limited to 10 MB; request total capped at 20 MB.
+
+port: 8080
+host: localhost
+
+upload:
+  path: /files
+  dir: ./uploads
+  fieldName: file            # multipart field to read (default: "file")
+  maxFileSizeBytes: 10485760 # 10 MB per file
+  maxTotalSizeBytes: 20971520 # 20 MB per request
+  maxFiles: 5                # at most 5 files per request
+  allowedMimeTypes:
+    - "image/jpeg"
+    - "image/png"
+    - "image/gif"
+    - "image/webp"
+    - "application/pdf"
+
+# Proxy everything else to the API backend
+proxy:
+  targets:
+    - "http://api:4000"

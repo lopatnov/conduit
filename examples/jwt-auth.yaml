@@ -1,0 +1,59 @@
+# ── JWT Bearer-Token Authentication ──────────────────────────────────────────
+#
+# Validates Authorization: Bearer <token> on every request.
+# Supports two modes:
+#
+#   Mode A — HS256 with a shared secret (simple, for internal services)
+#   Mode B — RS256/ES256 with JWKS endpoint (recommended for production)
+#
+# After validation, JWT claims are available for header injection:
+#   requestTransform.setHeaders: { "X-User-ID": "{{ jwt.sub }}" }
+#
+# Run: conduit -c examples/jwt-auth.yaml
+
+port: 8080
+
+# ── Mode B: JWKS endpoint (Auth0, AWS Cognito, Google, Keycloak) ──────────────
+# Keys are fetched once and cached; refreshed every hour in the background.
+jwtAuth:
+  jwksUrl: "https://YOUR_DOMAIN.auth0.com/.well-known/jwks.json"
+  # Only accept tokens issued for this audience.
+  audience: ["https://api.example.com"]
+  # Only accept tokens from this issuer.
+  issuer: "https://YOUR_DOMAIN.auth0.com"
+  # How often to re-fetch the JWKS (seconds).  Default: 3600.
+  jwksRefreshSecs: 3600
+  # Skip JWT validation for these paths (health, login, public docs).
+  skipPaths:
+    - /__health__
+    - /auth/**
+    - /docs/**
+
+# Inject validated JWT claims into upstream request headers.
+# {{ jwt.sub }}   → "sub" claim (user identifier, always present)
+# {{ jwt.email }} → "email" claim (if the IdP includes it)
+# {{ jwt.role }}  → custom role claim (depends on your IdP config)
+requestTransform:
+  setHeaders:
+    X-User-ID:    "{{ jwt.sub }}"
+    X-User-Email: "{{ jwt.email }}"
+    X-User-Role:  "{{ jwt.role }}"
+  removeHeaders:
+    - Authorization   # strip the raw JWT; upstream trusts X-User-* instead
+
+proxy:
+  /api: "http://backend:4000"
+
+healthCheck: true
+
+# ── Mode A: HS256 with a shared secret ───────────────────────────────────────
+# Use this for internal microservice-to-microservice auth where you control
+# both the token issuer and this proxy.
+#
+# SECURITY: store the secret in an environment variable, never in the file.
+#
+# Uncomment and replace the jwtAuth block above with this:
+#
+# jwtAuth:
+#   secret: "$JWT_SECRET"   # e.g. export JWT_SECRET=my-very-long-random-string
+#   skipPaths: [/__health__]

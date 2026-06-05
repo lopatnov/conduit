@@ -22,6 +22,13 @@ pub struct Cli {
     )]
     pub config: String,
 
+    /// Watch Kubernetes ConduitSite CRDs in this namespace instead of reading
+    /// a config file. Use "*" to watch all namespaces.
+    /// Requires: cargo build --features kubernetes
+    #[cfg(feature = "kubernetes")]
+    #[arg(long, value_name = "NAMESPACE")]
+    pub kubernetes_namespace: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -32,14 +39,14 @@ pub enum Command {
     Validate(ValidateArgs),
     /// Format config file to stdout (or overwrite with --write)
     Fmt(FmtArgs),
-    /// Create conduit.json interactively
+    /// Generate a starter config (interactive wizard or -y for non-interactive)
     Init(InitArgs),
     /// HEAD each upstream and report latency
     Probe(ProbeArgs),
     /// Reload config via Admin API
     Reload(AdminArgs),
-    /// Show server status
-    Status(AdminArgs),
+    /// Show server status and optionally upstream health
+    Status(StatusArgs),
     /// Graceful shutdown via Admin API
     Shutdown(AdminArgs),
     /// Manage upstream targets at runtime
@@ -65,6 +72,66 @@ pub struct InitArgs {
     /// Write config to this file instead of the default config path
     #[arg(short, long, value_name = "FILE")]
     pub output: Option<String>,
+
+    /// Non-interactive: accept all defaults without prompting.
+    /// Individual flags still override the defaults.
+    #[arg(short, long)]
+    pub yes: bool,
+
+    /// Output format: "yaml" (default) or "json".
+    /// Inferred from -o extension when provided.
+    #[arg(long, value_name = "FORMAT")]
+    pub format: Option<String>,
+
+    /// Port to listen on [default: 8080]
+    #[arg(long, value_name = "PORT")]
+    pub port: Option<u16>,
+
+    /// Serve static files from this directory [default: ./dist]
+    #[arg(long, value_name = "DIR")]
+    pub static_dir: Option<String>,
+
+    /// Disable static file serving (overrides --static-dir)
+    #[arg(long)]
+    pub no_static: bool,
+
+    /// Proxy requests to this upstream URL (e.g. http://localhost:4000)
+    #[arg(long, value_name = "URL")]
+    pub proxy: Option<String>,
+
+    /// Disable proxy (overrides --proxy)
+    #[arg(long)]
+    pub no_proxy: bool,
+
+    /// Log format: "dev", "json", "combined", or "none" [default: dev]
+    #[arg(long, value_name = "FORMAT")]
+    pub log: Option<String>,
+
+    /// Disable the /__health__ endpoint
+    #[arg(long)]
+    pub no_health: bool,
+
+    /// TLS certificate file (enables manual-cert TLS)
+    #[arg(long, value_name = "FILE", requires = "tls_key")]
+    pub tls_cert: Option<String>,
+
+    /// TLS private key file (required with --tls-cert)
+    #[arg(long, value_name = "FILE", requires = "tls_cert")]
+    pub tls_key: Option<String>,
+
+    /// ACME / Let's Encrypt email (enables auto-TLS)
+    #[arg(long, value_name = "EMAIL")]
+    pub tls_acme: Option<String>,
+}
+
+#[derive(Args)]
+pub struct StatusArgs {
+    /// Admin API address
+    #[arg(long, value_name = "ADDR", env = "CONDUIT_ADMIN")]
+    pub admin: Option<String>,
+    /// Show upstream health table (URL, healthy, latency, ejected, 5xx count)
+    #[arg(long)]
+    pub upstream: bool,
 }
 
 #[derive(Args)]

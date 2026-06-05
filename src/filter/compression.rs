@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use async_compression::tokio::bufread::{BrotliEncoder, DeflateEncoder, GzipEncoder};
+use async_compression::tokio::bufread::{BrotliEncoder, DeflateEncoder, GzipEncoder, ZstdEncoder};
 use async_compression::Level;
 use bytes::Bytes;
 use tokio::io::AsyncReadExt as _;
@@ -10,6 +10,22 @@ use crate::proxy::ctx::AcceptEncoding;
 
 // ── Options ────────────────────────────────────────────────────────────────
 
+/// Default compressible Content-Type prefixes — nginx `gzip_types` pattern.
+///
+/// Only text and structured data compress well.  Binary formats (images,
+/// video, audio, archives, fonts) are already compressed or grow larger.
+const DEFAULT_COMPRESS_TYPES: &[&str] = &[
+    "text/",
+    "application/json",
+    "application/xml",
+    "application/xhtml",
+    "application/javascript",
+    "application/x-javascript",
+    "application/wasm",
+    "image/svg",
+    "font/",
+];
+
 /// Resolved compression parameters (flattened from the bool / object shorthand).
 pub struct CompressOptions {
     /// Preferred encoding order — first match with the client's Accept-Encoding wins.
@@ -17,6 +33,10 @@ pub struct CompressOptions {
     pub level: u8,
     /// Minimum uncompressed body size in bytes before compression is applied.
     pub min_bytes: u64,
+    /// Content-Type prefixes/substrings to compress.
+    /// Empty list means "use DEFAULT_COMPRESS_TYPES".
+    /// `["*"]` means compress everything.
+    pub types: Vec<String>,
 }
 
 /// Resolve a site compression config into effective options, or `None` if disabled.
@@ -24,15 +44,17 @@ pub fn effective(cfg: &CompressionConfig) -> Option<CompressOptions> {
     match cfg {
         CompressionConfig::Enabled(false) => None,
         CompressionConfig::Enabled(true) => Some(CompressOptions {
-            algorithms: vec!["br".to_owned(), "gzip".to_owned()],
+            // br first (best ratio), then zstd (fast + small), then gzip (widest compat)
+            algorithms: vec!["br".to_owned(), "zstd".to_owned(), "gzip".to_owned()],
             level: 6,
             min_bytes: 1024,
+            types: Vec::new(), // empty → use DEFAULT_COMPRESS_TYPES
         }),
         CompressionConfig::Options(opts) => {
             let algorithms = opts
                 .algorithms
                 .clone()
-                .unwrap_or_else(|| vec!["br".to_owned(), "gzip".to_owned()]);
+                .unwrap_or_else(|| vec!["br".to_owned(), "zstd".to_owned(), "gzip".to_owned()]);
             if algorithms.is_empty() {
                 return None;
             }
@@ -40,6 +62,7 @@ pub fn effective(cfg: &CompressionConfig) -> Option<CompressOptions> {
                 algorithms,
                 level: opts.level.unwrap_or(6),
                 min_bytes: opts.min_bytes.unwrap_or(1024),
+                types: opts.types.clone().unwrap_or_default(),
             })
         }
     }
@@ -47,10 +70,39 @@ pub fn effective(cfg: &CompressionConfig) -> Option<CompressOptions> {
 
 // ── Encoding selection ─────────────────────────────────────────────────────
 
+/// Check whether `content_type` should be compressed.
+///
+/// **nginx `gzip_types` pattern** — skip binary content types that are already
+/// compressed or that do not benefit from compression (images, audio, video,
+/// archives).  Compressing them wastes CPU and often increases response size.
+///
+/// Matching is case-insensitive prefix/substring.
+/// - Empty `types` list → use [`DEFAULT_COMPRESS_TYPES`].
+/// - `["*"]` → compress everything.
+pub fn is_compressible_type(content_type: &str, opts: &CompressOptions) -> bool {
+    let ct = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+
+    let patterns: &[&str] = if opts.types.is_empty() {
+        DEFAULT_COMPRESS_TYPES
+    } else if opts.types.iter().any(|t| t == "*") {
+        return true;
+    } else {
+        return opts.types.iter().any(|t| ct.contains(t.as_str()));
+    };
+
+    patterns.iter().any(|p| ct.starts_with(p))
+}
+
 /// Choose the best `Content-Encoding` given what the client advertises.
 ///
 /// Returns `None` when:
 /// - the body is smaller than `opts.min_bytes`, or
+/// - the content type is not compressible (nginx `gzip_types` pattern), or
 /// - no algorithm in `opts.algorithms` is accepted by the client.
 pub fn best_encoding(
     opts: &CompressOptions,
@@ -63,6 +115,7 @@ pub fn best_encoding(
     for algo in &opts.algorithms {
         match algo.as_str() {
             "br" if accept.brotli => return Some("br"),
+            "zstd" if accept.zstd => return Some("zstd"),
             "gzip" if accept.gzip => return Some("gzip"),
             "deflate" if accept.deflate => return Some("deflate"),
             _ => {}
@@ -106,6 +159,13 @@ pub async fn compress_bytes(data: Bytes, encoding: &str, level: u8) -> Bytes {
                 .await
                 .is_ok()
         }
+        "zstd" => {
+            let r = tokio::io::BufReader::new(Cursor::new(data.clone()));
+            ZstdEncoder::with_quality(r, lev)
+                .read_to_end(&mut out)
+                .await
+                .is_ok()
+        }
         _ => false,
     };
 
@@ -140,6 +200,7 @@ mod tests {
             algorithms: Some(vec![]),
             level: None,
             min_bytes: None,
+            types: None,
         });
         assert!(effective(&cfg).is_none());
     }
@@ -150,8 +211,10 @@ mod tests {
             algorithms: vec!["gzip".to_owned()],
             level: 6,
             min_bytes: 1024,
+            types: Vec::new(),
         };
         let accept = AcceptEncoding {
+            zstd: false,
             gzip: true,
             ..Default::default()
         };
@@ -164,8 +227,10 @@ mod tests {
             algorithms: vec!["br".to_owned(), "gzip".to_owned()],
             level: 6,
             min_bytes: 0,
+            types: Vec::new(),
         };
         let accept = AcceptEncoding {
+            zstd: false,
             brotli: true,
             gzip: true,
             deflate: false,
@@ -180,6 +245,7 @@ mod tests {
             algorithms: Some(vec!["gzip".to_owned()]),
             level: Some(9),
             min_bytes: Some(512),
+            types: None,
         });
         let opts = effective(&cfg).unwrap();
         assert_eq!(opts.algorithms, vec!["gzip"]);
@@ -194,6 +260,7 @@ mod tests {
             algorithms: None,
             level: None,
             min_bytes: None,
+            types: None,
         });
         let opts = effective(&cfg).unwrap();
         assert!(!opts.algorithms.is_empty());
@@ -207,9 +274,11 @@ mod tests {
             algorithms: vec!["br".to_owned(), "gzip".to_owned()],
             level: 6,
             min_bytes: 0,
+            types: Vec::new(),
         };
         // brotli NOT accepted — should fall back to gzip.
         let accept = AcceptEncoding {
+            zstd: false,
             brotli: false,
             gzip: true,
             deflate: false,
@@ -223,8 +292,10 @@ mod tests {
             algorithms: vec!["deflate".to_owned()],
             level: 6,
             min_bytes: 0,
+            types: Vec::new(),
         };
         let accept = AcceptEncoding {
+            zstd: false,
             brotli: false,
             gzip: false,
             deflate: true,
@@ -238,9 +309,11 @@ mod tests {
             algorithms: vec!["br".to_owned(), "gzip".to_owned()],
             level: 6,
             min_bytes: 0,
+            types: Vec::new(),
         };
         // Client accepts nothing.
         let accept = AcceptEncoding {
+            zstd: false,
             brotli: false,
             gzip: false,
             deflate: false,
@@ -308,5 +381,112 @@ mod tests {
         let mut decoded = Vec::new();
         dec.read_to_end(&mut decoded).await.unwrap();
         assert_eq!(decoded, original.as_ref());
+    }
+
+    #[tokio::test]
+    async fn compress_zstd_roundtrip() {
+        use async_compression::tokio::bufread::ZstdDecoder;
+
+        let original = Bytes::from("hello world ".repeat(100));
+        let compressed = compress_bytes(original.clone(), "zstd", 6).await;
+        assert!(
+            compressed.len() < original.len(),
+            "zstd should compress repetitive data: compressed={} original={}",
+            compressed.len(),
+            original.len()
+        );
+
+        let mut dec = ZstdDecoder::new(tokio::io::BufReader::new(std::io::Cursor::new(compressed)));
+        let mut decoded = Vec::new();
+        dec.read_to_end(&mut decoded).await.unwrap();
+        assert_eq!(decoded, original.as_ref());
+    }
+
+    #[test]
+    fn best_encoding_picks_zstd_when_available() {
+        let opts = CompressOptions {
+            algorithms: vec!["br".to_owned(), "zstd".to_owned(), "gzip".to_owned()],
+            level: 6,
+            min_bytes: 0,
+            types: Vec::new(),
+        };
+        // Only zstd accepted.
+        let accept = AcceptEncoding {
+            zstd: true,
+            ..Default::default()
+        };
+        assert_eq!(best_encoding(&opts, &accept, 2000), Some("zstd"));
+    }
+
+    #[test]
+    fn best_encoding_prefers_br_over_zstd() {
+        let opts = CompressOptions {
+            algorithms: vec!["br".to_owned(), "zstd".to_owned(), "gzip".to_owned()],
+            level: 6,
+            min_bytes: 0,
+            types: Vec::new(),
+        };
+        // Both br and zstd accepted — br wins (listed first).
+        let accept = AcceptEncoding {
+            brotli: true,
+            zstd: true,
+            ..Default::default()
+        };
+        assert_eq!(best_encoding(&opts, &accept, 2000), Some("br"));
+    }
+
+    // ── is_compressible_type ──────────────────────────────────────────────────
+
+    fn opts_no_types() -> CompressOptions {
+        CompressOptions {
+            algorithms: vec![],
+            level: 6,
+            min_bytes: 0,
+            types: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn text_html_is_compressible() {
+        assert!(is_compressible_type(
+            "text/html; charset=utf-8",
+            &opts_no_types()
+        ));
+    }
+
+    #[test]
+    fn application_json_is_compressible() {
+        assert!(is_compressible_type("application/json", &opts_no_types()));
+    }
+
+    #[test]
+    fn image_jpeg_is_not_compressible() {
+        assert!(!is_compressible_type("image/jpeg", &opts_no_types()));
+    }
+
+    #[test]
+    fn video_mp4_is_not_compressible() {
+        assert!(!is_compressible_type("video/mp4", &opts_no_types()));
+    }
+
+    #[test]
+    fn image_svg_is_compressible() {
+        assert!(is_compressible_type("image/svg+xml", &opts_no_types()));
+    }
+
+    #[test]
+    fn wildcard_compresses_everything() {
+        let mut opts = opts_no_types();
+        opts.types = vec!["*".to_owned()];
+        assert!(is_compressible_type("image/jpeg", &opts));
+        assert!(is_compressible_type("video/mp4", &opts));
+    }
+
+    #[test]
+    fn custom_types_list_overrides_defaults() {
+        let mut opts = opts_no_types();
+        opts.types = vec!["text/plain".to_owned()];
+        assert!(is_compressible_type("text/plain", &opts));
+        assert!(!is_compressible_type("text/html", &opts));
     }
 }

@@ -1,0 +1,31 @@
+# ── URL rewriting with regex ──────────────────────────────────────────────────
+#
+# Rewrite request paths before forwarding to the upstream.
+# Rules are evaluated in order; the FIRST matching rule is applied.
+# Capture groups ($1, $2, …) are supported in the replacement.
+#
+# Examples:
+#   /api/v2/orders   →  /api stripped  →  /v2/orders  →  /orders
+#   /api/users/42    →  /api stripped  →  /users/42   →  /members/42
+#
+# Run: conduit -c examples/path-rewrite.yaml
+
+port: 8080
+
+proxy:
+  /api:
+    targets: ["http://backend:4000"]
+    # Remove the /api prefix before applying rewrite rules.
+    # /api/v2/orders → /v2/orders
+    stripPrefix: true
+
+    rewrite:
+      # Strip version prefix: /v1/... or /v2/... → /...
+      # Useful when upstreams don't know about API versioning.
+      - from: "^/v[0-9]+/(.+)$"
+        to: "/$1"
+
+      # Migrate legacy /users/:id path to new /members/:id path.
+      # Capture group $1 contains the numeric user ID.
+      - from: "^/users/([0-9]+)$"
+        to: "/members/$1"

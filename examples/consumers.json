@@ -1,0 +1,50 @@
+{
+  "port": 8080,
+
+  "consumers": {
+    "idHeader": "X-Consumer-ID",
+    "skipPaths": ["/__health__", "/public/**"],
+    "consumers": [
+      {
+        "username": "alice",
+        "apiKey": "$ALICE_API_KEY",
+        "rateLimit": { "windowSecs": 60, "limit": 100 },
+        "headers": { "X-Tier": "free" }
+      },
+      {
+        "username": "bob",
+        "apiKey": "$BOB_API_KEY",
+        "rateLimit": { "windowSecs": 60, "limit": 10000 },
+        "headers": { "X-Tier": "premium", "X-SLA": "99.9" }
+      },
+      {
+        "username": "billing-service",
+        "basicAuth": { "password": "$BILLING_SERVICE_PASSWORD" },
+        "headers": { "X-Internal": "true" }
+      },
+      {
+        "username": "data-pipeline",
+        "jwt": {
+          "secret": "$DATA_PIPELINE_JWT_SECRET",
+          "issuer": "https://auth.internal"
+        },
+        "headers": { "X-Service-Name": "data-pipeline" }
+      },
+      {
+        "username": "readonly-client",
+        "apiKey": "$READONLY_KEY"
+      }
+    ]
+  },
+
+  "proxy": {
+    "/api": "http://backend:4000"
+  },
+
+  "healthCheck": true,
+
+  "logging": {
+    "format": "json",
+    "skipPaths": ["/__health__"]
+  }
+}

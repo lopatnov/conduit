@@ -1,0 +1,17 @@
+{
+  "port": 8080,
+  "proxy": {
+    "/api": {
+      "targets": ["http://backend:4000"],
+      "stripPrefix": true,
+      "cache": {
+        "store": "memory",
+        "ttlSecs": 60,
+        "staleWhileRevalidateSecs": 300,
+        "staleIfErrorSecs": 600
+      }
+    }
+  },
+  "healthCheck": true,
+  "metrics": { "path": "/__metrics__" }
+}

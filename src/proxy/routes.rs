@@ -85,6 +85,16 @@ fn route_matches(
             return false;
         }
     }
+    // 5. Cookies.
+    if let Some(cookies) = &m.cookies {
+        let cookie_header = req_headers
+            .get("cookie")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !cookies_match(cookies, cookie_header) {
+            return false;
+        }
+    }
     true
 }
 
@@ -120,6 +130,36 @@ fn query_params_match(
     true
 }
 
+/// Return `true` when every cookie predicate in `predicates` is satisfied.
+///
+/// Parses the `Cookie` header value (e.g. `"a=1; b=2"`) and matches each
+/// named cookie against the given pattern using the same regex semantics as
+/// header and query matching.
+fn cookies_match(predicates: &indexmap::IndexMap<String, String>, cookie_header: &str) -> bool {
+    for (name, pattern) in predicates {
+        let value = cookie_value(cookie_header, name).unwrap_or("");
+        if !regex_match(pattern, value) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Return the value of cookie `name` from a `Cookie` header value string.
+///
+/// The `Cookie` header format is `name1=val1; name2=val2; …`.
+fn cookie_value<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
+    for pair in cookie_header.split(';') {
+        let pair = pair.trim();
+        if let Some((k, v)) = pair.split_once('=') {
+            if k.trim() == name {
+                return Some(v.trim());
+            }
+        }
+    }
+    None
+}
+
 // ── Action dispatch ───────────────────────────────────────────────────────────
 
 /// Convert a matched [`RouteConfig`] into a [`RouteResult`].
@@ -143,32 +183,18 @@ fn route_to_result(
         let options = Arc::new(static_options.cloned().unwrap_or_default());
         let (roots, strip_prefix) = router::resolve_static_roots(static_cfg, path);
         if !roots.is_empty() {
-            return (
-                UpstreamTarget::Local(LocalHandler::StaticFile {
+            return router::RouteResolution::local(UpstreamTarget::Local(
+                LocalHandler::StaticFile {
                     roots,
                     options,
                     strip_prefix,
-                }),
-                None,
-                None,
-                None,
-                false,
-                None,
-                None,
-            );
+                },
+            ));
         }
     }
 
     // No action configured — fall through to fallback.
-    (
-        UpstreamTarget::Local(LocalHandler::Fallback),
-        None,
-        None,
-        None,
-        false,
-        None,
-        None,
-    )
+    fallback_result()
 }
 
 /// Convert a [`ProxyRouteTarget`] to a [`RouteResult`].
@@ -264,19 +290,31 @@ fn full_cfg_to_result(
         max_attempts: r.attempts as usize,
         conditions: r.conditions.clone(),
         backoff_ms: r.backoff_ms,
+        backoff_jitter: r.backoff_jitter.unwrap_or(false),
+        budget_percent: r.budget_percent,
+        is_retrying: false,
     });
 
     let upstream_url_for_lc = is_least_conn.then(|| chosen_url.clone());
 
-    (
+    router::RouteResolution {
         upstream,
         retry,
-        cfg.timeout.clone(),
-        cfg.pool.clone(),
-        cfg.http2.unwrap_or(false),
-        upstream_url_for_lc,
-        cfg.cache.clone(),
-    )
+        proxy_timeout: cfg.timeout.clone(),
+        proxy_pool: cfg.pool.clone(),
+        proxy_http2: cfg.http2.unwrap_or(false),
+        proxy_upstream_url: upstream_url_for_lc,
+        proxy_cache_cfg: cfg.cache.clone(),
+        passive_unhealthy_status: cfg
+            .health_check
+            .as_ref()
+            .and_then(|hc| hc.unhealthy_status.clone())
+            .unwrap_or_default(),
+        passive_unhealthy_latency_ms: cfg
+            .health_check
+            .as_ref()
+            .and_then(|hc| hc.unhealthy_latency_ms),
+    }
 }
 
 /// Select an upstream URL from `urls` using the given strategy.
@@ -309,13 +347,22 @@ fn pick_by_strategy(
         LoadBalanceStrategy::RoundRobin => {
             upstream::pick_round_robin(urls, route_key, counters).map(|u| (u, false))
         }
+        LoadBalanceStrategy::P2c => crate::proxy::strategy::from_config(&LoadBalanceStrategy::P2c)
+            .pick(
+                urls,
+                weighted,
+                route_key,
+                hash_val,
+                counters,
+                upstream_health,
+            ),
     }
 }
 
 /// Convert a single-URL `ProxyRouteTarget::Url` to a [`RouteResult`].
 fn url_target_to_result(url: &str) -> RouteResult {
     match router::url_to_proxy_upstream(url, None) {
-        Some(upstream) => (upstream, None, None, None, false, None, None),
+        Some(upstream) => router::RouteResolution::local(upstream),
         None => fallback_result(),
     }
 }
@@ -329,7 +376,7 @@ fn round_robin_target_to_result(
     let counter = counters.entry(key).or_insert_with(|| AtomicUsize::new(0));
     let idx = counter.fetch_add(1, Ordering::Relaxed) % urls.len();
     match router::url_to_proxy_upstream(&urls[idx], None) {
-        Some(upstream) => (upstream, None, None, None, false, None, None),
+        Some(upstream) => router::RouteResolution::local(upstream),
         None => fallback_result(),
     }
 }
@@ -337,15 +384,7 @@ fn round_robin_target_to_result(
 /// Convenience: return the canonical "fall through to fallback" result.
 #[inline]
 fn fallback_result() -> RouteResult {
-    (
-        UpstreamTarget::Local(LocalHandler::Fallback),
-        None,
-        None,
-        None,
-        false,
-        None,
-        None,
-    )
+    router::RouteResolution::local(UpstreamTarget::Local(LocalHandler::Fallback))
 }
 
 // ── Glob path matching ────────────────────────────────────────────────────────
@@ -419,16 +458,29 @@ fn glob_single_star(rest: &[u8], s: &[u8]) -> bool {
 /// wrapped in an anchored `^(?:…)$` form.  Invalid patterns are not stored so
 /// they fall back to exact-string comparison without re-attempting compilation.
 ///
-/// The cache grows at most to the number of distinct patterns in the loaded
-/// config, which is small and bounded.
+/// Maximum number of compiled regular expressions to keep in the cache.
+///
+/// Patterns come from the admin-controlled config, so in practice there are
+/// only a few dozen at most.  The cap is a defence-in-depth safety net against
+/// an unbounded DashMap growth in pathological configs (e.g. thousands of
+/// header-match patterns across many config reloads).
+const MAX_REGEX_CACHE: usize = 2_048;
+
+/// Return a compiled, anchored version of `pattern`, reusing a cached copy
+/// when available.
 fn get_anchored_regex(pattern: &str) -> Option<Regex> {
     static CACHE: OnceLock<DashMap<String, Regex>> = OnceLock::new();
     let cache = CACHE.get_or_init(DashMap::new);
     if let Some(re) = cache.get(pattern) {
         return Some(re.clone());
     }
+    // Don't grow the cache past the safety cap — fall back to compile-each-time
+    // for new patterns once full.  This keeps memory bounded without silently
+    // dropping existing cached patterns.
     let re = Regex::new(&format!("^(?:{pattern})$")).ok()?;
-    cache.insert(pattern.to_owned(), re.clone());
+    if cache.len() < MAX_REGEX_CACHE {
+        cache.insert(pattern.to_owned(), re.clone());
+    }
     Some(re)
 }
 
@@ -772,7 +824,7 @@ mod tests {
             None,
         );
         assert!(result.is_some());
-        let (target, ..) = result.unwrap();
+        let target = result.unwrap().upstream;
         // First route should win — addr must contain port 4000.
         if let UpstreamTarget::Proxy { addr, .. } = target {
             assert!(addr.contains("4000"), "expected first:4000, got {addr}");
@@ -794,7 +846,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -810,7 +862,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(
             target,
             UpstreamTarget::Local(LocalHandler::Fallback)
@@ -831,7 +883,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -850,8 +902,8 @@ mod tests {
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
 
-        let (t1, ..) = route_to_result(&route, "/api", &counters, &registry, None);
-        let (t2, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let t1 = route_to_result(&route, "/api", &counters, &registry, None).upstream;
+        let t2 = route_to_result(&route, "/api", &counters, &registry, None).upstream;
 
         // Round-robin must select different upstreams on consecutive calls.
         let a1 = match t1 {
@@ -876,7 +928,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(
             target,
             UpstreamTarget::Local(LocalHandler::Fallback)
@@ -901,7 +953,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -920,7 +972,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -939,7 +991,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -959,7 +1011,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api/users", &counters, &registry, None);
+        let target = route_to_result(&route, "/api/users", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -989,7 +1041,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -1008,7 +1060,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api/items/42", &counters, &registry, None);
+        let target = route_to_result(&route, "/api/items/42", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -1038,7 +1090,7 @@ mod tests {
             static_files: None,
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         // Fail-open: when all upstreams are unhealthy the router falls back to
         // the full (unhealthy) pool rather than refusing traffic.
         assert!(
@@ -1063,6 +1115,8 @@ mod tests {
                     attempts: 2,
                     conditions: vec!["connection_error".to_string()],
                     backoff_ms: Some(50),
+                    backoff_jitter: None,
+                    budget_percent: None,
                 }),
                 ..Default::default()
             }))),
@@ -1070,7 +1124,9 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, retry, ..) = route_to_result(&route, "/api/users", &counters, &registry, None);
+        let _res = route_to_result(&route, "/api/users", &counters, &registry, None);
+        let target = _res.upstream;
+        let retry = _res.retry;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
         assert!(retry.is_some(), "expected retry state to be populated");
     }
@@ -1093,7 +1149,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
     }
 
@@ -1108,7 +1164,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/", &counters, &registry, None);
+        let target = route_to_result(&route, "/", &counters, &registry, None).upstream;
         assert!(matches!(
             target,
             UpstreamTarget::Local(LocalHandler::StaticFile { .. })
@@ -1127,7 +1183,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(
             target,
             UpstreamTarget::Local(LocalHandler::Fallback)
@@ -1150,7 +1206,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(
             target,
             UpstreamTarget::Local(LocalHandler::Fallback)
@@ -1174,7 +1230,7 @@ mod tests {
         };
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
-        let (target, ..) = route_to_result(&route, "/api", &counters, &registry, None);
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
         assert!(matches!(
             target,
             UpstreamTarget::Local(LocalHandler::Fallback)
@@ -1190,5 +1246,139 @@ mod tests {
             conn_count, 0,
             "conn counter must be zero after invalid-URL fallback"
         );
+    }
+
+    // ── cookie_value ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn cookie_value_found() {
+        assert_eq!(cookie_value("a=1; b=2; c=3", "b"), Some("2"));
+    }
+
+    #[test]
+    fn cookie_value_first_cookie() {
+        assert_eq!(cookie_value("session=abc; other=x", "session"), Some("abc"));
+    }
+
+    #[test]
+    fn cookie_value_not_found() {
+        assert_eq!(cookie_value("a=1; b=2", "missing"), None);
+    }
+
+    #[test]
+    fn cookie_value_empty_header() {
+        assert_eq!(cookie_value("", "any"), None);
+    }
+
+    // ── cookies_match ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn cookies_match_exact() {
+        let mut predicates = IndexMap::new();
+        predicates.insert("beta".to_string(), "1".to_string());
+        assert!(cookies_match(&predicates, "beta=1; session=abc"));
+        assert!(!cookies_match(&predicates, "beta=0; session=abc"));
+        assert!(!cookies_match(&predicates, "session=abc"));
+    }
+
+    #[test]
+    fn cookies_match_regex() {
+        let mut predicates = IndexMap::new();
+        predicates.insert("experiment".to_string(), "blue|green".to_string());
+        assert!(cookies_match(&predicates, "experiment=blue"));
+        assert!(cookies_match(&predicates, "experiment=green"));
+        assert!(!cookies_match(&predicates, "experiment=red"));
+    }
+
+    #[test]
+    fn cookies_match_multiple_predicates() {
+        let mut predicates = IndexMap::new();
+        predicates.insert("beta".to_string(), "1".to_string());
+        predicates.insert("group".to_string(), "A|B".to_string());
+        assert!(cookies_match(&predicates, "beta=1; group=A"));
+        assert!(cookies_match(&predicates, "group=B; beta=1; other=x"));
+        assert!(!cookies_match(&predicates, "beta=1; group=C")); // group doesn't match
+        assert!(!cookies_match(&predicates, "beta=0; group=A")); // beta doesn't match
+    }
+
+    // ── route_matches with cookies ────────────────────────────────────────────
+
+    #[test]
+    fn route_matches_cookie_predicate() {
+        let mut cookies_map = IndexMap::new();
+        cookies_map.insert("beta".to_string(), "1".to_string());
+        let m = MatchConfig {
+            cookies: Some(cookies_map),
+            ..Default::default()
+        };
+
+        // Cookie present with correct value.
+        let mut req_headers = http::HeaderMap::new();
+        req_headers.insert(
+            "cookie",
+            http::HeaderValue::from_static("beta=1; session=abc"),
+        );
+        assert!(route_matches(&m, "/any", "GET", &req_headers, None));
+
+        // Cookie absent.
+        assert!(!route_matches(
+            &m,
+            "/any",
+            "GET",
+            &http::HeaderMap::new(),
+            None
+        ));
+
+        // Cookie present with wrong value.
+        let mut wrong_headers = http::HeaderMap::new();
+        wrong_headers.insert("cookie", http::HeaderValue::from_static("beta=0"));
+        assert!(!route_matches(&m, "/any", "GET", &wrong_headers, None));
+    }
+
+    // ── cookie_value extra cases ──────────────────────────────────────────────
+
+    #[test]
+    fn cookie_value_with_whitespace() {
+        assert_eq!(cookie_value("  key = value ", "key"), Some("value"));
+    }
+
+    // ── query_param_value extra cases ─────────────────────────────────────────
+
+    #[test]
+    fn query_param_value_key_only_returns_empty() {
+        // "flag" without "=value" is a boolean parameter.
+        assert_eq!(query_param_value("flag&other=1", "flag"), Some(""));
+    }
+
+    #[test]
+    fn query_param_value_multiple_with_same_key_returns_first() {
+        // Only the first matching key is returned.
+        assert_eq!(query_param_value("a=1&a=2", "a"), Some("1"));
+    }
+
+    // ── get_anchored_regex ────────────────────────────────────────────────────
+
+    #[test]
+    fn get_anchored_regex_valid_pattern() {
+        let re = get_anchored_regex("v[12]");
+        assert!(re.is_some(), "valid pattern must compile");
+        let re = re.unwrap();
+        assert!(re.is_match("v1"));
+        assert!(re.is_match("v2"));
+        assert!(!re.is_match("v3"));
+    }
+
+    #[test]
+    fn get_anchored_regex_invalid_pattern_returns_none() {
+        let re = get_anchored_regex("[invalid");
+        assert!(re.is_none(), "invalid pattern must return None");
+    }
+
+    #[test]
+    fn get_anchored_regex_anchors_full_string() {
+        // Anchored regex must match only the full string, not substrings.
+        let re = get_anchored_regex("v1").unwrap();
+        assert!(re.is_match("v1"), "exact match must pass");
+        assert!(!re.is_match("v10"), "prefix match must not pass (anchored)");
     }
 }

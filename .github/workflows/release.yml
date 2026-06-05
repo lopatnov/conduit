@@ -23,10 +23,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ── Standard builds (no optional features) ──────────────────────────
           # Linux x86-64 (glibc)
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             use_cross: false
+            features: ""
             asset_name: conduit-x86_64-unknown-linux-gnu
             archive_ext: tar.gz
 
@@ -34,6 +36,7 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             use_cross: true
+            features: ""
             asset_name: conduit-x86_64-unknown-linux-musl
             archive_ext: tar.gz
 
@@ -41,13 +44,23 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             use_cross: true
+            features: ""
             asset_name: conduit-aarch64-unknown-linux-gnu
+            archive_ext: tar.gz
+
+          # Linux RISC-V 64 (standard build only)
+          - target: riscv64gc-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+            features: ""
+            asset_name: conduit-riscv64gc-unknown-linux-gnu
             archive_ext: tar.gz
 
           # macOS x86-64
           - target: x86_64-apple-darwin
             os: macos-latest
             use_cross: false
+            features: ""
             asset_name: conduit-x86_64-apple-darwin
             archive_ext: tar.gz
 
@@ -55,6 +68,7 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             use_cross: false
+            features: ""
             asset_name: conduit-aarch64-apple-darwin
             archive_ext: tar.gz
 
@@ -62,7 +76,52 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             use_cross: false
+            features: ""
             asset_name: conduit-x86_64-pc-windows-msvc.exe
+            archive_ext: zip
+
+          # ── Full builds (all 13 optional features) ──────────────────────────
+          # Identical targets, asset_name gains a "-full" suffix.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: false
+            features: "full"
+            asset_name: conduit-x86_64-unknown-linux-gnu-full
+            archive_ext: tar.gz
+
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+            features: "full"
+            asset_name: conduit-x86_64-unknown-linux-musl-full
+            archive_ext: tar.gz
+
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+            features: "full"
+            asset_name: conduit-aarch64-unknown-linux-gnu-full
+            archive_ext: tar.gz
+
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use_cross: false
+            features: "full"
+            asset_name: conduit-x86_64-apple-darwin-full
+            archive_ext: tar.gz
+
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_cross: false
+            features: "full"
+            asset_name: conduit-aarch64-apple-darwin-full
+            archive_ext: tar.gz
+
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
+            features: "full"
+            asset_name: conduit-x86_64-pc-windows-msvc-full.exe
             archive_ext: zip
 
     steps:
@@ -82,19 +141,31 @@ jobs:
       # Install cross for cross-compilation targets
       - name: Install cross
         if: matrix.use_cross
-        uses: taiki-e/install-action@50b4a718b59c718df4ef27a3b445f86cd57b9f00  # v2.80.0
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538  # v2.81.1
         with:
           tool: cross
 
       # Build (native)
       - name: Build (native)
         if: "!matrix.use_cross"
-        run: cargo build --release --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.features }}" ]; then
+            cargo build --release --target ${{ matrix.target }} --features "${{ matrix.features }}"
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
 
       # Build (cross)
       - name: Build (cross)
         if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.features }}" ]; then
+            cross build --release --target ${{ matrix.target }} --features "${{ matrix.features }}"
+          else
+            cross build --release --target ${{ matrix.target }}
+          fi
 
       # ---------- Package ----------
 
@@ -130,10 +201,38 @@ jobs:
           path: dist/${{ matrix.asset_name }}.${{ matrix.archive_ext }}
           if-no-files-found: error
 
+  # ── 1b. Attest build provenance (SLSA level 3) ──────────────────────────
+  # Generates cryptographically signed provenance for every binary artifact.
+  # Consumers can verify that binaries were built from this exact source commit
+  # using: gh attestation verify <binary> --repo lopatnov/conduit
+  attest:
+    name: Attest build provenance
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write       # required for OIDC-based signing
+      attestations: write   # required to create attestations
+
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: binary-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Set executable bit on Unix binaries
+        run: chmod +x dist/conduit-*-linux-* dist/conduit-*-darwin* 2>/dev/null || true
+
+      - name: Attest all binaries
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45  # v2
+        with:
+          subject-path: "dist/*"
+
   # ── 2. Create GitHub Release with all archives ───────────────────────────
   github-release:
     name: GitHub Release
-    needs: build
+    needs: [build, attest]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -219,7 +318,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
@@ -228,24 +327,69 @@ jobs:
             type=raw,value=latest
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7
         with:
           context: .
           file: contrib/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Standard image: no optional features
+
+  # ── 4a. Publish Docker image (full features) to GHCR ────────────────────
+  docker-full:
+    name: Publish Docker image (full features) to GHCR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          # Full-featured image uses a "-full" suffix on all tags.
+          tags: |
+            type=semver,pattern={{version}},suffix=-full
+            type=semver,pattern={{major}}.{{minor}},suffix=-full
+            type=raw,value=latest-full
+
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (all features)
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7
+        with:
+          context: .
+          file: contrib/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            FEATURES=full
 
   # ── 4b. Vulnerability scan (Trivy) ───────────────────────────────────────
   docker-scan:
-    name: Vulnerability scan (Trivy)
+    name: Vulnerability scan — standard image (Trivy)
     needs: docker
     runs-on: ubuntu-latest
     permissions:
@@ -254,16 +398,42 @@ jobs:
 
     steps:
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Scan image
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8  # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ needs.docker.outputs.version }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
+  docker-full-scan:
+    name: Vulnerability scan — full image (Trivy)
+    needs: docker-full
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan full image
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8  # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ needs.docker-full.outputs.version }}-full
           format: table
           exit-code: '1'
           ignore-unfixed: true

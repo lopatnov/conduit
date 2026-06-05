@@ -1,0 +1,19 @@
+# ── Minimal Conduit config ────────────────────────────────────────────────────
+#
+# The smallest useful configuration:
+#   • Serve static files from ./dist on every path that doesn't match /api
+#   • Proxy /api/* to a backend on port 4000
+#
+# Run: conduit -c examples/minimal.yaml
+
+# TCP port to listen on.  No host = listen on all interfaces.
+port: 8080
+
+# Serve files from ./dist for any path not matched by a proxy route.
+# The directory must exist and contain at least an index.html.
+static: ./dist
+
+# Proxy routes.  Keys are URL prefix patterns; first match wins.
+proxy:
+  # All requests to /api and below are forwarded to the upstream.
+  /api: "http://localhost:4000"

@@ -1,0 +1,70 @@
+# ── Auto-TLS via Let's Encrypt (ACME HTTP-01) ────────────────────────────────
+#
+# Conduit obtains and renews TLS certificates automatically.
+# No manual cert management — just provide your email and domain.
+#
+# Prerequisites:
+#   • Port 80 must be publicly reachable for HTTP-01 challenge verification
+#   • The domain must point to this server's IP
+#   • A writable ./certs directory for certificate storage
+#
+# Run: conduit -c examples/tls-acme.yaml
+
+host: example.com   # Domain to obtain a certificate for
+port: 443
+
+tls:
+  acme:
+    email: admin@example.com   # Used for expiry notifications from Let's Encrypt
+    storage: ./certs           # Where to store the certificate and key files
+    challenge: http-01         # HTTP-01 requires port 80 to be reachable
+
+  # Redirect plain HTTP (port 80) to HTTPS.
+  # Conduit also uses port 80 to answer Let's Encrypt's challenge requests.
+  httpRedirectPort: 80
+
+# HTTP/2 over TLS (negotiated via ALPN).
+http2:
+  maxConcurrentStreams: 100
+
+# Compress text responses.
+compression: true
+
+# Security response headers.
+securityHeaders: true
+
+# Structured JSON access logs.
+logging: json
+
+# Static files with pre-compressed variants and a 7-day cache TTL.
+static: ./dist
+staticOptions:
+  maxAge: "7d"
+  preCompressed: true   # serve .br / .gz files from the bundler
+
+proxy:
+  /api:
+    targets: ["http://backend:4000"]
+    stripPrefix: true
+    healthCheck:
+      path: /health
+      intervalSecs: 15
+
+healthCheck: true
+
+metrics:
+  path: /__metrics__
+  token: "$METRICS_TOKEN"
+
+# SPA fallback: HTML5 history mode works, API clients get JSON 404.
+fallback:
+  byAccept:
+    html:
+      status: 200
+      file: ./dist/index.html
+    json:
+      status: 404
+      body: { "error": "Not Found" }
+    "*":
+      status: 200
+      file: ./dist/index.html

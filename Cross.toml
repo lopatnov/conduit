@@ -1,0 +1,12 @@
+# Cross-compilation configuration for `cross`.
+# See https://github.com/cross-rs/cross/wiki/Configuration
+
+[target.riscv64gc-unknown-linux-gnu]
+# Use a custom Dockerfile that:
+#   1. Installs cmake (required by libz-ng-sys, a dep of async-compression)
+#   2. Creates a cmake toolchain file for riscv64 cross-compilation
+#   3. Sets CMAKE_TOOLCHAIN_FILE ENV so the Rust cmake crate picks it up
+#
+# Using a custom Dockerfile (rather than pre-build + env.set) because
+# cross env.set is not supported in the version installed by taiki-e/install-action.
+dockerfile = { file = "ci/Dockerfile.riscv64", context = "." }

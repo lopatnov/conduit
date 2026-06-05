@@ -478,4 +478,67 @@ mod tests {
             "get_or_create should return the same static reference for the same path"
         );
     }
+
+    #[test]
+    fn tmp_path_has_tmp_extension() {
+        let dir = TempDir::new().unwrap();
+        let storage = DiskCacheStorage::new(dir.path().to_str().unwrap());
+        let path = storage.tmp_path("abcdef1234");
+        assert!(
+            path.to_string_lossy().ends_with("abcdef1234.tmp"),
+            "tmp path must end with .tmp: {path:?}"
+        );
+    }
+
+    #[test]
+    fn tmp_path_uses_prefix_dir() {
+        let dir = TempDir::new().unwrap();
+        let storage = DiskCacheStorage::new(dir.path().to_str().unwrap());
+        let path = storage.tmp_path("deadbeef0123");
+        let components: Vec<_> = path.components().collect();
+        let prefix = &components[components.len() - 2];
+        assert_eq!(
+            prefix.as_os_str().to_str().unwrap(),
+            "de",
+            "expected 'de' prefix dir"
+        );
+    }
+
+    #[test]
+    fn entry_and_tmp_path_same_dir() {
+        let dir = TempDir::new().unwrap();
+        let storage = DiskCacheStorage::new(dir.path().to_str().unwrap());
+        let hash = "abcdef0123456789";
+        let entry = storage.entry_path(hash);
+        let tmp = storage.tmp_path(hash);
+        assert_eq!(
+            entry.parent(),
+            tmp.parent(),
+            "entry and tmp must be in the same directory"
+        );
+    }
+
+    #[test]
+    fn hash_produces_32_hex_chars() {
+        let key = CacheKey::new("host.example", "https:/path", "");
+        let dir = TempDir::new().unwrap();
+        let storage = DiskCacheStorage::new(dir.path().to_str().unwrap());
+        let hash = DiskCacheStorage::hash(&key);
+        assert_eq!(hash.len(), 32, "hash must be 32 hex chars");
+        assert!(
+            hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "hash must be lowercase hex"
+        );
+    }
+
+    #[test]
+    fn two_different_keys_produce_different_hashes() {
+        let k1 = CacheKey::new("host1", "https:/a", "");
+        let k2 = CacheKey::new("host2", "https:/b", "");
+        assert_ne!(
+            DiskCacheStorage::hash(&k1),
+            DiskCacheStorage::hash(&k2),
+            "different cache keys must produce different hashes"
+        );
+    }
 }

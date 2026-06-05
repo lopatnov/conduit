@@ -5,23 +5,15 @@
 [![crates.io downloads](https://img.shields.io/crates/d/lopatnov-conduit.svg)](https://crates.io/crates/lopatnov-conduit)
 [![npm version](https://img.shields.io/npm/v/@lopatnov/conduit.svg)](https://www.npmjs.com/package/@lopatnov/conduit)
 [![npm downloads](https://img.shields.io/npm/dt/@lopatnov/conduit.svg)](https://www.npmjs.com/package/@lopatnov/conduit)
-[![GitHub stars](https://img.shields.io/github/stars/lopatnov/conduit)](https://github.com/lopatnov/conduit/stargazers)
-[![GitHub issues](https://img.shields.io/github/issues/lopatnov/conduit)](https://github.com/lopatnov/conduit/issues)
-[![License](https://img.shields.io/github/license/lopatnov/conduit)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 
-**High-performance reverse proxy and static file server** built on [Cloudflare Pingora](https://github.com/cloudflare/pingora).
+**Production-grade reverse proxy and API gateway** built on [Cloudflare Pingora](https://github.com/cloudflare/pingora).
 
-Serves static files, proxies to backends, terminates TLS, and load-balances — configured with a
-single JSON file and packaged as a **single binary with no runtime dependencies**.
+A **single binary, single config file** that handles proxying, static files, auth, rate limiting, caching, scripting, and TLS — with a 14 MB footprint, ~28 ms cold start, and zero runtime dependencies.
 
 ```bash
-# Try immediately — no installation needed
-npx @lopatnov/conduit init   # interactive setup wizard
-npx @lopatnov/conduit        # start the server
-
-# Or install globally
-npm install -g @lopatnov/conduit
-cargo install lopatnov-conduit
+npx @lopatnov/conduit init   # generate config interactively
+npx @lopatnov/conduit        # start
 ```
 
 ---
@@ -29,43 +21,17 @@ cargo install lopatnov-conduit
 ## Table of Contents
 
 - [Quick Start](#quick-start)
-- [Live Demo](#live-demo)
+- [What Conduit does](#what-conduit-does)
 - [Installation](#installation)
-- [Building from Source](#building-from-source)
+- [Building from Source](docs/building.md) ↗
 - [CLI Commands](#cli-commands)
 - [Configuration](#configuration)
-  - [port / host](#port--host)
-  - [tls](#tls)
-  - [http2](#http2)
-  - [logging](#logging)
-  - [compression](#compression)
-  - [responseTime](#responsetime)
-  - [securityHeaders](#securityheaders)
-  - [cors](#cors)
-  - [ipFilter](#ipfilter)
-  - [limits](#limits)
-  - [rateLimit](#ratelimit)
-  - [basicAuth](#basicauth)
-  - [apiKey](#apikey)
-  - [redirects](#redirects)
-  - [static / staticOptions](#static--staticoptions)
-  - [proxy](#proxy)
-  - [routes (advanced routing)](#routes-advanced-routing)
-  - [Load balancing](#load-balancing)
-  - [Proxy cache](#proxy-cache)
-  - [healthCheck](#healthcheck)
-  - [upload](#upload)
-  - [hotReload](#hotreload)
-  - [metrics](#metrics)
-  - [fallback](#fallback)
-  - [Multi-site (global + sites)](#multi-site-global--sites)
-- [Configuration Recipes](#configuration-recipes)
+- [Recipes](#recipes)
 - [Admin API](#admin-api)
 - [Docker](#docker)
-- [Editor Integration (JSON Schema)](#editor-integration-json-schema)
-- [Benchmarks](#benchmarks)
+- [Editor Integration](#editor-integration-json-schema)
+- [Benchmarks](docs/benchmarks.md) ↗
 - [Contributing](#contributing)
-- [Built With](#built-with)
 - [License](#license)
 
 ---
@@ -73,1175 +39,346 @@ cargo install lopatnov-conduit
 ## Quick Start
 
 ```bash
-# 1. Create a config with the interactive wizard
-conduit init
+# 1. Generate a config
+conduit init          # interactive wizard
+conduit init --yes    # non-interactive, accept defaults → conduit.yaml
 
-# 2. Start
-conduit
-
-# 3. Validate before deploying to production
+# 2. Validate before starting
 conduit validate
+
+# 3. Start
+conduit
+# Listening on http://0.0.0.0:8080
 ```
 
-Minimum working config — save as `conduit.json`:
+Minimal hand-written config — YAML and JSON are equivalent:
 
-```json
-{
-  "port": 3000,
-  "static": "./dist",
-  "proxy": { "/api": "http://localhost:4000" }
-}
+```yaml
+# conduit.yaml
+port: 8080
+static: ./dist
+proxy:
+  /api: http://localhost:4000
 ```
 
-```text
-GET /            → serves ./dist/index.html
-GET /style.css   → serves ./dist/style.css
-GET /api/users   → proxied to http://localhost:4000/api/users
 ```
+GET /          → ./dist/index.html
+GET /logo.png  → ./dist/logo.png
+GET /api/users → http://localhost:4000/api/users
+```
+
+Verify it's running:
+
+```bash
+curl http://localhost:8080/__health__
+# {"status":"ok"}
+
+curl http://localhost:8080/api/users
+# proxied to http://localhost:4000/api/users
+```
+
+**→ Full examples:** [`examples/`](examples/) · **→ Configuration reference:** [docs/configuration.md](docs/configuration.md)
 
 ---
 
-## Live Demo
+## What Conduit does
 
-The repository includes a self-contained demo with **two virtual sites running from a single
-Conduit process**, a round-robin load balancer across two API backends, proxy caching, Basic Auth,
-and more — just like [express-reverse-proxy's demo](https://github.com/lopatnov/express-reverse-proxy)
-runs on multiple ports, but here everything shares one binary.
+<table>
+<tr><td><b>Proxying</b></td><td>Reverse proxy with 8 load-balancing strategies, health checks, outlier detection, circuit breaker, sticky sessions, failover</td></tr>
+<tr><td><b>Static files</b></td><td>ETag, Range, pre-compressed <code>.br</code>/<code>.gz</code>, <code>Cache-Control</code>, SPA fallback</td></tr>
+<tr><td><b>TLS</b></td><td>Manual certificates, auto-TLS via Let's Encrypt (ACME), mTLS client certificates, HTTP/2</td></tr>
+<tr><td><b>Auth</b></td><td>Basic Auth, API key, JWT (HS256/RS256/ES256 + JWKS), Forward Auth, Consumer model</td></tr>
+<tr><td><b>Rate limiting</b></td><td>Token-bucket per IP or header, burst capacity, Redis for multi-instance, per-route limits</td></tr>
+<tr><td><b>Caching</b></td><td>In-memory, Redis, disk — stale-while-revalidate, stale-if-error, thundering-herd lock</td></tr>
+<tr><td><b>Reliability</b></td><td>Retry with budget + jitter, per-try timeout, body buffering for replay, priority load-shedding, traffic mirroring</td></tr>
+<tr><td><b>Routing</b></td><td>Path glob, method, header regex, cookie, query params — ordered route table</td></tr>
+<tr><td><b>Middleware</b></td><td>Rhai scripting, WebAssembly plugins (Wasmtime), request/response header transforms, CORS, compression, fault injection</td></tr>
+<tr><td><b>Observability</b></td><td>Prometheus metrics (11 metrics), OpenTelemetry OTLP tracing, structured JSON access log, <code>X-Request-ID</code></td></tr>
+<tr><td><b>Operations</b></td><td>Hot config reload (zero dropped connections), Admin API, IP deny-list, TCP proxy mode, file upload</td></tr>
+<tr><td><b>Deployment</b></td><td>Single binary, Docker <code>FROM scratch</code>, Kubernetes CRD, systemd, YAML/JSON config, env var secrets</td></tr>
+</table>
 
-```bash
-# Terminal 1 — two mock API instances (ports 4000 and 4001)
-node demo/api/server.js
+### When to choose Conduit
 
-# Terminal 2 — Conduit: two virtual sites from one process
-conduit -c demo/conduit.json
-```
+Conduit is a good fit when you want **everything in one tool** — routing, auth, rate limiting, caching, and scripting — without separate sidecars, plugins, or configuration DSLs. One binary, one config file, one process to operate.
 
-| URL                                            | Description                                                  |
-| ---------------------------------------------- | ------------------------------------------------------------ |
-| [http://localhost:8080](http://localhost:8080) | Public app — proxy, cache, compression, rate limiting        |
-| [http://localhost:8081](http://localhost:8081) | Admin panel — protected with Basic Auth (`admin / demo1234`) |
-
-**VS Code users:** run the _"Demo: Start (Conduit + API)"_ task (`Terminal → Run Task…`)
-to launch both processes at once.
-
-See [`demo/README.md`](demo/README.md) for full details.
+| Capability | Conduit |
+|---|---|
+| Config format | Plain YAML or JSON — readable, diff-friendly, version-controlled |
+| JWT validation | Built-in (HS256 / RS256 / ES256 + JWKS rotation) |
+| Rate limiting | Built-in — per IP, per header, per route, Redis for multi-instance |
+| Scripting middleware | Rhai (embedded, sandboxed) + WebAssembly (Wasmtime, any language) |
+| Binary size | **14 MB** standard · **29 MB** full (all 14 optional features) |
+| Memory (idle) | **~8 MB** |
+| Hot reload | Zero dropped connections |
+| Auto-TLS | ACME / Let's Encrypt built-in |
+| WASM plugins | ✅ — bring your own logic, any compile-to-WASM language |
 
 ---
 
 ## Installation
 
-### Option 1 — npx (no installation, always latest)
+> **Standard vs full:** the standard binary covers the vast majority of use cases.
+> Add `--features` when you need JWT auth, scripting (Rhai/WASM), OTLP tracing,
+> auto-TLS (ACME), Redis, TCP proxy, file upload, or Kubernetes CRD mode.
+> See the [full features table](#optional-features).
+
+### npx — no installation needed
 
 ```bash
-npx @lopatnov/conduit
-npx @lopatnov/conduit init
-npx @lopatnov/conduit validate
+npx @lopatnov/conduit init      # generate config
+npx @lopatnov/conduit           # start server
+npx @lopatnov/conduit validate  # validate config
 ```
 
-### Option 2 — npm global install
+Downloads and caches the platform binary on first run. Always **standard** build.
 
-Install once, run anywhere as `conduit`:
+### npm global
 
 ```bash
 npm install -g @lopatnov/conduit
-conduit
 conduit validate
+conduit
 ```
 
-### Option 3 — Cargo
-
-```bash
-cargo install lopatnov-conduit
-```
-
-### Option 4 — Pre-built binaries
+### Pre-built binaries
 
 Download from [GitHub Releases](https://github.com/lopatnov/conduit/releases):
 
-| Platform                   | File                                       |
-| -------------------------- | ------------------------------------------ |
-| Linux x86-64               | `conduit-x86_64-unknown-linux-gnu.tar.gz`  |
-| Linux x86-64 musl (Docker) | `conduit-x86_64-unknown-linux-musl.tar.gz` |
-| Linux ARM64                | `conduit-aarch64-unknown-linux-gnu.tar.gz` |
-| macOS Intel                | `conduit-x86_64-apple-darwin.tar.gz`       |
-| macOS Apple Silicon        | `conduit-aarch64-apple-darwin.tar.gz`      |
-| Windows x86-64             | `conduit-x86_64-pc-windows-msvc.exe.zip`   |
+| Platform             | Standard                                    | Full (all 14 features)                           |
+| -------------------- | ------------------------------------------- | ------------------------------------------------ |
+| Linux x86-64         | `conduit-x86_64-unknown-linux-gnu.tar.gz`   | `conduit-x86_64-unknown-linux-gnu-full.tar.gz`   |
+| Linux x86-64 musl    | `conduit-x86_64-unknown-linux-musl.tar.gz`  | `conduit-x86_64-unknown-linux-musl-full.tar.gz`  |
+| Linux ARM64          | `conduit-aarch64-unknown-linux-gnu.tar.gz`  | `conduit-aarch64-unknown-linux-gnu-full.tar.gz`  |
+| Linux RISC-V 64      | `conduit-riscv64gc-unknown-linux-gnu.tar.gz`| —                                                |
+| macOS Intel          | `conduit-x86_64-apple-darwin.tar.gz`        | `conduit-x86_64-apple-darwin-full.tar.gz`        |
+| macOS Apple Silicon  | `conduit-aarch64-apple-darwin.tar.gz`       | `conduit-aarch64-apple-darwin-full.tar.gz`       |
+| Windows x86-64       | `conduit-x86_64-pc-windows-msvc.exe.zip`    | `conduit-x86_64-pc-windows-msvc-full.exe.zip`    |
 
 ```bash
-# Linux example
+# Linux x86-64 — standard
 curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu.tar.gz \
-  | tar xz
-./conduit --version
+  | tar xz && ./conduit --version
+
+# Linux x86-64 — full
+curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu-full.tar.gz \
+  | tar xz && ./conduit --version
 ```
 
----
-
-## Building from Source
-
-### Prerequisites
-
-- Rust stable toolchain: [rustup.rs](https://rustup.rs)
+### cargo install
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+cargo install lopatnov-conduit            # standard
+cargo install lopatnov-conduit --features full   # all features
 ```
 
-### Build
+### Optional features
 
-```bash
-git clone https://github.com/lopatnov/conduit
-cd conduit
+| Feature         | What it enables                                                            |
+| --------------- | -------------------------------------------------------------------------- |
+| `jwt`           | JWT Bearer-token auth + JWKS URL (`jwtAuth`)                               |
+| `consumers`     | Named API clients with per-consumer credentials and rate limits            |
+| `forward-auth`  | Delegate auth to an external HTTP service (`forwardAuth`)                  |
+| `rhai`          | Rhai scripting middleware (`type: "script"`)                               |
+| `wasm`          | WebAssembly plugin middleware (`type: "wasm"`) via Wasmtime                |
+| `tcp`           | Raw TCP proxy mode (`type: "tcp"` site)                                    |
+| `upload`        | Multipart file upload handler (`upload:` site config)                      |
+| `redis`         | Redis-backed rate limiting and caching                                     |
+| `cache`         | Response caching (`proxy.*.cache`)                                         |
+| `disk-cache`    | Disk-backed cache store (`cache.store: "disk:/path"`)                      |
+| `acme`          | Auto-TLS via Let's Encrypt (`tls.acme`)                                    |
+| `fault-injection` | Fault injection for chaos testing                                        |
+| `otlp`          | OpenTelemetry OTLP distributed tracing (`global.otlp`)                     |
+| `kubernetes`    | Kubernetes CRD config provider (`--kubernetes-namespace`)                  |
+| `full`          | All of the above                                                           |
 
-# Debug build — fast to compile, slower to run
-cargo build
-./target/debug/conduit --version
-
-# Release build — optimized, ~15 MB stripped binary
-cargo build --release
-./target/release/conduit --version
-# Windows: target\release\conduit.exe
-```
-
-### Cross-compilation
-
-Requires [cross](https://github.com/cross-rs/cross) and Docker:
-
-```bash
-cargo install cross
-
-# Linux musl — smallest binary, runs in Docker FROM scratch
-cross build --release --target x86_64-unknown-linux-musl
-
-# Linux ARM64 — for Raspberry Pi, AWS Graviton, etc.
-cross build --release --target aarch64-unknown-linux-gnu
-```
-
-> macOS targets can only be built on macOS. The [release workflow](.github/workflows/release.yml)
-> handles them using GitHub-hosted runners.
-
-### Release profile
-
-```toml
-[profile.release]
-lto            = true   # link-time optimization across crates
-codegen-units  = 1      # single codegen unit — slower compile, faster binary
-strip          = true   # strip debug symbols
-```
+For build instructions, cross-compilation, and troubleshooting see **[docs/building.md](docs/building.md)**.
 
 ---
 
 ## CLI Commands
 
 ```text
-conduit                         start the server (reads conduit.json)
-conduit -c <file>               start with a specific config file
-conduit --version               print version and exit
+conduit [-c FILE]                       start server (default config: conduit.yaml/json)
+conduit validate [-c FILE]              validate config — exit 0 = ok, exit 1 = errors
+conduit fmt [-c FILE] [--write]         pretty-print / normalise config in place
+conduit init [--yes] [-o FILE]          interactive setup wizard (--yes = non-interactive)
+conduit probe [-c FILE]                 ping all configured upstreams, show latency
 
-conduit init [-o <file>]        interactive wizard — creates conduit.json
-conduit validate [-c <file>]    validate config (exit 0 = OK, exit 1 = errors)
-conduit probe [-c <file>]       HEAD to every upstream, show latency table
-conduit fmt [-c <file>]         pretty-print config to stdout
-conduit fmt --write [-c <file>] pretty-print config back to the file
+conduit reload   [--admin ADDR]         hot-reload config (zero dropped connections)
+conduit status   [--admin ADDR]         version, uptime, in-flight requests
+conduit status   [--admin ADDR] --upstream   upstream health table (latency, ejected, 5xx)
+conduit shutdown [--admin ADDR]         graceful shutdown
+conduit upstreams [--admin ADDR]        list upstream health + latency
+conduit upstreams add    --route PATH --target URL [--weight N]
+conduit upstreams remove --route PATH --target URL
+conduit upstreams weight --route PATH --target URL --weight N
 
-conduit reload [--admin ADDR]   hot-reload config without restarting
-conduit status [--admin ADDR]   show server uptime, version, inflight requests
-conduit upstreams [--admin ADDR]         list all upstream health and latency
-conduit upstreams add    --route PATH --target URL [--weight N] [--site LABEL]
-conduit upstreams remove --route PATH --target URL [--site LABEL]
-conduit upstreams weight --route PATH --target URL --weight N [--site LABEL]
-conduit shutdown [--admin ADDR] graceful shutdown
+conduit completions bash|zsh|fish|power-shell|elvish   shell completion script
+conduit man                             generate man page (roff)
 ```
 
-### Shell completions
-
-```bash
-conduit completions bash   >> ~/.bashrc
-conduit completions zsh    >> ~/.zshrc
-conduit completions fish   >> ~/.config/fish/completions/conduit.fish
-conduit completions powershell >> $PROFILE
-```
-
-### Environment variables
-
-| Variable        | Default          | Description                                      |
-| --------------- | ---------------- | ------------------------------------------------ |
-| `RUST_LOG`      | `info`           | Log level: `error` `warn` `info` `debug` `trace` |
-| `CONDUIT_ADMIN` | `127.0.0.1:2019` | Admin API address for management commands        |
+Full flag reference and exit codes: **[docs/cli.md](docs/cli.md)**
 
 ---
 
 ## Configuration
 
-All options are optional unless noted. Fields accept environment variable references —
-`"$VAR"` is replaced with the value of `VAR` at startup.
+Config is a single YAML or JSON file. Conduit reads `conduit.yaml` (or `conduit.json`)
+by default; pass `-c path/to/file` to use another.
 
-Conduit reads `conduit.json` by default. Pass `-c path/to/file.json` to use another file.
+All string values support environment variable substitution: `"$VAR"` is replaced at
+startup. Never hard-code secrets — use env vars or a secrets manager.
+
+```yaml
+# conduit.yaml — annotated overview of common fields
+port: 443
+host: example.com          # virtual host (omit for catch-all)
+
+tls:
+  acme:                    # auto-TLS via Let's Encrypt (--features acme)
+    email: admin@example.com
+
+http2: true
+compression: true
+securityHeaders: true
+
+proxy:
+  /api:
+    targets:
+      - http://api-1:4000
+      - http://api-2:4000
+    strategy: least-conn
+    healthCheck: { path: /health }
+    retry: { attempts: 2, conditions: [5xx, connection_error] }
+    cache: { store: memory, ttlSecs: 60 }
+
+rateLimit:
+  windowSecs: 60
+  limit: 300
+
+jwtAuth:                   # --features jwt
+  jwksUrl: https://auth.example.com/.well-known/jwks.json
+  audience: [my-api]
+
+logging: json
+metrics: { path: /__metrics__ }
+healthCheck: true
+```
+
+**→ All fields with examples:** [docs/configuration.md](docs/configuration.md)  
+**→ Ready-to-run configs:** [examples/](examples/)
 
 ---
 
-### `port` / `host`
+## Recipes
 
-```json
-{ "port": 8080 }
+### Local dev server
+
+```yaml
+port: 3000
+logging: dev
+cors: true
+hotReload: true
+static: ./src
+proxy:
+  /api: http://localhost:4000
+fallback: { file: ./src/index.html, status: 200 }
 ```
 
-```json
-{ "host": "app.example.com", "port": 443 }
+### JWT API gateway
+
+```yaml
+port: 8080
+jwtAuth:                              # --features jwt
+  jwksUrl: https://auth.example.com/.well-known/jwks.json
+requestTransform:
+  setHeaders:
+    X-User-ID: "{{ jwt.sub }}"        # inject claim into upstream request
+proxy:
+  /users: http://users-svc:4001
+  /orders: http://orders-svc:4002
+rateLimit: { windowSecs: 60, limit: 500 }
+maskErrors: true
+metrics: { path: /__metrics__ }
 ```
 
-`host` is used for virtual hosting — only requests matching the `Host` header are handled
-by this site. Omit `host` to match any hostname (catch-all).
+### Multi-site (one process, multiple domains)
 
-Default port: `3000`.
+```yaml
+sites:
+  - host: app.example.com
+    port: 443
+    tls: { acme: { email: admin@example.com } }
+    static: ./dist
+    proxy: { /api: http://api:4000 }
 
----
-
-### `tls`
-
-**Manual certificates:**
-
-```json
-{
-  "port": 443,
-  "tls": {
-    "cert": "./certs/cert.pem",
-    "key": "./certs/key.pem",
-    "httpRedirectPort": 80
-  }
-}
+  - host: admin.example.com
+    port: 443
+    tls: { acme: { email: admin@example.com } }
+    basicAuth: { users: { admin: "$ADMIN_PASSWORD" } }
+    proxy: http://admin-backend:5000
 ```
 
-**Auto-TLS via Let's Encrypt** (no cert/key needed):
-
-```json
-{
-  "port": 443,
-  "tls": {
-    "acme": {
-      "email": "admin@example.com",
-      "storage": "./certs",
-      "challenge": "http-01"
-    }
-  }
-}
-```
-
-Conduit automatically obtains and renews certificates. `conduit validate` reports expiry status.
-
-> Conduit uses **rustls** — not OpenSSL.
-
-> **Single certificate per port (rustls limitation):** When multiple HTTPS sites
-> share the same port, Conduit serves the *first* registered `tls.cert`/`tls.key`
-> for *all* hostnames on that port — the rustls backend does not perform
-> per-SNI certificate selection. To serve different certificates per hostname,
-> assign each site to a different port. This limitation does not affect ACME
-> sites that each have their own port.
-
----
-
-### `http2`
-
-```json
-{
-  "port": 443,
-  "tls": { "cert": "./certs/cert.pem", "key": "./certs/key.pem" },
-  "http2": true
-}
-```
-
-| Field                  | Default | Description                         |
-| ---------------------- | ------- | ----------------------------------- |
-| `maxConcurrentStreams` | `100`   | Max parallel streams per connection |
-| `initialWindowSize`    | `65535` | Flow control window (bytes)         |
-
----
-
-### `logging`
-
-Accepts `false`, `true`, a format string, or an object.
-
-```json
-{ "logging": "dev" }
-```
-
-```json
-{ "logging": { "format": "combined", "file": "./logs/access.log" } }
-```
-
-| Format     | Description                                             |
-| ---------- | ------------------------------------------------------- |
-| `dev`      | Colorized, short — for development                      |
-| `combined` | Apache Combined Log Format — for production             |
-| `common`   | Apache Common Log Format                                |
-| `short`    | Short, without timestamps                               |
-| `json`     | Structured JSON — for log aggregation (ELK, Loki, etc.) |
-
----
-
-### `compression`
-
-Accepts `false`, `true`, or an object.
-
-```json
-{ "compression": true }
-```
-
-```json
-{
-  "compression": {
-    "algorithms": ["br", "gzip"],
-    "level": 6,
-    "minBytes": 1024
-  }
-}
-```
-
-Conduit negotiates the best algorithm based on the client's `Accept-Encoding` header.
-Brotli is preferred over gzip when the client supports both.
-
----
-
-### `responseTime`
-
-Adds `X-Response-Time: 1.23ms` to every response.
-
-```json
-{ "responseTime": true }
-```
-
-```json
-{ "responseTime": { "digits": 3 } }
-```
-
----
-
-### `securityHeaders`
-
-```json
-{ "securityHeaders": true }
-```
-
-Headers added with `true`:
-
-| Header                   | Value                             |
-| ------------------------ | --------------------------------- |
-| `X-Content-Type-Options` | `nosniff`                         |
-| `X-Frame-Options`        | `SAMEORIGIN`                      |
-| `Referrer-Policy`        | `strict-origin-when-cross-origin` |
-| `X-XSS-Protection`       | `1; mode=block`                   |
-
-Object form for HSTS and CSP:
-
-```json
-{
-  "securityHeaders": {
-    "contentSecurityPolicy": "default-src 'self'; img-src *",
-    "hsts": "max-age=31536000; includeSubDomains",
-    "frameOptions": "DENY"
-  }
-}
-```
-
----
-
-### `cors`
-
-Accepts `false`, `true`, or an object.
-
-```json
-{ "cors": true }
-```
-
-For production, restrict to specific origins:
-
-```json
-{
-  "cors": {
-    "origins": ["https://app.example.com"],
-    "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    "allowedHeaders": ["Content-Type", "Authorization"],
-    "credentials": true,
-    "maxAgeSecs": 86400
-  }
-}
-```
-
-CORS preflight (`OPTIONS`) requests bypass auth and rate limiting — browsers send them without
-credentials.
-
----
-
-### `ipFilter`
-
-Applied before auth and rate limiting.
-
-**Whitelist** — allow only these IPs/ranges:
-
-```json
-{ "ipFilter": { "allow": ["10.0.0.0/8", "192.168.0.0/16"] } }
-```
-
-**Blacklist** — block specific IPs:
-
-```json
-{ "ipFilter": { "deny": ["1.2.3.4", "5.6.7.0/24"] } }
-```
-
-**Behind another proxy:**
-
-```json
-{ "ipFilter": { "deny": ["1.2.3.4"], "trustProxy": true } }
-```
-
-Blocked requests receive `403 Forbidden`. IPv4, IPv6, and IPv4-mapped IPv6 are all supported.
-
----
-
-### `limits`
-
-```json
-{
-  "limits": {
-    "maxBodyBytes": 1048576,
-    "maxHeaderBytes": 8192,
-    "timeoutSecs": 30
-  }
-}
-```
-
-| Field            | Description                  | Status code                           |
-| ---------------- | ---------------------------- | ------------------------------------- |
-| `maxBodyBytes`   | Max request body size        | `413 Request Entity Too Large`        |
-| `maxHeaderBytes` | Max total header size        | `431 Request Header Fields Too Large` |
-| `timeoutSecs`    | Per-request timeout fallback | applied to all proxy peer timeouts    |
-
----
-
-### `rateLimit`
-
-Token-bucket rate limiter.
-
-```json
-{
-  "rateLimit": {
-    "windowSecs": 60,
-    "limit": 100
-  }
-}
-```
-
-**Key by a header** (API key, user ID, etc.):
-
-```json
-{
-  "rateLimit": {
-    "windowSecs": 60,
-    "limit": 1000,
-    "keyBy": "header:X-API-Key"
-  }
-}
-```
-
-**Redis-backed** — shared across multiple Conduit instances:
-
-```json
-{
-  "rateLimit": {
-    "windowSecs": 60,
-    "limit": 100,
-    "store": "redis://localhost:6379"
-  }
-}
-```
-
-Falls back to in-memory if Redis is unavailable.
-
-| Field        | Default          | Description                                |
-| ------------ | ---------------- | ------------------------------------------ |
-| `windowSecs` | required         | Time window in seconds                     |
-| `limit`      | required         | Max requests per window                    |
-| `algorithm`  | `"token-bucket"` | Rate limit algorithm                       |
-| `keyBy`      | `"ip"`           | `"ip"` or `"header:X-Name"`                |
-| `skipPaths`  | `[]`             | Paths exempt from limiting (glob patterns) |
-| `store`      | `"memory"`       | `"memory"` or `"redis://..."`              |
-
----
-
-### `basicAuth`
-
-```json
-{
-  "basicAuth": {
-    "users": { "alice": "secret123", "bob": "$BOB_PASSWORD" },
-    "challenge": true,
-    "realm": "My App",
-    "skipPaths": ["/__health__", "/public/**"]
-  }
-}
-```
-
-Use `$VAR` references to avoid storing passwords in the config file.
-
----
-
-### `apiKey`
-
-```json
-{
-  "apiKey": {
-    "keys": ["$API_KEY_1", "$API_KEY_2"],
-    "header": "X-API-Key",
-    "skipPaths": ["/__health__", "/public/**"]
-  }
-}
-```
-
----
-
-### `redirects`
-
-First matching rule wins. Supports `:param` captures and query string preservation.
-
-```json
-{
-  "redirects": [
-    { "from": "/old-page", "to": "/new-page", "status": 301 },
-    { "from": "/blog/:slug", "to": "/posts/:slug", "status": 308 },
-    { "from": "/docs", "to": "https://docs.example.com", "status": 302 }
-  ]
-}
-```
-
-| Status | Meaning                               |
-| ------ | ------------------------------------- |
-| `301`  | Moved Permanently                     |
-| `302`  | Found — temporary redirect            |
-| `307`  | Temporary Redirect (method preserved) |
-| `308`  | Permanent Redirect (method preserved) |
-
----
-
-### `static` / `staticOptions`
-
-**Simple:**
-
-```json
-{ "static": "./dist" }
-```
-
-**Multiple directories** — searched in order:
-
-```json
-{ "static": ["./dist", "./public"] }
-```
-
-**Map URL prefixes to directories:**
-
-```json
-{ "static": { "/": "./dist", "/assets": "./assets" } }
-```
-
-**Options:**
-
-```json
-{
-  "static": "./dist",
-  "staticOptions": {
-    "etag": true,
-    "lastModified": true,
-    "maxAge": "7d",
-    "index": ["index.html"],
-    "dotFiles": "ignore",
-    "preCompressed": true
-  }
-}
-```
-
-`preCompressed: true` serves `.br` / `.gz` variants directly without re-compressing on the fly.
-
-| Field           | Default          | Description                                      |
-| --------------- | ---------------- | ------------------------------------------------ |
-| `etag`          | `true`           | Generate ETag headers (enables 304 Not Modified) |
-| `lastModified`  | `true`           | Set Last-Modified header                         |
-| `maxAge`        | `"0"`            | Cache-Control max-age (`"1h"`, `"7d"`, `"1y"`)   |
-| `index`         | `["index.html"]` | Directory index filenames                        |
-| `dotFiles`      | `"ignore"`       | `"ignore"` \| `"allow"` \| `"deny"`              |
-| `preCompressed` | `false`          | Serve `.br`/`.gz` sidecar files                  |
-
----
-
-### `proxy`
-
-**Simple — proxy everything:**
-
-```json
-{ "proxy": "http://localhost:4000" }
-```
-
-**Route-based:**
-
-```json
-{
-  "proxy": {
-    "/api": "http://api-server:4000",
-    "/images": "http://image-server:5000"
-  }
-}
-```
-
-**Round-robin across multiple backends:**
-
-```json
-{
-  "proxy": {
-    "/api": ["http://b1:4000", "http://b2:4000", "http://b3:4000"]
-  }
-}
-```
-
-**Full form — with all options:**
-
-```json
-{
-  "proxy": {
-    "/api": {
-      "targets": ["http://b1:4000", "http://b2:4000"],
-      "strategy": "least-conn",
-      "stripPrefix": true,
-      "http2": false,
-      "timeout": { "connectMs": 2000, "readMs": 30000 },
-      "healthCheck": { "path": "/health", "intervalSecs": 10 },
-      "retry": { "attempts": 3, "conditions": ["connection_error", "5xx"] },
-      "cache": { "store": "memory", "ttlSecs": 300 }
-    }
-  }
-}
-```
-
-**`stripPrefix`** — `GET /api/users` is forwarded as `GET /users` to the backend.
-
-**Path rewrite** — regex-based, first match wins, applied after `stripPrefix`:
-
-```json
-{
-  "proxy": {
-    "/api": {
-      "targets": ["http://backend:4000"],
-      "rewrite": [{ "from": "^/v[0-9]+/(.+)$", "to": "/$1" }]
-    }
-  }
-}
-```
-
-**Upstream groups** — two-level load balancing:
-
-```json
-{
-  "proxy": {
-    "/api": {
-      "groups": [
-        {
-          "name": "us-east",
-          "targets": ["http://us1:4000", "http://us2:4000"],
-          "strategy": "least-conn"
-        },
-        {
-          "name": "eu-west",
-          "targets": ["http://eu1:4000", "http://eu2:4000"],
-          "strategy": "least-conn"
-        }
-      ],
-      "groupStrategy": "ip-hash"
-    }
-  }
-}
-```
-
-**Retry conditions:**
-
-| Condition          | Description                     |
-| ------------------ | ------------------------------- |
-| `connection_error` | Upstream is down or unreachable |
-| `5xx`              | Upstream returns a 5xx response |
-| `timeout`          | Read or write timeout           |
-
----
-
-### `routes` (advanced routing)
-
-Explicit route table evaluated in order; first match wins.
-
-```json
-{
-  "routes": [
-    {
-      "match": {
-        "path": "/api/**",
-        "method": ["POST", "PUT", "PATCH", "DELETE"]
-      },
-      "proxy": {
-        "targets": ["http://write-backend:4000"],
-        "strategy": "least-conn"
-      }
-    },
-    {
-      "match": { "path": "/api/**" },
-      "proxy": "http://read-backend:4000"
-    },
-    {
-      "match": { "path": "/public/**" },
-      "static": "./public"
-    }
-  ]
-}
-```
-
-**Match criteria** (all present fields must match):
-
-| Field     | Type                 | Description                                              |
-| --------- | -------------------- | -------------------------------------------------------- |
-| `path`    | glob string          | `*` — one segment, `**` — any depth. Default: match all. |
-| `method`  | `string[]`           | HTTP methods (case-insensitive). Default: match all.     |
-| `headers` | `{ name: pattern }`  | Header values (exact string or regex).                   |
-| `query`   | `{ param: pattern }` | Query param values (exact or regex).                     |
-
-Backward compatibility: top-level `proxy` and `static` are automatically converted to routes.
-
----
-
-### Load balancing
-
-Controlled by the `strategy` field inside a `proxy` route.
-
-| Strategy             | Value                  | Description                                                |
-| -------------------- | ---------------------- | ---------------------------------------------------------- |
-| Round-robin          | `round-robin`          | Default. Rotate evenly across all healthy backends.        |
-| Weighted round-robin | `weighted-round-robin` | Respects the `weight` field.                               |
-| Random               | `random`               | Pick a backend at random each request.                     |
-| Least connections    | `least-conn`           | Send to the backend with the fewest active connections.    |
-| Least response time  | `least-response-time`  | Send to the backend with the lowest recent latency.        |
-| IP hash              | `ip-hash`              | Sticky sessions — same client IP always hits same backend. |
-| Consistent hash      | `consistent-hash`      | Ketama ring — minimal reshuffling when backends change.    |
-
-**Weighted round-robin** requires explicit weights:
-
-```json
-{
-  "proxy": {
-    "/api": {
-      "targets": [
-        { "url": "http://powerful:4000", "weight": 3 },
-        { "url": "http://normal:4000", "weight": 1 }
-      ],
-      "strategy": "weighted-round-robin"
-    }
-  }
-}
-```
-
-`hashKey` for `ip-hash` / `consistent-hash`: `"ip"` (default), `"url"`, or `"header:X-My-Key"`.
-
----
-
-### Proxy cache
-
-Cache upstream responses in memory, Redis, or on disk.
-
-```json
-{
-  "proxy": {
-    "/api": {
-      "targets": ["http://backend:4000"],
-      "cache": {
-        "store": "memory",
-        "maxSizeMb": 256,
-        "ttlSecs": 300,
-        "varyHeaders": ["Accept-Language"],
-        "skipPaths": ["/api/auth/**", "/api/user/**"],
-        "skipIfCookie": true,
-        "methods": ["GET", "HEAD"]
-      }
-    }
-  }
-}
-```
-
-| `store` value    | Description                          |
-| ---------------- | ------------------------------------ |
-| `"memory"`       | In-process LRU — fastest, non-shared |
-| `"redis://..."`  | Redis — shared across instances      |
-| `"disk:./cache"` | Local filesystem — survives restarts |
-
----
-
-### `healthCheck`
-
-```json
-{ "healthCheck": true }
-```
-
-Default path: `/__health__`. Always returns `200 OK`:
-
-```json
-{ "status": "ok", "uptime": 3600, "version": "0.3.0" }
-```
-
-Include upstream health:
-
-```json
-{ "healthCheck": { "path": "/health", "includeUpstreams": true } }
-```
-
-The health endpoint **bypasses auth, rate limiting, and IP filtering**.
-
----
-
-### `upload`
-
-Accept `multipart/form-data` file uploads.
-
-```json
-{
-  "upload": {
-    "path": "/upload",
-    "dir": "./uploads",
-    "maxFileSizeBytes": 10485760,
-    "maxTotalSizeBytes": 52428800,
-    "maxFiles": 5,
-    "allowedMimeTypes": ["image/jpeg", "image/png", "application/pdf"]
-  }
-}
-```
-
-Uploaded files are saved with UUID-based names and the original extension.
-
----
-
-### `hotReload`
-
-Browser hot reload via SSE — useful for frontend development.
-
-```json
-{ "hotReload": true }
-```
-
-```json
-{
-  "hotReload": {
-    "extensions": [".html", ".css", ".js", ".ts"],
-    "path": "/__hot-reload__"
-  }
-}
-```
-
-Add to your HTML to auto-reload when files change:
-
-```html
-<script src="/__hot-reload__/client.js"></script>
-```
-
----
-
-### `metrics`
-
-Prometheus metrics endpoint.
-
-```json
-{ "metrics": { "path": "/__metrics__", "token": "$METRICS_TOKEN" } }
-```
-
-Metrics exposed:
-
-| Metric                             | Type      | Description                      |
-| ---------------------------------- | --------- | -------------------------------- |
-| `conduit_requests_total`           | counter   | Total requests, by method/status |
-| `conduit_request_duration_seconds` | histogram | Request latency                  |
-| `conduit_cache_hits_total`         | counter   | Proxy cache hits                 |
-| `conduit_cache_misses_total`       | counter   | Proxy cache misses               |
-
----
-
-### `fallback`
-
-Return a response when nothing else matched.
-
-**SPA fallback:**
-
-```json
-{ "fallback": { "status": 200, "file": "./dist/index.html" } }
-```
-
-**Content-type aware:**
-
-```json
-{
-  "fallback": {
-    "byAccept": {
-      "html": { "status": 200, "file": "./dist/index.html" },
-      "json": { "status": 404, "body": { "error": "Not Found" } },
-      "*": { "status": 200, "file": "./dist/index.html" }
-    }
-  }
-}
-```
-
----
-
-### Multi-site (`global` + `sites`)
-
-Run multiple virtual hosts from one Conduit process.
-
-```json
-{
-  "global": {
-    "workers": 4,
-    "shutdownTimeoutSecs": 30,
-    "admin": { "bind": "127.0.0.1:2019" }
-  },
-  "sites": [
-    {
-      "host": "app.example.com",
-      "port": 443,
-      "tls": { "cert": "$CERT", "key": "$KEY", "httpRedirectPort": 80 },
-      "static": "./dist",
-      "proxy": { "/api": "http://api:4000" }
-    },
-    {
-      "host": "admin.example.com",
-      "port": 443,
-      "tls": { "cert": "$CERT", "key": "$KEY" },
-      "basicAuth": { "users": { "admin": "$ADMIN_PASS" }, "challenge": true },
-      "static": "./admin-ui"
-    },
-    {
-      "host": "*",
-      "port": 443,
-      "tls": { "cert": "$CERT", "key": "$KEY" },
-      "fallback": { "status": 404, "body": "Unknown host" }
-    }
-  ]
-}
-```
-
-**Config forms** — three equivalent ways:
-
-```jsonc
-// Single site (most common)
-{ "port": 3000, "static": "./dist" }
-
-// Array of sites
-[
-  { "host": "a.com", "port": 443 },
-  { "host": "b.com", "port": 443 }
-]
-
-// Full form with global settings
-{ "global": { "workers": 4 }, "sites": [...] }
-```
-
----
-
-## Configuration Recipes
-
-### SPA with API proxy (production)
-
-```json
-{
-  "host": "app.example.com",
-  "port": 443,
-  "tls": { "cert": "$CERT", "key": "$KEY", "httpRedirectPort": 80 },
-  "http2": true,
-  "securityHeaders": true,
-  "cors": { "origins": ["https://app.example.com"], "credentials": true },
-  "logging": { "format": "json", "file": "/var/log/conduit/access.log" },
-  "static": "./dist",
-  "staticOptions": { "maxAge": "7d", "preCompressed": true },
-  "proxy": {
-    "/api": {
-      "targets": ["http://api1:4000", "http://api2:4000"],
-      "strategy": "least-conn",
-      "stripPrefix": true,
-      "retry": { "attempts": 3, "conditions": ["connection_error", "5xx"] },
-      "healthCheck": { "path": "/health", "intervalSecs": 10 },
-      "cache": { "store": "memory", "ttlSecs": 60, "skipIfCookie": true }
-    }
-  },
-  "rateLimit": { "windowSecs": 60, "limit": 300, "skipPaths": ["/__health__"] },
-  "healthCheck": true,
-  "metrics": { "path": "/__metrics__", "token": "$METRICS_TOKEN" },
-  "fallback": {
-    "byAccept": {
-      "html": { "status": 200, "file": "./dist/index.html" },
-      "json": { "status": 404, "body": { "error": "Not Found" } }
-    }
-  }
-}
-```
-
-### Production with Auto-TLS (Let's Encrypt)
-
-```json
-{
-  "port": 443,
-  "tls": { "acme": { "email": "admin@example.com" } },
-  "compression": true,
-  "securityHeaders": true,
-  "static": "./dist",
-  "proxy": {
-    "/api": { "targets": ["http://api:4000"], "strategy": "least-conn" }
-  },
-  "healthCheck": true
-}
-```
-
-### Frontend development with hot reload
-
-```json
-{
-  "port": 3000,
-  "logging": "dev",
-  "cors": true,
-  "hotReload": true,
-  "static": "./src",
-  "proxy": { "/api": "http://localhost:4000" },
-  "fallback": { "status": 200, "file": "./src/index.html" }
-}
-```
-
-### Microservices gateway
-
-```json
-{
-  "port": 8080,
-  "ipFilter": { "allow": ["10.0.0.0/8"] },
-  "proxy": {
-    "/users": "http://users-svc:4001",
-    "/orders": "http://orders-svc:4002",
-    "/catalog": ["http://catalog1:4003", "http://catalog2:4003"]
-  },
-  "healthCheck": true,
-  "metrics": { "path": "/__metrics__" }
-}
-```
-
-### Weighted load balancing + IP hash
-
-```json
-{
-  "port": 443,
-  "tls": { "cert": "$CERT", "key": "$KEY" },
-  "proxy": {
-    "/api": {
-      "targets": [
-        { "url": "http://powerful:4000", "weight": 3 },
-        { "url": "http://normal:4000", "weight": 1 }
-      ],
-      "strategy": "weighted-round-robin"
-    },
-    "/auth": {
-      "targets": ["http://auth1:5000", "http://auth2:5000"],
-      "strategy": "ip-hash",
-      "hashKey": "ip"
-    }
-  }
-}
-```
+**→ 30+ more scenarios:** [docs/recipes.md](docs/recipes.md) — HTTPS, load balancing,
+failover, circuit breaker, caching, security hardening, observability, Kubernetes.
 
 ---
 
 ## Admin API
 
-Runs on `127.0.0.1:2019` (loopback only — never exposed to the network).
+Optional local management server. Runs on loopback only — never exposed publicly.
 
-```json
-{ "global": { "admin": { "bind": "127.0.0.1:2019" } } }
+```yaml
+global:
+  admin:
+    bind: "127.0.0.1:2019"
+    token: "$ADMIN_TOKEN"    # optional Bearer token
 ```
 
-| Endpoint            | Method | Description                               |
-| ------------------- | ------ | ----------------------------------------- |
-| `/status`           | GET    | Server version, uptime, inflight requests |
-| `/reload`           | POST   | Hot-reload config from disk               |
-| `/shutdown`         | POST   | Graceful shutdown                         |
-| `/upstreams`        | GET    | Health, latency, and weights per backend  |
-| `/upstreams/add`    | POST   | Add an upstream (in memory only)          |
-| `/upstreams/remove` | POST   | Remove an upstream                        |
-| `/upstreams/weight` | POST   | Change a backend's weight (WRR only)      |
+```bash
+conduit reload                                     # hot-reload config
+conduit status                                     # uptime, version, in-flight count
+conduit status --upstream                          # upstream health table
+conduit upstreams add --route /api --target http://new-backend:4000
 
-Dynamic upstream changes survive until `conduit reload` — which resets from the config file.
+# Admin API directly
+curl http://localhost:2019/status
+curl -X POST http://localhost:2019/reload
+curl -X DELETE "http://localhost:2019/cache/purge?url=https://example.com/api/data"
+curl -X POST http://localhost:2019/ip-deny -d '{"cidr":"1.2.3.0/24"}'
+```
 
-**Request body fields for `/upstreams/add`, `/upstreams/remove`, `/upstreams/weight`:**
-
-| Field    | Required | Description                                                                              |
-| -------- | -------- | ---------------------------------------------------------------------------------------- |
-| `route`  | ✅        | Route path, e.g. `"/api"`                                                                |
-| `target` | ✅        | Full upstream URL, e.g. `"http://b3:4000"`                                               |
-| `weight` | add/weight | Target weight (default: 1 for add)                                                    |
-| `site`   | —        | Site label to scope the change, e.g. `"app.example.com:443"`. Omit to apply to all sites with this route. |
+**→ All endpoints with request/response examples:** [docs/admin.md](docs/admin.md)
 
 ---
 
 ## Docker
 
-Official images are published to the **GitHub Container Registry** on every tagged release:
-
 ```bash
+# Standard (~14 MB musl, FROM scratch)
 docker pull ghcr.io/lopatnov/conduit:latest
-docker pull ghcr.io/lopatnov/conduit:0.3.0
-```
 
-The image is built from [`contrib/Dockerfile`](contrib/Dockerfile) — a multi-stage build
-that compiles a fully-static musl binary and packages it into a `FROM scratch` image (~14 MB).
-It runs as UID 65534 (`nobody`) with no shell or OS userland.
+# Full — JWT, Rhai, WASM, OTLP, ACME, Redis, TCP proxy, Kubernetes, etc. (~29 MB)
+docker pull ghcr.io/lopatnov/conduit:latest-full
 
-### Run
-
-```bash
 docker run -p 8080:8080 \
-  -v $(pwd)/conduit.json:/etc/conduit/conduit.json:ro \
-  -v $(pwd)/dist:/dist:ro \
-  ghcr.io/lopatnov/conduit
+  -v $(pwd)/conduit.yaml:/etc/conduit/conduit.yaml:ro \
+  ghcr.io/lopatnov/conduit:latest -c /etc/conduit/conduit.yaml
 ```
 
-### docker-compose
+Both images run as `nobody` (UID 65534), no shell, no OS userland.
 
-```yaml
-services:
-  conduit:
-    image: ghcr.io/lopatnov/conduit:latest
-    ports:
-      - "443:443"
-      - "80:80"
-    volumes:
-      - ./conduit.json:/etc/conduit/conduit.json:ro
-      - ./dist:/dist:ro
-      - ./certs:/certs
-    environment:
-      METRICS_TOKEN: "${METRICS_TOKEN}"
-    restart: unless-stopped
-
-  api:
-    image: my-api:latest
-    expose: ["4000"]
-```
-
-### Build your own image
-
-```bash
-git clone https://github.com/lopatnov/conduit
-cd conduit
-docker build -f contrib/Dockerfile -t conduit:local .
-```
+**→ docker-compose, systemd, Kubernetes, production checklist:** [docs/deployment.md](docs/deployment.md)
 
 ---
 
 ## Editor Integration (JSON Schema)
 
-Conduit ships a [JSON Schema](schema/conduit.schema.json) that enables autocompletion,
-hover documentation, and inline validation in any JSON-aware editor.
+Conduit ships a [JSON Schema](schema/conduit.schema.json) for autocompletion,
+hover docs, and inline validation in both JSON and YAML configs.
 
-### VS Code — automatic (recommended)
-
-Add one line to your `conduit.json`:
+**VS Code — JSON: add one line to your config:**
 
 ```json
 {
@@ -1250,127 +387,45 @@ Add one line to your `conduit.json`:
 }
 ```
 
-VS Code picks up `$schema` automatically — no extension needed.
-
-### VS Code — workspace-wide
-
-Add to `.vscode/settings.json` to enable validation for **all** `conduit*.json` files in
-the workspace without adding `$schema` to every file:
+**VS Code — JSON: workspace-wide (all `conduit*.json` files):**
 
 ```json
+// .vscode/settings.json
 {
-  "json.schemas": [
-    {
-      "fileMatch": ["conduit.json", "conduit.*.json"],
-      "url": "https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json"
-    }
-  ]
+  "json.schemas": [{
+    "fileMatch": ["conduit.json", "conduit.*.json"],
+    "url": "https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json"
+  }]
 }
 ```
 
-### IntelliJ / WebStorm
+**VS Code — YAML: add to `.vscode/settings.json`** (requires the
+[YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)):
 
-**Settings → Languages & Frameworks → Schemas and DTDs → JSON Schema Mappings**
-
-| Field             | Value                                                                                |
-| ----------------- | ------------------------------------------------------------------------------------ |
-| Schema URL        | `https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json` |
-| Schema version    | JSON Schema version 2020-12                                                          |
-| File path pattern | `conduit*.json`                                                                      |
-
-### Any other editor
-
-Use the schema URL directly — most modern editors that support JSON Schema accept a `$schema`
-property or a manual mapping:
-
-```text
-https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json
+```json
+// .vscode/settings.json
+{
+  "yaml.schemas": {
+    "https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json":
+      ["conduit.yaml", "conduit.yml", "conduit.*.yaml"]
+  }
+}
 ```
 
----
-
-## Benchmarks
-
-See [BENCHMARKS.md](BENCHMARKS.md) for methodology and results.
+**IntelliJ / WebStorm:** Settings → Languages & Frameworks → Schemas and DTDs → JSON Schema Mappings
+→ add URL `https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json`,
+file pattern `conduit*.json, conduit*.yaml`.
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR.
 
 - **Bug reports** → [GitHub Issues](https://github.com/lopatnov/conduit/issues)
-- **Security vulnerabilities** → [GitHub Security Advisories](https://github.com/lopatnov/conduit/security/advisories) (do not use public issues)
+- **Security vulnerabilities** → [GitHub Security Advisories](https://github.com/lopatnov/conduit/security/advisories) (not public issues)
 - **Questions & ideas** → [GitHub Discussions](https://github.com/lopatnov/conduit/discussions)
-- **Found it useful?** — a ⭐ on GitHub helps others discover the project
-
----
-
-## Built With
-
-### Core runtime
-
-![Rust](https://img.shields.io/badge/Rust-000000?style=flat&logo=rust&logoColor=white)
-![Cloudflare Pingora](https://img.shields.io/badge/Cloudflare_Pingora_0.8-F48120?style=flat&logo=cloudflare&logoColor=white)
-![Tokio](https://img.shields.io/badge/Tokio-000000?style=flat&logo=tokio&logoColor=white)
-![Axum](https://img.shields.io/badge/Axum_0.8-000000?style=flat)
-
-### TLS & certificates
-
-![rustls](https://img.shields.io/badge/rustls-5C5C5C?style=flat)
-![rcgen](https://img.shields.io/badge/rcgen-5C5C5C?style=flat)
-![instant-acme](https://img.shields.io/badge/instant--acme-5C5C5C?style=flat)
-
-### Configuration & parsing
-
-![serde](https://img.shields.io/badge/serde-5C5C5C?style=flat)
-![serde_json](https://img.shields.io/badge/serde__json-5C5C5C?style=flat)
-![indexmap](https://img.shields.io/badge/indexmap-5C5C5C?style=flat)
-![humantime](https://img.shields.io/badge/humantime-5C5C5C?style=flat)
-![serde_path_to_error](https://img.shields.io/badge/serde__path__to__error-5C5C5C?style=flat)
-
-### Performance & concurrency
-
-![arc-swap](https://img.shields.io/badge/arc--swap-5C5C5C?style=flat)
-![dashmap](https://img.shields.io/badge/dashmap-5C5C5C?style=flat)
-![async-compression](https://img.shields.io/badge/async--compression_(brotli_·_gzip_·_deflate)-5C5C5C?style=flat)
-
-### Middleware & scripting
-
-![Rhai](https://img.shields.io/badge/Rhai_scripting-5C5C5C?style=flat)
-![regex](https://img.shields.io/badge/regex-5C5C5C?style=flat)
-![Redis](https://img.shields.io/badge/Redis_(rate_limit_store)-DC382D?style=flat&logo=redis&logoColor=white)
-
-### File handling
-
-![notify](https://img.shields.io/badge/notify_(fs_watcher)-5C5C5C?style=flat)
-![multer](https://img.shields.io/badge/multer_(multipart)-5C5C5C?style=flat)
-![uuid](https://img.shields.io/badge/uuid_v4-5C5C5C?style=flat)
-![mime_guess](https://img.shields.io/badge/mime__guess-5C5C5C?style=flat)
-
-### CLI & UX
-
-![clap](https://img.shields.io/badge/clap_4_(derive)-5C5C5C?style=flat)
-![clap_complete](https://img.shields.io/badge/clap__complete_(bash_·_zsh_·_fish)-5C5C5C?style=flat)
-![clap_mangen](https://img.shields.io/badge/clap__mangen_(man_page)-5C5C5C?style=flat)
-![dialoguer](https://img.shields.io/badge/dialoguer_(init_wizard)-5C5C5C?style=flat)
-![indicatif](https://img.shields.io/badge/indicatif_(progress_bars)-5C5C5C?style=flat)
-
-### Observability
-
-![tracing](https://img.shields.io/badge/tracing_+_tracing--subscriber-5C5C5C?style=flat)
-![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?style=flat&logo=prometheus&logoColor=white)
-
-### Dev tools & CI
-
-![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?style=flat&logo=githubactions&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker_(musl_+_scratch)-2496ED?style=flat&logo=docker&logoColor=white)
-![cross](https://img.shields.io/badge/cross_(cross--compilation)-5C5C5C?style=flat)
-![reqwest](https://img.shields.io/badge/reqwest_(integration_tests)-5C5C5C?style=flat)
-![criterion](https://img.shields.io/badge/criterion_(benchmarks)-5C5C5C?style=flat)
-![serial_test](https://img.shields.io/badge/serial__test-5C5C5C?style=flat)
-![SonarCloud](https://img.shields.io/badge/SonarCloud-F3702A?style=flat&logo=sonarcloud&logoColor=white)
-![CodeRabbit](https://img.shields.io/badge/CodeRabbit-FF7A00?style=flat)
+- **Found it useful?** — a ⭐ helps others discover the project
 
 ---
 

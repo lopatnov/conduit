@@ -1,6 +1,6 @@
 [package]
 name        = "lopatnov-conduit"
-version     = "0.3.0"
+version     = "1.0.0"
 edition     = "2021"
 description = "High-performance reverse proxy and file server built on Cloudflare Pingora"
 license     = "Apache-2.0"
@@ -27,6 +27,7 @@ pingora-cache          = { version = "0.8", features = ["rustls"] }
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
 serde_json          = "1"
+serde_yaml          = "0.9"
 serde_path_to_error = "0.1"
 indexmap            = { version = "2", features = ["serde"] }
 humantime           = "2"
@@ -44,10 +45,12 @@ pingora-http = "0.8"
 
 # --- Async runtime & HTTP ---
 tokio = { version = "1", features = ["full"] }
-axum  = { version = "0.8", features = ["multipart"] }
+# axum: Admin API always needs axum; multipart feature only needed for file upload
+# and is gated behind the `upload` feature (see [features] below).
+axum  = { version = "0.8" }
 
 # --- Compression ---
-async-compression = { version = "0.4", features = ["gzip", "brotli", "deflate", "tokio"] }
+async-compression = { version = "0.4", features = ["gzip", "brotli", "deflate", "zstd", "tokio"] }
 
 # --- Observability ---
 tracing            = "0.1"
@@ -62,32 +65,136 @@ dashmap  = "6"  # v7 is RC as of 2026-05 — upgrade after stable release
 mime_guess = "2"
 notify     = "8"
 regex      = "1"
-multer     = "3"
 uuid       = { version = "1", features = ["v4"] }
 
-# --- TLS / ACME ---
-instant-acme = { version = "0.8", features = ["rcgen"] }
-rcgen        = "0.14"
-x509-parser  = "0.17"
+# --- TLS (always needed) ---
+x509-parser  = "0.18"
+
+# --- ACME / auto-TLS (feature: acme) ---
+instant-acme = { version = "0.8", features = ["rcgen"], optional = true }
+rcgen        = { version = "0.14", optional = true }
 # ring is the crypto provider for rustls; needed to install before TLS starts.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls         = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
 
 # --- Errors & utilities ---
 anyhow    = "1"
 thiserror = "2"
 bytes     = "1"
+subtle    = "2"   # constant-time comparisons (admin token auth)
+libc      = "0.2" # O_NOFOLLOW for atomic symlink-safe file open (Unix)
+url       = "2"   # URL parsing for proxy-loop and SSRF detection
 httpdate  = "1"
 http      = "1"
 base64    = "0.22"
 
-# Phase 4: Rhai scripting middleware
-rhai = { version = "1", features = ["sync"] }
+# --- Rhai scripting middleware (feature: rhai) ---
+rhai = { version = "1", features = ["sync"], optional = true }
 
-# Phase 4.2: Redis-backed rate limiting.
-# tls-rustls enables rediss:// (TLS-encrypted) connections (e.g. AWS ElastiCache,
-# Azure Cache for Redis).  Redis is often on an internal network but cloud
-# deployments frequently require in-transit encryption.
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "tokio-rustls-comp"] }
+# --- JWT bearer-token authentication (feature: jwt) ---
+# Verifies HS256 (HMAC secret) and RS256/ES256 (JWKS/PEM).
+jsonwebtoken = { version = "9", optional = true }
+
+# --- HTTP client (feature: jwt for JWKS, forward-auth, mirroring) ---
+# `default-features = false` avoids native-tls; rustls keeps TLS consistent.
+# Used by: JWKS fetching, ForwardAuth subrequests, traffic mirroring.
+# reqwest is NOT optional because traffic mirroring (basic feature) uses it.
+# When jwt/forward-auth are disabled, reqwest is still used for mirroring.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+
+# --- Redis-backed rate limiting & caching (feature: redis) ---
+# tls-rustls enables rediss:// (TLS-encrypted) connections.
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "tokio-rustls-comp"], optional = true }
+
+# --- Kubernetes provider (optional feature) ---
+# Enable with: cargo build --features kubernetes
+kube        = { version = "0.99", features = ["runtime", "derive"], optional = true }
+k8s-openapi = { version = "0.24", optional = true }
+schemars    = { version = "0.8", optional = true }
+futures     = { version = "0.3", optional = true }
+
+# --- WASM plugin middleware (optional feature) ---
+# Enable with: cargo build --features wasm
+# Cranelift JIT: fast compilation; no WASI by default (sandboxed).
+wasmtime = { version = "45", features = ["cranelift"], optional = true }
+
+# --- OpenTelemetry OTLP tracing (optional feature) ---
+# Enable with: cargo build --features otlp
+# Exports distributed traces to any OTLP-compatible backend:
+# Grafana Tempo, Jaeger, Honeycomb, OpenTelemetry Collector, etc.
+# Uses gRPC (tonic) transport; adds ~4 MB to binary.
+opentelemetry     = { version = "0.27", optional = true }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"], optional = true }
+
+[features]
+# ── Default ────────────────────────────────────────────────────────────────────
+# Standard build: core proxy + static files + basic/api-key auth + IP filter +
+# rate limiting + CORS + security headers + compression + TLS + health checks +
+# Prometheus metrics + hot reload + Admin API + redirects.
+#
+# Explicitly empty — no heavyweight optional features compiled in by default.
+# Enable individual features or use `full` for a batteries-included build.
+default = []
+
+# ── Authentication ─────────────────────────────────────────────────────────────
+# JWT bearer-token validation (HS256 + RS256/ES256 via JWKS URL).
+jwt = ["dep:jsonwebtoken"]
+# Consumer model: per-consumer API-key / Basic Auth / JWT credentials +
+# per-consumer rate limits and header injection.
+consumers = []
+# ForwardAuth: delegate authentication to an external HTTP service.
+forward-auth = []
+
+# ── Scripting & plugins ────────────────────────────────────────────────────────
+# Rhai scripting middleware (type: "script" in middleware[]).
+rhai = ["dep:rhai"]
+# WASM plugin middleware (type: "wasm" in middleware[]).
+wasm = ["dep:wasmtime"]
+
+# ── Protocol extensions ────────────────────────────────────────────────────────
+# TCP passthrough proxy (type: "tcp" site config).
+tcp = []
+# File upload handler (upload: { path, dir } site config).
+# Enables axum/multipart (which internally pulls in multer) — not needed otherwise.
+upload = ["axum/multipart"]
+
+# ── Storage backends ───────────────────────────────────────────────────────────
+# Redis-backed rate limiting (rateLimit.store: "redis://...") and caching.
+redis = ["dep:redis"]
+# Response caching (proxy.*.cache config). Requires pingora-cache (always a dep).
+cache = []
+# Disk cache backend (cache.store: "disk:/path").
+disk-cache = ["cache"]
+
+# ── Auto-TLS ──────────────────────────────────────────────────────────────────
+# ACME / Let's Encrypt automatic certificate provisioning (tls.acme config).
+acme = ["dep:instant-acme", "dep:rcgen"]
+
+# ── Testing / chaos ───────────────────────────────────────────────────────────
+# Fault injection for chaos testing (faultInjection config). NOT for production.
+fault-injection = []
+
+# ── Observability ─────────────────────────────────────────────────────────────
+# OpenTelemetry OTLP distributed tracing (global.otlp config).
+otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
+
+# ── Orchestration ─────────────────────────────────────────────────────────────
+# Kubernetes CRD watching (--kubernetes-namespace flag).
+kubernetes = ["dep:kube", "dep:k8s-openapi", "k8s-openapi/v1_30", "dep:schemars", "dep:futures"]
+
+# ── Convenience bundles ────────────────────────────────────────────────────────
+# Full build: every optional feature enabled.
+full = [
+    "jwt", "consumers", "forward-auth",
+    "rhai", "wasm",
+    "tcp", "upload",
+    "redis", "cache", "disk-cache",
+    "acme",
+    "fault-injection",
+    "otlp",
+    "kubernetes",
+]
 
 [dev-dependencies]
 reqwest     = { version = "0.13", default-features = false, features = ["http2", "rustls", "blocking", "json", "multipart"] }
@@ -95,6 +202,33 @@ criterion   = { version = "0.8", features = ["html_reports"] }
 tempfile    = "3"
 serial_test = "3"
 time        = { version = "0.3", features = ["std"] }
+# wat: parse WebAssembly Text Format in tests (compile inline WAT → wasm bytes)
+wat         = "1"
+# rcgen is used in tests for cert generation even without the acme feature.
+rcgen       = "0.14"
+# jsonwebtoken is used in auth integration tests to generate test tokens.
+# Listed as dev-dep so tests compile without --features jwt.
+jsonwebtoken = "9"
+
+[[test]]
+name = "acme"
+required-features = ["acme"]
+
+[[test]]
+name = "cache"
+required-features = ["cache"]
+
+[[test]]
+name = "fault_injection"
+required-features = ["fault-injection"]
+
+[[test]]
+name = "forward_auth"
+required-features = ["forward-auth"]
+
+[[test]]
+name = "upload"
+required-features = ["upload"]
 
 [profile.release]
 lto           = true

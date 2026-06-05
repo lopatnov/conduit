@@ -48,6 +48,32 @@ jobs:
       - name: test
         run: cargo test
 
+  # ── Build + test with all optional features enabled ─────────────────────────
+  ci-features:
+    name: All features (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: features-all
+        continue-on-error: true
+
+      - name: clippy (all features)
+        run: cargo clippy --features full -- -D warnings
+
+      - name: test (all features)
+        run: cargo test --features full
+
   # ── ACME integration tests (Linux only, requires Docker for Pebble) ─────────
   acme:
     name: ACME (Pebble)
@@ -98,7 +124,7 @@ jobs:
           openssl x509 -in /tmp/pebble-ca.pem -noout -subject
 
       - name: Build (debug for faster CI)
-        run: cargo build
+        run: cargo build --features acme
 
       - name: Run ACME tests
         env:
@@ -106,4 +132,32 @@ jobs:
           # server certificate when connecting to https://localhost:14000/dir.
           # Account::builder_with_root() is used when this env var is set.
           CONDUIT_ACME_EXTRA_ROOT: /tmp/pebble-ca.pem
-        run: cargo test --test acme -- --nocapture
+        run: cargo test --test acme --features acme -- --nocapture
+
+  # ── Cross-compile check for RISC-V ──────────────────────────────────────────
+  cross-riscv:
+    name: Cross-compile RISC-V 64
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
+          targets: riscv64gc-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: riscv64
+        continue-on-error: true
+
+      - name: Install cross
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538  # v2.81.1
+        with:
+          tool: cross
+
+      - name: Build (cross, standard)
+        run: cross build --release --target riscv64gc-unknown-linux-gnu

@@ -166,9 +166,65 @@ fn probe_proxy(http: &str, https: &str, insecure: &reqwest::blocking::Client) ->
 
 /// Poll the admin `/status` endpoint once.  Returns `true` on a 2xx response.
 fn probe_admin(url: &str) -> bool {
+    // Accept both 200 (no auth) and 401 (auth required) as "admin is ready".
+    // 401 means the admin server is up and responding, it just requires a token.
     reqwest::blocking::get(url)
-        .map(|r| r.status().is_success())
+        .map(|r| r.status().is_success() || r.status().as_u16() == 401)
         .unwrap_or(false)
+}
+
+/// Start a minimal HTTP echo server on `port`.
+///
+/// Responds to every request with a JSON body:
+/// ```json
+/// { "method": "GET", "path": "/...", "headers": { "x-foo": "bar", ... } }
+/// ```
+/// Returns a [`std::thread::JoinHandle`] that keeps the server alive as long as
+/// the handle is in scope.  Drop it to shut down the server.
+pub fn start_echo_upstream(port: u16) -> std::thread::JoinHandle<()> {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind(format!("127.0.0.1:{port}")).expect("echo bind");
+    // Wait until bind succeeds, then spawn.
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            // Read the HTTP request.
+            let mut buf = vec![0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let raw = String::from_utf8_lossy(&buf[..n]);
+
+            // Parse method, path, and headers from the raw HTTP/1.1 request.
+            let mut lines = raw.lines();
+            let first = lines.next().unwrap_or("");
+            let mut parts = first.split_whitespace();
+            let method = parts.next().unwrap_or("GET").to_owned();
+            let path = parts.next().unwrap_or("/").to_owned();
+
+            let mut headers = serde_json::Map::new();
+            for line in &mut lines {
+                if line.is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = line.split_once(": ") {
+                    headers.insert(
+                        k.to_ascii_lowercase(),
+                        serde_json::Value::String(v.to_owned()),
+                    );
+                }
+            }
+
+            let body = serde_json::json!({ "method": method, "path": path, "headers": headers });
+            let body_str = body.to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body_str.len(),
+                body_str
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    })
 }
 
 /// Return a free TCP port on 127.0.0.1.

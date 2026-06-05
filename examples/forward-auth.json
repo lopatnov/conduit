@@ -1,0 +1,18 @@
+{
+  "port": 8080,
+
+  "forwardAuth": {
+    "url": "http://auth-service:9000/verify",
+    "requestHeaders": ["Authorization", "Cookie", "X-Tenant-ID"],
+    "responseHeaders": ["X-User-ID", "X-Role", "X-Scope"],
+    "timeoutMs": 3000,
+    "skipPaths": ["/__health__", "/public/**", "/v1/auth/login"]
+  },
+
+  "proxy": {
+    "/api": "http://api-backend:4000",
+    "/public": "http://public-content:5000"
+  },
+
+  "healthCheck": true
+}

@@ -1,19 +1,64 @@
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use async_compression::tokio::bufread::{BrotliEncoder, DeflateEncoder, GzipEncoder};
 use async_compression::Level;
+use async_trait::async_trait;
 use bytes::Bytes;
 use pingora_core::Result;
 use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 
-use crate::config::schema::StaticOptions;
+use crate::config::schema::{SiteConfig, StaticOptions};
 use crate::filter::compression::CompressOptions;
+use crate::handler::LocalHandlerImpl;
 use crate::proxy::ctx::AcceptEncoding;
 use crate::util::mime;
+
+/// Handler struct for static file responses.
+///
+/// Attempts to serve the file from `roots`; on a miss, delegates to the site's
+/// configured fallback (e.g. SPA index.html for HTML requests, 404 for others).
+pub struct StaticFileHandler {
+    pub roots: Vec<PathBuf>,
+    pub options: Arc<StaticOptions>,
+    pub strip_prefix: Option<String>,
+    pub extra_headers: Vec<(String, String)>,
+    pub compress_opts: Option<CompressOptions>,
+    pub accept_enc: AcceptEncoding,
+    /// Site config used to resolve the fallback when the file is not found.
+    pub fallback_site: Option<SiteConfig>,
+}
+
+#[async_trait]
+impl LocalHandlerImpl for StaticFileHandler {
+    async fn handle(&mut self, session: &mut Session) -> Result<()> {
+        let found = handle_static(
+            session,
+            &self.roots,
+            &self.options,
+            self.strip_prefix.as_deref(),
+            &self.extra_headers,
+            self.compress_opts.as_ref(),
+            &self.accept_enc,
+        )
+        .await?;
+
+        if !found {
+            crate::handler::fallback::handle_fallback(
+                session,
+                self.fallback_site.as_ref(),
+                &self.extra_headers,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+}
 
 /// Attempt to serve a static file.
 ///
@@ -50,9 +95,13 @@ pub async fn handle_static(
         return Ok(false);
     };
 
-    let meta = match tokio::fs::metadata(&file_path).await {
-        Ok(m) => m,
-        Err(_) => return Ok(false),
+    // Re-check with symlink_metadata to guard against a TOCTOU race:
+    // between find_file() rejecting symlinks and this point, another process
+    // could have replaced the file with a symlink.  Reject if it's now
+    // a symlink or has disappeared.
+    let meta = match tokio::fs::symlink_metadata(&file_path).await {
+        Ok(m) if !m.file_type().is_symlink() => m,
+        _ => return Ok(false),
     };
 
     let file_size = meta.len();
@@ -99,7 +148,7 @@ pub async fn handle_static(
     // compression for assets that were pre-compressed at build time.
     if options.pre_compressed.unwrap_or(false) {
         if let Some((pre_path, encoding)) = find_pre_compressed(&file_path, accept_enc).await {
-            let pre_meta = tokio::fs::metadata(&pre_path).await.ok();
+            let pre_meta = stat_no_symlink(&pre_path).await;
             let pre_size = pre_meta.map(|m| m.len()).unwrap_or(0);
             serve_pre_compressed(
                 session,
@@ -119,7 +168,11 @@ pub async fn handle_static(
     }
 
     // Pick an on-the-fly encoding if the config and client both support it.
+    // Also check content-type: don't compress binary formats (nginx gzip_types pattern).
     let compress = compress_opts.and_then(|opts| {
+        if !crate::filter::compression::is_compressible_type(&content_type, opts) {
+            return None;
+        }
         crate::filter::compression::best_encoding(opts, accept_enc, file_size)
             .map(|enc| (enc, opts.level))
     });
@@ -142,12 +195,52 @@ pub async fn handle_static(
 
 // ── File resolution ────────────────────────────────────────────────────────
 
+/// Open `path` for reading without following symlinks (nginx pattern).
+///
+/// On Linux/macOS: uses `O_NOFOLLOW` which makes the open syscall fail
+/// atomically when the final path component is a symbolic link.  This
+/// eliminates the TOCTOU window between stat_no_symlink() and open().
+///
+/// On Windows: falls back to a regular open (symlinks there require
+/// elevated privileges to create, so the risk is lower).
+async fn open_no_follow(path: &Path) -> std::io::Result<tokio::fs::File> {
+    #[cfg(unix)]
+    {
+        // O_NOFOLLOW is 0x20000 on Linux and 0x100 on macOS — use the
+        // platform constant via std's OpenOptionsExt trait.
+        let std_file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        Ok(tokio::fs::File::from_std(std_file))
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::fs::File::open(path).await
+    }
+}
+
+/// Check `path` metadata WITHOUT following symlinks.
+///
+/// Returns `None` when the path does not exist or is a symbolic link.
+/// Symlinks are rejected to prevent directory traversal: a symlink inside
+/// the static root could point anywhere on the filesystem (e.g.
+/// `/var/www/html/secret` → `/etc/passwd`), bypassing `sanitize_path`'s
+/// `..`-traversal protection.
+async fn stat_no_symlink(path: &std::path::Path) -> Option<std::fs::Metadata> {
+    let meta = tokio::fs::symlink_metadata(path).await.ok()?;
+    if meta.is_symlink() {
+        return None; // Reject — symlink could escape the static root.
+    }
+    Some(meta)
+}
+
 async fn find_file(roots: &[PathBuf], rel: &str, options: &StaticOptions) -> Option<PathBuf> {
     for root in roots {
         let candidate = root.join(rel);
-        match tokio::fs::metadata(&candidate).await {
-            Ok(m) if m.is_file() => return Some(candidate),
-            Ok(m) if m.is_dir() => {
+        match stat_no_symlink(&candidate).await {
+            Some(m) if m.is_file() => return Some(candidate),
+            Some(m) if m.is_dir() => {
                 if let Some(p) = find_index(&candidate, options).await {
                     return Some(p);
                 }
@@ -170,7 +263,7 @@ async fn find_index(dir: &Path, options: &StaticOptions) -> Option<PathBuf> {
     let indices = options.index.as_deref().unwrap_or(&defaults);
     for name in indices {
         let p = dir.join(name);
-        if tokio::fs::metadata(&p)
+        if stat_no_symlink(&p)
             .await
             .map(|m| m.is_file())
             .unwrap_or(false)
@@ -268,7 +361,7 @@ async fn find_pre_compressed(
         let mut pre = path.as_os_str().to_owned();
         pre.push(suffix);
         let pre_path = PathBuf::from(pre);
-        if tokio::fs::metadata(&pre_path)
+        if stat_no_symlink(&pre_path)
             .await
             .map(|m| m.is_file())
             .unwrap_or(false)
@@ -330,7 +423,7 @@ async fn stream_file_compressed(
     encoding: &str,
     level: u8,
 ) -> Result<()> {
-    let mut file = tokio::fs::File::open(path).await.map_err(|e| {
+    let mut file = open_no_follow(path).await.map_err(|e| {
         pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
     })?;
     if offset > 0 {
@@ -402,7 +495,7 @@ async fn stream_encoded<R: AsyncRead + Unpin>(session: &mut Session, mut reader:
 /// Stream `length` bytes from `file` starting at `offset` in 64 KiB chunks.
 async fn stream_file(session: &mut Session, path: &Path, offset: u64, length: u64) -> Result<()> {
     const CHUNK: usize = 64 * 1024;
-    let mut file = tokio::fs::File::open(path).await.map_err(|e| {
+    let mut file = open_no_follow(path).await.map_err(|e| {
         pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
     })?;
     if offset > 0 {
@@ -536,16 +629,19 @@ fn parse_range(header: &str, total: u64) -> Option<(u64, u64)> {
 }
 
 /// Attempt to decode a two-byte hex sequence (the digits after `%`) into a
-/// raw byte.  Returns `None` if the sequence is invalid or encodes a path
-/// separator (`/` or `\`), which must never be decoded to prevent traversal.
+/// raw byte.  Returns `None` if the sequence is invalid or encodes a
+/// dangerous byte.
 fn try_decode_percent_seq(hex: &[u8]) -> Option<u8> {
     let hs = std::str::from_utf8(hex).ok()?;
     let byte = u8::from_str_radix(hs, 16).ok()?;
-    // Never decode %2F ('/') or %5C ('\') — path separators allow traversal.
-    if byte == b'/' || byte == b'\\' {
-        return None;
+    // Never decode dangerous bytes:
+    // • %2F '/' and %5C '\' — path separators enable directory traversal.
+    // • %00 NUL — null bytes truncate paths at the OS syscall boundary on
+    //   POSIX systems (e.g. `file.php%00.txt` → opens `file.php`).
+    match byte {
+        b'/' | b'\\' | b'\0' => None,
+        b => Some(b),
     }
-    Some(byte)
 }
 
 fn percent_decode(s: &str) -> String {
@@ -603,6 +699,369 @@ fn decode_rel_path(req_path: &str, strip_prefix: Option<&str>) -> String {
             sanitize_path(after)
         }
         None => sanitize_path(&decoded),
+    }
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn symlink_in_static_root_is_not_served() {
+        // stat_no_symlink must return None for symlinks — serving them would
+        // allow directory traversal (symlink → /etc/passwd, etc.).
+        let dir = tempfile::tempdir().unwrap();
+        let real_file = dir.path().join("real.txt");
+        std::fs::write(&real_file, "contents").unwrap();
+
+        // Create a symlink pointing to the real file.
+        let link_path = dir.path().join("link.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_file, &link_path).unwrap();
+        #[cfg(windows)]
+        {
+            // Skip symlink test on Windows (requires privileges).
+            return;
+        }
+        // stat_no_symlink must reject the symlink.
+        assert!(
+            stat_no_symlink(&link_path).await.is_none(),
+            "symlink must not be served by static file handler"
+        );
+        // Regular file is fine.
+        assert!(
+            stat_no_symlink(&real_file).await.is_some(),
+            "regular file must be served"
+        );
+    }
+
+    #[test]
+    fn percent_decode_null_byte_is_rejected() {
+        // %00 must NOT be decoded — it would truncate the path at the OS level.
+        let decoded = percent_decode("file%00.txt");
+        assert!(
+            !decoded.contains('\0'),
+            "null byte must not appear in decoded path: {decoded:?}"
+        );
+        // The literal `%00` should remain undecoded, not become NUL.
+        assert_eq!(
+            decoded, "file%00.txt",
+            "undecoded %00 must be preserved as-is"
+        );
+    }
+
+    #[test]
+    fn percent_decode_slash_not_decoded() {
+        let decoded = percent_decode("%2Fetc%2Fpasswd");
+        assert_eq!(decoded, "%2Fetc%2Fpasswd", "%2F must not be decoded");
+    }
+
+    #[test]
+    fn percent_decode_normal_chars_decoded() {
+        let decoded = percent_decode("hello%20world");
+        assert_eq!(decoded, "hello world");
+    }
+
+    #[test]
+    fn sanitize_path_removes_dotdot() {
+        assert_eq!(sanitize_path("../etc/passwd"), "etc/passwd");
+        assert_eq!(sanitize_path("a/../../b"), "b");
+    }
+
+    // ── sanitize_path extra cases ─────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_path_removes_backslash_traversal() {
+        // Backslashes are normalized to forward slashes first.
+        assert_eq!(sanitize_path("a\\..\\b"), "b");
+    }
+
+    #[test]
+    fn sanitize_path_collapses_empty_segments() {
+        assert_eq!(sanitize_path("a//b"), "a/b");
+    }
+
+    #[test]
+    fn sanitize_path_removes_single_dot_segments() {
+        assert_eq!(sanitize_path("a/./b"), "a/b");
+    }
+
+    #[test]
+    fn sanitize_path_empty_input() {
+        assert_eq!(sanitize_path(""), "");
+    }
+
+    #[test]
+    fn sanitize_path_root_slash() {
+        assert_eq!(sanitize_path("/"), "");
+    }
+
+    #[test]
+    fn sanitize_path_normal_path() {
+        assert_eq!(sanitize_path("images/logo.png"), "images/logo.png");
+    }
+
+    // ── has_dotfile ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn has_dotfile_hidden_file() {
+        assert!(has_dotfile(".hidden"), "leading dot must be a dotfile");
+    }
+
+    #[test]
+    fn has_dotfile_hidden_dir() {
+        assert!(has_dotfile(".git/config"), "hidden dir must be a dotfile");
+    }
+
+    #[test]
+    fn has_dotfile_normal_file() {
+        assert!(!has_dotfile("images/logo.png"));
+    }
+
+    #[test]
+    fn has_dotfile_double_dot_is_dotfile() {
+        // ".." starts with '.' so has_dotfile returns true — this is intentional
+        // since dotfile blocking should also reject ".." segments (sanitize_path
+        // handles the actual traversal prevention separately).
+        assert!(has_dotfile(".."));
+    }
+
+    #[test]
+    fn has_dotfile_empty_string() {
+        assert!(!has_dotfile(""));
+    }
+
+    // ── parse_range ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_range_simple() {
+        // bytes=100-200 with total=1000 → (100, 200)
+        assert_eq!(parse_range("bytes=100-200", 1000), Some((100, 200)));
+    }
+
+    #[test]
+    fn parse_range_open_end() {
+        // bytes=100- → (100, total-1)
+        assert_eq!(parse_range("bytes=100-", 1000), Some((100, 999)));
+    }
+
+    #[test]
+    fn parse_range_suffix() {
+        // bytes=-200 → (800, 999)
+        assert_eq!(parse_range("bytes=-200", 1000), Some((800, 999)));
+    }
+
+    #[test]
+    fn parse_range_invalid_no_bytes_prefix() {
+        assert!(parse_range("0-100", 1000).is_none());
+    }
+
+    #[test]
+    fn parse_range_start_beyond_end() {
+        // bytes=500-100 (start > end) → invalid
+        assert!(parse_range("bytes=500-100", 1000).is_none());
+    }
+
+    #[test]
+    fn parse_range_end_beyond_total() {
+        // bytes=0-9999 with total=1000 → invalid (end >= total)
+        assert!(parse_range("bytes=0-9999", 1000).is_none());
+    }
+
+    #[test]
+    fn parse_range_suffix_zero_invalid() {
+        // bytes=-0 → zero suffix length is invalid
+        assert!(parse_range("bytes=-0", 1000).is_none());
+    }
+
+    // ── make_cache_control ────────────────────────────────────────────────────
+
+    #[test]
+    fn make_cache_control_no_max_age_returns_no_cache() {
+        use crate::config::schema::StaticOptions;
+        let opts = StaticOptions::default();
+        assert_eq!(make_cache_control(&opts), "no-cache");
+    }
+
+    #[test]
+    fn make_cache_control_with_max_age_returns_public() {
+        use crate::config::schema::StaticOptions;
+        let mut opts = StaticOptions::default();
+        opts.max_age = Some("1h".to_owned());
+        let cc = make_cache_control(&opts);
+        assert!(
+            cc.starts_with("public, max-age="),
+            "expected public max-age: {cc}"
+        );
+        assert!(cc.contains("3600"), "1h = 3600s: {cc}");
+    }
+
+    #[test]
+    fn make_cache_control_invalid_duration_returns_no_cache() {
+        use crate::config::schema::StaticOptions;
+        let mut opts = StaticOptions::default();
+        opts.max_age = Some("not-a-duration".to_owned());
+        assert_eq!(make_cache_control(&opts), "no-cache");
+    }
+
+    // ── try_decode_percent_seq ────────────────────────────────────────────────
+
+    #[test]
+    fn try_decode_percent_seq_normal_char() {
+        // %41 = 'A'
+        assert_eq!(try_decode_percent_seq(b"41"), Some(b'A'));
+    }
+
+    #[test]
+    fn try_decode_percent_seq_space() {
+        // %20 = space
+        assert_eq!(try_decode_percent_seq(b"20"), Some(b' '));
+    }
+
+    #[test]
+    fn try_decode_percent_seq_slash_rejected() {
+        // %2F = '/' — must NOT be decoded
+        assert!(try_decode_percent_seq(b"2F").is_none());
+        assert!(try_decode_percent_seq(b"2f").is_none());
+    }
+
+    #[test]
+    fn try_decode_percent_seq_backslash_rejected() {
+        // %5C = '\' — must NOT be decoded
+        assert!(try_decode_percent_seq(b"5C").is_none());
+    }
+
+    #[test]
+    fn try_decode_percent_seq_null_rejected() {
+        // %00 = NUL — must NOT be decoded
+        assert!(try_decode_percent_seq(b"00").is_none());
+    }
+
+    #[test]
+    fn try_decode_percent_seq_invalid_hex_returns_none() {
+        assert!(try_decode_percent_seq(b"ZZ").is_none());
+        assert!(try_decode_percent_seq(b"GG").is_none());
+    }
+
+    // ── decode_rel_path ───────────────────────────────────────────────────────
+
+    #[test]
+    fn decode_rel_path_no_prefix() {
+        assert_eq!(decode_rel_path("/images/logo.png", None), "images/logo.png");
+    }
+
+    #[test]
+    fn decode_rel_path_strips_prefix() {
+        assert_eq!(
+            decode_rel_path("/api/images/logo.png", Some("/api")),
+            "images/logo.png"
+        );
+    }
+
+    #[test]
+    fn decode_rel_path_percent_decoded() {
+        assert_eq!(
+            decode_rel_path("/files/hello%20world.txt", None),
+            "files/hello world.txt"
+        );
+    }
+
+    #[test]
+    fn decode_rel_path_traversal_prevented() {
+        // Even after percent-decoding, .. should be removed by sanitize_path.
+        assert_eq!(decode_rel_path("/../etc/passwd", None), "etc/passwd");
+    }
+}
+
+#[cfg(test)]
+mod tests_extra {
+    use super::*;
+    use pingora_http::ResponseHeader;
+
+    #[test]
+    fn insert_extra_adds_headers() {
+        let mut resp = ResponseHeader::build(200, None).unwrap();
+        let extra = vec![
+            ("x-custom".to_owned(), "value1".to_owned()),
+            ("x-another".to_owned(), "value2".to_owned()),
+        ];
+        insert_extra(&mut resp, &extra).unwrap();
+        assert_eq!(resp.headers.get("x-custom").unwrap(), "value1");
+        assert_eq!(resp.headers.get("x-another").unwrap(), "value2");
+    }
+
+    #[test]
+    fn insert_extra_empty_is_noop() {
+        let mut resp = ResponseHeader::build(200, None).unwrap();
+        insert_extra(&mut resp, &[]).unwrap();
+        assert_eq!(resp.headers.len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod tests_is_not_modified {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn headers_with(key: &str, value: &str) -> http::HeaderMap {
+        let mut hdrs = http::HeaderMap::new();
+        hdrs.insert(
+            http::header::HeaderName::from_bytes(key.as_bytes()).unwrap(),
+            http::header::HeaderValue::from_str(value).unwrap(),
+        );
+        hdrs
+    }
+
+    const ETAG: &str = r#""abc123""#;
+    const MTIME: std::time::SystemTime = UNIX_EPOCH; // epoch, always in past
+
+    #[test]
+    fn no_conditional_headers_returns_false() {
+        assert!(!is_not_modified(&http::HeaderMap::new(), ETAG, MTIME));
+    }
+
+    #[test]
+    fn if_none_match_exact_returns_true() {
+        let hdrs = headers_with("if-none-match", ETAG);
+        assert!(is_not_modified(&hdrs, ETAG, MTIME));
+    }
+
+    #[test]
+    fn if_none_match_wildcard_returns_true() {
+        let hdrs = headers_with("if-none-match", "*");
+        assert!(is_not_modified(&hdrs, ETAG, MTIME));
+    }
+
+    #[test]
+    fn if_none_match_different_etag_returns_false() {
+        let hdrs = headers_with("if-none-match", r#""different""#);
+        assert!(!is_not_modified(&hdrs, ETAG, MTIME));
+    }
+
+    #[test]
+    fn if_none_match_list_with_match_returns_true() {
+        let hdrs = headers_with("if-none-match", r#""other1", "abc123", "other2""#);
+        assert!(is_not_modified(&hdrs, ETAG, MTIME));
+    }
+
+    #[test]
+    fn if_modified_since_same_time_returns_true() {
+        // File was not modified since the given time.
+        let ims = httpdate::fmt_http_date(SystemTime::now() + Duration::from_secs(3600));
+        let hdrs = headers_with("if-modified-since", &ims);
+        let mtime = SystemTime::now();
+        assert!(is_not_modified(&hdrs, ETAG, mtime));
+    }
+
+    #[test]
+    fn if_modified_since_older_than_mtime_returns_false() {
+        // File was modified AFTER the If-Modified-Since header.
+        let ims = httpdate::fmt_http_date(UNIX_EPOCH);
+        let hdrs = headers_with("if-modified-since", &ims);
+        let mtime = SystemTime::now(); // very recent
+        assert!(!is_not_modified(&hdrs, ETAG, mtime));
     }
 }
 

@@ -21,9 +21,18 @@ pub struct TokenBucket {
 }
 
 impl TokenBucket {
-    pub fn new(limit: u64, window_secs: u64) -> Self {
-        let capacity = limit as f64;
-        let refill_rate = capacity / window_secs.max(1) as f64;
+    /// Create a new token bucket.
+    ///
+    /// * `limit`       — sustained request limit per `window_secs`
+    /// * `burst`       — extra capacity above `limit` for short spikes (0 = no burst)
+    /// * `window_secs` — refill window in seconds
+    ///
+    /// The bucket starts full at `limit + burst` tokens and refills at
+    /// `limit / window_secs` tokens per second.  This allows a burst of up to
+    /// `limit + burst` requests, while sustained throughput remains at `limit`.
+    pub fn new(limit: u64, burst: u64, window_secs: u64) -> Self {
+        let capacity = (limit + burst) as f64;
+        let refill_rate = limit as f64 / window_secs.max(1) as f64;
         Self {
             tokens: capacity,
             capacity,
@@ -99,6 +108,16 @@ fn extract_key(cfg: &RateLimitConfig, session: &Session) -> String {
 /// Check the token-bucket rate limit for this request.
 ///
 /// Returns `true` if the request is within the limit (allowed to proceed).
+/// Maximum number of distinct rate-limit buckets per limiter.
+///
+/// When the DashMap exceeds this threshold a new key receives its own bucket
+/// only if it already exists.  If it doesn't exist we return `false`
+/// (treat as rate-limited) to prevent unbounded memory growth.
+///
+/// An attacker sending millions of unique `X-Custom-Header` values could
+/// otherwise exhaust memory by creating millions of token buckets.
+const MAX_BUCKETS: usize = 100_000;
+
 pub fn check(cfg: &RateLimitConfig, session: &Session, limiter: &RateLimiter) -> bool {
     let path = session.req_header().uri.path();
     if is_path_skipped(cfg.skip_paths.as_deref(), path) {
@@ -106,9 +125,26 @@ pub fn check(cfg: &RateLimitConfig, session: &Session, limiter: &RateLimiter) ->
     }
 
     let key = extract_key(cfg, session);
+
+    // Fast path: bucket already exists.
+    if let Some(mut bucket) = limiter.get_mut(&key) {
+        return bucket.try_consume();
+    }
+
+    // Slow path: new key — check capacity before inserting.
+    if limiter.len() >= MAX_BUCKETS {
+        // Map is full: treat as rate-limited rather than allocating another bucket.
+        tracing::warn!(
+            key = %key,
+            buckets = limiter.len(),
+            "rate-limit bucket cap reached — treating new key as rate-limited"
+        );
+        return false;
+    }
+
     limiter
         .entry(key)
-        .or_insert_with(|| TokenBucket::new(cfg.limit, cfg.window_secs))
+        .or_insert_with(|| TokenBucket::new(cfg.limit, cfg.burst.unwrap_or(0), cfg.window_secs))
         .try_consume()
 }
 
@@ -128,7 +164,7 @@ mod tests {
 
     #[test]
     fn bucket_starts_full_and_allows_limit_requests() {
-        let mut b = TokenBucket::new(3, 60);
+        let mut b = TokenBucket::new(3, 0, 60);
         assert!(b.try_consume(), "1st token");
         assert!(b.try_consume(), "2nd token");
         assert!(b.try_consume(), "3rd token");
@@ -138,27 +174,27 @@ mod tests {
     #[test]
     fn bucket_with_zero_window_secs_uses_minimum_one() {
         // window_secs 0 is normalised to 1 internally.
-        let mut b = TokenBucket::new(1, 0);
+        let mut b = TokenBucket::new(1, 0, 0);
         assert!(b.try_consume());
         assert!(!b.try_consume());
     }
 
     #[test]
     fn is_stale_with_zero_threshold_is_always_true() {
-        let b = TokenBucket::new(10, 60);
+        let b = TokenBucket::new(10, 0, 60);
         assert!(b.is_stale(0), "elapsed >= 0 is always true");
     }
 
     #[test]
     fn is_stale_with_huge_threshold_is_false() {
-        let b = TokenBucket::new(10, 60);
+        let b = TokenBucket::new(10, 0, 60);
         assert!(!b.is_stale(u64::MAX));
     }
 
     #[test]
     fn cleanup_preserves_fresh_bucket() {
         let limiter = RateLimiter::new();
-        limiter.insert("key".to_string(), TokenBucket::new(10, 60));
+        limiter.insert("key".to_string(), TokenBucket::new(10, 0, 60));
         cleanup(&limiter);
         assert_eq!(limiter.len(), 1, "fresh bucket should survive cleanup");
     }
@@ -172,22 +208,22 @@ mod tests {
 
     #[test]
     fn bucket_window_secs_returns_configured_value() {
-        let b = TokenBucket::new(100, 120);
+        let b = TokenBucket::new(100, 0, 120);
         assert_eq!(b.window_secs(), 120);
     }
 
     #[test]
     fn bucket_window_secs_minimum_one_when_zero_configured() {
         // window_secs 0 is normalised to 1 internally.
-        let b = TokenBucket::new(10, 0);
+        let b = TokenBucket::new(10, 0, 0);
         assert_eq!(b.window_secs(), 1);
     }
 
     #[test]
     fn multiple_buckets_independent() {
         let limiter = RateLimiter::new();
-        limiter.insert("a".to_string(), TokenBucket::new(1, 60));
-        limiter.insert("b".to_string(), TokenBucket::new(2, 60));
+        limiter.insert("a".to_string(), TokenBucket::new(1, 0, 60));
+        limiter.insert("b".to_string(), TokenBucket::new(2, 0, 60));
         {
             let mut a = limiter.get_mut("a").unwrap();
             assert!(a.try_consume());
@@ -199,5 +235,35 @@ mod tests {
             assert!(b.try_consume());
             assert!(!b.try_consume());
         }
+    }
+
+    // ── burst capacity ────────────────────────────────────────────────────────
+
+    #[test]
+    fn burst_allows_extra_requests_above_limit() {
+        // limit=2, burst=3 → bucket starts with 5 tokens
+        let mut b = TokenBucket::new(2, 3, 60);
+        for i in 0..5 {
+            assert!(b.try_consume(), "token {i} should be available");
+        }
+        assert!(!b.try_consume(), "6th token must be denied (limit+burst=5)");
+    }
+
+    #[test]
+    fn zero_burst_behaves_like_classic_token_bucket() {
+        let mut b = TokenBucket::new(3, 0, 60);
+        assert!(b.try_consume());
+        assert!(b.try_consume());
+        assert!(b.try_consume());
+        assert!(!b.try_consume());
+    }
+
+    #[test]
+    fn burst_capacity_is_limit_plus_burst() {
+        // A bucket with limit=2, burst=3 should allow exactly 5 requests
+        // without waiting (capacity = limit + burst = 5).
+        let mut b = TokenBucket::new(2, 3, 60);
+        let allowed = (0..10).filter(|_| b.try_consume()).count();
+        assert_eq!(allowed, 5, "capacity must equal limit + burst");
     }
 }

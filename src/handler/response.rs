@@ -12,19 +12,44 @@ fn insert_extra(resp: &mut ResponseHeader, extra: &[(String, String)]) -> Result
 }
 
 /// Write a 401 Unauthorized response with an optional `WWW-Authenticate` challenge.
+///
+/// The response body is content-type aware: JSON clients (those sending
+/// `Accept: application/json`) receive a JSON body; all others receive an
+/// empty body.  This matches the behaviour of Oathkeeper's conditional error
+/// handlers.
 pub async fn write_denied(
     session: &mut Session,
     www_authenticate: Option<&str>,
     extra: &[(String, String)],
 ) -> Result<()> {
-    let mut resp = ResponseHeader::build(401, Some(2 + extra.len()))?;
-    resp.insert_header("content-length", "0")?;
-    if let Some(challenge) = www_authenticate {
-        resp.insert_header("www-authenticate", challenge)?;
+    let wants_json = session
+        .req_header()
+        .headers
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|a| a.contains("application/json"));
+
+    if wants_json {
+        let body = Bytes::from_static(b"{\"error\":\"Unauthorized\",\"status\":401}");
+        let mut resp = ResponseHeader::build(401, Some(3 + extra.len()))?;
+        resp.insert_header("content-type", "application/json")?;
+        resp.insert_header("content-length", body.len().to_string())?;
+        if let Some(challenge) = www_authenticate {
+            resp.insert_header("www-authenticate", challenge)?;
+        }
+        insert_extra(&mut resp, extra)?;
+        session.write_response_header(Box::new(resp), false).await?;
+        session.write_response_body(Some(body), true).await
+    } else {
+        let mut resp = ResponseHeader::build(401, Some(2 + extra.len()))?;
+        resp.insert_header("content-length", "0")?;
+        if let Some(challenge) = www_authenticate {
+            resp.insert_header("www-authenticate", challenge)?;
+        }
+        insert_extra(&mut resp, extra)?;
+        session.write_response_header(Box::new(resp), false).await?;
+        session.write_response_body(Some(Bytes::new()), true).await
     }
-    insert_extra(&mut resp, extra)?;
-    session.write_response_header(Box::new(resp), false).await?;
-    session.write_response_body(Some(Bytes::new()), true).await
 }
 
 /// Write a redirect response (3xx + Location header, empty body).

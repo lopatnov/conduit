@@ -1,0 +1,70 @@
+# ── Advanced routing with the routes array ───────────────────────────────────
+#
+# The `routes` array gives fine-grained control over routing:
+#   • Match on path glob, HTTP method, headers, or query parameters
+#   • First matching rule wins (order matters)
+#   • More flexible than the `proxy` shorthand
+#
+# This example uses two sites in an array:
+#   Site 1 (port 8080): separate read and write backends, API v2 dedicated server
+#   Site 2 (port 9090): admin panel locked to internal IPs only
+#
+# Run: conduit -c examples/routes.yaml
+
+# ── Site 1: public API + frontend ─────────────────────────────────────────────
+- port: 8080
+  routes:
+    # Rule 1: API v2 → dedicated new server (checked FIRST)
+    # Matches /api/v2/ and everything below it.
+    - match:
+        path: /api/v2/**
+      proxy:
+        targets: ["http://v2-api:5000"]
+        strategy: round-robin
+
+    # Rule 2: Write operations → write-optimised backends
+    # POST / PUT / PATCH / DELETE on /api/** → write cluster
+    - match:
+        path: /api/**
+        method: [POST, PUT, PATCH, DELETE]
+      proxy:
+        targets:
+          - "http://write-api:4001"
+          - "http://write-api:4002"
+        strategy: least-conn   # write operations vary in duration; LC is fairer
+
+    # Rule 3: Read operations → read replicas
+    # GET / HEAD on /api/** (all methods not matched above) → read cluster
+    - match:
+        path: /api/**
+      proxy:
+        targets:
+          - "http://read-api:4000"
+          - "http://read-api:4001"
+        strategy: round-robin
+
+    # Rule 4: everything else → static SPA
+    - match:
+        path: /**
+      static: ./dist
+
+  # SPA fallback for HTML5 history mode (client-side router).
+  fallback:
+    status: 200
+    file: ./dist/index.html
+
+# ── Site 2: admin panel (internal only) ───────────────────────────────────────
+- host: localhost
+  port: 9090
+
+  # Only allow connections from private/loopback networks.
+  # Any other source IP gets 403 immediately (before auth is checked).
+  # Note: when 'allow' is set, 'deny' is ignored — the allowlist is sufficient.
+  ipFilter:
+    allow:
+      - "127.0.0.1"
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+      - "192.168.0.0/16"
+
+  proxy: "http://admin-service:6000"

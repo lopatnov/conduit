@@ -57,4 +57,51 @@ mod tests {
             "application/octet-stream"
         );
     }
+
+    #[test]
+    fn wasm_extension() {
+        assert_eq!(content_type(Path::new("plugin.wasm")), "application/wasm");
+    }
+
+    #[test]
+    fn webp_extension() {
+        let ct = content_type(Path::new("image.webp"));
+        assert!(ct.contains("webp"), "unexpected: {ct}");
+    }
+
+    #[test]
+    fn pdf_extension() {
+        assert_eq!(content_type(Path::new("doc.pdf")), "application/pdf");
+    }
+
+    #[test]
+    fn gz_extension() {
+        let ct = content_type(Path::new("archive.tar.gz"));
+        assert!(
+            ct.contains("gzip") || ct.contains("octet"),
+            "unexpected: {ct}"
+        );
+    }
+
+    #[test]
+    fn xml_extension() {
+        let ct = content_type(Path::new("feed.xml"));
+        assert!(ct.contains("xml"), "unexpected: {ct}");
+    }
+
+    #[test]
+    fn ttf_font_extension() {
+        let ct = content_type(Path::new("font.ttf"));
+        assert!(!ct.is_empty(), "should not be empty");
+    }
+
+    #[test]
+    fn path_with_directories_uses_filename_extension() {
+        let ct_deep = content_type(Path::new("/some/path/to/style.css"));
+        let ct_shallow = content_type(Path::new("style.css"));
+        assert_eq!(
+            ct_deep, ct_shallow,
+            "directory path should not affect mime type"
+        );
+    }
 }

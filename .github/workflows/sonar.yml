@@ -2,9 +2,7 @@ name: SonarCloud
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: [main, phase-next]
 
 permissions:
   contents: read
@@ -16,6 +14,9 @@ jobs:
   sonar:
     name: SonarCloud analysis
     runs-on: ubuntu-latest
+    # Hard cap: coverage generation + sonar scan should finish well within 20 min.
+    # Without this the job can hang for GitHub's default 6-hour timeout.
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -26,17 +27,30 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
         with:
           toolchain: stable
+          components: llvm-tools-preview  # required by cargo-llvm-cov
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        continue-on-error: true
 
-      - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin --locked --version 0.35.4
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538  # v2.81.1
+        with:
+          tool: cargo-llvm-cov
 
-      # Unit tests only: integration tests spawn child processes which confuse
-      # tarpaulin's instrumentation. Coverage of the library code is what
-      # SonarCloud uses for the quality gate anyway.
-      - name: Generate coverage (unit tests)
-        run: cargo tarpaulin --lib --out Lcov --output-dir coverage --timeout 120
+      # Generate LCOV coverage from unit tests only (--lib).
+      # Integration tests spawn servers and make network calls — they take too
+      # long under instrumentation and can hang the job for hours.
+      # Unit tests alone give reliable coverage data in < 2 minutes.
+      - name: Generate coverage (LCOV, unit tests only)
+        run: |
+          cargo llvm-cov \
+            --lib \
+            --features full \
+            --lcov \
+            --output-path coverage.lcov \
+            --ignore-filename-regex '(tests/|build\.rs)'
+        env:
+          RUST_LOG: "error"  # silence tracing output so coverage stats stay clean
 
       - name: SonarCloud scan
         uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995  # v8.1.0
@@ -44,3 +58,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          args: >
+            -Dsonar.rust.lcov.reportPaths=coverage.lcov

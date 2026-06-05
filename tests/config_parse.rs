@@ -1,9 +1,23 @@
 use conduit::config::{
     from_str,
     schema::{
-        CompressionConfig, CorsConfig, HealthCheckConfig, HotReloadConfig, LoadBalanceStrategy,
-        LogFormat, LoggingConfig, ProxyConfig, ProxyRouteTarget, ProxyTarget, ResponseTimeConfig,
-        SecurityHeadersConfig, StaticConfig,
+        CompressionConfig,
+        CorsConfig,
+        // New Phase 4 types
+        ForwardAuthConfig,
+        HealthCheckConfig,
+        HotReloadConfig,
+        JwtAuthConfig,
+        LoadBalanceStrategy,
+        LogFormat,
+        LoggingConfig,
+        ProxyConfig,
+        ProxyRouteTarget,
+        ProxyTarget,
+        ResponseTimeConfig,
+        SecurityHeadersConfig,
+        StaticConfig,
+        UpstreamTlsConfig,
     },
 };
 use serial_test::serial;
@@ -704,4 +718,311 @@ fn bad_type_rejects_parse() {
 #[test]
 fn invalid_json_rejected() {
     assert!(from_str("{ not valid json }").is_err());
+}
+
+// ── Phase 4 new config fields ─────────────────────────────────────────────────
+
+#[test]
+fn jwt_auth_hs256_secret_parses() {
+    let cfg = parse(r#"{ "port": 8080, "jwtAuth": { "secret": "mysecret" } }"#);
+    let jwt = cfg.sites[0]
+        .jwt_auth
+        .as_ref()
+        .expect("jwtAuth should be present");
+    assert_eq!(jwt.secret.as_deref(), Some("mysecret"));
+    assert!(jwt.jwks_url.is_none());
+}
+
+#[test]
+fn jwt_auth_jwks_url_parses() {
+    let cfg = parse(
+        r#"{
+        "port": 8080,
+        "jwtAuth": {
+            "jwksUrl": "https://accounts.example.com/.well-known/jwks.json",
+            "audience": ["my-app"],
+            "issuer": "https://accounts.example.com",
+            "skipPaths": ["/__health__"]
+        }
+    }"#,
+    );
+    let jwt = cfg.sites[0]
+        .jwt_auth
+        .as_ref()
+        .expect("jwtAuth should be present");
+    assert!(jwt.jwks_url.is_some());
+    assert_eq!(jwt.audience.as_ref().unwrap()[0], "my-app");
+    assert_eq!(jwt.issuer.as_deref(), Some("https://accounts.example.com"));
+    assert_eq!(jwt.skip_paths.as_ref().unwrap()[0], "/__health__");
+}
+
+#[test]
+fn forward_auth_parses() {
+    let cfg = parse(
+        r#"{
+        "port": 8080,
+        "forwardAuth": {
+            "url": "http://auth:9000/verify",
+            "requestHeaders": ["Authorization", "Cookie"],
+            "responseHeaders": ["X-User-ID"],
+            "timeoutMs": 3000,
+            "skipPaths": ["/__health__"]
+        }
+    }"#,
+    );
+    let fa = cfg.sites[0]
+        .forward_auth
+        .as_ref()
+        .expect("forwardAuth should be present");
+    assert_eq!(fa.url, "http://auth:9000/verify");
+    assert_eq!(fa.request_headers.as_ref().unwrap().len(), 2);
+    assert_eq!(fa.response_headers.as_ref().unwrap()[0], "X-User-ID");
+    assert_eq!(fa.timeout_ms, Some(3000));
+}
+
+#[test]
+fn mask_errors_parses() {
+    let cfg = parse(r#"{ "port": 8080, "maskErrors": true }"#);
+    assert_eq!(cfg.sites[0].mask_errors, Some(true));
+    let cfg2 = parse(r#"{ "port": 8080, "maskErrors": false }"#);
+    assert_eq!(cfg2.sites[0].mask_errors, Some(false));
+}
+
+#[test]
+fn outlier_detection_parses() {
+    let cfg = parse(
+        r#"{
+        "port": 8080,
+        "outlierDetection": {
+            "consecutive5xx": 5,
+            "baseEjectionTimeSecs": 30,
+            "maxEjectionTimeSecs": 300,
+            "maxEjectionPercent": 10
+        }
+    }"#,
+    );
+    let od = cfg.sites[0]
+        .outlier_detection
+        .as_ref()
+        .expect("outlierDetection present");
+    assert_eq!(od.consecutive_5xx, Some(5));
+    assert_eq!(od.base_ejection_time_secs, Some(30));
+    assert_eq!(od.max_ejection_percent, Some(10));
+}
+
+#[test]
+fn request_response_transform_parses() {
+    let cfg = parse(
+        r#"{
+        "port": 8080,
+        "requestTransform": { "setHeaders": { "X-Inject": "val" }, "removeHeaders": ["X-Del"] },
+        "responseTransform": { "setHeaders": { "X-Served-By": "conduit" } }
+    }"#,
+    );
+    let rt = cfg.sites[0]
+        .request_transform
+        .as_ref()
+        .expect("requestTransform present");
+    assert_eq!(
+        rt.set_headers
+            .as_ref()
+            .unwrap()
+            .get("X-Inject")
+            .map(|s| s.as_str()),
+        Some("val")
+    );
+    assert_eq!(rt.remove_headers.as_ref().unwrap()[0], "X-Del");
+    let resp_t = cfg.sites[0]
+        .response_transform
+        .as_ref()
+        .expect("responseTransform present");
+    assert_eq!(resp_t.set_headers.as_ref().unwrap().len(), 1);
+}
+
+#[test]
+fn upstream_tls_parses() {
+    let cfg = parse(
+        r#"{
+        "port": 8080,
+        "proxy": {
+            "/api": {
+                "targets": ["https://backend:4443"],
+                "upstreamTls": { "verify": false, "serverName": "my-service" }
+            }
+        }
+    }"#,
+    );
+    if let Some(conduit::config::schema::ProxyConfig::Routes(routes)) = &cfg.sites[0].proxy {
+        if let Some(conduit::config::schema::ProxyRouteTarget::Full(route)) = routes.get("/api") {
+            let tls = route.upstream_tls.as_ref().expect("upstreamTls present");
+            assert_eq!(tls.verify, Some(false));
+            assert_eq!(tls.server_name.as_deref(), Some("my-service"));
+        } else {
+            panic!("expected Full route");
+        }
+    } else {
+        panic!("expected Routes proxy");
+    }
+}
+
+#[test]
+fn per_route_rate_limit_parses() {
+    let cfg = parse(
+        r#"{
+        "port": 8080,
+        "proxy": {
+            "/api": {
+                "targets": ["http://b:4000"],
+                "rateLimit": { "windowSecs": 60, "limit": 10, "keyBy": "ip" }
+            }
+        }
+    }"#,
+    );
+    if let Some(conduit::config::schema::ProxyConfig::Routes(routes)) = &cfg.sites[0].proxy {
+        if let Some(conduit::config::schema::ProxyRouteTarget::Full(route)) = routes.get("/api") {
+            let rl = route.rate_limit.as_ref().expect("rateLimit present");
+            assert_eq!(rl.limit, 10);
+            assert_eq!(rl.window_secs, 60);
+        } else {
+            panic!("expected Full route");
+        }
+    } else {
+        panic!("expected Routes proxy");
+    }
+}
+
+#[test]
+fn retry_budget_percent_parses() {
+    let cfg = parse(
+        r#"{
+        "port": 8080,
+        "proxy": {
+            "/api": {
+                "targets": ["http://b:4000"],
+                "retry": { "attempts": 3, "conditions": ["5xx"], "budgetPercent": 20.0 }
+            }
+        }
+    }"#,
+    );
+    if let Some(conduit::config::schema::ProxyConfig::Routes(routes)) = &cfg.sites[0].proxy {
+        if let Some(conduit::config::schema::ProxyRouteTarget::Full(route)) = routes.get("/api") {
+            let retry = route.retry.as_ref().expect("retry present");
+            assert_eq!(retry.budget_percent, Some(20.0));
+        } else {
+            panic!("expected Full route");
+        }
+    } else {
+        panic!("expected Routes proxy");
+    }
+}
+
+#[test]
+fn admin_token_parses() {
+    let cfg = parse(
+        r#"{
+        "global": { "admin": { "bind": "127.0.0.1:2019", "token": "secret" } },
+        "sites": [{ "port": 8080 }]
+    }"#,
+    );
+    let token = cfg
+        .global
+        .as_ref()
+        .unwrap()
+        .admin
+        .as_ref()
+        .unwrap()
+        .token
+        .as_deref();
+    assert_eq!(token, Some("secret"));
+}
+
+#[test]
+fn logging_skip_paths_parses() {
+    let cfg = parse(
+        r#"{
+        "port": 8080,
+        "logging": { "format": "json", "skipPaths": ["/__health__", "/metrics"] }
+    }"#,
+    );
+    if let Some(LoggingConfig::Options(opts)) = &cfg.sites[0].logging {
+        let skip = opts.skip_paths.as_ref().expect("skipPaths present");
+        assert!(skip.contains(&"/__health__".to_string()));
+    } else {
+        panic!("expected LoggingConfig::Options");
+    }
+}
+
+#[test]
+fn mirror_url_parses() {
+    let cfg = parse(
+        r#"{
+        "port": 8080,
+        "proxy": {
+            "/api": {
+                "targets": ["http://primary:4000"],
+                "mirror": "http://shadow:4000"
+            }
+        }
+    }"#,
+    );
+    if let Some(conduit::config::schema::ProxyConfig::Routes(routes)) = &cfg.sites[0].proxy {
+        if let Some(conduit::config::schema::ProxyRouteTarget::Full(route)) = routes.get("/api") {
+            assert_eq!(route.mirror.as_deref(), Some("http://shadow:4000"));
+        } else {
+            panic!("expected Full route");
+        }
+    } else {
+        panic!("expected Routes proxy");
+    }
+}
+
+#[test]
+fn otlp_config_parses() {
+    let cfg = conduit::config::from_str(
+        r#"{
+        "global": {
+            "otlp": {
+                "endpoint": "http://tempo:4317",
+                "serviceName": "my-gateway",
+                "sampleRate": 0.5,
+                "timeoutMs": 3000
+            }
+        },
+        "sites": [{ "port": 8080 }]
+    }"#,
+    )
+    .expect("parse");
+    let otlp = cfg
+        .global
+        .as_ref()
+        .unwrap()
+        .otlp
+        .as_ref()
+        .expect("otlp should be present");
+    assert_eq!(otlp.endpoint, "http://tempo:4317");
+    assert_eq!(otlp.service_name.as_deref(), Some("my-gateway"));
+    assert_eq!(otlp.sample_rate, Some(0.5));
+    assert_eq!(otlp.timeout_ms, Some(3000));
+}
+
+#[test]
+fn otlp_minimal_parses() {
+    // Only endpoint is required.
+    let cfg = conduit::config::from_str(
+        r#"{
+        "global": { "otlp": { "endpoint": "http://otel:4317" } },
+        "sites": [{ "port": 8080 }]
+    }"#,
+    )
+    .expect("parse");
+    let otlp = cfg
+        .global
+        .as_ref()
+        .unwrap()
+        .otlp
+        .as_ref()
+        .expect("otlp should be present");
+    assert_eq!(otlp.endpoint, "http://otel:4317");
+    assert!(otlp.service_name.is_none());
+    assert!(otlp.sample_rate.is_none());
 }

@@ -1,0 +1,139 @@
+# Example ConduitSite resources and Conduit Deployment
+#
+# Usage:
+#   kubectl apply -f contrib/k8s/conduitsite-crd.yaml
+#   kubectl apply -f contrib/k8s/example-site.yaml
+#
+# The Conduit pod watches all ConduitSite resources in its namespace and
+# automatically reconfigures itself when they change.
+
+---
+# SPA with API proxy
+apiVersion: conduit.io/v1
+kind: ConduitSite
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  port: 8080
+  host: app.example.com
+  proxy:
+    /api:
+      targets:
+        - http://api-svc:4000
+      strategy: least-conn
+      stripPrefix: true
+      healthCheck:
+        path: /health
+        intervalSecs: 10
+  healthCheck: true
+  compression: true
+  logging: json
+  fallback:
+    byAccept:
+      html:
+        status: 200
+        file: /dist/index.html
+      json:
+        status: 404
+        body:
+          error: Not Found
+
+---
+# Admin panel with Basic Auth
+apiVersion: conduit.io/v1
+kind: ConduitSite
+metadata:
+  name: admin-panel
+  namespace: default
+spec:
+  port: 8080
+  host: admin.example.com
+  proxy: http://admin-svc:5000
+  basicAuth:
+    users:
+      admin: $ADMIN_PASSWORD
+    challenge: true
+    realm: Admin Panel
+
+---
+# Conduit Deployment (requires kubernetes feature)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conduit
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: conduit
+  template:
+    metadata:
+      labels:
+        app: conduit
+    spec:
+      serviceAccountName: conduit
+      containers:
+        - name: conduit
+          image: ghcr.io/lopatnov/conduit:latest-full  # kubernetes feature requires full image
+          args:
+            - --kubernetes-namespace=default   # watch this namespace for ConduitSite CRDs
+          securityContext:
+            runAsNonRoot: true          # conduit image runs as UID 65534 (nobody)
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: admin
+              containerPort: 2019
+          livenessProbe:
+            httpGet:
+              path: /__health__
+              port: http
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /__health__
+              port: http
+            initialDelaySeconds: 3
+
+---
+# ServiceAccount + RBAC for watching CRDs
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: conduit
+  namespace: default
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: conduit-crd-reader
+  namespace: default
+rules:
+  - apiGroups: [conduit.io]
+    resources: [conduitsites]
+    verbs: [get, list, watch]
+  - apiGroups: [conduit.io]
+    resources: [conduitsites/status]
+    verbs: [update, patch]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: conduit-crd-reader
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: conduit
+    namespace: default
+roleRef:
+  kind: Role
+  name: conduit-crd-reader
+  apiGroup: rbac.authorization.k8s.io

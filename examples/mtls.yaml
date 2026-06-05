@@ -1,0 +1,62 @@
+# ── mTLS — mutual TLS / client certificate authentication ─────────────────────
+#
+# Requires every client to present a certificate signed by the configured CA.
+# Clients without a valid certificate are rejected at the TLS handshake —
+# before any HTTP processing.
+#
+# Use cases:
+#   • Zero-trust internal service mesh (B2B APIs)
+#   • IoT devices with device certificates
+#   • Service-to-service auth without OAuth
+#
+# To generate test certificates:
+#   # CA key + cert
+#   openssl genrsa -out ca.key 4096
+#   openssl req -new -x509 -key ca.key -out ca.crt -days 3650 -subj "/CN=My CA"
+#
+#   # Server key + cert (signed by CA)
+#   openssl genrsa -out server.key 4096
+#   openssl req -new -key server.key -out server.csr -subj "/CN=api.example.com"
+#   openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -out server.crt -days 365
+#
+#   # Client key + cert (signed by CA) — distribute to authorized clients
+#   openssl genrsa -out client.key 4096
+#   openssl req -new -key client.key -out client.csr -subj "/CN=my-client"
+#   openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -out client.crt -days 365
+#
+# Run: conduit -c examples/mtls.yaml
+
+global:
+  admin:
+    bind: "127.0.0.1:2019"
+
+sites:
+  - port: 443
+    host: api.example.com
+
+    tls:
+      cert: /etc/tls/server.crt
+      key:  /etc/tls/server.key
+      # Redirect http:// to https:// automatically.
+      httpRedirectPort: 80
+
+      # ── mTLS client certificate verification ──────────────────────────────
+      clientAuth:
+        # PEM file containing the CA that signs authorized client certificates.
+        # Only clients presenting a cert signed by this CA are allowed.
+        ca: /etc/tls/client-ca.crt
+
+        # optional: true  → request cert but allow connections without one
+        #                   (nginx ssl_verify_client optional)
+        # optional: false → reject connections without a valid cert (default)
+        optional: false
+
+    proxy:
+      /api:
+        targets: ["http://backend:4000"]
+        stripPrefix: true
+
+    healthCheck: true
+    securityHeaders: true
+    logging:
+      format: json

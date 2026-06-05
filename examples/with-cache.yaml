@@ -1,0 +1,44 @@
+# ── Proxy response caching ────────────────────────────────────────────────────
+#
+# Cache GET/HEAD responses from the public API in memory.
+# Private/authenticated routes bypass the cache.
+#
+# Run: conduit -c examples/with-cache.yaml
+
+port: 8080
+
+proxy:
+  /api/public:
+    targets: ["http://backend:4000"]
+    stripPrefix: false
+
+    cache:
+      store: memory        # in-process DashMap cache
+      maxSizeMb: 256       # evict LRU entries when over 256 MB
+      ttlSecs: 300         # cache entries live for 5 minutes
+
+      # Send separate cache entries for different client encodings / languages.
+      varyHeaders:
+        - Accept-Encoding
+        - Accept-Language
+
+      # Never cache responses when the client sends a session cookie.
+      # Prevents one user's response from leaking to another user.
+      skipIfCookie: true
+
+      # Skip caching for paths that are always user-specific.
+      skipPaths:
+        - /api/public/auth/**
+        - /api/public/user/**
+
+      # Only cache safe, idempotent methods.
+      methods: [GET, HEAD]
+
+  /api/private:
+    # No cache block → responses are never cached.
+    targets: ["http://backend:4000"]
+    stripPrefix: false
+
+healthCheck: true
+metrics:
+  path: /__metrics__

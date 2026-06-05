@@ -1,0 +1,33 @@
+{
+  "port": 8080,
+  "limits": {
+    "maxInflightRequests": 1000,
+    "priorityThreshold": 0.8
+  },
+  "routes": [
+    {
+      "match": { "path": "/checkout/**" },
+      "proxy": { "targets": ["http://checkout:4000"], "priority": 90 }
+    },
+    {
+      "match": { "path": "/api/v1/**" },
+      "proxy": { "targets": ["http://api:4000"], "priority": 70 }
+    },
+    {
+      "match": { "path": "/api/**" },
+      "proxy": { "targets": ["http://api:4000"] }
+    },
+    {
+      "match": { "path": "/batch/**" },
+      "proxy": { "targets": ["http://workers:4000"], "priority": 10 }
+    },
+    {
+      "match": { "path": "/analytics/**" },
+      "proxy": { "targets": ["http://analytics:4000"], "priority": 0 }
+    },
+    {
+      "match": { "path": "/**" },
+      "proxy": { "targets": ["http://api:4000"] }
+    }
+  ]
+}

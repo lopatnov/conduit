@@ -1,3 +1,4 @@
+#![cfg(feature = "upload")]
 use std::path::Path;
 use std::sync::Arc;
 

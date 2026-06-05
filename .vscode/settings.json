@@ -11,5 +11,9 @@
       ],
       "url": "https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json"
     }
-  ]
+  ],
+  "sonarlint.connectedMode.project": {
+    "connectionId": "lopatnov",
+    "projectKey": "lopatnov_conduit"
+  }
 }

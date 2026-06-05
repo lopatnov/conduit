@@ -1,0 +1,124 @@
+# ── Consumer model — named API clients with per-consumer policies ─────────────
+#
+# The consumer model lets you define named clients (Alice, Bob, service-a)
+# each with their own credentials and rate limits.  After identification:
+#   • The consumer's username is injected as X-Consumer-ID into the upstream
+#   • Per-consumer custom headers are added (e.g. X-Tier: premium)
+#   • Per-consumer rate limit is enforced independently of the site-level limit
+#
+# Supported credential types (V1):
+#   apiKey     — value in the x-api-key header (or custom apiKeyHeader)
+#   basicAuth  — Authorization: Basic base64(username:password)
+#
+# Requests that don't match any consumer receive 401 Unauthorized.
+#
+# Run: conduit -c examples/consumers.yaml
+
+port: 8080
+
+consumers:
+  # The header to inject the consumer's username into (default: x-consumer-id).
+  # Your upstream can use this to identify who made the request.
+  idHeader: "X-Consumer-ID"
+
+  # Header name to read API keys from (default: x-api-key).
+  # apiKeyHeader: "X-API-Key"
+
+  # Paths that bypass consumer auth (health checks, public docs, etc.)
+  skipPaths:
+    - /__health__
+    - /public/**
+
+  consumers:
+    # ── Free tier: Alice ───────────────────────────────────────────────────────
+    - username: alice
+      apiKey: "$ALICE_API_KEY"   # store secrets in env vars
+      rateLimit:
+        windowSecs: 60
+        limit: 100              # 100 requests per minute
+      headers:
+        X-Tier: free            # upstream can adjust behaviour per tier
+
+    # ── Premium tier: Bob ──────────────────────────────────────────────────────
+    - username: bob
+      apiKey: "$BOB_API_KEY"
+      rateLimit:
+        windowSecs: 60
+        limit: 10000            # premium = 10k rpm
+      headers:
+        X-Tier: premium
+        X-SLA: "99.9"
+
+    # ── Internal service using Basic Auth ─────────────────────────────────────
+    - username: billing-service
+      basicAuth:
+        password: "$BILLING_SERVICE_PASSWORD"
+      # No rate limit for internal services — trusted caller
+      headers:
+        X-Internal: "true"
+
+    # ── JWT service — identified by Bearer token (V2) ─────────────────────────
+    # This consumer presents a JWT signed with a shared HS256 secret.
+    # Useful for service-to-service auth where each service has its own key.
+    - username: data-pipeline
+      jwt:
+        secret: "$DATA_PIPELINE_JWT_SECRET"
+        issuer: "https://auth.internal"   # optional: restrict to specific issuer
+      headers:
+        X-Service-Name: "data-pipeline"
+
+    # ── JWT consumer via JWKS (RS256 / ES256) ─────────────────────────────────
+    # Identity provider issues tokens; Conduit validates against public keys.
+    # Works with Auth0, Google, AWS Cognito, Keycloak, etc.
+    # - username: partner-app
+    #   jwt:
+    #     jwksUrl: "https://partner.example.com/.well-known/jwks.json"
+    #     audience: ["my-api"]
+
+    # ── Read-only client: no rate limit, no custom headers ────────────────────
+    - username: readonly-client
+      apiKey: "$READONLY_KEY"
+
+proxy:
+  /api: "http://backend:4000"
+
+healthCheck: true
+logging:
+  format: json
+  skipPaths: [/__health__]
+
+# ── Alternative: sharedJwt (V3) ───────────────────────────────────────────────
+#
+# Instead of per-consumer JWT keys, define ONE JWKS endpoint for all consumers.
+# Each consumer is identified by matching the JWT `sub` claim to consumer.username.
+#
+# This is the Auth0 / Cognito / Keycloak / Google pattern:
+#   • The identity provider issues tokens where sub = user's unique ID
+#   • Conduit consumers are the allowed user IDs with per-user rate limits
+#
+# To use this pattern instead of the V1/V2 example above, replace the
+# consumers block with:
+#
+# consumers:
+#   sharedJwt:
+#     jwksUrl: "https://YOUR_DOMAIN.auth0.com/.well-known/jwks.json"
+#     audience: ["https://api.example.com"]
+#     issuer:   "https://YOUR_DOMAIN.auth0.com"
+#     usernameClaim: "sub"   # default — matches consumer.username
+#
+#   skipPaths: ["/__health__"]
+#
+#   consumers:
+#     - username: "auth0|alice123"      # jwt.sub must equal this exactly
+#       rateLimit: { windowSecs: 60, limit: 100 }
+#       headers: { X-User: alice }
+#
+#     - username: "auth0|bob456"
+#       rateLimit: { windowSecs: 60, limit: 10000 }
+#       headers: { X-Tier: premium }
+#
+#     # Consumers without per-consumer credentials are valid when sharedJwt is set
+#     - username: "auth0|readonly789"
+#
+# Note: when sharedJwt is set, consumers listed here don't need apiKey/basicAuth/jwt
+# credentials — they're identified purely by the sharedJwt sub claim.

@@ -1,0 +1,91 @@
+# ── Observability Stack — Metrics, Tracing, Structured Logs ─────────────────
+#
+# Full observability setup for production:
+#
+#   Prometheus  →  scrapes /__metrics__ for counters / histograms
+#   Grafana Tempo  ←  receives OTLP traces (--features otlp required)
+#   Loki / Datadog  ←  tail ./logs/access.log (JSON format)
+#
+# Dashboard variables available out-of-the-box:
+#   conduit_requests_total{method, status}
+#   conduit_request_duration_seconds{method, status}  (histogram)
+#   conduit_active_connections  (gauge)
+#   conduit_upstream_errors_total{route, status}
+#   conduit_retry_attempts_total{route, condition}
+#   conduit_rate_limit_rejected_total{site}
+#   conduit_cache_hits_total{route}
+#   conduit_cache_misses_total{route}
+#
+# Build: cargo build --release --features otlp
+# Run:   conduit -c examples/observability.yaml
+
+global:
+  # OpenTelemetry OTLP — distributed tracing.
+  # Requires: --features otlp at compile time.
+  # When disabled (feature absent), this section is silently ignored.
+  otlp:
+    endpoint: "http://tempo:4317"       # Grafana Tempo gRPC endpoint
+    serviceName: "conduit"              # appears as service.name in traces
+    sampleRate: 0.05                    # sample 5 % in production (adjust as needed)
+    timeoutMs: 5000
+
+  admin:
+    bind: "127.0.0.1:2019"
+
+sites:
+  - port: 8080
+
+    # ── Structured JSON access logs ────────────────────────────────────────────
+    # Each line is a JSON object → forward to Loki, Datadog, Splunk, etc.
+    # Fields: time, method, path, status, bytes, duration_ms, ip,
+    #         request_id (X-Request-ID), upstream (selected backend URL)
+    logging:
+      format: json
+      file: ./logs/access.log
+      # Do NOT log these paths — they generate hundreds of entries per minute
+      # and add no diagnostic value.
+      skipPaths:
+        - /__health__
+        - /__metrics__
+        - /favicon.ico
+        - /robots.txt
+
+    # ── Prometheus metrics ─────────────────────────────────────────────────────
+    # Scrape config for prometheus.yml:
+    #   - job_name: conduit
+    #     static_configs: [{targets: ["conduit-host:8080"]}]
+    #     metrics_path: /__metrics__
+    #     bearer_token: "my-metrics-token"
+    metrics:
+      path: /__metrics__
+      token: "$METRICS_TOKEN"   # optional — omit if scraper is on the same host
+
+    # ── Health endpoint ────────────────────────────────────────────────────────
+    # Kubernetes / load balancer readiness probe:
+    #   livenessProbe:  httpGet: { path: /__health__, port: 8080 }
+    #   readinessProbe: httpGet: { path: /__health__, port: 8080 }
+    healthCheck:
+      includeUpstreams: true   # include per-upstream health in the JSON response
+
+    # ── Outlier detection (passive health) ────────────────────────────────────
+    # Silently tracks 5xx rates from real traffic; ejects misbehaving upstreams
+    # without requiring a dedicated health check probe.
+    outlierDetection:
+      consecutive5xx: 5            # eject after 5 consecutive errors
+      baseEjectionTimeSecs: 30     # first ejection: 30 s
+      maxEjectionTimeSecs: 300     # exponential backoff capped at 5 min
+      maxEjectionPercent: 10       # never eject more than 10% of the cluster
+
+    # ── Security headers ──────────────────────────────────────────────────────
+    securityHeaders: true
+
+    proxy:
+      /api:
+        targets:
+          - "http://api1:4000"
+          - "http://api2:4000"
+        strategy: least-conn
+        stripPrefix: true
+        healthCheck:
+          path: /health
+          intervalSecs: 10

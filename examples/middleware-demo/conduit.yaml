@@ -1,0 +1,56 @@
+# middleware-demo/conduit.yaml
+#
+# Demonstrates all four middleware types in a single pipeline:
+#
+#   1. api-gate.rhai       (request, Rhai)  — API key check
+#   2. header-injector.wat (request, WASM)  — inject X-Trace-Id + X-Wasm-Plugin
+#   3. response-enricher.rhai (response, Rhai) — add X-Served-By, strip noisy headers
+#   4. response-tagger.wat (response, WASM) — add X-Processed-By: wasm
+#
+# Start with:
+#   conduit --config examples/middleware-demo/conduit.yaml
+#
+# Test:
+#   # Should return 401 (missing key)
+#   curl -v http://localhost:8080/
+#
+#   # Should return 200 and show injected headers
+#   curl -v -H "X-Api-Key: demo-secret" http://localhost:8080/
+#
+#   # Enable WASM features at compile time:
+#   cargo run --features wasm -- --config examples/middleware-demo/conduit.yaml
+
+port: 8080
+
+middleware:
+  # Step 1: Rhai API key gate (request phase)
+  # Returns 401/403 if X-Api-Key is missing or wrong.
+  - type: script
+    path: ./api-gate.rhai
+    config:
+      api_key: "demo-secret"
+      api_header: "x-api-key"
+
+  # Step 2: WASM header injector (request phase, requires --features wasm)
+  # Injects X-Trace-Id (copy of X-Request-ID) and X-Wasm-Plugin: header-injector/1.0
+  # onto the forwarded request so upstream receives them.
+  - type: wasm
+    path: ./header-injector.wasm
+
+  # Step 3: Rhai response enricher (response phase)
+  # Adds X-Served-By, X-Error-Category; strips X-Powered-By / Server.
+  - type: script
+    phase: response
+    path: ./response-enricher.rhai
+    config:
+      service_name: "demo-api"
+      hide_server: true
+
+  # Step 4: WASM response tagger (response phase, requires --features wasm)
+  # Injects X-Processed-By: wasm onto every response.
+  - type: wasm
+    path: ./response-tagger.wasm
+
+proxy:
+  targets:
+    - http://httpbin.org/anything   # public echo endpoint for demo

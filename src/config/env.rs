@@ -68,18 +68,21 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn keeps_unknown_var() {
         let out = interpolate(r#"{"token": "$CONDUIT_NONEXISTENT_XYZ_987"}"#);
         assert_eq!(out, r#"{"token": "$CONDUIT_NONEXISTENT_XYZ_987"}"#);
     }
 
     #[test]
+    #[serial]
     fn ignores_bare_dollar() {
         let out = interpolate("price: $42");
         assert_eq!(out, "price: $42");
     }
 
     #[test]
+    #[serial]
     fn ignores_double_dollar() {
         let out = interpolate("$$VAR");
         assert_eq!(out, "$$VAR");
@@ -100,5 +103,42 @@ mod tests {
         std::env::set_var("CONDUIT_TEST_BACKSLASH", r"C:\path\to\file");
         let out = interpolate(r#"{"path": "$CONDUIT_TEST_BACKSLASH"}"#);
         assert_eq!(out, r#"{"path": "C:\\path\\to\\file"}"#);
+    }
+
+    #[test]
+    #[serial]
+    fn var_at_end_of_string() {
+        let out = interpolate("value=$CONDUIT_NONEXISTENT_END");
+        assert_eq!(out, "value=$CONDUIT_NONEXISTENT_END");
+    }
+
+    #[test]
+    #[serial]
+    fn var_followed_by_special_char() {
+        let out = interpolate("$CONDUIT_NONEXISTENT_SPEC.");
+        assert_eq!(out, "$CONDUIT_NONEXISTENT_SPEC.");
+    }
+
+    #[test]
+    #[serial]
+    fn no_substitution_when_empty() {
+        let out = interpolate("");
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    #[serial]
+    fn dollar_at_end() {
+        let out = interpolate("trailing$");
+        assert_eq!(out, "trailing$");
+    }
+
+    #[test]
+    #[serial]
+    fn multiple_vars_in_one_string() {
+        std::env::set_var("CONDUIT_TEST_A", "hello");
+        std::env::set_var("CONDUIT_TEST_B", "world");
+        let out = interpolate("$CONDUIT_TEST_A $CONDUIT_TEST_B");
+        assert_eq!(out, "hello world");
     }
 }

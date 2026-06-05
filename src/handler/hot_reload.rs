@@ -13,6 +13,42 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use async_trait::async_trait;
+use pingora_core::Result as PingoraResult;
+
+use crate::handler::LocalHandlerImpl;
+
+/// Handler struct for serving the hot-reload client JavaScript snippet.
+pub struct HotReloadJsHandler {
+    pub extra_headers: Vec<(String, String)>,
+}
+
+#[async_trait]
+impl LocalHandlerImpl for HotReloadJsHandler {
+    async fn handle(&mut self, session: &mut Session) -> PingoraResult<()> {
+        handle_client_js(session, &self.extra_headers).await
+    }
+}
+
+/// Handler struct for the Server-Sent Events hot-reload stream.
+pub struct HotReloadSseHandler {
+    pub extra_headers: Vec<(String, String)>,
+    /// Wrapped in `Option` so the receiver can be moved out on the first
+    /// (and only) call to `handle`.
+    pub rx: Option<broadcast::Receiver<()>>,
+}
+
+#[async_trait]
+impl LocalHandlerImpl for HotReloadSseHandler {
+    async fn handle(&mut self, session: &mut Session) -> PingoraResult<()> {
+        let rx = self
+            .rx
+            .take()
+            .expect("HotReloadSseHandler::handle called twice");
+        handle_sse(session, rx, &self.extra_headers).await
+    }
+}
+
 use bytes::Bytes;
 use notify::Watcher;
 use pingora_core::Result;
@@ -294,4 +330,175 @@ fn event_passes_filter(event: &notify::Event, exts: Option<&[String]>) -> bool {
                 .unwrap_or(false)
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::from_str as parse;
+
+    fn parse_cfg(json: &str) -> crate::config::schema::AppConfig {
+        parse(json).expect("parse failed")
+    }
+
+    // ── build_watch_config ────────────────────────────────────────────────────
+
+    #[test]
+    fn build_watch_config_no_hot_reload_returns_none() {
+        let cfg = parse_cfg(r#"{ "port": 8080, "static": "./dist" }"#);
+        assert!(build_watch_config(&cfg).is_none());
+    }
+
+    #[test]
+    fn build_watch_config_hot_reload_false_returns_none() {
+        let cfg = parse_cfg(r#"{ "port": 8080, "static": "./dist", "hotReload": false }"#);
+        assert!(build_watch_config(&cfg).is_none());
+    }
+
+    #[test]
+    fn build_watch_config_no_static_dir_returns_none() {
+        // hotReload=true but no static directory — nothing to watch.
+        let cfg = parse_cfg(r#"{ "port": 8080, "hotReload": true }"#);
+        assert!(build_watch_config(&cfg).is_none());
+    }
+
+    #[test]
+    fn build_watch_config_hot_reload_true_returns_dir() {
+        let cfg = parse_cfg(r#"{ "port": 8080, "static": "./dist", "hotReload": true }"#);
+        let result = build_watch_config(&cfg);
+        assert!(
+            result.is_some(),
+            "hotReload=true with static dir must return Some"
+        );
+        let (dirs, exts) = result.unwrap();
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0], std::path::PathBuf::from("./dist"));
+        assert!(exts.is_none(), "no extension filter → watch all files");
+    }
+
+    #[test]
+    fn build_watch_config_with_extension_filter() {
+        let cfg = parse_cfg(
+            r#"{ "port": 8080, "static": "./dist",
+                 "hotReload": { "extensions": [".html", ".css", ".js"] } }"#,
+        );
+        let result = build_watch_config(&cfg);
+        assert!(result.is_some());
+        let (dirs, exts) = result.unwrap();
+        assert_eq!(dirs.len(), 1);
+        let exts = exts.expect("extension filter must be present");
+        assert!(exts.contains(&".css".to_owned()) || exts.iter().any(|e| e.contains("css")));
+    }
+
+    #[test]
+    fn build_watch_config_deduplicates_dirs() {
+        // Two sites with the same static dir → only one watch dir.
+        let cfg = parse_cfg(
+            r#"[
+                { "port": 8080, "static": "./dist", "hotReload": true },
+                { "port": 8081, "static": "./dist", "hotReload": true }
+            ]"#,
+        );
+        let result = build_watch_config(&cfg);
+        assert!(result.is_some());
+        let (dirs, _) = result.unwrap();
+        assert_eq!(dirs.len(), 1, "duplicate dirs must be deduped: {dirs:?}");
+    }
+
+    // ── event_passes_filter ───────────────────────────────────────────────────
+
+    fn make_event(kind: notify::EventKind, paths: Vec<std::path::PathBuf>) -> notify::Event {
+        notify::Event {
+            kind,
+            paths,
+            attrs: notify::event::EventAttributes::default(),
+        }
+    }
+
+    #[test]
+    fn event_passes_filter_modify_no_ext_filter() {
+        let evt = make_event(
+            notify::EventKind::Modify(notify::event::ModifyKind::Any),
+            vec![PathBuf::from("index.html")],
+        );
+        assert!(
+            event_passes_filter(&evt, None),
+            "no filter → all events pass"
+        );
+    }
+
+    #[test]
+    fn event_passes_filter_create_no_ext_filter() {
+        let evt = make_event(
+            notify::EventKind::Create(notify::event::CreateKind::File),
+            vec![PathBuf::from("style.css")],
+        );
+        assert!(event_passes_filter(&evt, None));
+    }
+
+    #[test]
+    fn event_passes_filter_access_event_rejected() {
+        // Access events (reads) must not trigger hot-reload.
+        let evt = make_event(
+            notify::EventKind::Access(notify::event::AccessKind::Open(
+                notify::event::AccessMode::Any,
+            )),
+            vec![PathBuf::from("index.html")],
+        );
+        assert!(
+            !event_passes_filter(&evt, None),
+            "Access events must be ignored"
+        );
+    }
+
+    #[test]
+    fn event_passes_filter_matching_extension_passes() {
+        let evt = make_event(
+            notify::EventKind::Modify(notify::event::ModifyKind::Any),
+            vec![PathBuf::from("style.css")],
+        );
+        let exts = vec![".css".to_owned(), ".js".to_owned()];
+        assert!(event_passes_filter(&evt, Some(&exts)));
+    }
+
+    #[test]
+    fn event_passes_filter_non_matching_extension_blocked() {
+        let evt = make_event(
+            notify::EventKind::Modify(notify::event::ModifyKind::Any),
+            vec![PathBuf::from("image.png")],
+        );
+        let exts = vec![".css".to_owned(), ".js".to_owned()];
+        assert!(
+            !event_passes_filter(&evt, Some(&exts)),
+            "png not in filter → blocked"
+        );
+    }
+
+    #[test]
+    fn event_passes_filter_case_insensitive() {
+        // Extension comparison is case-insensitive.
+        let evt = make_event(
+            notify::EventKind::Modify(notify::event::ModifyKind::Any),
+            vec![PathBuf::from("STYLE.CSS")],
+        );
+        let exts = vec![".css".to_owned()];
+        assert!(
+            event_passes_filter(&evt, Some(&exts)),
+            "case-insensitive match must pass"
+        );
+    }
+
+    #[test]
+    fn event_passes_filter_strip_leading_dot() {
+        // Extension can be configured with or without a leading dot.
+        let evt = make_event(
+            notify::EventKind::Modify(notify::event::ModifyKind::Any),
+            vec![PathBuf::from("app.js")],
+        );
+        let exts_no_dot = vec!["js".to_owned()]; // no leading dot
+        assert!(
+            event_passes_filter(&evt, Some(&exts_no_dot)),
+            "extension without leading dot must still match"
+        );
+    }
 }

@@ -1,8 +1,25 @@
+use async_trait::async_trait;
 use bytes::Bytes;
 use pingora_core::Result;
 use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
 use prometheus::{Encoder, TextEncoder};
+use subtle::ConstantTimeEq as _;
+
+use crate::handler::LocalHandlerImpl;
+
+/// Handler struct for Prometheus metrics responses.
+pub struct MetricsHandler {
+    pub token: Option<String>,
+    pub extra_headers: Vec<(String, String)>,
+}
+
+#[async_trait]
+impl LocalHandlerImpl for MetricsHandler {
+    async fn handle(&mut self, session: &mut Session) -> Result<()> {
+        handle_metrics(session, self.token.as_deref(), &self.extra_headers).await
+    }
+}
 
 /// Serve the Prometheus metrics endpoint.
 ///
@@ -21,7 +38,9 @@ pub async fn handle_metrics(
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .unwrap_or("");
-        if provided != tok {
+        // Constant-time comparison — same reasoning as admin API token.
+        let ok = provided.len() == tok.len() && provided.as_bytes().ct_eq(tok.as_bytes()).into();
+        if !ok {
             let mut resp = ResponseHeader::build(401, Some(2 + extra.len()))?;
             resp.insert_header("content-length", "0")?;
             resp.insert_header("www-authenticate", "Bearer")?;

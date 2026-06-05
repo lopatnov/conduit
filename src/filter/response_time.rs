@@ -67,4 +67,46 @@ mod tests {
         assert!(s.starts_with("12.3"), "got {s}");
         assert!(s.ends_with("ms"), "got {s}");
     }
+
+    #[test]
+    fn format_zero_duration() {
+        let s = format_elapsed(Duration::ZERO, 0);
+        assert_eq!(s, "0ms", "zero duration should be 0ms");
+    }
+
+    #[test]
+    fn format_large_duration() {
+        let s = format_elapsed(Duration::from_secs(2), 0);
+        assert_eq!(s, "2000ms", "2s should format as 2000ms");
+    }
+
+    #[test]
+    fn decimal_digits_returns_zero_for_none() {
+        assert_eq!(decimal_digits(None), 0, "None config → 0 digits");
+    }
+
+    #[test]
+    fn decimal_digits_returns_zero_for_enabled_true() {
+        assert_eq!(
+            decimal_digits(Some(&ResponseTimeConfig::Enabled(true))),
+            0,
+            "Enabled(true) → 0 digits"
+        );
+    }
+
+    #[test]
+    fn decimal_digits_options_none_defaults_to_zero() {
+        let cfg = ResponseTimeConfig::Options(ResponseTimeOptions { digits: None });
+        assert_eq!(
+            decimal_digits(Some(&cfg)),
+            0,
+            "Options with digits: None → 0 digits"
+        );
+    }
+
+    #[test]
+    fn decimal_digits_options_with_value() {
+        let cfg = ResponseTimeConfig::Options(ResponseTimeOptions { digits: Some(3) });
+        assert_eq!(decimal_digits(Some(&cfg)), 3, "Options digits: 3 → 3");
+    }
 }

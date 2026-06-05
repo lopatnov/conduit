@@ -45,3 +45,51 @@ pub const DEFAULT_UNHEALTHY_THRESHOLD: u32 = 3;
 
 /// Healthy threshold: consecutive successes before marking upstream up.
 pub const DEFAULT_HEALTHY_THRESHOLD: u32 = 1;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admin_bind_is_loopback() {
+        assert!(
+            DEFAULT_ADMIN_BIND.starts_with("127.0.0.1"),
+            "admin must bind loopback"
+        );
+        assert!(
+            DEFAULT_ADMIN_BIND.contains("2019"),
+            "default admin port is 2019"
+        );
+    }
+
+    #[test]
+    fn health_and_metrics_paths_start_with_slash() {
+        assert!(DEFAULT_HEALTH_PATH.starts_with('/'));
+        assert!(DEFAULT_METRICS_PATH.starts_with('/'));
+        assert!(DEFAULT_HOT_RELOAD_PATH.starts_with('/'));
+    }
+
+    #[test]
+    fn cache_methods_are_idempotent() {
+        // Only GET and HEAD are safe to cache by default.
+        assert!(DEFAULT_CACHE_METHODS.contains(&"GET"));
+        assert!(DEFAULT_CACHE_METHODS.contains(&"HEAD"));
+        assert!(!DEFAULT_CACHE_METHODS.contains(&"POST"));
+        assert!(!DEFAULT_CACHE_METHODS.contains(&"PUT"));
+    }
+
+    #[test]
+    fn thresholds_are_sane() {
+        // Unhealthy threshold > healthy threshold so recovery is fast.
+        assert!(DEFAULT_UNHEALTHY_THRESHOLD > DEFAULT_HEALTHY_THRESHOLD);
+        assert!(DEFAULT_SHUTDOWN_TIMEOUT_SECS > 0);
+        assert!(DEFAULT_HEALTH_CHECK_INTERVAL_SECS > 0);
+    }
+
+    #[test]
+    fn rate_limit_defaults_are_non_empty() {
+        assert!(!DEFAULT_RATE_LIMIT_ALGORITHM.is_empty());
+        assert!(!DEFAULT_RATE_LIMIT_KEY_BY.is_empty());
+        assert!(!DEFAULT_API_KEY_HEADER.is_empty());
+    }
+}
