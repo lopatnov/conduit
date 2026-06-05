@@ -36,8 +36,8 @@ Two image variants are published to the GitHub Container Registry on every relea
 
 | Variant  | Tags                                       | Includes                                                                                                                                                         |
 | -------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Standard | `:latest`, `:1.0.0`, `:1.0`                | Core proxy — no optional features. Smallest binary (~14 MB)                                                                                                      |
-| Full     | `:latest-full`, `:1.0.0-full`, `:1.0-full` | All 14 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`, `otlp`, `kubernetes` |
+| Standard | `:latest`, `:1.1.0`, `:1.1`                | Core proxy — no optional features. Smallest binary (~14 MB)                                                                                                      |
+| Full     | `:latest-full`, `:1.1.0-full`, `:1.1-full` | All 14 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`, `otlp`, `kubernetes` |
 
 ```bash
 # Standard (~14 MB)

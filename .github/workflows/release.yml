@@ -141,7 +141,7 @@ jobs:
       # Install cross for cross-compilation targets
       - name: Install cross
         if: matrix.use_cross
-        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538  # v2.81.1
+        uses: taiki-e/install-action@4bc351f7f2614e48088386e2a0ad917ca3a7e4ba  # v2.81.5
         with:
           tool: cross
 
@@ -185,11 +185,13 @@ jobs:
           Copy-Item "target\${{ matrix.target }}\release\conduit.exe" "dist\${{ matrix.asset_name }}"
           Compress-Archive -Path "dist\${{ matrix.asset_name }}" -DestinationPath "dist\${{ matrix.asset_name }}.zip"
 
-      # Upload bare binary (used by npm postinstall)
+      # Upload bare binary (used by npm postinstall).
+      # Name uses asset_name (not target) so standard and full builds for the
+      # same target get distinct artifact names and don't overwrite each other.
       - name: Upload binary artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: binary-${{ matrix.target }}
+          name: binary-${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
           if-no-files-found: error
 
@@ -197,7 +199,7 @@ jobs:
       - name: Upload archive artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: archive-${{ matrix.target }}
+          name: archive-${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}.${{ matrix.archive_ext }}
           if-no-files-found: error
 
@@ -225,7 +227,7 @@ jobs:
         run: chmod +x dist/conduit-*-linux-* dist/conduit-*-darwin* 2>/dev/null || true
 
       - name: Attest all binaries
-        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45  # v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be  # v2
         with:
           subject-path: "dist/*"
 
@@ -405,7 +407,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Scan image
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8  # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.71.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ needs.docker.outputs.version }}
           format: table
@@ -431,7 +433,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Scan full image
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8  # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.71.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ needs.docker-full.outputs.version }}-full
           format: table

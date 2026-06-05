@@ -1,6 +1,6 @@
 [package]
 name        = "lopatnov-conduit"
-version     = "1.0.0"
+version     = "1.1.0"
 edition     = "2021"
 description = "High-performance reverse proxy and file server built on Cloudflare Pingora"
 license     = "Apache-2.0"
@@ -93,7 +93,7 @@ rhai = { version = "1", features = ["sync"], optional = true }
 
 # --- JWT bearer-token authentication (feature: jwt) ---
 # Verifies HS256 (HMAC secret) and RS256/ES256 (JWKS/PEM).
-jsonwebtoken = { version = "9", optional = true }
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"], optional = true }
 
 # --- HTTP client (feature: jwt for JWKS, forward-auth, mirroring) ---
 # `default-features = false` avoids native-tls; rustls keeps TLS consistent.
@@ -208,7 +208,7 @@ wat         = "1"
 rcgen       = "0.14"
 # jsonwebtoken is used in auth integration tests to generate test tokens.
 # Listed as dev-dep so tests compile without --features jwt.
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 
 [[test]]
 name = "acme"
