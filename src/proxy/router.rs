@@ -414,28 +414,26 @@ fn resolve_proxy(
             } else {
                 None
             };
-            let sticky_cookie_name: Option<&str> =
-                sticky_cfg.map(|s| s.cookie.as_str());
-            let sticky_cookie_val: Option<String> = sticky_cookie_name
-                .and_then(|name| extract_cookie(req_headers, name));
+            let sticky_cookie_name: Option<&str> = sticky_cfg.map(|s| s.cookie.as_str());
+            let sticky_cookie_val: Option<String> =
+                sticky_cookie_name.and_then(|name| extract_cookie(req_headers, name));
 
             // HMAC sticky: find which healthy upstream the cookie was signed for.
             // `pinned_url` = Some(url) if cookie is a valid HMAC of that URL.
-            let pinned_url: Option<String> = if let (Some(val), Some(cfg)) =
-                (sticky_cookie_val.as_deref(), sticky_cfg)
-            {
-                if let Some(ref secret) = cfg.secret {
-                    // Try to find the upstream whose HMAC matches the cookie.
-                    all_urls
-                        .iter()
-                        .find(|u| hmac_verify_sticky(u, val, secret))
-                        .cloned()
+            let pinned_url: Option<String> =
+                if let (Some(val), Some(cfg)) = (sticky_cookie_val.as_deref(), sticky_cfg) {
+                    if let Some(ref secret) = cfg.secret {
+                        // Try to find the upstream whose HMAC matches the cookie.
+                        all_urls
+                            .iter()
+                            .find(|u| hmac_verify_sticky(u, val, secret))
+                            .cloned()
+                    } else {
+                        None // No secret: use raw cookie as hash input (below)
+                    }
                 } else {
-                    None // No secret: use raw cookie as hash input (below)
-                }
-            } else {
-                None
-            };
+                    None
+                };
 
             // Strict mode: if the client presented a signed cookie for a peer
             // that is now unhealthy, refuse the request rather than silently
@@ -863,8 +861,7 @@ pub(crate) fn hmac_verify_sticky(upstream_url: &str, cookie_value: &str, secret:
     let Ok(actual_bytes) = URL_SAFE_NO_PAD.decode(cookie_value) else {
         return false;
     };
-    expected_bytes.len() == actual_bytes.len()
-        && expected_bytes.ct_eq(&actual_bytes).into()
+    expected_bytes.len() == actual_bytes.len() && expected_bytes.ct_eq(&actual_bytes).into()
 }
 
 fn find_route<'a>(
@@ -2544,7 +2541,9 @@ mod tests {
         assert!(!signed.is_empty(), "HMAC signature must not be empty");
         // URL-safe base64: only A-Z a-z 0-9 - _ (no + / =)
         assert!(
-            signed.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            signed
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
             "signature must be URL-safe base64 (no +, /, or =): {signed}"
         );
     }

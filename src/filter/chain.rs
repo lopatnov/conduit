@@ -331,10 +331,7 @@ impl RequestFilter for LimitsGuard {
             .get("host")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        if host_val
-            .bytes()
-            .any(|b| b == b'\r' || b == b'\n' || b == 0)
-        {
+        if host_val.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0) {
             response::write_response(
                 ctx.session,
                 400,
@@ -1241,7 +1238,10 @@ mod tests {
     fn max_request_headers_threshold() {
         // Verify the comparison logic used inside LimitsGuard.
         assert!(50u32 > 49u32, "50 headers should exceed limit of 49");
-        assert!(!(50u32 > 50u32), "50 headers at limit should not exceed limit of 50");
+        assert!(
+            !(50u32 > 50u32),
+            "50 headers at limit should not exceed limit of 50"
+        );
     }
 
     // ── limits_rejection body/header messages ─────────────────────────────────

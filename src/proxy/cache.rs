@@ -853,9 +853,11 @@ mod tests {
         let mut c = cfg(60);
         c.early_refresh_secs = Some(15);
         let json = serde_json::to_string(&c).expect("must serialize");
-        assert!(json.contains("earlyRefreshSecs"), "field name must be camelCase");
-        let roundtrip: CacheConfig =
-            serde_json::from_str(&json).expect("must deserialize");
+        assert!(
+            json.contains("earlyRefreshSecs"),
+            "field name must be camelCase"
+        );
+        let roundtrip: CacheConfig = serde_json::from_str(&json).expect("must deserialize");
         assert_eq!(roundtrip.early_refresh_secs, Some(15));
     }
 }

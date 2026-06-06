@@ -237,7 +237,10 @@ pub struct SiteConfig {
     /// ```json
     /// { "allowDuplicateChunked": true }
     /// ```
-    #[serde(rename = "allowDuplicateChunked", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "allowDuplicateChunked",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub allow_duplicate_chunked: Option<bool>,
     /// Emit W3C `Server-Timing` response header for this site.
     ///
@@ -1029,10 +1032,7 @@ pub struct LimitsConfig {
     /// ```json
     /// { "maxRequestHeaders": 100 }
     /// ```
-    #[serde(
-        rename = "maxRequestHeaders",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "maxRequestHeaders", skip_serializing_if = "Option::is_none")]
     pub max_request_headers: Option<u32>,
     /// Minimum upload rate in bytes per second (slow-loris upload defence).
     ///

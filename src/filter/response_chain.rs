@@ -110,7 +110,9 @@ impl ResponseFilterChain {
         let allow_duplicate_chunked = site
             .and_then(|s| s.allow_duplicate_chunked)
             .unwrap_or(false);
-        chain = chain.push(CrlfProtectionFilter { allow_duplicate_chunked });
+        chain = chain.push(CrlfProtectionFilter {
+            allow_duplicate_chunked,
+        });
 
         // Phase 2 — CORS + security + custom site headers.
         chain = chain.push(InjectExtraHeadersFilter {
@@ -594,7 +596,9 @@ mod tests {
         resp.insert_header("x-custom", "clean-value").unwrap();
         resp.insert_header("content-type", "text/html").unwrap();
         let ctx = dummy_ctx();
-        let filter = CrlfProtectionFilter { allow_duplicate_chunked: false };
+        let filter = CrlfProtectionFilter {
+            allow_duplicate_chunked: false,
+        };
         let result = filter.apply(&mut resp, &ctx).unwrap();
         assert!(matches!(result, ResponseFilterOutcome::Continue));
         assert!(resp.headers.get("x-custom").is_some());
@@ -608,7 +612,11 @@ mod tests {
             .unwrap();
         resp.insert_header("x-custom", "value").unwrap();
         let ctx = dummy_ctx();
-        CrlfProtectionFilter { allow_duplicate_chunked: false }.apply(&mut resp, &ctx).unwrap();
+        CrlfProtectionFilter {
+            allow_duplicate_chunked: false,
+        }
+        .apply(&mut resp, &ctx)
+        .unwrap();
         assert!(resp.headers.get("content-type").is_some());
         assert!(resp.headers.get("x-custom").is_some());
     }
@@ -620,9 +628,11 @@ mod tests {
         resp.insert_header("transfer-encoding", "chunked, chunked")
             .unwrap();
         let ctx = dummy_ctx();
-        CrlfProtectionFilter { allow_duplicate_chunked: false }
-            .apply(&mut resp, &ctx)
-            .unwrap();
+        CrlfProtectionFilter {
+            allow_duplicate_chunked: false,
+        }
+        .apply(&mut resp, &ctx)
+        .unwrap();
         let te: Vec<_> = resp
             .headers
             .get_all("transfer-encoding")
@@ -639,9 +649,11 @@ mod tests {
         resp.insert_header("transfer-encoding", "chunked, chunked")
             .unwrap();
         let ctx = dummy_ctx();
-        CrlfProtectionFilter { allow_duplicate_chunked: true }
-            .apply(&mut resp, &ctx)
-            .unwrap();
+        CrlfProtectionFilter {
+            allow_duplicate_chunked: true,
+        }
+        .apply(&mut resp, &ctx)
+        .unwrap();
         let te: Vec<_> = resp
             .headers
             .get_all("transfer-encoding")
@@ -863,7 +875,9 @@ mod tests {
     #[test]
     fn chain_returns_continue_when_all_pass() {
         let chain = ResponseFilterChain::new()
-            .push(CrlfProtectionFilter { allow_duplicate_chunked: false })
+            .push(CrlfProtectionFilter {
+                allow_duplicate_chunked: false,
+            })
             .push(InjectExtraHeadersFilter { headers: vec![] });
         let mut resp = make_resp(200);
         let ctx = dummy_ctx();
@@ -1066,9 +1080,16 @@ mod tests {
         let mut resp = make_resp(200);
         let ctx = dummy_ctx();
         filter.apply(&mut resp, &ctx).unwrap();
-        let val = resp.headers.get("server-timing").and_then(|v| v.to_str().ok()).unwrap_or("");
+        let val = resp
+            .headers
+            .get("server-timing")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
         assert!(val.starts_with("total;dur="), "must have total: {val}");
-        assert!(!val.contains("upstream"), "no upstream when upstream_start is None");
+        assert!(
+            !val.contains("upstream"),
+            "no upstream when upstream_start is None"
+        );
     }
 
     #[test]
@@ -1081,7 +1102,11 @@ mod tests {
         let mut resp = make_resp(200);
         let ctx = dummy_ctx();
         filter.apply(&mut resp, &ctx).unwrap();
-        let val = resp.headers.get("server-timing").and_then(|v| v.to_str().ok()).unwrap_or("");
+        let val = resp
+            .headers
+            .get("server-timing")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
         assert!(val.contains("total;dur="), "must have total");
         assert!(val.contains("upstream;dur="), "must have upstream: {val}");
     }

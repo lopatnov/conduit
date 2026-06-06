@@ -1493,10 +1493,7 @@ impl ProxyHttp for ConduitProxy {
                     .with_label_values(&[url])
                     .inc();
                 // Per-upstream selection counters (#40).
-                crate::proxy::health::record_upstream_selected(
-                    &self.state.upstream_health,
-                    url,
-                );
+                crate::proxy::health::record_upstream_selected(&self.state.upstream_health, url);
             }
         }
 
@@ -1570,8 +1567,7 @@ impl ProxyHttp for ConduitProxy {
                 CachePhase::Hit | CachePhase::Stale | CachePhase::StaleUpdating
             ) {
                 if let Some(req_ctx_mut) = ctx.as_mut() {
-                    req_ctx_mut.cache_age_secs =
-                        Some(compute_response_age(upstream_response));
+                    req_ctx_mut.cache_age_secs = Some(compute_response_age(upstream_response));
                 }
             }
         }
@@ -1706,9 +1702,9 @@ impl ProxyHttp for ConduitProxy {
                 // Use new_up() so ErrorSource::Upstream is set — required for
                 // should_serve_stale() to recognise this as an upstream error
                 // and serve a stale cached response (#48).
-                return Err(pingora_core::Error::new_up(
-                    pingora_core::ErrorType::Custom("5xx_retry"),
-                )
+                return Err(pingora_core::Error::new_up(pingora_core::ErrorType::Custom(
+                    "5xx_retry",
+                ))
                 .more_context(format!("upstream returned HTTP {status}")));
             }
 
@@ -1731,8 +1727,10 @@ impl ProxyHttp for ConduitProxy {
         // response transforms.  The value is `HttpOnly; SameSite=Lax` so it is
         // not accessible from JavaScript and provides basic CSRF protection.
         if let Some((cookie_name, cookie_val)) = &sticky_cookie {
-            let cookie_header =
-                format!("{}={}; Path=/; HttpOnly; SameSite=Lax", cookie_name, cookie_val);
+            let cookie_header = format!(
+                "{}={}; Path=/; HttpOnly; SameSite=Lax",
+                cookie_name, cookie_val
+            );
             let _ = upstream_response.insert_header("set-cookie", cookie_header);
         }
 
@@ -1827,15 +1825,11 @@ impl ProxyHttp for ConduitProxy {
             let remaining_secs = session
                 .cache
                 .maybe_cache_meta()
-                .and_then(|meta| {
-                    meta.fresh_until()
-                        .duration_since(SystemTime::now())
-                        .ok()
-                })
+                .and_then(|meta| meta.fresh_until().duration_since(SystemTime::now()).ok())
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
 
-            if remaining_secs < early_window_secs as u64 {
+            if proxy_cache::should_early_refresh(remaining_secs, early_window_secs) {
                 tracing::debug!(
                     upstream = %upstream_url,
                     remaining_secs,
@@ -2304,7 +2298,12 @@ impl ProxyHttp for ConduitProxy {
             .as_ref()
             .and_then(|c| c.early_refresh_upstream_url.as_deref().map(str::to_owned))
         {
-            let path = session.req_header().uri.path_and_query().map(|pq| pq.as_str().to_owned()).unwrap_or_default();
+            let path = session
+                .req_header()
+                .uri
+                .path_and_query()
+                .map(|pq| pq.as_str().to_owned())
+                .unwrap_or_default();
             tracing::debug!(upstream = %early_url, path = %path, "spawning early cache refresh");
             tokio::spawn(async move {
                 fire_early_refresh(&early_url, &path).await;
@@ -3368,8 +3367,7 @@ mod tests {
         // Build a response with a Date header set 60 seconds in the past.
         let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
         let date_str = httpdate::fmt_http_date(past);
-        let mut resp =
-            pingora_http::ResponseHeader::build(StatusCode::OK, None).unwrap();
+        let mut resp = pingora_http::ResponseHeader::build(StatusCode::OK, None).unwrap();
         resp.insert_header("date", date_str).unwrap();
         let age = compute_response_age(&resp);
         // Allow ±2s for test execution time.
@@ -3388,8 +3386,7 @@ mod tests {
     #[test]
     fn compute_response_age_unparseable_date_returns_zero() {
         use http::StatusCode;
-        let mut resp =
-            pingora_http::ResponseHeader::build(StatusCode::OK, None).unwrap();
+        let mut resp = pingora_http::ResponseHeader::build(StatusCode::OK, None).unwrap();
         resp.insert_header("date", "not-a-date").unwrap();
         assert_eq!(compute_response_age(&resp), 0);
     }
@@ -3833,10 +3830,13 @@ mod tests {
     fn upload_rate_step_at_exact_min_rate_keeps_excess_zero() {
         let mut excess = 0.0f64;
         let min_rate = 1024u64; // 1 KiB/s
-        // Exactly 1024 bytes in exactly 1 second → excess stays at 0.
+                                // Exactly 1024 bytes in exactly 1 second → excess stays at 0.
         let rejected = upload_rate_step(&mut excess, 1024, min_rate, 1.0);
         assert!(!rejected, "exactly at min rate must not reject");
-        assert!((excess - 0.0).abs() < 0.01, "excess should be ~0, got {excess}");
+        assert!(
+            (excess - 0.0).abs() < 0.01,
+            "excess should be ~0, got {excess}"
+        );
     }
 
     #[test]
@@ -3873,7 +3873,10 @@ mod tests {
         // 100 bytes in 1 second (1/10 of min rate) → deficit grows.
         let rejected = upload_rate_step(&mut excess, 100, min_rate, 1.0);
         // deficit = 100 - 1000 = -900; not yet past -1000 threshold.
-        assert!(!rejected, "single slow chunk below min rate but deficit < min_rate");
+        assert!(
+            !rejected,
+            "single slow chunk below min rate but deficit < min_rate"
+        );
         assert!(excess < 0.0, "excess must be negative (deficit): {excess}");
     }
 

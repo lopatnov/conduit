@@ -680,11 +680,12 @@ fn build_flat_upstream_list(registry: &health::UpstreamRegistry) -> Vec<Value> {
             let url = e.key().as_str();
             let active_conns = registry.conn_load(url);
             // Derive "state" string from ejection and connection load.
-            let state = if e.value().ejected_until_secs.map_or(false, |until| {
-                until > std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
+            let state = if e.value().ejected_until_secs.is_some_and(|until| {
+                until
+                    > std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
             }) {
                 "ejected"
             } else if e.value().half_open {
@@ -706,7 +707,7 @@ fn build_flat_upstream_list(registry: &health::UpstreamRegistry) -> Vec<Value> {
                 "consecutive_successes": e.value().consecutive_successes,
                 "consecutive_5xx":       e.value().consecutive_5xx,
                 "active_connections":    active_conns,
-                "ejected":               e.value().ejected_until_secs.map_or(false, |until| {
+                "ejected":               e.value().ejected_until_secs.is_some_and(|until| {
                     until > std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
