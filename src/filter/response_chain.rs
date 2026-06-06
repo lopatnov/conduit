@@ -233,23 +233,19 @@ impl ResponseFilter for CrlfProtectionFilter {
 /// Source: freenginx `ngx_http_proxy_module.c` commit `56d8eaa6`
 /// (`proxy_allow_duplicate_chunked`).
 fn dedup_chunked_transfer_encoding(resp: &mut ResponseHeader) {
-    // Fast path: zero-allocation early exit for the common single-header case.
-    // Only proceed with the full allocation when there are multiple TE headers
-    // or a comma-separated value that might contain duplicate "chunked" tokens.
-    let te_count = resp.headers.get_all("transfer-encoding").iter().count();
-    if te_count == 0 {
+    // Fast path: single iterator pass with no allocation.
+    // Peek at the first two TE headers; if there is at most one and it
+    // contains no comma, there can be no duplicate "chunked" tokens.
+    let mut te_iter = resp.headers.get_all("transfer-encoding").iter();
+    let first = te_iter.next();
+    let second = te_iter.next();
+    let needs_dedup = match (first, second) {
+        (None, _) => false,
+        (Some(_), Some(_)) => true, // two or more separate TE headers
+        (Some(v), None) => v.as_bytes().contains(&b','), // comma → possible duplicates
+    };
+    if !needs_dedup {
         return;
-    }
-    if te_count == 1 {
-        let needs_dedup = resp
-            .headers
-            .get("transfer-encoding")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.contains(','))
-            .unwrap_or(false);
-        if !needs_dedup {
-            return;
-        }
     }
 
     let te_values: Vec<String> = resp

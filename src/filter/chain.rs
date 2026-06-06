@@ -456,13 +456,38 @@ fn try_acquire_ip_slot(ip: &str, max: u64, counts: &dashmap::DashMap<String, Ato
         }
         return false;
     }
-    // Request is allowed — mark the IP so logging() can decrement the counter.
-    // We need to propagate this to RequestCtx; the LimitsGuard doesn't have
-    // direct access to RequestCtx here. We store it on the session via the
-    // ctx extra_headers note — actually we'll handle this in service.rs by
-    // checking max_connections_per_ip in do_request_filter and setting
-    // req_ctx.client_ip_for_conn_limit.
     true
+}
+
+// ── RAII connection-slot guard ────────────────────────────────────────────────
+
+/// RAII guard that holds one per-IP connection slot for the duration of a
+/// request.
+///
+/// When this guard is dropped (at the end of the request lifecycle, whether
+/// the request completes normally, is rejected, or panics) the slot is
+/// automatically released by decrementing the shared counter.  This replaces
+/// the manual `fetch_sub` that was previously scattered across `logging()`.
+///
+/// The guard is created in `service.rs` after the filter chain succeeds and
+/// stored in [`RequestCtx`]; it is dropped when `RequestCtx` is dropped at
+/// the end of `logging()`.
+#[derive(Debug)]
+pub struct IpConnSlotGuard {
+    pub ip: String,
+    pub counts: Arc<dashmap::DashMap<String, AtomicUsize>>,
+}
+
+impl Drop for IpConnSlotGuard {
+    fn drop(&mut self) {
+        if let Some(counter) = self.counts.get(&self.ip) {
+            let prev = counter.fetch_sub(1, Ordering::Relaxed);
+            if prev == 0 {
+                // Prevent wrap-around on a hypothetical race.
+                counter.store(0, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 /// Token-bucket rate limiter; falls back to in-memory when Redis is unavailable.
@@ -1319,6 +1344,45 @@ mod tests {
             Err(_) => true,
             Ok(hv) => is_host_header_invalid(Some(&hv)),
         }
+    }
+
+    // ── IpConnSlotGuard ──────────────────────────────────────────────────────
+
+    #[test]
+    fn ip_conn_slot_guard_decrements_on_drop() {
+        let counts: Arc<dashmap::DashMap<String, AtomicUsize>> = Arc::new(dashmap::DashMap::new());
+        // Manually set the counter to 1 (simulating a slot that was acquired).
+        counts
+            .entry("10.1.2.3".to_owned())
+            .or_insert_with(|| AtomicUsize::new(0))
+            .store(1, Ordering::Relaxed);
+
+        let guard = IpConnSlotGuard {
+            ip: "10.1.2.3".to_owned(),
+            counts: Arc::clone(&counts),
+        };
+        // Before drop: counter is still 1.
+        assert_eq!(counts.get("10.1.2.3").unwrap().load(Ordering::Relaxed), 1);
+        drop(guard);
+        // After drop: counter should be 0.
+        assert_eq!(counts.get("10.1.2.3").unwrap().load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn ip_conn_slot_guard_prevents_wrap_on_zero() {
+        let counts: Arc<dashmap::DashMap<String, AtomicUsize>> = Arc::new(dashmap::DashMap::new());
+        counts
+            .entry("10.1.2.4".to_owned())
+            .or_insert_with(|| AtomicUsize::new(0))
+            .store(0, Ordering::Relaxed);
+
+        let guard = IpConnSlotGuard {
+            ip: "10.1.2.4".to_owned(),
+            counts: Arc::clone(&counts),
+        };
+        drop(guard);
+        // Counter must not wrap around to usize::MAX.
+        assert_eq!(counts.get("10.1.2.4").unwrap().load(Ordering::Relaxed), 0);
     }
 
     // ── is_host_header_invalid ────────────────────────────────────────────────

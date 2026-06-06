@@ -81,9 +81,11 @@ pub struct RequestCtx {
     /// `None` for local handlers (health, static, metrics, …).
     pub upstream_start: Option<Instant>,
 
-    /// Client IP, used by logging() to decrement the per-IP connection counter
-    /// when `limits.maxConnectionsPerIp` is set.
-    pub client_ip_for_conn_limit: Option<String>,
+    /// RAII guard that releases the per-IP connection slot when this context
+    /// is dropped at the end of `logging()`.  `None` when
+    /// `limits.maxConnectionsPerIp` is not configured or the request was
+    /// rejected before a slot was acquired.
+    pub ip_conn_slot: Option<crate::filter::chain::IpConnSlotGuard>,
 
     /// Passive health check: HTTP status codes that count as upstream failures.
     ///
@@ -173,7 +175,7 @@ impl RequestCtx {
             actual_body_bytes: 0,
             jwt_claims: None,
             upstream_start: None,
-            client_ip_for_conn_limit: None,
+            ip_conn_slot: None,
             passive_unhealthy_status: Vec::new(),
             passive_unhealthy_latency_ms: None,
             websocket_allowed: false,

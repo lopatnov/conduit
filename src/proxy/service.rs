@@ -747,7 +747,13 @@ impl ConduitProxy {
                         .map(|a| a.ip().to_string())
                         .unwrap_or_default();
                     if !ip.is_empty() {
-                        req_ctx.client_ip_for_conn_limit = Some(ip);
+                        // Store the RAII guard; it will automatically decrement
+                        // the slot counter when RequestCtx is dropped at the
+                        // end of logging() — no manual fetch_sub needed.
+                        req_ctx.ip_conn_slot = Some(crate::filter::chain::IpConnSlotGuard {
+                            ip,
+                            counts: Arc::clone(&self.state.ip_conn_counts),
+                        });
                     }
                 }
             }
@@ -2108,19 +2114,9 @@ impl ProxyHttp for ConduitProxy {
     {
         // Decrement inflight for proxy requests (local handlers decrement inline).
         self.state.metrics.active_connections.dec();
-        // Release per-IP connection slot (nginx limit_conn pattern).
-        if let Some(ip) = ctx
-            .as_ref()
-            .and_then(|c| c.client_ip_for_conn_limit.as_deref())
-        {
-            if let Some(counter) = self.state.ip_conn_counts.get(ip) {
-                let prev = counter.fetch_sub(1, Ordering::Relaxed);
-                if prev == 0 {
-                    // Prevent wrap-around if there was a race.
-                    counter.store(0, Ordering::Relaxed);
-                }
-            }
-        }
+        // The per-IP connection slot is released automatically here:
+        // RequestCtx.ip_conn_slot (IpConnSlotGuard) is dropped when ctx is
+        // cleared at the end of this function, so no manual fetch_sub needed.
         if let Some(req_ctx) = ctx.as_ref() {
             if !matches!(req_ctx.upstream, UpstreamTarget::Local(_)) {
                 self.state.inflight.fetch_sub(1, Ordering::Relaxed);
