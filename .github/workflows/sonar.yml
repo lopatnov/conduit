@@ -2,9 +2,13 @@ name: SonarCloud
 
 on:
   push:
-    branches: [main, security/v1.1.0-stabilize]
+    branches: [main]
   pull_request:
     branches: [main]
+    # Dependabot PRs only bump CI action pins — no Rust code changes.
+    # Running coverage + SonarCloud scan wastes ~10 minutes for zero benefit.
+    paths-ignore:
+      - '.github/workflows/**'
 
 permissions:
   contents: read
