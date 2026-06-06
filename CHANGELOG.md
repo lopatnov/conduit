@@ -9,6 +9,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.1.0] — TBD
+
+### Security
+
+- Upgrade `pingora` and all `pingora-*` crates `0.8.0 → 0.8.1` — mitigates
+  HTTP/2 Bomb (CVE-2026-47774 / RUSTSEC) by bounding the default H2 server
+  header-list size to 64 KiB and limiting concurrent streams to 100.
+- Upgrade `jsonwebtoken` `9.3.1 → 10.4.0` — fixes CVE-2026-25537
+  (Type Confusion leading to potential authorization bypass).
+
+### Changes
+
+- Bump GitHub Actions in CI/CD workflows (Trivy, taiki-e/install-action,
+  codeql-action, attest-build-provenance) via Dependabot.
+- Fix release workflow artifact naming: standard and full builds for the same
+  target now use distinct artifact names, ensuring all binaries appear in the
+  GitHub Release.
+
+---
+
 ## [1.0.0] — 2026-06-02
 
 This release promotes Conduit to a stable, production-ready API gateway and
@@ -551,7 +571,8 @@ compile-time feature-flag system so the binary stays lean for simple deployments
 - **Release pipeline** — `cross`-compiled binaries for six targets; Docker image
   (musl + `FROM scratch`); npm wrapper (`npx conduit`); crates.io publish.
 
-[Unreleased]: https://github.com/lopatnov/conduit/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/lopatnov/conduit/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/lopatnov/conduit/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/lopatnov/conduit/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/lopatnov/conduit/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lopatnov/conduit/compare/v0.1.0...v0.2.0

@@ -1,6 +1,6 @@
 # Benchmarks
 
-Performance measurements for Conduit v1.0.0 — standard build (no optional
+Performance measurements for Conduit v1.1.0 — standard build (no optional
 features) and full build (`--features full`).
 
 > **Methodology:** raw wrk output is measured data; cells marked ¹ are

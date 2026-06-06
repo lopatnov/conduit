@@ -132,6 +132,32 @@ impl BackgroundService for AdminApiService {
             });
         }
 
+        // Spawn event-loop lag monitor — updates conduit_eventloop_lag_ms every second.
+        //
+        // Uses a yield-probe technique: schedule a `yield_now()` and measure how long
+        // the executor takes to resume.  This directly captures scheduling latency
+        // (event-loop lag) without requiring `tokio_unstable` or external crates.
+        // A rising value indicates CPU saturation or I/O stall in the runtime.
+        #[cfg(feature = "tokio-metrics")]
+        {
+            use crate::proxy::service::ConduitMetrics;
+            let gauge = ConduitMetrics::global().eventloop_lag_ms.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+                // Under heavy load the tick may be missed; Skip prevents a burst
+                // of catch-up probes that would skew the lag metric.
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    ticker.tick().await;
+                    // Measure how long between yielding and being resumed.
+                    let before = std::time::Instant::now();
+                    tokio::task::yield_now().await;
+                    let lag_ms = before.elapsed().as_secs_f64() * 1000.0;
+                    gauge.set(lag_ms);
+                }
+            });
+        }
+
         // Spawn upstream health check tasks for every route that has healthCheck configured.
         {
             let config = self.state.config.load();
@@ -195,6 +221,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/upstreams/remove", post(upstreams_remove_handler))
         .route("/upstreams/weight", post(upstreams_weight_handler))
         .route("/cache/purge", delete(cache_purge_handler))
+        .route("/rate-limits", get(rate_limits_handler))
         .route("/ip-deny", post(ip_deny_add_handler))
         .route("/ip-deny", delete(ip_deny_remove_handler))
         .route("/certs/reload", post(certs_reload_handler));
@@ -653,17 +680,87 @@ fn build_flat_upstream_list(registry: &health::UpstreamRegistry) -> Vec<Value> {
         .statuses
         .iter()
         .map(|e| {
+            let url = e.key().as_str();
+            let active_conns = registry.conn_load(url);
+            // Compute ejection once with a single wall-clock read so that the
+            // "state" and "ejected" fields are always consistent in the same item.
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let is_ejected = e
+                .value()
+                .ejected_until_secs
+                .is_some_and(|until| until > now_secs);
+            let state = if is_ejected {
+                "ejected"
+            } else if e.value().half_open {
+                "half-open"
+            } else if !e.value().healthy {
+                "unhealthy"
+            } else if active_conns > 0 {
+                "busy"
+            } else {
+                "healthy"
+            };
             json!({
-                "url":                   e.key(),
+                "url":                   url,
                 "healthy":               e.value().healthy,
+                "state":                 state,
                 "latency_ms":            e.value().latency_ms,
+                "ewma_latency_ms":       (e.value().ewma_latency_us / 1000.0) as u64,
                 "consecutive_failures":  e.value().consecutive_failures,
                 "consecutive_successes": e.value().consecutive_successes,
+                "consecutive_5xx":       e.value().consecutive_5xx,
+                "active_connections":    active_conns,
+                "ejected":               is_ejected,
+                "responses": {
+                    "2xx": e.value().responses_2xx,
+                    "4xx": e.value().responses_4xx,
+                    "5xx": e.value().responses_5xx,
+                },
+                "selected": {
+                    "total": e.value().selected_total,
+                    "last_secs": e.value().selected_last_secs,
+                },
             })
         })
         .collect();
     flat.sort_by(|a, b| a["url"].as_str().cmp(&b["url"].as_str()));
     flat
+}
+
+/// `GET /rate-limits` — per-site/route rate-limiter counters.
+///
+/// Returns a nested object: `{ site: { route_key: { passed, rejected } } }`.
+/// The key format mirrors the internal rate-limiter key (`"{site}\0{route}"`).
+async fn rate_limits_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    use serde_json::Map;
+    let mut result: std::collections::BTreeMap<String, serde_json::Value> =
+        std::collections::BTreeMap::new();
+
+    for entry in state.rate_limiter.iter() {
+        // Key format: "{site}\0{route}" or "*\0{route}" for wildcard.
+        // Skip keys from other namespaces (e.g. "consumer:{username}" inserted
+        // by ConsumersGuard) that do not follow the site\0route convention.
+        let key = entry.key();
+        let (site, route) = match key.split_once('\0') {
+            Some(pair) => pair,
+            None => continue, // not a site\0route key — skip
+        };
+        let bucket = entry.value();
+        result
+            .entry(site.to_owned())
+            .or_insert_with(|| serde_json::Value::Object(Map::new()))
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                route.to_owned(),
+                json!({ "passed": bucket.passed, "rejected": bucket.rejected }),
+            );
+    }
+
+    Json(json!(result))
 }
 
 /// Format a site's host+port as a human-readable label.

@@ -293,20 +293,10 @@ pub fn extract_claims(
     cfg: &JwtAuthConfig,
 ) -> Option<std::collections::HashMap<String, serde_json::Value>> {
     // Decode without validation (already validated by check_jwt earlier).
-    let mut v = jsonwebtoken::Validation::new(Algorithm::HS256);
-    v.insecure_disable_signature_validation();
-    v.validate_exp = false;
-    v.validate_aud = false;
-
-    // Try all the same key paths as validate_token but skip sig check.
-    let data = if let Some(secret) = &cfg.secret {
-        let key = DecodingKey::from_secret(secret.as_bytes());
-        decode::<serde_json::Value>(token, &key, &v).ok()
-    } else {
-        // For JWKS — use insecure decode (sig already validated).
-        let key = DecodingKey::from_secret(b"");
-        decode::<serde_json::Value>(token, &key, &v).ok()
-    }?;
+    // Use the dedicated insecure_decode API instead of the deprecated
+    // `Validation::insecure_disable_signature_validation()` method.
+    let _ = cfg; // sig already verified; we only need the payload here
+    let data = jsonwebtoken::dangerous::insecure_decode::<serde_json::Value>(token).ok()?;
 
     if let serde_json::Value::Object(map) = data.claims {
         Some(map.into_iter().collect())

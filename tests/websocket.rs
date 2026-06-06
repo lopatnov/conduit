@@ -326,7 +326,7 @@ fn websocket_upgrade_returns_101() {
             "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
             "sites": [{
                 "port": port,
-                "proxy": format!("http://{upstream_addr}")
+                "proxy": { "/": { "targets": [format!("http://{upstream_addr}")], "websocket": true } }
             }]
         }),
     );
@@ -369,7 +369,7 @@ fn websocket_accept_header_is_correct() {
             "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
             "sites": [{
                 "port": port,
-                "proxy": format!("http://{upstream_addr}")
+                "proxy": { "/": { "targets": [format!("http://{upstream_addr}")], "websocket": true } }
             }]
         }),
     );
@@ -405,7 +405,7 @@ fn websocket_data_is_tunneled_after_upgrade() {
             "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
             "sites": [{
                 "port": port,
-                "proxy": format!("http://{upstream_addr}")
+                "proxy": { "/": { "targets": [format!("http://{upstream_addr}")], "websocket": true } }
             }]
         }),
     );

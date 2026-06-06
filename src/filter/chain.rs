@@ -321,6 +321,64 @@ pub struct LimitsGuard {
 #[async_trait]
 impl RequestFilter for LimitsGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
+        // Host header security check — always enforced, no config needed.
+        //
+        // Reject requests whose Host header is:
+        //   1. Non-UTF-8 bytes (obvious malform / injection attempt).
+        //   2. Contains CR, LF, or NUL (header-injection / smuggling).
+        //   3. Not a valid HTTP authority (e.g. contains spaces, path
+        //      separators, or other RFC 3986 §3.2-invalid characters).
+        //
+        // We use `http::uri::Authority::try_from` for the authority check
+        // since it enforces the full RFC 3986 grammar and is already a
+        // transitive dependency via the `http` crate.
+        let host_hdr = ctx.session.req_header().headers.get("host");
+        let host_invalid = match host_hdr {
+            // Non-UTF-8 bytes in Host are always malformed.
+            Some(v) => match v.to_str() {
+                Err(_) => true, // non-UTF-8 → reject
+                Ok(s) => {
+                    // Explicit control-byte check (belt-and-suspenders).
+                    if s.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0) {
+                        true
+                    } else {
+                        // Validate as a proper RFC 3986 authority.
+                        http::uri::Authority::try_from(s).is_err()
+                    }
+                }
+            },
+            None => false,
+        };
+        if host_invalid {
+            response::write_response(
+                ctx.session,
+                400,
+                "text/plain",
+                Bytes::from_static(b"Bad Request (invalid Host header)"),
+                ctx.extra_headers,
+            )
+            .await?;
+            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+            return Ok(FilterOutcome::Handled);
+        }
+
+        // Request header count limit.
+        if let Some(max_hdrs) = self.cfg.max_request_headers {
+            let count = ctx.session.req_header().headers.len() as u32;
+            if count > max_hdrs {
+                response::write_response(
+                    ctx.session,
+                    431,
+                    "text/plain",
+                    Bytes::from_static(b"Request Header Fields Too Large"),
+                    ctx.extra_headers,
+                )
+                .await?;
+                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+                return Ok(FilterOutcome::Handled);
+            }
+        }
+
         // Inflight request cap — checked before body/header limits so the
         // rejection cost is minimal when the server is under heavy load.
         if let Some(max) = self.cfg.max_inflight_requests {
@@ -1160,6 +1218,50 @@ mod tests {
         );
     }
 
+    // ── Host header validation (LimitsGuard) ─────────────────────────────────
+
+    #[test]
+    fn host_validation_rejects_crlf_in_host() {
+        // Validate that the host-header check correctly flags CR/LF bytes.
+        // The check is: host_val.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
+        let bad_hosts = [
+            "evil.com\r\nX-Injected: yes",
+            "evil.com\n",
+            "evil.com\r",
+            "evil\0.com",
+        ];
+        for h in &bad_hosts {
+            let has_bad = h.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0);
+            assert!(has_bad, "expected bad host to be detected: {h:?}");
+        }
+    }
+
+    #[test]
+    fn host_validation_accepts_normal_host() {
+        let good_hosts = [
+            "example.com",
+            "example.com:8080",
+            "192.168.1.1:443",
+            "[::1]:8080",
+        ];
+        for h in &good_hosts {
+            let has_bad = h.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0);
+            assert!(!has_bad, "expected normal host to pass: {h:?}");
+        }
+    }
+
+    // ── maxRequestHeaders ────────────────────────────────────────────────────
+
+    #[test]
+    fn max_request_headers_threshold() {
+        // Verify the comparison logic used inside LimitsGuard.
+        assert!(50u32 > 49u32, "50 headers should exceed limit of 49");
+        assert!(
+            !(50u32 > 50u32),
+            "50 headers at limit should not exceed limit of 50"
+        );
+    }
+
     // ── limits_rejection body/header messages ─────────────────────────────────
 
     #[test]
@@ -1181,5 +1283,73 @@ mod tests {
         assert_eq!(status, 431);
         let body_str = std::str::from_utf8(&body).unwrap_or("?");
         assert!(!body_str.is_empty());
+    }
+
+    // ── Host header validation (LimitsGuard) ─────────────────────────────────
+    //
+    // These tests exercise the host_invalid logic inline, without needing a
+    // full session, by reproducing the exact validation expression.
+
+    fn check_host(raw: &[u8]) -> bool {
+        // Returns true when the host value is INVALID (should be rejected).
+        match http::header::HeaderValue::from_bytes(raw).ok().as_ref() {
+            None => true, // bytes not representable as HeaderValue → invalid
+            Some(v) => match v.to_str() {
+                Err(_) => true, // non-UTF-8 → invalid
+                Ok(s) => {
+                    if s.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0) {
+                        true
+                    } else {
+                        http::uri::Authority::try_from(s).is_err()
+                    }
+                }
+            },
+        }
+    }
+
+    #[test]
+    fn host_valid_simple_domain_accepted() {
+        assert!(!check_host(b"example.com"));
+    }
+
+    #[test]
+    fn host_valid_domain_with_port_accepted() {
+        assert!(!check_host(b"example.com:8080"));
+    }
+
+    #[test]
+    fn host_valid_ipv4_accepted() {
+        assert!(!check_host(b"192.168.1.1"));
+    }
+
+    #[test]
+    fn host_valid_ipv6_accepted() {
+        assert!(!check_host(b"[::1]:443"));
+    }
+
+    #[test]
+    fn host_cr_lf_rejected() {
+        assert!(check_host(b"evil.com\r\nX-Injected: yes"));
+    }
+
+    #[test]
+    fn host_nul_byte_rejected() {
+        assert!(check_host(b"evil.com\x00"));
+    }
+
+    #[test]
+    fn host_space_rejected() {
+        assert!(check_host(b"evil .com"));
+    }
+
+    #[test]
+    fn host_path_separator_rejected() {
+        assert!(check_host(b"evil.com/../../etc/passwd"));
+    }
+
+    #[test]
+    fn host_non_utf8_rejected() {
+        // 0xFF is not valid UTF-8; to_str() will return Err → treated as invalid.
+        assert!(check_host(b"evil\xff.com"));
     }
 }

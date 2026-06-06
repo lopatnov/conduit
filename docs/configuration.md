@@ -32,6 +32,7 @@ The standard binary covers most use cases. Some config sections require a featur
 | `acme`            | `--features acme`                  | [`tls.acme`](#auto-tls-via-lets-encrypt)                    |
 | `fault-injection` | `--features fault-injection`       | [`faultInjection`](#fault-injection)                        |
 | `otlp`            | `--features otlp`                  | [`global.otlp`](#opentelemetry-tracing)                     |
+| `tokio-metrics`   | `--features tokio-metrics`         | `conduit_eventloop_lag_ms` Prometheus gauge (no config key) |
 | `kubernetes`      | `--features kubernetes`            | `--kubernetes-namespace` CLI flag (not a config field)      |
 | `full`            | `--features full`                  | All of the above                                            |
 
@@ -187,6 +188,7 @@ request. No configuration is needed — they are always present.
 | `X-Forwarded-Proto` | `http` or `https`      | Derived from whether the site has TLS configured             |
 | `X-Forwarded-Host`  | Original `Host` header | Lets upstreams reconstruct full URLs                         |
 | `X-Request-ID`      | UUID v4                | Auto-generated if absent; forwarded as-is if client sends it |
+| `Via`               | `1.1 conduit`          | RFC 7230 §5.7 — identifies the proxy hop; appended to existing value |
 
 To remove any of these before forwarding, use `requestTransform.removeHeaders`:
 
@@ -559,7 +561,9 @@ proxy:
 | `timeout.connectMs`   | number               | `3000`        | TCP connect timeout                                                            |
 | `timeout.sendMs`      | number               | —             | Request send timeout                                                           |
 | `timeout.readMs`      | number               | `30000`       | Response read timeout                                                          |
+| `timeout.firstByteMs` | number               | —             | Max ms to wait for first upstream response byte (overrides `readMs`)           |
 | `timeout.perTryMs`    | number               | —             | Per-retry timeout                                                              |
+| `websocket`           | bool                 | `false`       | Allow WebSocket upgrades (`101 Switching Protocols`) — rejected with 502 by default |
 | `retry.attempts`      | number               | `0`           | Number of retry attempts (0 = disabled)                                        |
 | `retry.conditions`    | string[]             | —             | `connection_error`, `5xx`, `timeout`                                           |
 | `retry.backoffMs`     | number               | `0`           | Wait between retries (ms)                                                      |
@@ -573,6 +577,8 @@ proxy:
 | `upstreamTls`         | object               | —             | TLS for HTTPS upstreams — see [Upstream TLS](#upstream-tls-verification)       |
 | `mirror`              | string               | —             | Shadow URL — see [Traffic mirroring](#traffic-mirroring)                       |
 | `sticky.cookie`       | string               | —             | Cookie name for sticky sessions                                                |
+| `sticky.secret`       | string               | —             | HMAC-SHA256 secret — Conduit signs + verifies the cookie (prevents forgery)    |
+| `sticky.strict`       | boolean              | `false`       | Return 503 when the pinned upstream is down (instead of routing elsewhere)     |
 | `groups`              | object[]             | —             | Two-level LB groups: `[{name, targets, strategy}]`                             |
 | `groupStrategy`       | string               | `round-robin` | Outer strategy when `groups` is set                                            |
 | `priority`            | number (0–100)       | `50`          | Request priority for load shedding — see [Priority routing](#priority-routing) |
@@ -1002,6 +1008,40 @@ If the client presents no cookie (first request), the request is routed by the
 configured strategy and the upstream is recorded — no cookie is set by Conduit.
 The application is responsible for setting the session cookie.
 
+#### HMAC-signed sticky cookies
+
+Without a `secret`, the cookie value is used as a raw consistent-hash key.
+An attacker can craft a cookie to force routing to any backend they choose.
+
+Set `sticky.secret` to make Conduit sign cookies with **HMAC-SHA256** and
+verify them on every request. Forged cookies silently fall back to normal
+load-balancing rather than pinning to an attacker-controlled backend.
+
+```yaml
+proxy:
+  /app:
+    targets: ["http://a:4000", "http://b:4000"]
+    strategy: consistent-hash
+    sticky:
+      cookie: srv_id       # Conduit sets this cookie on every response
+      secret: "$STICKY_SECRET"  # HMAC key — use an env var, never hardcode
+      strict: false        # true = 503 when pinned upstream is down
+```
+
+| Option    | Behaviour |
+|-----------|-----------|
+| No `secret` | Cookie value is the raw consistent-hash key (legacy, no forgery protection) |
+| `secret` set | Conduit signs the URL with HMAC-SHA256 and injects a `Set-Cookie` on every response |
+| `strict: false` (default) | If the pinned upstream is unhealthy, fall back to the next available backend |
+| `strict: true` | If the pinned upstream is unhealthy, return `503 Service Unavailable` immediately |
+
+The injected cookie attributes are: `Path=/; HttpOnly; SameSite=Lax`.
+
+> **Security note:** store the HMAC secret in an environment variable
+> (`secret: "$STICKY_SECRET"`). Rotate by changing the value and reloading;
+> existing cookies will silently fall through to normal load-balancing for one
+> request and then get a new signed cookie.
+
 ---
 
 ### Upstream groups (two-level balancing)
@@ -1386,6 +1426,20 @@ proxy:
 > `limits.maxBodyBufferBytes` is set. Without it, request bodies are not buffered and
 > `connection_error` retries on non-GET methods are skipped silently.
 
+### 1xx interim responses
+
+Some upstream backends (Spring Boot, CDNs, gRPC gateways) send one or more
+`1xx` informational responses before the final response — for example
+`103 Early Hints` for browser resource preloading, or `100 Continue` after a
+`Expect: 100-continue` request header.
+
+Conduit passes 1xx responses through to the client without running any
+middleware (retry logic, error masking, response transforms, etc.), then
+continues waiting for the real response. No configuration is required.
+
+**Exception:** `101 Switching Protocols` (WebSocket upgrade) is handled
+separately by the `websocket: true` route option — see the field reference table.
+
 ---
 
 ## Outlier Detection
@@ -1444,6 +1498,7 @@ limits:
   maxConnectionsPerIp: 50 # max simultaneous connections from one IP (429)
   keepaliveRequestLimit: 1000 # recycle connections after this many requests
   priorityThreshold: 0.8 # shed low-priority routes above 80% concurrency
+  minUploadRateBytesPerSec: 1024 # reject uploads slower than 1 KiB/s (408)
 ```
 
 ```json
@@ -1457,7 +1512,8 @@ limits:
     "maxBodyBufferBytes": 1048576,
     "maxConnectionsPerIp": 50,
     "keepaliveRequestLimit": 1000,
-    "priorityThreshold": 0.8
+    "priorityThreshold": 0.8,
+    "minUploadRateBytesPerSec": 1024
   }
 }
 ```
@@ -1470,8 +1526,10 @@ limits:
 | `maxInflightRequests`   | number | —       | Max concurrent requests — returns `503` if exceeded (must be ≥ 1)                                                             |
 | `maxBodyBufferBytes`    | number | —       | Max body buffered per request for retry replay                                                                                |
 | `maxConnectionsPerIp`   | number | —       | Max simultaneous open connections from a single client IP — returns `429` if exceeded                                         |
-| `keepaliveRequestLimit` | number | —       | Max requests per keepalive connection; closes and recycles after. Equivalent to nginx's `keepalive_requests`.                 |
-| `priorityThreshold`     | number | `0.8`   | Fraction of `maxInflightRequests` at which low-priority routes are shed (0.0–1.0) — see [Priority routing](#priority-routing) |
+| `maxRequestHeaders`          | number | —       | Max number of request headers — returns `431 Request Header Fields Too Large` if exceeded                                     |
+| `keepaliveRequestLimit`      | number | —       | Max requests per keepalive connection; closes and recycles after. Equivalent to nginx's `keepalive_requests`.                 |
+| `priorityThreshold`          | number | `0.8`   | Fraction of `maxInflightRequests` at which low-priority routes are shed (0.0–1.0) — see [Priority routing](#priority-routing) |
+| `minUploadRateBytesPerSec`   | number | —       | Minimum upload rate in bytes/s — closes slow uploads with `408 Request Timeout` (slow-loris protection)                       |
 
 ---
 
@@ -1631,7 +1689,8 @@ proxy:
 | `ttlSecs`                  | number   | —             | Fresh cache TTL (seconds)                                                          |
 | `maxSizeMb`                | number   | —             | Memory budget; LRU eviction above this                                             |
 | `staleWhileRevalidateSecs` | number   | `0`           | Serve stale while refreshing in background (RFC 5861)                              |
-| `staleIfErrorSecs`         | number   | `0`           | Serve stale when upstream returns 5xx (RFC 5861)                                   |
+| `staleIfErrorSecs`         | number   | `0`           | Serve stale when upstream returns 5xx, including after retries are exhausted (RFC 5861) |
+| `earlyRefreshSecs`         | number   | `0`           | Refresh cache in the background when remaining TTL < this value (see below)        |
 | `varyHeaders`              | string[] | —             | Vary cache key by these request headers                                            |
 | `skipPaths`                | string[] | —             | Paths to never cache                                                               |
 | `skipIfCookie`             | bool     | `false`       | Skip caching when request has a cookie                                             |
@@ -1642,10 +1701,57 @@ part of the key, so POST responses are not cached by default (add `"POST"` to
 `methods` only for idempotent endpoints). Use `varyHeaders` to differentiate
 responses by `Accept-Language` or `Accept-Encoding`.
 
+**`Age` header** (RFC 7234 §5.1): Conduit automatically injects an `Age:
+<seconds>` header on every cache hit, computed as `now − Date` from the stored
+response. Any `Age` header carried by the cached response is replaced to prevent
+double-counting across proxy hops. No configuration is required.
+
 **Stale-while-revalidate** (RFC 5861): the first request after TTL expiry
 returns the stale response immediately while a background request refreshes the
 cache. Zero latency penalty for users. A built-in cache lock prevents thundering
 herd — only one background fetch goes to the upstream at a time.
+
+**Stale-if-error** (RFC 5861): when the upstream returns a 5xx error, Conduit
+serves the last known good cached response instead of forwarding the error to
+the client. This works in all three scenarios:
+
+1. **No retry configured** — upstream 5xx immediately falls back to stale cache.
+2. **Retry configured, budget exhausted** — after all retry attempts fail, stale
+   cache is served instead of the final 5xx error.
+3. **Retry + stale together** — Conduit retries the configured number of times;
+   if all retries fail and stale cache is available, it serves stale.
+
+Set `staleIfErrorSecs` to the maximum age (in seconds) of a stale response you
+are willing to serve. When no stale entry exists or the stale entry is older than
+`staleIfErrorSecs`, the upstream error is forwarded to the client.
+
+**Early refresh** (`earlyRefreshSecs`): when the remaining TTL of a cached
+entry drops below `earlyRefreshSecs`, Conduit fires a background GET request
+directly to the upstream while the **current** client request is still served
+the (still-valid) cached response with zero latency. The cache is updated before
+it ever expires, so clients never see stale content as long as the upstream is
+reachable.
+
+Comparison with `staleWhileRevalidateSecs`:
+
+| Feature                     | Activates        | Clients see stale? |
+| --------------------------- | ---------------- | ------------------ |
+| `staleWhileRevalidateSecs`  | After TTL expires | Yes, until refresh |
+| `earlyRefreshSecs`          | Before TTL expires | No                |
+
+Use `earlyRefreshSecs` when zero-stale is important (news feeds, pricing data,
+session-sensitive API). Use `staleWhileRevalidateSecs` when occasional stale
+is acceptable and you want a simpler setup.
+
+```yaml
+# Never-stale cache: refresh 10 s before the 60-second TTL expires.
+cache:
+  store: memory
+  ttlSecs: 60
+  earlyRefreshSecs: 10
+```
+
+Source: h2o `lib/common/cache.c` — `H2O_CACHE_FLAG_EARLY_UPDATE`.
 
 **`s-maxage` handling**: Conduit respects the upstream `Cache-Control: s-maxage=N` directive
 as the effective TTL when the upstream returns it. `s-maxage=0` explicitly prevents
@@ -2658,6 +2764,21 @@ Clients receive: `{ "error": "Internal Server Error", "status": 500 }`
 
 ---
 
+## Upstream Protocol Compatibility
+
+### allowDuplicateChunked
+
+By default, Conduit deduplicates `Transfer-Encoding: chunked` headers from upstream responses.
+Some misconfigured origins emit `Transfer-Encoding: chunked, chunked` or two separate `Transfer-Encoding: chunked` headers, which confuses strict HTTP clients.
+
+```yaml
+allowDuplicateChunked: true   # pass duplicate chunked headers through unmodified
+```
+
+Only enable this for upstreams that deliberately rely on duplicate chunked headers.
+
+---
+
 ## Upstream TLS Verification
 
 ```yaml
@@ -3014,8 +3135,8 @@ global:
     token: "$ADMIN_TOKEN" # optional Bearer token
 ```
 
-The Admin API provides 10 endpoints: hot-reload, status, upstream management,
-cache purge, and runtime IP deny-list.
+The Admin API provides 12 endpoints: hot-reload, status, upstream management,
+cache purge, rate-limit stats, and runtime IP deny-list.
 
 **→ Full reference with request/response examples: [docs/admin.md](admin.md)**
 
@@ -3038,6 +3159,7 @@ All metrics are at the [`metrics.path`](#metrics) endpoint.
 | `conduit_rate_limit_rejected_total`   | counter   | `site`               | Rate-limited (429) requests per site                             |
 | `conduit_cache_hits_total`            | counter   | `route`              | Proxy cache hits                                                 |
 | `conduit_cache_misses_total`          | counter   | `route`              | Proxy cache misses                                               |
+| `conduit_eventloop_lag_ms`            | gauge     | —                    | Mean scheduling delay (ms) of the admin runtime (**`--features tokio-metrics`**) |
 
 **Example Grafana queries:**
 

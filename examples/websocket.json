@@ -1,0 +1,16 @@
+{
+  "host": "ws.example.com",
+  "proxy": {
+    "/chat": {
+      "targets": ["http://chat-server:3000"],
+      "websocket": true,
+      "timeout": {
+        "connectMs": 5000,
+        "readMs": 300000
+      }
+    },
+    "/api": {
+      "targets": ["http://api-server:4000"]
+    }
+  }
+}

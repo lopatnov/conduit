@@ -1,6 +1,6 @@
 [package]
 name        = "lopatnov-conduit"
-version     = "1.0.0"
+version     = "1.1.0"
 edition     = "2021"
 description = "High-performance reverse proxy and file server built on Cloudflare Pingora"
 license     = "Apache-2.0"
@@ -87,13 +87,15 @@ url       = "2"   # URL parsing for proxy-loop and SSRF detection
 httpdate  = "1"
 http      = "1"
 base64    = "0.22"
+hmac      = "0.12"
+sha2      = "0.10"
 
 # --- Rhai scripting middleware (feature: rhai) ---
 rhai = { version = "1", features = ["sync"], optional = true }
 
 # --- JWT bearer-token authentication (feature: jwt) ---
 # Verifies HS256 (HMAC secret) and RS256/ES256 (JWKS/PEM).
-jsonwebtoken = { version = "9", optional = true }
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"], optional = true }
 
 # --- HTTP client (feature: jwt for JWKS, forward-auth, mirroring) ---
 # `default-features = false` avoids native-tls; rustls keeps TLS consistent.
@@ -126,6 +128,7 @@ wasmtime = { version = "45", features = ["cranelift"], optional = true }
 opentelemetry     = { version = "0.27", optional = true }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"], optional = true }
 opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"], optional = true }
+
 
 [features]
 # ── Default ────────────────────────────────────────────────────────────────────
@@ -178,6 +181,10 @@ fault-injection = []
 # ── Observability ─────────────────────────────────────────────────────────────
 # OpenTelemetry OTLP distributed tracing (global.otlp config).
 otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
+# Tokio event-loop lag gauge (conduit_eventloop_lag_ms).
+# Uses a yield-probe task that measures scheduling delay — no external deps,
+# no tokio_unstable required.  Safe to enable in production.
+tokio-metrics = []
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
 # Kubernetes CRD watching (--kubernetes-namespace flag).
@@ -193,6 +200,7 @@ full = [
     "acme",
     "fault-injection",
     "otlp",
+    "tokio-metrics",
     "kubernetes",
 ]
 
@@ -208,7 +216,7 @@ wat         = "1"
 rcgen       = "0.14"
 # jsonwebtoken is used in auth integration tests to generate test tokens.
 # Listed as dev-dep so tests compile without --features jwt.
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 
 [[test]]
 name = "acme"

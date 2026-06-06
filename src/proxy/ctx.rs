@@ -97,6 +97,48 @@ pub struct RequestCtx {
     /// Populated from `healthCheck.unhealthyLatencyMs` during routing.
     /// If the upstream response time exceeds this, it counts as a failure.
     pub passive_unhealthy_latency_ms: Option<u64>,
+    /// Whether this route explicitly allows WebSocket upgrades.
+    ///
+    /// Set from `proxy.*.websocket: true` in the route config.  When `false`
+    /// (the default), any `101 Switching Protocols` response from upstream is
+    /// rejected with `502 Bad Gateway` to prevent unexpected protocol tunnelling.
+    pub websocket_allowed: bool,
+    /// Failed upstream attempts that need EWMA/health tracking after a retry.
+    ///
+    /// When `RetryOnErrorFilter` fires `RetryUpstream`, the current upstream's
+    /// URL and status are pushed here before clearing `proxy_upstream_url`.
+    /// `logging()` iterates this list to record latency and ejection status for
+    /// each failed attempt — preventing the "won by retry" blind-spot where a
+    /// successful final attempt masks prior 5xx failures.
+    pub failed_upstream_attempts: Vec<(String, u16)>,
+    /// Age in seconds to inject as the `Age` response header for cache hits.
+    ///
+    /// Computed in `upstream_response_filter` from the cached response's `Date`
+    /// header (RFC 7234 §5.1): `age = now − date`.  `None` for non-cached
+    /// responses or when the cache feature is disabled.
+    pub cache_age_secs: Option<u64>,
+    /// Sticky-session cookie to set on the response when HMAC signing is enabled.
+    ///
+    /// Populated during routing when `sticky.secret` is configured.
+    /// Format: `(cookie_name, hmac_signed_value)`.  The `upstream_response_filter`
+    /// injects the corresponding `Set-Cookie` header.
+    pub sticky_set_cookie: Option<(String, String)>,
+    /// Slow-loris upload defense: accumulated excess bytes for the leaky-bucket
+    /// rate checker in `request_body_filter`.
+    ///
+    /// Positive excess means the client is sending faster than `minUploadRate`
+    /// would allow; negative means the client has headroom.  Set to 0.0 on init.
+    pub upload_excess_bytes: f64,
+    /// Timestamp of the last body chunk received, used by the upload-rate checker.
+    pub upload_last_chunk: Option<std::time::Instant>,
+    /// Upstream URL to refresh in the background after this cache-hit response
+    /// is served (early refresh, #31).
+    ///
+    /// Set by `response_filter` when the cache entry's remaining TTL is within
+    /// `earlyRefreshSecs`.  `logging()` spawns a fire-and-forget GET task.
+    /// `None` when early refresh is not configured or the TTL is not yet close.
+    #[cfg(feature = "cache")]
+    pub early_refresh_upstream_url: Option<String>,
 }
 
 impl RequestCtx {
@@ -134,6 +176,14 @@ impl RequestCtx {
             client_ip_for_conn_limit: None,
             passive_unhealthy_status: Vec::new(),
             passive_unhealthy_latency_ms: None,
+            websocket_allowed: false,
+            failed_upstream_attempts: Vec::new(),
+            cache_age_secs: None,
+            sticky_set_cookie: None,
+            upload_excess_bytes: 0.0,
+            upload_last_chunk: None,
+            #[cfg(feature = "cache")]
+            early_refresh_upstream_url: None,
             #[cfg(feature = "otlp")]
             otel_span: None,
         }
