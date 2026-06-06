@@ -2,7 +2,9 @@ name: SonarCloud
 
 on:
   push:
-    branches: [main, phase-next]
+    branches: [main, security/v1.1.0-stabilize]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
