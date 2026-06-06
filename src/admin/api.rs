@@ -682,7 +682,12 @@ fn build_flat_upstream_list(registry: &health::UpstreamRegistry) -> Vec<Value> {
                 "consecutive_successes": e.value().consecutive_successes,
                 "consecutive_5xx":       e.value().consecutive_5xx,
                 "active_connections":    active_conns,
-                "ejected":               e.value().ejected_until_secs.is_some(),
+                "ejected":               e.value().ejected_until_secs.map_or(false, |until| {
+                    until > std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                }),
             })
         })
         .collect();

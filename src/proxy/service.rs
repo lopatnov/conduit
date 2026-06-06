@@ -1261,6 +1261,20 @@ impl ProxyHttp for ConduitProxy {
 
         let (addr_str, tls, sni) = resolve_peer_addr(req_ctx)?;
 
+        // For retry attempts (#47 companion fix): restore proxy_upstream_url to
+        // the URL for THIS attempt so that logging(), access log, and EWMA
+        // tracking all reflect the *actual* upstream that served the response.
+        //
+        // resolve_peer_addr() already incremented retry.attempt, so the URL
+        // used in this call is urls[(attempt - 1) % len].
+        if let Some(ref retry) = req_ctx.retry {
+            if retry.attempt > 1 {
+                // This is a retry (attempt was >0 before incrementing).
+                let idx = (retry.attempt - 1) % retry.urls.len();
+                req_ctx.proxy_upstream_url = Some(retry.urls[idx].clone());
+            }
+        }
+
         let socket_addr: SocketAddr = addr_str.parse().map_err(|_| {
             pingora_core::Error::explain(
                 pingora_core::ErrorType::ConnectProxyFailure,
