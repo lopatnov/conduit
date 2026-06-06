@@ -1425,28 +1425,29 @@ impl ProxyHttp for ConduitProxy {
             };
             if let Some(min_rate) = min_rate_opt {
                 let now = std::time::Instant::now();
-                if let Some(last_chunk) = req_ctx.upload_last_chunk {
-                    let elapsed_secs = now.duration_since(last_chunk).as_secs_f64();
-                    if upload_rate_step(
-                        &mut req_ctx.upload_excess_bytes,
-                        chunk_len,
+                // elapsed_secs = 0 on the first chunk so the chunk bytes are
+                // credited to the bucket immediately (no time-based drain).
+                let elapsed_secs = req_ctx
+                    .upload_last_chunk
+                    .map(|last| now.duration_since(last).as_secs_f64())
+                    .unwrap_or(0.0);
+                if upload_rate_step(
+                    &mut req_ctx.upload_excess_bytes,
+                    chunk_len,
+                    min_rate,
+                    elapsed_secs,
+                ) {
+                    tracing::debug!(
                         min_rate,
-                        elapsed_secs,
-                    ) {
-                        tracing::debug!(
-                            min_rate,
-                            excess = req_ctx.upload_excess_bytes,
-                            "upload rate below minimum — closing connection (408)"
-                        );
-                        *body = None;
-                        return Err(pingora_core::Error::explain(
-                            pingora_core::ErrorType::HTTPStatus(408),
-                            "upload rate below minUploadRateBytesPerSec",
-                        ));
-                    }
+                        excess = req_ctx.upload_excess_bytes,
+                        "upload rate below minimum — closing connection (408)"
+                    );
+                    *body = None;
+                    return Err(pingora_core::Error::explain(
+                        pingora_core::ErrorType::HTTPStatus(408),
+                        "upload rate below minUploadRateBytesPerSec",
+                    ));
                 }
-                // Record timestamp; skip rate check on the first chunk since
-                // we have no reference point for elapsed time.
                 req_ctx.upload_last_chunk = Some(now);
             }
         }
@@ -3010,16 +3011,14 @@ async fn fire_early_refresh(upstream_url: &str, path_and_query: &str) {
     let base = upstream_url.trim_end_matches('/');
     let target = format!("{base}{path_and_query}");
 
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::debug!(error = %e, "early refresh: failed to build client");
-            return;
-        }
-    };
+    // Reuse a single process-wide client to benefit from connection pooling.
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_default()
+    });
 
     match client
         .get(&target)

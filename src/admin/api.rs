@@ -144,6 +144,9 @@ impl BackgroundService for AdminApiService {
             let gauge = ConduitMetrics::global().eventloop_lag_ms.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+                // Under heavy load the tick may be missed; Skip prevents a burst
+                // of catch-up probes that would skew the lag metric.
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     ticker.tick().await;
                     // Measure how long between yielding and being resumed.

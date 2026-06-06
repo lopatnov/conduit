@@ -294,6 +294,7 @@ fn path_matches(pattern: &str, path: &str) -> bool {
 ///
 /// The check is a simple comparison: if the remaining TTL is within the
 /// configured window, a background refresh is warranted.
+#[cfg(feature = "cache")]
 pub(crate) fn should_early_refresh(remaining_secs: u64, early_window_secs: u32) -> bool {
     early_window_secs > 0 && remaining_secs < early_window_secs as u64
 }
@@ -812,36 +813,42 @@ mod tests {
     // These tests verify the TTL-window decision function that `response_filter`
     // uses to decide whether to schedule a background cache refresh.
 
+    #[cfg(feature = "cache")]
     #[test]
     fn early_refresh_not_configured_is_false() {
         // earlyRefreshSecs = 0 (unset) → never refresh early.
         assert!(!should_early_refresh(5, 0));
     }
 
+    #[cfg(feature = "cache")]
     #[test]
     fn early_refresh_within_window_is_true() {
         // 8 seconds remain, window is 10 s → refresh.
         assert!(should_early_refresh(8, 10));
     }
 
+    #[cfg(feature = "cache")]
     #[test]
     fn early_refresh_at_window_boundary_is_true() {
         // 9 seconds remain, window is 10 s → refresh (strict <).
         assert!(should_early_refresh(9, 10));
     }
 
+    #[cfg(feature = "cache")]
     #[test]
     fn early_refresh_exactly_at_window_is_false() {
         // remaining == window → not yet in the early-refresh zone.
         assert!(!should_early_refresh(10, 10));
     }
 
+    #[cfg(feature = "cache")]
     #[test]
     fn early_refresh_well_within_ttl_is_false() {
         // Plenty of TTL left → no early refresh.
         assert!(!should_early_refresh(3600, 10));
     }
 
+    #[cfg(feature = "cache")]
     #[test]
     fn early_refresh_zero_remaining_with_window_is_true() {
         // Already expired — still triggers (stale-if-error can serve stale).

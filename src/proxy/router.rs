@@ -946,7 +946,9 @@ pub fn parse_rfc9218_priority(header: &str) -> Option<u8> {
     for token in header.split(',') {
         let token = token.trim();
         if let Some(rest) = token.strip_prefix("u=") {
-            if let Ok(urgency) = rest.trim().parse::<u8>() {
+            // Strip any structured-field parameters (e.g. `u=3;foo=bar` → "3").
+            let val_str = rest.split(';').next().unwrap_or("").trim();
+            if let Ok(urgency) = val_str.parse::<u8>() {
                 if urgency <= 7 {
                     return Some(100u8.saturating_sub(urgency * 14));
                 }
