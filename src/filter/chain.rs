@@ -322,16 +322,17 @@ pub struct LimitsGuard {
 impl RequestFilter for LimitsGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
         // Host header security check — always enforced, no config needed.
-        // Reject requests whose Host header contains control characters or null
-        // bytes, which are used in header-injection / request-smuggling attacks.
-        let host_val = ctx
-            .session
-            .req_header()
-            .headers
-            .get("host")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if host_val.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0) {
+        // Reject requests whose Host header is non-UTF-8 or contains control
+        // characters / null bytes (header-injection / request-smuggling).
+        let host_hdr = ctx.session.req_header().headers.get("host");
+        let host_invalid = match host_hdr {
+            // Non-UTF-8 bytes in Host are always malformed.
+            Some(v) => v.to_str().map_or(true, |s| {
+                s.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
+            }),
+            None => false,
+        };
+        if host_invalid {
             response::write_response(
                 ctx.session,
                 400,

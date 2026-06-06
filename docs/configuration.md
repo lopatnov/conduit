@@ -1433,10 +1433,9 @@ Some upstream backends (Spring Boot, CDNs, gRPC gateways) send one or more
 `103 Early Hints` for browser resource preloading, or `100 Continue` after a
 `Expect: 100-continue` request header.
 
-Conduit forwards these 1xx responses to the client unchanged and waits for the
-real response before running any middleware (retry logic, error masking, response
-transforms, etc.). No configuration is required — this is always the correct
-behavior per RFC 7230.
+Conduit passes 1xx responses through to the client without running any
+middleware (retry logic, error masking, response transforms, etc.), then
+continues waiting for the real response. No configuration is required.
 
 **Exception:** `101 Switching Protocols` (WebSocket upgrade) is handled
 separately by the `websocket: true` route option — see the field reference table.

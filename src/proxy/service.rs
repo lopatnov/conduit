@@ -751,8 +751,13 @@ impl ConduitProxy {
                                 .get("priority")
                                 .and_then(|v| v.to_str().ok())
                                 .and_then(router::parse_rfc9218_priority);
+                            // Clamp downward only: the RFC 9218 header may lower
+                            // effective priority (making shedding more likely) but
+                            // never raise it above the operator-configured value.
+                            // Allowing clients to raise their own priority would let
+                            // any request bypass load shedding.
                             let effective_priority =
-                                rfc9218_priority.map_or(route_priority, |p| route_priority.max(p));
+                                rfc9218_priority.map_or(route_priority, |p| p.min(route_priority));
                             if effective_priority < 50 {
                                 let extra = req_ctx.extra_headers.clone();
                                 response::write_response(

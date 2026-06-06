@@ -228,13 +228,12 @@ pub fn record_request_latency(
 /// counter on the upstream entry.  Called from `logging()` after every proxied
 /// request.
 pub fn record_response_status(registry: &UpstreamRegistry, url: &str, status: u16) {
-    if let Some(mut entry) = registry.statuses.get_mut(url) {
-        match status {
-            200..=299 => entry.responses_2xx = entry.responses_2xx.saturating_add(1),
-            400..=499 => entry.responses_4xx = entry.responses_4xx.saturating_add(1),
-            500..=599 => entry.responses_5xx = entry.responses_5xx.saturating_add(1),
-            _ => {}
-        }
+    let mut entry = registry.statuses.entry(url.to_owned()).or_default();
+    match status {
+        200..=299 => entry.responses_2xx = entry.responses_2xx.saturating_add(1),
+        400..=499 => entry.responses_4xx = entry.responses_4xx.saturating_add(1),
+        500..=599 => entry.responses_5xx = entry.responses_5xx.saturating_add(1),
+        _ => {}
     }
 }
 
@@ -243,10 +242,9 @@ pub fn record_response_status(registry: &UpstreamRegistry, url: &str, status: u1
 /// Increments `selected_total` and updates `selected_last_secs`.
 /// Called from `upstream_request_filter()`.
 pub fn record_upstream_selected(registry: &UpstreamRegistry, url: &str) {
-    if let Some(mut entry) = registry.statuses.get_mut(url) {
-        entry.selected_total = entry.selected_total.saturating_add(1);
-        entry.selected_last_secs = now_secs();
-    }
+    let mut entry = registry.statuses.entry(url.to_owned()).or_default();
+    entry.selected_total = entry.selected_total.saturating_add(1);
+    entry.selected_last_secs = now_secs();
 }
 
 ///

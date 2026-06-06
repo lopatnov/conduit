@@ -181,6 +181,7 @@
         "consumers": { "$ref": "#/$defs/ConsumersConfig" },
         "outlierDetection": { "$ref": "#/$defs/OutlierDetectionConfig" },
         "maskErrors": { "type": "boolean", "description": "Replace upstream 5xx bodies with a generic JSON error." },
+        "serverTiming": { "type": "boolean", "description": "Inject a W3C Server-Timing response header with total and upstream durations." },
         "allowDuplicateChunked": { "type": "boolean", "description": "Allow duplicate Transfer-Encoding: chunked headers from upstream (default: false, deduplicate)." },
         "faultInjection": { "$ref": "#/$defs/FaultInjectionConfig" },
         "jwtAuth": { "$ref": "#/$defs/JwtAuthConfig" },
@@ -456,7 +457,7 @@
           "required": ["cookie"],
           "properties": {
             "cookie": { "type": "string", "description": "Cookie name used for sticky-session routing." },
-            "secret": { "type": "string", "description": "HMAC-SHA256 secret. When set, Conduit signs the upstream URL into the cookie and verifies it on every request, preventing forgery. Use an env-var reference ($MY_SECRET)." },
+            "secret": { "type": "string", "minLength": 1, "description": "HMAC-SHA256 secret. When set, Conduit signs the upstream URL into the cookie and verifies it on every request, preventing forgery. Use an env-var reference ($MY_SECRET). Must be non-empty." },
             "strict": { "type": "boolean", "description": "When true, return 503 if the pinned upstream is unhealthy instead of failing over to another backend. Default false." }
           },
           "description": "Sticky-session configuration. Routes the same client to the same upstream using a cookie."
