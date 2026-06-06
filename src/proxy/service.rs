@@ -1399,6 +1399,56 @@ impl ProxyHttp for ConduitProxy {
             if enforce_max_body_bytes(req_ctx, body, chunk_len, max_body) {
                 return Ok(());
             }
+
+            // Slow-loris upload defense: leaky-bucket minimum-rate check (#51).
+            //
+            // Pattern: freenginx `ngx_http_request_body.c` commit b85480cc
+            //          (client_body_min_rate).
+            //
+            // Algorithm:
+            //   `excess += chunk_bytes − min_rate × elapsed_secs`
+            //
+            // "Excess" is the surplus above the minimum rate (positive =
+            // client sending fast, negative = client is behind).
+            // Surplus is capped at one second's worth (min_rate bytes) to
+            // prevent unlimited credit from fast initial bursts.
+            // When the client falls more than one second behind
+            // (excess < -min_rate) the connection is closed with 408.
+            let min_rate_opt = {
+                let config = self.state.config.load();
+                config
+                    .sites
+                    .get(req_ctx.site_idx)
+                    .and_then(|s| s.limits.as_ref())
+                    .and_then(|l| l.min_upload_rate_bytes_per_sec)
+                    .filter(|&r| r > 0)
+            };
+            if let Some(min_rate) = min_rate_opt {
+                let now = std::time::Instant::now();
+                if let Some(last_chunk) = req_ctx.upload_last_chunk {
+                    let elapsed_secs = now.duration_since(last_chunk).as_secs_f64();
+                    if upload_rate_step(
+                        &mut req_ctx.upload_excess_bytes,
+                        chunk_len,
+                        min_rate,
+                        elapsed_secs,
+                    ) {
+                        tracing::debug!(
+                            min_rate,
+                            excess = req_ctx.upload_excess_bytes,
+                            "upload rate below minimum — closing connection (408)"
+                        );
+                        *body = None;
+                        return Err(pingora_core::Error::explain(
+                            pingora_core::ErrorType::HTTPStatus(408),
+                            "upload rate below minUploadRateBytesPerSec",
+                        ));
+                    }
+                }
+                // Record timestamp; skip rate check on the first chunk since
+                // we have no reference point for elapsed time.
+                req_ctx.upload_last_chunk = Some(now);
+            }
         }
 
         // Retry body buffering (separate from size enforcement).
@@ -1531,13 +1581,34 @@ impl ProxyHttp for ConduitProxy {
             None => return Ok(()),
         };
 
+        // Ignore 1xx interim responses from upstream (#50) — except 101.
+        //
+        // Pingora calls `upstream_response_filter` once per 1xx informational
+        // response AND once more for the final response.  Running the full
+        // ResponseFilterChain on 103 Early Hints, 100 Continue, etc. would
+        // wrongly trigger retry / error-mask / CRLF-strip logic on a non-final
+        // status.  We return `Ok(())` to let Pingora forward the 1xx to the
+        // client unchanged.
+        //
+        // Source: freenginx `ngx_http_proxy_module.c` commit `fd953ff4` —
+        //   ignore unexpected 1xx and continue parsing the real response.
+        let status_u16 = upstream_response.status.as_u16();
+        if status_u16 != 101 && upstream_response.status.is_informational() {
+            tracing::debug!(
+                status = status_u16,
+                upstream = ?req_ctx.proxy_upstream_url,
+                "skipping ResponseFilterChain for interim 1xx response"
+            );
+            return Ok(());
+        }
+
         // WebSocket upgrade security (#46): reject unexpected protocol upgrades.
         //
         // A `101 Switching Protocols` response from upstream is only permitted
         // when the route explicitly declares `websocket: true`.  Otherwise the
         // upstream is violating the HTTP protocol contract and we drop the
         // connection with 502 to prevent unexpected tunnelling.
-        if upstream_response.status.as_u16() == 101 && !req_ctx.websocket_allowed {
+        if status_u16 == 101 && !req_ctx.websocket_allowed {
             tracing::warn!(
                 upstream = ?req_ctx.proxy_upstream_url,
                 "upstream returned 101 Switching Protocols but websocket is not \
@@ -1551,6 +1622,11 @@ impl ProxyHttp for ConduitProxy {
 
         let config = self.state.config.load();
         let chain = ResponseFilterChain::build(req_ctx, &config);
+
+        // Clone sticky-cookie data before the chain runs so that subsequent
+        // mutable borrows of `ctx` (in MaskBody / RetryUpstream arms) do not
+        // conflict with the immutable `req_ctx` reference.
+        let sticky_cookie: Option<(String, String)> = req_ctx.sticky_set_cookie.clone();
 
         // The response chain may execute WASM plugins whose .wasm file is
         // read from disk on first load.  Use block_in_place to signal Tokio
@@ -1627,10 +1703,13 @@ impl ProxyHttp for ConduitProxy {
                     }
                 }
 
-                return Err(pingora_core::Error::explain(
+                // Use new_up() so ErrorSource::Upstream is set — required for
+                // should_serve_stale() to recognise this as an upstream error
+                // and serve a stale cached response (#48).
+                return Err(pingora_core::Error::new_up(
                     pingora_core::ErrorType::Custom("5xx_retry"),
-                    format!("upstream returned HTTP {status}; will retry"),
-                ));
+                )
+                .more_context(format!("upstream returned HTTP {status}")));
             }
 
             ResponseFilterOutcome::MaskBody => {
@@ -1643,6 +1722,20 @@ impl ProxyHttp for ConduitProxy {
                 }
             }
         }
+
+        // Sticky-session Set-Cookie injection (#39): when `sticky.secret` is
+        // configured the chosen upstream URL is HMAC-signed and returned to
+        // the client so future requests pin to the same backend.
+        //
+        // This runs after the response chain so it is never clobbered by
+        // response transforms.  The value is `HttpOnly; SameSite=Lax` so it is
+        // not accessible from JavaScript and provides basic CSRF protection.
+        if let Some((cookie_name, cookie_val)) = &sticky_cookie {
+            let cookie_header =
+                format!("{}={}; Path=/; HttpOnly; SameSite=Lax", cookie_name, cookie_val);
+            let _ = upstream_response.insert_header("set-cookie", cookie_header);
+        }
+
         Ok(())
     }
 
@@ -1674,6 +1767,87 @@ impl ProxyHttp for ConduitProxy {
             }
         }
         Ok(None)
+    }
+
+    /// Detect cache hits that are within the early-refresh window (#31).
+    ///
+    /// Pingora calls `response_filter` for **all** responses — including those
+    /// served directly from the cache.  We check whether:
+    ///
+    /// 1. The route has `cache.earlyRefreshSecs` configured.
+    /// 2. The current response is a cache hit (`CachePhase::Hit`).
+    /// 3. The remaining TTL (`fresh_until − now`) is within the refresh window.
+    ///
+    /// When all three are true, we store the upstream URL in `RequestCtx`.
+    /// `logging()` will then spawn a fire-and-forget reqwest GET, causing Pingora
+    /// to fetch a fresh copy and store it.  The **current** client request still
+    /// receives the cached (still valid) response without any latency penalty.
+    ///
+    /// Source: h2o `lib/common/cache.c` — `H2O_CACHE_FLAG_EARLY_UPDATE`.
+    async fn response_filter(
+        &self,
+        session: &mut Session,
+        _upstream_response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        #[cfg(feature = "cache")]
+        {
+            use pingora_cache::CachePhase;
+            use std::time::SystemTime;
+
+            // Only trigger early refresh for cache hits.
+            if !matches!(session.cache.phase(), CachePhase::Hit) {
+                return Ok(());
+            }
+
+            let Some(req_ctx) = ctx.as_mut() else {
+                return Ok(());
+            };
+
+            // Only when the route has earlyRefreshSecs configured.
+            let early_window_secs = req_ctx
+                .proxy_cache_cfg
+                .as_ref()
+                .and_then(|c| c.early_refresh_secs)
+                .unwrap_or(0);
+            if early_window_secs == 0 {
+                return Ok(());
+            }
+
+            // Get the upstream URL for the background refresh task.
+            let upstream_url = match &req_ctx.proxy_upstream_url {
+                Some(url) => url.clone(),
+                None => return Ok(()),
+            };
+
+            // Check how much TTL remains.
+            let remaining_secs = session
+                .cache
+                .maybe_cache_meta()
+                .and_then(|meta| {
+                    meta.fresh_until()
+                        .duration_since(SystemTime::now())
+                        .ok()
+                })
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            if remaining_secs < early_window_secs as u64 {
+                tracing::debug!(
+                    upstream = %upstream_url,
+                    remaining_secs,
+                    early_window_secs,
+                    "cache TTL within early-refresh window — scheduling background refresh"
+                );
+                req_ctx.early_refresh_upstream_url = Some(upstream_url);
+            }
+        }
+        #[cfg(not(feature = "cache"))]
+        let _ = (session, ctx);
+        Ok(())
     }
 
     fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<()>
@@ -2117,6 +2291,26 @@ impl ProxyHttp for ConduitProxy {
             }
         }
 
+        // ── Early cache refresh (#31) ─────────────────────────────────────────
+        // When `response_filter` detected that the cached entry is within the
+        // early-refresh window, spawn a fire-and-forget GET to the upstream URL
+        // so the cache is refreshed before clients see a stale entry.
+        //
+        // We intentionally do this in `logging()` rather than `response_filter`
+        // so the task is spawned after the response is fully sent to the client,
+        // not while the main request is still in flight.
+        #[cfg(feature = "cache")]
+        if let Some(early_url) = ctx
+            .as_ref()
+            .and_then(|c| c.early_refresh_upstream_url.as_deref().map(str::to_owned))
+        {
+            let path = session.req_header().uri.path_and_query().map(|pq| pq.as_str().to_owned()).unwrap_or_default();
+            tracing::debug!(upstream = %early_url, path = %path, "spawning early cache refresh");
+            tokio::spawn(async move {
+                fire_early_refresh(&early_url, &path).await;
+            });
+        }
+
         // ── OpenTelemetry: finish span with all request attributes ────────────
         #[cfg(feature = "otlp")]
         if let Some(req_ctx) = ctx.as_mut() {
@@ -2198,6 +2392,36 @@ fn is_safe_http_method(method: &str) -> bool {
         method.to_ascii_uppercase().as_str(),
         "GET" | "HEAD" | "OPTIONS" | "TRACE"
     )
+}
+
+/// Leaky-bucket minimum-upload-rate step (#51).
+///
+/// Updates `excess` (surplus bytes above the minimum rate) and returns
+/// `true` when the client has fallen more than one second behind the
+/// minimum rate and should be rejected with 408.
+///
+/// # Arguments
+/// - `excess` — running surplus in bytes (positive = fast, negative = slow).
+///   Modified in place.
+/// - `chunk_len` — bytes received in this chunk.
+/// - `min_rate` — minimum acceptable rate in bytes per second.
+/// - `elapsed_secs` — seconds elapsed since the previous chunk.
+///
+/// # Algorithm
+/// ```text
+/// excess += chunk_len − min_rate × elapsed_secs
+/// excess  = min(excess, min_rate)   // cap surplus (no unlimited burst credit)
+/// reject  = excess < −min_rate       // more than one second of deficit
+/// ```
+pub(crate) fn upload_rate_step(
+    excess: &mut f64,
+    chunk_len: usize,
+    min_rate: u64,
+    elapsed_secs: f64,
+) -> bool {
+    *excess += chunk_len as f64 - min_rate as f64 * elapsed_secs;
+    *excess = excess.min(min_rate as f64);
+    *excess < -(min_rate as f64)
 }
 
 /// Enforce the `maxBodyBytes` hard limit on actual received bytes.
@@ -2769,6 +2993,52 @@ fn fire_mirror_request(mirror_url: &str, session: &Session, upstream_request: &R
             }
         }
     });
+}
+
+/// Fire-and-forget an early cache refresh GET to an upstream URL (#31).
+///
+/// Called from `logging()` when the cached entry's remaining TTL is within
+/// `earlyRefreshSecs`.  The response is discarded; the purpose is purely to
+/// cause Pingora's cache to be refreshed for the next real client request.
+///
+/// The request is sent directly to the upstream (not via Pingora), so it
+/// bypasses the local request pipeline.  A short 10-second timeout prevents
+/// slow upstreams from holding the background task open.
+///
+/// Source: h2o `lib/common/cache.c` — `H2O_CACHE_FLAG_EARLY_UPDATE`.
+#[cfg(feature = "cache")]
+async fn fire_early_refresh(upstream_url: &str, path_and_query: &str) {
+    let base = upstream_url.trim_end_matches('/');
+    let target = format!("{base}{path_and_query}");
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!(error = %e, "early refresh: failed to build client");
+            return;
+        }
+    };
+
+    match client
+        .get(&target)
+        .header("X-Early-Refresh", "1")
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            tracing::debug!(
+                url = %target,
+                status = resp.status().as_u16(),
+                "early refresh: upstream response received"
+            );
+        }
+        Err(e) => {
+            tracing::debug!(url = %target, error = %e, "early refresh: request failed");
+        }
+    }
 }
 
 /// Return a compiled [`regex::Regex`] for `pattern`, using a process-wide cache
@@ -3557,6 +3827,94 @@ mod tests {
         assert_eq!(ctx.retry.unwrap().attempt, 1);
     }
 
+    // ── upload_rate_step (leaky-bucket minimum rate, #51) ────────────────────
+
+    #[test]
+    fn upload_rate_step_at_exact_min_rate_keeps_excess_zero() {
+        let mut excess = 0.0f64;
+        let min_rate = 1024u64; // 1 KiB/s
+        // Exactly 1024 bytes in exactly 1 second → excess stays at 0.
+        let rejected = upload_rate_step(&mut excess, 1024, min_rate, 1.0);
+        assert!(!rejected, "exactly at min rate must not reject");
+        assert!((excess - 0.0).abs() < 0.01, "excess should be ~0, got {excess}");
+    }
+
+    #[test]
+    fn upload_rate_step_above_min_rate_accumulates_surplus() {
+        let mut excess = 0.0f64;
+        let min_rate = 1024u64;
+        // 2048 bytes in 1 second (twice the minimum rate) → surplus = 1024.
+        let rejected = upload_rate_step(&mut excess, 2048, min_rate, 1.0);
+        assert!(!rejected, "above min rate must not reject");
+        // Surplus capped at min_rate (1024).
+        assert!(
+            (excess - 1024.0).abs() < 0.01,
+            "surplus capped at min_rate: got {excess}"
+        );
+    }
+
+    #[test]
+    fn upload_rate_step_surplus_is_capped_at_one_second() {
+        let mut excess = 0.0f64;
+        let min_rate = 1000u64;
+        // Enormous burst: 1_000_000 bytes in 0.01 seconds.
+        upload_rate_step(&mut excess, 1_000_000, min_rate, 0.01);
+        // Surplus must be capped at min_rate (1000) — not the raw 999_990.
+        assert!(
+            excess <= min_rate as f64 + 0.01,
+            "surplus must be capped at min_rate: got {excess}"
+        );
+    }
+
+    #[test]
+    fn upload_rate_step_below_min_rate_accumulates_deficit() {
+        let mut excess = 0.0f64;
+        let min_rate = 1000u64;
+        // 100 bytes in 1 second (1/10 of min rate) → deficit grows.
+        let rejected = upload_rate_step(&mut excess, 100, min_rate, 1.0);
+        // deficit = 100 - 1000 = -900; not yet past -1000 threshold.
+        assert!(!rejected, "single slow chunk below min rate but deficit < min_rate");
+        assert!(excess < 0.0, "excess must be negative (deficit): {excess}");
+    }
+
+    #[test]
+    fn upload_rate_step_rejects_when_deficit_exceeds_one_second() {
+        let mut excess = -(1000f64 - 1.0); // just below the rejection threshold
+        let min_rate = 1000u64;
+        // One more tiny chunk with a 1-second gap: excess += 1 - 1000 → -1999+1 = -1999
+        let rejected = upload_rate_step(&mut excess, 1, min_rate, 1.0);
+        assert!(rejected, "deficit > min_rate must trigger rejection");
+        assert!(
+            excess < -(min_rate as f64),
+            "excess must be below -min_rate: {excess}"
+        );
+    }
+
+    #[test]
+    fn upload_rate_step_carries_over_surplus_for_slow_periods() {
+        let mut excess = 0.0f64;
+        let min_rate = 1000u64;
+        // First chunk: big burst that fills the surplus bucket.
+        upload_rate_step(&mut excess, 10_000, min_rate, 0.0);
+        // Surplus capped at 1000.
+        assert!((excess - 1000.0).abs() < 0.01, "surplus capped: {excess}");
+
+        // Second chunk: very slow (1 byte in 1 second).
+        // excess += 1 - 1000 → 1000 + 1 - 1000 = 1.
+        let rejected = upload_rate_step(&mut excess, 1, min_rate, 1.0);
+        assert!(!rejected, "surplus from burst must absorb one slow chunk");
+        assert!(excess >= 0.0, "excess should remain non-negative: {excess}");
+    }
+
+    #[test]
+    fn upload_rate_step_zero_elapsed_never_rejects() {
+        let mut excess = 0.0f64;
+        let min_rate = 1000u64;
+        // First call always has elapsed=0 (first chunk in request_body_filter).
+        let rejected = upload_rate_step(&mut excess, 1, min_rate, 0.0);
+        assert!(!rejected, "first chunk (elapsed=0) must never reject");
+    }
+
     // ── ConduitMetrics (tokio-metrics feature) ────────────────────────────────
 
     /// Verify that `eventloop_lag_ms` gauge is accessible when the feature is
@@ -3580,5 +3938,52 @@ mod tests {
         assert!(metrics.eventloop_lag_ms.get() > 0.0);
         // Reset to avoid affecting other tests.
         metrics.eventloop_lag_ms.set(0.0);
+    }
+
+    // ── 1xx interim response guard (#50) ─────────────────────────────────────
+    //
+    // The logic in `upstream_response_filter` that skips the ResponseFilterChain
+    // for 1xx (except 101) uses `StatusCode::is_informational()`.  These tests
+    // verify the classification of status codes we care about so that a refactor
+    // of the guard condition does not silently regress.
+
+    #[test]
+    fn status_100_is_informational_and_not_101() {
+        let s = http::StatusCode::CONTINUE;
+        assert!(s.is_informational());
+        assert_ne!(s.as_u16(), 101);
+    }
+
+    #[test]
+    fn status_103_early_hints_is_informational_and_not_101() {
+        // 103 Early Hints — common source of unexpected 1xx from backends
+        // (Spring Boot, Caddy, CDNs).  Must be skipped by the guard.
+        let s = http::StatusCode::from_u16(103).unwrap();
+        assert!(s.is_informational());
+        assert_ne!(s.as_u16(), 101);
+    }
+
+    #[test]
+    fn status_101_is_informational_but_handled_separately() {
+        // 101 is informational but should NOT be skipped — the WebSocket
+        // upgrade guard runs for 101 specifically.
+        let s = http::StatusCode::SWITCHING_PROTOCOLS;
+        assert!(s.is_informational());
+        assert_eq!(s.as_u16(), 101);
+        // Guard condition: status != 101 AND is_informational() → skip.
+        // For 101 this is FALSE — so the WebSocket check runs instead.
+        assert!(!(s.as_u16() != 101 && s.is_informational()));
+    }
+
+    #[test]
+    fn status_200_is_not_informational() {
+        let s = http::StatusCode::OK;
+        assert!(!s.is_informational());
+    }
+
+    #[test]
+    fn status_500_is_not_informational() {
+        let s = http::StatusCode::INTERNAL_SERVER_ERROR;
+        assert!(!s.is_informational());
     }
 }

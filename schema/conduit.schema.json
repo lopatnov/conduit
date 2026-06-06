@@ -121,7 +121,9 @@
             "maxRequestHeaders":     { "type": "integer", "minimum": 1,
                                        "description": "Max number of request headers. Requests exceeding this receive 431." },
             "maxConnectionsPerIp":   { "type": "integer", "minimum": 1,
-                                       "description": "Max simultaneous in-flight requests from one client IP. Excess requests receive 429." }
+                                       "description": "Max simultaneous in-flight requests from one client IP. Excess requests receive 429." },
+            "minUploadRateBytesPerSec": { "type": "integer", "minimum": 1,
+                                          "description": "Minimum upload rate in bytes per second. Clients uploading slower than this receive 408 Request Timeout (slow-loris upload defence)." }
           }
         },
         "headers":   { "type": "object", "additionalProperties": { "type": "string" } },
@@ -449,17 +451,30 @@
           "type": "boolean",
           "description": "Allow WebSocket upgrades (101 Switching Protocols) on this route. Default false — unexpected upgrades are rejected with 502."
         },
+        "sticky": {
+          "type": "object",
+          "required": ["cookie"],
+          "properties": {
+            "cookie": { "type": "string", "description": "Cookie name used for sticky-session routing." },
+            "secret": { "type": "string", "description": "HMAC-SHA256 secret. When set, Conduit signs the upstream URL into the cookie and verifies it on every request, preventing forgery. Use an env-var reference ($MY_SECRET)." },
+            "strict": { "type": "boolean", "description": "When true, return 503 if the pinned upstream is unhealthy instead of failing over to another backend. Default false." }
+          },
+          "description": "Sticky-session configuration. Routes the same client to the same upstream using a cookie."
+        },
         "cache": {
           "type": "object",
           "required": ["store"],
           "properties": {
-            "store":        { "type": "string" },
-            "maxSizeMb":    { "type": "integer", "minimum": 1 },
-            "ttlSecs":      { "type": "integer", "minimum": 0 },
-            "varyHeaders":  { "type": "array", "items": { "type": "string" } },
-            "skipPaths":    { "type": "array", "items": { "type": "string" } },
-            "skipIfCookie": { "type": "boolean" },
-            "methods":      { "type": "array", "items": { "type": "string" } }
+            "store":                    { "type": "string" },
+            "maxSizeMb":                { "type": "integer", "minimum": 1 },
+            "ttlSecs":                  { "type": "integer", "minimum": 0 },
+            "staleWhileRevalidateSecs": { "type": "integer", "minimum": 0, "description": "Serve stale while refreshing in background (RFC 5861)." },
+            "staleIfErrorSecs":         { "type": "integer", "minimum": 0, "description": "Serve stale when upstream returns 5xx, including after retries are exhausted (RFC 5861)." },
+            "earlyRefreshSecs":         { "type": "integer", "minimum": 0, "description": "Spawn a background refresh when remaining TTL drops below this value. Clients always see fresh content." },
+            "varyHeaders":              { "type": "array", "items": { "type": "string" } },
+            "skipPaths":                { "type": "array", "items": { "type": "string" } },
+            "skipIfCookie":             { "type": "boolean" },
+            "methods":                  { "type": "array", "items": { "type": "string" } }
           }
         }
       }

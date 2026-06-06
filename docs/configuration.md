@@ -577,6 +577,8 @@ proxy:
 | `upstreamTls`         | object               | —             | TLS for HTTPS upstreams — see [Upstream TLS](#upstream-tls-verification)       |
 | `mirror`              | string               | —             | Shadow URL — see [Traffic mirroring](#traffic-mirroring)                       |
 | `sticky.cookie`       | string               | —             | Cookie name for sticky sessions                                                |
+| `sticky.secret`       | string               | —             | HMAC-SHA256 secret — Conduit signs + verifies the cookie (prevents forgery)    |
+| `sticky.strict`       | boolean              | `false`       | Return 503 when the pinned upstream is down (instead of routing elsewhere)     |
 | `groups`              | object[]             | —             | Two-level LB groups: `[{name, targets, strategy}]`                             |
 | `groupStrategy`       | string               | `round-robin` | Outer strategy when `groups` is set                                            |
 | `priority`            | number (0–100)       | `50`          | Request priority for load shedding — see [Priority routing](#priority-routing) |
@@ -1006,6 +1008,40 @@ If the client presents no cookie (first request), the request is routed by the
 configured strategy and the upstream is recorded — no cookie is set by Conduit.
 The application is responsible for setting the session cookie.
 
+#### HMAC-signed sticky cookies
+
+Without a `secret`, the cookie value is used as a raw consistent-hash key.
+An attacker can craft a cookie to force routing to any backend they choose.
+
+Set `sticky.secret` to make Conduit sign cookies with **HMAC-SHA256** and
+verify them on every request. Forged cookies silently fall back to normal
+load-balancing rather than pinning to an attacker-controlled backend.
+
+```yaml
+proxy:
+  /app:
+    targets: ["http://a:4000", "http://b:4000"]
+    strategy: consistent-hash
+    sticky:
+      cookie: srv_id       # Conduit sets this cookie on every response
+      secret: "$STICKY_SECRET"  # HMAC key — use an env var, never hardcode
+      strict: false        # true = 503 when pinned upstream is down
+```
+
+| Option    | Behaviour |
+|-----------|-----------|
+| No `secret` | Cookie value is the raw consistent-hash key (legacy, no forgery protection) |
+| `secret` set | Conduit signs the URL with HMAC-SHA256 and injects a `Set-Cookie` on every response |
+| `strict: false` (default) | If the pinned upstream is unhealthy, fall back to the next available backend |
+| `strict: true` | If the pinned upstream is unhealthy, return `503 Service Unavailable` immediately |
+
+The injected cookie attributes are: `Path=/; HttpOnly; SameSite=Lax`.
+
+> **Security note:** store the HMAC secret in an environment variable
+> (`secret: "$STICKY_SECRET"`). Rotate by changing the value and reloading;
+> existing cookies will silently fall through to normal load-balancing for one
+> request and then get a new signed cookie.
+
 ---
 
 ### Upstream groups (two-level balancing)
@@ -1390,6 +1426,21 @@ proxy:
 > `limits.maxBodyBufferBytes` is set. Without it, request bodies are not buffered and
 > `connection_error` retries on non-GET methods are skipped silently.
 
+### 1xx interim responses
+
+Some upstream backends (Spring Boot, CDNs, gRPC gateways) send one or more
+`1xx` informational responses before the final response — for example
+`103 Early Hints` for browser resource preloading, or `100 Continue` after a
+`Expect: 100-continue` request header.
+
+Conduit forwards these 1xx responses to the client unchanged and waits for the
+real response before running any middleware (retry logic, error masking, response
+transforms, etc.). No configuration is required — this is always the correct
+behavior per RFC 7230.
+
+**Exception:** `101 Switching Protocols` (WebSocket upgrade) is handled
+separately by the `websocket: true` route option — see the field reference table.
+
 ---
 
 ## Outlier Detection
@@ -1448,6 +1499,7 @@ limits:
   maxConnectionsPerIp: 50 # max simultaneous connections from one IP (429)
   keepaliveRequestLimit: 1000 # recycle connections after this many requests
   priorityThreshold: 0.8 # shed low-priority routes above 80% concurrency
+  minUploadRateBytesPerSec: 1024 # reject uploads slower than 1 KiB/s (408)
 ```
 
 ```json
@@ -1461,7 +1513,8 @@ limits:
     "maxBodyBufferBytes": 1048576,
     "maxConnectionsPerIp": 50,
     "keepaliveRequestLimit": 1000,
-    "priorityThreshold": 0.8
+    "priorityThreshold": 0.8,
+    "minUploadRateBytesPerSec": 1024
   }
 }
 ```
@@ -1474,9 +1527,10 @@ limits:
 | `maxInflightRequests`   | number | —       | Max concurrent requests — returns `503` if exceeded (must be ≥ 1)                                                             |
 | `maxBodyBufferBytes`    | number | —       | Max body buffered per request for retry replay                                                                                |
 | `maxConnectionsPerIp`   | number | —       | Max simultaneous open connections from a single client IP — returns `429` if exceeded                                         |
-| `maxRequestHeaders`     | number | —       | Max number of request headers — returns `431 Request Header Fields Too Large` if exceeded                                     |
-| `keepaliveRequestLimit` | number | —       | Max requests per keepalive connection; closes and recycles after. Equivalent to nginx's `keepalive_requests`.                 |
-| `priorityThreshold`     | number | `0.8`   | Fraction of `maxInflightRequests` at which low-priority routes are shed (0.0–1.0) — see [Priority routing](#priority-routing) |
+| `maxRequestHeaders`          | number | —       | Max number of request headers — returns `431 Request Header Fields Too Large` if exceeded                                     |
+| `keepaliveRequestLimit`      | number | —       | Max requests per keepalive connection; closes and recycles after. Equivalent to nginx's `keepalive_requests`.                 |
+| `priorityThreshold`          | number | `0.8`   | Fraction of `maxInflightRequests` at which low-priority routes are shed (0.0–1.0) — see [Priority routing](#priority-routing) |
+| `minUploadRateBytesPerSec`   | number | —       | Minimum upload rate in bytes/s — closes slow uploads with `408 Request Timeout` (slow-loris protection)                       |
 
 ---
 
@@ -1636,7 +1690,8 @@ proxy:
 | `ttlSecs`                  | number   | —             | Fresh cache TTL (seconds)                                                          |
 | `maxSizeMb`                | number   | —             | Memory budget; LRU eviction above this                                             |
 | `staleWhileRevalidateSecs` | number   | `0`           | Serve stale while refreshing in background (RFC 5861)                              |
-| `staleIfErrorSecs`         | number   | `0`           | Serve stale when upstream returns 5xx (RFC 5861)                                   |
+| `staleIfErrorSecs`         | number   | `0`           | Serve stale when upstream returns 5xx, including after retries are exhausted (RFC 5861) |
+| `earlyRefreshSecs`         | number   | `0`           | Refresh cache in the background when remaining TTL < this value (see below)        |
 | `varyHeaders`              | string[] | —             | Vary cache key by these request headers                                            |
 | `skipPaths`                | string[] | —             | Paths to never cache                                                               |
 | `skipIfCookie`             | bool     | `false`       | Skip caching when request has a cookie                                             |
@@ -1656,6 +1711,48 @@ double-counting across proxy hops. No configuration is required.
 returns the stale response immediately while a background request refreshes the
 cache. Zero latency penalty for users. A built-in cache lock prevents thundering
 herd — only one background fetch goes to the upstream at a time.
+
+**Stale-if-error** (RFC 5861): when the upstream returns a 5xx error, Conduit
+serves the last known good cached response instead of forwarding the error to
+the client. This works in all three scenarios:
+
+1. **No retry configured** — upstream 5xx immediately falls back to stale cache.
+2. **Retry configured, budget exhausted** — after all retry attempts fail, stale
+   cache is served instead of the final 5xx error.
+3. **Retry + stale together** — Conduit retries the configured number of times;
+   if all retries fail and stale cache is available, it serves stale.
+
+Set `staleIfErrorSecs` to the maximum age (in seconds) of a stale response you
+are willing to serve. When no stale entry exists or the stale entry is older than
+`staleIfErrorSecs`, the upstream error is forwarded to the client.
+
+**Early refresh** (`earlyRefreshSecs`): when the remaining TTL of a cached
+entry drops below `earlyRefreshSecs`, Conduit fires a background GET request
+directly to the upstream while the **current** client request is still served
+the (still-valid) cached response with zero latency. The cache is updated before
+it ever expires, so clients never see stale content as long as the upstream is
+reachable.
+
+Comparison with `staleWhileRevalidateSecs`:
+
+| Feature                     | Activates        | Clients see stale? |
+| --------------------------- | ---------------- | ------------------ |
+| `staleWhileRevalidateSecs`  | After TTL expires | Yes, until refresh |
+| `earlyRefreshSecs`          | Before TTL expires | No                |
+
+Use `earlyRefreshSecs` when zero-stale is important (news feeds, pricing data,
+session-sensitive API). Use `staleWhileRevalidateSecs` when occasional stale
+is acceptable and you want a simpler setup.
+
+```yaml
+# Never-stale cache: refresh 10 s before the 60-second TTL expires.
+cache:
+  store: memory
+  ttlSecs: 60
+  earlyRefreshSecs: 10
+```
+
+Source: h2o `lib/common/cache.c` — `H2O_CACHE_FLAG_EARLY_UPDATE`.
 
 **`s-maxage` handling**: Conduit respects the upstream `Cache-Control: s-maxage=N` directive
 as the effective TTL when the upstream returns it. `s-maxage=0` explicitly prevents

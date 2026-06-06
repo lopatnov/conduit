@@ -135,12 +135,23 @@ impl ResponseFilterChain {
             });
         }
 
-        // Phase 5 — 5xx retry (terminates chain if fired).
+        // Phase 5 — 5xx retry / stale-if-error fallback (terminates chain if fired).
+        //
+        // `stale_on_error` enables the error path even when retry is not configured
+        // (or retry budget is exhausted).  This allows Pingora to call
+        // `should_serve_stale()` and serve a cached stale response on 5xx (#48).
+        let stale_on_error = req_ctx
+            .proxy_cache_cfg
+            .as_ref()
+            .and_then(|c| c.stale_if_error_secs)
+            .unwrap_or(0)
+            > 0;
         chain = chain.push(RetryOnErrorFilter {
             retry: req_ctx.retry.as_ref().map(|r| RetrySpec {
                 has_attempts_left: r.has_attempts_left(),
                 has_5xx_condition: r.has_condition("5xx"),
             }),
+            stale_on_error,
         });
 
         // Phase 6 — Error masking (terminates chain if fired).
@@ -366,6 +377,7 @@ impl ResponseFilter for ServerTimingFilter {
 
 /// Retry specification passed to `RetryOnErrorFilter` without a borrow
 /// of `RetryState` (which would create a lifetime dependency on `RequestCtx`).
+#[derive(Debug)]
 pub struct RetrySpec {
     pub has_attempts_left: bool,
     pub has_5xx_condition: bool,
@@ -374,10 +386,20 @@ pub struct RetrySpec {
 /// Phase 5 — Trigger a Pingora retry when the upstream returns a 5xx status
 /// and the route has a `retry` config with `"5xx"` in its conditions list.
 ///
+/// Also handles the stale-if-error gap (#48): when `stale_on_error` is set,
+/// triggers the error path even without a retry config (or when retry budget is
+/// exhausted) so that Pingora can call `should_serve_stale()` and serve a
+/// cached stale response instead of forwarding the 5xx to the client.
+///
 /// Returns `RetryUpstream` (terminal) — the caller must propagate a Pingora
-/// `Custom("5xx_retry")` error to activate the retry machinery.
+/// `Custom("5xx_retry")` error to activate the retry / stale-fallback machinery.
 pub struct RetryOnErrorFilter {
     pub retry: Option<RetrySpec>,
+    /// Trigger the error path on 5xx even when retry is not configured (or
+    /// exhausted), so that `should_serve_stale()` can serve a stale response.
+    ///
+    /// Derived from `cache.staleIfErrorSecs > 0`.
+    pub stale_on_error: bool,
 }
 
 impl ResponseFilter for RetryOnErrorFilter {
@@ -386,8 +408,19 @@ impl ResponseFilter for RetryOnErrorFilter {
         resp: &mut ResponseHeader,
         _req_ctx: &RequestCtx,
     ) -> Result<ResponseFilterOutcome> {
-        if let Some(spec) = &self.retry {
-            if resp.status.as_u16() >= 500 && spec.has_attempts_left && spec.has_5xx_condition {
+        if resp.status.as_u16() >= 500 {
+            // Retry takes priority when budget and conditions are available.
+            if let Some(spec) = &self.retry {
+                if spec.has_attempts_left && spec.has_5xx_condition {
+                    return Ok(ResponseFilterOutcome::RetryUpstream);
+                }
+            }
+            // Stale-if-error fallback (#48): trigger the Pingora error path so
+            // that `should_serve_stale()` can serve a cached stale response.
+            // Handles two cases:
+            // 1. No retry config (retry = None).
+            // 2. Last retry attempt exhausted (has_attempts_left = false).
+            if self.stale_on_error {
                 return Ok(ResponseFilterOutcome::RetryUpstream);
             }
         }
@@ -696,6 +729,7 @@ mod tests {
                 has_attempts_left: true,
                 has_5xx_condition: true,
             }),
+            stale_on_error: false,
         };
         assert!(matches!(
             r.apply(&mut resp, &ctx).unwrap(),
@@ -712,6 +746,7 @@ mod tests {
                 has_attempts_left: true,
                 has_5xx_condition: true,
             }),
+            stale_on_error: false,
         };
         assert!(matches!(
             r.apply(&mut resp, &ctx).unwrap(),
@@ -728,6 +763,7 @@ mod tests {
                 has_attempts_left: false,
                 has_5xx_condition: true,
             }),
+            stale_on_error: false,
         };
         assert!(matches!(
             r.apply(&mut resp, &ctx).unwrap(),
@@ -744,6 +780,7 @@ mod tests {
                 has_attempts_left: true,
                 has_5xx_condition: false,
             }),
+            stale_on_error: false,
         };
         assert!(matches!(
             r.apply(&mut resp, &ctx).unwrap(),
@@ -922,12 +959,65 @@ mod tests {
 
     #[test]
     fn retry_none_config_never_retries() {
-        let filter = RetryOnErrorFilter { retry: None };
+        let filter = RetryOnErrorFilter {
+            retry: None,
+            stale_on_error: false,
+        };
         let mut resp = make_resp(503);
         let ctx = dummy_ctx();
         assert!(matches!(
             filter.apply(&mut resp, &ctx).unwrap(),
             ResponseFilterOutcome::Continue
+        ));
+    }
+
+    #[test]
+    fn stale_on_error_triggers_retry_upstream_on_5xx() {
+        // When stale_on_error=true and no retry config, a 5xx should trigger
+        // RetryUpstream so Pingora can call should_serve_stale().
+        let filter = RetryOnErrorFilter {
+            retry: None,
+            stale_on_error: true,
+        };
+        let mut resp = make_resp(503);
+        let ctx = dummy_ctx();
+        assert!(matches!(
+            filter.apply(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::RetryUpstream
+        ));
+    }
+
+    #[test]
+    fn stale_on_error_does_not_trigger_on_2xx() {
+        // stale_on_error should not affect successful responses.
+        let filter = RetryOnErrorFilter {
+            retry: None,
+            stale_on_error: true,
+        };
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        assert!(matches!(
+            filter.apply(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::Continue
+        ));
+    }
+
+    #[test]
+    fn stale_on_error_with_retry_exhausted_still_triggers() {
+        // Even when retry budget is exhausted (has_attempts_left=false),
+        // stale_on_error should still trigger RetryUpstream for stale cache.
+        let filter = RetryOnErrorFilter {
+            retry: Some(RetrySpec {
+                has_attempts_left: false,
+                has_5xx_condition: true,
+            }),
+            stale_on_error: true,
+        };
+        let mut resp = make_resp(500);
+        let ctx = dummy_ctx();
+        assert!(matches!(
+            filter.apply(&mut resp, &ctx).unwrap(),
+            ResponseFilterOutcome::RetryUpstream
         ));
     }
 

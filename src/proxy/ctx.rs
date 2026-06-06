@@ -117,6 +117,28 @@ pub struct RequestCtx {
     /// header (RFC 7234 §5.1): `age = now − date`.  `None` for non-cached
     /// responses or when the cache feature is disabled.
     pub cache_age_secs: Option<u64>,
+    /// Sticky-session cookie to set on the response when HMAC signing is enabled.
+    ///
+    /// Populated during routing when `sticky.secret` is configured.
+    /// Format: `(cookie_name, hmac_signed_value)`.  The `upstream_response_filter`
+    /// injects the corresponding `Set-Cookie` header.
+    pub sticky_set_cookie: Option<(String, String)>,
+    /// Slow-loris upload defense: accumulated excess bytes for the leaky-bucket
+    /// rate checker in `request_body_filter`.
+    ///
+    /// Positive excess means the client is sending faster than `minUploadRate`
+    /// would allow; negative means the client has headroom.  Set to 0.0 on init.
+    pub upload_excess_bytes: f64,
+    /// Timestamp of the last body chunk received, used by the upload-rate checker.
+    pub upload_last_chunk: Option<std::time::Instant>,
+    /// Upstream URL to refresh in the background after this cache-hit response
+    /// is served (early refresh, #31).
+    ///
+    /// Set by `response_filter` when the cache entry's remaining TTL is within
+    /// `earlyRefreshSecs`.  `logging()` spawns a fire-and-forget GET task.
+    /// `None` when early refresh is not configured or the TTL is not yet close.
+    #[cfg(feature = "cache")]
+    pub early_refresh_upstream_url: Option<String>,
 }
 
 impl RequestCtx {
@@ -157,6 +179,11 @@ impl RequestCtx {
             websocket_allowed: false,
             failed_upstream_attempts: Vec::new(),
             cache_age_secs: None,
+            sticky_set_cookie: None,
+            upload_excess_bytes: 0.0,
+            upload_last_chunk: None,
+            #[cfg(feature = "cache")]
+            early_refresh_upstream_url: None,
             #[cfg(feature = "otlp")]
             otel_span: None,
         }

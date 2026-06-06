@@ -87,6 +87,8 @@ url       = "2"   # URL parsing for proxy-loop and SSRF detection
 httpdate  = "1"
 http      = "1"
 base64    = "0.22"
+hmac      = "0.12"
+sha2      = "0.10"
 
 # --- Rhai scripting middleware (feature: rhai) ---
 rhai = { version = "1", features = ["sync"], optional = true }

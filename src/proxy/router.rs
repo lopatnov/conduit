@@ -43,6 +43,11 @@ pub struct RouteResolution {
     /// Whether WebSocket upgrades are permitted on this route.
     /// Populated from `proxy.*.websocket: true` in the route config.
     pub websocket_allowed: bool,
+    /// HMAC-signed sticky cookie to inject in the response (`Set-Cookie`).
+    ///
+    /// `Some((name, value))` when `sticky.secret` is configured.  The
+    /// `upstream_response_filter` in `service.rs` injects the header.
+    pub sticky_set_cookie: Option<(String, String)>,
 }
 
 impl RouteResolution {
@@ -60,6 +65,7 @@ impl RouteResolution {
             passive_unhealthy_status: Vec::new(),
             passive_unhealthy_latency_ms: None,
             websocket_allowed: false,
+            sticky_set_cookie: None,
         }
     }
 }
@@ -130,6 +136,7 @@ pub fn route_request(
     ctx.passive_unhealthy_status = res.passive_unhealthy_status;
     ctx.passive_unhealthy_latency_ms = res.passive_unhealthy_latency_ms;
     ctx.websocket_allowed = res.websocket_allowed;
+    ctx.sticky_set_cookie = res.sticky_set_cookie;
     ctx
 }
 
@@ -395,16 +402,63 @@ fn resolve_proxy(
                 .filter(|(url, _)| urls.contains(url))
                 .collect();
 
-            // Sticky sessions: if configured, extract the cookie value and use
-            // it as the hash input — the same cookie value always maps to the
-            // same upstream bucket (consistent hashing).
-            let sticky_override: Option<String> = if let ProxyRouteTarget::Full(cfg) = route_target
-            {
-                cfg.sticky
-                    .as_ref()
-                    .and_then(|s| extract_cookie(req_headers, &s.cookie))
+            // Sticky sessions: extract and optionally verify the session cookie.
+            //
+            // When `sticky.secret` is set, verify the HMAC-SHA256 of each candidate
+            // upstream URL to find the pinned backend.  A forged or unmatched cookie
+            // falls through to normal load-balancing (or returns 503 in strict mode).
+            // Without `secret`, the raw cookie value is used as the consistent-hash
+            // key (legacy behavior).
+            let sticky_cfg = if let ProxyRouteTarget::Full(cfg) = route_target {
+                cfg.sticky.as_ref()
             } else {
                 None
+            };
+            let sticky_cookie_name: Option<&str> =
+                sticky_cfg.map(|s| s.cookie.as_str());
+            let sticky_cookie_val: Option<String> = sticky_cookie_name
+                .and_then(|name| extract_cookie(req_headers, name));
+
+            // HMAC sticky: find which healthy upstream the cookie was signed for.
+            // `pinned_url` = Some(url) if cookie is a valid HMAC of that URL.
+            let pinned_url: Option<String> = if let (Some(val), Some(cfg)) =
+                (sticky_cookie_val.as_deref(), sticky_cfg)
+            {
+                if let Some(ref secret) = cfg.secret {
+                    // Try to find the upstream whose HMAC matches the cookie.
+                    all_urls
+                        .iter()
+                        .find(|u| hmac_verify_sticky(u, val, secret))
+                        .cloned()
+                } else {
+                    None // No secret: use raw cookie as hash input (below)
+                }
+            } else {
+                None
+            };
+
+            // Strict mode: if the client presented a signed cookie for a peer
+            // that is now unhealthy, refuse the request rather than silently
+            // routing to a different upstream (which would break session affinity).
+            if let (Some(ref url), Some(cfg)) = (pinned_url.as_ref(), sticky_cfg) {
+                if cfg.strict.unwrap_or(false) && !upstream_health.is_healthy(url) {
+                    tracing::debug!(
+                        url = %url,
+                        "sticky strict mode: pinned upstream unhealthy — returning 503"
+                    );
+                    return Some(RouteResolution::local(UpstreamTarget::Local(
+                        LocalHandler::Overloaded,
+                    )));
+                }
+            }
+
+            // Determine the hash / override value for consistent-hash selection.
+            let sticky_override: Option<String> = if let Some(ref pinned) = pinned_url {
+                // HMAC-verified: pin to the exact upstream.
+                Some(pinned.clone())
+            } else {
+                // No secret or no cookie: fall back to raw cookie value.
+                sticky_cookie_val
             };
 
             // Compute hash value for ip-hash, consistent-hash, and sticky.
@@ -492,6 +546,19 @@ fn resolve_proxy(
             let proxy_upstream_url =
                 (is_least_conn || circuit_tracking).then(|| chosen_url.clone());
 
+            // HMAC sticky: sign the chosen upstream URL and schedule a
+            // Set-Cookie injection on the response side.
+            let sticky_set_cookie: Option<(String, String)> = if let Some(cfg) = sticky_cfg {
+                if let Some(ref secret) = cfg.secret {
+                    let signed = hmac_sign_sticky(&chosen_url, secret);
+                    Some((cfg.cookie.clone(), signed))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             Some(RouteResolution {
                 upstream,
                 retry: retry_state,
@@ -503,6 +570,7 @@ fn resolve_proxy(
                 passive_unhealthy_status,
                 passive_unhealthy_latency_ms,
                 websocket_allowed,
+                sticky_set_cookie,
             })
         }
     }
@@ -643,6 +711,7 @@ fn resolve_grouped(
         passive_unhealthy_status: Vec::new(), // groups don't have per-route healthCheck
         passive_unhealthy_latency_ms: None,
         websocket_allowed: false, // groups don't support websocket config in V1
+        sticky_set_cookie: None,  // groups don't support sticky in V1
     })
 }
 
@@ -761,6 +830,41 @@ fn extract_cookie(headers: &http::HeaderMap, name: &str) -> Option<String> {
         }
     }
     None
+}
+
+// ── Sticky-session HMAC helpers ───────────────────────────────────────────────
+
+/// Compute `HMAC-SHA256(upstream_url, secret)` and return it as URL-safe base64
+/// (no padding).  Used for both signing response cookies and verifying requests.
+pub(crate) fn hmac_sign_sticky(upstream_url: &str, secret: &str) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+    mac.update(upstream_url.as_bytes());
+    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+}
+
+/// Return `true` when `cookie_value` is the valid HMAC of `upstream_url` with
+/// the given `secret`.  Uses constant-time comparison to prevent timing attacks.
+pub(crate) fn hmac_verify_sticky(upstream_url: &str, cookie_value: &str, secret: &str) -> bool {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    use subtle::ConstantTimeEq as _;
+
+    let expected = hmac_sign_sticky(upstream_url, secret);
+    let Ok(expected_bytes) = URL_SAFE_NO_PAD.decode(&expected) else {
+        return false;
+    };
+    let Ok(actual_bytes) = URL_SAFE_NO_PAD.decode(cookie_value) else {
+        return false;
+    };
+    expected_bytes.len() == actual_bytes.len()
+        && expected_bytes.ct_eq(&actual_bytes).into()
 }
 
 fn find_route<'a>(
@@ -2429,6 +2533,97 @@ mod tests {
         assert!(
             retry_state.is_some(),
             "retry config must produce retry state"
+        );
+    }
+
+    // ── hmac_sign_sticky / hmac_verify_sticky (#39) ───────────────────────────
+
+    #[test]
+    fn hmac_sign_sticky_produces_non_empty_base64() {
+        let signed = hmac_sign_sticky("http://backend:4000", "mysecret");
+        assert!(!signed.is_empty(), "HMAC signature must not be empty");
+        // URL-safe base64: only A-Z a-z 0-9 - _ (no + / =)
+        assert!(
+            signed.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "signature must be URL-safe base64 (no +, /, or =): {signed}"
+        );
+    }
+
+    #[test]
+    fn hmac_sign_sticky_is_deterministic() {
+        let a = hmac_sign_sticky("http://backend:4000", "s3cret");
+        let b = hmac_sign_sticky("http://backend:4000", "s3cret");
+        assert_eq!(a, b, "same inputs must always produce the same HMAC");
+    }
+
+    #[test]
+    fn hmac_sign_sticky_differs_for_different_urls() {
+        let a = hmac_sign_sticky("http://backend-a:4000", "s3cret");
+        let b = hmac_sign_sticky("http://backend-b:4000", "s3cret");
+        assert_ne!(a, b, "different URLs must produce different HMACs");
+    }
+
+    #[test]
+    fn hmac_sign_sticky_differs_for_different_secrets() {
+        let a = hmac_sign_sticky("http://backend:4000", "secret1");
+        let b = hmac_sign_sticky("http://backend:4000", "secret2");
+        assert_ne!(a, b, "different secrets must produce different HMACs");
+    }
+
+    #[test]
+    fn hmac_verify_sticky_correct_value_returns_true() {
+        let url = "http://backend:4000";
+        let secret = "s3cret";
+        let signed = hmac_sign_sticky(url, secret);
+        assert!(
+            hmac_verify_sticky(url, &signed, secret),
+            "correct HMAC must verify successfully"
+        );
+    }
+
+    #[test]
+    fn hmac_verify_sticky_wrong_url_returns_false() {
+        let secret = "s3cret";
+        let signed = hmac_sign_sticky("http://backend-a:4000", secret);
+        assert!(
+            !hmac_verify_sticky("http://backend-b:4000", &signed, secret),
+            "HMAC signed for URL-A must not verify against URL-B"
+        );
+    }
+
+    #[test]
+    fn hmac_verify_sticky_wrong_secret_returns_false() {
+        let url = "http://backend:4000";
+        let signed = hmac_sign_sticky(url, "correct-secret");
+        assert!(
+            !hmac_verify_sticky(url, &signed, "wrong-secret"),
+            "HMAC signed with one secret must not verify with a different secret"
+        );
+    }
+
+    #[test]
+    fn hmac_verify_sticky_tampered_value_returns_false() {
+        let url = "http://backend:4000";
+        let secret = "s3cret";
+        let mut signed = hmac_sign_sticky(url, secret);
+        // Flip the first character to simulate tampering.
+        if signed.starts_with('A') {
+            signed.replace_range(0..1, "B");
+        } else {
+            signed.replace_range(0..1, "A");
+        }
+        assert!(
+            !hmac_verify_sticky(url, &signed, secret),
+            "tampered cookie value must not verify"
+        );
+    }
+
+    #[test]
+    fn hmac_verify_sticky_garbage_input_returns_false() {
+        // Non-base64 input must not panic, just return false.
+        assert!(
+            !hmac_verify_sticky("http://backend:4000", "not!valid!base64!!!!", "s3cret"),
+            "invalid base64 must return false without panicking"
         );
     }
 }

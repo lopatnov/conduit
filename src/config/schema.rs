@@ -1034,6 +1034,27 @@ pub struct LimitsConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub max_request_headers: Option<u32>,
+    /// Minimum upload rate in bytes per second (slow-loris upload defence).
+    ///
+    /// **freenginx / nginx `client_body_min_rate` pattern.**  Uses a leaky-bucket
+    /// algorithm: excess accumulates when the client sends slower than the limit.
+    /// When accumulated excess exceeds the burst allowance (1 second of data by
+    /// default) the request is terminated with `408 Request Timeout`.
+    ///
+    /// Typical values: `1024` (1 KiB/s) for strict protection,
+    /// `256` for slow-network tolerance.
+    ///
+    /// `None` (default) disables the check.
+    ///
+    /// ```yaml
+    /// limits:
+    ///   minUploadRateBytesPerSec: 1024
+    /// ```
+    #[serde(
+        rename = "minUploadRateBytesPerSec",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub min_upload_rate_bytes_per_sec: Option<u64>,
 }
 
 // ── Redirects ──────────────────────────────────────────────────────────────
@@ -1252,6 +1273,25 @@ pub struct ProxyRouteConfig {
 pub struct StickyConfig {
     /// Name of the cookie to use as the session affinity key.
     pub cookie: String,
+    /// HMAC-SHA256 secret for signing and verifying sticky-session cookies.
+    ///
+    /// When set, the cookie value is `HMAC-SHA256(upstream_url, secret)` encoded
+    /// as URL-safe base64 (no padding).  On incoming requests the HMAC is verified
+    /// against every healthy upstream; a forged or mismatched cookie falls through
+    /// to normal load-balancing rather than pinning the client to an arbitrary peer.
+    ///
+    /// **Strongly recommended in production** — without a secret, clients can craft
+    /// any cookie value to pin themselves to any upstream (session-pinning attack).
+    ///
+    /// Supports `$ENV_VAR` interpolation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// When `true`, return `503 Service Unavailable` if the hinted upstream is
+    /// unhealthy or ejected, rather than falling back to another peer.
+    ///
+    /// Default: `false` (fall back to normal load-balancing).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
 }
 
 /// Upstream TLS configuration (used with `https://` proxy targets).
@@ -1483,6 +1523,26 @@ pub struct CacheConfig {
     /// forwarding the error to the client.
     #[serde(rename = "staleIfErrorSecs", skip_serializing_if = "Option::is_none")]
     pub stale_if_error_secs: Option<u32>,
+    /// Proactively refresh a cache entry in the background before it expires.
+    ///
+    /// When the remaining TTL drops below `earlyRefreshSecs`, Conduit fires a
+    /// fire-and-forget GET request to the upstream.  The client is served the
+    /// still-valid cached response with zero latency — the refresh happens
+    /// concurrently.  The cache is updated the moment the background response
+    /// arrives, so the next real request always gets a fresh copy.
+    ///
+    /// Unlike `staleWhileRevalidateSecs`, which activates only *after* the TTL
+    /// expires, `earlyRefreshSecs` ensures the cache never goes stale from the
+    /// client's perspective.
+    ///
+    /// ```yaml
+    /// cache:
+    ///   store: memory
+    ///   ttlSecs: 60
+    ///   earlyRefreshSecs: 10  # refresh 10 s before expiry
+    /// ```
+    #[serde(rename = "earlyRefreshSecs", skip_serializing_if = "Option::is_none")]
+    pub early_refresh_secs: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vary_headers: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
