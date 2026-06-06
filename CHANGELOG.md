@@ -16,7 +16,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Upgrade `pingora` and all `pingora-*` crates `0.8.0 → 0.8.1` — mitigates
   HTTP/2 Bomb (CVE-2026-47774 / RUSTSEC) by bounding the default H2 server
   header-list size to 64 KiB and limiting concurrent streams to 100.
-- Upgrade `jsonwebtoken` `9.3.1 → 10.3.0` — fixes CVE-2026-25537
+- Upgrade `jsonwebtoken` `9.3.1 → 10.4.0` — fixes CVE-2026-25537
   (Type Confusion leading to potential authorization bypass).
 
 ### Changes

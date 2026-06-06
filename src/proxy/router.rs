@@ -451,12 +451,23 @@ fn resolve_proxy(
             }
 
             // Determine the hash / override value for consistent-hash selection.
+            //
+            // Security: when a secret is configured (HMAC mode), a cookie that
+            // fails signature verification must NOT influence routing — otherwise
+            // a client could forge/manipulate their cookie to steer to specific
+            // upstreams.  Raw cookie values are only used when no secret is set
+            // (legacy, non-HMAC sticky).
+            let hmac_mode = sticky_cfg.and_then(|cfg| cfg.secret.as_ref()).is_some();
             let sticky_override: Option<String> = if let Some(ref pinned) = pinned_url {
                 // HMAC-verified: pin to the exact upstream.
                 Some(pinned.clone())
-            } else {
-                // No secret or no cookie: fall back to raw cookie value.
+            } else if !hmac_mode {
+                // No secret configured: use raw cookie as consistent-hash input.
                 sticky_cookie_val
+            } else {
+                // HMAC mode but cookie failed verification: ignore — fall through
+                // to the configured load-balancing strategy.
+                None
             };
 
             // Compute hash value for ip-hash, consistent-hash, and sticky.
