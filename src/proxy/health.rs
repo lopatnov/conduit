@@ -108,6 +108,17 @@ pub struct UpstreamEntry {
     /// - Probe fails (5xx): `half_open` is cleared, upstream is re-ejected with
     ///   the next exponential-backoff duration.
     pub half_open: bool,
+    /// Cumulative count of 2xx responses received from this upstream.
+    pub responses_2xx: u64,
+    /// Cumulative count of 4xx responses received from this upstream.
+    pub responses_4xx: u64,
+    /// Cumulative count of 5xx responses received from this upstream.
+    pub responses_5xx: u64,
+    /// Total number of times this upstream was selected to handle a request.
+    pub selected_total: u64,
+    /// Unix timestamp (seconds) of the last time this upstream was selected.
+    /// Zero means it has never been selected since the process started.
+    pub selected_last_secs: u64,
 }
 
 impl Default for UpstreamEntry {
@@ -124,6 +135,11 @@ impl Default for UpstreamEntry {
             ejected_until_secs: None,
             ejection_count: 0,
             half_open: false,
+            responses_2xx: 0,
+            responses_4xx: 0,
+            responses_5xx: 0,
+            selected_total: 0,
+            selected_last_secs: 0,
         }
     }
 }
@@ -206,6 +222,33 @@ pub fn record_request_latency(
 /// Compute the slow-start traffic fraction for an upstream.
 ///
 /// Check whether `url` should be ejected based on its consecutive 5xx count.
+/// Record a completed request's HTTP status code for per-upstream statistics.
+///
+/// Increments the matching `responses_2xx`, `responses_4xx`, or `responses_5xx`
+/// counter on the upstream entry.  Called from `logging()` after every proxied
+/// request.
+pub fn record_response_status(registry: &UpstreamRegistry, url: &str, status: u16) {
+    if let Some(mut entry) = registry.statuses.get_mut(url) {
+        match status {
+            200..=299 => entry.responses_2xx = entry.responses_2xx.saturating_add(1),
+            400..=499 => entry.responses_4xx = entry.responses_4xx.saturating_add(1),
+            500..=599 => entry.responses_5xx = entry.responses_5xx.saturating_add(1),
+            _ => {}
+        }
+    }
+}
+
+/// Record that this upstream was selected to handle a request.
+///
+/// Increments `selected_total` and updates `selected_last_secs`.
+/// Called from `upstream_request_filter()`.
+pub fn record_upstream_selected(registry: &UpstreamRegistry, url: &str) {
+    if let Some(mut entry) = registry.statuses.get_mut(url) {
+        entry.selected_total = entry.selected_total.saturating_add(1);
+        entry.selected_last_secs = now_secs();
+    }
+}
+
 ///
 /// If the threshold is reached the upstream is ejected for
 /// `base_time × 2^ejection_count` seconds, capped at `max_ejection_time_secs`.

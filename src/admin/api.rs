@@ -132,6 +132,29 @@ impl BackgroundService for AdminApiService {
             });
         }
 
+        // Spawn event-loop lag monitor — updates conduit_eventloop_lag_ms every second.
+        //
+        // Uses a yield-probe technique: schedule a `yield_now()` and measure how long
+        // the executor takes to resume.  This directly captures scheduling latency
+        // (event-loop lag) without requiring `tokio_unstable` or external crates.
+        // A rising value indicates CPU saturation or I/O stall in the runtime.
+        #[cfg(feature = "tokio-metrics")]
+        {
+            use crate::proxy::service::ConduitMetrics;
+            let gauge = ConduitMetrics::global().eventloop_lag_ms.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+                loop {
+                    ticker.tick().await;
+                    // Measure how long between yielding and being resumed.
+                    let before = std::time::Instant::now();
+                    tokio::task::yield_now().await;
+                    let lag_ms = before.elapsed().as_secs_f64() * 1000.0;
+                    gauge.set(lag_ms);
+                }
+            });
+        }
+
         // Spawn upstream health check tasks for every route that has healthCheck configured.
         {
             let config = self.state.config.load();
@@ -195,6 +218,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/upstreams/remove", post(upstreams_remove_handler))
         .route("/upstreams/weight", post(upstreams_weight_handler))
         .route("/cache/purge", delete(cache_purge_handler))
+        .route("/rate-limits", get(rate_limits_handler))
         .route("/ip-deny", post(ip_deny_add_handler))
         .route("/ip-deny", delete(ip_deny_remove_handler))
         .route("/certs/reload", post(certs_reload_handler));
@@ -688,11 +712,48 @@ fn build_flat_upstream_list(registry: &health::UpstreamRegistry) -> Vec<Value> {
                         .unwrap_or_default()
                         .as_secs()
                 }),
+                "responses": {
+                    "2xx": e.value().responses_2xx,
+                    "4xx": e.value().responses_4xx,
+                    "5xx": e.value().responses_5xx,
+                },
+                "selected": {
+                    "total": e.value().selected_total,
+                    "last_secs": e.value().selected_last_secs,
+                },
             })
         })
         .collect();
     flat.sort_by(|a, b| a["url"].as_str().cmp(&b["url"].as_str()));
     flat
+}
+
+/// `GET /rate-limits` — per-site/route rate-limiter counters.
+///
+/// Returns a nested object: `{ site: { route_key: { passed, rejected } } }`.
+/// The key format mirrors the internal rate-limiter key (`"{site}\0{route}"`).
+async fn rate_limits_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    use serde_json::Map;
+    let mut result: std::collections::BTreeMap<String, serde_json::Value> =
+        std::collections::BTreeMap::new();
+
+    for entry in state.rate_limiter.iter() {
+        // Key format: "{site}\0{route}" or "*\0{route}" for wildcard.
+        let key = entry.key();
+        let bucket = entry.value();
+        let (site, route) = key.split_once('\0').unwrap_or(("*", key));
+        result
+            .entry(site.to_owned())
+            .or_insert_with(|| serde_json::Value::Object(Map::new()))
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                route.to_owned(),
+                json!({ "passed": bucket.passed, "rejected": bucket.rejected }),
+            );
+    }
+
+    Json(json!(result))
 }
 
 /// Format a site's host+port as a human-readable label.

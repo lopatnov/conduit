@@ -18,6 +18,10 @@ pub struct TokenBucket {
     window_secs: u64,
     /// Last time the bucket was refilled or a token was consumed.
     last_touched: Instant,
+    /// Number of requests that passed (token was available).
+    pub passed: u64,
+    /// Number of requests that were rejected (token unavailable).
+    pub rejected: u64,
 }
 
 impl TokenBucket {
@@ -39,6 +43,8 @@ impl TokenBucket {
             refill_rate,
             window_secs: window_secs.max(1),
             last_touched: Instant::now(),
+            passed: 0,
+            rejected: 0,
         }
     }
 
@@ -53,8 +59,10 @@ impl TokenBucket {
 
         if self.tokens >= 1.0 {
             self.tokens -= 1.0;
+            self.passed += 1;
             true
         } else {
+            self.rejected += 1;
             false
         }
     }

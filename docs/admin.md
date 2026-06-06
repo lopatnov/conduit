@@ -19,6 +19,7 @@ graceful shutdown — all without restarting the process.
   - [POST /upstreams/remove](#post-upstreamsremove)
   - [POST /upstreams/weight](#post-upstreamsweight)
   - [DELETE /cache/purge](#delete-cachepurge)
+  - [GET /rate-limits](#get-rate-limits)
   - [POST /ip-deny](#post-ip-deny)
   - [DELETE /ip-deny](#delete-ip-deny)
   - [POST /certs/reload](#post-certsreload)
@@ -264,16 +265,30 @@ curl http://localhost:2019/upstreams
     {
       "url": "http://api-1:4000",
       "healthy": true,
+      "state": "healthy",
       "latency_ms": 12,
+      "ewma_latency_ms": 11,
       "consecutive_failures": 0,
-      "consecutive_successes": 5
+      "consecutive_successes": 5,
+      "consecutive_5xx": 0,
+      "active_connections": 2,
+      "ejected": false,
+      "responses": { "2xx": 9821, "4xx": 3, "5xx": 0 },
+      "selected":  { "total": 9824, "last_secs": 1749123456 }
     },
     {
       "url": "http://api-2:4000",
       "healthy": false,
+      "state": "ejected",
       "latency_ms": null,
+      "ewma_latency_ms": 0,
       "consecutive_failures": 3,
-      "consecutive_successes": 0
+      "consecutive_successes": 0,
+      "consecutive_5xx": 5,
+      "active_connections": 0,
+      "ejected": true,
+      "responses": { "2xx": 4100, "4xx": 1, "5xx": 5 },
+      "selected":  { "total": 4106, "last_secs": 1749120000 }
     }
   ],
   "routes": [
@@ -306,8 +321,30 @@ curl http://localhost:2019/upstreams
 
 The response has two sections:
 
-- `upstreams` — flat list of all known upstream URLs with their current health state
+- `upstreams` — flat list of all known upstream URLs with detailed health state
 - `routes` — per-site, per-route view showing strategy and target weights
+
+**Upstream state values:**
+
+| `state`      | Meaning                                                             |
+| ------------ | ------------------------------------------------------------------- |
+| `healthy`    | Passing health checks, no active connections                        |
+| `busy`       | Active connections ≥ 1 (may indicate high load)                     |
+| `unhealthy`  | Failing health checks                                               |
+| `half-open`  | Ejection expired; next probe request will decide full recovery      |
+| `ejected`    | Blocked by outlier detection; will re-join after backoff expires    |
+
+**New fields (v1.1+):**
+
+| Field                 | Description                                                        |
+| --------------------- | ------------------------------------------------------------------ |
+| `state`               | Human-readable state string (see table above)                      |
+| `ewma_latency_ms`     | Exponentially-weighted moving average latency (passive, all traffic) |
+| `consecutive_5xx`     | Consecutive 5xx responses since last success                       |
+| `active_connections`  | In-flight requests currently being processed by this upstream      |
+| `responses`           | Lifetime totals: `2xx`, `4xx`, `5xx` response counts               |
+| `selected.total`      | Total times this upstream was chosen by the load balancer          |
+| `selected.last_secs`  | Unix timestamp of the most recent selection                        |
 
 ---
 
@@ -423,6 +460,41 @@ curl -X DELETE "http://localhost:2019/cache/purge?url=https://api.example.com/v1
 
 > Only the in-memory cache is supported. Redis cache purge is not yet
 > implemented.
+
+---
+
+### GET /rate-limits
+
+Return accumulated pass/reject counters for every rate-limit bucket currently
+in memory. Useful for diagnosing which clients or routes are being throttled.
+
+```bash
+curl http://localhost:2019/rate-limits
+```
+
+**Response:**
+
+```json
+{
+  "app.example.com:8080": {
+    "/api": {
+      "passed":   12345,
+      "rejected": 3
+    }
+  },
+  "*": {
+    "*": {
+      "passed":   99000,
+      "rejected": 12
+    }
+  }
+}
+```
+
+The outer key is the site label (`host:port` or `"*"` for wildcard rules) and the
+inner key is the route prefix. Both `passed` and `rejected` are monotonically
+increasing counters that reset when the process restarts or `POST /reload` is called
+(reload clears in-memory rate-limiter state).
 
 ---
 

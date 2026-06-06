@@ -32,6 +32,7 @@ The standard binary covers most use cases. Some config sections require a featur
 | `acme`            | `--features acme`                  | [`tls.acme`](#auto-tls-via-lets-encrypt)                    |
 | `fault-injection` | `--features fault-injection`       | [`faultInjection`](#fault-injection)                        |
 | `otlp`            | `--features otlp`                  | [`global.otlp`](#opentelemetry-tracing)                     |
+| `tokio-metrics`   | `--features tokio-metrics`         | `conduit_eventloop_lag_ms` Prometheus gauge (no config key) |
 | `kubernetes`      | `--features kubernetes`            | `--kubernetes-namespace` CLI flag (not a config field)      |
 | `full`            | `--features full`                  | All of the above                                            |
 
@@ -3038,8 +3039,8 @@ global:
     token: "$ADMIN_TOKEN" # optional Bearer token
 ```
 
-The Admin API provides 10 endpoints: hot-reload, status, upstream management,
-cache purge, and runtime IP deny-list.
+The Admin API provides 12 endpoints: hot-reload, status, upstream management,
+cache purge, rate-limit stats, and runtime IP deny-list.
 
 **→ Full reference with request/response examples: [docs/admin.md](admin.md)**
 
@@ -3062,6 +3063,7 @@ All metrics are at the [`metrics.path`](#metrics) endpoint.
 | `conduit_rate_limit_rejected_total`   | counter   | `site`               | Rate-limited (429) requests per site                             |
 | `conduit_cache_hits_total`            | counter   | `route`              | Proxy cache hits                                                 |
 | `conduit_cache_misses_total`          | counter   | `route`              | Proxy cache misses                                               |
+| `conduit_eventloop_lag_ms`            | gauge     | —                    | Mean scheduling delay (ms) of the admin runtime (**`--features tokio-metrics`**) |
 
 **Example Grafana queries:**
 

@@ -127,6 +127,7 @@ opentelemetry     = { version = "0.27", optional = true }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"], optional = true }
 opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"], optional = true }
 
+
 [features]
 # ── Default ────────────────────────────────────────────────────────────────────
 # Standard build: core proxy + static files + basic/api-key auth + IP filter +
@@ -178,6 +179,10 @@ fault-injection = []
 # ── Observability ─────────────────────────────────────────────────────────────
 # OpenTelemetry OTLP distributed tracing (global.otlp config).
 otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
+# Tokio event-loop lag gauge (conduit_eventloop_lag_ms).
+# Uses a yield-probe task that measures scheduling delay — no external deps,
+# no tokio_unstable required.  Safe to enable in production.
+tokio-metrics = []
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
 # Kubernetes CRD watching (--kubernetes-namespace flag).
@@ -193,6 +198,7 @@ full = [
     "acme",
     "fault-injection",
     "otlp",
+    "tokio-metrics",
     "kubernetes",
 ]
 

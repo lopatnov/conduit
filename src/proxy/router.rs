@@ -827,6 +827,34 @@ pub fn find_route_priority(site: &SiteConfig, path: &str) -> Option<u8> {
     None
 }
 
+/// Parse an RFC 9218 `Priority:` header value and convert to Conduit's 0–100 scale.
+///
+/// RFC 9218 format: `u=<urgency>[,i]` where urgency is 0 (highest) to 7 (lowest).
+/// Mapping: `priority = 100 - urgency * 14`
+///
+/// Returns `None` if the header is absent, malformed, or the urgency is out of range.
+///
+/// ```
+/// assert_eq!(parse_rfc9218_priority("u=0"), Some(100)); // highest urgency
+/// assert_eq!(parse_rfc9218_priority("u=3"), Some(58));  // default urgency
+/// assert_eq!(parse_rfc9218_priority("u=7"), Some(2));   // lowest urgency
+/// assert_eq!(parse_rfc9218_priority("u=7,i"), Some(2)); // incremental flag ignored
+/// ```
+pub fn parse_rfc9218_priority(header: &str) -> Option<u8> {
+    // Find the `u=<N>` token; other directives (e.g. `i`) are ignored.
+    for token in header.split(',') {
+        let token = token.trim();
+        if let Some(rest) = token.strip_prefix("u=") {
+            if let Ok(urgency) = rest.trim().parse::<u8>() {
+                if urgency <= 7 {
+                    return Some(100u8.saturating_sub(urgency * 14));
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn resolve_static_roots(cfg: &StaticConfig, path: &str) -> (Vec<PathBuf>, Option<String>) {
     match cfg {
         StaticConfig::Single(s) => (vec![PathBuf::from(s)], None),
@@ -1800,6 +1828,42 @@ mod tests {
             addr_override.contains("override-target"),
             "after override, runtime target must be used: got {addr_override}"
         );
+    }
+
+    // ── parse_rfc9218_priority ────────────────────────────────────────────────
+
+    #[test]
+    fn rfc9218_highest_urgency_maps_to_100() {
+        assert_eq!(parse_rfc9218_priority("u=0"), Some(100));
+    }
+
+    #[test]
+    fn rfc9218_default_urgency_maps_to_58() {
+        assert_eq!(parse_rfc9218_priority("u=3"), Some(58));
+    }
+
+    #[test]
+    fn rfc9218_lowest_urgency_maps_to_2() {
+        assert_eq!(parse_rfc9218_priority("u=7"), Some(2));
+    }
+
+    #[test]
+    fn rfc9218_incremental_flag_ignored() {
+        assert_eq!(parse_rfc9218_priority("u=7,i"), Some(2));
+        assert_eq!(parse_rfc9218_priority("u=1, i"), Some(86));
+    }
+
+    #[test]
+    fn rfc9218_out_of_range_returns_none() {
+        assert_eq!(parse_rfc9218_priority("u=8"), None);
+        assert_eq!(parse_rfc9218_priority("u=255"), None);
+    }
+
+    #[test]
+    fn rfc9218_malformed_returns_none() {
+        assert_eq!(parse_rfc9218_priority(""), None);
+        assert_eq!(parse_rfc9218_priority("i"), None);
+        assert_eq!(parse_rfc9218_priority("u=abc"), None);
     }
 
     // ── find_route_priority ───────────────────────────────────────────────────

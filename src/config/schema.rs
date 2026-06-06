@@ -239,6 +239,22 @@ pub struct SiteConfig {
     /// ```
     #[serde(rename = "allowDuplicateChunked", skip_serializing_if = "Option::is_none")]
     pub allow_duplicate_chunked: Option<bool>,
+    /// Emit W3C `Server-Timing` response header for this site.
+    ///
+    /// When `true`, every proxied response carries a `Server-Timing` header
+    /// with two entries:
+    ///
+    /// - `total;dur=<ms>` — time from request received to upstream response headers
+    /// - `upstream;dur=<ms>` — time the upstream took to return response headers
+    ///
+    /// The header is visible in browser DevTools → Network → Timing panel.
+    /// Cached responses include only `total` (no upstream round-trip).
+    ///
+    /// ```json
+    /// { "serverTiming": true }
+    /// ```
+    #[serde(rename = "serverTiming", skip_serializing_if = "Option::is_none")]
+    pub server_timing: Option<bool>,
     /// Fault injection for testing — inject artificial errors or delays.
     /// Should NOT be enabled in production.
     #[serde(rename = "faultInjection", skip_serializing_if = "Option::is_none")]

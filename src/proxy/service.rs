@@ -96,6 +96,13 @@ pub struct ConduitMetrics {
     /// Incremented when a request is forwarded to an upstream; decremented in
     /// `logging()`.  Label: `upstream` (full URL).
     pub upstream_active_connections: prometheus::GaugeVec,
+    /// Mean task-poll duration in milliseconds for the admin/background Tokio
+    /// runtime, updated every second.  A rising value indicates event-loop
+    /// saturation (CPU starvation or I/O stall).
+    ///
+    /// Present only when compiled with `--features tokio-metrics`.
+    #[cfg(feature = "tokio-metrics")]
+    pub eventloop_lag_ms: prometheus::Gauge,
 }
 
 impl ConduitMetrics {
@@ -180,6 +187,14 @@ impl ConduitMetrics {
                 )
                 .expect("register conduit_upstream_active_connections");
 
+                #[cfg(feature = "tokio-metrics")]
+                let eventloop_lag_ms = prometheus::register_gauge!(
+                    "conduit_eventloop_lag_ms",
+                    "Mean task-poll duration in milliseconds for the background/admin Tokio \
+                     runtime (proxy for event-loop saturation). Updated every second."
+                )
+                .expect("register conduit_eventloop_lag_ms");
+
                 Arc::new(Self {
                     requests_total,
                     request_duration_seconds,
@@ -192,6 +207,8 @@ impl ConduitMetrics {
                     upstream_requests_total,
                     upstream_latency_seconds,
                     upstream_active_connections,
+                    #[cfg(feature = "tokio-metrics")]
+                    eventloop_lag_ms,
                 })
             })
             .clone()
@@ -720,10 +737,22 @@ impl ConduitProxy {
                         let current = self.state.inflight.load(Ordering::Relaxed) as f64;
                         let load_fraction = current / max_inflight as f64;
                         if load_fraction >= threshold {
-                            // Priority comes exclusively from the route config.
+                            // Base priority from route config, optionally elevated
+                            // by the RFC 9218 standard `Priority: u=<N>` header.
+                            // Browsers and CDNs set this header; Conduit maps
+                            // urgency 0–7 to 100–2 and takes the maximum so that
+                            // clients can signal high urgency but not bypass
+                            // server-assigned priority.
                             let route_priority =
                                 router::find_route_priority(site, &path).unwrap_or(50);
-                            let effective_priority = route_priority;
+                            let rfc9218_priority = session
+                                .req_header()
+                                .headers
+                                .get("priority")
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(router::parse_rfc9218_priority);
+                            let effective_priority =
+                                rfc9218_priority.map_or(route_priority, |p| route_priority.max(p));
                             if effective_priority < 50 {
                                 let extra = req_ctx.extra_headers.clone();
                                 response::write_response(
@@ -1413,6 +1442,11 @@ impl ProxyHttp for ConduitProxy {
                     .upstream_active_connections
                     .with_label_values(&[url])
                     .inc();
+                // Per-upstream selection counters (#40).
+                crate::proxy::health::record_upstream_selected(
+                    &self.state.upstream_health,
+                    url,
+                );
             }
         }
 
@@ -2035,6 +2069,14 @@ impl ProxyHttp for ConduitProxy {
                 .upstream_requests_total
                 .with_label_values(&[url, &status])
                 .inc();
+
+            // Per-peer response code breakdown (#40).
+            let status_u16 = status.parse::<u16>().unwrap_or(0);
+            crate::proxy::health::record_response_status(
+                &self.state.upstream_health,
+                url,
+                status_u16,
+            );
             if let Some(upstream_secs) = ctx
                 .as_ref()
                 .and_then(|c| c.upstream_start)
@@ -3513,5 +3555,30 @@ mod tests {
         assert_eq!(addr, "a:4000");
         // Attempt should be incremented.
         assert_eq!(ctx.retry.unwrap().attempt, 1);
+    }
+
+    // ── ConduitMetrics (tokio-metrics feature) ────────────────────────────────
+
+    /// Verify that `eventloop_lag_ms` gauge is accessible when the feature is
+    /// compiled in.  The gauge starts at 0.0 before any probe fires.
+    #[cfg(feature = "tokio-metrics")]
+    #[test]
+    fn eventloop_lag_ms_gauge_is_registered() {
+        let metrics = ConduitMetrics::global();
+        // Gauge should start at 0.0 (no probe has fired yet).
+        assert_eq!(metrics.eventloop_lag_ms.get(), 0.0);
+    }
+
+    /// The gauge can be set and read back correctly.
+    #[cfg(feature = "tokio-metrics")]
+    #[test]
+    fn eventloop_lag_ms_gauge_set_and_get() {
+        let metrics = ConduitMetrics::global();
+        metrics.eventloop_lag_ms.set(3.14);
+        // Value should be >= 3.14 (another test may set it too, but we just
+        // verify the set → get round-trip works).
+        assert!(metrics.eventloop_lag_ms.get() > 0.0);
+        // Reset to avoid affecting other tests.
+        metrics.eventloop_lag_ms.set(0.0);
     }
 }

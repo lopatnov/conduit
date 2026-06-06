@@ -127,6 +127,14 @@ impl ResponseFilterChain {
         let start_time = req_ctx.start_time;
         chain = chain.push(ResponseTimeFilter { rt_cfg, start_time });
 
+        // Phase 4.5 — W3C Server-Timing header.
+        if site.and_then(|s| s.server_timing).unwrap_or(false) {
+            chain = chain.push(ServerTimingFilter {
+                start_time: req_ctx.start_time,
+                upstream_start: req_ctx.upstream_start,
+            });
+        }
+
         // Phase 5 — 5xx retry (terminates chain if fired).
         chain = chain.push(RetryOnErrorFilter {
             retry: req_ctx.retry.as_ref().map(|r| RetrySpec {
@@ -321,6 +329,37 @@ impl ResponseFilter for ResponseTimeFilter {
             let value = response_time::format_elapsed(elapsed, digits);
             resp.insert_header("x-response-time", value)?;
         }
+        Ok(ResponseFilterOutcome::Continue)
+    }
+}
+
+/// Phase 4.5 — W3C `Server-Timing` response header.
+///
+/// Emits timing entries visible in browser DevTools → Network → Timing panel:
+/// - `total;dur=<ms>` — time from request received to upstream response headers
+/// - `upstream;dur=<ms>` — upstream TTFB (only when an upstream request was made)
+///
+/// Enabled per-site with `serverTiming: true`.
+pub struct ServerTimingFilter {
+    pub start_time: std::time::Instant,
+    pub upstream_start: Option<std::time::Instant>,
+}
+
+impl ResponseFilter for ServerTimingFilter {
+    fn apply(
+        &self,
+        resp: &mut ResponseHeader,
+        _req_ctx: &RequestCtx,
+    ) -> Result<ResponseFilterOutcome> {
+        let total_ms = self.start_time.elapsed().as_secs_f64() * 1000.0;
+        let value = match self.upstream_start {
+            Some(us) => {
+                let upstream_ms = us.elapsed().as_secs_f64() * 1000.0;
+                format!("total;dur={total_ms:.1}, upstream;dur={upstream_ms:.1}")
+            }
+            None => format!("total;dur={total_ms:.1}"),
+        };
+        resp.insert_header("server-timing", value)?;
         Ok(ResponseFilterOutcome::Continue)
     }
 }
@@ -924,6 +963,37 @@ mod tests {
             filter.apply(&mut resp, &ctx).unwrap(),
             ResponseFilterOutcome::Continue
         ));
+    }
+
+    // ── ServerTimingFilter ────────────────────────────────────────────────────
+
+    #[test]
+    fn server_timing_filter_total_only_when_no_upstream() {
+        let filter = ServerTimingFilter {
+            start_time: std::time::Instant::now(),
+            upstream_start: None,
+        };
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        filter.apply(&mut resp, &ctx).unwrap();
+        let val = resp.headers.get("server-timing").and_then(|v| v.to_str().ok()).unwrap_or("");
+        assert!(val.starts_with("total;dur="), "must have total: {val}");
+        assert!(!val.contains("upstream"), "no upstream when upstream_start is None");
+    }
+
+    #[test]
+    fn server_timing_filter_includes_upstream_when_set() {
+        let start = std::time::Instant::now();
+        let filter = ServerTimingFilter {
+            start_time: start,
+            upstream_start: Some(start),
+        };
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        filter.apply(&mut resp, &ctx).unwrap();
+        let val = resp.headers.get("server-timing").and_then(|v| v.to_str().ok()).unwrap_or("");
+        assert!(val.contains("total;dur="), "must have total");
+        assert!(val.contains("upstream;dur="), "must have upstream: {val}");
     }
 
     // ── InjectExtraHeadersFilter — Age header (RFC 7234 §5.1, #49) ──────────
