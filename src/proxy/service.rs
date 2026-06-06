@@ -4017,4 +4017,70 @@ mod tests {
         let s = http::StatusCode::INTERNAL_SERVER_ERROR;
         assert!(!s.is_informational());
     }
+
+    // ── record_failed_upstream_for_retry ──────────────────────────────────────
+
+    /// ctx = None → function must return without panicking.
+    #[test]
+    fn record_failed_upstream_ctx_none_is_noop() {
+        let proxy = make_proxy();
+        let mut ctx: Option<RequestCtx> = None;
+        let config = AppConfig::default();
+        // Must not panic.
+        proxy.record_failed_upstream_for_retry(&mut ctx, &config, 500);
+    }
+
+    /// ctx is Some but proxy_upstream_url is None → function returns early,
+    /// failed_upstream_attempts stays empty.
+    #[test]
+    fn record_failed_upstream_url_none_returns_early() {
+        let proxy = make_proxy();
+        let inner = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        // proxy_upstream_url defaults to None — no URL to record.
+        assert!(inner.proxy_upstream_url.is_none());
+        let mut ctx = Some(inner);
+        let config = AppConfig::default();
+        proxy.record_failed_upstream_for_retry(&mut ctx, &config, 503);
+        // No attempt should have been pushed.
+        assert!(ctx.unwrap().failed_upstream_attempts.is_empty());
+    }
+
+    /// Happy path: URL is set → it is taken (cleared), the attempt is pushed,
+    /// and upstream_start is reset to None.
+    #[test]
+    fn record_failed_upstream_records_attempt_and_clears_url() {
+        let proxy = make_proxy();
+        let mut inner = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        inner.proxy_upstream_url = Some("http://backend:4000".to_owned());
+        inner.upstream_start = None;
+        let mut ctx = Some(inner);
+        let config = AppConfig::default();
+        proxy.record_failed_upstream_for_retry(&mut ctx, &config, 502);
+        let req = ctx.as_ref().unwrap();
+        // URL must have been taken (cleared).
+        assert!(req.proxy_upstream_url.is_none());
+        // The failed attempt must be recorded.
+        assert_eq!(req.failed_upstream_attempts.len(), 1);
+        assert_eq!(req.failed_upstream_attempts[0].0, "http://backend:4000");
+        assert_eq!(req.failed_upstream_attempts[0].1, 502);
+        // upstream_start should remain None (wasn't set).
+        assert!(req.upstream_start.is_none());
+    }
+
+    /// When upstream_start is set, the latency histogram observe branch runs.
+    #[test]
+    fn record_failed_upstream_observes_latency_when_start_is_set() {
+        let proxy = make_proxy();
+        let mut inner = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        inner.proxy_upstream_url = Some("http://backend:4001".to_owned());
+        inner.upstream_start = Some(std::time::Instant::now());
+        let mut ctx = Some(inner);
+        let config = AppConfig::default();
+        // Must not panic even when upstream_start is Some.
+        proxy.record_failed_upstream_for_retry(&mut ctx, &config, 500);
+        let req = ctx.as_ref().unwrap();
+        // upstream_start reset to None after recording.
+        assert!(req.upstream_start.is_none());
+        assert_eq!(req.failed_upstream_attempts.len(), 1);
+    }
 }
