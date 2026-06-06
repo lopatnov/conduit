@@ -1310,19 +1310,59 @@ mod tests {
 
     fn check_host(raw: &[u8]) -> bool {
         // Returns true when the host value is INVALID (should be rejected).
-        match http::header::HeaderValue::from_bytes(raw).ok().as_ref() {
-            None => true, // bytes not representable as HeaderValue → invalid
-            Some(v) => match v.to_str() {
-                Err(_) => true, // non-UTF-8 → invalid
-                Ok(s) => {
-                    if s.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0) {
-                        true
-                    } else {
-                        http::uri::Authority::try_from(s).is_err()
-                    }
-                }
-            },
+        // Delegates to is_host_header_invalid so the tests exercise the real function.
+        //
+        // Bytes that can't be constructed into a HeaderValue would be rejected by
+        // Pingora's HTTP parser before reaching this guard — we treat them as
+        // invalid for completeness.
+        match http::header::HeaderValue::from_bytes(raw) {
+            Err(_) => true,
+            Ok(hv) => is_host_header_invalid(Some(&hv)),
         }
+    }
+
+    // ── is_host_header_invalid ────────────────────────────────────────────────
+
+    #[test]
+    fn is_host_header_invalid_absent_host_returns_false() {
+        // A missing Host header is not invalid — it is handled elsewhere.
+        assert!(!is_host_header_invalid(None));
+    }
+
+    // ── try_acquire_ip_slot ───────────────────────────────────────────────────
+
+    #[test]
+    fn try_acquire_ip_slot_allows_first_request() {
+        let counts = dashmap::DashMap::new();
+        assert!(try_acquire_ip_slot("10.0.0.1", 3, &counts));
+        assert_eq!(counts.get("10.0.0.1").unwrap().load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn try_acquire_ip_slot_rejects_when_limit_reached() {
+        let counts = dashmap::DashMap::new();
+        assert!(try_acquire_ip_slot("10.0.0.2", 1, &counts)); // slot 1 → allowed
+        assert!(!try_acquire_ip_slot("10.0.0.2", 1, &counts)); // slot 2 → rejected
+                                                               // Counter must be rolled back after rejection.
+        assert_eq!(counts.get("10.0.0.2").unwrap().load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn try_acquire_ip_slot_fills_up_to_limit() {
+        let counts = dashmap::DashMap::new();
+        for _ in 0..5 {
+            assert!(try_acquire_ip_slot("10.0.0.3", 5, &counts));
+        }
+        assert!(!try_acquire_ip_slot("10.0.0.3", 5, &counts)); // 6th → rejected
+        assert_eq!(counts.get("10.0.0.3").unwrap().load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn try_acquire_ip_slot_different_ips_are_independent() {
+        let counts = dashmap::DashMap::new();
+        assert!(try_acquire_ip_slot("1.1.1.1", 1, &counts));
+        assert!(try_acquire_ip_slot("2.2.2.2", 1, &counts)); // different IP → allowed
+        assert!(!try_acquire_ip_slot("1.1.1.1", 1, &counts)); // same IP → rejected
     }
 
     #[test]

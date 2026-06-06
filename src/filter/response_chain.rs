@@ -233,6 +233,25 @@ impl ResponseFilter for CrlfProtectionFilter {
 /// Source: freenginx `ngx_http_proxy_module.c` commit `56d8eaa6`
 /// (`proxy_allow_duplicate_chunked`).
 fn dedup_chunked_transfer_encoding(resp: &mut ResponseHeader) {
+    // Fast path: zero-allocation early exit for the common single-header case.
+    // Only proceed with the full allocation when there are multiple TE headers
+    // or a comma-separated value that might contain duplicate "chunked" tokens.
+    let te_count = resp.headers.get_all("transfer-encoding").iter().count();
+    if te_count == 0 {
+        return;
+    }
+    if te_count == 1 {
+        let needs_dedup = resp
+            .headers
+            .get("transfer-encoding")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.contains(','))
+            .unwrap_or(false);
+        if !needs_dedup {
+            return;
+        }
+    }
+
     let te_values: Vec<String> = resp
         .headers
         .get_all("transfer-encoding")
@@ -240,11 +259,6 @@ fn dedup_chunked_transfer_encoding(resp: &mut ResponseHeader) {
         .filter_map(|v| v.to_str().ok())
         .map(|s| s.to_owned())
         .collect();
-
-    // Only act when there are multiple headers or a comma-separated value.
-    if te_values.len() <= 1 && !te_values.iter().any(|v| v.contains(',')) {
-        return;
-    }
 
     // Count occurrences of "chunked" across all TE header values.
     let chunked_count = te_values
@@ -1341,6 +1355,94 @@ mod tests {
         resp.insert_header("x-keep", "yes").unwrap();
         apply_response_mutations(&mut resp, vec![], vec![]);
         assert_eq!(resp.headers.get("x-keep").unwrap(), "yes");
+    }
+
+    // ── dedup_chunked_transfer_encoding ──────────────────────────────────────
+
+    #[test]
+    fn dedup_te_no_op_when_no_te_header() {
+        let mut resp = make_resp(200);
+        dedup_chunked_transfer_encoding(&mut resp);
+        assert!(resp.headers.get("transfer-encoding").is_none());
+    }
+
+    #[test]
+    fn dedup_te_no_op_for_single_non_comma_chunked() {
+        let mut resp = make_resp(200);
+        resp.insert_header("transfer-encoding", "chunked").unwrap();
+        dedup_chunked_transfer_encoding(&mut resp);
+        let vals: Vec<_> = resp
+            .headers
+            .get_all("transfer-encoding")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        assert_eq!(vals, vec!["chunked"]);
+    }
+
+    #[test]
+    fn dedup_te_removes_duplicate_chunked_headers() {
+        let mut resp = make_resp(200);
+        // Append two separate Transfer-Encoding: chunked headers.
+        resp.headers.append(
+            "transfer-encoding",
+            http::header::HeaderValue::from_static("chunked"),
+        );
+        resp.headers.append(
+            "transfer-encoding",
+            http::header::HeaderValue::from_static("chunked"),
+        );
+        dedup_chunked_transfer_encoding(&mut resp);
+        let vals: Vec<_> = resp
+            .headers
+            .get_all("transfer-encoding")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        assert_eq!(vals.len(), 1, "exactly one TE header expected after dedup");
+        assert_eq!(vals[0], "chunked");
+    }
+
+    #[test]
+    fn dedup_te_collapses_comma_separated_duplicates() {
+        let mut resp = make_resp(200);
+        resp.insert_header("transfer-encoding", "chunked, chunked")
+            .unwrap();
+        dedup_chunked_transfer_encoding(&mut resp);
+        let vals: Vec<_> = resp
+            .headers
+            .get_all("transfer-encoding")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        assert_eq!(vals.len(), 1);
+        assert_eq!(
+            vals[0].to_lowercase().matches("chunked").count(),
+            1,
+            "chunked should appear exactly once"
+        );
+    }
+
+    #[test]
+    fn dedup_te_preserves_other_directives() {
+        let mut resp = make_resp(200);
+        resp.insert_header("transfer-encoding", "gzip, chunked, chunked")
+            .unwrap();
+        dedup_chunked_transfer_encoding(&mut resp);
+        let val = resp
+            .headers
+            .get("transfer-encoding")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            val.contains("gzip"),
+            "gzip directive must be preserved: {val}"
+        );
+        assert_eq!(
+            val.to_lowercase().matches("chunked").count(),
+            1,
+            "chunked must appear exactly once: {val}"
+        );
     }
 }
 

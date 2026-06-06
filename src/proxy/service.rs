@@ -380,7 +380,9 @@ impl ConduitProxy {
             Some(c) => c,
             None => return,
         };
-        let url = match req_ctx_mut.proxy_upstream_url.clone() {
+        // Use take() to extract the URL and simultaneously clear the field,
+        // avoiding a clone and the explicit `= None` at the end of the function.
+        let url = match req_ctx_mut.proxy_upstream_url.take() {
             Some(u) => u,
             None => return,
         };
@@ -431,9 +433,8 @@ impl ConduitProxy {
         // Reset upstream_start for the retry attempt.
         req_ctx_mut.upstream_start = None;
         // Push to failed list for structured logging / future use.
+        // proxy_upstream_url was already cleared by the take() above.
         req_ctx_mut.failed_upstream_attempts.push((url, status));
-        // Clear current URL — next upstream_peer() will set a new one.
-        req_ctx_mut.proxy_upstream_url = None;
     }
 
     /// Check the retry budget and increment `retry_inflight` if a retry is allowed.
