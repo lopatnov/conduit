@@ -39,7 +39,7 @@ jobs:
         continue-on-error: true
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@4bc351f7f2614e48088386e2a0ad917ca3a7e4ba  # v2.81.5
+        uses: taiki-e/install-action@56545b37b57562edd73171cb6c62cc509db4c34e  # v2.81.7
         with:
           tool: cargo-llvm-cov
 
