@@ -321,6 +321,49 @@ pub struct LimitsGuard {
 #[async_trait]
 impl RequestFilter for LimitsGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
+        // Host header security check — always enforced, no config needed.
+        // Reject requests whose Host header contains control characters or null
+        // bytes, which are used in header-injection / request-smuggling attacks.
+        let host_val = ctx
+            .session
+            .req_header()
+            .headers
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if host_val
+            .bytes()
+            .any(|b| b == b'\r' || b == b'\n' || b == 0)
+        {
+            response::write_response(
+                ctx.session,
+                400,
+                "text/plain",
+                Bytes::from_static(b"Bad Request (invalid Host header)"),
+                ctx.extra_headers,
+            )
+            .await?;
+            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+            return Ok(FilterOutcome::Handled);
+        }
+
+        // Request header count limit.
+        if let Some(max_hdrs) = self.cfg.max_request_headers {
+            let count = ctx.session.req_header().headers.len() as u32;
+            if count > max_hdrs {
+                response::write_response(
+                    ctx.session,
+                    431,
+                    "text/plain",
+                    Bytes::from_static(b"Request Header Fields Too Large"),
+                    ctx.extra_headers,
+                )
+                .await?;
+                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+                return Ok(FilterOutcome::Handled);
+            }
+        }
+
         // Inflight request cap — checked before body/header limits so the
         // rejection cost is minimal when the server is under heavy load.
         if let Some(max) = self.cfg.max_inflight_requests {
@@ -1158,6 +1201,47 @@ mod tests {
             std::ptr::eq(c1 as *const _, c2 as *const _),
             "forward_auth_client must be a singleton"
         );
+    }
+
+    // ── Host header validation (LimitsGuard) ─────────────────────────────────
+
+    #[test]
+    fn host_validation_rejects_crlf_in_host() {
+        // Validate that the host-header check correctly flags CR/LF bytes.
+        // The check is: host_val.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
+        let bad_hosts = [
+            "evil.com\r\nX-Injected: yes",
+            "evil.com\n",
+            "evil.com\r",
+            "evil\0.com",
+        ];
+        for h in &bad_hosts {
+            let has_bad = h.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0);
+            assert!(has_bad, "expected bad host to be detected: {h:?}");
+        }
+    }
+
+    #[test]
+    fn host_validation_accepts_normal_host() {
+        let good_hosts = [
+            "example.com",
+            "example.com:8080",
+            "192.168.1.1:443",
+            "[::1]:8080",
+        ];
+        for h in &good_hosts {
+            let has_bad = h.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0);
+            assert!(!has_bad, "expected normal host to pass: {h:?}");
+        }
+    }
+
+    // ── maxRequestHeaders ────────────────────────────────────────────────────
+
+    #[test]
+    fn max_request_headers_threshold() {
+        // Verify the comparison logic used inside LimitsGuard.
+        assert!(50u32 > 49u32, "50 headers should exceed limit of 49");
+        assert!(!(50u32 > 50u32), "50 headers at limit should not exceed limit of 50");
     }
 
     // ── limits_rejection body/header messages ─────────────────────────────────

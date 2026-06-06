@@ -40,6 +40,9 @@ pub struct RouteResolution {
     /// Passive health: latency threshold in ms above which response counts as failure.
     /// Populated from `healthCheck.unhealthyLatencyMs`.
     pub passive_unhealthy_latency_ms: Option<u64>,
+    /// Whether WebSocket upgrades are permitted on this route.
+    /// Populated from `proxy.*.websocket: true` in the route config.
+    pub websocket_allowed: bool,
 }
 
 impl RouteResolution {
@@ -56,6 +59,7 @@ impl RouteResolution {
             proxy_cache_cfg: None,
             passive_unhealthy_status: Vec::new(),
             passive_unhealthy_latency_ms: None,
+            websocket_allowed: false,
         }
     }
 }
@@ -125,6 +129,7 @@ pub fn route_request(
     // Populate passive health thresholds so logging() can apply them.
     ctx.passive_unhealthy_status = res.passive_unhealthy_status;
     ctx.passive_unhealthy_latency_ms = res.passive_unhealthy_latency_ms;
+    ctx.websocket_allowed = res.websocket_allowed;
     ctx
 }
 
@@ -296,6 +301,7 @@ fn resolve_proxy(
                 mirror_url,
                 upstream_tls,
                 max_conns_per_upstream,
+                websocket_allowed,
             ) = match route_target {
                 ProxyRouteTarget::Full(cfg) => (
                     cfg.retry.as_ref(),
@@ -311,9 +317,10 @@ fn resolve_proxy(
                     cfg.health_check
                         .as_ref()
                         .and_then(|hc| hc.max_connections_per_upstream),
+                    cfg.websocket.unwrap_or(false),
                 ),
                 _ => (
-                    None, None, None, None, false, "ip", None, None, None, None, None,
+                    None, None, None, None, false, "ip", None, None, None, None, None, false,
                 ),
             };
 
@@ -495,6 +502,7 @@ fn resolve_proxy(
                 proxy_cache_cfg: cache_cfg,
                 passive_unhealthy_status,
                 passive_unhealthy_latency_ms,
+                websocket_allowed,
             })
         }
     }
@@ -634,6 +642,7 @@ fn resolve_grouped(
         proxy_cache_cfg: cache_cfg,
         passive_unhealthy_status: Vec::new(), // groups don't have per-route healthCheck
         passive_unhealthy_latency_ms: None,
+        websocket_allowed: false, // groups don't support websocket config in V1
     })
 }
 

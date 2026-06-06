@@ -1,0 +1,24 @@
+## WebSocket proxy example
+##
+## By default, Conduit rejects unexpected 101 Switching Protocols responses
+## from upstream to prevent protocol tunnelling.
+## Set `websocket: true` on any route that proxies WebSocket connections.
+
+host: ws.example.com
+
+proxy:
+  ## WebSocket route — upgrades allowed
+  /chat:
+    targets:
+      - http://chat-server:3000
+    websocket: true          # permit 101 Switching Protocols responses
+    timeout:
+      connectMs: 5000
+      readMs: 300000         # keep-alive: allow long-lived WebSocket connections
+
+  ## Regular HTTP route — upgrades NOT allowed (default)
+  /api:
+    targets:
+      - http://api-server:4000
+    ## websocket: false is the default
+    ## any 101 from upstream will be rejected with 502

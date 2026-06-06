@@ -223,6 +223,22 @@ pub struct SiteConfig {
     /// ```
     #[serde(rename = "maskErrors", skip_serializing_if = "Option::is_none")]
     pub mask_errors: Option<bool>,
+    /// Allow upstream responses with duplicate `Transfer-Encoding: chunked`
+    /// headers to pass through unmodified.
+    ///
+    /// By default (`false`), Conduit deduplicates repeated `chunked` directives
+    /// in upstream `Transfer-Encoding` headers — some misconfigured origins emit
+    /// `Transfer-Encoding: chunked, chunked` or two separate `Transfer-Encoding`
+    /// headers, which confuses strict HTTP clients.
+    ///
+    /// Set to `true` only for upstreams that deliberately rely on duplicate
+    /// chunked headers.
+    ///
+    /// ```json
+    /// { "allowDuplicateChunked": true }
+    /// ```
+    #[serde(rename = "allowDuplicateChunked", skip_serializing_if = "Option::is_none")]
+    pub allow_duplicate_chunked: Option<bool>,
     /// Fault injection for testing — inject artificial errors or delays.
     /// Should NOT be enabled in production.
     #[serde(rename = "faultInjection", skip_serializing_if = "Option::is_none")]
@@ -984,6 +1000,24 @@ pub struct LimitsConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub max_connections_per_ip: Option<u64>,
+    /// Maximum number of headers allowed in an incoming request.
+    ///
+    /// Requests with more headers than this limit are rejected with
+    /// `431 Request Header Fields Too Large`.  Protects against header-flooding
+    /// attacks and misconfigured clients that send excessive headers.
+    ///
+    /// Equivalent to nginx `large_client_header_buffers` count limit.
+    ///
+    /// Default: unlimited (`None`).
+    ///
+    /// ```json
+    /// { "maxRequestHeaders": 100 }
+    /// ```
+    #[serde(
+        rename = "maxRequestHeaders",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_request_headers: Option<u32>,
 }
 
 // ── Redirects ──────────────────────────────────────────────────────────────
@@ -1181,6 +1215,19 @@ pub struct ProxyRouteConfig {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<u8>,
+    /// Allow WebSocket upgrades on this route.
+    ///
+    /// When `false` (the default) and an upstream returns `101 Switching
+    /// Protocols`, Conduit rejects the upgrade and returns `502 Bad Gateway`.
+    /// This prevents unexpected protocol tunnelling through the proxy.
+    ///
+    /// Set to `true` explicitly for routes that proxy WebSocket connections.
+    ///
+    /// ```json
+    /// { "targets": ["http://ws-backend:4000"], "websocket": true }
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub websocket: Option<bool>,
 }
 
 /// Configuration for cookie-based sticky sessions.
@@ -1285,6 +1332,20 @@ pub struct ProxyTimeout {
     /// allowing multiple retries.
     #[serde(rename = "perTryMs", skip_serializing_if = "Option::is_none")]
     pub per_try_ms: Option<u64>,
+    /// Maximum time in milliseconds to wait for the upstream to send the first
+    /// byte of the response after the request has been forwarded.
+    ///
+    /// Differs from `readMs` in intent: `firstByteMs` caps the upstream latency
+    /// (how long until the server starts responding) while `readMs` caps
+    /// individual read-call durations.  Maps to Pingora's `read_timeout` for
+    /// the initial response window.  Useful for fail-fast behaviour when
+    /// upstreams are slow to start responding.
+    ///
+    /// ```json
+    /// { "timeout": { "firstByteMs": 500, "readMs": 30000 } }
+    /// ```
+    #[serde(rename = "firstByteMs", skip_serializing_if = "Option::is_none")]
+    pub first_byte_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

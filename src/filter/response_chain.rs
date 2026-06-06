@@ -106,8 +106,11 @@ impl ResponseFilterChain {
 
         let mut chain = Self::new();
 
-        // Phase 1 — Security: strip header-injection characters.
-        chain = chain.push(CrlfProtectionFilter);
+        // Phase 1 — Security: strip header-injection characters; deduplicate chunked.
+        let allow_duplicate_chunked = site
+            .and_then(|s| s.allow_duplicate_chunked)
+            .unwrap_or(false);
+        chain = chain.push(CrlfProtectionFilter { allow_duplicate_chunked });
 
         // Phase 2 — CORS + security + custom site headers.
         chain = chain.push(InjectExtraHeadersFilter {
@@ -151,12 +154,21 @@ impl ResponseFilterChain {
 
 // ── Concrete filters ──────────────────────────────────────────────────────────
 
-/// Phase 1 — Strip response headers whose values contain CR or LF characters.
+/// Phase 1 — Strip response headers whose values contain CR or LF characters,
+/// and deduplicate `Transfer-Encoding: chunked` headers from upstream.
 ///
 /// Prevents header-injection (CRLF injection) attacks where an upstream
 /// embeds newlines in header values to splice additional HTTP headers into
 /// the client response.
-pub struct CrlfProtectionFilter;
+///
+/// Duplicate `chunked` directives (e.g. `Transfer-Encoding: chunked, chunked`
+/// or two separate `Transfer-Encoding: chunked` headers) are removed unless
+/// `allowDuplicateChunked: true` is set in the site config.
+pub struct CrlfProtectionFilter {
+    /// When `true`, pass duplicate `Transfer-Encoding: chunked` headers through
+    /// unmodified.  Defaults to `false` (deduplicate).
+    pub allow_duplicate_chunked: bool,
+}
 
 impl ResponseFilter for CrlfProtectionFilter {
     fn apply(
@@ -164,6 +176,7 @@ impl ResponseFilter for CrlfProtectionFilter {
         resp: &mut ResponseHeader,
         _req_ctx: &RequestCtx,
     ) -> Result<ResponseFilterOutcome> {
+        // Remove headers containing CR or LF (header-injection protection).
         let bad: Vec<http::header::HeaderName> = resp
             .headers
             .iter()
@@ -178,6 +191,43 @@ impl ResponseFilter for CrlfProtectionFilter {
         for name in bad {
             resp.headers.remove(&name);
         }
+
+        // Deduplicate Transfer-Encoding: chunked unless explicitly allowed.
+        if !self.allow_duplicate_chunked {
+            let te_values: Vec<String> = resp
+                .headers
+                .get_all("transfer-encoding")
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .map(|s| s.to_owned())
+                .collect();
+            if te_values.len() > 1 || te_values.iter().any(|v| v.contains(',')) {
+                // Count occurrences of "chunked" across all TE header values.
+                let chunked_count = te_values
+                    .iter()
+                    .flat_map(|v| v.split(','))
+                    .filter(|s| s.trim().eq_ignore_ascii_case("chunked"))
+                    .count();
+                if chunked_count > 1 {
+                    // Remove all Transfer-Encoding headers and re-insert a
+                    // single deduplicated value.
+                    let other_directives: Vec<&str> = te_values
+                        .iter()
+                        .flat_map(|v| v.split(','))
+                        .map(|s| s.trim())
+                        .filter(|s| !s.eq_ignore_ascii_case("chunked"))
+                        .collect();
+                    resp.headers.remove("transfer-encoding");
+                    let new_val = if other_directives.is_empty() {
+                        "chunked".to_owned()
+                    } else {
+                        format!("{}, chunked", other_directives.join(", "))
+                    };
+                    let _ = resp.insert_header("transfer-encoding", new_val);
+                }
+            }
+        }
+
         Ok(ResponseFilterOutcome::Continue)
     }
 }
@@ -462,7 +512,8 @@ mod tests {
         resp.insert_header("x-custom", "clean-value").unwrap();
         resp.insert_header("content-type", "text/html").unwrap();
         let ctx = dummy_ctx();
-        let result = CrlfProtectionFilter.apply(&mut resp, &ctx).unwrap();
+        let filter = CrlfProtectionFilter { allow_duplicate_chunked: false };
+        let result = filter.apply(&mut resp, &ctx).unwrap();
         assert!(matches!(result, ResponseFilterOutcome::Continue));
         assert!(resp.headers.get("x-custom").is_some());
         assert!(resp.headers.get("content-type").is_some());
@@ -475,9 +526,47 @@ mod tests {
             .unwrap();
         resp.insert_header("x-custom", "value").unwrap();
         let ctx = dummy_ctx();
-        CrlfProtectionFilter.apply(&mut resp, &ctx).unwrap();
+        CrlfProtectionFilter { allow_duplicate_chunked: false }.apply(&mut resp, &ctx).unwrap();
         assert!(resp.headers.get("content-type").is_some());
         assert!(resp.headers.get("x-custom").is_some());
+    }
+
+    #[test]
+    fn crlf_filter_deduplicates_chunked_encoding() {
+        // Upstream sends Transfer-Encoding: chunked, chunked — should be normalised.
+        let mut resp = make_resp(200);
+        resp.insert_header("transfer-encoding", "chunked, chunked")
+            .unwrap();
+        let ctx = dummy_ctx();
+        CrlfProtectionFilter { allow_duplicate_chunked: false }
+            .apply(&mut resp, &ctx)
+            .unwrap();
+        let te: Vec<_> = resp
+            .headers
+            .get_all("transfer-encoding")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        assert_eq!(te, vec!["chunked"], "duplicate chunked deduplicated");
+    }
+
+    #[test]
+    fn crlf_filter_allow_duplicate_chunked_passes_through() {
+        // When allowDuplicateChunked is true the filter should not modify TE.
+        let mut resp = make_resp(200);
+        resp.insert_header("transfer-encoding", "chunked, chunked")
+            .unwrap();
+        let ctx = dummy_ctx();
+        CrlfProtectionFilter { allow_duplicate_chunked: true }
+            .apply(&mut resp, &ctx)
+            .unwrap();
+        let te: Vec<_> = resp
+            .headers
+            .get_all("transfer-encoding")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        assert_eq!(te, vec!["chunked, chunked"], "duplicate chunked preserved");
     }
 
     // ── InjectExtraHeadersFilter ─────────────────────────────────────────────
@@ -688,7 +777,7 @@ mod tests {
     #[test]
     fn chain_returns_continue_when_all_pass() {
         let chain = ResponseFilterChain::new()
-            .push(CrlfProtectionFilter)
+            .push(CrlfProtectionFilter { allow_duplicate_chunked: false })
             .push(InjectExtraHeadersFilter { headers: vec![] });
         let mut resp = make_resp(200);
         let ctx = dummy_ctx();

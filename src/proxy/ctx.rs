@@ -97,6 +97,20 @@ pub struct RequestCtx {
     /// Populated from `healthCheck.unhealthyLatencyMs` during routing.
     /// If the upstream response time exceeds this, it counts as a failure.
     pub passive_unhealthy_latency_ms: Option<u64>,
+    /// Whether this route explicitly allows WebSocket upgrades.
+    ///
+    /// Set from `proxy.*.websocket: true` in the route config.  When `false`
+    /// (the default), any `101 Switching Protocols` response from upstream is
+    /// rejected with `502 Bad Gateway` to prevent unexpected protocol tunnelling.
+    pub websocket_allowed: bool,
+    /// Failed upstream attempts that need EWMA/health tracking after a retry.
+    ///
+    /// When `RetryOnErrorFilter` fires `RetryUpstream`, the current upstream's
+    /// URL and status are pushed here before clearing `proxy_upstream_url`.
+    /// `logging()` iterates this list to record latency and ejection status for
+    /// each failed attempt — preventing the "won by retry" blind-spot where a
+    /// successful final attempt masks prior 5xx failures.
+    pub failed_upstream_attempts: Vec<(String, u16)>,
 }
 
 impl RequestCtx {
@@ -134,6 +148,8 @@ impl RequestCtx {
             client_ip_for_conn_limit: None,
             passive_unhealthy_status: Vec::new(),
             passive_unhealthy_latency_ms: None,
+            websocket_allowed: false,
+            failed_upstream_attempts: Vec::new(),
             #[cfg(feature = "otlp")]
             otel_span: None,
         }

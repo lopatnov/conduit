@@ -1465,6 +1465,24 @@ impl ProxyHttp for ConduitProxy {
             None => return Ok(()),
         };
 
+        // WebSocket upgrade security (#46): reject unexpected protocol upgrades.
+        //
+        // A `101 Switching Protocols` response from upstream is only permitted
+        // when the route explicitly declares `websocket: true`.  Otherwise the
+        // upstream is violating the HTTP protocol contract and we drop the
+        // connection with 502 to prevent unexpected tunnelling.
+        if upstream_response.status.as_u16() == 101 && !req_ctx.websocket_allowed {
+            tracing::warn!(
+                upstream = ?req_ctx.proxy_upstream_url,
+                "upstream returned 101 Switching Protocols but websocket is not \
+                 enabled for this route — rejecting upgrade"
+            );
+            return Err(pingora_core::Error::explain(
+                pingora_core::ErrorType::HTTPStatus(502),
+                "upstream attempted unexpected protocol upgrade (set websocket:true to allow)",
+            ));
+        }
+
         let config = self.state.config.load();
         let chain = ResponseFilterChain::build(req_ctx, &config);
 
@@ -1478,6 +1496,71 @@ impl ProxyHttp for ConduitProxy {
 
             ResponseFilterOutcome::RetryUpstream => {
                 let status = upstream_response.status.as_u16();
+
+                // Failure propagation fix (#47): record the failed upstream attempt
+                // BEFORE returning the retry error so that EWMA, consecutive_5xx,
+                // outlier detection, and the conn_count slot are all updated for
+                // the upstream that actually failed.  Without this, a successful
+                // retry on a different backend would silently clear the failure
+                // from the passive health record.
+                if let Some(req_ctx_mut) = ctx.as_mut() {
+                    if let Some(url) = req_ctx_mut.proxy_upstream_url.clone() {
+                        let elapsed_us = req_ctx_mut.start_time.elapsed().as_micros() as u64;
+                        // Release the connection slot for the failed upstream
+                        // immediately — the next upstream_peer() call will
+                        // acquire a new slot for the retry target.
+                        self.state.upstream_health.conn_dec(&url);
+                        crate::proxy::health::record_request_latency(
+                            &self.state.upstream_health,
+                            &url,
+                            elapsed_us,
+                            status,
+                        );
+                        // Trigger outlier detection for the failed upstream.
+                        let site_idx = req_ctx_mut.site_idx;
+                        if let Some(od) = config
+                            .sites
+                            .get(site_idx)
+                            .and_then(|s| s.outlier_detection.as_ref())
+                        {
+                            crate::proxy::health::maybe_eject(
+                                &self.state.upstream_health,
+                                &url,
+                                od,
+                            );
+                        }
+                        // Update Prometheus per-upstream metrics for the failed attempt
+                        // so the gauge doesn't leak (it was incremented by
+                        // upstream_request_filter when we first forwarded to A).
+                        self.state
+                            .metrics
+                            .upstream_active_connections
+                            .with_label_values(&[&url])
+                            .dec();
+                        self.state
+                            .metrics
+                            .upstream_requests_total
+                            .with_label_values(&[&url, &status.to_string()])
+                            .inc();
+                        if let Some(upstream_secs) = req_ctx_mut
+                            .upstream_start
+                            .map(|t| t.elapsed().as_secs_f64())
+                        {
+                            self.state
+                                .metrics
+                                .upstream_latency_seconds
+                                .with_label_values(&[&url])
+                                .observe(upstream_secs);
+                        }
+                        // Reset upstream_start for the retry attempt.
+                        req_ctx_mut.upstream_start = None;
+                        // Push to failed list for structured logging / future use.
+                        req_ctx_mut.failed_upstream_attempts.push((url, status));
+                        // Clear current URL — next upstream_peer() will set a new one.
+                        req_ctx_mut.proxy_upstream_url = None;
+                    }
+                }
+
                 return Err(pingora_core::Error::explain(
                     pingora_core::ErrorType::Custom("5xx_retry"),
                     format!("upstream returned HTTP {status}; will retry"),
@@ -2183,6 +2266,13 @@ fn apply_peer_options(
         .or(fallback_ms)
         .map(Duration::from_millis);
 
+    // first_byte_timeout — maps to read_timeout when explicitly set, allowing
+    // operators to enforce a tight "time to first byte" window independently
+    // of per-read I/O timeouts.  Takes precedence over readMs.
+    if let Some(first_byte_ms) = timeout.and_then(|t| t.first_byte_ms) {
+        peer.options.read_timeout = Some(Duration::from_millis(first_byte_ms));
+    }
+
     if let Some(p) = pool {
         if let Some(secs) = p.idle_timeout_secs {
             peer.options.idle_timeout = Some(Duration::from_secs(secs));
@@ -2350,6 +2440,18 @@ fn append_forwarded_headers(
     {
         upstream_request.insert_header("x-forwarded-host", host)?;
     }
+
+    // Via: RFC 7230 §5.7 — identify the proxy hop.
+    // Append to any existing Via header rather than replacing it.
+    let via_value = match upstream_request
+        .headers
+        .get("via")
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(existing) => format!("{existing}, 1.1 conduit"),
+        None => "1.1 conduit".to_owned(),
+    };
+    upstream_request.insert_header("via", via_value)?;
 
     Ok(())
 }
@@ -2818,6 +2920,7 @@ mod tests {
             read_ms: Some(1000),
             send_ms: Some(2000),
             per_try_ms: None,
+            first_byte_ms: None,
         };
         apply_peer_options(&mut peer, Some(&timeout), None, None);
         assert_eq!(
@@ -2869,6 +2972,26 @@ mod tests {
         assert_eq!(
             peer.options.idle_timeout,
             Some(std::time::Duration::from_secs(30))
+        );
+    }
+
+    #[test]
+    fn apply_peer_options_first_byte_ms_overrides_read_timeout() {
+        use crate::config::schema::ProxyTimeout;
+        let addr: std::net::SocketAddr = "127.0.0.1:4000".parse().unwrap();
+        let mut peer = HttpPeer::new(addr, false, String::new());
+        let timeout = ProxyTimeout {
+            connect_ms: None,
+            read_ms: Some(30_000), // 30s general read timeout
+            send_ms: None,
+            per_try_ms: None,
+            first_byte_ms: Some(500), // 500ms first-byte timeout overrides readMs
+        };
+        apply_peer_options(&mut peer, Some(&timeout), None, None);
+        // first_byte_ms takes precedence over read_ms
+        assert_eq!(
+            peer.options.read_timeout,
+            Some(std::time::Duration::from_millis(500))
         );
     }
 

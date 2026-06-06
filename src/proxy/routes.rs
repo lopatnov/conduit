@@ -314,6 +314,7 @@ fn full_cfg_to_result(
             .health_check
             .as_ref()
             .and_then(|hc| hc.unhealthy_latency_ms),
+        websocket_allowed: cfg.websocket.unwrap_or(false),
     }
 }
 

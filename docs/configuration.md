@@ -187,6 +187,7 @@ request. No configuration is needed — they are always present.
 | `X-Forwarded-Proto` | `http` or `https`      | Derived from whether the site has TLS configured             |
 | `X-Forwarded-Host`  | Original `Host` header | Lets upstreams reconstruct full URLs                         |
 | `X-Request-ID`      | UUID v4                | Auto-generated if absent; forwarded as-is if client sends it |
+| `Via`               | `1.1 conduit`          | RFC 7230 §5.7 — identifies the proxy hop; appended to existing value |
 
 To remove any of these before forwarding, use `requestTransform.removeHeaders`:
 
@@ -559,7 +560,9 @@ proxy:
 | `timeout.connectMs`   | number               | `3000`        | TCP connect timeout                                                            |
 | `timeout.sendMs`      | number               | —             | Request send timeout                                                           |
 | `timeout.readMs`      | number               | `30000`       | Response read timeout                                                          |
+| `timeout.firstByteMs` | number               | —             | Max ms to wait for first upstream response byte (overrides `readMs`)           |
 | `timeout.perTryMs`    | number               | —             | Per-retry timeout                                                              |
+| `websocket`           | bool                 | `false`       | Allow WebSocket upgrades (`101 Switching Protocols`) — rejected with 502 by default |
 | `retry.attempts`      | number               | `0`           | Number of retry attempts (0 = disabled)                                        |
 | `retry.conditions`    | string[]             | —             | `connection_error`, `5xx`, `timeout`                                           |
 | `retry.backoffMs`     | number               | `0`           | Wait between retries (ms)                                                      |
@@ -1470,6 +1473,7 @@ limits:
 | `maxInflightRequests`   | number | —       | Max concurrent requests — returns `503` if exceeded (must be ≥ 1)                                                             |
 | `maxBodyBufferBytes`    | number | —       | Max body buffered per request for retry replay                                                                                |
 | `maxConnectionsPerIp`   | number | —       | Max simultaneous open connections from a single client IP — returns `429` if exceeded                                         |
+| `maxRequestHeaders`     | number | —       | Max number of request headers — returns `431 Request Header Fields Too Large` if exceeded                                     |
 | `keepaliveRequestLimit` | number | —       | Max requests per keepalive connection; closes and recycles after. Equivalent to nginx's `keepalive_requests`.                 |
 | `priorityThreshold`     | number | `0.8`   | Fraction of `maxInflightRequests` at which low-priority routes are shed (0.0–1.0) — see [Priority routing](#priority-routing) |
 
@@ -2655,6 +2659,21 @@ maskErrors: true
 ```
 
 Clients receive: `{ "error": "Internal Server Error", "status": 500 }`
+
+---
+
+## Upstream Protocol Compatibility
+
+### allowDuplicateChunked
+
+By default, Conduit deduplicates `Transfer-Encoding: chunked` headers from upstream responses.
+Some misconfigured origins emit `Transfer-Encoding: chunked, chunked` or two separate `Transfer-Encoding: chunked` headers, which confuses strict HTTP clients.
+
+```yaml
+allowDuplicateChunked: true   # pass duplicate chunked headers through unmodified
+```
+
+Only enable this for upstreams that deliberately rely on duplicate chunked headers.
 
 ---
 

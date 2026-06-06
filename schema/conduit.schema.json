@@ -117,7 +117,11 @@
             "maxBodyBufferBytes":    { "type": "integer", "minimum": 0 },
             "keepaliveRequestLimit": { "type": "integer", "minimum": 1 },
             "priorityThreshold":     { "type": "number", "minimum": 0, "maximum": 1,
-                                       "description": "Fraction of maxInflightRequests at which low-priority routes (priority < 50) are shed (0.0–1.0). Default 0.8." }
+                                       "description": "Fraction of maxInflightRequests at which low-priority routes (priority < 50) are shed (0.0–1.0). Default 0.8." },
+            "maxRequestHeaders":     { "type": "integer", "minimum": 1,
+                                       "description": "Max number of request headers. Requests exceeding this receive 431." },
+            "maxConnectionsPerIp":   { "type": "integer", "minimum": 1,
+                                       "description": "Max simultaneous in-flight requests from one client IP. Excess requests receive 429." }
           }
         },
         "headers":   { "type": "object", "additionalProperties": { "type": "string" } },
@@ -175,6 +179,7 @@
         "consumers": { "$ref": "#/$defs/ConsumersConfig" },
         "outlierDetection": { "$ref": "#/$defs/OutlierDetectionConfig" },
         "maskErrors": { "type": "boolean", "description": "Replace upstream 5xx bodies with a generic JSON error." },
+        "allowDuplicateChunked": { "type": "boolean", "description": "Allow duplicate Transfer-Encoding: chunked headers from upstream (default: false, deduplicate)." },
         "faultInjection": { "$ref": "#/$defs/FaultInjectionConfig" },
         "jwtAuth": { "$ref": "#/$defs/JwtAuthConfig" },
         "forwardAuth": { "$ref": "#/$defs/ForwardAuthConfig" },
@@ -380,9 +385,11 @@
         "timeout": {
           "type": "object",
           "properties": {
-            "connectMs": { "type": "integer", "minimum": 0 },
-            "sendMs":    { "type": "integer", "minimum": 0 },
-            "readMs":    { "type": "integer", "minimum": 0 }
+            "connectMs":    { "type": "integer", "minimum": 0 },
+            "sendMs":       { "type": "integer", "minimum": 0 },
+            "readMs":       { "type": "integer", "minimum": 0 },
+            "firstByteMs":  { "type": "integer", "minimum": 0,
+                              "description": "Max ms to wait for the first byte of the upstream response. Overrides readMs." }
           }
         },
         "pool": {
@@ -437,6 +444,10 @@
           "minimum": 0,
           "maximum": 100,
           "description": "Route priority for load shedding (0=lowest, 100=highest, default 50). When the site exceeds limits.priorityThreshold, requests to routes with priority < 50 receive 503 Load Shedding."
+        },
+        "websocket": {
+          "type": "boolean",
+          "description": "Allow WebSocket upgrades (101 Switching Protocols) on this route. Default false — unexpected upgrades are rejected with 502."
         },
         "cache": {
           "type": "object",
