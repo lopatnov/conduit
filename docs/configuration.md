@@ -1646,6 +1646,11 @@ part of the key, so POST responses are not cached by default (add `"POST"` to
 `methods` only for idempotent endpoints). Use `varyHeaders` to differentiate
 responses by `Accept-Language` or `Accept-Encoding`.
 
+**`Age` header** (RFC 7234 §5.1): Conduit automatically injects an `Age:
+<seconds>` header on every cache hit, computed as `now − Date` from the stored
+response. Any `Age` header carried by the cached response is replaced to prevent
+double-counting across proxy hops. No configuration is required.
+
 **Stale-while-revalidate** (RFC 5861): the first request after TTL expiry
 returns the stale response immediately while a background request refreshes the
 cache. Zero latency penalty for users. A built-in cache lock prevents thundering

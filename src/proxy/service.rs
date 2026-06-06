@@ -1474,6 +1474,24 @@ impl ProxyHttp for ConduitProxy {
     {
         use crate::filter::response_chain::{ResponseFilterChain, ResponseFilterOutcome};
 
+        // RFC 7234 §5.1 Age header (#49): compute age for cache hits.
+        //
+        // Must happen before the immutable `req_ctx` borrow below so we can
+        // write to `ctx`.  The mutable borrow ends at the closing `}`.
+        #[cfg(feature = "cache")]
+        {
+            use pingora_cache::CachePhase;
+            if matches!(
+                _session.cache.phase(),
+                CachePhase::Hit | CachePhase::Stale | CachePhase::StaleUpdating
+            ) {
+                if let Some(req_ctx_mut) = ctx.as_mut() {
+                    req_ctx_mut.cache_age_secs =
+                        Some(compute_response_age(upstream_response));
+                }
+            }
+        }
+
         let req_ctx = match ctx.as_ref() {
             Some(c) => c,
             None => return Ok(()),
@@ -2252,6 +2270,26 @@ fn resolve_peer_addr(req_ctx: &mut RequestCtx) -> pingora_core::Result<(String, 
 /// 1. `proxy.*.timeout.*` — per-route fine-grained timeouts
 /// 2. `limits.timeoutSecs` — site-wide fallback timeout
 ///
+/// Compute the RFC 7234 §5.1 `Age` value for a cached response.
+///
+/// Uses the `Date` header of the stored response to determine how old it is:
+/// `age = now − date_header_value`.  This is the "apparent age" formula from
+/// RFC 7234 §5.1, which is sufficient for most proxy deployments.
+///
+/// Returns `0` when the `Date` header is absent or cannot be parsed — the
+/// response will still carry an `Age: 0` header, signalling a fresh hit.
+#[cfg(feature = "cache")]
+fn compute_response_age(resp: &pingora_http::ResponseHeader) -> u64 {
+    use std::time::SystemTime;
+    resp.headers
+        .get("date")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| httpdate::parse_http_date(s).ok())
+        .and_then(|date| SystemTime::now().duration_since(date).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// `limits.timeout_secs` is applied to all three timeout fields only when
 /// the corresponding per-route field is absent.
 fn apply_peer_options(
@@ -3007,6 +3045,41 @@ mod tests {
             peer.options.read_timeout,
             Some(std::time::Duration::from_millis(500))
         );
+    }
+
+    // ── compute_response_age ─────────────────────────────────────────────────
+
+    #[cfg(feature = "cache")]
+    #[test]
+    fn compute_response_age_from_date_header() {
+        use http::StatusCode;
+        // Build a response with a Date header set 60 seconds in the past.
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let date_str = httpdate::fmt_http_date(past);
+        let mut resp =
+            pingora_http::ResponseHeader::build(StatusCode::OK, None).unwrap();
+        resp.insert_header("date", date_str).unwrap();
+        let age = compute_response_age(&resp);
+        // Allow ±2s for test execution time.
+        assert!(age >= 58 && age <= 62, "age should be ~60s, got {age}");
+    }
+
+    #[cfg(feature = "cache")]
+    #[test]
+    fn compute_response_age_missing_date_returns_zero() {
+        use http::StatusCode;
+        let resp = pingora_http::ResponseHeader::build(StatusCode::OK, None).unwrap();
+        assert_eq!(compute_response_age(&resp), 0);
+    }
+
+    #[cfg(feature = "cache")]
+    #[test]
+    fn compute_response_age_unparseable_date_returns_zero() {
+        use http::StatusCode;
+        let mut resp =
+            pingora_http::ResponseHeader::build(StatusCode::OK, None).unwrap();
+        resp.insert_header("date", "not-a-date").unwrap();
+        assert_eq!(compute_response_age(&resp), 0);
     }
 
     // ── get_rewrite_regex ─────────────────────────────────────────────────────

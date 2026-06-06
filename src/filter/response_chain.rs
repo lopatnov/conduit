@@ -244,7 +244,7 @@ impl ResponseFilter for InjectExtraHeadersFilter {
     fn apply(
         &self,
         resp: &mut ResponseHeader,
-        _req_ctx: &RequestCtx,
+        req_ctx: &RequestCtx,
     ) -> Result<ResponseFilterOutcome> {
         // Strip Pingora's default `Server: Pingora` banner — it leaks the
         // proxy software name, helping attackers target Pingora-specific CVEs.
@@ -259,6 +259,16 @@ impl ResponseFilter for InjectExtraHeadersFilter {
             .unwrap_or(false)
         {
             resp.remove_header("server");
+        }
+
+        // Age header for cache hits (RFC 7234 §5.1, #49).
+        //
+        // Remove any `Age` value carried by the stored response before
+        // inserting the freshly computed one — prevents double-counting when
+        // a cached response already has an `Age` header from a prior hop.
+        if let Some(age_secs) = req_ctx.cache_age_secs {
+            resp.headers.remove("age");
+            resp.insert_header("age", age_secs.to_string())?;
         }
 
         for (name, value) in &self.headers {
@@ -914,6 +924,57 @@ mod tests {
             filter.apply(&mut resp, &ctx).unwrap(),
             ResponseFilterOutcome::Continue
         ));
+    }
+
+    // ── InjectExtraHeadersFilter — Age header (RFC 7234 §5.1, #49) ──────────
+
+    #[test]
+    fn inject_filter_injects_age_header_when_cache_age_set() {
+        // When RequestCtx.cache_age_secs is Some, the filter must inject
+        // an `Age` header with the computed value.
+        let filter = InjectExtraHeadersFilter { headers: vec![] };
+        let mut resp = make_resp(200);
+        let mut ctx = dummy_ctx();
+        ctx.cache_age_secs = Some(42);
+        filter.apply(&mut resp, &ctx).unwrap();
+        assert_eq!(
+            resp.headers.get("age").and_then(|v| v.to_str().ok()),
+            Some("42"),
+            "Age header must be injected with computed value"
+        );
+    }
+
+    #[test]
+    fn inject_filter_no_age_header_when_not_cache_hit() {
+        // cache_age_secs = None (non-cached response) → no Age header added.
+        let filter = InjectExtraHeadersFilter { headers: vec![] };
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx(); // cache_age_secs defaults to None
+        filter.apply(&mut resp, &ctx).unwrap();
+        assert!(
+            resp.headers.get("age").is_none(),
+            "Age header must not be injected for non-cached responses"
+        );
+    }
+
+    #[test]
+    fn inject_filter_replaces_existing_age_header() {
+        // When the cached response already carries an Age header from a prior
+        // hop, it must be replaced with the freshly computed value to prevent
+        // double-counting.
+        let filter = InjectExtraHeadersFilter { headers: vec![] };
+        let mut resp = make_resp(200);
+        resp.insert_header("age", "10").unwrap(); // stale Age from stored response
+        let mut ctx = dummy_ctx();
+        ctx.cache_age_secs = Some(75);
+        filter.apply(&mut resp, &ctx).unwrap();
+        let values: Vec<_> = resp.headers.get_all("age").iter().collect();
+        assert_eq!(values.len(), 1, "exactly one Age header must remain");
+        assert_eq!(
+            values[0].to_str().unwrap(),
+            "75",
+            "Age header must reflect the recomputed value, not the stale one"
+        );
     }
 
     // ── InjectExtraHeadersFilter edge cases ───────────────────────────────────

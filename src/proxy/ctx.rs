@@ -111,6 +111,12 @@ pub struct RequestCtx {
     /// each failed attempt — preventing the "won by retry" blind-spot where a
     /// successful final attempt masks prior 5xx failures.
     pub failed_upstream_attempts: Vec<(String, u16)>,
+    /// Age in seconds to inject as the `Age` response header for cache hits.
+    ///
+    /// Computed in `upstream_response_filter` from the cached response's `Date`
+    /// header (RFC 7234 §5.1): `age = now − date`.  `None` for non-cached
+    /// responses or when the cache feature is disabled.
+    pub cache_age_secs: Option<u64>,
 }
 
 impl RequestCtx {
@@ -150,6 +156,7 @@ impl RequestCtx {
             passive_unhealthy_latency_ms: None,
             websocket_allowed: false,
             failed_upstream_attempts: Vec::new(),
+            cache_age_secs: None,
             #[cfg(feature = "otlp")]
             otel_span: None,
         }
