@@ -1292,10 +1292,7 @@ mod tests {
 
     fn check_host(raw: &[u8]) -> bool {
         // Returns true when the host value is INVALID (should be rejected).
-        match http::header::HeaderValue::from_bytes(raw)
-            .ok()
-            .as_ref()
-        {
+        match http::header::HeaderValue::from_bytes(raw).ok().as_ref() {
             None => true, // bytes not representable as HeaderValue → invalid
             Some(v) => match v.to_str() {
                 Err(_) => true, // non-UTF-8 → invalid
