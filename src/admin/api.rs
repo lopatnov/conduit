@@ -741,9 +741,14 @@ async fn rate_limits_handler(State(state): State<Arc<AppState>>) -> Json<Value> 
 
     for entry in state.rate_limiter.iter() {
         // Key format: "{site}\0{route}" or "*\0{route}" for wildcard.
+        // Skip keys from other namespaces (e.g. "consumer:{username}" inserted
+        // by ConsumersGuard) that do not follow the site\0route convention.
         let key = entry.key();
+        let (site, route) = match key.split_once('\0') {
+            Some(pair) => pair,
+            None => continue, // not a site\0route key — skip
+        };
         let bucket = entry.value();
-        let (site, route) = key.split_once('\0').unwrap_or(("*", key));
         result
             .entry(site.to_owned())
             .or_insert_with(|| serde_json::Value::Object(Map::new()))

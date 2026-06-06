@@ -322,14 +322,31 @@ pub struct LimitsGuard {
 impl RequestFilter for LimitsGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
         // Host header security check — always enforced, no config needed.
-        // Reject requests whose Host header is non-UTF-8 or contains control
-        // characters / null bytes (header-injection / request-smuggling).
+        //
+        // Reject requests whose Host header is:
+        //   1. Non-UTF-8 bytes (obvious malform / injection attempt).
+        //   2. Contains CR, LF, or NUL (header-injection / smuggling).
+        //   3. Not a valid HTTP authority (e.g. contains spaces, path
+        //      separators, or other RFC 3986 §3.2-invalid characters).
+        //
+        // We use `http::uri::Authority::try_from` for the authority check
+        // since it enforces the full RFC 3986 grammar and is already a
+        // transitive dependency via the `http` crate.
         let host_hdr = ctx.session.req_header().headers.get("host");
         let host_invalid = match host_hdr {
             // Non-UTF-8 bytes in Host are always malformed.
-            Some(v) => v.to_str().map_or(true, |s| {
-                s.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
-            }),
+            Some(v) => match v.to_str() {
+                Err(_) => true, // non-UTF-8 → reject
+                Ok(s) => {
+                    // Explicit control-byte check (belt-and-suspenders).
+                    if s.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0) {
+                        true
+                    } else {
+                        // Validate as a proper RFC 3986 authority.
+                        http::uri::Authority::try_from(s).is_err()
+                    }
+                }
+            },
             None => false,
         };
         if host_invalid {
@@ -1266,5 +1283,76 @@ mod tests {
         assert_eq!(status, 431);
         let body_str = std::str::from_utf8(&body).unwrap_or("?");
         assert!(!body_str.is_empty());
+    }
+
+    // ── Host header validation (LimitsGuard) ─────────────────────────────────
+    //
+    // These tests exercise the host_invalid logic inline, without needing a
+    // full session, by reproducing the exact validation expression.
+
+    fn check_host(raw: &[u8]) -> bool {
+        // Returns true when the host value is INVALID (should be rejected).
+        match http::header::HeaderValue::from_bytes(raw)
+            .ok()
+            .as_ref()
+        {
+            None => true, // bytes not representable as HeaderValue → invalid
+            Some(v) => match v.to_str() {
+                Err(_) => true, // non-UTF-8 → invalid
+                Ok(s) => {
+                    if s.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0) {
+                        true
+                    } else {
+                        http::uri::Authority::try_from(s).is_err()
+                    }
+                }
+            },
+        }
+    }
+
+    #[test]
+    fn host_valid_simple_domain_accepted() {
+        assert!(!check_host(b"example.com"));
+    }
+
+    #[test]
+    fn host_valid_domain_with_port_accepted() {
+        assert!(!check_host(b"example.com:8080"));
+    }
+
+    #[test]
+    fn host_valid_ipv4_accepted() {
+        assert!(!check_host(b"192.168.1.1"));
+    }
+
+    #[test]
+    fn host_valid_ipv6_accepted() {
+        assert!(!check_host(b"[::1]:443"));
+    }
+
+    #[test]
+    fn host_cr_lf_rejected() {
+        assert!(check_host(b"evil.com\r\nX-Injected: yes"));
+    }
+
+    #[test]
+    fn host_nul_byte_rejected() {
+        assert!(check_host(b"evil.com\x00"));
+    }
+
+    #[test]
+    fn host_space_rejected() {
+        assert!(check_host(b"evil .com"));
+    }
+
+    #[test]
+    fn host_path_separator_rejected() {
+        assert!(check_host(b"evil.com/../../etc/passwd"));
+    }
+
+    #[test]
+    fn host_non_utf8_rejected() {
+        // 0xFF is not valid UTF-8; to_str() will return Err → treated as invalid.
+        assert!(check_host(b"evil\xff.com"));
     }
 }

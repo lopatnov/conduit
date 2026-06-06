@@ -1737,7 +1737,9 @@ impl ProxyHttp for ConduitProxy {
                 "{}={}; Path=/; HttpOnly; SameSite=Lax",
                 cookie_name, cookie_val
             );
-            let _ = upstream_response.insert_header("set-cookie", cookie_header);
+            // Use append_header so upstream Set-Cookie headers (session
+            // tokens, auth cookies) are preserved alongside the sticky cookie.
+            let _ = upstream_response.append_header("set-cookie", cookie_header);
         }
 
         Ok(())
