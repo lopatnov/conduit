@@ -350,6 +350,92 @@ pub struct ConduitProxy {
 }
 
 impl ConduitProxy {
+    /// Record a failed upstream attempt immediately before triggering a Pingora
+    /// retry.
+    ///
+    /// Updates all passive health state for the upstream that just returned
+    /// `status`:
+    ///
+    /// - Releases the connection slot (`conn_dec`) so the next `upstream_peer()`
+    ///   call can acquire a new slot for the retry target.
+    /// - Records latency into the EWMA and increments `consecutive_5xx` via
+    ///   `record_request_latency`.
+    /// - Runs outlier-detection ejection (`maybe_eject`) if configured.
+    /// - Decrements the Prometheus `upstream_active_connections` gauge and
+    ///   increments `upstream_requests_total` / `upstream_latency_seconds`.
+    /// - Appends the failed attempt to `failed_upstream_attempts` for structured
+    ///   logging, then clears `proxy_upstream_url` so the next `upstream_peer()`
+    ///   starts fresh.
+    ///
+    /// Without this, a successful retry on a different backend would silently
+    /// absorb the failure without updating the health record of the backend that
+    /// actually failed.
+    fn record_failed_upstream_for_retry(
+        &self,
+        ctx: &mut Option<RequestCtx>,
+        config: &AppConfig,
+        status: u16,
+    ) {
+        let req_ctx_mut = match ctx.as_mut() {
+            Some(c) => c,
+            None => return,
+        };
+        let url = match req_ctx_mut.proxy_upstream_url.clone() {
+            Some(u) => u,
+            None => return,
+        };
+
+        let elapsed_us = req_ctx_mut.start_time.elapsed().as_micros() as u64;
+        // Release the connection slot for the failed upstream immediately.
+        self.state.upstream_health.conn_dec(&url);
+        crate::proxy::health::record_request_latency(
+            &self.state.upstream_health,
+            &url,
+            elapsed_us,
+            status,
+        );
+
+        // Trigger outlier detection for the failed upstream.
+        let site_idx = req_ctx_mut.site_idx;
+        if let Some(od) = config
+            .sites
+            .get(site_idx)
+            .and_then(|s| s.outlier_detection.as_ref())
+        {
+            crate::proxy::health::maybe_eject(&self.state.upstream_health, &url, od);
+        }
+
+        // Update Prometheus per-upstream metrics so the active-connections gauge
+        // doesn't leak (it was incremented by upstream_request_filter when we
+        // first forwarded to this backend).
+        self.state
+            .metrics
+            .upstream_active_connections
+            .with_label_values(&[&url])
+            .dec();
+        self.state
+            .metrics
+            .upstream_requests_total
+            .with_label_values(&[&url, &status.to_string()])
+            .inc();
+        if let Some(upstream_secs) = req_ctx_mut
+            .upstream_start
+            .map(|t| t.elapsed().as_secs_f64())
+        {
+            self.state
+                .metrics
+                .upstream_latency_seconds
+                .with_label_values(&[&url])
+                .observe(upstream_secs);
+        }
+        // Reset upstream_start for the retry attempt.
+        req_ctx_mut.upstream_start = None;
+        // Push to failed list for structured logging / future use.
+        req_ctx_mut.failed_upstream_attempts.push((url, status));
+        // Clear current URL — next upstream_peer() will set a new one.
+        req_ctx_mut.proxy_upstream_url = None;
+    }
+
     /// Check the retry budget and increment `retry_inflight` if a retry is allowed.
     ///
     /// Returns `true` when the retry may proceed, `false` when the budget is
@@ -1640,71 +1726,10 @@ impl ProxyHttp for ConduitProxy {
 
             ResponseFilterOutcome::RetryUpstream => {
                 let status = upstream_response.status.as_u16();
-
-                // Failure propagation fix (#47): record the failed upstream attempt
-                // BEFORE returning the retry error so that EWMA, consecutive_5xx,
-                // outlier detection, and the conn_count slot are all updated for
-                // the upstream that actually failed.  Without this, a successful
-                // retry on a different backend would silently clear the failure
-                // from the passive health record.
-                if let Some(req_ctx_mut) = ctx.as_mut() {
-                    if let Some(url) = req_ctx_mut.proxy_upstream_url.clone() {
-                        let elapsed_us = req_ctx_mut.start_time.elapsed().as_micros() as u64;
-                        // Release the connection slot for the failed upstream
-                        // immediately — the next upstream_peer() call will
-                        // acquire a new slot for the retry target.
-                        self.state.upstream_health.conn_dec(&url);
-                        crate::proxy::health::record_request_latency(
-                            &self.state.upstream_health,
-                            &url,
-                            elapsed_us,
-                            status,
-                        );
-                        // Trigger outlier detection for the failed upstream.
-                        let site_idx = req_ctx_mut.site_idx;
-                        if let Some(od) = config
-                            .sites
-                            .get(site_idx)
-                            .and_then(|s| s.outlier_detection.as_ref())
-                        {
-                            crate::proxy::health::maybe_eject(
-                                &self.state.upstream_health,
-                                &url,
-                                od,
-                            );
-                        }
-                        // Update Prometheus per-upstream metrics for the failed attempt
-                        // so the gauge doesn't leak (it was incremented by
-                        // upstream_request_filter when we first forwarded to A).
-                        self.state
-                            .metrics
-                            .upstream_active_connections
-                            .with_label_values(&[&url])
-                            .dec();
-                        self.state
-                            .metrics
-                            .upstream_requests_total
-                            .with_label_values(&[&url, &status.to_string()])
-                            .inc();
-                        if let Some(upstream_secs) = req_ctx_mut
-                            .upstream_start
-                            .map(|t| t.elapsed().as_secs_f64())
-                        {
-                            self.state
-                                .metrics
-                                .upstream_latency_seconds
-                                .with_label_values(&[&url])
-                                .observe(upstream_secs);
-                        }
-                        // Reset upstream_start for the retry attempt.
-                        req_ctx_mut.upstream_start = None;
-                        // Push to failed list for structured logging / future use.
-                        req_ctx_mut.failed_upstream_attempts.push((url, status));
-                        // Clear current URL — next upstream_peer() will set a new one.
-                        req_ctx_mut.proxy_upstream_url = None;
-                    }
-                }
-
+                // Failure propagation fix (#47): record health / metrics for the
+                // failed upstream BEFORE returning the retry error — see
+                // `record_failed_upstream_for_retry` for the full rationale.
+                self.record_failed_upstream_for_retry(ctx, &config, status);
                 // Use new_up() so ErrorSource::Upstream is set — required for
                 // should_serve_stale() to recognise this as an upstream error
                 // and serve a stale cached response (#48).
