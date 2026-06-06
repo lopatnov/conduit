@@ -947,6 +947,7 @@ pub fn find_route_priority(site: &SiteConfig, path: &str) -> Option<u8> {
 /// Returns `None` if the header is absent, malformed, or the urgency is out of range.
 ///
 /// ```
+/// # use conduit::proxy::router::parse_rfc9218_priority;
 /// assert_eq!(parse_rfc9218_priority("u=0"), Some(100)); // highest urgency
 /// assert_eq!(parse_rfc9218_priority("u=3"), Some(58));  // default urgency
 /// assert_eq!(parse_rfc9218_priority("u=7"), Some(2));   // lowest urgency
