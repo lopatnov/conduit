@@ -4083,4 +4083,30 @@ mod tests {
         assert!(req.upstream_start.is_none());
         assert_eq!(req.failed_upstream_attempts.len(), 1);
     }
+
+    /// When the site config has outlier_detection set, maybe_eject() is called.
+    #[test]
+    fn record_failed_upstream_triggers_outlier_detection_when_configured() {
+        let proxy = make_proxy();
+        let mut inner = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        inner.proxy_upstream_url = Some("http://backend:4002".to_owned());
+        inner.site_idx = 0;
+        let mut ctx = Some(inner);
+
+        // Build an AppConfig with outlier detection enabled on site 0.
+        let mut config = AppConfig::default();
+        let mut site = crate::config::schema::SiteConfig::default();
+        site.outlier_detection = Some(crate::config::schema::OutlierDetectionConfig {
+            consecutive_5xx: Some(1),
+            base_ejection_time_secs: Some(5),
+            max_ejection_time_secs: Some(30),
+            max_ejection_percent: Some(50),
+        });
+        config.sites = vec![site];
+
+        // Must not panic — exercises the maybe_eject() call inside the if-let branch.
+        proxy.record_failed_upstream_for_retry(&mut ctx, &config, 503);
+        let req = ctx.as_ref().unwrap();
+        assert_eq!(req.failed_upstream_attempts.len(), 1);
+    }
 }
