@@ -1,0 +1,45 @@
+name: Test Trivy scan fix (temporary)
+
+# Temporary smoke-test workflow for the docker-full-scan fix in release.yml.
+# The release workflow only triggers on `v*` tag pushes, so this lets us
+# exercise the corrected image-ref logic against the already-published
+# `1.1.0-full` image without cutting a new release. Delete this file once
+# the fix is confirmed working.
+
+on:
+  push:
+    branches:
+      - fix/trivy-cli-version
+    paths:
+      - .github/workflows/test-trivy-scan.yml
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  scan-full-image:
+    name: Scan ghcr.io/lopatnov/conduit:1.1.0-full (corrected tag reference)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan image (same args as docker-full-scan, exit-code relaxed for the smoke test)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: ghcr.io/lopatnov/conduit:1.1.0-full
+          trivy-version: '0.71.0'
+          format: table
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
