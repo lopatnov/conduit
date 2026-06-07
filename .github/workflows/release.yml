@@ -407,9 +407,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Scan image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.71.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ needs.docker.outputs.version }}
+          version: 'v0.71.0'
           format: table
           exit-code: '1'
           ignore-unfixed: true
@@ -433,9 +434,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Scan full image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.71.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
-          image-ref: ${{ env.IMAGE_NAME }}:${{ needs.docker-full.outputs.version }}-full
+          image-ref: ${{ env.IMAGE_NAME }}:${{ needs.docker-full.outputs.version }}
+          version: 'v0.71.0'
           format: table
           exit-code: '1'
           ignore-unfixed: true
