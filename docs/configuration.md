@@ -34,6 +34,7 @@ The standard binary covers most use cases. Some config sections require a featur
 | `otlp`            | `--features otlp`                  | [`global.otlp`](#opentelemetry-tracing)                     |
 | `tokio-metrics`   | `--features tokio-metrics`         | `conduit_eventloop_lag_ms` Prometheus gauge (no config key) |
 | `kubernetes`      | `--features kubernetes`            | `--kubernetes-namespace` CLI flag (not a config field)      |
+| `standard`        | `--features standard`              | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` |
 | `full`            | `--features full`                  | All of the above                                            |
 
 Download a `-full` binary from [GitHub Releases](https://github.com/lopatnov/conduit/releases)

@@ -52,10 +52,14 @@ Add features with `--features`:
 | `fault-injection` | Fault injection for chaos testing (`faultInjection`)                     |
 | `otlp`          | OpenTelemetry OTLP distributed tracing (`global.otlp`)                     |
 | `kubernetes`    | Kubernetes CRD config provider (`--kubernetes-namespace`)                  |
+| `standard`      | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` — typical self-hosted reverse-proxy / API-gateway set |
 | `full`          | All of the above                                                           |
 
 ```bash
-# Common production set
+# Typical self-hosted reverse-proxy / API gateway (auth stack + caching + auto-TLS)
+cargo build --release --features standard
+
+# Custom production set
 cargo build --release --features "jwt,rhai,redis,otlp"
 
 # All features

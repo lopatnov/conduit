@@ -191,13 +191,30 @@ tokio-metrics = []
 kubernetes = ["dep:kube", "dep:k8s-openapi", "k8s-openapi/v1_30", "dep:schemars", "dep:futures"]
 
 # ── Convenience bundles ────────────────────────────────────────────────────────
+# Standard build: the typical self-hosted reverse-proxy / API-gateway feature
+# set — auth stack (JWT + consumers + ForwardAuth), response caching, and
+# auto-TLS — without niche or heavyweight extras (scripting, WASM, TCP mode,
+# upload, storage backends, chaos testing, tracing, orchestration).
+#
+# | Profile      | Use case                                              |
+# |--------------|-------------------------------------------------------|
+# | _(default)_  | Minimal reverse proxy, embed in a larger system       |
+# | `standard`   | Self-hosted reverse proxy + API gateway               |
+# | `full`       | Every feature — CI / feature exploration              |
+standard = [
+    "jwt",           # JWT validation (HS256, RS256/ES256, JWKS)
+    "consumers",     # Consumer model — per-consumer auth + rate limit
+    "forward-auth",  # Delegate auth to an external service
+    "cache",         # HTTP response caching
+    "acme",          # Auto-TLS via Let's Encrypt (Caddy-style)
+]
+
 # Full build: every optional feature enabled.
 full = [
-    "jwt", "consumers", "forward-auth",
+    "standard",
     "rhai", "wasm",
     "tcp", "upload",
-    "redis", "cache", "disk-cache",
-    "acme",
+    "redis", "disk-cache",
     "fault-injection",
     "otlp",
     "tokio-metrics",
