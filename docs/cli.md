@@ -587,7 +587,14 @@ cargo build --release --features "jwt,rhai,redis"
 | `fault-injection` | Fault injection for chaos testing                   | —                       |
 | `otlp`            | OpenTelemetry OTLP tracing                          | `opentelemetry` stack   |
 | `kubernetes`      | Kubernetes CRD config provider                      | `kube`, `k8s-openapi`   |
+| `standard`        | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` (typical self-hosted reverse-proxy / API-gateway set) | bundle, no extra deps of its own |
 | `full`            | All of the above                                    | all of the above        |
+
+> **Naming note:** the `standard` *feature flag* is a convenience bundle of
+> optional features — it is not the same as the **standard build**
+> (`cargo build --release`, no `--features`) referenced elsewhere in this doc.
+> `cargo build --release --features standard` produces a superset of the
+> standard build with the auth/cache/auto-TLS stack compiled in.
 
 When a feature is off but its config field is set, Conduit logs a warning at
 startup and continues with that feature disabled (fail-open, no crash).
