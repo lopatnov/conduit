@@ -74,6 +74,43 @@ jobs:
       - name: test (all features)
         run: cargo test --features full
 
+  # ── Cross-compile smoke tests for non-native architectures ──────────────────
+  # Mirrors the `use_cross: true` targets in release.yml's build matrix, but
+  # only exercises a release build (no test run / no artifact upload) — just
+  # enough to catch target-specific compile breakage early. Add a line to
+  # `matrix.target` to cover another architecture; no other changes needed.
+  cross-compile:
+    name: Cross-compile ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - riscv64gc-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: cross-${{ matrix.target }}
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: Install cross
+        uses: taiki-e/install-action@56545b37b57562edd73171cb6c62cc509db4c34e  # v2.81.7
+        with:
+          tool: cross
+
+      - name: Build (cross, standard)
+        run: cross build --release --target ${{ matrix.target }}
+
   # ── ACME integration tests (Linux only, requires Docker for Pebble) ─────────
   acme:
     name: ACME (Pebble)
@@ -133,31 +170,3 @@ jobs:
           # Account::builder_with_root() is used when this env var is set.
           CONDUIT_ACME_EXTRA_ROOT: /tmp/pebble-ca.pem
         run: cargo test --test acme --features acme -- --nocapture
-
-  # ── Cross-compile check for RISC-V ──────────────────────────────────────────
-  cross-riscv:
-    name: Cross-compile RISC-V 64
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
-
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
-        with:
-          toolchain: stable
-          targets: riscv64gc-unknown-linux-gnu
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          key: riscv64
-        continue-on-error: true
-
-      - name: Install cross
-        uses: taiki-e/install-action@56545b37b57562edd73171cb6c62cc509db4c34e  # v2.81.7
-        with:
-          tool: cross
-
-      - name: Build (cross, standard)
-        run: cross build --release --target riscv64gc-unknown-linux-gnu
