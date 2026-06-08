@@ -126,7 +126,7 @@ wasmtime = { version = "45", features = ["cranelift"], optional = true }
 # Grafana Tempo, Jaeger, Honeycomb, OpenTelemetry Collector, etc.
 # Uses gRPC (tonic) transport; adds ~4 MB to binary.
 opentelemetry     = { version = "0.27", optional = true }
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"], optional = true }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"], optional = true }
 opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"], optional = true }
 
 
