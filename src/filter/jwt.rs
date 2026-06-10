@@ -562,7 +562,7 @@ mod tests {
 
     #[test]
     fn expand_jwt_templates_sub() {
-        use crate::proxy::service::expand_jwt_templates;
+        use crate::proxy::request_phase::expand_jwt_templates;
         let mut claims = std::collections::HashMap::new();
         claims.insert("sub".to_string(), serde_json::json!("alice"));
         claims.insert("role".to_string(), serde_json::json!("admin"));
