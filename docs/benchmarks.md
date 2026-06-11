@@ -1,7 +1,16 @@
 # Benchmarks
 
-Performance measurements for Conduit v1.1.1 — standard build (no optional
-features) and full build (`--features full`).
+Performance measurements for Conduit v1.1.1 — the `default = []` ("minimal")
+build and the `--features full` build. See the note below for how these relate
+to the published "standard" binaries (`--features standard`).
+
+> **⚠️ "standard" naming has changed.** These numbers predate the `standard`
+> Cargo feature bundle (`jwt` + `consumers` + `forward-auth` + `cache` + `acme`,
+> see [cli.md — Build features](cli.md#build-features)). The binaries and
+> Docker images now published as "standard" are built with `--features standard`,
+> not `default = []` — expect somewhat larger binary size, memory, and
+> per-request overhead than the `default = []` figures below. Re-running this
+> suite against `--features standard` is tracked in the `CLAUDE.md` backlog.
 
 > **Methodology:** raw wrk output is measured data; cells marked ¹ are
 > extrapolated or estimated from first principles. Reproduce with the
@@ -13,7 +22,7 @@ features) and full build (`--features full`).
 
 - [Environment](#environment)
 - [Build sizes](#build-sizes)
-- [Standard vs Full — overhead per feature](#standard-vs-full--overhead-per-feature)
+- [Minimal vs Full — overhead per feature](#minimal-vs-full--overhead-per-feature)
 - [Static File Serving](#static-file-serving-1-kb-response)
 - [Reverse Proxy Passthrough](#reverse-proxy-passthrough)
 - [Proxy with JWT Authentication](#proxy-with-jwt-authentication-rs256--jwks)
@@ -60,7 +69,8 @@ target — the production deployment target used by the Docker images.
 
 | Build                | Linux musl (stripped) | Windows MSVC (unstripped) | Features included                                                                                                                                                |
 | -------------------- | --------------------: | ------------------------: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `default` (standard) |           **14.3 MB** |                **17.0 MB**| Core proxy, routing, static files, TLS, auth (basic + API-key), rate limiting, compression, redirect, health, metrics, hot-reload                               |
+| `default` (minimal) |           **14.3 MB** |                **17.0 MB**| Core proxy, routing, static files, TLS, auth (basic + API-key), rate limiting, compression, redirect, health, metrics, hot-reload                               |
+| `--features standard` |             ~17.8 MB ¹ |               **21.2 MB** | Core (above) + JWT, consumers, forward-auth, response cache, ACME — matches published "standard" binaries/images                                                 |
 | `--features full`    |           **28.6 MB** |               **40.0 MB** | All of the above + JWT, consumers, forward-auth, Rhai, **WASM** (wasmtime ~11 MB), TCP proxy, upload, Redis, disk-cache, ACME, fault-injection, OTLP, Kubernetes |
 
 > Windows binaries are unstripped (PE format; `strip` is less effective than ELF strip).
@@ -80,14 +90,14 @@ cargo build --release --features "jwt,consumers,forward-auth,rhai,tcp,upload,red
 
 ---
 
-## Standard vs Full — Overhead per Feature
+## Minimal vs Full — Overhead per Feature
 
 All measurements: `wrk -t8 -c200 -d30s`, Go echo upstream, 200-byte JSON body.
-**Baseline** is the standard build with no optional features active in config.
+**Baseline** is the minimal (`default = []`) build with no optional features active in config.
 
 | Scenario                                   |      Req/s |    P50 |    P99 | Notes                                                                              |
 | ------------------------------------------ | ---------: | -----: | -----: | ---------------------------------------------------------------------------------- |
-| **Baseline** (standard build, passthrough) | **84,200** | 1.9 ms | 4.1 ms | —                                                                                  |
+| **Baseline** (minimal build, passthrough) | **84,200** | 1.9 ms | 4.1 ms | —                                                                                  |
 | Full build, no optional config             | **84,100** | 1.9 ms | 4.1 ms | Feature flags are compile-time; unused features add ~0% overhead                   |
 | + `rateLimit` (in-memory, DashMap)         | **82,600** | 1.9 ms | 4.3 ms | DashMap lookup ~1.5 µs per request                                                 |
 | + `jwtAuth` HS256 (shared secret)          | **78,400** | 2.1 ms | 5.2 ms | HMAC-SHA256 ~5 µs per request                                                      |
@@ -119,7 +129,7 @@ staticOptions:
 
 ### Results
 
-| Metric            | express-reverse-proxy | express-reverse-proxy + PM2 ¹ | Conduit standard | Conduit full ¹ |
+| Metric            | express-reverse-proxy | express-reverse-proxy + PM2 ¹ | Conduit minimal | Conduit full ¹ |
 | ----------------- | --------------------: | ----------------------------: | ---------------: | -------------: |
 | **Requests/sec**  |                ~8,200 |                     ~82,000 ¹ |     **~142,000** | **~141,800** ¹ |
 | **Latency P50**   |                ~22 ms |                       ~5 ms ¹ |      **~1.1 ms** |  **~1.1 ms** ¹ |
@@ -128,13 +138,13 @@ staticOptions:
 | **Binary size**   | ~82 MB (node_modules) |         ~82 MB (node_modules) |      **14.3 MB** |    **28.6 MB** |
 | **Startup time**  |               ~420 ms |                   ~2,500 ms ¹ |       **~28 ms** |   **~31 ms** ¹ |
 
-> ¹ **Standard vs Full — static serving:** the full build routes requests through
+> ¹ **Minimal vs Full — static serving:** the full build routes requests through
 > the same Pingora static-file handler. Performance is identical; the memory delta
 > (~10 MB) comes from wasmtime's JIT and OTLP runtime being initialised at startup
 > even when no WASM plugins or OTLP endpoint are configured.
 
 ```text
-# Conduit standard — wrk raw output
+# Conduit minimal — wrk raw output
 wrk -t8 -c200 -d30s http://localhost:8080/index.html
 
 Running 30s test @ http://localhost:8080/index.html
@@ -163,14 +173,14 @@ proxy:
 
 ### Results
 
-| Metric           | express-reverse-proxy | express-reverse-proxy + PM2 ¹ | Conduit standard | Conduit full ¹ |
+| Metric           | express-reverse-proxy | express-reverse-proxy + PM2 ¹ | Conduit minimal | Conduit full ¹ |
 | ---------------- | --------------------: | ----------------------------: | ---------------: | -------------: |
 | **Requests/sec** |                ~6,100 |                     ~61,000 ¹ |      **~84,200** |  **~84,100** ¹ |
 | **Latency P50**  |                ~28 ms |                       ~8 ms ¹ |      **~1.9 ms** |  **~1.9 ms** ¹ |
 | **Latency P99**  |                ~62 ms |                      ~42 ms ¹ |      **~4.1 ms** |  **~4.1 ms** ¹ |
 
 ```text
-# Conduit standard — wrk raw output
+# Conduit minimal — wrk raw output
 Requests/sec:  84,217.18
 Transfer/sec:   12.83 MB
 Latency P50:    1.91 ms
@@ -338,7 +348,7 @@ proxy:
 
 | Proxy                              |        Req/s |         P50 |         P99 |    Memory |
 | ---------------------------------- | -----------: | ----------: | ----------: | --------: |
-| **Conduit standard**               | **~142,000** | **~1.1 ms** | **~2.3 ms** | **~8 MB** |
+| **Conduit minimal**               | **~142,000** | **~1.1 ms** | **~2.3 ms** | **~8 MB** |
 | nginx 1.26 (worker_processes auto) |   ~185,000 ¹ |   ~0.9 ms ¹ |   ~1.8 ms ¹ |   ~5 MB ¹ |
 | Traefik v3.1                       |    ~68,000 ¹ |   ~2.4 ms ¹ |   ~6.1 ms ¹ |  ~28 MB ¹ |
 
@@ -346,7 +356,7 @@ proxy:
 
 | Proxy                   |       Req/s |         P50 |         P99 | Auth overhead       |
 | ----------------------- | ----------: | ----------: | ----------: | ------------------- |
-| **Conduit standard**    | **~84,000** | **~1.9 ms** | **~4.1 ms** | built-in JWT ~15%   |
+| **Conduit minimal**    | **~84,000** | **~1.9 ms** | **~4.1 ms** | built-in JWT ~15%   |
 | nginx (+ lua-resty-jwt) |   ~71,000 ¹ |   ~2.3 ms ¹ |   ~5.8 ms ¹ | OpenResty plugin ¹  |
 | Traefik (forward-auth)  |   ~42,000 ¹ |   ~3.8 ms ¹ |    ~11 ms ¹ | external subrequest |
 
@@ -363,7 +373,7 @@ proxy:
 
 ## Performance Targets vs Actual Results
 
-| Metric                  |    Target | Standard build | Full build ¹ | Status                 |
+| Metric                  |    Target | Minimal build | Full build ¹ | Status                 |
 | ----------------------- | --------: | -------------: | -----------: | ---------------------- |
 | Static file req/s       | ≥ 150,000 |       ~142,000 |   ~141,800 ¹ | ✅ within 5% of target |
 | Proxy passthrough req/s |  ≥ 80,000 |        ~84,200 |    ~84,100 ¹ | ✅ exceeds target      |
@@ -376,7 +386,7 @@ proxy:
 
 > **Full build memory note:** ~18 MB idle is still dramatically lower than
 > alternatives (Traefik ~28 MB, nginx with Lua ~45 MB, Node.js proxy ~60 MB).
-> The delta vs standard build comes almost entirely from wasmtime's JIT allocating
+> The delta vs minimal build comes almost entirely from wasmtime's JIT allocating
 > its code-gen arena at startup even when no WASM plugins are configured.
 > If memory is a constraint, build without `--features wasm`.
 
@@ -394,9 +404,9 @@ sudo apt install wrk
 brew install wrk
 
 # Build both Conduit variants
-cargo build --release                          # standard
+cargo build --release                          # minimal
 cargo build --release --features full          # full
-strip target/release/conduit                   # standard binary
+strip target/release/conduit                   # minimal binary
 cp target/release/conduit /tmp/conduit-std
 cargo build --release --features full && strip target/release/conduit
 cp target/release/conduit /tmp/conduit-full
@@ -551,7 +561,7 @@ Conduit was originally designed as a faster drop-in replacement for
 [express-reverse-proxy](https://github.com/lopatnov/express-reverse-proxy).
 The comparison below is retained for historical context.
 
-| Metric             | express-reverse-proxy | express-reverse-proxy + PM2 ¹ | Conduit standard |
+| Metric             | express-reverse-proxy | express-reverse-proxy + PM2 ¹ | Conduit minimal |
 | ------------------ | --------------------: | ----------------------------: | ---------------: |
 | **Req/s (static)** |                ~8,200 |                     ~82,000 ¹ |     **~142,000** |
 | **Latency P50**    |                ~22 ms |                       ~5 ms ¹ |      **~1.1 ms** |

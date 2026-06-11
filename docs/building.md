@@ -13,7 +13,7 @@ are statically linked via `-sys` crates.
 
 ---
 
-## Standard build
+## Quick start
 
 ```bash
 git clone https://github.com/lopatnov/conduit
@@ -29,11 +29,18 @@ cargo build --release
 # Windows: target\release\conduit.exe
 ```
 
+`cargo build --release` with no flags produces the **minimal build**
+(`default = []`) — core reverse proxy, TLS, static files, rate limiting,
+basic/API-key auth, compression, hot-reload, Prometheus metrics, health
+checks, and the Admin API. See [Optional features](#optional-features) below
+for the `standard` bundle that matches the published binaries and Docker
+images.
+
 ---
 
 ## Optional features
 
-The default build (`default = []`) is the minimal standard proxy.
+The default build (`default = []`) is the minimal embed-friendly proxy.
 Add features with `--features`:
 
 | Feature         | What it enables                                                            |
@@ -56,7 +63,8 @@ Add features with `--features`:
 | `full`          | All of the above                                                           |
 
 ```bash
-# Typical self-hosted reverse-proxy / API gateway (auth stack + caching + auto-TLS)
+# Typical self-hosted reverse-proxy / API gateway (auth stack + caching +
+# auto-TLS) — matches the published "standard" binaries and Docker images
 cargo build --release --features standard
 
 # Custom production set
@@ -97,8 +105,8 @@ cross build --release --target x86_64-unknown-linux-musl
 # Linux ARM64 — Raspberry Pi 4/5, AWS Graviton, Apple M-series VMs
 cross build --release --target aarch64-unknown-linux-gnu
 
-# Linux RISC-V 64 (standard build)
-cross build --release --target riscv64gc-unknown-linux-gnu
+# Linux RISC-V 64 (standard feature bundle — see release.yml)
+cross build --release --target riscv64gc-unknown-linux-gnu --features standard
 ```
 
 > **macOS targets** can only be built on macOS.
@@ -132,8 +140,11 @@ cross build --release --target riscv64gc-unknown-linux-gnu
 # Unit tests (fast, no network)
 cargo test --lib
 
-# All tests — standard build
+# All tests — default build (no --features)
 cargo test
+
+# All tests — standard feature bundle (matches published binaries)
+cargo test --features standard
 
 # All tests — full features
 cargo test --features full
@@ -159,8 +170,13 @@ cargo bench
 Build locally using the production Dockerfile (multi-stage musl + `FROM scratch`):
 
 ```bash
-# Standard image
+# Minimal image (default = [])
 docker build -f contrib/Dockerfile -t conduit:local .
+
+# Standard image (matches the published default tag)
+docker build -f contrib/Dockerfile \
+  --build-arg FEATURES=standard \
+  -t conduit:local-standard .
 
 # Full features image
 docker build -f contrib/Dockerfile \

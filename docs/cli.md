@@ -546,16 +546,26 @@ for the CRD schema and `kubectl apply` instructions.
 
 ## Build features
 
-Conduit uses compile-time feature flags to keep the default binary lean.
-The **standard build** (`cargo build --release`) includes the core reverse proxy,
-TLS, static files, rate limiting, basic/API-key auth, compression, hot-reload,
-Prometheus metrics, health checks, and the Admin API — everything needed for most
-production deployments. Optional capabilities with heavier dependencies are added
-with `--features`.
+Conduit uses compile-time feature flags to keep the binary lean and the
+attack surface small. `cargo build --release` with no flags produces the
+**minimal build** (`default = []`): core reverse proxy, TLS, static files,
+rate limiting, basic/API-key auth, compression, hot-reload, Prometheus
+metrics, health checks, and the Admin API. It's the right choice for
+embedding Conduit in a larger system or for the smallest footprint.
+
+The binaries and Docker images **published as "standard"** (the un-suffixed
+`conduit-<target>` downloads and the `:latest` image — see
+[deployment.md](deployment.md)) add the `standard` feature bundle on top of
+that: `jwt` + `consumers` + `forward-auth` + `cache` + `acme`, the auth/cache/
+auto-TLS stack most self-hosted reverse-proxy / API-gateway deployments need.
+Reproduce it from source with `--features standard`.
 
 ```bash
-# Standard build (minimal, fast, secure)
+# Minimal build (default = []) — embed-friendly, smallest footprint
 cargo build --release
+
+# Standard build — matches the published "conduit-<target>" binaries
+cargo build --release --features standard
 
 # Single optional feature
 cargo build --release --features jwt
@@ -587,14 +597,8 @@ cargo build --release --features "jwt,rhai,redis"
 | `fault-injection` | Fault injection for chaos testing                   | —                       |
 | `otlp`            | OpenTelemetry OTLP tracing                          | `opentelemetry` stack   |
 | `kubernetes`      | Kubernetes CRD config provider                      | `kube`, `k8s-openapi`   |
-| `standard`        | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` (typical self-hosted reverse-proxy / API-gateway set) | bundle, no extra deps of its own |
+| `standard`        | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` (typical self-hosted reverse-proxy / API-gateway set) — used by the published "standard" binaries/images | bundle, no extra deps of its own |
 | `full`            | All of the above                                    | all of the above        |
-
-> **Naming note:** the `standard` *feature flag* is a convenience bundle of
-> optional features — it is not the same as the **standard build**
-> (`cargo build --release`, no `--features`) referenced elsewhere in this doc.
-> `cargo build --release --features standard` produces a superset of the
-> standard build with the auth/cache/auto-TLS stack compiled in.
 
 When a feature is off but its config field is set, Conduit logs a warning at
 startup and continues with that feature disabled (fail-open, no crash).
