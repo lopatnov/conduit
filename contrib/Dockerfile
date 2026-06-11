@@ -4,12 +4,17 @@
 #
 # Build arguments:
 #   FEATURES — optional comma-separated feature flags to enable.
-#              Leave empty (default) for the standard build.
-#              Use "otlp,wasm,kubernetes" for the full-featured image.
+#              Leave empty (default) for the minimal build (default = [] —
+#              core proxy only, no jwt/consumers/forward-auth/cache/acme).
+#              The published "standard" image (release.yml `docker` job) is
+#              built with FEATURES=standard — see Cargo.toml [features].
+#              FEATURES=full enables every optional feature.
 #
 # Examples:
-#   docker build .                                         # standard
-#   docker build --build-arg FEATURES=otlp,wasm,kubernetes .  # full
+#   docker build .                                  # minimal (default = [])
+#   docker build --build-arg FEATURES=standard .    # standard (published default tag)
+#   docker build --build-arg FEATURES=full .        # full
+#   docker build --build-arg FEATURES=otlp,wasm .   # custom subset
 
 # ── Stage 1: build ────────────────────────────────────────────────────────────
 # Use the latest stable Rust on Alpine — keeps in sync with the toolchain

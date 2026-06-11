@@ -1,7 +1,16 @@
 # Benchmarks
 
-Performance measurements for Conduit v1.1.1 — standard build (no optional
-features) and full build (`--features full`).
+Performance measurements for Conduit v1.1.1 — the `default = []` build ("no
+optional features", labeled "standard" throughout this document) and the
+`--features full` build.
+
+> **⚠️ "standard" naming has changed.** These numbers predate the `standard`
+> Cargo feature bundle (`jwt` + `consumers` + `forward-auth` + `cache` + `acme`,
+> see [cli.md — Build features](cli.md#build-features)). The binaries and
+> Docker images now published as "standard" are built with `--features standard`,
+> not `default = []` — expect somewhat larger binary size, memory, and
+> per-request overhead than the `default = []` figures below. Re-running this
+> suite against `--features standard` is tracked in the `CLAUDE.md` backlog.
 
 > **Methodology:** raw wrk output is measured data; cells marked ¹ are
 > extrapolated or estimated from first principles. Reproduce with the
@@ -61,6 +70,7 @@ target — the production deployment target used by the Docker images.
 | Build                | Linux musl (stripped) | Windows MSVC (unstripped) | Features included                                                                                                                                                |
 | -------------------- | --------------------: | ------------------------: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `default` (standard) |           **14.3 MB** |                **17.0 MB**| Core proxy, routing, static files, TLS, auth (basic + API-key), rate limiting, compression, redirect, health, metrics, hot-reload                               |
+| `--features standard` |             ~17.8 MB ¹ |               **21.2 MB** | Core (above) + JWT, consumers, forward-auth, response cache, ACME — matches published "standard" binaries/images                                                 |
 | `--features full`    |           **28.6 MB** |               **40.0 MB** | All of the above + JWT, consumers, forward-auth, Rhai, **WASM** (wasmtime ~11 MB), TCP proxy, upload, Redis, disk-cache, ACME, fault-injection, OTLP, Kubernetes |
 
 > Windows binaries are unstripped (PE format; `strip` is less effective than ELF strip).

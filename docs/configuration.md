@@ -15,7 +15,10 @@ startup. This keeps secrets out of config files.
 
 ### Optional build features
 
-The standard binary covers most use cases. Some config sections require a feature flag:
+The binaries and Docker images published as "standard" already include the
+`standard` feature bundle (`jwt`, `consumers`, `forward-auth`, `cache`, `acme`
+— see the `standard` row below). Some config sections still require an
+additional feature flag (or `--features full`):
 
 | Feature           | Flag                               | Config section                                              |
 | ----------------- | ---------------------------------- | ----------------------------------------------------------- |
@@ -1686,7 +1689,7 @@ proxy:
 
 | Field                      | Type     | Default       | Description                                                                        |
 | -------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------- |
-| `store`                    | string   | —             | `"memory"` (standard), `"redis://..."` / `"rediss://..."` (`--features redis`), `"disk:/path"` (`--features disk-cache`) |
+| `store`                    | string   | —             | `"memory"`, `"redis://..."` / `"rediss://..."` (`--features redis`), `"disk:/path"` (`--features disk-cache`) |
 | `ttlSecs`                  | number   | —             | Fresh cache TTL (seconds)                                                          |
 | `maxSizeMb`                | number   | —             | Memory budget; LRU eviction above this                                             |
 | `staleWhileRevalidateSecs` | number   | `0`           | Serve stale while refreshing in background (RFC 5861)                              |
@@ -2188,8 +2191,8 @@ See [`examples/consumers.yaml`](../examples/consumers.yaml)
 
 ## Rate Limiting
 
-In-memory rate limiting is part of the standard build.
-`store: "redis://..."` requires `--features redis`.
+In-memory rate limiting requires no feature flag — available in every build,
+including the minimal `default = []`. `store: "redis://..."` requires `--features redis`.
 
 ### Site-level
 

@@ -36,11 +36,11 @@ Two image variants are published to the GitHub Container Registry on every relea
 
 | Variant  | Tags                                       | Includes                                                                                                                                                         |
 | -------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Standard | `:latest`, `:1.1.1`, `:1.1`                | Core proxy — no optional features. Smallest binary (~14 MB)                                                                                                      |
+| Standard | `:latest`, `:1.1.1`, `:1.1`                | `standard` feature bundle: `jwt`, `consumers`, `forward-auth`, `cache`, `acme` — covers the typical self-hosted reverse-proxy / API gateway                     |
 | Full     | `:latest-full`, `:1.1.1-full`, `:1.1-full` | All 14 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`, `otlp`, `kubernetes` |
 
 ```bash
-# Standard (~14 MB)
+# Standard (jwt, consumers, forward-auth, cache, acme)
 docker pull ghcr.io/lopatnov/conduit:latest
 
 # Full — all optional features enabled
@@ -48,10 +48,11 @@ docker pull ghcr.io/lopatnov/conduit:latest-full
 ```
 
 > **Standard vs Full:** the standard image covers the majority of production use
-> cases — TLS, proxying, routing, rate limiting, basic/API-key auth, metrics,
+> cases — TLS, proxying, routing, rate limiting, basic/API-key/JWT auth, the
+> consumer model, ForwardAuth, response caching, auto-TLS (ACME), metrics,
 > hot-reload. Use the full image (or build from source with `--features`) when
-> you need JWT validation, scripting middleware (Rhai/WASM), auto-TLS (ACME),
-> file uploads, Redis-backed rate limiting, or Kubernetes CRD config.
+> you need scripting middleware (Rhai/WASM), file uploads, Redis-backed rate
+> limiting/caching, OTLP tracing, TCP proxy mode, or Kubernetes CRD config.
 
 Both images are multi-stage musl builds packaged into `FROM scratch`.
 They run as UID 65534 (`nobody`) with no shell or OS userland.
@@ -122,8 +123,13 @@ at startup. Pass secrets via `environment:` — never bake them into the image.
 git clone https://github.com/lopatnov/conduit
 cd conduit
 
-# Standard image
+# Minimal image (default = [])
 docker build -f contrib/Dockerfile -t conduit:local .
+
+# Standard image (matches the published default tag)
+docker build -f contrib/Dockerfile \
+  --build-arg FEATURES=standard \
+  -t conduit:local-standard .
 
 # Full-features image
 docker build -f contrib/Dockerfile \
@@ -146,12 +152,12 @@ restart on failure.
 Download a pre-built binary from [GitHub Releases](https://github.com/lopatnov/conduit/releases):
 
 ```bash
-# Linux x86-64 (standard)
+# Linux x86-64 (standard: jwt, consumers, forward-auth, cache, acme)
 curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu.tar.gz \
   | tar xz
 sudo install -m 755 conduit /usr/local/bin/conduit
 
-# Linux x86-64 (full — JWT, WASM, OTLP, etc.)
+# Linux x86-64 (full — adds Rhai/WASM, OTLP, TCP proxy, Redis, uploads, Kubernetes, etc.)
 curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu-full.tar.gz \
   | tar xz
 sudo install -m 755 conduit /usr/local/bin/conduit
@@ -606,7 +612,7 @@ kubectl delete conduitsite my-app
 | Prometheus metrics | via exporter     | ✅ native                  |
 | Config format      | YAML annotations | JSON / YAML file or CRDs   |
 | Kubernetes CRDs    | ✅               | ✅ `--features kubernetes` |
-| Binary size        | ~50 MB           | ~14 MB                     |
+| Binary size        | ~50 MB           | ~18 MB                     |
 
 Conduit is a good fit when you want a **simple, self-contained proxy** without
 the overhead of a full Ingress controller. For large clusters with many teams

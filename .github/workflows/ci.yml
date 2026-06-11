@@ -74,6 +74,34 @@ jobs:
       - name: test (all features)
         run: cargo test --features full
 
+  # ── Build + test with the `standard` feature bundle ──────────────────────────
+  # Matches the feature set shipped in release.yml's un-suffixed binaries and
+  # the un-suffixed Docker image — see Cargo.toml [features] `standard`.
+  ci-standard:
+    name: Standard feature bundle (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: features-standard
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: clippy (standard features)
+        run: cargo clippy --features standard -- -D warnings
+
+      - name: test (standard features)
+        run: cargo test --features standard
+
   # ── Cross-compile smoke tests for non-native architectures ──────────────────
   # Mirrors the `use_cross: true` targets in release.yml's build matrix, but
   # only exercises a release build (no test run / no artifact upload) — just
@@ -109,7 +137,7 @@ jobs:
           tool: cross
 
       - name: Build (cross, standard)
-        run: cross build --release --target ${{ matrix.target }}
+        run: cross build --release --target ${{ matrix.target }} --features standard
 
   # ── ACME integration tests (Linux only, requires Docker for Pebble) ─────────
   acme:
