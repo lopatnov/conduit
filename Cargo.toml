@@ -255,6 +255,10 @@ required-features = ["forward-auth"]
 name = "upload"
 required-features = ["upload"]
 
+[[bench]]
+name = "logging_phase_labels"
+harness = false
+
 [profile.release]
 lto           = true
 codegen-units = 1
