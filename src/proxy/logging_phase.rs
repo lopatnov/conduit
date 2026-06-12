@@ -135,11 +135,13 @@ pub(super) async fn logging(
     }
 
     // Record Prometheus metrics.
-    let method = session.req_header().method.as_str().to_owned();
-    let status = session
-        .response_written()
-        .map(|h| h.status.as_u16().to_string())
-        .unwrap_or_else(|| "0".to_owned());
+    // `method`/`status`/`route` borrow from `session` instead of allocating
+    // owned `String`s, and `status_u16` is computed once and reused below
+    // instead of round-tripping through `.to_string()` + `.parse::<u16>()`.
+    let method = session.req_header().method.as_str();
+    let response_written = session.response_written();
+    let status_u16 = response_written.map(|h| h.status.as_u16()).unwrap_or(0);
+    let status = response_written.map(|h| h.status.as_str()).unwrap_or("0");
     let elapsed = ctx
         .as_ref()
         .map(|c| c.start_time.elapsed().as_secs_f64())
@@ -149,27 +151,24 @@ pub(super) async fn logging(
         .state
         .metrics
         .requests_total
-        .with_label_values(&[&method, &status])
+        .with_label_values(&[method, status])
         .inc();
     proxy
         .state
         .metrics
         .request_duration_seconds
-        .with_label_values(&[&method, &status])
+        .with_label_values(&[method, status])
         .observe(elapsed);
 
     // Upstream error counter (5xx status codes from upstream).
-    {
-        let status_u16 = status.parse::<u16>().unwrap_or(0);
-        if status_u16 >= 500 {
-            let route = session.req_header().uri.path().to_owned();
-            proxy
-                .state
-                .metrics
-                .upstream_errors_total
-                .with_label_values(&[&route, &status])
-                .inc();
-        }
+    if status_u16 >= 500 {
+        let route = session.req_header().uri.path();
+        proxy
+            .state
+            .metrics
+            .upstream_errors_total
+            .with_label_values(&[route, status])
+            .inc();
     }
 
     // Per-upstream metrics: active_connections decrement, requests_total, latency_seconds.
@@ -186,11 +185,10 @@ pub(super) async fn logging(
             .state
             .metrics
             .upstream_requests_total
-            .with_label_values(&[url, &status])
+            .with_label_values(&[url, status])
             .inc();
 
         // Per-peer response code breakdown (#40).
-        let status_u16 = status.parse::<u16>().unwrap_or(0);
         crate::proxy::health::record_response_status(&proxy.state.upstream_health, url, status_u16);
         if let Some(upstream_secs) = ctx
             .as_ref()
@@ -213,14 +211,14 @@ pub(super) async fn logging(
         .is_some()
     {
         use pingora_cache::CachePhase;
-        let route = session.req_header().uri.path().to_owned();
+        let route = session.req_header().uri.path();
         match session.cache.phase() {
             CachePhase::Hit => {
                 proxy
                     .state
                     .metrics
                     .cache_hits_total
-                    .with_label_values(&[&route])
+                    .with_label_values(&[route])
                     .inc();
             }
             CachePhase::Miss | CachePhase::Expired => {
@@ -228,7 +226,7 @@ pub(super) async fn logging(
                     .state
                     .metrics
                     .cache_misses_total
-                    .with_label_values(&[&route])
+                    .with_label_values(&[route])
                     .inc();
             }
             _ => {}
@@ -265,8 +263,7 @@ pub(super) async fn logging(
     if let Some(req_ctx) = ctx.as_mut() {
         if let Some(mut span) = req_ctx.otel_span.take() {
             use opentelemetry::{trace::Span, KeyValue};
-            let status_u16 = status.parse::<u16>().unwrap_or(0);
-            span.set_attribute(KeyValue::new("http.method", method.clone()));
+            span.set_attribute(KeyValue::new("http.method", method.to_string()));
             span.set_attribute(KeyValue::new(
                 "http.path",
                 session.req_header().uri.path().to_owned(),
