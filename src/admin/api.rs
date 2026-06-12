@@ -325,10 +325,10 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
                 .join("; ")
         )));
     }
-    // Collect feature warnings once — used for both logging and the response body.
+    // Collect config warnings once — used for both logging and the response body.
     let fw: Vec<String> = validate::feature_warnings(&new_config);
     for w in &fw {
-        tracing::warn!("feature not compiled in: {w}");
+        tracing::warn!("{w}");
     }
 
     // Detect fields that require a restart (cold changes).

@@ -1,0 +1,84 @@
+name: Sync docs to Wiki
+
+# Mirrors docs/*.md into the repo's GitHub Wiki so the Wiki stays in sync
+# with the canonical docs without manual copy/paste.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/wiki.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: wiki
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    # Write access is needed to push the synced docs to <repo>.wiki.
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repo (docs source)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            docs
+
+      - name: Checkout wiki
+        id: wiki-checkout
+        continue-on-error: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: wiki
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+
+      - name: Initialize wiki repo if it doesn't exist yet
+        if: steps.wiki-checkout.outcome != 'success'
+        run: |
+          mkdir -p wiki
+          cd wiki
+          git init -b master
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.wiki.git"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync markdown docs into wiki
+        run: |
+          set -euo pipefail
+          for f in docs/*.md; do
+            name=$(basename "$f")
+            # docs/README.md becomes the Wiki's landing page.
+            if [ "$name" = "README.md" ]; then
+              dest="wiki/Home.md"
+            else
+              dest="wiki/$name"
+            fi
+            {
+              echo "<!-- Auto-generated from docs/$name in ${{ github.repository }} — edit there, not here. -->"
+              echo
+              cat "$f"
+            } > "$dest"
+          done
+
+      - name: Commit and push
+        working-directory: wiki
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to publish."
+            exit 0
+          fi
+          git commit -m "docs: sync wiki from docs/ (${GITHUB_SHA})"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.wiki.git" "HEAD:$(git symbolic-ref --short HEAD)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -340,7 +340,7 @@ fn run_server(config_path: &str) {
         process::exit(1);
     }
     for w in validate::feature_warnings(&cfg) {
-        tracing::warn!("feature not compiled in: {w}");
+        tracing::warn!("{w}");
     }
     if let Err(e) = builder::run_server(cfg, path.to_path_buf(), None) {
         eprintln!("server error: {e}");
