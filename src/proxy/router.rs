@@ -848,7 +848,7 @@ fn extract_cookie(headers: &http::HeaderMap, name: &str) -> Option<String> {
 pub(crate) fn hmac_sign_sticky(upstream_url: &str, secret: &str) -> String {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine as _;
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
 
     type HmacSha256 = Hmac<Sha256>;
