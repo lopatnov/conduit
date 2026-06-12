@@ -15,12 +15,12 @@ concurrency:
   group: wiki
   cancel-in-progress: false
 
-permissions:
-  contents: write
-
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # Write access is needed to push the synced docs to <repo>.wiki.
+    permissions:
+      contents: write
     steps:
       - name: Checkout repo (docs source)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -37,6 +37,7 @@ jobs:
           repository: ${{ github.repository }}.wiki
           path: wiki
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Initialize wiki repo if it doesn't exist yet
         if: steps.wiki-checkout.outcome != 'success'
@@ -60,7 +61,7 @@ jobs:
               dest="wiki/$name"
             fi
             {
-              echo "<!-- Auto-generated from docs/$name in lopatnov/conduit — edit there, not here. -->"
+              echo "<!-- Auto-generated from docs/$name in ${{ github.repository }} — edit there, not here. -->"
               echo
               cat "$f"
             } > "$dest"
