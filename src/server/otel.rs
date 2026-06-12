@@ -23,18 +23,21 @@ pub use otlp_impl::{init_tracer, shutdown_tracer};
 
 #[cfg(feature = "otlp")]
 mod otlp_impl {
+    use std::sync::OnceLock;
     use std::time::Duration;
 
     use opentelemetry::global;
     use opentelemetry::KeyValue;
     use opentelemetry_otlp::{SpanExporter, WithExportConfig};
     use opentelemetry_sdk::{
-        runtime,
-        trace::{RandomIdGenerator, Sampler, TracerProvider},
+        trace::{RandomIdGenerator, Sampler, SdkTracerProvider, TracerProviderBuilder},
         Resource,
     };
 
     use crate::config::schema::OtlpConfig;
+
+    /// The installed tracer provider, retained so [`shutdown_tracer`] can flush it.
+    static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
     /// Initialise and install the global OTLP tracer provider.
     pub fn init_tracer(cfg: &OtlpConfig) -> anyhow::Result<()> {
@@ -42,12 +45,14 @@ mod otlp_impl {
         let timeout = Duration::from_millis(cfg.timeout_ms.unwrap_or(5_000));
         let sample_rate = cfg.sample_rate.unwrap_or(1.0).clamp(0.0, 1.0);
 
-        let resource = Resource::new(vec![
-            KeyValue::new("service.name", service_name),
-            KeyValue::new("telemetry.sdk.language", "rust"),
-        ]);
+        let resource = Resource::builder()
+            .with_attributes(vec![
+                KeyValue::new("service.name", service_name),
+                KeyValue::new("telemetry.sdk.language", "rust"),
+            ])
+            .build();
 
-        // Build OTLP gRPC exporter (opentelemetry-otlp 0.27 API).
+        // Build OTLP gRPC exporter (opentelemetry-otlp 0.32 API).
         let exporter = SpanExporter::builder()
             .with_tonic()
             .with_endpoint(&cfg.endpoint)
@@ -61,9 +66,9 @@ mod otlp_impl {
         fn base(
             exporter: opentelemetry_otlp::SpanExporter,
             resource: Resource,
-        ) -> opentelemetry_sdk::trace::Builder {
-            TracerProvider::builder()
-                .with_batch_exporter(exporter, runtime::Tokio)
+        ) -> TracerProviderBuilder {
+            SdkTracerProvider::builder()
+                .with_batch_exporter(exporter)
                 .with_id_generator(RandomIdGenerator::default())
                 .with_max_events_per_span(64)
                 .with_max_attributes_per_span(32)
@@ -84,7 +89,9 @@ mod otlp_impl {
                 .build()
         };
 
-        global::set_tracer_provider(provider);
+        global::set_tracer_provider(provider.clone());
+        let _ = TRACER_PROVIDER.set(provider);
+
         tracing::info!(
             endpoint = %cfg.endpoint,
             sample_rate,
@@ -95,6 +102,10 @@ mod otlp_impl {
 
     /// Flush buffered spans and shut down the tracer provider.
     pub fn shutdown_tracer() {
-        global::shutdown_tracer_provider();
+        if let Some(provider) = TRACER_PROVIDER.get() {
+            if let Err(e) = provider.shutdown() {
+                tracing::warn!("OpenTelemetry tracer shutdown error: {e}");
+            }
+        }
     }
 }
