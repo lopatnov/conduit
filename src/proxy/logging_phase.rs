@@ -139,14 +139,9 @@ pub(super) async fn logging(
     // owned `String`s, and `status_u16` is computed once and reused below
     // instead of round-tripping through `.to_string()` + `.parse::<u16>()`.
     let method = session.req_header().method.as_str();
-    let status_u16 = session
-        .response_written()
-        .map(|h| h.status.as_u16())
-        .unwrap_or(0);
-    let status = session
-        .response_written()
-        .map(|h| h.status.as_str())
-        .unwrap_or("0");
+    let response_written = session.response_written();
+    let status_u16 = response_written.map(|h| h.status.as_u16()).unwrap_or(0);
+    let status = response_written.map(|h| h.status.as_str()).unwrap_or("0");
     let elapsed = ctx
         .as_ref()
         .map(|c| c.start_time.elapsed().as_secs_f64())
