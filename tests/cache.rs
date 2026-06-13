@@ -2,7 +2,7 @@ mod common;
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use serial_test::serial;
@@ -60,6 +60,130 @@ impl MockUpstream {
     fn hit_count(&self) -> usize {
         self.hits.load(Ordering::SeqCst)
     }
+}
+
+// ── Flaky mock upstream (for stale-if-error tests) ──────────────────────────────
+
+/// Body returned by a healthy `FlakyUpstream` — asserted on after the upstream
+/// starts failing to prove the *cached* copy (not a fresh fetch) was served.
+const FRESH_BODY: &str = "fresh-cached-body";
+
+/// A mock upstream that serves a cacheable `200` until `fail` is flipped, after
+/// which it either returns `500` or drops the connection without responding.
+/// Used to exercise the stale-if-error path (#48): warm the cache, let the
+/// entry go stale, induce an upstream failure, and assert the stale copy is
+/// served instead of the failure.
+struct FlakyUpstream {
+    port: u16,
+    hits: Arc<AtomicUsize>,
+    fail: Arc<AtomicBool>,
+    /// When `fail` is set: `true` → drop the connection (upstream connection
+    /// error), `false` → respond with HTTP 500.
+    drop_conn: Arc<AtomicBool>,
+}
+
+impl FlakyUpstream {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind flaky upstream");
+        let port = listener.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(false));
+        let drop_conn = Arc::new(AtomicBool::new(false));
+        let (h, f, d) = (hits.clone(), fail.clone(), drop_conn.clone());
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let (h, f, d) = (h.clone(), f.clone(), d.clone());
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 8192];
+                    let _ = stream.read(&mut buf);
+                    h.fetch_add(1, Ordering::SeqCst);
+                    if f.load(Ordering::SeqCst) {
+                        if d.load(Ordering::SeqCst) {
+                            // Drop the stream without responding — conduit sees
+                            // an upstream connection failure.
+                            return;
+                        }
+                        let body = b"upstream is down";
+                        let resp = format!(
+                            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                        let _ = stream.write_all(body);
+                        return;
+                    }
+                    // Healthy: cacheable 200 (no Set-Cookie / no-store).
+                    let body = FRESH_BODY.as_bytes();
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                    let _ = stream.write_all(body);
+                });
+            }
+        });
+
+        FlakyUpstream {
+            port,
+            hits,
+            fail,
+            drop_conn,
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    fn hit_count(&self) -> usize {
+        self.hits.load(Ordering::SeqCst)
+    }
+
+    /// Subsequent requests return HTTP 500.
+    fn start_failing_with_500(&self) {
+        self.drop_conn.store(false, Ordering::SeqCst);
+        self.fail.store(true, Ordering::SeqCst);
+    }
+
+    /// Subsequent requests drop the connection without responding.
+    fn start_failing_by_dropping(&self) {
+        self.drop_conn.store(true, Ordering::SeqCst);
+        self.fail.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Build a single-site config proxying `path_prefix` to `upstream_url` with a
+/// 1-second cache TTL and a 300-second stale-if-error window.  `retry` is
+/// appended verbatim into the route when `Some`.
+fn stale_if_error_config(
+    port: u16,
+    admin_port: u16,
+    path_prefix: &str,
+    upstream_url: &str,
+    retry: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut route = serde_json::json!({
+        "targets": [upstream_url],
+        "strategy": "round-robin",
+        "cache": {
+            "store": "memory",
+            "ttlSecs": 1,
+            "staleIfErrorSecs": 300
+        }
+    });
+    if let Some(retry) = retry {
+        route["retry"] = retry;
+    }
+    serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "proxy": { path_prefix: route }
+        }]
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -331,5 +455,142 @@ fn cache_lock_prevents_thundering_herd() {
         1,
         "cache lock must prevent thundering herd: expected 1 upstream hit, got {}",
         upstream.hit_count()
+    );
+}
+
+// ── stale-if-error (#48) ────────────────────────────────────────────────────────
+//
+// These tests warm the cache, let the entry go stale (ttlSecs = 1, sleep 1.5 s),
+// then induce an upstream failure and assert the *stale* cached copy is served
+// instead of the failure.  The `hit_count >= 2` assertion is load-bearing: it
+// proves the second request actually went stale → revalidated → failed → served
+// stale, rather than being a still-fresh cache hit (which would never contact
+// the upstream).
+
+/// Helper: warm the cache for `path`, returning once the entry is stored.
+fn warm_cache(srv: &common::TestServer, upstream: &FlakyUpstream, path: &str) {
+    let r1 = reqwest::blocking::get(srv.url(path)).expect("warm GET");
+    assert_eq!(r1.status(), 200, "warm-up request must return 200");
+    assert_eq!(
+        r1.text().unwrap(),
+        FRESH_BODY,
+        "warm-up body must be cached body"
+    );
+    assert_eq!(
+        upstream.hit_count(),
+        1,
+        "warm-up must reach the upstream once"
+    );
+    // Let the cached entry go stale (ttlSecs = 1).
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+}
+
+/// stale-if-error on a 5xx with NO retry configured: the stale entry must be
+/// served instead of the upstream 500.
+#[test]
+#[serial]
+fn stale_if_error_serves_stale_on_5xx_without_retry() {
+    let upstream = FlakyUpstream::start();
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        stale_if_error_config(port, admin_port, "/sie-5xx", &upstream.url(), None),
+    );
+
+    warm_cache(&srv, &upstream, "/sie-5xx/item");
+    upstream.start_failing_with_500();
+
+    let r2 = reqwest::blocking::get(srv.url("/sie-5xx/item")).expect("GET 2");
+    let status = r2.status();
+    let body = r2.text().unwrap();
+    assert_eq!(
+        status, 200,
+        "stale-if-error must serve the cached 200, not the upstream 500"
+    );
+    assert_eq!(
+        body, FRESH_BODY,
+        "served body must be the stale cached copy"
+    );
+    assert!(
+        upstream.hit_count() >= 2,
+        "revalidation must have reached the failing upstream (proves entry went stale)"
+    );
+}
+
+/// stale-if-error when the retry budget is exhausted (issue #48): retry is
+/// configured for 5xx, every attempt fails, and once retries are spent the
+/// stale cached copy must be served instead of surfacing the 500.
+#[test]
+#[serial]
+fn stale_if_error_serves_stale_when_retry_exhausted_on_5xx() {
+    let upstream = FlakyUpstream::start();
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        stale_if_error_config(
+            port,
+            admin_port,
+            "/sie-retry",
+            &upstream.url(),
+            Some(serde_json::json!({ "attempts": 2, "conditions": ["5xx"] })),
+        ),
+    );
+
+    warm_cache(&srv, &upstream, "/sie-retry/item");
+    upstream.start_failing_with_500();
+
+    let r2 = reqwest::blocking::get(srv.url("/sie-retry/item")).expect("GET 2");
+    let status = r2.status();
+    let body = r2.text().unwrap();
+    assert_eq!(
+        status, 200,
+        "after retries are exhausted, stale-if-error must serve the cached 200"
+    );
+    assert_eq!(
+        body, FRESH_BODY,
+        "served body must be the stale cached copy"
+    );
+    assert!(
+        upstream.hit_count() >= 2,
+        "the retry attempts must have reached the failing upstream"
+    );
+}
+
+/// stale-if-error on an upstream *connection* failure (not a 5xx response):
+/// the upstream drops the connection during revalidation, and the stale cached
+/// copy must still be served.
+#[test]
+#[serial]
+fn stale_if_error_serves_stale_on_connection_error() {
+    let upstream = FlakyUpstream::start();
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        stale_if_error_config(port, admin_port, "/sie-conn", &upstream.url(), None),
+    );
+
+    warm_cache(&srv, &upstream, "/sie-conn/item");
+    upstream.start_failing_by_dropping();
+
+    let r2 = reqwest::blocking::get(srv.url("/sie-conn/item")).expect("GET 2");
+    let status = r2.status();
+    let body = r2.text().unwrap();
+    assert_eq!(
+        status, 200,
+        "stale-if-error must serve the cached 200 on an upstream connection error"
+    );
+    assert_eq!(
+        body, FRESH_BODY,
+        "served body must be the stale cached copy"
+    );
+    assert!(
+        upstream.hit_count() >= 2,
+        "revalidation must have reached the failing upstream (proves entry went stale)"
     );
 }
