@@ -93,7 +93,9 @@ impl FlakyUpstream {
 
         std::thread::spawn(move || {
             for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { return };
+                // Skip transient accept errors rather than tearing down the
+                // mock server (which would flake the test).
+                let Ok(mut stream) = stream else { continue };
                 let (h, f, d) = (h.clone(), f.clone(), d.clone());
                 std::thread::spawn(move || {
                     let mut buf = [0u8; 8192];
@@ -181,7 +183,9 @@ fn stale_if_error_config(
         "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
         "sites": [{
             "port": port,
-            "proxy": { path_prefix: route }
+            // `(path_prefix)` interpolates the variable's value as the key — a
+            // bare `path_prefix` would use the literal string "path_prefix".
+            "proxy": { (path_prefix): route }
         }]
     })
 }
@@ -513,9 +517,10 @@ fn stale_if_error_serves_stale_on_5xx_without_retry() {
         body, FRESH_BODY,
         "served body must be the stale cached copy"
     );
-    assert!(
-        upstream.hit_count() >= 2,
-        "revalidation must have reached the failing upstream (proves entry went stale)"
+    assert_eq!(
+        upstream.hit_count(),
+        2,
+        "exactly one warm-up hit + one revalidation hit (no retry configured)"
     );
 }
 
@@ -554,6 +559,11 @@ fn stale_if_error_serves_stale_when_retry_exhausted_on_5xx() {
         body, FRESH_BODY,
         "served body must be the stale cached copy"
     );
+    // Loose bound on purpose: the exact upstream-hit count here depends on
+    // retry-attempt internals (warm-up + initial revalidation + N retries),
+    // which this test does not pin — retry counting is covered elsewhere. All
+    // this test asserts is that revalidation reached the failing upstream and
+    // the stale copy was still served.
     assert!(
         upstream.hit_count() >= 2,
         "the retry attempts must have reached the failing upstream"
@@ -589,8 +599,9 @@ fn stale_if_error_serves_stale_on_connection_error() {
         body, FRESH_BODY,
         "served body must be the stale cached copy"
     );
-    assert!(
-        upstream.hit_count() >= 2,
-        "revalidation must have reached the failing upstream (proves entry went stale)"
+    assert_eq!(
+        upstream.hit_count(),
+        2,
+        "exactly one warm-up hit + one revalidation hit (no retry configured)"
     );
 }
