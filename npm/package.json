@@ -1,6 +1,6 @@
 {
   "name": "@lopatnov/conduit",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Production-grade reverse proxy and API gateway built on Cloudflare Pingora. TLS, JWT auth, rate limiting, load balancing, caching, Prometheus metrics, hot reload. One config file, one binary, no runtime dependencies.",
   "keywords": [
     "reverse-proxy",
