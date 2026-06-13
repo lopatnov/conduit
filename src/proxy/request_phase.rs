@@ -451,161 +451,24 @@ impl ConduitProxy {
 
         // If per-IP connection limiting is configured and the request was allowed,
         // store the client IP so logging() can decrement the counter on completion.
-        {
-            let config = self.state.config.load();
-            if let Some(site) = config.sites.get(req_ctx.site_idx) {
-                if site
-                    .limits
-                    .as_ref()
-                    .and_then(|l| l.max_connections_per_ip)
-                    .is_some()
-                {
-                    let ip = session
-                        .client_addr()
-                        .and_then(|a| a.as_inet())
-                        .map(|a| a.ip().to_string())
-                        .unwrap_or_default();
-                    if !ip.is_empty() {
-                        // Store the RAII guard; it will automatically decrement
-                        // the slot counter when RequestCtx is dropped at the
-                        // end of logging() — no manual fetch_sub needed.
-                        req_ctx.ip_conn_slot = Some(crate::filter::chain::IpConnSlotGuard {
-                            ip,
-                            counts: std::sync::Arc::clone(&self.state.ip_conn_counts),
-                        });
-                    }
-                }
-            }
-        }
+        self.store_ip_conn_slot(session, &mut req_ctx);
 
         // ── Per-route rate limiting (applied after site-level guard chain) ──────
         // Checked here — after routing — so we know which route was matched.
-        {
-            let config = self.state.config.load();
-            let path = session.req_header().uri.path().to_owned();
-            if let Some(site) = config.sites.get(req_ctx.site_idx) {
-                if let Some((rl_cfg, route_key)) = router::find_route_rate_limit(site, &path) {
-                    let key = format!(
-                        "route:{route_key}:{}",
-                        rate_limit::extract_client_key(&rl_cfg, session)
-                    );
-                    let allowed = {
-                        self.state
-                            .rate_limiter
-                            .entry(key)
-                            .or_insert_with(|| {
-                                rate_limit::TokenBucket::new(
-                                    rl_cfg.limit,
-                                    rl_cfg.burst.unwrap_or(0),
-                                    rl_cfg.window_secs,
-                                )
-                            })
-                            .try_consume()
-                    };
-                    if !allowed {
-                        let extra = req_ctx.extra_headers.clone();
-                        self.state
-                            .metrics
-                            .rate_limit_rejected_total
-                            .with_label_values(&[&format!("route:{}", &route_key)])
-                            .inc();
-                        response::write_response(
-                            session,
-                            429,
-                            "text/plain",
-                            bytes::Bytes::from_static(b"Too Many Requests"),
-                            &extra,
-                        )
-                        .await?;
-                        self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                        self.state.metrics.active_connections.dec();
-                        return Ok(true);
-                    }
-                }
-            }
+        if self.enforce_route_rate_limit(session, &req_ctx).await? {
+            return Ok(true);
         }
 
         // ── Priority-based load shedding (post-routing) ───────────────────────
-        // When the site is above its priority threshold, low-priority routes
-        // are shed with 503.  Priority is determined solely by the route config
-        // (proxy.*.priority).
-        //
-        // SECURITY: We intentionally do NOT trust the `X-Priority` header from
-        // downstream clients — an attacker could send `X-Priority: 100` to
-        // bypass load shedding entirely.  The header is stripped below to
-        // prevent it from leaking to the upstream as well.
-        {
-            // Strip X-Priority from the incoming request so it cannot be used
-            // by the upstream to grant itself elevated priority on retries.
-            let _ = session.req_header_mut().remove_header("x-priority");
-
-            let config = self.state.config.load();
-            let path = session.req_header().uri.path().to_owned();
-            if let Some(site) = config.sites.get(req_ctx.site_idx) {
-                if let Some(limits) = &site.limits {
-                    if let (Some(max_inflight), Some(threshold)) =
-                        (limits.max_inflight_requests, limits.priority_threshold)
-                    {
-                        let current = self.state.inflight.load(Ordering::Relaxed) as f64;
-                        let load_fraction = current / max_inflight as f64;
-                        if load_fraction >= threshold {
-                            // Base priority from route config, optionally elevated
-                            // by the RFC 9218 standard `Priority: u=<N>` header.
-                            // Browsers and CDNs set this header; Conduit maps
-                            // urgency 0–7 to 100–2 and takes the maximum so that
-                            // clients can signal high urgency but not bypass
-                            // server-assigned priority.
-                            let route_priority =
-                                router::find_route_priority(site, &path).unwrap_or(50);
-                            let rfc9218_priority = session
-                                .req_header()
-                                .headers
-                                .get("priority")
-                                .and_then(|v| v.to_str().ok())
-                                .and_then(router::parse_rfc9218_priority);
-                            // Clamp downward only: the RFC 9218 header may lower
-                            // effective priority (making shedding more likely) but
-                            // never raise it above the operator-configured value.
-                            // Allowing clients to raise their own priority would let
-                            // any request bypass load shedding.
-                            let effective_priority =
-                                rfc9218_priority.map_or(route_priority, |p| p.min(route_priority));
-                            if effective_priority < 50 {
-                                let extra = req_ctx.extra_headers.clone();
-                                response::write_response(
-                                    session,
-                                    503,
-                                    "application/json",
-                                    bytes::Bytes::from_static(
-                                        b"{\"error\":\"Service Unavailable\",\"reason\":\"load shedding\",\"status\":503}",
-                                    ),
-                                    &extra,
-                                )
-                                .await?;
-                                self.state.inflight.fetch_sub(1, Ordering::Relaxed);
-                                self.state.metrics.active_connections.dec();
-                                return Ok(true);
-                            }
-                        }
-                    }
-                }
-            }
+        if self.shed_low_priority_request(session, &req_ctx).await? {
+            return Ok(true);
         }
 
         // ── JWT claims extraction for header template substitution ─────────────
         // Only available when compiled with --features jwt.
         #[cfg(feature = "jwt")]
-        if let Some(ref jwt_cfg) = jwt_auth_cfg {
-            if let Some(auth_hdr) = session
-                .req_header()
-                .headers
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-            {
-                if let Some(token) = auth_hdr.strip_prefix("Bearer ").map(str::trim) {
-                    req_ctx.jwt_claims = crate::filter::jwt::extract_claims(token, jwt_cfg);
-                }
-            }
+        {
+            req_ctx.jwt_claims = jwt_claims_from_session(session, jwt_auth_cfg.as_ref());
         }
 
         // ── Attach OTel span to request context ───────────────────────────────
@@ -765,10 +628,175 @@ impl ConduitProxy {
         chain.run(&mut ctx).await
     }
 
-    /// Determine whether the request is allowed by the rate limiter.
+    /// If per-IP connection limiting is configured for the matched site, store
+    /// the client IP in the context so logging() can release the slot on
+    /// completion.
+    fn store_ip_conn_slot(&self, session: &Session, req_ctx: &mut RequestCtx) {
+        let config = self.state.config.load();
+        let per_ip_limit_configured = config
+            .sites
+            .get(req_ctx.site_idx)
+            .and_then(|s| s.limits.as_ref())
+            .and_then(|l| l.max_connections_per_ip)
+            .is_some();
+        if !per_ip_limit_configured {
+            return;
+        }
+        let ip = session
+            .client_addr()
+            .and_then(|a| a.as_inet())
+            .map(|a| a.ip().to_string())
+            .unwrap_or_default();
+        if ip.is_empty() {
+            return;
+        }
+        // Store the RAII guard; it will automatically decrement the slot
+        // counter when RequestCtx is dropped at the end of logging() — no
+        // manual fetch_sub needed.
+        req_ctx.ip_conn_slot = Some(crate::filter::chain::IpConnSlotGuard {
+            ip,
+            counts: std::sync::Arc::clone(&self.state.ip_conn_counts),
+        });
+    }
+
+    /// Per-route token-bucket rate limiting, applied after the site-level
+    /// guard chain — once the route is known.
     ///
-    /// Uses Redis when configured and available; falls back to the in-memory
-    /// token-bucket limiter if the Redis connection was not established at startup.
+    /// Returns `Ok(true)` when the request was rejected with 429 (response
+    /// written, inflight counters decremented), `Ok(false)` to continue.
+    async fn enforce_route_rate_limit(
+        &self,
+        session: &mut Session,
+        req_ctx: &RequestCtx,
+    ) -> Result<bool> {
+        let config = self.state.config.load();
+        // Borrow the path directly from the session — `find_route_rate_limit`
+        // takes `&str`, so there is no need to allocate an owned String on the
+        // rate-limit hot path.
+        let path = session.req_header().uri.path();
+        let Some(site) = config.sites.get(req_ctx.site_idx) else {
+            return Ok(false);
+        };
+        let Some((rl_cfg, route_key)) = router::find_route_rate_limit(site, path) else {
+            return Ok(false);
+        };
+        let key = format!(
+            "route:{route_key}:{}",
+            rate_limit::extract_client_key(&rl_cfg, session)
+        );
+        let allowed = {
+            self.state
+                .rate_limiter
+                .entry(key)
+                .or_insert_with(|| {
+                    rate_limit::TokenBucket::new(
+                        rl_cfg.limit,
+                        rl_cfg.burst.unwrap_or(0),
+                        rl_cfg.window_secs,
+                    )
+                })
+                .try_consume()
+        };
+        if allowed {
+            return Ok(false);
+        }
+        let extra = req_ctx.extra_headers.clone();
+        self.state
+            .metrics
+            .rate_limit_rejected_total
+            .with_label_values(&[&format!("route:{}", &route_key)])
+            .inc();
+        response::write_response(
+            session,
+            429,
+            "text/plain",
+            bytes::Bytes::from_static(b"Too Many Requests"),
+            &extra,
+        )
+        .await?;
+        self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+        self.state.metrics.active_connections.dec();
+        Ok(true)
+    }
+
+    /// Priority-based load shedding (post-routing).
+    ///
+    /// When the site is above its priority threshold, low-priority routes
+    /// are shed with 503.  Priority is determined solely by the route config
+    /// (proxy.*.priority).
+    ///
+    /// SECURITY: We intentionally do NOT trust the `X-Priority` header from
+    /// downstream clients — an attacker could send `X-Priority: 100` to
+    /// bypass load shedding entirely.  The header is stripped here to
+    /// prevent it from leaking to the upstream as well.
+    ///
+    /// Returns `Ok(true)` when the request was shed with 503 (response
+    /// written, inflight counters decremented), `Ok(false)` to continue.
+    async fn shed_low_priority_request(
+        &self,
+        session: &mut Session,
+        req_ctx: &RequestCtx,
+    ) -> Result<bool> {
+        // Strip X-Priority from the incoming request so it cannot be used
+        // by the upstream to grant itself elevated priority on retries.
+        let _ = session.req_header_mut().remove_header("x-priority");
+
+        let config = self.state.config.load();
+        // Borrow the path directly from the session — it is only used for the
+        // route priority lookup below, which takes `&str`.
+        let path = session.req_header().uri.path();
+        let Some(site) = config.sites.get(req_ctx.site_idx) else {
+            return Ok(false);
+        };
+        let Some(limits) = &site.limits else {
+            return Ok(false);
+        };
+        let (Some(max_inflight), Some(threshold)) =
+            (limits.max_inflight_requests, limits.priority_threshold)
+        else {
+            return Ok(false);
+        };
+        let current = self.state.inflight.load(Ordering::Relaxed) as f64;
+        let load_fraction = current / max_inflight as f64;
+        if load_fraction < threshold {
+            return Ok(false);
+        }
+        // Base priority from route config, optionally elevated by the
+        // RFC 9218 standard `Priority: u=<N>` header.  Browsers and CDNs
+        // set this header; Conduit maps urgency 0–7 to 100–2 and takes the
+        // maximum so that clients can signal high urgency but not bypass
+        // server-assigned priority.
+        let route_priority = router::find_route_priority(site, path).unwrap_or(50);
+        let rfc9218_priority = session
+            .req_header()
+            .headers
+            .get("priority")
+            .and_then(|v| v.to_str().ok())
+            .and_then(router::parse_rfc9218_priority);
+        // Clamp downward only: the RFC 9218 header may lower effective
+        // priority (making shedding more likely) but never raise it above
+        // the operator-configured value.  Allowing clients to raise their
+        // own priority would let any request bypass load shedding.
+        let effective_priority = rfc9218_priority.map_or(route_priority, |p| p.min(route_priority));
+        if effective_priority >= 50 {
+            return Ok(false);
+        }
+        let extra = req_ctx.extra_headers.clone();
+        response::write_response(
+            session,
+            503,
+            "application/json",
+            bytes::Bytes::from_static(
+                b"{\"error\":\"Service Unavailable\",\"reason\":\"load shedding\",\"status\":503}",
+            ),
+            &extra,
+        )
+        .await?;
+        self.state.inflight.fetch_sub(1, Ordering::Relaxed);
+        self.state.metrics.active_connections.dec();
+        Ok(true)
+    }
+
     /// Dispatch a request to the appropriate local handler.
     ///
     /// Returns `Ok(true)` for local handlers (response fully written) or
@@ -1880,6 +1908,26 @@ pub(super) fn extract_host(session: &Session) -> String {
         .and_then(|v| v.to_str().ok())
         .map(|h| h.split(':').next().unwrap_or(h).to_owned())
         .unwrap_or_default()
+}
+
+/// Extract JWT claims from the `Authorization: Bearer` header for header
+/// template substitution (`{{ jwt.<claim> }}`).
+///
+/// Returns `None` when JWT auth is not configured, the header is missing or
+/// not a Bearer token, or the token cannot be decoded.
+#[cfg(feature = "jwt")]
+fn jwt_claims_from_session(
+    session: &Session,
+    jwt_cfg: Option<&crate::config::schema::JwtAuthConfig>,
+) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+    let jwt_cfg = jwt_cfg?;
+    let auth_hdr = session
+        .req_header()
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())?;
+    let token = auth_hdr.strip_prefix("Bearer ").map(str::trim)?;
+    crate::filter::jwt::extract_claims(token, jwt_cfg)
 }
 
 /// Append `X-Forwarded-For` and `X-Forwarded-Proto` headers to the upstream request.
