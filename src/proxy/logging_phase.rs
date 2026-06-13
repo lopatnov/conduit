@@ -331,8 +331,11 @@ fn finish_otel_span(
     ));
     span.set_attribute(KeyValue::new("http.status_code", status_u16 as i64));
     span.set_attribute(KeyValue::new("http.duration_ms", (elapsed * 1000.0) as i64));
-    if let Some(ref url) = req_ctx.proxy_upstream_url {
-        span.set_attribute(KeyValue::new("upstream.url", url.clone()));
+    // `finish_otel_span` is the last helper called in `logging()` and has
+    // mutable access to `ctx`, so take the URL instead of cloning it — the
+    // context is cleared by Pingora immediately after this returns.
+    if let Some(url) = req_ctx.proxy_upstream_url.take() {
+        span.set_attribute(KeyValue::new("upstream.url", url));
     }
     // Attach the X-Request-ID so the trace is correlatable with logs.
     if let Some(rid) = session

@@ -670,11 +670,14 @@ impl ConduitProxy {
         req_ctx: &RequestCtx,
     ) -> Result<bool> {
         let config = self.state.config.load();
-        let path = session.req_header().uri.path().to_owned();
+        // Borrow the path directly from the session — `find_route_rate_limit`
+        // takes `&str`, so there is no need to allocate an owned String on the
+        // rate-limit hot path.
+        let path = session.req_header().uri.path();
         let Some(site) = config.sites.get(req_ctx.site_idx) else {
             return Ok(false);
         };
-        let Some((rl_cfg, route_key)) = router::find_route_rate_limit(site, &path) else {
+        let Some((rl_cfg, route_key)) = router::find_route_rate_limit(site, path) else {
             return Ok(false);
         };
         let key = format!(
@@ -739,7 +742,9 @@ impl ConduitProxy {
         let _ = session.req_header_mut().remove_header("x-priority");
 
         let config = self.state.config.load();
-        let path = session.req_header().uri.path().to_owned();
+        // Borrow the path directly from the session — it is only used for the
+        // route priority lookup below, which takes `&str`.
+        let path = session.req_header().uri.path();
         let Some(site) = config.sites.get(req_ctx.site_idx) else {
             return Ok(false);
         };
@@ -761,7 +766,7 @@ impl ConduitProxy {
         // set this header; Conduit maps urgency 0–7 to 100–2 and takes the
         // maximum so that clients can signal high urgency but not bypass
         // server-assigned priority.
-        let route_priority = router::find_route_priority(site, &path).unwrap_or(50);
+        let route_priority = router::find_route_priority(site, path).unwrap_or(50);
         let rfc9218_priority = session
             .req_header()
             .headers
