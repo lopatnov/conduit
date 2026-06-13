@@ -36,8 +36,8 @@ Two image variants are published to the GitHub Container Registry on every relea
 
 | Variant  | Tags                                       | Includes                                                                                                                                                         |
 | -------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Standard | `:latest`, `:1.1.1`, `:1.1`                | `standard` feature bundle: `jwt`, `consumers`, `forward-auth`, `cache`, `acme` — covers the typical self-hosted reverse-proxy / API gateway                     |
-| Full     | `:latest-full`, `:1.1.1-full`, `:1.1-full` | All 14 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`, `otlp`, `kubernetes` |
+| Standard | `:latest`, `:1.1.2`, `:1.1`                | `standard` feature bundle: `jwt`, `consumers`, `forward-auth`, `cache`, `acme` — covers the typical self-hosted reverse-proxy / API gateway                     |
+| Full     | `:latest-full`, `:1.1.2-full`, `:1.1-full` | All 14 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`, `otlp`, `kubernetes` |
 
 ```bash
 # Standard (jwt, consumers, forward-auth, cache, acme)
@@ -650,7 +650,7 @@ sudo systemctl restart conduit
 
 ```bash
 # Update the image tag — Kubernetes handles the rolling restart
-kubectl set image deployment/myapp conduit=ghcr.io/lopatnov/conduit:1.1.1
+kubectl set image deployment/myapp conduit=ghcr.io/lopatnov/conduit:1.1.2
 kubectl rollout status deployment/myapp
 
 # Roll back if needed
