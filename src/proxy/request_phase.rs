@@ -32,7 +32,7 @@ use pingora_proxy::Session;
 
 use crate::config::schema::{
     ApiKeyConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig, HealthCheckConfig,
-    IpFilterConfig, LimitsConfig, MiddlewareEntry, ProxyTimeout, RateLimitConfig,
+    IpFilterConfig, LimitsConfig, MiddlewareEntry, ProxyTimeout, RateLimitConfig, SiteConfig,
 };
 #[cfg(feature = "consumers")]
 use crate::filter::chain::ConsumersGuard;
@@ -233,6 +233,13 @@ impl ConduitProxy {
         let is_cors_preflight = cors::is_preflight(session);
 
         // ── Load config once — extract all per-site filters ───────────────────
+        // A single owned snapshot drives routing AND the post-guard helpers
+        // below, so they all observe the same config that resolved
+        // `req_ctx.site_idx` — never a newer hot-reloaded snapshot (avoids the
+        // routing-vs-helper TOCTOU drift raised in #91).  `load_full()` returns
+        // an owned `Arc` (cheap refcount bump, no alloc) that is safe to hold
+        // across the guard-chain `.await` below, unlike a `load()` guard.
+        let config = self.state.config.load_full();
         let (
             mut req_ctx,
             ip_cfg,
@@ -256,7 +263,6 @@ impl ConduitProxy {
             consumers_cfg,
             site_label,
         ) = {
-            let config = self.state.config.load();
             let host = extract_host(session);
             let path_and_query = session
                 .req_header()
@@ -449,18 +455,29 @@ impl ConduitProxy {
             return Ok(true);
         }
 
+        // Resolve the matched site from the same snapshot used for routing, so
+        // the post-guard helpers below act on the exact config that produced
+        // `req_ctx.site_idx` — not a possibly newer hot-reloaded snapshot (#91).
+        let site = config.sites.get(req_ctx.site_idx);
+
         // If per-IP connection limiting is configured and the request was allowed,
         // store the client IP so logging() can decrement the counter on completion.
-        self.store_ip_conn_slot(session, &mut req_ctx);
+        self.store_ip_conn_slot(session, &mut req_ctx, site);
 
         // ── Per-route rate limiting (applied after site-level guard chain) ──────
         // Checked here — after routing — so we know which route was matched.
-        if self.enforce_route_rate_limit(session, &req_ctx).await? {
+        if self
+            .enforce_route_rate_limit(session, &req_ctx, site)
+            .await?
+        {
             return Ok(true);
         }
 
         // ── Priority-based load shedding (post-routing) ───────────────────────
-        if self.shed_low_priority_request(session, &req_ctx).await? {
+        if self
+            .shed_low_priority_request(session, &req_ctx, site)
+            .await?
+        {
             return Ok(true);
         }
 
@@ -631,11 +648,17 @@ impl ConduitProxy {
     /// If per-IP connection limiting is configured for the matched site, store
     /// the client IP in the context so logging() can release the slot on
     /// completion.
-    fn store_ip_conn_slot(&self, session: &Session, req_ctx: &mut RequestCtx) {
-        let config = self.state.config.load();
-        let per_ip_limit_configured = config
-            .sites
-            .get(req_ctx.site_idx)
+    ///
+    /// `site` is the route-resolved site from the request's config snapshot
+    /// (passed in by `do_request_filter`) so this never re-reads a different
+    /// config than the one that produced `req_ctx.site_idx`.
+    fn store_ip_conn_slot(
+        &self,
+        session: &Session,
+        req_ctx: &mut RequestCtx,
+        site: Option<&SiteConfig>,
+    ) {
+        let per_ip_limit_configured = site
             .and_then(|s| s.limits.as_ref())
             .and_then(|l| l.max_connections_per_ip)
             .is_some();
@@ -662,19 +685,22 @@ impl ConduitProxy {
     /// Per-route token-bucket rate limiting, applied after the site-level
     /// guard chain — once the route is known.
     ///
+    /// `site` is the route-resolved site from the request's config snapshot
+    /// (passed in by `do_request_filter`) so this shares the routing snapshot.
+    ///
     /// Returns `Ok(true)` when the request was rejected with 429 (response
     /// written, inflight counters decremented), `Ok(false)` to continue.
     async fn enforce_route_rate_limit(
         &self,
         session: &mut Session,
         req_ctx: &RequestCtx,
+        site: Option<&SiteConfig>,
     ) -> Result<bool> {
-        let config = self.state.config.load();
         // Borrow the path directly from the session — `find_route_rate_limit`
         // takes `&str`, so there is no need to allocate an owned String on the
         // rate-limit hot path.
         let path = session.req_header().uri.path();
-        let Some(site) = config.sites.get(req_ctx.site_idx) else {
+        let Some(site) = site else {
             return Ok(false);
         };
         let Some((rl_cfg, route_key)) = router::find_route_rate_limit(site, path) else {
@@ -730,22 +756,25 @@ impl ConduitProxy {
     /// bypass load shedding entirely.  The header is stripped here to
     /// prevent it from leaking to the upstream as well.
     ///
+    /// `site` is the route-resolved site from the request's config snapshot
+    /// (passed in by `do_request_filter`) so this shares the routing snapshot.
+    ///
     /// Returns `Ok(true)` when the request was shed with 503 (response
     /// written, inflight counters decremented), `Ok(false)` to continue.
     async fn shed_low_priority_request(
         &self,
         session: &mut Session,
         req_ctx: &RequestCtx,
+        site: Option<&SiteConfig>,
     ) -> Result<bool> {
         // Strip X-Priority from the incoming request so it cannot be used
         // by the upstream to grant itself elevated priority on retries.
         let _ = session.req_header_mut().remove_header("x-priority");
 
-        let config = self.state.config.load();
         // Borrow the path directly from the session — it is only used for the
         // route priority lookup below, which takes `&str`.
         let path = session.req_header().uri.path();
-        let Some(site) = config.sites.get(req_ctx.site_idx) else {
+        let Some(site) = site else {
             return Ok(false);
         };
         let Some(limits) = &site.limits else {
