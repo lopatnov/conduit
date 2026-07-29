@@ -36,16 +36,34 @@ itself.
   latest summary comments on #114's sub-issues (step 9 below) — a previous
   iteration's summary may directly tell you what to do next.
 
-## Step 1 — Dependabot triage
+## Step 1 — PR triage (Dependabot + the user's own PRs)
 - Call **`dependency-steward`** to list open Dependabot PRs, classify semver
   risk, group related bumps, and check their CI.
-- Act on its recommendation directly: merge the ones it clears as safe
-  (`mcp__github__merge_pull_request`), leave a comment on ones it says to
-  hold, and if a Dependabot PR's CI is red, fix the break (small, in scope)
-  or say why not — never leave a red Dependabot PR silently unmerged without
-  a reason recorded.
-- The build must stay green after every merge — re-run `/build` if a merge
-  could plausibly interact with in-flight work on the 2.0 branch.
+- Also list the user's own open, non-draft PRs against `main` (`lopatnov`-
+  authored, not this migration's own PRs against the 2.0 branch — those are
+  Step 7's job). For each: check CI (`get_check_runs`), check for unresolved
+  review threads/findings from CodeRabbit/Qodo/Gitar/SonarCloud/Socket/
+  Semgrep/CodeQL, and check `mergeable_state`.
+- Act on both directly and by the same bar: merge
+  (`mcp__github__merge_pull_request`, squash, matching this repo's commit-
+  title convention) whatever is green, clean, and has no unaddressed real
+  finding. Leave a comment explaining why not for anything held back — never
+  leave a ready-looking PR sitting unmerged with no recorded reason, and never
+  merge over a finding you haven't actually judged.
+- If a PR's CI is red, fix the break when it's small and in scope, or say why
+  not. The build must stay green after every merge — re-run `/build` if a
+  merge could plausibly interact with in-flight work on the 2.0 branch.
+- If merges to `main` accumulate to something worth shipping (several fixes,
+  a security fix like #111, etc.), it's fine to flag that a release looks due
+  — but only **cut** one (`release-engineer`, `.claude/skills/release/
+  SKILL.md`) when the user has confirmed the target version, per that skill's
+  own rule. If a release *is* cut during this step, don't stop at pushing the
+  tag: watch `release.yml` (`mcp__github__actions_list`/`actions_get`/
+  `get_job_logs` — this environment has no `gh` CLI) through to completion
+  and verify the actual artifacts (GitHub Release binaries, both Docker
+  manifest variants, npm package version) per the skill's Step 3/4 — a tag
+  push that triggers a workflow which then fails partway is not a shipped
+  release.
 
 ## Step 2 — pick the next task (skip if Step 0 found unfinished work)
 - Look at #114's open sub-issues (`mcp__github__issue_read` /
