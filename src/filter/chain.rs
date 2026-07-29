@@ -286,18 +286,24 @@ impl RequestFilter for HealthBypass {
 ///
 /// Pattern from traefik `AllowedHosts` — prevents HTTP Host header injection
 /// where an application generates absolute URLs from an untrusted Host header.
+///
+/// When `securityHeaders.allowedHosts` is not explicitly configured, falls
+/// back to the site's own `host:` value (`site_host`) so this protection
+/// applies by default, not just when opted into.
 pub struct AllowedHostsGuard {
     pub security_cfg: Option<crate::config::schema::SecurityHeadersConfig>,
+    pub site_host: Option<String>,
     pub host: String,
 }
 
 #[async_trait]
 impl RequestFilter for AllowedHostsGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        let Some(ref cfg) = self.security_cfg else {
-            return Ok(FilterOutcome::Continue);
-        };
-        if crate::filter::security_headers::is_host_allowed(cfg, &self.host) {
+        if crate::filter::security_headers::is_host_allowed(
+            self.security_cfg.as_ref(),
+            self.site_host.as_deref(),
+            &self.host,
+        ) {
             return Ok(FilterOutcome::Continue);
         }
         crate::handler::response::write_response(

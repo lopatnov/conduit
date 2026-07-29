@@ -249,6 +249,7 @@ impl ConduitProxy {
             api_key_cfg,
             cors_cfg,
             security_cfg,
+            site_host,
             redirect_result,
             custom_headers,
             middleware,
@@ -366,6 +367,7 @@ impl ConduitProxy {
                 api_key_cfg,
                 cors_cfg,
                 security_cfg,
+                site.and_then(|s| s.host.clone()),
                 redirect_result,
                 custom_headers,
                 middleware,
@@ -428,6 +430,7 @@ impl ConduitProxy {
             ip_cfg,
             limits_cfg,
             security_cfg: security_cfg.clone(),
+            site_host,
             host: incoming_host,
             rate_limit_cfg,
             basic_auth_cfg,
@@ -554,6 +557,7 @@ impl ConduitProxy {
         // 3a. AllowedHosts: Host header allowlist (after bypass so health is exempt).
         chain = chain.push(AllowedHostsGuard {
             security_cfg: guards.security_cfg.clone(),
+            site_host: guards.site_host.clone(),
             host: guards.host.clone(),
         });
 
@@ -1877,6 +1881,9 @@ struct GuardCtx {
     limits_cfg: Option<LimitsConfig>,
     /// Security headers config — used by `AllowedHostsGuard`.
     security_cfg: Option<crate::config::schema::SecurityHeadersConfig>,
+    /// The matched site's own `host:` config value — used by `AllowedHostsGuard`
+    /// as a default-safe fallback when `allowedHosts` is not explicitly set.
+    site_host: Option<String>,
     /// Incoming `Host` header value — checked against `allowedHosts`.
     host: String,
     rate_limit_cfg: Option<RateLimitConfig>,
