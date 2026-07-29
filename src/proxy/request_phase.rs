@@ -730,7 +730,7 @@ impl ConduitProxy {
         self.state
             .metrics
             .rate_limit_rejected_total
-            .with_label_values(&[&format!("route:{}", &route_key)])
+            .with_label_values(&[&format!("route:{}", route_key)])
             .inc();
         response::write_response(
             session,
@@ -1125,7 +1125,7 @@ impl ConduitProxy {
             self.state
                 .metrics
                 .retry_attempts_total
-                .with_label_values(&[&route, condition])
+                .with_label_values(&[route.as_str(), condition])
                 .inc();
         }
     }
@@ -2863,7 +2863,6 @@ mod tests {
     #[test]
     fn header_transform_sets_header() {
         use pingora_http::RequestHeader;
-        use std::collections::HashMap;
         let mut req = RequestHeader::build("GET", b"/api", None).unwrap();
         let transform = crate::config::schema::HeaderTransformConfig {
             set_headers: Some(
