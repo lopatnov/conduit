@@ -90,7 +90,7 @@ async fn fetch_jwks(url: &str) -> anyhow::Result<HashMap<String, CachedKey>> {
     for jwk in resp.keys {
         let kid = jwk
             .kid
-            .unwrap_or_else(|| format!("{}-default", &jwk.key_type));
+            .unwrap_or_else(|| format!("{}-default", jwk.key_type));
         let cached = match jwk.key_type.as_str() {
             "RSA" => {
                 if let (Some(n), Some(e)) = (jwk.n, jwk.e) {
