@@ -734,7 +734,7 @@ impl ConduitProxy {
         self.state
             .metrics
             .rate_limit_rejected_total
-            .with_label_values(&[&format!("route:{}", &route_key)])
+            .with_label_values(&[&format!("route:{}", route_key)])
             .inc();
         response::write_response(
             session,
