@@ -263,7 +263,11 @@ mod tests {
     #[test]
     fn site_host_fallback_applies_even_with_bool_security_headers() {
         let cfg = SecurityHeadersConfig::Enabled(true);
-        assert!(!is_host_allowed(Some(&cfg), Some("example.com"), "evil.com"));
+        assert!(!is_host_allowed(
+            Some(&cfg),
+            Some("example.com"),
+            "evil.com"
+        ));
     }
 
     #[test]
