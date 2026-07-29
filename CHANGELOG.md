@@ -9,6 +9,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.0.0] — in progress on `claude/cargo-workspace-features-23qxfr`
+
+Marks the start of the feature-driven Cargo workspace migration (see GitHub
+issue #114): splitting the single `lopatnov-conduit` crate into one crate per
+feature so a build only compiles the code and dependencies a chosen feature
+set actually needs. This is a long-lived migration branch, not a cut release —
+`main` and its `1.x` line are unaffected until the migration lands. Every PR
+merged into this branch bumps the workspace minor version (`2.1.0`, `2.2.0`,
+...) so migration progress is traceable; the branch is retired into a real
+`2.0.0` release once #114's sub-issues are all closed.
+
+---
+
 ## [1.1.0] — TBD
 
 ### Security
