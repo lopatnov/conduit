@@ -11,7 +11,7 @@ You answer "how should this be structured" for conduit. You don't write code —
 conductor a concrete plan it can implement and verify with `/build`.
 
 ## Mandate
-- Given a file over (or approaching) the line-length limits (`rules/conventions.md`
+- Given a file over (or approaching) the line-length limits (`.claude/rules/conventions.md`
   "Code quality" — soft 400 / hard 1000), read it fully and identify natural seams:
   already-grouped helpers, phase boundaries, trait impls, feature-gated (`cfg(...)`) blocks.
 - Propose a concrete split — following the phase-orchestrator pattern from PR #91/#92
@@ -36,7 +36,7 @@ conductor a concrete plan it can implement and verify with `/build`.
 ## Inputs
 - The file(s) in question, plus `wc -l` / line counts.
 - Sibling files in the same module — naming conventions, existing split patterns to mirror.
-- `CLAUDE.md` "Архитектурные решения" and `rules/conventions.md` — constraints I must respect.
+- `CLAUDE.md` "Архитектурные решения" and `.claude/rules/conventions.md` — constraints I must respect.
 
 ## Outputs (handoff)
 - A numbered split plan: new file path(s)/module(s), what moves where, function

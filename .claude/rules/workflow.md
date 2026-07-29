@@ -66,7 +66,7 @@ new state (`scrum-master`).
 
 ## Session budget discipline
 
-- Context is bounded (~200K). Split big tasks before starting (see `rules/index.md`).
+- Context is bounded (~200K). Split big tasks before starting (see `.claude/rules/index.md`).
 - Delegate noisy/voluminous work to subagents (`build-validator` instead of raw compiler dumps).
 - Finish what's started before chasing new ideas — park new ideas in the `CLAUDE.md` backlog.
 - If you see a real risk of running out of budget mid-task: stop, record state clearly

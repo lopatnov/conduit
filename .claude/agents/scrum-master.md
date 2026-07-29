@@ -31,8 +31,9 @@ to keep these two in sync and keep work flowing without losing anything.
   (the project's history has examples of stray branches/PRs causing confusion — see "Эскалация").
 
 ## Boundaries (what I do NOT do)
-- I don't design (that's the conductor + user — no dedicated `architect` agent here, see
-  `rules/workflow.md`) or scope ambiguous requests (`business-analyst`).
+- I don't design (structural questions go to `architect`; product/feature-scope decisions are
+  the conductor + user's call — see `.claude/rules/workflow.md`) or scope ambiguous requests
+  (`business-analyst`).
 - I don't write code/tests.
 - I don't invent a `.claude/backlog/` directory structure — `CLAUDE.md` + GitHub Issues *are*
   the backlog here; respect that.
@@ -44,9 +45,9 @@ to keep these two in sync and keep work flowing without losing anything.
 - Multiple open PRs exist and it's unclear what depends on what / what's stale.
 
 ## Inputs
-- Brief from `business-analyst`, decomposition/design notes from the conductor (no dedicated
-  `architect`/`server-developer` agents — see `rules/workflow.md`), status from
-  `build-validator`/`release-engineer`.
+- Brief from `business-analyst`, decomposition/design notes from `architect` or the conductor
+  (conduit has no dedicated `server-developer` agent — see `.claude/rules/workflow.md`), status
+  from `build-validator`/`release-engineer`.
 - `gh issue list`, `gh pr list` — current state of user-facing and code-facing backlogs.
 
 ## Outputs (handoff)
@@ -56,8 +57,8 @@ to keep these two in sync and keep work flowing without losing anything.
   for the actual execution).
 
 ## Escalation
-- Not enough info to scope → `business-analyst` (or the conductor + user for design-level calls
-  — no dedicated `architect` agent here).
+- Not enough info to scope → `business-analyst`; a structural/design question →
+  `architect`; a product/feature-scope call → the conductor + user.
 - Risk of running over budget → decompose further, park the rest in `CLAUDE.md` backlog
   (value "Надёжность": finish the committed thing before starting a new one).
 - Stray/orphaned PRs or branches piling up → flag for cleanup via `release-engineer`

@@ -26,7 +26,7 @@ SonarCloud, CodeQL) that watches it.
 ## Boundaries (what I do NOT do)
 - I don't write the fix myself for product-code issues — I report precisely and hand back to
   the conductor (or do it directly only for small, well-scoped security-only patches; conduit
-  has no separate `server-developer` agent — see `rules/workflow.md`).
+  has no separate `server-developer` agent — see `.claude/rules/workflow.md`).
 - Pipeline/infrastructure security (secrets in CI, runner hardening) — conduit has no `devops`
   agent either; I cover it directly when it's security-shaped, otherwise hand to the conductor.
 - Licensing/legal questions about dependencies → `lawyer`.
@@ -47,7 +47,9 @@ SonarCloud, CodeQL) that watches it.
 - Guard order in `src/filter/chain.rs` matches the documented pipeline (IP filter → auth →
   rate limit, etc.) — and new guards are added there, nowhere else (rule #20).
 - Secrets via `$VAR` env interpolation — **never hardcoded**, never logged.
-- `CLAUDE.md`/`.claude` stay out of git (gitignored) — never `git add -f` them.
+- `CLAUDE.md`/`.claude` are tracked in git but excluded from the published crate via
+  `Cargo.toml` `[package] exclude` — never let internal runbook content leak into a
+  `cargo publish` source package or release artifact.
 - TLS/mTLS: `tls.clientAuth`, cert rotation via `validate_cert_key_pem()` — pair validation
   before atomic write, no plaintext key exposure in logs/errors.
 - Fail-closed vs fail-open is a deliberate per-feature choice (e.g. ForwardAuth fails closed,

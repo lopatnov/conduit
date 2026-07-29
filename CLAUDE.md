@@ -1,47 +1,51 @@
 # Conduit — Claude's reference
 
 > Высокопроизводительный реверс-прокси на Rust · Cloudflare Pingora · v1.1.0
-> Проект: `C:\projects\conduit`
+> Проект: `<projects-root>\conduit`
 
 ---
 
-## Локальные репозитории (C:\projects\) — всегда читать источники
+## Локальные репозитории (<projects-root>\) — всегда читать источники
 
 ### Rust (прямо применимо к Conduit)
 | Путь | Что даёт |
 |------|---------|
-| `C:\projects\pingora` | v0.8.1 — КРИТИЧНО. ProxyHttp, TlsSettings, CachePhase, все хуки. Main содержит незарелизенные фичи для 0.9.0 |
-| `C:\projects\tokio` | Async runtime, spawn, channels |
-| `C:\projects\tower` | Service/middleware traits (наш FilterChain построен похоже) |
-| `C:\projects\http` | HeaderMap, Request/Response типы |
-| `C:\projects\reqwest` | HTTP client (mirror, forwardauth, JWKS) |
-| `C:\projects\wasmtime` | v46 WASM engine source |
-| `C:\projects\linkerd2-proxy` | **Rust proxy** — `linkerd/http/retry/src/replay.rs` = ReplayBody (body buffering для retry) |
-| `C:\projects\azure-sdk-for-rust` | Azure SDK — `azure_identity` (Managed Identity), `azure_security_keyvault` (Key Vault). Источник для `--features azure` |
+| `<projects-root>\pingora` | v0.8.1 — КРИТИЧНО. ProxyHttp, TlsSettings, CachePhase, все хуки. Main содержит незарелизенные фичи для 0.9.0 |
+| `<projects-root>\tokio` | Async runtime, spawn, channels |
+| `<projects-root>\tower` | Service/middleware traits (наш FilterChain построен похоже) |
+| `<projects-root>\http` | HeaderMap, Request/Response типы |
+| `<projects-root>\reqwest` | HTTP client (mirror, forwardauth, JWKS) |
+| `<projects-root>\wasmtime` | v46 WASM engine source |
+| `<projects-root>\linkerd2-proxy` | **Rust proxy** — `linkerd/http/retry/src/replay.rs` = ReplayBody (body buffering для retry) |
+| `<projects-root>\azure-sdk-for-rust` | Azure SDK — `azure_identity` (Managed Identity), `azure_security_keyvault` (Key Vault). Источник для `--features azure` |
 
 ### Proxy/gateway (паттерны и идеи)
 | Путь | Язык | Что даёт |
 |------|------|---------|
-| `C:\projects\nginx` | C | mTLS, upstream TLS, buffering |
-| `C:\projects\angie` | C | nginx fork (российский, активно развивается) — HTTP/3, ACME, статистика |
-| `C:\projects\freenginx` | C | nginx fork от Igor Sysoev — community-driven, минималистичный |
-| `C:\projects\h2o` | C | HTTP/2 server — mruby scripting, aggressive H2 optimizations, QUIC/H3 |
-| `C:\projects\traefik` | Go | mTLS `ClientAuth`, middleware chain, OTLP |
-| `C:\projects\envoy` | C++ | CircuitBreaker `resource_manager.h`, queue |
-| `C:\projects\haproxy` | C | `src/queue.c` — request queue + backpressure |
-| `C:\projects\apisix` | Lua/Go | Consumer model, 12-phase response pipeline |
-| `C:\projects\oathkeeper` | Go | Authenticator→Authorizer→Mutator (наш ForwardAuth) |
-| `C:\projects\caddy` | Go | Auto-TLS, Let's Encrypt patterns |
-| `C:\projects\squid` | C | Cache patterns |
-| `C:\projects\unit` | C | nginx Unit, модульная архитектура |
+| `<projects-root>\nginx` | C | mTLS, upstream TLS, buffering |
+| `<projects-root>\angie` | C | nginx fork (российский, активно развивается) — HTTP/3, ACME, статистика |
+| `<projects-root>\freenginx` | C | nginx fork от Igor Sysoev — community-driven, минималистичный |
+| `<projects-root>\h2o` | C | HTTP/2 server — mruby scripting, aggressive H2 optimizations, QUIC/H3 |
+| `<projects-root>\traefik` | Go | mTLS `ClientAuth`, middleware chain, OTLP |
+| `<projects-root>\envoy` | C++ | CircuitBreaker `resource_manager.h`, queue |
+| `<projects-root>\haproxy` | C | `src/queue.c` — request queue + backpressure |
+| `<projects-root>\apisix` | Lua/Go | Consumer model, 12-phase response pipeline |
+| `<projects-root>\oathkeeper` | Go | Authenticator→Authorizer→Mutator (наш ForwardAuth) |
+| `<projects-root>\caddy` | Go | Auto-TLS, Let's Encrypt patterns |
+| `<projects-root>\squid` | C | Cache patterns |
+| `<projects-root>\unit` | C | nginx Unit, модульная архитектура |
 
 ---
 
 ## Language & Localization
 
-- All code, comments, commit messages, docs — **English only**
+- All code, comments, commit messages, user-facing docs (`docs/*.md`, `README.md`) —
+  **English only**
 - CLI output, error messages, log entries — **English only**
 - No end-user UI to localize
+- This applies to the *product* — not to internal maintainer notes. `CLAUDE.md` itself and
+  `.claude/**` are the user's own operational tooling/notes and are written in the user's
+  working language (Russian); they're excluded from the English-only bar.
 
 ---
 
@@ -156,7 +160,7 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 
 - [x] **Cache thundering herd prevention** — `CACHE_LOCK` singleton в `proxy/cache.rs`, передаётся в `session.cache.enable()`. Pingora `CacheLock` (16 шардов, 10s timeout): первый запрос — `Write`, остальные ждут `Read` lock.
 - [x] **Stale-while-revalidate** — `cache.staleWhileRevalidateSecs + staleIfErrorSecs`. `CacheMeta::new(fresh_until, now, swr, sie, resp)`. `should_serve_stale()` hook в service.rs. `parse_cc_directive()` читает upstream `Cache-Control` header.
-  Источник: `C:\projects\pingora\pingora-cache\src\lib.rs:85`, `proxy_trait.rs:621`.
+  Источник: `<projects-root>\pingora\pingora-cache\src\lib.rs:85`, `proxy_trait.rs:621`.
 
 ---
 
@@ -217,7 +221,7 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 #### Высокий приоритет
 
 - [x] **mTLS (client certificate auth)** — `tls.clientAuth: { ca, optional }`. `make_tls_settings_with_client_auth()` в server/tls.rs. `WebPkiClientVerifier::builder()` + `load_ca_file_into_store()` из `pingora_core::tls`. TlsPortMap расширен для передачи `TlsClientAuth`.
-  Источник: `C:\projects\pingora\pingora-core\src\listeners\tls\rustls\mod.rs:97`.
+  Источник: `<projects-root>\pingora\pingora-core\src\listeners\tls\rustls\mod.rs:97`.
 - [x] **Error masking** — `maskErrors: bool` в SiteConfig. `upstream_response_body_filter` заменяет 5xx тело на `{"error":"Internal Server Error","status":500}`. Content-Type/Length обновляется.
 - [x] **Upstream TLS verification** — `proxy.*.upstreamTls: { verify: bool, serverName: string }`. Stored in `UpstreamTarget::Proxy.upstream_tls`. Applied in `upstream_peer()`: sets `peer.options.verify_cert/verify_hostname/alternative_cn`.
   **⚠️ РАСШИРЕНИЕ в Pingora main (→ 0.9.0):** коммит `61febef` добавляет per-peer CA support —
@@ -237,7 +241,7 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 #### Средний приоритет
 
 - [x] **Request body buffering для retry** — `limits.maxBodyBufferBytes: u64`. `request_body_filter()` в service.rs накапливает чанки в `RequestCtx.body_buffer`. При overflow → `body_too_large = true`. Паттерн linkerd2-proxy `ReplayBody`.
-  Источник: `C:\projects\pingora\pingora-proxy\src\proxy_trait.rs:132`, `C:\projects\linkerd2-proxy\linkerd\http\retry\src\replay.rs`.
+  Источник: `<projects-root>\pingora\pingora-proxy\src\proxy_trait.rs:132`, `<projects-root>\linkerd2-proxy\linkerd\http\retry\src\replay.rs`.
 - [x] **Retry budget** — `retry.budgetPercent: f64`. `AppState.retry_inflight: AtomicUsize`. `retry_budget_allows()` в service.rs: мягкое ограничение. `RetryState.is_retrying` для декремента в `logging()`.
 - [x] **Per-try timeout** — `ProxyTimeout.perTryMs` в schema.
 
@@ -323,7 +327,7 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
   - Guard/response-chain собирается **только из звеньев скомпилированных фич** — никаких
     рантайм-проверок вида `if has_jwt { ... }`; отсутствующая фича = отсутствующий код
     (настоящий zero-cost abstraction, по аналогии с тем, как `tower` кодирует middleware-стек
-    на уровне типов — см. `C:\projects\tower`).
+    на уровне типов — см. `<projects-root>\tower`).
   - Поверх — **именованные бандлы** под конкретные сценарии вместо текущих `standard`/`full`:
     ```
     conduit-dev     = static + hot-reload + error-details + cors
@@ -336,7 +340,7 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 
 ---
 
-## Беклог из исследования репозиториев (C:\projects\)
+## Беклог из исследования репозиториев (<projects-root>\)
 
 > ⚠️ Это результат предварительного анализа. Каждую задачу нужно детально изучить
 > перед реализацией. Источники: pingora, linkerd2-proxy, traefik, nginx, envoy, haproxy,
@@ -359,7 +363,7 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 - [x] **IP rate limit с burst** — `rateLimit.burst: u32`.
   Сейчас токен-бакет без burst. Добавить burst capacity.
   Паттерн: nginx `limit_req zone=... burst=5 nodelay`.
-  Источник: `C:\projects\nginx\src\http\modules\ngx_http_limit_req_module.c`.
+  Источник: `<projects-root>\nginx\src\http\modules\ngx_http_limit_req_module.c`.
 
 - [x] **Deny list / CIDR block API** — Admin API `POST /ip-deny { cidr: "1.2.3.0/24" }`.
   Динамическое добавление/удаление deny-CIDRs без reload.
@@ -406,7 +410,7 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
   **⚠️ ЧАСТИЧНО РАЗБЛОКИРОВАНО в Pingora main (→ 0.9.0):** коммит `ee387f4` добавляет
   `daemon_wait_for_ready = true` — новый процесс шлёт SIGUSR1 когда готов, старый только
   тогда начинает shutdown. Устраняет 502s при zero-downtime деплое. Пример:
-  `C:\projects\pingora\pingora\examples\graceful_upgrade.rs`.
+  `<projects-root>\pingora\pingora\examples\graceful_upgrade.rs`.
 
 - [x] **Upstream connection pool warmup** — `healthCheck.prewarmConnections: u8` (макс 8). `spawn_connection_warmup()` в `health.rs` запускает N HEAD-запросов к upstream при старте через reqwest. Вызывается из `AdminApiService::start()`. Значения выше 8 обрезаются.
 
@@ -438,8 +442,8 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 - [ ] **External processing filter (ext_proc)** — gRPC stream для внешней модификации req/resp.
   Conduit отправляет запрос/ответ внешнему gRPC сервису для обработки.
   Config: `{ "type": "ext_proc", "grpc": "grpc://filter-service:9000" }`.
-  Паттерн: envoy External Processing filter (`C:\projects\envoy\source\extensions\filters\http\ext_proc`).
-  Feature `--features ext-proc`. Требует tonic (`C:\projects\tonic`).
+  Паттерн: envoy External Processing filter (`<projects-root>\envoy\source\extensions\filters\http\ext_proc`).
+  Feature `--features ext-proc`. Требует tonic (`<projects-root>\tonic`).
 
 - [ ] **Lua скрипты** — `type: "lua"` middleware (менее приоритетно чем Rhai/WASM).
   Используется в nginx/OpenResty/apisix. Mlua crate.
@@ -459,9 +463,9 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 
 ---
 
-### 🐟 Из исследования h2o (`C:\projects\h2o`)
+### 🐟 Из исследования h2o (`<projects-root>\h2o`)
 
-> Источник: `C:\projects\h2o` — HTTP/2 server от Kazuho Oku (DeNA). Изучен 2026-06-06.
+> Источник: `<projects-root>\h2o` — HTTP/2 server от Kazuho Oku (DeNA). Изучен 2026-06-06.
 > Ключевые файлы: `lib/handler/proxy.c`, `lib/handler/throttle_resp.c`,
 > `lib/handler/server_timing.c`, `lib/http2/scheduler.c`, `lib/common/cache.c`,
 > `lib/core/proxy.c`, `include/h2o/absprio.h`.
@@ -552,9 +556,9 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 
 ---
 
-### 🅰️ Из исследования Angie (`C:\projects\angie`)
+### 🅰️ Из исследования Angie (`<projects-root>\angie`)
 
-> Источник: `C:\projects\angie` — nginx fork (ex-nginx team, активная разработка).
+> Источник: `<projects-root>\angie` — nginx fork (ex-nginx team, активная разработка).
 > Изучен 2026-06-06. Ключевые файлы: `src/http/modules/ngx_http_metric_module.c`,
 > `ngx_http_limit_req_module.c`, `ngx_http_upstream_zone_module.c`,
 > `ngx_http_upstream_sticky_module.c`, `ngx_stream_mqtt_preread_module.c`,
@@ -641,9 +645,9 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 
 ---
 
-### 🆓 Из исследования freenginx (`C:\projects\freenginx`)
+### 🆓 Из исследования freenginx (`<projects-root>\freenginx`)
 
-> Источник: `C:\projects\freenginx` v1.31.2 — nginx fork от Maxim Dounin / Igor Sysoev.
+> Источник: `<projects-root>\freenginx` v1.31.2 — nginx fork от Maxim Dounin / Igor Sysoev.
 > Изучен 2026-06-06. Ключевые коммиты: `b85480cc`, `32ed1b58`, `f7ba7388`, `d5ea86c7`,
 > `fd953ff4`, `70ee831d`, `a00f8b21`, `3f3f3a6b`.
 
@@ -731,28 +735,28 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 - [x] **RESEARCH: Pingora HTTP/3** — **НЕТ в 0.8.** Gateway example явно говорит "we don't support h3". Ждём следующей версии.
 
 - [x] **RESEARCH: linkerd2-proxy load balancing** — изучить
-  `C:\projects\linkerd2-proxy\linkerd\proxy\balance\` для улучшенных LB алгоритмов
+  `<projects-root>\linkerd2-proxy\linkerd\proxy\balance\` для улучшенных LB алгоритмов
   (EWMA-based P2C improvements, latency percentiles).
 
 - [x] **RESEARCH: envoy ext_proc protocol** — изучить протокол для планирования ext_proc — изучить
-  `C:\projects\envoy\api\envoy\service\ext_proc\v3\external_processor.proto`
+  `<projects-root>\envoy\api\envoy\service\ext_proc\v3\external_processor.proto`
   для совместимого протокола External Processing.
 
 - [x] **RESEARCH: traefik mTLS config** — устарел, mTLS уже реализован — изучить
-  `C:\projects\traefik\pkg\config\dynamic\http_config.go` для определения
+  `<projects-root>\traefik\pkg\config\dynamic\http_config.go` для определения
   совместимого config schema (ClientAuth, CAFiles, etc.).
 
 - [x] **RESEARCH: haproxy queue.c** — изучен, блокировка обоснована (Pingora нет хука) — изучить
-  `C:\projects\haproxy\src\queue.c` — алгоритм приоритетной очереди upstream.
+  `<projects-root>\haproxy\src\queue.c` — алгоритм приоритетной очереди upstream.
   Оценить реализуемость в Pingora без хука.
 
 - [x] **RESEARCH: rustls WebPkiClientVerifier** — устарел, mTLS уже реализован — изучить
-  `C:\projects\rustls\rustls\src\server\` для понимания как построить
+  `<projects-root>\rustls\rustls\src\server\` для понимания как построить
   `Arc<dyn ClientCertVerifier>` из CA bundle (.pem file).
   Нужно для mTLS реализации.
 
 - [x] **RESEARCH: axum advanced routing** — изучен; типизированные ошибки AdminError добавлены в admin/api.rs — изучить
-  `C:\projects\axum\axum\src\` для улучшения Admin API
+  `<projects-root>\axum\axum\src\` для улучшения Admin API
   (versioning, better error handling, OpenAPI spec generation).
 
 ---
@@ -815,7 +819,7 @@ Tokio "full" features уже включены. Ключевые находки �
 
 ### ⚠️ ИСПРАВЛЕНИЕ: предыдущие данные о блокировках были ОШИБОЧНЫ
 
-Проверка исходников `C:\projects\pingora` (v0.8.0) показала что 3 из 4 задач РЕАЛИЗУЕМЫ:
+Проверка исходников `<projects-root>\pingora` (v0.8.0) показала что 3 из 4 задач РЕАЛИЗУЕМЫ:
 
 | Задача | Старый статус | Реальный статус (проверено в pingora src) |
 |--------|---------------|------------------------------------------|
@@ -1066,7 +1070,7 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   `benchmarks.md` НЕ выдуманы, оценка `~17.8 MB ¹` оставлена с пометкой.
 - **Worktree-guards** (после того как .claude-тулинг дважды оказывался в эфемерной
   worktree-копии): правило «Worktree persistence» в `.claude/rules/index.md` + `Stop`-хук
-  в user-настройках (`C:\Users\Lopat\.claude\settings.json`, `shell: powershell`),
+  в user-настройках (`<user-home>\.claude\settings.json`, `shell: powershell`),
   аддитивно зеркалит worktree `.claude/{agents,commands,skills,rules}` → main checkout
   (robocopy /XO, без удалений). См. [[worktree-dotclaude-split]].
 

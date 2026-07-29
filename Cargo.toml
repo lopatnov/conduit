@@ -7,6 +7,9 @@ license     = "Apache-2.0"
 repository  = "https://github.com/lopatnov/conduit"
 keywords    = ["proxy", "reverse-proxy", "http", "server", "pingora"]
 categories  = ["network-programming", "web-programming::http-server"]
+# Internal AI-assistant tooling/runbooks — tracked in git for reproducibility across
+# sessions, but not part of the published crate source package.
+exclude     = [".claude/**", "CLAUDE.md"]
 
 [[bin]]
 name = "conduit"

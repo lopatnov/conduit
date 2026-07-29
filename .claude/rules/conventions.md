@@ -35,7 +35,7 @@ whether something is patch/minor/major.
 ## Push frequency & CI economy
 
 - `git push` no more than once per hour by default — avoids spamming CI / creating races
-  between PRs. More often only when the user explicitly asks (see `rules/index.md`).
+  between PRs. More often only when the user explicitly asks (see `.claude/rules/index.md`).
 - Before pushing a fix to an open PR, check whether the *same* failure is transient
   (network blip — see `release-engineer` "Transient vs real") before adding a new commit.
 
@@ -82,4 +82,4 @@ gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:"<node_i
 For "Outside diff range" comments (can't be replied to inline — platform limitation),
 post a regular `gh pr comment` addressing the points instead.
 
-> One `git push` ≤ once/hour without explicit user request (see `rules/index.md` — economy & CI races).
+> One `git push` ≤ once/hour without explicit user request (see `.claude/rules/index.md` — economy & CI races).

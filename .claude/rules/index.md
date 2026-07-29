@@ -13,23 +13,23 @@
   example walk-throughs (trivial fix / bug fix / feature / release), and session-budget
   discipline. Read this before deciding whether (and which) subagent to spawn.
 
-## Worktree persistence (don't strand `.claude/` tooling)
+## Worktree persistence (don't strand uncommitted `.claude/` tooling)
 
-> A harness worktree (`C:\projects\conduit\.claude\worktrees\<name>`) has its **own
-> physical copy** of `.claude/` — a real directory, not a junction. Since `.claude/`
-> is gitignored, git does **not** sync it between the worktree and the main checkout.
+> `.claude/` and `CLAUDE.md` are tracked in git, so a worktree created from a *committed*
+> branch already has the same tooling as the main checkout. The residual risk is only
+> **uncommitted** edits made inside a harness worktree (a real directory, not a junction) —
+> those are local to that worktree until committed, same as any other uncommitted file.
 
-- When creating or editing **persist-able `.claude/` tooling** — agents
-  (`.claude/agents/`), commands (`.claude/commands/`), skills (`.claude/skills/`),
-  or rule files (`.claude/rules/`) — write to (or copy into) the **main checkout**
-  `C:\projects\conduit\.claude\...`, **not** only the worktree copy. Files left in
-  the worktree copy are **lost when the worktree is cleaned up**.
-- A `Stop` hook auto-mirrors the worktree's `.claude/{agents,commands,skills,rules}`
-  back to main (additive, no deletes) as a safety net — but don't rely on it; write
-  to main directly when you can.
+- When editing **persist-able `.claude/` tooling** — agents (`.claude/agents/`), commands
+  (`.claude/commands/`), skills (`.claude/skills/`), or rule files (`.claude/rules/`) —
+  commit the change (even a small WIP commit) before the worktree is cleaned up, so it isn't
+  **lost when the worktree is removed**.
+- A `Stop` hook may auto-mirror an uncommitted worktree's `.claude/{agents,commands,skills,rules}`
+  back to the main checkout (additive, no deletes) as a safety net — but don't rely on it;
+  commit directly when you can.
 - **`CLAUDE.md` is fine** — it is *not* copied into the worktree (lives only in the
-  main repo root), so editing `C:\projects\conduit\CLAUDE.md` already persists.
-  **User memory is fine** too (`C:\Users\Lopat\.claude\projects\...\memory\`).
+  main repo root), so editing `<projects-root>\conduit\CLAUDE.md` already persists.
+  **User memory is fine** too (`<user-home>\.claude\projects\...\memory\`).
 
 ## Build discipline
 
@@ -98,5 +98,7 @@
   triage). `release-engineer` drives a release from this; the conductor can also follow it
   directly for a quick one.
 
-> All of `.claude/` and `CLAUDE.md` are gitignored for this repo (see `.gitignore`) —
-> never `git add -f` them, never push them.
+> `.claude/` and `CLAUDE.md` are tracked in git for this repo (not gitignored — they ship
+> with the source tree so cloud/remote sessions get the same tooling as local ones) but are
+> excluded from the *published crate* via `Cargo.toml` `[package] exclude` — they never end
+> up in the `cargo publish` source package or release artifacts.

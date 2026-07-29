@@ -86,7 +86,7 @@ name, missing `v` prefix on the Trivy version pin — all three real regressions
 
 ## Transient vs. real failure during release
 
-Same heuristic as routine CI triage (see `release-engineer`, `rules/index.md`): a `curl
+Same heuristic as routine CI triage (see `release-engineer`, `.claude/rules/index.md`): a `curl
 failed: SSL_read: unexpected eof` or `download of <crate> failed` on crates.io/ghcr.io is
 usually a network blip — `gh run rerun <id> --failed`. Only escalate as a real regression if
 the *same commit/tag* fails the *same way* across multiple reruns.
