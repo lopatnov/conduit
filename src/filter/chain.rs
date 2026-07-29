@@ -310,7 +310,7 @@ impl RequestFilter for AllowedHostsGuard {
             ctx.session,
             400,
             "text/plain",
-            bytes::Bytes::from_static(b"Bad Request: host not in allowedHosts"),
+            bytes::Bytes::from_static(b"Bad Request: host not allowed"),
             ctx.extra_headers,
         )
         .await?;

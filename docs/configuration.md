@@ -2631,7 +2631,7 @@ securityHeaders:
   xFrameOptions: DENY
   referrerPolicy: "no-referrer"
   permissionsPolicy: "geolocation=(), microphone=()"
-  allowedHosts: # reject Host headers not in this list (→ 421)
+  allowedHosts: # reject Host headers not in this list (→ 400)
     - "example.com"
     - "www.example.com"
 ```
@@ -2645,7 +2645,7 @@ securityHeaders:
 | `xFrameOptions`         | string   | `SAMEORIGIN`                      | `X-Frame-Options`                                                                    |
 | `referrerPolicy`        | string   | `strict-origin-when-cross-origin` | `Referrer-Policy`                                                                    |
 | `permissionsPolicy`     | string   | — (not set)                       | `Permissions-Policy` — restrict browser feature access                               |
-| `allowedHosts`          | string[] | falls back to the site's `host:`  | Reject requests with a `Host` header not in this list with `421 Misdirected Request` |
+| `allowedHosts`          | string[] | falls back to the site's `host:`  | Reject requests with a `Host` header not in this list with `400 Bad Request`         |
 
 > **Always set:** `X-Content-Type-Options: nosniff` and `X-XSS-Protection: 1; mode=block`
 > are added in both `true` and object forms — they cannot be disabled.
