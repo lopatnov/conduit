@@ -2631,7 +2631,7 @@ securityHeaders:
   xFrameOptions: DENY
   referrerPolicy: "no-referrer"
   permissionsPolicy: "geolocation=(), microphone=()"
-  allowedHosts: # reject Host headers not in this list (→ 421)
+  allowedHosts: # reject Host headers not in this list (→ 400)
     - "example.com"
     - "www.example.com"
 ```
@@ -2645,7 +2645,7 @@ securityHeaders:
 | `xFrameOptions`         | string   | `SAMEORIGIN`                      | `X-Frame-Options`                                                                    |
 | `referrerPolicy`        | string   | `strict-origin-when-cross-origin` | `Referrer-Policy`                                                                    |
 | `permissionsPolicy`     | string   | — (not set)                       | `Permissions-Policy` — restrict browser feature access                               |
-| `allowedHosts`          | string[] | — (not set)                       | Reject requests with a `Host` header not in this list with `421 Misdirected Request` |
+| `allowedHosts`          | string[] | falls back to the site's `host:`  | Reject requests with a `Host` header not in this list with `400 Bad Request`         |
 
 > **Always set:** `X-Content-Type-Options: nosniff` and `X-XSS-Protection: 1; mode=block`
 > are added in both `true` and object forms — they cannot be disabled.
@@ -2657,7 +2657,15 @@ securityHeaders:
 > See the [Permissions Policy spec](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy).
 >
 > **`allowedHosts`** prevents host-header injection attacks where an attacker sends a request with
-> a forged `Host` header to bypass routing or cache-keying logic.
+> a forged `Host` header to bypass routing or cache-keying logic — the classic exploit is a
+> poisoned password-reset link: an app that builds absolute URLs from `Host`/`X-Forwarded-Host`
+> will happily email a reset link pointing at an attacker-controlled domain.
+>
+> **Secure by default even without this option:** when `allowedHosts` is not set, Conduit falls
+> back to validating the incoming `Host` against the site's own `host:` value (when one is
+> configured) and rejects anything else. Set `allowedHosts` explicitly when a site must accept
+> more than one hostname (e.g. `example.com` and `www.example.com`), or leave a site's `host:`
+> unset/`"*"` for an intentional catch-all that accepts any Host.
 
 ---
 
