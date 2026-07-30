@@ -99,7 +99,6 @@ impl Default for LogWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
 
     #[test]
     fn new_writer_uses_stdout() {
