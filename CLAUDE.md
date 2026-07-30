@@ -762,6 +762,18 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 ---
 
 
+## Integrity audit log (Conduit 2.0 cycle, Step 1c)
+
+> Append-only. `/feature-workspace-cycle` Step 1c writes one row here each time it audits
+> a feature/module via `integrity-auditor`, so a later firing can see what's already been
+> checked recently instead of re-auditing the same area. Newest entries on top.
+
+| Date | Area audited | Result | Notes |
+|------|---------------|--------|-------|
+| _(none yet — first Step 1c firing starts this log)_ | | | |
+
+---
+
 ## Tokio 1.52.3 — возможности (исследовано)
 
 Tokio "full" features уже включены. Ключевые находки для будущего использования:

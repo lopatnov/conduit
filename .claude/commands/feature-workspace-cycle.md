@@ -91,9 +91,10 @@ but don't burn every firing on it either.
   - If the auditor flags that a gap looks like "missing a known-good
     pattern" rather than just a missing test/doc line, loop in
     **`prior-art-researcher`** before deciding the fix — see the note below.
-- Log what you audited and found (even "no gaps") so a future firing doesn't
-  re-audit the same area needlessly — a short note in the relevant `CLAUDE.md`
-  section or a comment is enough.
+- Log what you audited and found (even "no gaps") in `CLAUDE.md`'s
+  **"Integrity audit log (Conduit 2.0 cycle, Step 1c)"** table — one row per
+  audit, newest on top — so a future firing can see what's already been
+  checked recently instead of re-auditing the same area.
 
 ## Step 2 — pick the next task (skip if Step 0 found unfinished work)
 - Look at #114's open sub-issues (`mcp__github__issue_read` /
