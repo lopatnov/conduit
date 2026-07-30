@@ -121,7 +121,7 @@ futures     = { version = "0.3", optional = true }
 # --- WASM plugin middleware (optional feature) ---
 # Enable with: cargo build --features wasm
 # Cranelift JIT: fast compilation; no WASI by default (sandboxed).
-wasmtime = { version = "45", features = ["cranelift"], optional = true }
+wasmtime = { version = "46", features = ["cranelift"], optional = true }
 
 # --- OpenTelemetry OTLP tracing (optional feature) ---
 # Enable with: cargo build --features otlp
