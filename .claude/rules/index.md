@@ -83,6 +83,31 @@
   (`conventions.md` "Code quality") or for bigger design-decomposition questions. Hands back a
   concrete split/PR-decomposition plan; never edits files itself — the conductor implements it.
 
+### Added for the Conduit 2.0 workspace migration (#114) — `/feature-workspace-cycle`
+
+These exist for the feature-driven Cargo workspace migration cycle, but aren't limited to
+it — call them whenever the same shape of task comes up outside that cycle too.
+
+- `dependency-steward` (haiku, read-only) — triages open Dependabot PRs in a batch: semver
+  risk, grouping related bumps, CI status, merge/hold recommendation.
+- `feature-matrix-runner` (haiku, read-only) — proves Cargo feature gating is actually
+  correct (`cargo hack --each-feature --no-dev-deps`, optional powerset), distinct from
+  `build-validator`'s single-profile check.
+- `footprint-auditor` (haiku, read-only) — measures stripped binary size / dependency count
+  per feature profile and diffs against a base ref; the metric the workspace split exists
+  to move.
+- `integrity-auditor` (sonnet, read-only) — spot-checks that an *already-shipped* feature
+  still works as documented: implementation vs. its own tests vs. docs/schema, reporting
+  gaps (never fixing them itself). Distinct from self-review (which only covers new diffs).
+- `prior-art-researcher` (sonnet) — "how do other proxies/gateways solve this" research
+  against the reference projects named in `CLAUDE.md`'s own backlog (h2o, Angie, Envoy,
+  HAProxy, traefik, linkerd2-proxy, etc.), with concrete file/line pointers and an explicit
+  adapt/don't-adapt call.
+- `docs-scribe` (sonnet) — keeps README/`docs/*.md`/`CHANGELOG.md`/
+  `schema/conduit.schema.json` in sync with a merged diff.
+- `crate-extractor` (sonnet) — **temporary**, retire after #114 Phase 6 — executes one
+  mechanical crate-extraction end-to-end from the recipe in `CONTRIBUTING.md`/the pilot PR.
+
 > When in doubt about whether to spawn one of these for a small ask — don't. The conductor
 > handles trivial scoping/backlog bookkeeping/license-glance itself; reserve these for when
 > the question genuinely needs that role's framing (see "Economy" above).
