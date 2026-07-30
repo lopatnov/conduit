@@ -29,6 +29,7 @@ Model assignment (already encoded in each agent's frontmatter — don't override
 `prior-art-researcher`, and this conductor loop itself.
 
 ## Step 0 — orient (conductor, no agent)
+
 - Check this session's own recent history first: is there an open PR from a
   prior firing still awaiting CI/review? A branch with uncommitted or
   unpushed work? Resume that before looking for new work.
@@ -37,6 +38,7 @@ Model assignment (already encoded in each agent's frontmatter — don't override
   iteration's summary may directly tell you what to do next.
 
 ## Step 1 — PR triage (Dependabot + the user's own PRs)
+
 - Call **`dependency-steward`** to list open Dependabot PRs, classify semver
   risk, group related bumps, and check their CI.
 - Also list the user's own open, non-draft PRs against `main` (`lopatnov`-
@@ -66,37 +68,51 @@ Model assignment (already encoded in each agent's frontmatter — don't override
   release.
 
 ## Step 1c — integrity & completeness audit (periodic, not every firing)
+
 Conduit has a large body of already-shipped code, features, and docs that
 mostly hasn't been re-verified since it landed — the migration work in Steps
 2-8 only reviews *new* diffs, which leaves a blind spot. This step closes it.
-Not free (it's a real reasoning pass), so use judgment on cadence: run it
-roughly **once every 4-6 firings**, or whenever Step 0 found nothing
-unfinished and Step 1 found nothing to triage — don't skip it indefinitely,
-but don't burn every firing on it either.
-- Pick one feature/module/config area not audited recently (check `CLAUDE.md`
-  for the oldest "Реализовано" entry, or a module whose test file hasn't
-  changed in a long `git log`) and call **`integrity-auditor`** on it. The
-  goal stated plainly: **at minimum, confirm nothing is silently broken or
-  lost; ideally, leave it better than found.**
-- For each gap it reports:
-  - `docs-drift` or a small, obvious, low-risk fix (a missing doc line, an
-    absent test for an existing code path with no behavior ambiguity) → fix
-    it directly, own branch off `main`, through the same self-review → green
-    → merge mechanics as Steps 4-7 (this is *not* #114 work, so the branch
-    targets `main`, not the migration branch).
-  - A real behavioral bug, or anything needing design judgment → file a
+Not free (it's a real reasoning pass), so cadence is a hard **AND**, not an
+either/or: run it only when **both** (a) roughly 4-6 firings have passed since
+the last entry in the audit log below, **and** (b) Step 0 found nothing
+unfinished and Step 1 found nothing to triage. If either condition fails,
+skip this step for the current firing rather than defaulting to running it
+whenever there's idle time.
+
+- Pick one feature/module/config area not audited recently (check the audit
+  log's own entries first; failing that, `CLAUDE.md`'s oldest "Реализовано"
+  entry, or a module whose test file hasn't changed in a long `git log`) and
+  call **`integrity-auditor`** on it, passing `main` as the ref to audit
+  against. The goal stated plainly: **at minimum, confirm nothing is silently
+  broken or lost; ideally, leave it better than found.**
+- For each gap it reports, route by **risk and ambiguity**, not by which
+  `KIND` label the auditor used (`untested-path`, `docs-drift`, `stale-claim`,
+  and `real-bug` all fall into one of these two paths — the kind label
+  informs the judgment, it doesn't pre-decide it):
+  - **Low-risk and unambiguous** (a missing doc line, an absent test for an
+    existing code path whose correct behavior isn't in question) → fix it
+    directly. Branch off `main` (not the 2.0 migration branch — this isn't
+    #114 work), then follow the same *sequence* as Steps 4-6 (self-review,
+    get green, docs) and merge straight into `main` yourself — do **not**
+    use Step 7's destination, which is hardcoded to the migration branch and
+    only applies to #114 PRs.
+  - **A real behavioral bug, or anything needing design judgment** → file a
     GitHub issue with the specifics (`scrum-master`) rather than
-    stealth-fixing it inline; it becomes normal backlog, picked up like any
-    other issue (by a future firing of this cycle, or by the user directly).
+    stealth-fixing it inline. This becomes ordinary repo backlog — note that
+    Step 2 below only selects #114 sub-issues, so don't promise it'll be
+    picked up by a future firing of *this* command; it's there for the user
+    or a normal (non-#114) session to pick up.
   - If the auditor flags that a gap looks like "missing a known-good
     pattern" rather than just a missing test/doc line, loop in
-    **`prior-art-researcher`** before deciding the fix — see the note below.
+    **`prior-art-researcher`** before deciding the fix — see the note in
+    Step 2 below.
 - Log what you audited and found (even "no gaps") in `CLAUDE.md`'s
   **"Integrity audit log (Conduit 2.0 cycle, Step 1c)"** table — one row per
-  audit, newest on top — so a future firing can see what's already been
-  checked recently instead of re-auditing the same area.
+  audit, newest on top. This log is also what you check against for the
+  cadence rule above — no separate counter needed.
 
 ## Step 2 — pick the next task (skip if Step 0 found unfinished work)
+
 - Look at #114's open sub-issues (`mcp__github__issue_read` /
   `list_issues` filtered to sub-issues of #114). Pick the next one in
   phase order (Phase 0 → 6) unless a dependency isn't merged yet.
@@ -118,6 +134,7 @@ but don't burn every firing on it either.
   issues linked as sub-issues of the parent, and pick the first piece.
 
 ## Step 3 — implement
+
 - Create a branch off the current tip of the 2.0 migration branch
   (`claude/cargo-workspace-features-23qxfr`), never off `main` directly for
   #114 work.
@@ -131,6 +148,7 @@ but don't burn every firing on it either.
   fine), and `subscribe_pr_activity` on it.
 
 ## Step 4 — self-review and fix
+
 - Review your own diff as if it were someone else's: correctness, scope
   creep, missed edge cases, anything that contradicts `CLAUDE.md`'s recorded
   architectural decisions.
@@ -142,6 +160,7 @@ but don't burn every firing on it either.
   ignoring or blindly complying.
 
 ## Step 5 — get it green
+
 - Call **`build-validator`** (`/build`, with `full` if the change touches
   feature-gated code) and **`feature-matrix-runner`** (mandatory for any PR
   that touches `[features]` or moves code across a crate boundary — which is
@@ -152,23 +171,27 @@ but don't burn every firing on it either.
 - Do not proceed to Step 6 until both are GREEN.
 
 ## Step 6 — docs and CI/CD
+
 - Call **`docs-scribe`** if the diff changed config schema, CLI surface,
   Cargo features, or moved a module referenced by path in the docs.
 - Update `.github/workflows/*.yml` yourself if the crate split changes what
   needs building/testing (new workspace member, new feature combination worth
   covering in `ci-features`).
 
-## Step 7 — merge
+## Step 7 — merge (Steps 3-8 apply to #114 work only — Step 1c has its own merge path above)
+
 - Once green and reviewed, merge the PR into
   `claude/cargo-workspace-features-23qxfr` (call **`release-engineer`** first
   if there's any merge-order ambiguity with other open PRs on that branch).
 
 ## Step 8 — log the summary
+
 - Comment on the sub-issue (and #114 if it's a phase-completing step) with a
   short summary: what changed, the footprint delta if measured, what's next.
   This is what Step 0 of the *next* firing reads to pick up context.
 
 ## Step 9 — check the finish line
+
 - After logging the summary, check: does #114 have any open sub-issues left?
   Does any part of the codebase still compile in code unrelated to an
   active feature for any tested combination?
@@ -182,6 +205,7 @@ but don't burn every firing on it either.
   Step 0 will pick up from here.
 
 ## Escalation (stop and ask, don't guess)
+
 - A merge conflict or design question genuinely needs the user's judgment
   (not just "which crate boundary" — `architect` handles that) → surface it
   plainly in your final message rather than picking silently and moving on.
