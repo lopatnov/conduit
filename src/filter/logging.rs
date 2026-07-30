@@ -326,7 +326,6 @@ mod tests {
 
     #[test]
     fn json_log_includes_upstream_ms_when_present() {
-        use std::time::Instant;
         // Build a minimal fake session snapshot by directly calling format_line
         // via write_access_log is hard without a real Session; test format_line
         // logic indirectly through the JSON branch using a real AccessLogContext.
