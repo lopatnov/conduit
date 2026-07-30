@@ -522,7 +522,7 @@ mod tests {
     fn hash_produces_32_hex_chars() {
         let key = CacheKey::new("host.example", "https:/path", "");
         let dir = TempDir::new().unwrap();
-        let storage = DiskCacheStorage::new(dir.path().to_str().unwrap());
+        let _storage = DiskCacheStorage::new(dir.path().to_str().unwrap());
         let hash = DiskCacheStorage::hash(&key);
         assert_eq!(hash.len(), 32, "hash must be 32 hex chars");
         assert!(
