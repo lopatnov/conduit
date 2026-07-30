@@ -719,6 +719,78 @@ fn allowed_hosts_passes_good_host() {
     );
 }
 
+/// Without `allowedHosts` configured at all, a site with an explicit `host:`
+/// must still reject a forged Host header by default — this is the
+/// Host-header-injection / poisoned-password-reset-link protection applying
+/// out of the box, not just when opted into via `allowedHosts`.
+#[test]
+#[serial]
+fn default_allowed_hosts_rejects_mismatched_host() {
+    let echo_port = common::free_port();
+    let _echo = common::start_echo_upstream(echo_port);
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "host": "example.com",
+                "port": port,
+                "proxy": { "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] } }
+            }]
+        }),
+    );
+
+    let resp = Client::new()
+        .get(srv.url("/"))
+        .header("host", "evil.com")
+        .send()
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "forged Host must be rejected by default when the site declares host:"
+    );
+}
+
+/// The default-fallback allowlist above must not break normal traffic:
+/// a request whose Host matches the site's configured `host:` passes through.
+#[test]
+#[serial]
+fn default_allowed_hosts_passes_matching_host() {
+    let echo_port = common::free_port();
+    let _echo = common::start_echo_upstream(echo_port);
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "host": "example.com",
+                "port": port,
+                "proxy": { "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] } }
+            }]
+        }),
+    );
+
+    let resp = Client::new()
+        .get(srv.url("/"))
+        .header("host", "example.com")
+        .send()
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "matching Host must pass through under the default fallback"
+    );
+}
+
 // ── maxBodyBytes chunked bypass ───────────────────────────────────────────────
 
 /// Clients that use chunked transfer encoding (no Content-Length) must not

@@ -753,10 +753,9 @@ fn parse_upstream_url(url: &str) -> Option<(bool, String, u16, String)> {
     let url = url.trim();
     let (is_tls, rest) = if let Some(rest) = url.strip_prefix("https://") {
         (true, rest)
-    } else if let Some(rest) = url.strip_prefix("http://") {
-        (false, rest)
     } else {
-        return None;
+        let rest = url.strip_prefix("http://")?;
+        (false, rest)
     };
 
     let (authority, path) = rest
