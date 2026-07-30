@@ -13,27 +13,43 @@ pub fn header_entries(cfg: &SecurityHeadersConfig) -> Vec<(String, String)> {
 
 /// Check whether the incoming `Host` header is allowed.
 ///
-/// Returns `true` when the host is allowed (or `allowedHosts` is not configured).
-/// Returns `false` when the host is explicitly rejected — the caller should return 400.
+/// Returns `true` when the host is allowed. Returns `false` when the host is
+/// explicitly rejected — the caller should return 400.
 ///
 /// Matches `traefik AllowedHosts` pattern: blocks Host header injection attacks where
 /// applications generate absolute URLs (e.g. password-reset links) from the untrusted Host.
-pub fn is_host_allowed(cfg: &SecurityHeadersConfig, host: &str) -> bool {
-    let opts = match cfg {
-        SecurityHeadersConfig::Options(opts) => opts,
-        _ => return true, // no options configured → allow any host
-    };
-    let Some(allowed) = &opts.allowed_hosts else {
-        return true; // not configured → allow any host
-    };
-    if allowed.is_empty() {
-        return true;
-    }
+///
+/// Precedence:
+/// 1. `securityHeaders.allowedHosts`, when configured, is authoritative — matched
+///    against explicitly (or `"*"` to allow any host).
+/// 2. Otherwise, fall back to the site's own `host:` config value (`site_host`), so
+///    Host-header injection is rejected by default without requiring extra
+///    configuration — a site declaring `host: example.com` implicitly only accepts
+///    that Host. Catch-all sites (`host` unset or `"*"`) have no single expected
+///    value, so they keep allowing any Host.
+pub fn is_host_allowed(
+    cfg: Option<&SecurityHeadersConfig>,
+    site_host: Option<&str>,
+    host: &str,
+) -> bool {
     // Strip port from host for matching.
     let host_no_port = host.split(':').next().unwrap_or(host);
-    allowed
-        .iter()
-        .any(|a| a == "*" || a == host || a == host_no_port)
+
+    if let Some(SecurityHeadersConfig::Options(opts)) = cfg {
+        if let Some(allowed) = &opts.allowed_hosts {
+            if allowed.is_empty() {
+                return true;
+            }
+            return allowed
+                .iter()
+                .any(|a| a == "*" || a == host || a == host_no_port);
+        }
+    }
+
+    match site_host {
+        Some(h) if h != "*" => h.eq_ignore_ascii_case(host) || h.eq_ignore_ascii_case(host_no_port),
+        _ => true, // catch-all site or no site host configured → allow any host
+    }
 }
 
 fn defaults() -> Vec<(String, String)> {
@@ -184,10 +200,11 @@ mod tests {
     // ── is_host_allowed ───────────────────────────────────────────────────────
 
     #[test]
-    fn no_allowed_hosts_allows_everything() {
+    fn no_allowed_hosts_and_no_site_host_allows_everything() {
         let cfg = SecurityHeadersConfig::Enabled(true);
-        assert!(is_host_allowed(&cfg, "evil.com"));
-        assert!(is_host_allowed(&cfg, "api.example.com"));
+        assert!(is_host_allowed(Some(&cfg), None, "evil.com"));
+        assert!(is_host_allowed(Some(&cfg), None, "api.example.com"));
+        assert!(is_host_allowed(None, None, "evil.com"));
     }
 
     #[test]
@@ -198,8 +215,8 @@ mod tests {
             ..Default::default()
         };
         let cfg = SecurityHeadersConfig::Options(opts);
-        assert!(is_host_allowed(&cfg, "api.example.com"));
-        assert!(!is_host_allowed(&cfg, "evil.com"));
+        assert!(is_host_allowed(Some(&cfg), None, "api.example.com"));
+        assert!(!is_host_allowed(Some(&cfg), None, "evil.com"));
     }
 
     #[test]
@@ -211,7 +228,7 @@ mod tests {
         };
         let cfg = SecurityHeadersConfig::Options(opts);
         // Host header often includes port: "api.example.com:8080"
-        assert!(is_host_allowed(&cfg, "api.example.com:8080"));
+        assert!(is_host_allowed(Some(&cfg), None, "api.example.com:8080"));
     }
 
     #[test]
@@ -222,7 +239,58 @@ mod tests {
             ..Default::default()
         };
         let cfg = SecurityHeadersConfig::Options(opts);
-        assert!(is_host_allowed(&cfg, "anything.example.com"));
+        assert!(is_host_allowed(Some(&cfg), None, "anything.example.com"));
+    }
+
+    #[test]
+    fn site_host_fallback_rejects_mismatch_when_allowed_hosts_unset() {
+        // No `securityHeaders` at all — a site declaring `host: example.com`
+        // must still reject a forged Host header by default (#password-reset
+        // link poisoning / Host header injection).
+        assert!(is_host_allowed(None, Some("example.com"), "example.com"));
+        assert!(!is_host_allowed(None, Some("example.com"), "evil.com"));
+    }
+
+    #[test]
+    fn site_host_fallback_is_case_insensitive_and_strips_port() {
+        assert!(is_host_allowed(
+            None,
+            Some("example.com"),
+            "EXAMPLE.com:8080"
+        ));
+    }
+
+    #[test]
+    fn site_host_fallback_applies_even_with_bool_security_headers() {
+        let cfg = SecurityHeadersConfig::Enabled(true);
+        assert!(!is_host_allowed(
+            Some(&cfg),
+            Some("example.com"),
+            "evil.com"
+        ));
+    }
+
+    #[test]
+    fn catch_all_site_host_allows_everything() {
+        assert!(is_host_allowed(None, Some("*"), "evil.com"));
+        assert!(is_host_allowed(None, None, "evil.com"));
+    }
+
+    #[test]
+    fn explicit_allowed_hosts_takes_precedence_over_site_host() {
+        use crate::config::schema::SecurityHeadersOptions;
+        let opts = SecurityHeadersOptions {
+            allowed_hosts: Some(vec!["api.example.com".to_owned()]),
+            ..Default::default()
+        };
+        let cfg = SecurityHeadersConfig::Options(opts);
+        // site_host says "example.com" but allowedHosts explicitly allows a
+        // different host — the explicit list wins.
+        assert!(is_host_allowed(
+            Some(&cfg),
+            Some("example.com"),
+            "api.example.com"
+        ));
     }
 
     // ── HSTS edge cases ───────────────────────────────────────────────────────
