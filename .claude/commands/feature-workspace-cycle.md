@@ -1,5 +1,5 @@
 ---
-description: One autonomous iteration of the Conduit 2.0 workspace-migration cycle (#114) — Dependabot triage, pick up or decompose a sub-issue, implement it on a branch, self-review, get it green, update docs, merge, log a summary, and check whether #114's goal is fully met.
+description: One autonomous iteration of the Conduit 2.0 workspace-migration cycle (#114) — Dependabot triage, a periodic integrity audit of already-shipped code/tests/docs, pick up or decompose a sub-issue, implement it on a branch, self-review, get it green, update docs, merge, log a summary, and check whether #114's goal is fully met.
 argument-hint: "(none — reads state from GitHub: open PRs, #114's open sub-issues, and this session's own history)"
 ---
 
@@ -25,8 +25,8 @@ Model assignment (already encoded in each agent's frontmatter — don't override
 **haiku** for mechanical/high-volume work (`dependency-steward`,
 `feature-matrix-runner`, `footprint-auditor`, `build-validator`,
 `benchmark-runner`); **opus** for architecture/large-file decomposition
-(`architect`); **sonnet** for everything else, including this conductor loop
-itself.
+(`architect`); **sonnet** for everything else, including `integrity-auditor`,
+`prior-art-researcher`, and this conductor loop itself.
 
 ## Step 0 — orient (conductor, no agent)
 - Check this session's own recent history first: is there an open PR from a
@@ -65,13 +65,52 @@ itself.
   push that triggers a workflow which then fails partway is not a shipped
   release.
 
+## Step 1c — integrity & completeness audit (periodic, not every firing)
+Conduit has a large body of already-shipped code, features, and docs that
+mostly hasn't been re-verified since it landed — the migration work in Steps
+2-8 only reviews *new* diffs, which leaves a blind spot. This step closes it.
+Not free (it's a real reasoning pass), so use judgment on cadence: run it
+roughly **once every 4-6 firings**, or whenever Step 0 found nothing
+unfinished and Step 1 found nothing to triage — don't skip it indefinitely,
+but don't burn every firing on it either.
+- Pick one feature/module/config area not audited recently (check `CLAUDE.md`
+  for the oldest "Реализовано" entry, or a module whose test file hasn't
+  changed in a long `git log`) and call **`integrity-auditor`** on it. The
+  goal stated plainly: **at minimum, confirm nothing is silently broken or
+  lost; ideally, leave it better than found.**
+- For each gap it reports:
+  - `docs-drift` or a small, obvious, low-risk fix (a missing doc line, an
+    absent test for an existing code path with no behavior ambiguity) → fix
+    it directly, own branch off `main`, through the same self-review → green
+    → merge mechanics as Steps 4-7 (this is *not* #114 work, so the branch
+    targets `main`, not the migration branch).
+  - A real behavioral bug, or anything needing design judgment → file a
+    GitHub issue with the specifics (`scrum-master`) rather than
+    stealth-fixing it inline; it becomes normal backlog, picked up like any
+    other issue (by a future firing of this cycle, or by the user directly).
+  - If the auditor flags that a gap looks like "missing a known-good
+    pattern" rather than just a missing test/doc line, loop in
+    **`prior-art-researcher`** before deciding the fix — see the note below.
+- Log what you audited and found (even "no gaps") so a future firing doesn't
+  re-audit the same area needlessly — a short note in the relevant `CLAUDE.md`
+  section or a comment is enough.
+
 ## Step 2 — pick the next task (skip if Step 0 found unfinished work)
 - Look at #114's open sub-issues (`mcp__github__issue_read` /
   `list_issues` filtered to sub-issues of #114). Pick the next one in
   phase order (Phase 0 → 6) unless a dependency isn't merged yet.
 - If the task genuinely needs "how do others solve this" input before you can
   implement it, call **`prior-art-researcher`** first and fold its
-  recommendation into the approach.
+  recommendation into the approach. This isn't only for brand-new work: if
+  you (or `integrity-auditor` in Step 1c) notice an existing piece of code
+  solving a problem clumsily where a well-established pattern from the
+  reference projects (`tower`'s typed middleware stack, linkerd2-proxy's
+  `ReplayBody`, h2o/Angie/Envoy/HAProxy's algorithms — see `CLAUDE.md`'s own
+  research backlog for the full list) would clearly do it better, treat that
+  as worth raising too — via `prior-art-researcher` for the "what do others
+  do" brief, then `architect` if it's a real structural change. Don't
+  gold-plate: only worth it when the improvement is clear and low-risk, not
+  as a pretext to rewrite something that already works.
 - If the sub-issue is still too big to finish in one iteration (rare — most
   were already sized small during the original decomposition), decompose it
   further yourself or via **`scrum-master`**, file the pieces as GitHub
