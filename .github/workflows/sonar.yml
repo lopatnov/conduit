@@ -25,12 +25,12 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0  # full history required for blame / new-code detection
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # stable
         with:
           toolchain: stable
           components: llvm-tools-preview  # required by cargo-llvm-cov
@@ -39,7 +39,7 @@ jobs:
         continue-on-error: true
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@56545b37b57562edd73171cb6c62cc509db4c34e  # v2.81.7
+        uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419  # v2.82.7
         with:
           tool: cargo-llvm-cov
 
@@ -59,7 +59,7 @@ jobs:
           RUST_LOG: "error"  # silence tracing output so coverage stats stay clean
 
       - name: SonarCloud scan
-        uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995  # v8.1.0
+        uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e  # v8.2.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
