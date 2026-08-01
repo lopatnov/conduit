@@ -232,10 +232,24 @@ whenever there's idle time.
   active feature for any tested combination?
 - If #114 is fully, elegantly, and concisely done — every planned crate
   extracted, `proxy` itself optional, `cargo-workspaces` publishing wired up,
-  docs/CI in sync — say so explicitly in a closing comment on #114, close it,
-  and note in your final output that the routine driving this command should
-  be disabled (don't disable it yourself — that's the user's Routine to stop,
-  flag it clearly).
+  docs/CI in sync — completion means **shipping it**, not just closing the
+  issue. In order:
+  1. Get the tracking PR (`claude/cargo-workspace-features-23qxfr` → `main`,
+     e.g. #152) fully green, mark it ready for review (undraft), and merge it
+     into `main` — same unconditional `security-engineer` gate as any other
+     merge (Step 7).
+  2. Call **`release-engineer`** and follow `.claude/skills/release/SKILL.md`
+     to cut the actual `v2.0.0` release: version-lockstep check across
+     `Cargo.toml`/`Cargo.lock`/`npm/package.json`/docs, confirm the target
+     version with the user first (the skill's own rule — don't guess/assume
+     it's `v2.0.0` without asking), tag, push, watch `release.yml` through to
+     completion, verify the artifacts (GitHub Release, both Docker manifests,
+     npm) — per Step 1's own rule that a tag push isn't a shipped release
+     until the pipeline and artifacts are confirmed.
+  3. Only then say so explicitly in a closing comment on #114, close it, and
+     note in your final output that the routine driving this command should
+     be disabled (don't disable it yourself — that's the user's Routine to
+     stop, flag it clearly).
 - Otherwise: end the turn normally. The Routine fires again next hour and
   Step 0 will pick up from here.
 
