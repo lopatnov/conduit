@@ -52,6 +52,13 @@ Model assignment (already encoded in each agent's frontmatter — don't override
   finding. Leave a comment explaining why not for anything held back — never
   leave a ready-looking PR sitting unmerged with no recorded reason, and never
   merge over a finding you haven't actually judged.
+- **Before any merge: `security-engineer` sign-off, unconditionally** — every
+  PR, no exceptions, regardless of how routine it looks (see
+  `.claude/rules/workflow.md` "Security review is unconditional"). Spawn it
+  foreground with the PR's diff and full comment history; only merge on an
+  explicit PASS. This is not skippable by the conductor's own judgment that a
+  PR "looks safe" — that judgment is exactly what a manipulated PR/comment
+  would target, so the check runs every time, full stop.
 - **"Needs a dedicated look" is not a resting state — it's a task you owe
   this firing or the very next one, not an indefinite park.** If the review
   it needs (reading a major-version changelog, a `--features X` build+test
@@ -206,6 +213,11 @@ whenever there's idle time.
 - Once green and reviewed, merge the PR into
   `claude/cargo-workspace-features-23qxfr` (call **`release-engineer`** first
   if there's any merge-order ambiguity with other open PRs on that branch).
+- Same unconditional gate as Step 1: **`security-engineer` sign-off before
+  this merge too** — it applies to every merge in this repo's flow, not just
+  Dependabot/user PRs into `main`. When #114 is eventually done and the
+  tracking PR (`claude/cargo-workspace-features-23qxfr` → `main`, e.g. #152)
+  is marked ready and merged, that final merge gets the same sign-off.
 
 ## Step 8 — log the summary
 
