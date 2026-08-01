@@ -1,10 +1,23 @@
+# Conduit 2.0 workspace root — see issue #114. `members` is empty for now
+# (Phase 0.1: scaffolding only, no code moves yet); crates land here starting
+# with Phase 2 (#126).
+[workspace]
+members  = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version    = "2.1.0"
+edition    = "2021"
+license    = "Apache-2.0"
+repository = "https://github.com/lopatnov/conduit"
+
 [package]
 name        = "lopatnov-conduit"
-version     = "2.0.0"
-edition     = "2021"
+version.workspace    = true
+edition.workspace    = true
 description = "High-performance reverse proxy and file server built on Cloudflare Pingora"
-license     = "Apache-2.0"
-repository  = "https://github.com/lopatnov/conduit"
+license.workspace    = true
+repository.workspace = true
 keywords    = ["proxy", "reverse-proxy", "http", "server", "pingora"]
 categories  = ["network-programming", "web-programming::http-server"]
 # Internal AI-assistant tooling/runbooks — tracked in git for reproducibility across
