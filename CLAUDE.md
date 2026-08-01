@@ -1110,3 +1110,31 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
 - При разборе пункта 2 (V2 feature-driven архитектура) выявлено: `request_phase.rs`
   (3157 строк) и `router.rs` (2642, CC 79) уже втрое превышают новый жёсткий лимит —
   естественные кандидаты на разбиение через `architect` как часть V2-дизайна.
+
+### Реализовано в сессии 2026-08-01 (Conduit 2.0 migration — Phase 0.1: workspace scaffolding)
+
+- **[PR #150](https://github.com/lopatnov/conduit/pull/150)
+  `feat(workspace): add [workspace] scaffolding to root Cargo.toml`**
+  (ветка `feat/workspace-scaffolding-115` → `claude/cargo-workspace-features-23qxfr`,
+  squash-merge `c746cd9`, [issue #115](https://github.com/lopatnov/conduit/issues/115)
+  CLOSED) — первая реальная имплементационная задача эпика #114 (первые 5 сессий
+  после создания эпика ушли на PR #112/#149 tooling и Dependabot-триаж). Root
+  `Cargo.toml` получил `[workspace]` (`members = ["crates/*"]`, `resolver = "2"`) и
+  `[workspace.package]` (version/edition/license/repository); `[package]` теперь
+  наследует эти поля через `.workspace = true` вместо дублирования — проверено
+  через `cargo metadata` (`workspace_members` резолвится корректно), а не просто
+  задекларировано. `crates/README.md` — плейсхолдер, сама директория пустая до
+  Phase 2 (#126, `conduit-core`). Код не двигался, `cargo build`/`check` output
+  не изменился. Версия workspace поднята до `2.1.0` (per-PR minor bump на этой
+  ветке, `main`/1.x не затронуты).
+  Перед началом сама ветка `claude/cargo-workspace-features-23qxfr` смерджена с
+  `main` (была позади на #111 security fix + `.claude/` tooling + 10
+  Dependabot-бампов) — во избежание накопления конфликтов.
+  `feature-matrix-runner`: `cargo hack check --each-feature --no-dev-deps` —
+  20/20 комбинаций зелёные, `resolver = "2"` не ломает feature isolation.
+  Два finding'а Qodo (version lockstep vs 1.x release artifacts; workspace glob
+  matches README) — оба ложные срабатывания, отклонены с обоснованием
+  (проверено эмпирически через `cargo metadata` + зелёный CI), Qodo подтвердил
+  (strikethrough). CodeRabbit не ревьюит PR в non-default branch — авто-ревью
+  отключено оргой для веток кроме `main`.
+  Следующий шаг эпика: #116 (hoist third-party deps в `[workspace.dependencies]`).
