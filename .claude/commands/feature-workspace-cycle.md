@@ -52,6 +52,20 @@ Model assignment (already encoded in each agent's frontmatter — don't override
   finding. Leave a comment explaining why not for anything held back — never
   leave a ready-looking PR sitting unmerged with no recorded reason, and never
   merge over a finding you haven't actually judged.
+- **"Needs a dedicated look" is not a resting state — it's a task you owe
+  this firing or the very next one, not an indefinite park.** If the review
+  it needs (reading a major-version changelog, a `--features X` build+test
+  pass, checking a companion crate that must move in lockstep) fits in this
+  firing's remaining budget, do it now instead of writing a holding comment
+  and moving on — a holding comment is only for genuinely deferring to the
+  user, not a substitute for doing the review. Concretely, before leaving a
+  "held" comment on any PR, check whether it already has one from a prior
+  firing (`get_comments`): a repeat encounter means the deferred work is now
+  overdue — do it this firing, don't restate the same reasoning a second
+  time. (PR #101, a kube 3→4.0.0 major bump, sat "held for dedicated review"
+  across many firings for ~5 weeks on exactly this reasoning before the
+  actual review — a companion `k8s-openapi` bump the release notes explicitly
+  called for — finally happened. That gap is the reason this bullet exists.)
 - If a PR's CI is red, fix the break when it's small and in scope, or say why
   not. The build must stay green after every merge — re-run `/build` if a
   merge could plausibly interact with in-flight work on the 2.0 branch.
