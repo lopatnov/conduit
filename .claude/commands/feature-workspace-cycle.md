@@ -80,6 +80,15 @@ Model assignment (already encoded in each agent's frontmatter — don't override
   manifest variants, npm package version) per the skill's Step 3/4 — a tag
   push that triggers a workflow which then fails partway is not a shipped
   release.
+- This step **is** the daily instance of the "Dependabot & branch hygiene
+  reflex check" (`.claude/rules/index.md`) — also list all branches and
+  cross-reference against PRs in every state (not just Dependabot's): a
+  branch with no PR at all is a genuine orphan worth flagging to the user;
+  one whose PR is merged/closed is just leftover clutter, noted but not
+  worth chasing deletion (blocked from inside a session — see that rule).
+  Log the outcome as a row in `CLAUDE.md`'s "Dependabot & branch hygiene
+  log" — this satisfies the reflex check's ~24h cadence for the day, so an
+  ad hoc session later that day can skip re-running it.
 
 ## Step 1c — integrity & completeness audit (periodic, not every firing)
 
