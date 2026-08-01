@@ -126,11 +126,11 @@ jobs:
             archive_ext: zip
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
@@ -142,7 +142,7 @@ jobs:
       # Install cross for cross-compilation targets
       - name: Install cross
         if: matrix.use_cross
-        uses: taiki-e/install-action@56545b37b57562edd73171cb6c62cc509db4c34e  # v2.81.7
+        uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419  # v2.82.7
         with:
           tool: cross
 
@@ -228,7 +228,7 @@ jobs:
         run: chmod +x dist/conduit-*-linux-* dist/conduit-*-darwin* 2>/dev/null || true
 
       - name: Attest all binaries
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
         with:
           subject-path: "dist/*"
 
@@ -241,7 +241,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
 
@@ -273,7 +273,7 @@ jobs:
         run: sha256sum * > SHA256SUMS.txt
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3.0.0
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b  # v3.0.1
         with:
           name: "Conduit v${{ steps.version.outputs.version }}"
           draft: false
@@ -289,11 +289,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # stable
         with:
           toolchain: stable
 
@@ -315,7 +315,7 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
 
@@ -360,7 +360,7 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
 
@@ -459,7 +459,7 @@ jobs:
       id-token: write   # required for npm provenance attestation (Trusted Publisher)
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
 
