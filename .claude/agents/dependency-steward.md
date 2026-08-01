@@ -43,7 +43,12 @@ each one by hand. Purely mechanical: fetch, classify, group, hand back a list.
 
 ## Escalation
 - A major/breaking bump, or one touching a security-sensitive dependency (TLS,
-  auth crates) → flag to `security-engineer` before recommending merge.
+  auth crates) → flag to `security-engineer` for a closer look before recommending merge.
+  Note this is in *addition* to, not instead of, the unconditional gate: **every** PR —
+  including a clean patch-level bump this agent recommends merging outright — still gets
+  a mandatory `security-engineer` sign-off before the conductor merges it (see
+  `.claude/rules/workflow.md` "Security review is unconditional"). This agent's merge/hold
+  recommendation is an input to that gate, not a substitute for it.
 - New transitive dependency with an unclear license → `lawyer`.
 
 ## Definition of Done

@@ -5,13 +5,14 @@ argument-hint: "(none — reads state from GitHub: open PRs, #114's open sub-iss
 
 # /feature-workspace-cycle — one iteration
 
-This command is fired **once per hour by a Routine bound to this same session**
-(self-bind mode), so it continues the actual conversation rather than starting
-cold each time. Before doing anything else: **look at what you were already
-doing.** If the previous turn left a branch half-finished, a PR open awaiting
-CI, or a task mid-flight, continue that — don't start something new just
-because a new hour ticked over. "Continue the unfinished thing" beats "pick a
-fresh task" every time this fires.
+This command is fired **once a day at 4AM by a Routine bound to this same
+session** (self-bind mode — changed from hourly per the user's own request,
+since hourly was too frequent), so it continues the actual conversation
+rather than starting cold each time. Before doing anything else: **look at
+what you were already doing.** If the previous turn left a branch
+half-finished, a PR open awaiting CI, or a task mid-flight, continue that —
+don't start something new just because a new day ticked over. "Continue the
+unfinished thing" beats "pick a fresh task" every time this fires.
 
 Target: fully realize #114 (feature-driven Cargo workspace — one crate per
 feature, zero unrelated code/deps compiled in for any feature combination).
@@ -96,6 +97,14 @@ Model assignment (already encoded in each agent's frontmatter — don't override
   Log the outcome as a row in `CLAUDE.md`'s "Dependabot & branch hygiene
   log" — this satisfies the reflex check's ~24h cadence for the day, so an
   ad hoc session later that day can skip re-running it.
+- **Keep the migration branch in sync with `main`**: every merge in this step
+  moves `main` independently of `claude/cargo-workspace-features-23qxfr` —
+  nothing propagates those commits to the migration branch automatically. If
+  `main` has moved since the migration branch's last sync, merge
+  `origin/main` into it now (small, its own commit — don't bury it inside a
+  sub-issue PR). Frequent small syncs are far cheaper than one large
+  conflict-resolution pass when the tracking PR (#152) finally gets merged
+  in Step 9 — that's the failure mode this bullet prevents.
 
 ## Step 1c — integrity & completeness audit (periodic, not every firing)
 
@@ -104,10 +113,14 @@ mostly hasn't been re-verified since it landed — the migration work in Steps
 2-8 only reviews *new* diffs, which leaves a blind spot. This step closes it.
 Not free (it's a real reasoning pass), so cadence is a hard **AND**, not an
 either/or: run it only when **both** (a) roughly 4-6 firings have passed since
-the last entry in the audit log below, **and** (b) Step 0 found nothing
-unfinished and Step 1 found nothing to triage. If either condition fails,
-skip this step for the current firing rather than defaulting to running it
-whenever there's idle time.
+the last entry in the audit log below — at the current once-daily cadence
+that's **roughly 4-6 days**, not 4-6 hours; re-check this if the Routine's
+schedule ever changes again — **and** (b) Step 0 found nothing unfinished and
+Step 1 found nothing to triage. If either condition fails, skip this step for
+the current firing rather than defaulting to running it whenever there's idle
+time. (In practice Step 1 finds something to triage most firings, so this
+step will fire rarely — that's an accepted tradeoff, not a bug: it's meant
+for genuinely idle firings, not a guaranteed periodic pass.)
 
 - Pick one feature/module/config area not audited recently (check the audit
   log's own entries first; failing that, `CLAUDE.md`'s oldest "Реализовано"
@@ -250,8 +263,8 @@ whenever there's idle time.
      note in your final output that the routine driving this command should
      be disabled (don't disable it yourself — that's the user's Routine to
      stop, flag it clearly).
-- Otherwise: end the turn normally. The Routine fires again next hour and
-  Step 0 will pick up from here.
+- Otherwise: end the turn normally. The Routine fires again tomorrow at 4AM
+  and Step 0 will pick up from here.
 
 ## Escalation (stop and ask, don't guess)
 
