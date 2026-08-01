@@ -7,6 +7,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **`AllowedHostsGuard` is now secure by default.** Previously, Host-header
+  validation only applied when `securityHeaders.allowedHosts` was explicitly
+  configured — a site with no `securityHeaders` block (or `allowedHosts`
+  unset) accepted any `Host` header, which is then echoed into
+  `X-Forwarded-Host` for the upstream. Applications that build absolute URLs
+  (e.g. password-reset links) from that header are vulnerable to Host-header
+  injection / poisoned-reset-link attacks. Conduit now falls back to
+  validating the incoming `Host` against the matched site's own `host:`
+  config value when `allowedHosts` is not set, rejecting anything else with
+  `400 Bad Request`. Catch-all sites (`host` unset or `"*"`) are unaffected
+  and continue to accept any `Host`. Explicit `allowedHosts` configuration
+  still takes precedence when present.
+
 ---
 
 ## [2.0.0] — in progress on `claude/cargo-workspace-features-23qxfr`
