@@ -351,6 +351,21 @@ full = [
     "kubernetes",
 ]
 
+[dev-dependencies]
+# reqwest: adds test-only features (http2/blocking/multipart) on top of the
+# main-crate base feature set via workspace-inherited feature union.
+reqwest                = { workspace = true, features = ["http2", "blocking", "multipart"] }
+criterion.workspace     = true
+tempfile.workspace      = true
+serial_test.workspace   = true
+time.workspace          = true
+wat.workspace           = true
+# rcgen is used in tests for cert generation even without the acme feature.
+rcgen.workspace         = true
+# jsonwebtoken is used in auth integration tests to generate test tokens.
+# Listed as dev-dep so tests compile without --features jwt.
+jsonwebtoken.workspace  = true
+
 [[test]]
 name = "acme"
 required-features = ["acme"]
