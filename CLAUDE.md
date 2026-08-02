@@ -782,6 +782,7 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 
 | Date/time (UTC) | New Dependabot PRs found/acted on | Orphan branches flagged | Notes |
 |---|---|---|---|
+| 2026-08-02 ~04:00 (daily cycle firing) | 0 open (clean) | 0 (branch count dropped 25→22 since last check — user cleanup via the provided script + GitHub's own Dependabot branch auto-cleanup; `fix/pr112-review` orphan also gone) | Migration branch was 2 commits behind `main` (#101 kube fix, #151 all-actions bump) — the new "keep migration branch in sync" bullet caught this on its first real firing. Merged clean (`git merge origin/main`, no conflicts, `cargo check --features full` green), pushed as `844a174`. |
 | 2026-08-01 ~10:00 | #151 (all-actions group, 11 updates) — merged; #101 (kube 3→4.0.0) — root-caused a real k8s-openapi 0.28 version conflict, fixed, merged | 0 (all ~25 branches checked accounted for by a PR — either open, merged, or closed) | Prompted by the user noticing `feat/workspace-scaffolding-115` and `dependabot/cargo/kube-4.0.0` in the branch list. Root cause of the untriaged PR + leftover branches: repo has no "Automatically delete head branches" setting and the cycle went from hourly to daily, leaving a gap between firings that no other session filled. This log + rule exist to close that gap. |
 
 ---
