@@ -126,8 +126,11 @@ redis = { version = "1", default-features = false, features = ["tokio-comp", "co
 
 # --- Kubernetes provider (optional feature) ---
 # Enable with: cargo build --features kubernetes
-kube        = { version = "3.1", features = ["runtime", "derive"], optional = true }
-k8s-openapi = { version = "0.27", optional = true }
+kube        = { version = "4.0", features = ["runtime", "derive"], optional = true }
+# Must track the k8s-openapi version kube itself depends on internally (kube 4.0.0 → 0.28) —
+# otherwise Cargo resolves two separate k8s-openapi copies and the unfeatured transitive one
+# fails to build ("None of the v1_* features are enabled").
+k8s-openapi = { version = "0.28", optional = true }
 schemars    = { version = "1.2", optional = true }
 futures     = { version = "0.3", optional = true }
 
@@ -204,7 +207,7 @@ tokio-metrics = []
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
 # Kubernetes CRD watching (--kubernetes-namespace flag).
-kubernetes = ["dep:kube", "dep:k8s-openapi", "k8s-openapi/v1_31", "dep:schemars", "dep:futures"]
+kubernetes = ["dep:kube", "dep:k8s-openapi", "k8s-openapi/v1_32", "dep:schemars", "dep:futures"]
 
 # ── Convenience bundles ────────────────────────────────────────────────────────
 # Standard build: the typical self-hosted reverse-proxy / API-gateway feature
