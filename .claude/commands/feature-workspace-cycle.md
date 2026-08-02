@@ -213,6 +213,18 @@ for genuinely idle firings, not a guaranteed periodic pass.)
 - Call **`footprint-auditor`** on extraction PRs specifically, to confirm the
   split actually shrank the target profile's dependency count/binary size —
   that's the number #114 exists to move.
+- **Spawn these with `isolation: "worktree"` if you plan to keep editing
+  files yourself while they run in the background.** Learned the hard way:
+  `feature-matrix-runner` and `footprint-auditor` have Bash access and do
+  their own `git checkout`/`cargo` runs against whatever working directory
+  they're given — without an isolated worktree, that's the *same* checkout
+  the conductor is using, and their branch switches raced with and twice
+  silently reverted an uncommitted conductor edit back to a stale commit
+  (issue #116's PR, 2026-08-02) before anyone noticed via a missing
+  `[dev-dependencies]` table reappearing. If running one of these in the
+  foreground (blocking, no further edits until it returns), the shared
+  directory is fine; only use worktree isolation when you'll actually keep
+  working concurrently.
 - Do not proceed to Step 6 until both are GREEN.
 
 ## Step 6 — docs and CI/CD
