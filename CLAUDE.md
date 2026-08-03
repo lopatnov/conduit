@@ -1151,3 +1151,50 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   (strikethrough). CodeRabbit не ревьюит PR в non-default branch — авто-ревью
   отключено оргой для веток кроме `main`.
   Следующий шаг эпика: #116 (hoist third-party deps в `[workspace.dependencies]`).
+
+### Реализовано в сессии 2026-08-03 (Conduit 2.0 migration — Phase 0.2: hoist deps + security-gate hardening)
+
+- **[PR #153](https://github.com/lopatnov/conduit/pull/153)
+  `refactor(workspace): hoist every third-party dep into [workspace.dependencies] (#116)`**
+  (ветка `feat/workspace-hoist-deps-116` → `claude/cargo-workspace-features-23qxfr`,
+  squash-merge `1124d1d`, [issue #116](https://github.com/lopatnov/conduit/issues/116)
+  CLOSED) — каждая third-party зависимость перенесена в новую `[workspace.dependencies]`
+  таблицу; `[dependencies]`/`[dev-dependencies]` корневого пакета теперь ссылаются через
+  `name.workspace = true` (`optional = true` остаётся на уровне пакета — внутри
+  `[workspace.dependencies]` он не валиден). Чистый рефактор объявлений, `src/` не тронут,
+  дрейфа резолюции зависимостей нет за пределами версии пакета `2.1.0 → 2.2.0`.
+  `feature-matrix-runner`: 20/20 `cargo hack --each-feature --no-dev-deps` зелёные.
+  **Инцидент по пути**: первый `Write` черновик `Cargo.toml` случайно потерял всю
+  таблицу `[dev-dependencies]` (молча, причина не установлена) — сломал CI на
+  ubuntu/macos/windows/ACME/All-features/Standard-bundle (`cannot find blocking in
+  reqwest`/`cannot find crate tempfile`). Пойман только через реальный `cargo test`
+  в CI (не через локальный `cargo check`/`clippy`, которые не компилируют test-таргеты).
+  Первый фикс был **молча откачен** гонкой с параллельно запущенным
+  `feature-matrix-runner` (агент с Bash-доступом, свои `git checkout` в той же
+  директории) — переприменён и закоммичен немедленно; задокументировано как новое
+  правило Step 5 (`isolation: "worktree"` для фоновых верификационных агентов, если
+  conductor планирует продолжать редактировать файлы параллельно), коммит `58da726`.
+- **`security-engineer` unconditional-gate — первый реальный HOLD**: первый проход
+  вернул HOLD не по содержимому рефактора (оно было чистым на всех проверках), а
+  из-за устаревшей относительно `claude/cargo-workspace-features-23qxfr` ветки PR —
+  агент через double-dot diff (`target..head`) увидел, что PR "трогает"
+  `.claude/commands/feature-workspace-cycle.md`, и предупредил, что squash-merge может
+  откатить 2 недавних коммита в этом файле. Conductor независимо проверил через
+  реальный `git merge --squash` в изолированном clone — тот тронул только
+  `Cargo.toml`/`Cargo.lock` (squash использует merge-base semantics, не raw double-dot
+  diff) — но вместо спора о диффах просто смёржил актуальный tip target-ветки в PR
+  (коммит `5830f37`), закрыв вопрос однозначно. Второй foreground-проход
+  `security-engineer` против нового head дал **PASS**; verdict запощен как обязательный
+  sign-off комментарий на PR перед мерджем (per `.claude/rules/workflow.md`).
+- **Хардening процесса по итогам** (коммит `333385c`, вызван реальными findings
+  CodeRabbit на трекинг-PR #152, а не самоинициативой): `.claude/rules/workflow.md` и
+  `.claude/commands/feature-workspace-cycle.md` теперь явно требуют, что PASS
+  `security-engineer` валиден только для той SHA, что он реально ревьюил — любой
+  новый коммит после PASS (фикс, ребейз, merge-forward) инвалидирует его и требует
+  повторного прохода перед мерджем; и что результат worktree-изолированного
+  background-валидатора покрывает только то, что было закоммичено в этот worktree
+  на момент spawn — не более поздние правки conductor'а в общем чекауте. Третий
+  finding CodeRabbit (историческая версия `2.1.0` в записи Phase 0.1 выше по этому
+  же файлу) — ложное срабатывание, отклонён с обоснованием (дневниковая запись, не
+  текущая документация); CodeRabbit сам отозвал finding и записал learning.
+  Все 3 треда на #152 отвечены и resolved.
