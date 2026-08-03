@@ -62,6 +62,10 @@ Model assignment (already encoded in each agent's frontmatter — don't override
   an explicit PASS. This is not skippable by the conductor's own judgment
   that a PR "looks safe" — that judgment is exactly what a manipulated
   PR/comment would target, so the check runs every time, full stop.
+  **The PASS is only valid for the head SHA it actually reviewed** — if the
+  PR gets another commit afterward (a fix, a rebase, a merge-forward to
+  resolve a HOLD), re-run the review against the new head before merging;
+  don't merge a SHA the agent never saw (see `.claude/rules/workflow.md`).
 - **"Needs a dedicated look" is not a resting state — it's a task you owe
   this firing or the very next one, not an indefinite park.** If the review
   it needs (reading a major-version changelog, a `--features X` build+test
@@ -225,6 +229,16 @@ for genuinely idle firings, not a guaranteed periodic pass.)
   foreground (blocking, no further edits until it returns), the shared
   directory is fine; only use worktree isolation when you'll actually keep
   working concurrently.
+- **A worktree-isolated result only covers what was actually committed
+  and pushed/available to that worktree at spawn time** — it does not
+  retroactively cover edits the conductor makes afterward in the shared
+  checkout, even if those edits land before the agent reports back. Commit
+  (and push, if the worktree pulls from `origin`) the exact change you want
+  validated *before* spawning, so the worktree's snapshot and the diff that
+  eventually merges are the same bytes. If you keep editing after spawning,
+  treat the result as covering only the earlier commit, not your latest
+  state — re-run against the new commit rather than assuming the green
+  result still applies.
 - Do not proceed to Step 6 until both are GREEN.
 
 ## Step 6 — docs and CI/CD
