@@ -6,33 +6,16 @@ members  = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version    = "2.1.0"
+version    = "2.2.0"
 edition    = "2021"
 license    = "Apache-2.0"
 repository = "https://github.com/lopatnov/conduit"
 
-[package]
-name        = "lopatnov-conduit"
-version.workspace    = true
-edition.workspace    = true
-description = "High-performance reverse proxy and file server built on Cloudflare Pingora"
-license.workspace    = true
-repository.workspace = true
-keywords    = ["proxy", "reverse-proxy", "http", "server", "pingora"]
-categories  = ["network-programming", "web-programming::http-server"]
-# Internal AI-assistant tooling/runbooks — tracked in git for reproducibility across
-# sessions, but not part of the published crate source package.
-exclude     = [".claude/**", "CLAUDE.md"]
-
-[[bin]]
-name = "conduit"
-path = "src/main.rs"
-
-[lib]
-name = "conduit"
-path = "src/lib.rs"
-
-[dependencies]
+# Every third-party dependency lives here (Phase 0.2, issue #116) so future
+# member crates under crates/* inherit identical versions/features for
+# shared deps via `dep.workspace = true` — the primary defense against Cargo
+# feature unification silently pulling in mismatched feature sets later.
+[workspace.dependencies]
 # --- Pingora core ---
 pingora                = { version = "0.8", features = ["rustls"] }
 pingora-core           = { version = "0.8", features = ["rustls"] }
@@ -61,8 +44,6 @@ pingora-http = "0.8"
 
 # --- Async runtime & HTTP ---
 tokio = { version = "1", features = ["full"] }
-# axum: Admin API always needs axum; multipart feature only needed for file upload
-# and is gated behind the `upload` feature (see [features] below).
 axum  = { version = "0.8" }
 
 # --- Compression ---
@@ -84,11 +65,11 @@ regex      = "1"
 uuid       = { version = "1", features = ["v4"] }
 
 # --- TLS (always needed) ---
-x509-parser  = "0.18"
+x509-parser = "0.18"
 
 # --- ACME / auto-TLS (feature: acme) ---
-instant-acme = { version = "0.8", features = ["rcgen"], optional = true }
-rcgen        = { version = "0.14", optional = true }
+instant-acme = { version = "0.8", features = ["rcgen"] }
+rcgen        = "0.14"
 # ring is the crypto provider for rustls; needed to install before TLS starts.
 rustls         = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
@@ -107,46 +88,176 @@ hmac      = "0.13"
 sha2      = "0.11"
 
 # --- Rhai scripting middleware (feature: rhai) ---
-rhai = { version = "1", features = ["sync"], optional = true }
+rhai = { version = "1", features = ["sync"] }
 
 # --- JWT bearer-token authentication (feature: jwt) ---
 # Verifies HS256 (HMAC secret) and RS256/ES256 (JWKS/PEM).
-jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"], optional = true }
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 
 # --- HTTP client (feature: jwt for JWKS, forward-auth, mirroring) ---
 # `default-features = false` avoids native-tls; rustls keeps TLS consistent.
-# Used by: JWKS fetching, ForwardAuth subrequests, traffic mirroring.
-# reqwest is NOT optional because traffic mirroring (basic feature) uses it.
-# When jwt/forward-auth are disabled, reqwest is still used for mirroring.
+# Base feature set covers main-crate usage (JWKS/ForwardAuth/mirroring); the
+# dev-dependency below adds test-only extras (http2/blocking/multipart) on
+# top via feature union, since workspace-inherited features are additive.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 # --- Redis-backed rate limiting & caching (feature: redis) ---
 # tls-rustls enables rediss:// (TLS-encrypted) connections.
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "tokio-rustls-comp"], optional = true }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "tokio-rustls-comp"] }
 
 # --- Kubernetes provider (optional feature) ---
 # Enable with: cargo build --features kubernetes
-kube        = { version = "4.0", features = ["runtime", "derive"], optional = true }
+kube        = { version = "4.0", features = ["runtime", "derive"] }
 # Must track the k8s-openapi version kube itself depends on internally (kube 4.0.0 → 0.28) —
 # otherwise Cargo resolves two separate k8s-openapi copies and the unfeatured transitive one
 # fails to build ("None of the v1_* features are enabled").
-k8s-openapi = { version = "0.28", optional = true }
-schemars    = { version = "1.2", optional = true }
-futures     = { version = "0.3", optional = true }
+k8s-openapi = { version = "0.28" }
+schemars    = { version = "1.2" }
+futures     = { version = "0.3" }
 
 # --- WASM plugin middleware (optional feature) ---
 # Enable with: cargo build --features wasm
 # Cranelift JIT: fast compilation; no WASI by default (sandboxed).
-wasmtime = { version = "46", features = ["cranelift"], optional = true }
+wasmtime = { version = "46", features = ["cranelift"] }
 
 # --- OpenTelemetry OTLP tracing (optional feature) ---
 # Enable with: cargo build --features otlp
 # Exports distributed traces to any OTLP-compatible backend:
 # Grafana Tempo, Jaeger, Honeycomb, OpenTelemetry Collector, etc.
 # Uses gRPC (tonic) transport; adds ~4 MB to binary.
-opentelemetry     = { version = "0.32", optional = true }
-opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"], optional = true }
-opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"], optional = true }
+opentelemetry      = { version = "0.32" }
+opentelemetry_sdk  = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"] }
+
+# --- Dev/test-only ---
+criterion   = { version = "0.8", features = ["html_reports"] }
+tempfile    = "3"
+serial_test = "3"
+time        = { version = "0.3", features = ["std"] }
+# wat: parse WebAssembly Text Format in tests (compile inline WAT → wasm bytes)
+wat         = "1"
+
+[package]
+name        = "lopatnov-conduit"
+version.workspace    = true
+edition.workspace    = true
+description = "High-performance reverse proxy and file server built on Cloudflare Pingora"
+license.workspace    = true
+repository.workspace = true
+keywords    = ["proxy", "reverse-proxy", "http", "server", "pingora"]
+categories  = ["network-programming", "web-programming::http-server"]
+# Internal AI-assistant tooling/runbooks — tracked in git for reproducibility across
+# sessions, but not part of the published crate source package.
+exclude     = [".claude/**", "CLAUDE.md"]
+
+[[bin]]
+name = "conduit"
+path = "src/main.rs"
+
+[lib]
+name = "conduit"
+path = "src/lib.rs"
+
+[dependencies]
+# --- Pingora core ---
+pingora.workspace                = true
+pingora-core.workspace           = true
+pingora-proxy.workspace          = true
+pingora-load-balancing.workspace = true
+pingora-cache.workspace          = true
+
+# --- Config & parsing ---
+serde.workspace               = true
+serde_json.workspace          = true
+serde_yaml.workspace          = true
+serde_path_to_error.workspace = true
+indexmap.workspace            = true
+humantime.workspace           = true
+
+# --- CLI ---
+clap.workspace          = true
+clap_complete.workspace = true
+clap_mangen.workspace   = true
+dialoguer.workspace     = true
+indicatif.workspace     = true
+async-trait.workspace   = true
+
+# --- Pingora HTTP types ---
+pingora-http.workspace = true
+
+# --- Async runtime & HTTP ---
+tokio.workspace = true
+# axum: Admin API always needs axum; multipart feature only needed for file upload
+# and is gated behind the `upload` feature (see [features] below).
+axum.workspace  = true
+
+# --- Compression ---
+async-compression.workspace = true
+
+# --- Observability ---
+tracing.workspace            = true
+tracing-subscriber.workspace = true
+prometheus.workspace         = true
+
+# --- Performance & state ---
+arc-swap.workspace = true
+dashmap.workspace  = true
+
+# --- Functionality ---
+mime_guess.workspace = true
+notify.workspace     = true
+regex.workspace      = true
+uuid.workspace       = true
+
+# --- TLS (always needed) ---
+x509-parser.workspace = true
+
+# --- ACME / auto-TLS (feature: acme) ---
+instant-acme = { workspace = true, optional = true }
+rcgen        = { workspace = true, optional = true }
+rustls.workspace         = true
+rustls-pemfile.workspace = true
+
+# --- Errors & utilities ---
+anyhow.workspace    = true
+thiserror.workspace = true
+bytes.workspace     = true
+subtle.workspace    = true
+libc.workspace      = true
+url.workspace       = true
+httpdate.workspace  = true
+http.workspace      = true
+base64.workspace    = true
+hmac.workspace      = true
+sha2.workspace      = true
+
+# --- Rhai scripting middleware (feature: rhai) ---
+rhai = { workspace = true, optional = true }
+
+# --- JWT bearer-token authentication (feature: jwt) ---
+jsonwebtoken = { workspace = true, optional = true }
+
+# --- HTTP client (feature: jwt for JWKS, forward-auth, mirroring) ---
+# reqwest is NOT optional because traffic mirroring (basic feature) uses it.
+# When jwt/forward-auth are disabled, reqwest is still used for mirroring.
+reqwest.workspace = true
+
+# --- Redis-backed rate limiting & caching (feature: redis) ---
+redis = { workspace = true, optional = true }
+
+# --- Kubernetes provider (optional feature) ---
+kube        = { workspace = true, optional = true }
+k8s-openapi = { workspace = true, optional = true }
+schemars    = { workspace = true, optional = true }
+futures     = { workspace = true, optional = true }
+
+# --- WASM plugin middleware (optional feature) ---
+wasmtime = { workspace = true, optional = true }
+
+# --- OpenTelemetry OTLP tracing (optional feature) ---
+opentelemetry      = { workspace = true, optional = true }
+opentelemetry_sdk  = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
 
 
 [features]
@@ -241,18 +352,19 @@ full = [
 ]
 
 [dev-dependencies]
-reqwest     = { version = "0.13", default-features = false, features = ["http2", "rustls", "blocking", "json", "multipart"] }
-criterion   = { version = "0.8", features = ["html_reports"] }
-tempfile    = "3"
-serial_test = "3"
-time        = { version = "0.3", features = ["std"] }
-# wat: parse WebAssembly Text Format in tests (compile inline WAT → wasm bytes)
-wat         = "1"
+# reqwest: adds test-only features (http2/blocking/multipart) on top of the
+# main-crate base feature set via workspace-inherited feature union.
+reqwest                = { workspace = true, features = ["http2", "blocking", "multipart"] }
+criterion.workspace     = true
+tempfile.workspace      = true
+serial_test.workspace   = true
+time.workspace          = true
+wat.workspace           = true
 # rcgen is used in tests for cert generation even without the acme feature.
-rcgen       = "0.14"
+rcgen.workspace         = true
 # jsonwebtoken is used in auth integration tests to generate test tokens.
 # Listed as dev-dep so tests compile without --features jwt.
-jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+jsonwebtoken.workspace  = true
 
 [[test]]
 name = "acme"
