@@ -1338,9 +1338,9 @@ healthCheck:
 | `healthyThreshold`          | number   | `1`           | Consecutive passes before re-adding                                                                                                                  |
 | `unhealthyStatus`           | number[] | any non-2xx   | HTTP status codes from the health-check probe that count as failures. Default: any non-2xx response. Example: `[429, 500, 502, 503, 504]` |
 | `unhealthyLatencyMs`        | number   | —             | Health-check probe responses slower than this (ms) count as failures, even if the status code is 2xx                                                 |
-| `slowStartSecs`             | number   | `0`           | Traffic ramp-up period after recovery                                                                                                                |
+| `slowStartSecs`             | number   | `0`           | Traffic ramp-up period after recovery. ⚠️ Not currently wired into routing — see [Circuit Breaker](#circuit-breaker) note below.                     |
 | `maxConnectionsPerUpstream` | number   | —             | [Circuit breaker](#circuit-breaker) threshold                                                                                                        |
-| `prewarmConnections`        | number   | `0`           | Pre-establish N keepalive connections at startup (max 8)                                                                                             |
+| `prewarmConnections`        | number   | `0`           | Pre-establish N keepalive connections at startup (max 8). ⚠️ Currently warms a throwaway client, not Conduit's real upstream pool — see note below.  |
 | `includeUpstreams`          | bool     | `false`       | Include upstream health in `/__health__` response                                                                                                    |
 
 ---
@@ -1348,7 +1348,29 @@ healthCheck:
 ## Circuit Breaker
 
 When **all** upstreams reach `maxConnectionsPerUpstream` concurrent connections,
-Conduit returns `503` immediately instead of queuing.
+Conduit returns `503` immediately instead of queuing. This all-maxed → 503
+behavior holds for every load-balance strategy.
+
+> **Known limitations** (found by a 2026-08-03 integrity audit, tracked in
+> GitHub issues — see the repo's issue tracker for current status):
+> - Skipping an individual at-limit upstream in favor of under-capacity peers
+>   (rather than the all-maxed 503 case above) is only guaranteed today for
+>   the `LeastConn` strategy. The other 7 strategies, including the
+>   `RoundRobin` default, do not currently re-check per-upstream connection
+>   load during selection.
+> - `slowStartSecs` is parsed but not yet wired into any strategy's selection
+>   logic — configuring it currently has no effect on traffic ramp-up.
+> - `prewarmConnections` currently warms a short-lived, throwaway HTTP
+>   client rather than Conduit's real upstream connection pool, so it
+>   doesn't yet deliver its intended latency benefit for real traffic.
+> - Passive per-upstream tracking (Outlier Detection ejection, Peak EWMA
+>   latency, and the per-peer `responses_2xx/4xx/5xx` Admin API stats) is
+>   only populated today for the `LeastConn` strategy or when
+>   `maxConnectionsPerUpstream` is also set — for other strategies without a
+>   connection cap, these stay at their defaults / never trigger.
+> - Circuit breaking only applies to the legacy `proxy: { <path>: {...} }`
+>   config format; it is not currently enforced for the `routes[]` array
+>   format or `groups`.
 
 ```yaml
 # YAML
@@ -1449,6 +1471,13 @@ separately by the `websocket: true` route option — see the field reference tab
 ## Outlier Detection
 
 Passively eject upstreams that return too many 5xx responses from real traffic.
+
+> **Known limitation** (2026-08-03 integrity audit): today this only actually
+> tracks and ejects when the route's `strategy` is `LeastConn`, or when
+> `healthCheck.maxConnectionsPerUpstream` is also configured (see the
+> [Circuit Breaker](#circuit-breaker) known-limitations note) — see the
+> repo's issue tracker for current status. For other strategies without a
+> connection cap, outlier ejection does not currently trigger.
 
 ```yaml
 # YAML

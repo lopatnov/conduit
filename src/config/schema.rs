@@ -1428,6 +1428,12 @@ pub struct UpstreamHealthCheck {
     /// Slow-start ramp-up window in seconds.  After an upstream recovers from
     /// an unhealthy state, its effective weight is increased linearly from 0 to
     /// 100 % over this window.  Set to 0 (default) to disable.
+    ///
+    /// **Known limitation** (2026-08-03 integrity audit, see tracking issue):
+    /// this field is parsed and `UpstreamEntry.recovery_time_secs` is set on
+    /// recovery, but no `LoadBalancingStrategy` implementation currently reads
+    /// `health::slow_start_fraction()` back — setting this field has no effect
+    /// on routing today.
     #[serde(rename = "slowStartSecs", skip_serializing_if = "Option::is_none")]
     pub slow_start_secs: Option<u64>,
     /// Maximum number of concurrent in-flight requests to any single upstream
@@ -1435,8 +1441,16 @@ pub struct UpstreamHealthCheck {
     ///
     /// When ALL healthy upstreams reach this limit Conduit returns
     /// `503 Service Unavailable` immediately (circuit breaker / back-pressure).
-    /// A single upstream at max while others are below capacity is handled
-    /// normally by the load-balancer (requests go to under-capacity peers).
+    ///
+    /// **Known limitation** (2026-08-03 integrity audit, see tracking issue):
+    /// the "single upstream at max is skipped in favor of under-capacity
+    /// peers" behavior described above is only guaranteed for the `LeastConn`
+    /// strategy today — it always selects the true minimum-load candidate.
+    /// The other 7 strategies (including the `RoundRobin` default) do not
+    /// currently re-check per-upstream connection load during selection, so
+    /// they may still route to an at-limit upstream as long as at least one
+    /// other candidate is under the cap. The all-upstreams-maxed → 503
+    /// behavior above holds for every strategy.
     ///
     /// Defaults to unlimited (`None`).
     ///

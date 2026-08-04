@@ -219,9 +219,6 @@ pub fn record_request_latency(
     }
 }
 
-/// Compute the slow-start traffic fraction for an upstream.
-///
-/// Check whether `url` should be ejected based on its consecutive 5xx count.
 /// Record a completed request's HTTP status code for per-upstream statistics.
 ///
 /// Increments the matching `responses_2xx`, `responses_4xx`, or `responses_5xx`
@@ -247,6 +244,7 @@ pub fn record_upstream_selected(registry: &UpstreamRegistry, url: &str) {
     entry.selected_last_secs = now_secs();
 }
 
+/// Check whether `url` should be ejected based on its consecutive 5xx count.
 ///
 /// If the threshold is reached the upstream is ejected for
 /// `base_time × 2^ejection_count` seconds, capped at `max_ejection_time_secs`.
@@ -310,11 +308,19 @@ pub fn maybe_eject(
     );
 }
 
+/// Compute the slow-start traffic fraction for an upstream.
+///
 /// Returns a value in `[0.0, 1.0]`:
 /// - `1.0` when slow-start is disabled or the ramp window has elapsed.
 /// - A value proportional to `elapsed / window_secs` during ramp-up.
 ///
 /// Callers should multiply their selection probability by this value.
+///
+/// **Not currently wired into any `LoadBalancingStrategy` implementation** —
+/// see the tracking issue for `healthCheck.slowStartSecs` filed from the
+/// 2026-08-03 integrity audit. Configuring `slowStartSecs` today has no
+/// effect on routing; this function and its data (`recovery_time_secs`) exist
+/// but nothing yet calls it outside its own unit tests.
 pub fn slow_start_fraction(entry: &UpstreamEntry, window_secs: u64) -> f64 {
     if window_secs == 0 {
         return 1.0;
@@ -703,8 +709,16 @@ pub fn spawn_health_checks(registry: Arc<UpstreamRegistry>, config: &AppConfig) 
 /// `healthCheck.prewarmConnections` configured.
 ///
 /// For each such route, sends `n` sequential HEAD requests to the configured
-/// health-check path immediately after startup, populating Pingora's connection
-/// pool so the first real user requests don't pay the TCP-handshake cost.
+/// health-check path immediately after startup.
+///
+/// **Known limitation** (2026-08-03 integrity audit, see tracking issue): each
+/// request currently goes through its own freshly-built, short-lived
+/// `reqwest::Client` (see `warmup_url`), which is dropped at the end of the
+/// loop body — it does not populate Pingora's own upstream connector pool
+/// used by `upstream_peer()` for real proxied traffic, so real user requests
+/// still pay the full TCP-handshake cost. Left in place because it's
+/// otherwise harmless (a handful of HEAD requests at startup); does not yet
+/// deliver the latency benefit its name implies.
 pub fn spawn_connection_warmup(config: &AppConfig) {
     for site in &config.sites {
         let Some(crate::config::schema::ProxyConfig::Routes(routes)) = &site.proxy else {
