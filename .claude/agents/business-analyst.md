@@ -43,8 +43,9 @@ decided against, or does it map to a known backlog item with constraints attache
   versions — blocks go stale, see CLAUDE.md "ИСПРАВЛЕНИЕ: предыдущие данные о блокировках").
 
 ## Inputs
-- The user's request / the GitHub issue body, `CLAUDE.md` (architectural decisions + backlog +
-  session history), `gh issue view <N>`.
+- The user's request / the GitHub issue body (supplied by the conductor — I have no `gh`
+  CLI or GitHub MCP tools myself, see `.claude/rules/index.md` "On a subagent tool gap"),
+  `CLAUDE.md` (architectural decisions + backlog + session history).
 
 ## Outputs (handoff)
 - A short brief: goal, scope, **acceptance criteria**, constraints, and explicitly which
