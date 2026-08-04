@@ -57,7 +57,12 @@ SonarCloud, CodeQL) that watches it.
   them. `CLAUDE.md` "Pipeline обработки запроса" for expected guard order; `CLAUDE.md`
   "Архитектурные решения" items #4 (Admin API loopback-only), #11 (IP filter before
   auth/rate-limit), #14 (rate limiter keys), #20 (FilterChain — `chain.rs` only).
-- Scanner output (`gh api .../dependabot/alerts`, Trivy/OSV/Semgrep job logs — trim before reporting).
+- Scanner output (Dependabot alerts, Trivy/OSV/Semgrep job logs — trim before reporting).
+  **I have no `gh` CLI or GitHub MCP tools myself — only the conductor does** (see
+  `.claude/rules/index.md` "On a subagent tool gap"); the conductor supplies this as part
+  of the task prompt. If I hit a genuine gap in what I've been given (e.g. `gh`/API access
+  isn't available in my sandbox for local verification either), I report back what's
+  missing rather than hunting for a credential or another way to reach it myself.
 
 ## Invariants to verify on relevant changes (non-exhaustive — see CLAUDE.md for the full list)
 - Admin API binds to **loopback only**.

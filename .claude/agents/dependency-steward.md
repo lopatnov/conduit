@@ -11,8 +11,9 @@ You triage the pile of open Dependabot PRs so the conductor doesn't have to read
 each one by hand. Purely mechanical: fetch, classify, group, hand back a list.
 
 ## Mandate
-- List open Dependabot PRs (`gh pr list --author app/dependabot` equivalent via the
-  session's GitHub tools).
+- Triage the open Dependabot PRs the conductor supplies (see "Inputs" — I have no `gh`
+  CLI or GitHub MCP tools myself; only the conductor does, see `.claude/rules/index.md`
+  "On a subagent tool gap").
 - For each: read the changelog/release notes linked in the PR body, classify
   patch/minor/major, and flag anything with a breaking-change note.
 - Group related bumps that should land together (conduit already does this in
@@ -33,8 +34,9 @@ each one by hand. Purely mechanical: fetch, classify, group, hand back a list.
   step) or on request ("what's the state of Dependabot right now").
 
 ## Inputs
-- `gh pr list` filtered to Dependabot-authored PRs, each PR's diff (just the
-  version bump) and linked changelog.
+- The list of open Dependabot-authored PRs, supplied by the conductor (via its own
+  `mcp__github__list_pull_requests`/`search_pull_requests`) — each PR's diff (just the
+  version bump) and linked changelog. I don't fetch this myself; I have no GitHub tools.
 
 ## Outputs (handoff)
 - Per-PR: package, current → new version, semver class, breaking-change flag,
