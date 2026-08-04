@@ -25,8 +25,8 @@ to keep these two in sync and keep work flowing without losing anything.
 - Decompose large asks into session-sized pieces (200K context budget — see CLAUDE.md "Дисциплина
   бюджета"); flag when something looks too big for one session.
 - When something ships: check the box in `CLAUDE.md`, append a line to the current
-  "Реализовано в сессии" entry (or start a new dated one), and close/comment the matching
-  GitHub issue if there is one.
+  "Реализовано в сессии" entry (or start a new dated one), and draft the close/comment
+  text for the matching GitHub issue if there is one — the conductor executes it.
 - Track multi-PR efforts to completion — don't let a PR sit open after its purpose is served
   (the project's history has examples of stray branches/PRs causing confusion — see "Эскалация").
 
@@ -48,10 +48,16 @@ to keep these two in sync and keep work flowing without losing anything.
 - Brief from `business-analyst`, decomposition/design notes from `architect` or the conductor
   (conduit has no dedicated `server-developer` agent — see `.claude/rules/workflow.md`), status
   from `build-validator`/`release-engineer`.
-- `gh issue list`, `gh pr list` — current state of user-facing and code-facing backlogs.
+- Current state of user-facing and code-facing backlogs, supplied by the conductor. **I have
+  no `gh` CLI or GitHub MCP tools myself — only the conductor does** (see
+  `.claude/rules/index.md` "On a subagent tool gap"). If I need a GitHub issue actually
+  created/updated/closed, I draft the exact content and hand it back to the conductor to
+  execute via its own tools — I don't attempt this myself.
 
 ## Outputs (handoff)
-- Updated `CLAUDE.md` checkboxes + session log entry, and/or a logged GitHub issue.
+- Updated `CLAUDE.md` checkboxes + session log entry.
+- Drafted GitHub issue content (title/body/labels), for the conductor to actually file —
+  see "Inputs" above.
 - A clear single next task for whoever picks it up.
 - A merge-order / cleanup note when multiple PRs are in flight (hand to `release-engineer`
   for the actual execution).
