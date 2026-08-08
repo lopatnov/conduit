@@ -6,7 +6,7 @@ members  = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version    = "2.2.0"
+version    = "2.3.0"
 edition    = "2021"
 license    = "Apache-2.0"
 repository = "https://github.com/lopatnov/conduit"
@@ -17,11 +17,12 @@ repository = "https://github.com/lopatnov/conduit"
 # feature unification silently pulling in mismatched feature sets later.
 [workspace.dependencies]
 # --- Pingora core ---
-pingora                = { version = "0.8", features = ["rustls"] }
-pingora-core           = { version = "0.8", features = ["rustls"] }
-pingora-proxy          = { version = "0.8", features = ["rustls"] }
-pingora-load-balancing = { version = "0.8", features = ["rustls"] }
-pingora-cache          = { version = "0.8", features = ["rustls"] }
+# pingora and pingora-load-balancing dropped (#117, integrity audit): declared
+# but zero references anywhere in src/ — pingora-core/-proxy/-cache cover
+# everything actually used.
+pingora-core  = { version = "0.8", features = ["rustls"] }
+pingora-proxy = { version = "0.8", features = ["rustls"] }
+pingora-cache = { version = "0.8", features = ["rustls"] }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -160,11 +161,9 @@ path = "src/lib.rs"
 
 [dependencies]
 # --- Pingora core ---
-pingora.workspace                = true
-pingora-core.workspace           = true
-pingora-proxy.workspace          = true
-pingora-load-balancing.workspace = true
-pingora-cache.workspace          = true
+pingora-core.workspace  = true
+pingora-proxy.workspace = true
+pingora-cache.workspace = true
 
 # --- Config & parsing ---
 serde.workspace               = true
