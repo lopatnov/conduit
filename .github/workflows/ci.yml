@@ -175,13 +175,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "number=$EVENT_PR_NUMBER" >> "$GITHUB_OUTPUT"
           else
             number=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/pulls?head=${{ github.repository_owner }}:${{ github.ref_name }}&state=open" \
+              "https://api.github.com/repos/$REPO/pulls?head=$REPO_OWNER:$REF_NAME&state=open" \
               | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['number'] if d else '')")
             echo "number=$number" >> "$GITHUB_OUTPUT"
           fi
