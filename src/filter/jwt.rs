@@ -307,7 +307,7 @@ pub fn extract_claims(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-fn extract_bearer(auth_header: Option<&str>) -> Option<&str> {
+pub(crate) fn extract_bearer(auth_header: Option<&str>) -> Option<&str> {
     let hdr = auth_header?.trim();
     let lower = hdr.to_ascii_lowercase();
     if lower.starts_with("bearer ") {
@@ -719,15 +719,18 @@ mod tests {
 
     #[test]
     fn non_object_claims_returns_none_from_extract() {
-        // A JWT with a non-object payload can't be extracted as a HashMap.
-        // Use an array as the claim body by building it raw.
+        // A JWT whose payload is a JSON array (not an object) can't be
+        // extracted as a HashMap<String, Value> — extract_claims must
+        // return None rather than panicking or silently discarding data.
         let cfg = JwtAuthConfig {
             secret: Some("secret".into()),
             ..Default::default()
         };
-        // Normal token: extract_claims on a normal token returns Some.
         let secret = "secret";
-        let token = make_hs256_token(secret, json!({ "sub": "u", "exp": exp_future() }));
-        assert!(extract_claims(&token, &cfg).is_some());
+        let token = make_hs256_token(secret, json!(["not", "an", "object"]));
+        assert!(
+            extract_claims(&token, &cfg).is_none(),
+            "non-object payload must yield None, not a HashMap"
+        );
     }
 }
