@@ -179,7 +179,14 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 
 #### Высокий приоритет
 
-- [x] **JWT validation with JWKS URL** — `jwtAuth: { secret? | jwksUrl?, audience?, issuer?, skipPaths? }`. HS256 + RS256/ES256 (JWKS). `JwtGuard` в filter chain (6c, после apiKey). `src/filter/jwt.rs`. JWKS кэш per-URL с TTL. `jsonwebtoken = "9"`. 8 unit + 6 integration тестов.
+- [x] **JWT validation with JWKS URL** — `jwtAuth: { secret? | jwksUrl?, audience?, issuer?, skipPaths? }`. HS256 + RS256/ES256 (JWKS). `JwtGuard` в filter chain (6c, после apiKey). `src/filter/jwt.rs`. JWKS кэш per-URL с TTL. `jsonwebtoken = "10"`. 20 unit + 6 integration тестов.
+  **Уточнение 2026-08-10 (integrity audit, Step 1c)**: все 20 unit-тестов и все 6
+  integration-тестов покрывают только HS256 — RS256/ES256-путь через JWKS (парсинг
+  `Jwk`, `kid`-матчинг, выбор алгоритма) вообще не тестируется, см.
+  [issue #164](https://github.com/lopatnov/conduit/issues/164). Отдельно найдено: JWKS
+  refresh — блокирующий синхронный fetch внутри async guard, без single-flight и без
+  fallback на протухшие-по-TTL ключи при недоступности endpoint'а — см.
+  [issue #163](https://github.com/lopatnov/conduit/issues/163).
 - [x] **Conditional error responses** — `write_denied()` в `handler/response.rs`: Accept: application/json → JSON body {"error":"Unauthorized","status":401}; иначе empty.
 
 #### Средний приоритет
@@ -785,6 +792,7 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 
 | Date | Area audited | Result | Notes |
 |------|---------------|--------|-------|
+| 2026-08-10 | `src/filter/jwt.rs` (JWT bearer-token auth, unchanged functionally since v1.1.0/2026-06-06 — only a clippy fix touched it since) | 2 real behavioral gaps + 6 low-risk doc/test issues | Second Step 1c firing (cadence gate satisfied: ~5 firings since the 08-03 audit, Step 0/1 both idle). Root finding: JWKS refresh is a synchronous blocking fetch inside the async `JwtGuard`, with no single-flight lock and no fallback to stale-but-still-valid keys on refetch failure — despite the module doc and `JwtAuthConfig.jwksUrl` doc both claiming a background-refresh design that doesn't exist. Filed as [#163](https://github.com/lopatnov/conduit/issues/163) (needs design judgment — recommended adapting the existing `CACHE_LOCK`/stale-while-revalidate pattern rather than inventing a new one). Companion gap: the RS256/ES256/JWKS code path — literally half of what the feature advertises — has zero test coverage (all 20 unit + 6 integration tests are HS256-only); filed as [#164](https://github.com/lopatnov/conduit/issues/164). Low-risk fixes shipped directly on `fix/jwt-audit-gaps-integrity` (off `main`, not the migration branch): case-sensitive `strip_prefix("Bearer ")` in claim-template extraction reusing the already-tested case-insensitive `extract_bearer` instead of a second ad hoc parse; `jwksRefreshSecs` minimum (60s, matches `schema/conduit.schema.json`) now enforced in `validate.rs` (previously schema-only, unenforced at runtime); docs updated for JWKS-unreachable-after-TTL fail-closed behavior and non-string-claim JSON-text serialization in `{{ jwt.<claim> }}` templates (both previously undocumented); a mislabeled test (`non_object_claims_returns_none_from_extract`) that silently tested the wrong thing rewritten to actually build a non-object-payload JWT; stale `jsonwebtoken v9`/test-count claims in this file corrected. |
 | 2026-08-03 | `src/proxy/health.rs` (unchanged since v1.1.0/PR #67 — oldest actively-used file in the codebase) | 4 real behavioral gaps + 4 low-risk doc/comment issues | First-ever Step 1c firing (cadence gate finally satisfied: Step 0 idle, Step 1 found nothing to triage). Root finding: passive health tracking (Outlier Detection, Peak EWMA, per-peer response stats) and true circuit-breaker enforcement (skipping a single at-limit upstream) only actually work for `LoadBalanceStrategy::LeastConn` or when `maxConnectionsPerUpstream` happens to also be set — for the `RoundRobin` default and 4 other strategies without a connection cap, several `[x]`-marked "done" backlog items silently no-op. Also found `slowStartSecs` fully unwired (zero effect) and `prewarmConnections` warming a throwaway client instead of Pingora's real pool. Doc/comment-only fixes (scrambled doc-comment un-scramble, honest known-limitation notes, 2 stale CLAUDE.md backlog claims corrected) shipped directly via [PR #154](https://github.com/lopatnov/conduit/pull/154) per the low-risk/unambiguous routing rule. The 4 behavioral gaps needing design judgment filed as [#155](https://github.com/lopatnov/conduit/issues/155) (passive tracking gate), [#156](https://github.com/lopatnov/conduit/issues/156) (circuit-breaker enforcement gate, cross-references #155), [#157](https://github.com/lopatnov/conduit/issues/157) (`slowStartSecs` dead code), [#158](https://github.com/lopatnov/conduit/issues/158) (`prewarmConnections` doesn't warm the real pool) — ordinary repo backlog, not #114 sub-issues. Note: the agent originally delegated to file these issues (`scrum-master`) turned out not to have GitHub MCP tools in its grant, fell back to raw-credential API probing (blocked by egress policy, no data exposed) — flagged as a security-relevant subagent-behavior incident and routed to `security-engineer` for review rather than self-cleared; issues were filed directly by the conductor's own properly-scoped tools instead. |
 
 ---
@@ -852,7 +860,9 @@ Tokio "full" features уже включены. Ключевые находки �
 - Cache lock: Pingora уже имеет `pingora-cache/src/lock.rs` → `WritePermit` — использовать его
 - `retry.budgetPercent`: мягкое ограничение, TOCTOU гонки допустимы
 - `proxy.*.mirror`: V1 = headers only, тело не буферируется. V2 = буферировать < 1MB
-- JWT: jsonwebtoken v9 имеет leeway 60s по умолчанию. Expired test должен просрочить > 60s
+- JWT: jsonwebtoken v10 имеет leeway 60s по умолчанию (проверено против vendored source,
+  `validation.rs:129`, `leeway: 60` — поведение не изменилось при миграции v9→v10).
+  Expired test должен просрочить > 60s
 - `reqwest` повышен в main deps для mirroring + JWKS + Forward Auth. features = ["json", "rustls"]
 - JWKS refresh: синхронный std::thread::spawn + new_current_thread runtime (как ACME)
 - ForwardAuth: process-wide `OnceLock<reqwest::Client>` в `forward_auth_client()` — не per-request

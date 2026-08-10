@@ -827,6 +827,17 @@ fn validate_jwt_auth(
             ));
         }
     }
+    // Matches schema/conduit.schema.json's documented minimum: below 60s, the
+    // JWKS cache (currently a synchronous per-request fetch on expiry — #163)
+    // would refetch on nearly every request instead of caching meaningfully.
+    if let Some(refresh) = cfg.jwks_refresh_secs {
+        if refresh < 60 {
+            errors.push(ValidationError::new(
+                format!("{prefix}.jwksRefreshSecs"),
+                "jwtAuth.jwksRefreshSecs must be >= 60",
+            ));
+        }
+    }
 }
 
 fn validate_middleware(
@@ -2552,6 +2563,31 @@ mod tests {
     fn jwt_auth_with_invalid_jwks_url_rejected() {
         let e = errs(r#"{ "port": 8080, "jwtAuth": { "jwksUrl": "not-a-url" } }"#);
         assert!(!e.is_empty(), "invalid jwksUrl must be rejected");
+    }
+
+    #[test]
+    fn jwt_auth_jwks_refresh_secs_below_minimum_rejected() {
+        let e = errs(
+            r#"{ "port": 8080, "jwtAuth": {
+                 "jwksUrl": "https://a.com/.well-known/jwks.json",
+                 "jwksRefreshSecs": 5
+            } }"#,
+        );
+        assert!(
+            e.iter().any(|err| err.path.contains("jwksRefreshSecs")),
+            "jwksRefreshSecs below 60 must be rejected: {e:?}"
+        );
+    }
+
+    #[test]
+    fn jwt_auth_jwks_refresh_secs_at_minimum_valid() {
+        let e = errs(
+            r#"{ "port": 8080, "jwtAuth": {
+                 "jwksUrl": "https://a.com/.well-known/jwks.json",
+                 "jwksRefreshSecs": 60
+            } }"#,
+        );
+        assert!(e.is_empty(), "jwksRefreshSecs=60 must pass: {e:?}");
     }
 
     // ── check_cert_expiry (via validate_tls) ─────────────────────────────────

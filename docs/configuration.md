@@ -1961,6 +1961,14 @@ jwtAuth:
 }
 ```
 
+JWKS keys are fetched on demand and cached for `jwksRefreshSecs` (minimum
+60s, enforced). If the JWKS endpoint is unreachable when the cache needs to
+refresh, requests fail closed — every JWT request returns 401 until the
+endpoint recovers, even for tokens signed with a key already in the (stale)
+cache. Plan JWKS endpoint availability accordingly. See
+[#163](https://github.com/lopatnov/conduit/issues/163) for planned
+background-refresh + stale-fallback behavior.
+
 ### Shared secret (HS256)
 
 ```yaml
@@ -1980,7 +1988,7 @@ jwtAuth:
 | ----------------- | -------- | ------- | ------------------------------------------------------- |
 | `secret`          | string   | —       | HS256 shared secret (mutually exclusive with `jwksUrl`) |
 | `jwksUrl`         | string   | —       | JWKS endpoint URL (RS256 / ES256)                       |
-| `jwksRefreshSecs` | number   | `3600`  | JWKS key refresh interval                               |
+| `jwksRefreshSecs` | number   | `3600`  | JWKS key refresh interval (minimum `60`)                |
 | `audience`        | string[] | —       | Required `aud` claims                                   |
 | `issuer`          | string   | —       | Required `iss` claim                                    |
 | `skipPaths`       | string[] | —       | Paths that bypass JWT validation                        |
@@ -2010,7 +2018,11 @@ requestTransform:
 }
 ```
 
-Unknown claims expand to empty string. See [Request / Response Transform](#request--response-transform).
+Unknown claims expand to empty string. Non-string claims (numbers, booleans,
+arrays, objects) expand to their JSON text representation — e.g. a `roles`
+claim holding `["admin", "editor"]` expands `{{ jwt.roles }}` to the literal
+text `["admin","editor"]`, brackets and quotes included. See
+[Request / Response Transform](#request--response-transform).
 
 See [`examples/jwt-auth.yaml`](../examples/jwt-auth.yaml)
 
@@ -2357,6 +2369,10 @@ Available in `requestTransform.setHeaders` after JWT validation:
 | `{{ jwt.email }}` | `email` | Email claim (if IdP includes it)                    |
 | `{{ jwt.iss }}`   | `iss`   | Token issuer                                        |
 | any claim         | any     | `{{ jwt.<claim> }}` — unknown claims expand to `""` |
+
+Non-string claims (numbers, booleans, arrays, objects) expand to their JSON
+text representation — e.g. `{{ jwt.roles }}` for `roles: ["admin", "editor"]`
+expands to the literal text `["admin","editor"]`.
 
 ---
 

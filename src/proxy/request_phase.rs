@@ -1962,7 +1962,7 @@ fn jwt_claims_from_session(
         .headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())?;
-    let token = auth_hdr.strip_prefix("Bearer ").map(str::trim)?;
+    let token = crate::filter::jwt::extract_bearer(Some(auth_hdr))?;
     crate::filter::jwt::extract_claims(token, jwt_cfg)
 }
 
