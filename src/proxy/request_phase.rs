@@ -571,6 +571,8 @@ impl ConduitProxy {
             chain = chain.push(RateLimitGuard {
                 cfg,
                 site_label: guards.site_label.clone(),
+                #[cfg(feature = "redis")]
+                redis_rate_limiter: self.state.redis_rate_limiter.clone(),
             });
         }
 
@@ -640,8 +642,6 @@ impl ConduitProxy {
             extra_headers: &guards.extra_headers,
             inflight: &self.state.inflight,
             rate_limiter: &self.state.rate_limiter,
-            #[cfg(feature = "redis")]
-            redis_rate_limiter: self.state.redis_rate_limiter.as_ref(),
             ip_conn_counts: &self.state.ip_conn_counts,
             client_ip: guards.client_ip,
         };

@@ -71,10 +71,6 @@ pub struct FilterContext<'a> {
     pub inflight: &'a AtomicUsize,
     /// In-memory rate-limit token buckets.
     pub rate_limiter: &'a RateLimiter,
-    /// Optional Redis-backed rate limiter (may be `None` at startup).
-    /// Only available when compiled with `--features redis`.
-    #[cfg(feature = "redis")]
-    pub redis_rate_limiter: Option<&'a Arc<RedisRateLimiter>>,
     /// Per-client-IP concurrent connection counts (nginx limit_conn pattern).
     pub ip_conn_counts: &'a dashmap::DashMap<String, AtomicUsize>,
     /// Extracted client IP used for per-IP connection limiting.
@@ -502,6 +498,10 @@ pub struct RateLimitGuard {
     /// Label used for `conduit_rate_limit_rejected_total{site=…}`.
     /// Typically `"host:port"` or `"*"` for catch-all sites.
     pub site_label: String,
+    /// Optional Redis-backed rate limiter (may be `None` at startup).
+    /// Only available when compiled with `--features redis`.
+    #[cfg(feature = "redis")]
+    pub redis_rate_limiter: Option<Arc<RedisRateLimiter>>,
 }
 
 #[async_trait]
@@ -512,7 +512,7 @@ impl RequestFilter for RateLimitGuard {
             ctx.session,
             ctx.rate_limiter,
             #[cfg(feature = "redis")]
-            ctx.redis_rate_limiter,
+            self.redis_rate_limiter.as_ref(),
             #[cfg(not(feature = "redis"))]
             None,
         )
