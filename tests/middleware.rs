@@ -245,8 +245,7 @@ fn demo_rhai_api_gate_missing_key_returns_401() {
         "api-gate.rhai",
         include_str!("../examples/middleware-demo/api-gate.rhai"),
     );
-    let echo_port = free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
     let port = free_port();
     let admin_port = free_port();
     let cfg = api_gate_config(port, admin_port, echo_port, &script, "secret");
@@ -268,8 +267,7 @@ fn demo_rhai_api_gate_wrong_key_returns_403() {
         "api-gate.rhai",
         include_str!("../examples/middleware-demo/api-gate.rhai"),
     );
-    let echo_port = free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
     let port = free_port();
     let admin_port = free_port();
     let cfg = api_gate_config(port, admin_port, echo_port, &script, "correct-key");
@@ -293,8 +291,7 @@ fn demo_rhai_api_gate_correct_key_reaches_upstream() {
         "api-gate.rhai",
         include_str!("../examples/middleware-demo/api-gate.rhai"),
     );
-    let echo_port = free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
     let port = free_port();
     let admin_port = free_port();
     let cfg = api_gate_config(port, admin_port, echo_port, &script, "correct-key");
@@ -330,8 +327,7 @@ fn demo_rhai_response_enricher_adds_served_by() {
         "response-enricher.rhai",
         include_str!("../examples/middleware-demo/response-enricher.rhai"),
     );
-    let echo_port = free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
 
     let port = free_port();
     let admin_port = free_port();
@@ -378,8 +374,7 @@ fn demo_wasm_header_injector_injects_x_wasm_plugin() {
     );
 
     // Echo server: returns the headers it received as JSON body.
-    let echo_port = free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
 
     let port = free_port();
     let admin_port = free_port();
@@ -428,8 +423,7 @@ fn demo_wasm_response_tagger_adds_processed_by() {
         "response-tagger.wasm",
         include_str!("../examples/middleware-demo/response-tagger.wat"),
     );
-    let echo_port = free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
 
     let port = free_port();
     let admin_port = free_port();
@@ -513,8 +507,7 @@ true
 "#,
     );
 
-    let echo_port = free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
     let port = free_port();
     let admin_port = free_port();
     let cfg = serde_json::json!({
