@@ -4,33 +4,31 @@ use pingora_core::Result;
 use pingora_proxy::Session;
 use tokio::fs;
 
-use crate::config::schema::{FallbackConfig, FallbackRule, SiteConfig};
+use crate::config::schema::{FallbackConfig, FallbackRule};
 use crate::handler::response::write_response;
 use crate::handler::LocalHandlerImpl;
 
 /// Handler struct for fallback responses (404, SPA shell, custom body).
 pub struct FallbackHandler {
-    /// Site config to resolve the `fallback` rule from; `None` → plain 404.
-    pub site: Option<SiteConfig>,
+    /// The `fallback` rule to serve; `None` → plain 404.
+    pub fallback: Option<FallbackConfig>,
     pub extra_headers: Vec<(String, String)>,
 }
 
 #[async_trait]
 impl LocalHandlerImpl for FallbackHandler {
     async fn handle(&mut self, session: &mut Session) -> Result<()> {
-        handle_fallback(session, self.site.as_ref(), &self.extra_headers).await
+        handle_fallback(session, self.fallback.as_ref(), &self.extra_headers).await
     }
 }
 
 pub async fn handle_fallback(
     session: &mut Session,
-    site: Option<&SiteConfig>,
+    fallback: Option<&FallbackConfig>,
     extra: &[(String, String)],
 ) -> Result<()> {
-    if let Some(site) = site {
-        if let Some(fb) = &site.fallback {
-            return handle_configured(session, fb, extra).await;
-        }
+    if let Some(fb) = fallback {
+        return handle_configured(session, fb, extra).await;
     }
     write_response(
         session,
