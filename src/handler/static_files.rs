@@ -13,7 +13,7 @@ use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 
-use crate::config::schema::{SiteConfig, StaticOptions};
+use crate::config::schema::{FallbackConfig, StaticOptions};
 use crate::filter::compression::CompressOptions;
 use crate::handler::LocalHandlerImpl;
 use crate::proxy::ctx::AcceptEncoding;
@@ -30,8 +30,8 @@ pub struct StaticFileHandler {
     pub extra_headers: Vec<(String, String)>,
     pub compress_opts: Option<CompressOptions>,
     pub accept_enc: AcceptEncoding,
-    /// Site config used to resolve the fallback when the file is not found.
-    pub fallback_site: Option<SiteConfig>,
+    /// Fallback rule to serve when the file is not found.
+    pub fallback: Option<FallbackConfig>,
 }
 
 #[async_trait]
@@ -51,7 +51,7 @@ impl LocalHandlerImpl for StaticFileHandler {
         if !found {
             crate::handler::fallback::handle_fallback(
                 session,
-                self.fallback_site.as_ref(),
+                self.fallback.as_ref(),
                 &self.extra_headers,
             )
             .await?;

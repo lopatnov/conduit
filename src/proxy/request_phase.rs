@@ -939,7 +939,7 @@ impl ConduitProxy {
                     .get(site_idx)
                     .and_then(|s| s.compression.as_ref())
                     .and_then(compression::effective);
-                let fallback_site = config.sites.get(site_idx).cloned();
+                let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
                 let accept_enc = ctx
                     .as_ref()
                     .map(|c| c.accept_enc.clone())
@@ -965,16 +965,16 @@ impl ConduitProxy {
                     extra_headers: extra,
                     compress_opts,
                     accept_enc,
-                    fallback_site,
+                    fallback,
                 }))
             }
 
             HandlerKind::Fallback => {
                 let config = self.state.config.load();
                 let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
-                let site = config.sites.get(site_idx).cloned();
+                let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
                 Some(Box::new(fallback::FallbackHandler {
-                    site,
+                    fallback,
                     extra_headers: extra,
                 }))
             }

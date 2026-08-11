@@ -159,7 +159,7 @@ fn write_access_log_entry(proxy: &ConduitProxy, session: &Session, ctx: &Option<
     logging::write_access_log(
         session,
         start_time,
-        site,
+        site.and_then(|s| s.logging.as_ref()),
         &proxy.state.log_writer,
         &logging::AccessLogContext {
             request_id,
