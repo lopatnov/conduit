@@ -434,8 +434,7 @@ fn mask_errors_false_passes_upstream_body_through() {
 #[test]
 #[serial]
 fn priority_routing_below_threshold_serves_all() {
-    let echo_port = common::free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
 
     let port = common::free_port();
     let admin_port = common::free_port();
@@ -470,8 +469,7 @@ fn priority_routing_below_threshold_serves_all() {
 #[test]
 #[serial]
 fn priority_routing_above_threshold_sheds_low_priority() {
-    let echo_port = common::free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
 
     let port = common::free_port();
     let admin_port = common::free_port();
@@ -514,8 +512,7 @@ fn priority_routing_above_threshold_sheds_low_priority() {
 #[test]
 #[serial]
 fn x_priority_header_from_client_does_not_bypass_load_shedding() {
-    let echo_port = common::free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
 
     let port = common::free_port();
     let admin_port = common::free_port();
@@ -558,8 +555,7 @@ fn x_priority_header_from_client_does_not_bypass_load_shedding() {
 #[test]
 #[serial]
 fn x_priority_header_stripped_before_upstream() {
-    let echo_port = common::free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
 
     let port = common::free_port();
     let admin_port = common::free_port();
@@ -599,8 +595,7 @@ fn x_priority_header_stripped_before_upstream() {
 #[serial]
 #[cfg(feature = "consumers")]
 fn x_consumer_id_from_client_is_stripped() {
-    let echo_port = common::free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
 
     let port = common::free_port();
     let admin_port = common::free_port();
@@ -651,8 +646,7 @@ fn x_consumer_id_from_client_is_stripped() {
 #[test]
 #[serial]
 fn allowed_hosts_rejects_bad_host() {
-    let echo_port = common::free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
 
     let port = common::free_port();
     let admin_port = common::free_port();
@@ -688,8 +682,7 @@ fn allowed_hosts_rejects_bad_host() {
 #[test]
 #[serial]
 fn allowed_hosts_passes_good_host() {
-    let echo_port = common::free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
 
     let port = common::free_port();
     let admin_port = common::free_port();
@@ -726,8 +719,7 @@ fn allowed_hosts_passes_good_host() {
 #[test]
 #[serial]
 fn default_allowed_hosts_rejects_mismatched_host() {
-    let echo_port = common::free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
 
     let port = common::free_port();
     let admin_port = common::free_port();
@@ -761,8 +753,7 @@ fn default_allowed_hosts_rejects_mismatched_host() {
 #[test]
 #[serial]
 fn default_allowed_hosts_passes_matching_host() {
-    let echo_port = common::free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
 
     let port = common::free_port();
     let admin_port = common::free_port();
@@ -1100,8 +1091,7 @@ fn get_requests_are_retried_on_5xx() {
 #[test]
 #[serial]
 fn rate_limit_burst_allows_burst_requests() {
-    let echo_port = common::free_port();
-    let _echo = common::start_echo_upstream(echo_port);
+    let (echo_port, _echo) = common::start_echo_upstream();
 
     let port = common::free_port();
     let admin_port = common::free_port();

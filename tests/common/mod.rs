@@ -173,21 +173,28 @@ fn probe_admin(url: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Start a minimal HTTP echo server on `port`.
+/// Start a minimal HTTP echo server on an OS-assigned free port.
 ///
 /// Responds to every request with a JSON body:
 /// ```json
 /// { "method": "GET", "path": "/...", "headers": { "x-foo": "bar", ... } }
 /// ```
-/// Returns a [`std::thread::JoinHandle`] that keeps the server alive as long as
-/// the handle is in scope.  Drop it to shut down the server.
-pub fn start_echo_upstream(port: u16) -> std::thread::JoinHandle<()> {
+/// Binds to port 0 itself (rather than taking a pre-selected port from
+/// [`free_port`]) so there's no TOCTOU gap between choosing a port and
+/// actually binding it — the exact race `free_port`'s own doc comment
+/// describes, which still occurs *across* test binaries since each binary's
+/// atomic counter independently cycles the same 10000-19999 range.
+///
+/// Returns the bound port and a [`std::thread::JoinHandle`] that keeps the
+/// server alive as long as the handle is in scope.  Drop it to shut down
+/// the server.
+pub fn start_echo_upstream() -> (u16, std::thread::JoinHandle<()>) {
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
-    let listener = TcpListener::bind(format!("127.0.0.1:{port}")).expect("echo bind");
-    // Wait until bind succeeds, then spawn.
-    std::thread::spawn(move || {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("echo bind");
+    let port = listener.local_addr().expect("echo local_addr").port();
+    let handle = std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             // Read the HTTP request.
@@ -224,7 +231,8 @@ pub fn start_echo_upstream(port: u16) -> std::thread::JoinHandle<()> {
             );
             let _ = stream.write_all(response.as_bytes());
         }
-    })
+    });
+    (port, handle)
 }
 
 /// Return a free TCP port on 127.0.0.1.
