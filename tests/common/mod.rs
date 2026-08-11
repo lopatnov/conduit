@@ -185,9 +185,13 @@ fn probe_admin(url: &str) -> bool {
 /// describes, which still occurs *across* test binaries since each binary's
 /// atomic counter independently cycles the same 10000-19999 range.
 ///
-/// Returns the bound port and a [`std::thread::JoinHandle`] that keeps the
-/// server alive as long as the handle is in scope.  Drop it to shut down
-/// the server.
+/// Returns the bound port and a [`std::thread::JoinHandle`] for the server
+/// thread. The thread loops on `listener.incoming()` with no shutdown
+/// signal, so dropping the handle only detaches it — the thread and its
+/// listening socket stay alive until the test process itself exits, not
+/// until the handle drops. That's fine here: each test binary is short-lived
+/// and the port is only ever reused by later test *processes*, never by
+/// this same one.
 pub fn start_echo_upstream() -> (u16, std::thread::JoinHandle<()>) {
     use std::io::{Read, Write};
     use std::net::TcpListener;
