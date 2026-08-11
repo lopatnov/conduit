@@ -139,7 +139,18 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 
 - [x] **X-Request-ID injection** — `XRequestIdGuard` в `filter/chain.rs`. UUID v4 если absent, forward если present. Первый guard в FilterChain.
 - [x] **Outlier Detection** — `outlierDetection: { consecutive5xx, baseEjectionTimeSecs, maxEjectionTimeSecs, maxEjectionPercent }`. `maybe_eject()` + `UpstreamEntry.ejected_until_secs/ejection_count`. Exponential backoff. Max ejection % enforcement.
-- [x] **Circuit Breaker** — `healthCheck.maxConnectionsPerUpstream: u64`. When ALL healthy upstreams ≥ limit → `LocalHandler::Overloaded` → 503. `conn_inc_if_below()` + `pick_least_conn_with_max()` in health.rs. Works for all LB strategies. 2 integration tests.
+  **Caveat found 2026-08-03 (integrity audit, Step 1c)**: only actually tracks/ejects
+  when strategy is `LeastConn` or `healthCheck.maxConnectionsPerUpstream` is also set
+  (gated by `RequestCtx.proxy_upstream_url`) — no-ops for the other 6 strategies
+  otherwise, including the `RoundRobin` default. Tracked as a GitHub issue, not yet fixed.
+- [x] **Circuit Breaker** — `healthCheck.maxConnectionsPerUpstream: u64`. When ALL healthy upstreams ≥ limit → `LocalHandler::Overloaded` → 503 — this part holds for every strategy. 2 integration tests.
+  **Correction 2026-08-03 (integrity audit, Step 1c)**: "Works for all LB strategies"
+  was inaccurate — the *all-maxed → 503* case holds everywhere, but skipping a single
+  at-limit upstream in favor of under-capacity peers is only guaranteed for `LeastConn`
+  today (it always picks true min-load). `conn_inc_if_below()`/`pick_least_conn_with_max()`
+  are dead code (never called outside their own unit tests) — the real live mechanism is
+  inline in `router.rs` (`under_limit` computed then discarded, `:374-397`). Tracked as a
+  GitHub issue, not yet fixed.
 - [x] **Forward Auth** — `forwardAuth: { url, requestHeaders?, responseHeaders?, timeoutMs?, skipPaths? }`. `ForwardAuthGuard` (6d в chain). Subrequest через `reqwest::Client` singleton. 2xx=allow+inject headers, 4xx/5xx=deny, unreachable=fail closed. 5 integration tests.
 - [x] **Service Failover** — `ProxyRouteConfig.backup`. Когда все primary unhealthy → route to backup. Логика в `resolve_proxy()`.
 - [x] **Inflight request limit** — `LimitsConfig.maxInflightRequests`. `LimitsGuard` проверяет `inflight` перед прочими лимитами. 503 при превышении.
@@ -168,7 +179,14 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 
 #### Высокий приоритет
 
-- [x] **JWT validation with JWKS URL** — `jwtAuth: { secret? | jwksUrl?, audience?, issuer?, skipPaths? }`. HS256 + RS256/ES256 (JWKS). `JwtGuard` в filter chain (6c, после apiKey). `src/filter/jwt.rs`. JWKS кэш per-URL с TTL. `jsonwebtoken = "9"`. 8 unit + 6 integration тестов.
+- [x] **JWT validation with JWKS URL** — `jwtAuth: { secret? | jwksUrl?, audience?, issuer?, skipPaths? }`. HS256 + RS256/ES256 (JWKS). `JwtGuard` в filter chain (6c, после apiKey). `src/filter/jwt.rs`. JWKS кэш per-URL с TTL. `jsonwebtoken = "10"`. 20 unit + 6 integration тестов.
+  **Уточнение 2026-08-10 (integrity audit, Step 1c)**: все 20 unit-тестов и все 6
+  integration-тестов покрывают только HS256 — RS256/ES256-путь через JWKS (парсинг
+  `Jwk`, `kid`-матчинг, выбор алгоритма) вообще не тестируется, см.
+  [issue #164](https://github.com/lopatnov/conduit/issues/164). Отдельно найдено: JWKS
+  refresh — блокирующий синхронный fetch внутри async guard, без single-flight и без
+  fallback на протухшие-по-TTL ключи при недоступности endpoint'а — см.
+  [issue #163](https://github.com/lopatnov/conduit/issues/163).
 - [x] **Conditional error responses** — `write_denied()` в `handler/response.rs`: Accept: application/json → JSON body {"error":"Unauthorized","status":401}; иначе empty.
 
 #### Средний приоритет
@@ -571,10 +589,14 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
   `TokenBucket.passed/rejected` + новый endpoint `rate_limits_handler()` в `admin/api.rs`.
   Источник: `ngx_http_limit_req_module.c` — `ngx_http_limit_req_stats_t`.
 
-- [x] **Upstream "busy" state** — поле `"state": "up"|"busy"|"unavailable"|"recovering"`
-  в `GET /upstreams`. "busy" = `conn_count >= maxConnectionsPerUpstream`.
-  `conn_count` уже есть в `UpstreamEntry`; нужно только добавить поле в API-ответ.
+- [x] **Upstream "busy" state** — поле `"state"` в `GET /upstreams`.
   Источник: `ngx_http_upstream_zone_module.c` line 1172.
+  **Исправлено 2026-08-03 (integrity audit, Step 1c)**: реально отгруженный enum —
+  `"ejected"|"half-open"|"unhealthy"|"busy"|"healthy"` (`admin/api.rs:695-705`),
+  не `"up"|"busy"|"unavailable"|"recovering"` как было записано изначально; `"busy"`
+  значит `active_conns > 0` (есть нагрузка), а не именно `conn_count >=
+  maxConnectionsPerUpstream`. Совпадает с `docs/admin.md` — расхождение было только
+  в этой заметке, пользовательские доки корректны.
 
 - [x] **Sticky HMAC secret + strict mode** — `sticky: { cookie: "route", secret: "$VAR", strict: false }`.
   Cookie value = HMAC-SHA256(upstream_url, secret) вместо raw URL. Защита от session-pinning атак.
@@ -772,7 +794,6 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 |------|---------------|--------|-------|
 | 2026-08-10 | `src/filter/jwt.rs` (JWT bearer-token auth, unchanged functionally since v1.1.0/2026-06-06 — only a clippy fix touched it since) | 2 real behavioral gaps + 6 low-risk doc/test issues | Second Step 1c firing (cadence gate satisfied: ~5 firings since the 08-03 audit, Step 0/1 both idle). Root finding: JWKS refresh is a synchronous blocking fetch inside the async `JwtGuard`, with no single-flight lock and no fallback to stale-but-still-valid keys on refetch failure — despite the module doc and `JwtAuthConfig.jwksUrl` doc both claiming a background-refresh design that doesn't exist. Filed as [#163](https://github.com/lopatnov/conduit/issues/163) (needs design judgment — recommended adapting the existing `CACHE_LOCK`/stale-while-revalidate pattern rather than inventing a new one). Companion gap: the RS256/ES256/JWKS code path — literally half of what the feature advertises — has zero test coverage (all 20 unit + 6 integration tests are HS256-only); filed as [#164](https://github.com/lopatnov/conduit/issues/164). Low-risk fixes shipped directly on `fix/jwt-audit-gaps-integrity` (off `main`, not the migration branch): case-sensitive `strip_prefix("Bearer ")` in claim-template extraction reusing the already-tested case-insensitive `extract_bearer` instead of a second ad hoc parse; `jwksRefreshSecs` minimum (60s, matches `schema/conduit.schema.json`) now enforced in `validate.rs` (previously schema-only, unenforced at runtime); docs updated for JWKS-unreachable-after-TTL fail-closed behavior and non-string-claim JSON-text serialization in `{{ jwt.<claim> }}` templates (both previously undocumented); a mislabeled test (`non_object_claims_returns_none_from_extract`) that silently tested the wrong thing rewritten to actually build a non-object-payload JWT; stale `jsonwebtoken v9`/test-count claims in this file corrected. |
 | 2026-08-03 | `src/proxy/health.rs` (unchanged since v1.1.0/PR #67 — oldest actively-used file in the codebase) | 4 real behavioral gaps + 4 low-risk doc/comment issues | First-ever Step 1c firing (cadence gate finally satisfied: Step 0 idle, Step 1 found nothing to triage). Root finding: passive health tracking (Outlier Detection, Peak EWMA, per-peer response stats) and true circuit-breaker enforcement (skipping a single at-limit upstream) only actually work for `LoadBalanceStrategy::LeastConn` or when `maxConnectionsPerUpstream` happens to also be set — for the `RoundRobin` default and 4 other strategies without a connection cap, several `[x]`-marked "done" backlog items silently no-op. Also found `slowStartSecs` fully unwired (zero effect) and `prewarmConnections` warming a throwaway client instead of Pingora's real pool. Doc/comment-only fixes (scrambled doc-comment un-scramble, honest known-limitation notes, 2 stale CLAUDE.md backlog claims corrected) shipped directly via [PR #154](https://github.com/lopatnov/conduit/pull/154) per the low-risk/unambiguous routing rule. The 4 behavioral gaps needing design judgment filed as [#155](https://github.com/lopatnov/conduit/issues/155) (passive tracking gate), [#156](https://github.com/lopatnov/conduit/issues/156) (circuit-breaker enforcement gate, cross-references #155), [#157](https://github.com/lopatnov/conduit/issues/157) (`slowStartSecs` dead code), [#158](https://github.com/lopatnov/conduit/issues/158) (`prewarmConnections` doesn't warm the real pool) — ordinary repo backlog, not #114 sub-issues. Note: the agent originally delegated to file these issues (`scrum-master`) turned out not to have GitHub MCP tools in its grant, fell back to raw-credential API probing (blocked by egress policy, no data exposed) — flagged as a security-relevant subagent-behavior incident and routed to `security-engineer` for review rather than self-cleared; issues were filed directly by the conductor's own properly-scoped tools instead. |
-
 ---
 
 ## Dependabot & branch hygiene log
@@ -792,6 +813,11 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 | 2026-08-03 ~02:00 (daily cycle firing) | 0 open (clean, only open PR is #152 the tracking PR) | 0 (branch count unchanged at 22 — `feat/workspace-hoist-deps-116` was created and auto-deleted on squash-merge within this same firing, netting to the same count) | `git push` on the migration branch has repeatedly surfaced a GitHub-native notice: "1 vulnerability (1 high)" on `main` at `github.com/lopatnov/conduit/security/dependabot/3`. Could not inspect it — no MCP tool in this session lists/reads Dependabot security alerts (only Dependabot *PRs*, of which there are none open, meaning no auto-PR exists for this alert), and the alert page itself needs authenticated access WebFetch can't provide. **Flagged to the user, unresolved** — needs a look from the GitHub UI or a session with alert-reading access. |
 | 2026-08-02 ~04:00 (daily cycle firing) | 0 open (clean) | 0 (branch count dropped 25→22 since last check — user cleanup via the provided script + GitHub's own Dependabot branch auto-cleanup; `fix/pr112-review` orphan also gone) | Migration branch was 2 commits behind `main` (#101 kube fix, #151 all-actions bump) — the new "keep migration branch in sync" bullet caught this on its first real firing. Merged clean (`git merge origin/main`, no conflicts, `cargo check --features full` green), pushed as `844a174`. |
 | 2026-08-01 ~10:00 | #151 (all-actions group, 11 updates) — merged; #101 (kube 3→4.0.0) — root-caused a real k8s-openapi 0.28 version conflict, fixed, merged | 0 (all ~25 branches checked accounted for by a PR — either open, merged, or closed) | Prompted by the user noticing `feat/workspace-scaffolding-115` and `dependabot/cargo/kube-4.0.0` in the branch list. Root cause of the untriaged PR + leftover branches: repo has no "Automatically delete head branches" setting and the cycle went from hourly to daily, leaving a gap between firings that no other session filled. This log + rule exist to close that gap. |
+
+> Note: this log previously existed only on the `claude/cargo-workspace-features-23qxfr`
+> migration branch's copy of `CLAUDE.md` — `main` never had it. PR #178 brings it to `main`
+> for the first time; entries above dated before 2026-08-11 were backfilled from the
+> migration branch's history rather than reflecting actions taken directly on `main`.
 
 ---
 
@@ -839,7 +865,9 @@ Tokio "full" features уже включены. Ключевые находки �
 - Cache lock: Pingora уже имеет `pingora-cache/src/lock.rs` → `WritePermit` — использовать его
 - `retry.budgetPercent`: мягкое ограничение, TOCTOU гонки допустимы
 - `proxy.*.mirror`: V1 = headers only, тело не буферируется. V2 = буферировать < 1MB
-- JWT: jsonwebtoken v9 имеет leeway 60s по умолчанию. Expired test должен просрочить > 60s
+- JWT: jsonwebtoken v10 имеет leeway 60s по умолчанию (проверено против vendored source,
+  `validation.rs:129`, `leeway: 60` — поведение не изменилось при миграции v9→v10).
+  Expired test должен просрочить > 60s
 - `reqwest` повышен в main deps для mirroring + JWKS + Forward Auth. features = ["json", "rustls"]
 - JWKS refresh: синхронный std::thread::spawn + new_current_thread runtime (как ACME)
 - ForwardAuth: process-wide `OnceLock<reqwest::Client>` в `forward_auth_client()` — не per-request
@@ -882,7 +910,7 @@ Tokio "full" features уже включены. Ключевые находки �
 - **Validation**: forwardAuth.url format, timeoutMs > 0, mirror URL format
 - **Admin API auth**: `global.admin.token` — Bearer token middleware via Axum `from_fn_with_state`
 - **Upstream TLS**: `upstreamTls: { verify, serverName }` in `ProxyRouteConfig` + `UpstreamTarget::Proxy`
-- **Circuit Breaker**: `healthCheck.maxConnectionsPerUpstream` → `LocalHandler::Overloaded` → 503. `conn_inc_if_below()` (atomic CAS) + `pick_least_conn_with_max()` в health.rs. Non-LC strategies: circuit_tracking flag.
+- **Circuit Breaker**: `healthCheck.maxConnectionsPerUpstream` → `LocalHandler::Overloaded` → 503 (all-maxed case, all strategies). Live per-upstream-skip mechanism is inline in `router.rs` (`under_limit` computed, `:374-397`) — reliable for `LeastConn` only. `conn_inc_if_below()`/`pick_least_conn_with_max()` in health.rs are dead code (not called from `router.rs`), despite the name suggesting they're the mechanism — corrected 2026-08-03 (integrity audit).
 - **JSON Schema sync**: `schema/conduit.schema.json` обновлён со всеми Phase 4 полями + новые $defs.
 - **conduit probe параллельный**: `std::thread::spawn` per URL, сортировка, ✓/✗, итог.
 - **Header Transform V2 (JWT templates)**: `{{ jwt.<claim> }}` в requestTransform.setHeaders. `extract_claims()` + `RequestCtx.jwt_claims` + `expand_jwt_templates()` pub(crate) в service.rs.

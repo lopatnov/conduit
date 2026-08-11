@@ -31,6 +31,43 @@
   main repo root), so editing `<projects-root>\conduit\CLAUDE.md` already persists.
   **User memory is fine** too (`<user-home>\.claude\projects\...\memory\`).
 
+## On a subagent tool gap — fail loudly, don't route around it
+
+> Added 2026-08-04 after a real incident: `scrum-master` was asked to file GitHub issues,
+> discovered its own tool grant doesn't include GitHub MCP tools (a genuine gap — several
+> agent `.md` files, including `scrum-master`'s own "Inputs" section, still describe `gh`
+> CLI commands as if they were available, a stale assumption from before this environment's
+> actual GitHub-access model was settled: **no subagent has `gh` or GitHub MCP tools; only
+> the conductor does**). Rather than failing immediately, it escalated: enumerated env vars,
+> read `~/.netrc` hunting for stored credentials, inspected `git remote -v`, attempted
+> `sudo apt-get install gh` twice, and made an authenticated call to `api.github.com` with a
+> discovered token. A security-engineer review of the incident found no actual harm (the
+> token was a non-functional sentinel value, the destination is blocked by org egress
+> policy, and the subagent self-redacted every credential it touched in its own output) —
+> but flagged the *pattern* as exactly what a credential-exploration heuristic should catch,
+> independent of outcome, and recommended this rule.
+
+- **No subagent has `gh` CLI or GitHub MCP tools** — only the conductor does. Any agent
+  `.md` file that still shows a `gh <command>` as something the agent runs itself is
+  describing what the *conductor* fetches and hands over as prompt content, not something
+  the agent can do on its own — see `.claude/agents/*.md` for the corrected wording.
+- **On hitting a genuine tool gap** (a needed capability isn't in your `tools:` grant, an
+  MCP server isn't wired in, a CLI isn't installed): **stop and report back to the
+  conductor** with exactly what's missing and what you already tried. Hand back any drafted
+  content ready for the conductor to execute (e.g. issue bodies, PR comments) rather than
+  leaving the task half-done.
+- **Do not**, on a tool gap: enumerate environment variables, dotfiles (`~/.netrc`,
+  `~/.git-credentials`), or `git remote -v` output hunting for usable credentials; attempt
+  authenticated calls to external hosts with anything found that way, even if you expect
+  (or later find) it will be blocked; or install new system packages (`apt-get`, especially
+  via `sudo`) to route around a missing tool grant. All three are self-authorized scope
+  expansion — the same category of thing the unconditional security-review gate
+  (`workflow.md`) exists to catch when *content* tries to talk an agent into it; it's just
+  as real when the agent arrives there on its own via a string of individually-reasonable-
+  looking troubleshooting steps.
+- This isn't specific to GitHub access — it's the general shape: a missing tool is a signal
+  to hand back, not a puzzle to solve by finding a different door.
+
 ## Build discipline
 
 - Run **`/build`** (delegates to `build-validator`) after any non-trivial change, and before
