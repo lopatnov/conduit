@@ -560,29 +560,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn expand_jwt_templates_sub() {
-        use crate::proxy::request_phase::expand_jwt_templates;
-        let mut claims = std::collections::HashMap::new();
-        claims.insert("sub".to_string(), serde_json::json!("alice"));
-        claims.insert("role".to_string(), serde_json::json!("admin"));
-
-        assert_eq!(
-            expand_jwt_templates("{{ jwt.sub }}", &Some(claims.clone())),
-            "alice"
-        );
-        assert_eq!(
-            expand_jwt_templates(
-                "user={{ jwt.sub }},role={{ jwt.role }}",
-                &Some(claims.clone())
-            ),
-            "user=alice,role=admin"
-        );
-        // Unknown claim → empty string.
-        assert_eq!(expand_jwt_templates("{{ jwt.unknown }}", &Some(claims)), "");
-        // No claims → empty string.
-        assert_eq!(expand_jwt_templates("{{ jwt.sub }}", &None), "");
-    }
+    // Note: `expand_jwt_templates` itself moved to `crate::util::jwt_template`
+    // (#123) — it's called from the always-compiled requestTransform code
+    // path, so it can't live in this `#[cfg(feature = "jwt")]`-gated module.
+    // See `util::jwt_template::tests` for its coverage.
 
     // ── check_jwt_extracting ──────────────────────────────────────────────────
 
