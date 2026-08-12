@@ -1297,7 +1297,7 @@ pub(super) async fn request_body_filter(
                 .upload_last_chunk
                 .map(|last| now.duration_since(last).as_secs_f64())
                 .unwrap_or(0.0);
-            if upload_rate_step(
+            if crate::filter::limits::upload_rate_step(
                 &mut req_ctx.upload_excess_bytes,
                 chunk_len,
                 min_rate,
@@ -1661,36 +1661,6 @@ pub(super) fn is_safe_http_method(method: &str) -> bool {
         method.to_ascii_uppercase().as_str(),
         "GET" | "HEAD" | "OPTIONS" | "TRACE"
     )
-}
-
-/// Leaky-bucket minimum-upload-rate step (#51).
-///
-/// Updates `excess` (surplus bytes above the minimum rate) and returns
-/// `true` when the client has fallen more than one second behind the
-/// minimum rate and should be rejected with 408.
-///
-/// # Arguments
-/// - `excess` — running surplus in bytes (positive = fast, negative = slow).
-///   Modified in place.
-/// - `chunk_len` — bytes received in this chunk.
-/// - `min_rate` — minimum acceptable rate in bytes per second.
-/// - `elapsed_secs` — seconds elapsed since the previous chunk.
-///
-/// # Algorithm
-/// ```text
-/// excess += chunk_len − min_rate × elapsed_secs
-/// excess  = min(excess, min_rate)   // cap surplus (no unlimited burst credit)
-/// reject  = excess < −min_rate       // more than one second of deficit
-/// ```
-pub(crate) fn upload_rate_step(
-    excess: &mut f64,
-    chunk_len: usize,
-    min_rate: u64,
-    elapsed_secs: f64,
-) -> bool {
-    *excess += chunk_len as f64 - min_rate as f64 * elapsed_secs;
-    *excess = excess.min(min_rate as f64);
-    *excess < -(min_rate as f64)
 }
 
 /// Enforce the `maxBodyBytes` hard limit on actual received bytes.
@@ -2123,7 +2093,7 @@ pub(super) fn apply_header_transform_request_with_claims(
     if let Some(set) = &transform.set_headers {
         for (name, value) in set {
             let resolved = if value.contains("{{") {
-                expand_jwt_templates(value, jwt_claims)
+                crate::util::jwt_template::expand_jwt_templates(value, jwt_claims)
             } else {
                 value.clone()
             };
@@ -2131,35 +2101,6 @@ pub(super) fn apply_header_transform_request_with_claims(
         }
     }
     Ok(())
-}
-
-/// Expand `{{ jwt.<claim> }}` templates in a string.
-///
-/// Replaces all occurrences of `{{ jwt.CLAIM }}` with the corresponding value
-/// from the JWT payload.  Unknown claims are replaced with an empty string.
-/// Non-string claim values are JSON-serialized (e.g. numbers, arrays).
-/// Expand `{{ jwt.<claim> }}` templates — exposed for unit tests via `pub(crate)`.
-pub(crate) fn expand_jwt_templates(
-    template: &str,
-    claims: &Option<std::collections::HashMap<String, serde_json::Value>>,
-) -> String {
-    static JWT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = JWT_RE.get_or_init(|| {
-        regex::Regex::new(r"\{\{\s*jwt\.(\w+)\s*\}\}").expect("jwt template regex")
-    });
-
-    re.replace_all(template, |caps: &regex::Captures<'_>| {
-        let claim_name = &caps[1];
-        match claims {
-            Some(map) => match map.get(claim_name) {
-                Some(serde_json::Value::String(s)) => s.clone(),
-                Some(v) => v.to_string(),
-                None => String::new(),
-            },
-            None => String::new(),
-        }
-    })
-    .into_owned()
 }
 
 /// Fire-and-forget a copy of the current request to a mirror backend.
@@ -2426,21 +2367,6 @@ mod tests {
             apply_path_rewrites("/v1/users", Some(&rules)),
             "/first/users"
         );
-    }
-
-    // ── expand_jwt_templates (additional cases) ───────────────────────────────
-
-    #[test]
-    fn expand_jwt_templates_no_template_unchanged() {
-        let claims: std::collections::HashMap<String, serde_json::Value> = Default::default();
-        let result = expand_jwt_templates("plain-value", &Some(claims));
-        assert_eq!(result, "plain-value");
-    }
-
-    #[test]
-    fn expand_jwt_templates_null_claims_returns_empty() {
-        let result = expand_jwt_templates("{{ jwt.sub }}", &None);
-        assert_eq!(result, "");
     }
 
     // ── resolve_peer_addr ─────────────────────────────────────────────────────
@@ -2973,100 +2899,6 @@ mod tests {
         assert_eq!(addr, "a:4000");
         // Attempt should be incremented.
         assert_eq!(ctx.retry.unwrap().attempt, 1);
-    }
-
-    // ── upload_rate_step (leaky-bucket minimum rate, #51) ────────────────────
-
-    #[test]
-    fn upload_rate_step_at_exact_min_rate_keeps_excess_zero() {
-        let mut excess = 0.0f64;
-        let min_rate = 1024u64; // 1 KiB/s
-                                // Exactly 1024 bytes in exactly 1 second → excess stays at 0.
-        let rejected = upload_rate_step(&mut excess, 1024, min_rate, 1.0);
-        assert!(!rejected, "exactly at min rate must not reject");
-        assert!(
-            (excess - 0.0).abs() < 0.01,
-            "excess should be ~0, got {excess}"
-        );
-    }
-
-    #[test]
-    fn upload_rate_step_above_min_rate_accumulates_surplus() {
-        let mut excess = 0.0f64;
-        let min_rate = 1024u64;
-        // 2048 bytes in 1 second (twice the minimum rate) → surplus = 1024.
-        let rejected = upload_rate_step(&mut excess, 2048, min_rate, 1.0);
-        assert!(!rejected, "above min rate must not reject");
-        // Surplus capped at min_rate (1024).
-        assert!(
-            (excess - 1024.0).abs() < 0.01,
-            "surplus capped at min_rate: got {excess}"
-        );
-    }
-
-    #[test]
-    fn upload_rate_step_surplus_is_capped_at_one_second() {
-        let mut excess = 0.0f64;
-        let min_rate = 1000u64;
-        // Enormous burst: 1_000_000 bytes in 0.01 seconds.
-        upload_rate_step(&mut excess, 1_000_000, min_rate, 0.01);
-        // Surplus must be capped at min_rate (1000) — not the raw 999_990.
-        assert!(
-            excess <= min_rate as f64 + 0.01,
-            "surplus must be capped at min_rate: got {excess}"
-        );
-    }
-
-    #[test]
-    fn upload_rate_step_below_min_rate_accumulates_deficit() {
-        let mut excess = 0.0f64;
-        let min_rate = 1000u64;
-        // 100 bytes in 1 second (1/10 of min rate) → deficit grows.
-        let rejected = upload_rate_step(&mut excess, 100, min_rate, 1.0);
-        // deficit = 100 - 1000 = -900; not yet past -1000 threshold.
-        assert!(
-            !rejected,
-            "single slow chunk below min rate but deficit < min_rate"
-        );
-        assert!(excess < 0.0, "excess must be negative (deficit): {excess}");
-    }
-
-    #[test]
-    fn upload_rate_step_rejects_when_deficit_exceeds_one_second() {
-        let mut excess = -(1000f64 - 1.0); // just below the rejection threshold
-        let min_rate = 1000u64;
-        // One more tiny chunk with a 1-second gap: excess += 1 - 1000 → -1999+1 = -1999
-        let rejected = upload_rate_step(&mut excess, 1, min_rate, 1.0);
-        assert!(rejected, "deficit > min_rate must trigger rejection");
-        assert!(
-            excess < -(min_rate as f64),
-            "excess must be below -min_rate: {excess}"
-        );
-    }
-
-    #[test]
-    fn upload_rate_step_carries_over_surplus_for_slow_periods() {
-        let mut excess = 0.0f64;
-        let min_rate = 1000u64;
-        // First chunk: big burst that fills the surplus bucket.
-        upload_rate_step(&mut excess, 10_000, min_rate, 0.0);
-        // Surplus capped at 1000.
-        assert!((excess - 1000.0).abs() < 0.01, "surplus capped: {excess}");
-
-        // Second chunk: very slow (1 byte in 1 second).
-        // excess += 1 - 1000 → 1000 + 1 - 1000 = 1.
-        let rejected = upload_rate_step(&mut excess, 1, min_rate, 1.0);
-        assert!(!rejected, "surplus from burst must absorb one slow chunk");
-        assert!(excess >= 0.0, "excess should remain non-negative: {excess}");
-    }
-
-    #[test]
-    fn upload_rate_step_zero_elapsed_never_rejects() {
-        let mut excess = 0.0f64;
-        let min_rate = 1000u64;
-        // First call always has elapsed=0 (first chunk in request_body_filter).
-        let rejected = upload_rate_step(&mut excess, 1, min_rate, 0.0);
-        assert!(!rejected, "first chunk (elapsed=0) must never reject");
     }
 
     // ── record_failed_upstream_for_retry ──────────────────────────────────────
