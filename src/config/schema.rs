@@ -307,6 +307,14 @@ pub struct SiteConfig {
     #[serde(rename = "responseTransform", skip_serializing_if = "Option::is_none")]
     pub response_transform: Option<HeaderTransformConfig>,
     // Phase 5 (optional): pub cgi: Option<CgiConfig>,
+    /// Catches any top-level JSON/YAML key that doesn't match a named field
+    /// above — either a typo, or (once schema fields become `#[cfg]`-gated
+    /// per feature during the Conduit 2.0 workspace migration, #114) a key
+    /// belonging to a feature this binary wasn't compiled with. Never
+    /// populated by well-formed configs against the current, always-present
+    /// field set; see `validate::feature_warnings()` for how it's surfaced.
+    #[serde(flatten)]
+    pub extra: IndexMap<String, serde_json::Value>,
 }
 
 // ── TLS ────────────────────────────────────────────────────────────────────
