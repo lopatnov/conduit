@@ -59,8 +59,54 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
     check_proxy_loop_warnings(config, &mut warnings);
     check_jwt_secret_warnings(config, &mut warnings);
     check_metrics_auth_warnings(config, &mut warnings);
+    check_extra_key_warnings(config, &mut warnings);
 
     warnings
+}
+
+/// Maps a top-level `SiteConfig` JSON/YAML key to the Cargo feature that
+/// owns it. Used by `check_extra_key_warnings` below to turn a key that
+/// lands in `SiteConfig.extra` (unrecognized by any named field) into an
+/// actionable warning instead of a silent no-op.
+///
+/// This table is ahead of need (#124, part of the Conduit 2.0 workspace
+/// migration, #114): today every field on `SiteConfig` is always present
+/// regardless of compiled features, so a well-known key like `jwtAuth`
+/// always lands in its named field, never in `extra` — this table only
+/// fires for genuine typos right now. Once the migration starts
+/// `#[cfg]`-gating these fields per feature crate, the same keys will start
+/// landing in `extra` whenever their feature is compiled out, and this
+/// table (already wired into `feature_warnings()`) picks them up with no
+/// further changes needed — preserving today's warning UX instead of
+/// regressing to a hard deserialize error or a silent drop.
+const DISABLED_KEY_OWNING_FEATURE: &[(&str, &str)] = &[
+    ("jwtAuth", "jwt"),
+    ("forwardAuth", "forward-auth"),
+    ("consumers", "consumers"),
+    ("tcp", "tcp"),
+    ("upload", "upload"),
+    ("faultInjection", "fault-injection"),
+];
+
+/// Warn about unrecognized top-level site config keys (`SiteConfig.extra`):
+/// a specific "recompile with --features X" message when the key is known
+/// to belong to an optional feature, or a generic typo warning otherwise.
+fn check_extra_key_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
+    for (i, site) in config.sites.iter().enumerate() {
+        for key in site.extra.keys() {
+            match DISABLED_KEY_OWNING_FEATURE.iter().find(|(k, _)| k == key) {
+                Some((_, feature)) => warnings.push(format!(
+                    "sites[{i}].{key} is configured but Conduit was compiled without the \
+                     `{feature}` feature — this configuration will be ignored. \
+                     Recompile with `--features {feature}` to enable."
+                )),
+                None => warnings.push(format!(
+                    "sites[{i}].{key} is not a recognized configuration key and will be \
+                     ignored — check for a typo."
+                )),
+            }
+        }
+    }
 }
 
 /// Check warnings for global-level feature flags (e.g. OTLP).
@@ -1997,6 +2043,66 @@ mod tests {
         assert!(
             w[0].contains("--features wasm"),
             "warning must mention compile flag: {}",
+            w[0]
+        );
+    }
+
+    // ── extra key warnings (#124) ────────────────────────────────────────────
+
+    #[test]
+    fn unrecognized_key_is_captured_in_extra_not_an_error() {
+        // Today, since every field is always present, an unrecognized key
+        // must parse successfully (captured in `extra`) rather than erroring.
+        let cfg = parse(r#"{ "port": 8080, "totallyMadeUpKey": true }"#);
+        assert_eq!(
+            cfg.sites[0].extra.get("totallyMadeUpKey"),
+            Some(&serde_json::json!(true))
+        );
+    }
+
+    #[test]
+    fn unrecognized_key_produces_typo_warning() {
+        let w = warns(r#"{ "port": 8080, "jwtAuht": { "secret": "x" } }"#);
+        assert_eq!(w.len(), 1, "expected exactly one warning: {w:?}");
+        assert!(
+            w[0].contains("jwtAuht") && w[0].contains("typo"),
+            "warning must name the key and mention a typo: {}",
+            w[0]
+        );
+    }
+
+    #[test]
+    fn known_field_key_never_lands_in_extra() {
+        // Well-known keys always deserialize into their named field today —
+        // this is the "ahead of need" property the whole mechanism relies on.
+        let cfg = parse(r#"{ "port": 8080, "jwtAuth": { "secret": "x" } }"#);
+        assert!(
+            cfg.sites[0].extra.is_empty(),
+            "known key must not land in extra: {:?}",
+            cfg.sites[0].extra
+        );
+    }
+
+    #[test]
+    fn disabled_key_owning_feature_table_produces_recompile_warning() {
+        // Simulates the future state (once #114 gates fields per-crate) by
+        // manually placing a known disabled-feature key into `extra` —
+        // proving the table lookup + warning wording work correctly now,
+        // ahead of any field actually being removed from the struct.
+        let mut config = parse(r#"{ "port": 8080 }"#);
+        config.sites[0]
+            .extra
+            .insert("jwtAuth".to_string(), serde_json::json!({}));
+        let w = feature_warnings(&config);
+        assert_eq!(w.len(), 1, "expected exactly one warning: {w:?}");
+        assert!(
+            w[0].contains("jwtAuth") && w[0].contains("--features jwt"),
+            "warning must name the key and the owning feature: {}",
+            w[0]
+        );
+        assert!(
+            !w[0].contains("typo"),
+            "a known disabled-feature key must not be reported as a typo: {}",
             w[0]
         );
     }
