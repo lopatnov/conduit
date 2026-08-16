@@ -235,6 +235,23 @@ jobs:
   # --no-dev-deps is what makes this meaningful: without it, jsonwebtoken and
   # rcgen (declared as dev-deps for tests) mask real gating gaps by being
   # present regardless of which --features flag is passed. See #114/#118.
+  # ── Workspace layer-boundary guard (issue #114/#125) ─────────────────────
+  # No-ops today (crates/ has no member crates yet) — establishes the
+  # guardrail ahead of Phase 2+ extractions, so a Layer-1 feature crate
+  # reaching into SiteConfig/AppConfig directly fails fast in CI instead of
+  # being discovered mid-Phase-5.
+  layer-boundaries:
+    name: Layer boundaries (SiteConfig/AppConfig)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check Layer-1 crates don't reference SiteConfig/AppConfig
+        run: ./scripts/check-layer-boundaries.sh
+
   ci-hack:
     name: Feature isolation (cargo-hack)
     runs-on: ubuntu-latest
