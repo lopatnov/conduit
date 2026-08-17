@@ -563,7 +563,11 @@ impl ConduitProxy {
 
         // 4. Request size / header limits.
         if let Some(cfg) = guards.limits_cfg {
-            chain = chain.push(LimitsGuard { cfg });
+            chain = chain.push(LimitsGuard {
+                cfg,
+                ip_conn_counts: std::sync::Arc::clone(&self.state.ip_conn_counts),
+                client_ip: guards.client_ip.clone(),
+            });
         }
 
         // 5. Token-bucket rate limiting.
@@ -571,6 +575,7 @@ impl ConduitProxy {
             chain = chain.push(RateLimitGuard {
                 cfg,
                 site_label: guards.site_label.clone(),
+                rate_limiter: std::sync::Arc::clone(&self.state.rate_limiter),
                 #[cfg(feature = "redis")]
                 redis_rate_limiter: self.state.redis_rate_limiter.clone(),
             });
@@ -582,6 +587,7 @@ impl ConduitProxy {
             chain = chain.push(ConsumersGuard {
                 cfg,
                 path: guards.script_path.clone(),
+                rate_limiter: std::sync::Arc::clone(&self.state.rate_limiter),
             });
         }
 
@@ -641,9 +647,6 @@ impl ConduitProxy {
             session,
             extra_headers: &guards.extra_headers,
             inflight: &self.state.inflight,
-            rate_limiter: &self.state.rate_limiter,
-            ip_conn_counts: &self.state.ip_conn_counts,
-            client_ip: guards.client_ip,
         };
 
         chain.run(&mut ctx).await
