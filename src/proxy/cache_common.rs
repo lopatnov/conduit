@@ -90,4 +90,27 @@ mod tests {
         );
         assert_eq!(handler.read_body().await.unwrap(), None);
     }
+
+    #[tokio::test]
+    async fn simple_hit_handler_finish_is_noop_ok() {
+        let handler: Box<SimpleHitHandler> =
+            Box::new(SimpleHitHandler::new(Bytes::from_static(b"x")));
+        let storage = crate::proxy::cache::cache_storage() as &'static (dyn Storage + Sync);
+        let key = CacheKey::new("host.example", "https:/path", "");
+        let span = pingora_cache::trace::Span::inactive();
+        assert!(handler.finish(storage, &key, &span.handle()).await.is_ok());
+    }
+
+    #[test]
+    fn simple_hit_handler_as_any_downcasts_to_concrete_type() {
+        let mut handler = SimpleHitHandler::new(Bytes::from_static(b"x"));
+        assert!(handler
+            .as_any()
+            .downcast_ref::<SimpleHitHandler>()
+            .is_some());
+        assert!(handler
+            .as_any_mut()
+            .downcast_mut::<SimpleHitHandler>()
+            .is_some());
+    }
 }
