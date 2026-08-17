@@ -49,7 +49,7 @@ impl TestServer {
             cfg_path: cfg_path.clone(),
             _dir: dir,
         };
-        server.wait_ready();
+        server.wait_ready(requires_mtls(&config));
         server
     }
 
@@ -58,10 +58,14 @@ impl TestServer {
     /// Tries both `http://` and `https://` (with cert validation disabled) on
     /// the proxy port so TLS and non-TLS sites are handled transparently.
     ///
+    /// `mtls_required` narrows the proxy probe to accept a bare TCP connect
+    /// as evidence of readiness — see `probe_proxy`'s doc comment for why
+    /// this can't be a blanket fallback for every config.
+    ///
     /// Also polls `child.try_wait()` on every iteration so that a server that
     /// exits prematurely (e.g. due to a port-bind failure) is detected
     /// immediately rather than after the full 15-second deadline.
-    fn wait_ready(&mut self) {
+    fn wait_ready(&mut self, mtls_required: bool) {
         let health_http = format!("http://127.0.0.1:{}/__health__", self.port);
         let health_https = format!("https://127.0.0.1:{}/__health__", self.port);
         let admin_url = format!("http://127.0.0.1:{}/status", self.admin_port);
@@ -88,7 +92,15 @@ impl TestServer {
                 Err(e) => panic!("could not check server liveness: {e}"),
             }
 
-            if !proxy_ok && probe_proxy(&health_http, &health_https, &insecure) {
+            if !proxy_ok
+                && probe_proxy(
+                    &health_http,
+                    &health_https,
+                    &insecure,
+                    self.port,
+                    mtls_required,
+                )
+            {
                 proxy_ok = true;
             }
             if !admin_ok && probe_admin(&admin_url) {
@@ -152,7 +164,25 @@ fn is_ready_status(r: reqwest::blocking::Response) -> bool {
 /// Poll both the HTTP and HTTPS health endpoints once.
 ///
 /// Returns `true` if either endpoint replies with a "ready" status.
-fn probe_proxy(http: &str, https: &str, insecure: &reqwest::blocking::Client) -> bool {
+///
+/// When `mtls_required` is `true`, also falls back to a bare TCP connect on
+/// `port` if both app-layer probes fail — needed for `tls.clientAuth.optional:
+/// false` sites, where this probe (no client cert) is correctly rejected at
+/// the TLS layer before any HTTP response exists, but the listener is
+/// nonetheless fully up. This fallback is deliberately NOT applied to every
+/// config: a bare TCP connect only proves the socket is listening, not that
+/// the HTTP/TLS/health-check path actually works, so applying it universally
+/// would risk masking a genuinely broken server as "ready" for any other
+/// test. Scoping it to the one case that needs it (detected via
+/// `requires_mtls`) keeps that guarantee intact everywhere else — see
+/// `mtls_required_*` in `tests/mtls.rs` for the scenario this unblocks.
+fn probe_proxy(
+    http: &str,
+    https: &str,
+    insecure: &reqwest::blocking::Client,
+    port: u16,
+    mtls_required: bool,
+) -> bool {
     let http_ok = reqwest::blocking::get(http)
         .map(is_ready_status)
         .unwrap_or(false);
@@ -161,7 +191,34 @@ fn probe_proxy(http: &str, https: &str, insecure: &reqwest::blocking::Client) ->
         .send()
         .map(is_ready_status)
         .unwrap_or(false);
-    http_ok || https_ok
+    http_ok
+        || https_ok
+        || (mtls_required
+            && std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+                Duration::from_millis(200),
+            )
+            .is_ok())
+}
+
+/// Detects whether `config` has any site with `tls.clientAuth.optional`
+/// explicitly `false` (mTLS required) — the one case where a bare TCP
+/// connect is accepted as a proxy-readiness signal in [`probe_proxy`].
+/// `clientAuth.optional` defaults to `false` when `clientAuth` is present at
+/// all but the field is omitted, matching `TlsClientAuth`'s own
+/// `#[serde(default)]` in `src/config/schema.rs`.
+fn requires_mtls(config: &serde_json::Value) -> bool {
+    let sites = match config.get("sites").and_then(|s| s.as_array()) {
+        Some(sites) => sites.as_slice(),
+        None => std::slice::from_ref(config), // single-site shorthand form
+    };
+    sites.iter().any(|site| {
+        site.pointer("/tls/clientAuth").is_some_and(|ca| {
+            !ca.get("optional")
+                .and_then(|o| o.as_bool())
+                .unwrap_or(false)
+        })
+    })
 }
 
 /// Poll the admin `/status` endpoint once.  Returns `true` on a 2xx response.

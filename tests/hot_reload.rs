@@ -165,6 +165,48 @@ fn reload_cold_field_workers_rejected() {
     );
 }
 
+/// Changing `sites[0].tls.cert`/`.key` is a cold field — reload must be
+/// rejected. Uses placeholder (non-existent) cert/key paths: cold-field
+/// detection compares the configured path strings before any file is ever
+/// read, so no real PEM content is needed to trigger it (mirrors how
+/// `check_cert_expiry` itself silently skips a missing file at validation
+/// time — see `src/config/validate.rs`).
+#[test]
+#[serial]
+fn reload_cold_field_tls_cert_rejected() {
+    let port = common::free_port();
+    let admin_port = common::free_port();
+
+    let srv =
+        common::TestServer::start_with_config(port, admin_port, base_config(port, admin_port));
+
+    srv.rewrite_config(serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "tls": {
+                "cert": "/nonexistent/cert.pem",   // ← cold field, first set
+                "key": "/nonexistent/key.pem"
+            }
+        }]
+    }));
+
+    let resp = srv.reload();
+    assert_eq!(
+        resp["status"], "error",
+        "tls.cert/tls.key change must be rejected: {resp}"
+    );
+    let cold: Vec<String> = serde_json::from_value(resp["cold_fields"].clone()).unwrap_or_default();
+    assert!(
+        cold.iter().any(|f| f.contains("tls.cert")),
+        "cold_fields must mention tls.cert: {cold:?}"
+    );
+    assert!(
+        cold.iter().any(|f| f.contains("tls.key")),
+        "cold_fields must mention tls.key: {cold:?}"
+    );
+}
+
 // ── Hot reload — CORS config change ──────────────────────────────────────────
 
 /// Adding CORS on reload causes the CORS header to appear in subsequent responses.
