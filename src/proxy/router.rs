@@ -2465,6 +2465,284 @@ mod tests {
         }
     }
 
+    #[test]
+    fn malformed_backup_url_falls_through_to_fallback() {
+        use crate::config::schema::{ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget};
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://primary:4000".to_owned())],
+                // `url_to_host_port` (upstream.rs) is lenient about bare hostnames
+                // ("not-a-url" alone parses fine, host="not-a-url", default port) --
+                // the only input it actually rejects is an empty host portion after
+                // scheme-trimming, e.g. a scheme with nothing after it. Matches the
+                // existing `url_to_host_port_empty_host_returns_none` unit test.
+                backup: Some("http://".to_owned()),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        // Mark the primary as unhealthy so the (malformed) backup path is tried.
+        {
+            let mut entry = reg
+                .statuses
+                .entry("http://primary:4000".to_owned())
+                .or_default();
+            entry.healthy = false;
+        }
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        // A malformed backup URL must not panic and must not silently load-balance
+        // across the known-unhealthy primaries -- it falls through to
+        // match_static_or_fallback (no static config here -> Fallback).
+        assert!(
+            matches!(ctx.upstream, UpstreamTarget::Local(LocalHandler::Fallback)),
+            "malformed backup URL must fall through to Fallback, got {:?}",
+            ctx.upstream
+        );
+    }
+
+    // ── sticky sessions: HMAC-verified routing ────────────────────────────────
+
+    #[test]
+    fn sticky_hmac_routes_to_pinned_upstream() {
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, StickyConfig,
+        };
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://a:4000".to_owned()),
+                    ProxyTarget::Simple("http://b:4000".to_owned()),
+                ],
+                sticky: Some(StickyConfig {
+                    cookie: "srv_id".to_owned(),
+                    secret: Some("s3cret".to_owned()),
+                    strict: None,
+                }),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+
+        // Cookie signed specifically for "b", not "a" -- pinning must follow the
+        // signature, not round-robin/hash selection.
+        let signed = hmac_sign_sticky("http://b:4000", "s3cret");
+        let mut headers = http::HeaderMap::new();
+        headers.insert("cookie", format!("srv_id={signed}").parse().unwrap());
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &headers,
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        match &ctx.upstream {
+            UpstreamTarget::Proxy { addr, .. } => {
+                assert_eq!(addr, "b:4000", "must route to the HMAC-pinned upstream");
+            }
+            other => panic!("expected Proxy upstream, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sticky_strict_mode_returns_503_when_pinned_upstream_unhealthy() {
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, StickyConfig,
+        };
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://a:4000".to_owned()),
+                    ProxyTarget::Simple("http://b:4000".to_owned()),
+                ],
+                sticky: Some(StickyConfig {
+                    cookie: "srv_id".to_owned(),
+                    secret: Some("s3cret".to_owned()),
+                    strict: Some(true),
+                }),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        // Pin the cookie to "a", then mark "a" unhealthy -- strict mode must
+        // refuse rather than silently fail over to "b" (which would break the
+        // session-affinity guarantee strict mode exists to provide).
+        {
+            let mut entry = reg.statuses.entry("http://a:4000".to_owned()).or_default();
+            entry.healthy = false;
+        }
+        let signed = hmac_sign_sticky("http://a:4000", "s3cret");
+        let mut headers = http::HeaderMap::new();
+        headers.insert("cookie", format!("srv_id={signed}").parse().unwrap());
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &headers,
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(
+            matches!(
+                ctx.upstream,
+                UpstreamTarget::Local(LocalHandler::Overloaded)
+            ),
+            "strict mode must return Overloaded when the pinned upstream is unhealthy: {:?}",
+            ctx.upstream
+        );
+    }
+
+    #[test]
+    fn sticky_forged_cookie_ignored_falls_back_to_load_balancing() {
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, StickyConfig,
+        };
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://a:4000".to_owned()),
+                    ProxyTarget::Simple("http://b:4000".to_owned()),
+                ],
+                sticky: Some(StickyConfig {
+                    cookie: "srv_id".to_owned(),
+                    secret: Some("s3cret".to_owned()),
+                    strict: None,
+                }),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        // A cookie that doesn't match either upstream's HMAC -- must not steer
+        // routing to an attacker-chosen peer; must fall through to normal
+        // load-balancing across the healthy set instead.
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "cookie",
+            "srv_id=not-a-valid-hmac-signature".parse().unwrap(),
+        );
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &headers,
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        let chosen_url = match &ctx.upstream {
+            UpstreamTarget::Proxy { addr, .. } => {
+                assert!(
+                    addr == "a:4000" || addr == "b:4000",
+                    "forged cookie must still resolve to a real upstream via normal \
+                     load-balancing: {addr}"
+                );
+                format!("http://{addr}")
+            }
+            other => panic!("expected Proxy upstream, got {:?}", other),
+        };
+        // Normal sticky-cookie-setting behavior must still apply to whichever
+        // upstream was actually chosen (the forged cookie is ignored for
+        // *selection*, not for the response-side re-signing) -- verify the
+        // replacement cookie is both correctly named AND actually signed for
+        // the upstream that was picked, not merely present. A regression that
+        // set the wrong cookie name or signed for the wrong upstream must fail
+        // this test.
+        let (cookie_name, cookie_value) = ctx
+            .sticky_set_cookie
+            .as_ref()
+            .expect("a fresh signed cookie must still be set for the chosen upstream");
+        assert_eq!(
+            cookie_name, "srv_id",
+            "cookie name must match sticky.cookie"
+        );
+        assert!(
+            hmac_verify_sticky(&chosen_url, cookie_value, "s3cret"),
+            "fresh cookie must be validly signed for the actually-chosen upstream {chosen_url}"
+        );
+    }
+
     // ── pick_url_by_strategy direct tests ─────────────────────────────────────
 
     #[test]
