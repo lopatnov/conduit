@@ -701,6 +701,9 @@ fn decode_rel_path(req_path: &str, strip_prefix: Option<&str>) -> String {
 mod tests {
     use super::*;
 
+    // Windows symlink creation requires elevated privileges in CI, so this test only
+    // runs on unix — `std::os::unix::fs::symlink` isn't available on Windows anyway.
+    #[cfg(unix)]
     #[tokio::test]
     async fn symlink_in_static_root_is_not_served() {
         // stat_no_symlink must return None for symlinks — serving them would
@@ -711,13 +714,8 @@ mod tests {
 
         // Create a symlink pointing to the real file.
         let link_path = dir.path().join("link.txt");
-        #[cfg(unix)]
         std::os::unix::fs::symlink(&real_file, &link_path).unwrap();
-        #[cfg(windows)]
-        {
-            // Skip symlink test on Windows (requires privileges).
-            return;
-        }
+
         // stat_no_symlink must reject the symlink.
         assert!(
             stat_no_symlink(&link_path).await.is_none(),
