@@ -1347,30 +1347,39 @@ healthCheck:
 
 ## Circuit Breaker
 
-When **all** upstreams reach `maxConnectionsPerUpstream` concurrent connections,
-Conduit returns `503` immediately instead of queuing. This all-maxed → 503
-behavior holds for every load-balance strategy.
+`maxConnectionsPerUpstream` enforces a per-upstream connection cap for every
+load-balance strategy, across all three config shapes (`proxy: {}` map,
+`routes[]` array, and `groups`):
 
-> **Known limitations** (found by a 2026-08-03 integrity audit, tracked in
-> GitHub issues — see the repo's issue tracker for current status):
-> - Skipping an individual at-limit upstream in favor of under-capacity peers
->   (rather than the all-maxed 503 case above) is only guaranteed today for
->   the `LeastConn` strategy. The other 7 strategies, including the
->   `RoundRobin` default, do not currently re-check per-upstream connection
->   load during selection.
+- Requests are only routed to upstreams currently **below** the cap.
+- When **all** healthy upstreams for a route are at or above the cap,
+  Conduit returns `503` immediately instead of queuing.
+- `IpHash` / `ConsistentHash` (and sticky sessions, which force
+  `ConsistentHash`) don't shrink the hash space when a peer is at capacity —
+  they forward-probe to the next candidate on the ring. This means only the
+  client(s) whose preferred peer is currently saturated get relocated (to a
+  deterministic fallback peer); every other client's mapping is unaffected.
+- The cap is a **soft limit** under concurrency: it is checked, then
+  acquired, in two separate steps (not atomically), so a burst of
+  simultaneously-arriving requests can briefly overshoot it by the number of
+  concurrent racers. This self-corrects on the next request and is the same
+  trade-off `retry.budgetPercent` makes — a spurious `503` for a request that
+  actually had capacity is worse than brief overshoot.
+- For a `groups`-configured route, only the *selected* group's targets are
+  checked — if every target in that group is at capacity, the request 503s
+  even if a different group has room. Group selection itself is not
+  capacity-aware (it's typically hash/affinity-driven).
+- A retry attempt bypasses the cap: capacity is evaluated once, at initial
+  routing time, not re-checked per retry attempt. See tracked follow-up
+  issue for undercounting on retry-heavy routes.
+
+> **Known limitations** still open after the 2026-08-03 integrity audit —
+> see the repo's issue tracker for current status:
 > - `slowStartSecs` is parsed but not yet wired into any strategy's selection
 >   logic — configuring it currently has no effect on traffic ramp-up.
 > - `prewarmConnections` currently warms a short-lived, throwaway HTTP
 >   client rather than Conduit's real upstream connection pool, so it
 >   doesn't yet deliver its intended latency benefit for real traffic.
-> - Passive per-upstream tracking (Outlier Detection ejection, Peak EWMA
->   latency, and the per-peer `responses_2xx/4xx/5xx` Admin API stats) is
->   only populated today for the `LeastConn` strategy or when
->   `maxConnectionsPerUpstream` is also set — for other strategies without a
->   connection cap, these stay at their defaults / never trigger.
-> - Circuit breaking only applies to the legacy `proxy: { <path>: {...} }`
->   config format; it is not currently enforced for the `routes[]` array
->   format or `groups`.
 
 ```yaml
 # YAML
@@ -1471,13 +1480,7 @@ separately by the `websocket: true` route option — see the field reference tab
 ## Outlier Detection
 
 Passively eject upstreams that return too many 5xx responses from real traffic.
-
-> **Known limitation** (2026-08-03 integrity audit): today this only actually
-> tracks and ejects when the route's `strategy` is `LeastConn`, or when
-> `healthCheck.maxConnectionsPerUpstream` is also configured (see the
-> [Circuit Breaker](#circuit-breaker) known-limitations note) — see the
-> repo's issue tracker for current status. For other strategies without a
-> connection cap, outlier ejection does not currently trigger.
+Tracks and ejects for every load-balance strategy, not just `LeastConn`.
 
 ```yaml
 # YAML

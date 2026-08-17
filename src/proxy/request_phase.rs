@@ -82,9 +82,10 @@ impl ConduitProxy {
     /// - Runs outlier-detection ejection (`maybe_eject`) if configured.
     /// - Decrements the Prometheus `upstream_active_connections` gauge and
     ///   increments `upstream_requests_total` / `upstream_latency_seconds`.
-    /// - Appends the failed attempt to `failed_upstream_attempts` for structured
-    ///   logging, then clears `proxy_upstream_url` and `upstream_conn_slot` so
-    ///   the next `upstream_peer()` starts fresh with no inherited slot.
+    /// - Appends the failed attempt to `failed_upstream_attempts` (currently
+    ///   write-only — see that field's doc comment and issue #218), then
+    ///   clears `proxy_upstream_url` and `upstream_conn_slot` so the next
+    ///   `upstream_peer()` starts fresh with no inherited slot.
     ///
     /// Without this, a successful retry on a different backend would silently
     /// absorb the failure without updating the health record of the backend that
