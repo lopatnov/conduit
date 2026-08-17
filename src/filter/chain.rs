@@ -44,41 +44,9 @@ use crate::filter::{auth, cors, ip_filter, limits, rate_limit};
 use crate::handler::response;
 use uuid::Uuid;
 
-// ── Outcome ───────────────────────────────────────────────────────────────────
+// ── Outcome + Context + Trait (Layer-0 vocabulary, #114/#126) ──────────────────
 
-/// What a filter returns after inspecting a request.
-pub enum FilterOutcome {
-    /// Pass the request to the next filter in the chain.
-    Continue,
-    /// The filter wrote a rejection response and decremented the inflight
-    /// counter; the chain should stop and return `Ok(true)` to Pingora.
-    Handled,
-    /// Skip all remaining guard filters and let the normal dispatch proceed.
-    /// Used by the health / ACME / hot-reload bypass guard.
-    Bypass,
-}
-
-// ── Context ───────────────────────────────────────────────────────────────────
-
-/// Data shared by every filter in a single request's guard chain.
-pub struct FilterContext<'a> {
-    /// The live HTTP session — filters may read headers and write responses.
-    pub session: &'a mut Session,
-    /// Headers to attach to any rejection response (CORS, security, custom).
-    pub extra_headers: &'a [(String, String)],
-    /// Inflight counter; each filter that writes a rejection response
-    /// decrements it.
-    pub inflight: &'a AtomicUsize,
-}
-
-// ── Trait ─────────────────────────────────────────────────────────────────────
-
-/// A single guard filter in the request pipeline.
-#[async_trait]
-pub trait RequestFilter: Send + Sync {
-    /// Inspect the request and decide whether to continue, reject, or bypass.
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome>;
-}
+pub use conduit_core::filter::chain::{FilterContext, FilterOutcome, RequestFilter};
 
 // ── Chain ─────────────────────────────────────────────────────────────────────
 
