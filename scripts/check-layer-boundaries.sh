@@ -14,15 +14,18 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # Layer 0/2/3 crates: allowed to reference SiteConfig/AppConfig (they own it,
-# or need the full config at the top of the stack).
+# or need the full config at the top of the stack). Names must match the
+# actual `[package] name` in each crate's Cargo.toml -- the
+# `lopatnov-conduit-<name>` convention documented in crates/README.md, not
+# the short form used in prose/issue titles.
 ALLOWED_CRATES=(
-  conduit-core
-  conduit-config-core
-  conduit-config
-  conduit-runtime
-  conduit-admin-core
-  conduit-server
-  conduit-cli
+  lopatnov-conduit-core
+  lopatnov-conduit-config-core
+  lopatnov-conduit-config
+  lopatnov-conduit-runtime
+  lopatnov-conduit-admin-core
+  lopatnov-conduit-server
+  lopatnov-conduit-cli
 )
 
 is_allowed() {
@@ -45,7 +48,12 @@ for manifest in crates/*/Cargo.toml; do
   [[ -d "$crate_dir/src" ]] || continue
 
   checked=$((checked + 1))
-  hits="$(grep -rn -E '\b(SiteConfig|AppConfig)\b' "$crate_dir/src" || true)"
+  # Exclude line (//, ///, //!) and block (/* */-style, best-effort: lines
+  # starting with * after trimming) comments -- a Layer-1 crate's own doc
+  # comment explaining *why* it avoids SiteConfig/AppConfig (a natural thing
+  # to write) would otherwise false-positive as a real reference.
+  hits="$(grep -rn -E '\b(SiteConfig|AppConfig)\b' "$crate_dir/src" \
+    | grep -v -E '^[^:]+:[0-9]+:\s*(//|\*)' || true)"
   if [[ -n "$hits" ]]; then
     echo "::error::$crate_name (Layer-1 feature crate) references SiteConfig/AppConfig directly:"
     echo "$hits"
