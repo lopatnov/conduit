@@ -28,10 +28,27 @@ pub struct RequestCtx {
     pub proxy_http2: bool,
     /// The upstream URL that was selected for this request.
     ///
-    /// `Some` only for `strategy: "least-conn"` routes so that the `logging()`
-    /// hook can decrement the per-upstream connection counter after the response
-    /// is sent.
+    /// `Some` for every proxied request (not just `least-conn`/circuit-breaker
+    /// routes) so that Peak EWMA, Outlier Detection, per-peer response stats,
+    /// and the per-upstream Prometheus gauges can attribute this request no
+    /// matter which load-balancing strategy picked it. Whether this request
+    /// also holds a `conn_count` slot that must be released is tracked
+    /// separately by [`upstream_conn_slot`](Self::upstream_conn_slot) — the
+    /// two must not be conflated, since `conn_count` is keyed by URL alone and
+    /// a phantom decrement from an attribution-only request would corrupt the
+    /// slot count for a *different* route sharing the same upstream.
     pub proxy_upstream_url: Option<String>,
+    /// `true` when routing acquired a `conn_count` slot for
+    /// `proxy_upstream_url` (via `conn_inc` / least-conn selection) that this
+    /// request is responsible for releasing via `conn_dec`.
+    ///
+    /// `false` when `proxy_upstream_url` is populated for passive-health
+    /// attribution only (no slot was acquired) — e.g. any non-least-conn
+    /// route with no `maxConnectionsPerUpstream` configured. Reset to `false`
+    /// whenever `proxy_upstream_url` is replaced without a matching
+    /// `conn_inc` (see `record_failed_upstream_for_retry` /
+    /// `upstream_peer`'s retry-restore path).
+    pub upstream_conn_slot: bool,
     /// Cache configuration for this route (`proxy.*.cache`), if caching is enabled.
     ///
     /// `None` means the route has no cache config and caching is disabled for
@@ -167,6 +184,7 @@ impl RequestCtx {
             proxy_pool,
             proxy_http2,
             proxy_upstream_url,
+            upstream_conn_slot: false,
             proxy_cache_cfg,
             mask_upstream_body: false,
             response_transform,
