@@ -1,6 +1,5 @@
-# Conduit 2.0 workspace root — see issue #114. `members` is empty for now
-# (Phase 0.1: scaffolding only, no code moves yet); crates land here starting
-# with Phase 2 (#126).
+# Conduit 2.0 workspace root — see issue #114. crates/conduit-core (#126) is
+# the first member; more land here as later phases extract them.
 [workspace]
 members  = ["crates/*"]
 resolver = "2"
@@ -23,6 +22,11 @@ repository = "https://github.com/lopatnov/conduit"
 pingora-core  = { version = "0.8", features = ["rustls"] }
 pingora-proxy = { version = "0.8", features = ["rustls"] }
 pingora-cache = { version = "0.8", features = ["rustls"] }
+
+# --- Conduit workspace member crates ---
+# path + version so `cargo publish` can resolve this as a real dependency
+# once member crates start publishing (see #114's crates.io-publishing risk).
+lopatnov-conduit-core = { path = "crates/conduit-core", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -164,6 +168,9 @@ path = "src/lib.rs"
 pingora-core.workspace  = true
 pingora-proxy.workspace = true
 pingora-cache.workspace = true
+
+# --- Conduit workspace member crates ---
+lopatnov-conduit-core.workspace = true
 
 # --- Config & parsing ---
 serde.workspace               = true

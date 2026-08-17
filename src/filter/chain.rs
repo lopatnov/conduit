@@ -44,47 +44,9 @@ use crate::filter::{auth, cors, ip_filter, limits, rate_limit};
 use crate::handler::response;
 use uuid::Uuid;
 
-// ── Outcome ───────────────────────────────────────────────────────────────────
+// ── Outcome + Context + Trait (Layer-0 vocabulary, #114/#126) ──────────────────
 
-/// What a filter returns after inspecting a request.
-pub enum FilterOutcome {
-    /// Pass the request to the next filter in the chain.
-    Continue,
-    /// The filter wrote a rejection response and decremented the inflight
-    /// counter; the chain should stop and return `Ok(true)` to Pingora.
-    Handled,
-    /// Skip all remaining guard filters and let the normal dispatch proceed.
-    /// Used by the health / ACME / hot-reload bypass guard.
-    Bypass,
-}
-
-// ── Context ───────────────────────────────────────────────────────────────────
-
-/// Data shared by every filter in a single request's guard chain.
-pub struct FilterContext<'a> {
-    /// The live HTTP session — filters may read headers and write responses.
-    pub session: &'a mut Session,
-    /// Headers to attach to any rejection response (CORS, security, custom).
-    pub extra_headers: &'a [(String, String)],
-    /// Inflight counter; each filter that writes a rejection response
-    /// decrements it.
-    pub inflight: &'a AtomicUsize,
-    /// In-memory rate-limit token buckets.
-    pub rate_limiter: &'a RateLimiter,
-    /// Per-client-IP concurrent connection counts (nginx limit_conn pattern).
-    pub ip_conn_counts: &'a dashmap::DashMap<String, AtomicUsize>,
-    /// Extracted client IP used for per-IP connection limiting.
-    pub client_ip: String,
-}
-
-// ── Trait ─────────────────────────────────────────────────────────────────────
-
-/// A single guard filter in the request pipeline.
-#[async_trait]
-pub trait RequestFilter: Send + Sync {
-    /// Inspect the request and decide whether to continue, reject, or bypass.
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome>;
-}
+pub use conduit_core::filter::chain::{FilterContext, FilterOutcome, RequestFilter};
 
 // ── Chain ─────────────────────────────────────────────────────────────────────
 
@@ -318,6 +280,10 @@ impl RequestFilter for AllowedHostsGuard {
 /// Enforces request body and header size limits.
 pub struct LimitsGuard {
     pub cfg: LimitsConfig,
+    /// Per-client-IP concurrent connection counts (nginx limit_conn pattern).
+    pub ip_conn_counts: Arc<dashmap::DashMap<String, AtomicUsize>>,
+    /// Extracted client IP used for per-IP connection limiting.
+    pub client_ip: String,
 }
 
 #[async_trait]
@@ -392,8 +358,8 @@ impl RequestFilter for LimitsGuard {
         // Checked after the inflight cap so the DashMap lookup only runs when
         // the server is accepting new connections.
         if let Some(max_per_ip) = self.cfg.max_connections_per_ip {
-            let ip = &ctx.client_ip;
-            if !ip.is_empty() && !try_acquire_ip_slot(ip, max_per_ip, ctx.ip_conn_counts) {
+            let ip = &self.client_ip;
+            if !ip.is_empty() && !try_acquire_ip_slot(ip, max_per_ip, &self.ip_conn_counts) {
                 response::write_response(
                     ctx.session,
                     429,
@@ -498,6 +464,8 @@ pub struct RateLimitGuard {
     /// Label used for `conduit_rate_limit_rejected_total{site=…}`.
     /// Typically `"host:port"` or `"*"` for catch-all sites.
     pub site_label: String,
+    /// In-memory rate-limit token buckets.
+    pub rate_limiter: Arc<RateLimiter>,
     /// Optional Redis-backed rate limiter (may be `None` at startup).
     /// Only available when compiled with `--features redis`.
     #[cfg(feature = "redis")]
@@ -510,7 +478,7 @@ impl RequestFilter for RateLimitGuard {
         let allowed = rate_limit_allowed(
             &self.cfg,
             ctx.session,
-            ctx.rate_limiter,
+            &self.rate_limiter,
             #[cfg(feature = "redis")]
             self.redis_rate_limiter.as_ref(),
             #[cfg(not(feature = "redis"))]
@@ -562,6 +530,8 @@ impl RequestFilter for RateLimitGuard {
 pub struct ConsumersGuard {
     pub cfg: ConsumersConfig,
     pub path: String,
+    /// Shared token-bucket rate limiter, used for the per-consumer rate limit.
+    pub rate_limiter: Arc<RateLimiter>,
 }
 
 #[cfg(feature = "consumers")]
@@ -594,7 +564,7 @@ impl RequestFilter for ConsumersGuard {
         // Per-consumer rate limit — key: "consumer:{username}" (global per consumer).
         if let Some(rl_cfg) = &consumer.rate_limit {
             let key = format!("consumer:{}", consumer.username);
-            let allowed = ctx
+            let allowed = self
                 .rate_limiter
                 .entry(key)
                 .or_insert_with(|| {

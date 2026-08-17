@@ -29,57 +29,16 @@ use crate::config::schema::{AppConfig, HeaderTransformConfig, ResponseTimeConfig
 use crate::filter::response_time;
 use crate::proxy::ctx::RequestCtx;
 
-// ── Outcome ───────────────────────────────────────────────────────────────────
+// ── Outcome + Trait (Layer-0 vocabulary, #114/#120/#126) ────────────────────────
 
-/// What a response filter returns after processing.
-pub enum ResponseFilterOutcome {
-    /// Apply the changes and continue to the next filter.
-    Continue,
-    /// This response should be retried against the upstream.
-    ///
-    /// Returned by `RetryOnErrorFilter` on 5xx when retries are configured.
-    /// The caller must propagate a Pingora `Custom("5xx_retry")` error.
-    RetryUpstream,
-    /// The response body should be replaced with a generic error JSON.
-    ///
-    /// Returned by `ErrorMaskFilter` on 5xx when `maskErrors: true` is set.
-    /// The caller sets `RequestCtx.mask_upstream_body = true` and updates
-    /// the `Content-Type` / `Content-Length` headers.
-    MaskBody,
-}
-
-// ── Trait ─────────────────────────────────────────────────────────────────────
-
-/// Narrow read-only view of request context exposed to [`ResponseFilter::apply`].
-///
-/// `ResponseFilter` implementors currently only ever read `cache_age_secs`
-/// from the request context (every other filter captures what it needs into
-/// its own struct fields at [`ResponseFilterChain::build`] time instead of
-/// reading `RequestCtx` per-request). This trait exists so `ResponseFilter`
-/// itself doesn't name the concrete `RequestCtx` type, which carries
-/// feature-gated fields (JWT claims, WASM plugin state, etc.) that belong to
-/// higher layers — unblocking `ResponseFilter` from living in a Layer-0 core
-/// crate (#114/#120). `ResponseFilterChain::build`/`run` still take the
-/// concrete `RequestCtx`; only the per-filter `apply()` signature changes.
-pub trait ResponseCtx: Send + Sync {
-    /// Age (seconds) of a cache-hit response, for the `Age` response header
-    /// (RFC 7234 §5.1, #49). `None` for non-cached responses.
-    fn cache_age_secs(&self) -> Option<u64>;
-}
+pub use conduit_core::filter::response_chain::{
+    ResponseCtx, ResponseFilter, ResponseFilterOutcome,
+};
 
 impl ResponseCtx for RequestCtx {
     fn cache_age_secs(&self) -> Option<u64> {
         self.cache_age_secs
     }
-}
-
-/// A single phase in the response filter pipeline.
-pub trait ResponseFilter: Send + Sync {
-    fn apply(
-        &self,
-        resp: &mut ResponseHeader,
-        req_ctx: &dyn ResponseCtx,
-    ) -> Result<ResponseFilterOutcome>;
 }
 
 // ── Chain ─────────────────────────────────────────────────────────────────────

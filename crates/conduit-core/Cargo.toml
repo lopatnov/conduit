@@ -1,0 +1,22 @@
+[package]
+name        = "lopatnov-conduit-core"
+version.workspace    = true
+edition.workspace    = true
+description = "Layer-0 traits and primitives for conduit's feature-driven workspace (issue #114/#126) — zero config knowledge, pingora + std only"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_core"
+path = "src/lib.rs"
+
+[dependencies]
+pingora-core  = { workspace = true }
+pingora-proxy = { workspace = true }
+pingora-http  = { workspace = true }
+async-trait   = { workspace = true }
+bytes         = { workspace = true }
+mime_guess    = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
