@@ -30,9 +30,15 @@ pub struct RouteResolution {
     pub proxy_pool: Option<ConnectionPoolConfig>,
     /// Negotiate HTTP/2 with the upstream when `true`.
     pub proxy_http2: bool,
-    /// Selected upstream URL — `Some` for least-conn / circuit-breaker routes
-    /// so `logging()` can decrement the per-upstream counter after the response.
+    /// Selected upstream URL — `Some` for every proxy route so passive-health
+    /// attribution (EWMA, Outlier Detection, per-peer stats) works regardless
+    /// of load-balancing strategy. See `upstream_conn_slot` for whether a
+    /// `conn_count` slot also needs releasing.
     pub proxy_upstream_url: Option<String>,
+    /// `true` when a `conn_count` slot was acquired for `proxy_upstream_url`
+    /// and must be released by `logging()` via `conn_dec`. `false` means the
+    /// URL above is for attribution only — no slot to release.
+    pub upstream_conn_slot: bool,
     /// Per-route cache config, if caching is enabled.
     pub proxy_cache_cfg: Option<CacheConfig>,
     /// Passive health: HTTP status codes that count as upstream failures.
@@ -62,6 +68,7 @@ impl RouteResolution {
             proxy_pool: None,
             proxy_http2: false,
             proxy_upstream_url: None,
+            upstream_conn_slot: false,
             proxy_cache_cfg: None,
             passive_unhealthy_status: Vec::new(),
             passive_unhealthy_latency_ms: None,
@@ -138,6 +145,7 @@ pub fn route_request(
     ctx.passive_unhealthy_latency_ms = res.passive_unhealthy_latency_ms;
     ctx.websocket_allowed = res.websocket_allowed;
     ctx.sticky_set_cookie = res.sticky_set_cookie;
+    ctx.upstream_conn_slot = res.upstream_conn_slot;
     ctx
 }
 
@@ -445,12 +453,16 @@ fn resolve_proxy_routes(
     // When maxConnectionsPerUpstream is set and the strategy is NOT
     // least-conn (which already tracks conn_count), increment the counter
     // manually here so the circuit breaker sees accurate load. Decremented
-    // by logging() via proxy_upstream_url.
+    // by logging() via proxy_upstream_url, gated on upstream_conn_slot.
     let circuit_tracking = opts.max_conns_per_upstream.is_some() && !is_least_conn;
     if circuit_tracking {
         ctx.upstream_health.conn_inc(&chosen_url);
     }
-    let proxy_upstream_url = (is_least_conn || circuit_tracking).then(|| chosen_url.clone());
+    // proxy_upstream_url is populated unconditionally (#155) so passive-health
+    // attribution works for every strategy; upstream_conn_slot separately
+    // tracks whether this request actually holds a conn_count slot to release.
+    let proxy_upstream_url = Some(chosen_url.clone());
+    let upstream_conn_slot = is_least_conn || circuit_tracking;
 
     // HMAC sticky: sign the chosen upstream URL and schedule a Set-Cookie
     // injection on the response side.
@@ -463,6 +475,7 @@ fn resolve_proxy_routes(
         proxy_pool: opts.pool.cloned(),
         proxy_http2: opts.http2,
         proxy_upstream_url,
+        upstream_conn_slot,
         proxy_cache_cfg: opts.cache.cloned(),
         passive_unhealthy_status: opts.unhealthy_status.to_vec(),
         passive_unhealthy_latency_ms: opts.unhealthy_latency_ms,
@@ -802,7 +815,10 @@ fn resolve_grouped(
         }
     };
 
-    let proxy_upstream_url = is_least_conn.then(|| chosen_url.clone());
+    // proxy_upstream_url is populated unconditionally (#155) so passive-health
+    // attribution works for every strategy; upstream_conn_slot tracks whether
+    // this request actually holds the conn_count slot least-conn acquired.
+    let proxy_upstream_url = Some(chosen_url.clone());
     Some(RouteResolution {
         upstream,
         retry: retry_state,
@@ -810,6 +826,7 @@ fn resolve_grouped(
         proxy_pool,
         proxy_http2,
         proxy_upstream_url,
+        upstream_conn_slot: is_least_conn,
         proxy_cache_cfg: cache_cfg,
         passive_unhealthy_status: Vec::new(), // groups don't have per-route healthCheck
         passive_unhealthy_latency_ms: None,
@@ -2834,6 +2851,215 @@ mod tests {
         assert!(
             hmac_verify_sticky(&chosen_url, cookie_value, "s3cret"),
             "fresh cookie must be validly signed for the actually-chosen upstream {chosen_url}"
+        );
+    }
+
+    // ── proxy_upstream_url / upstream_conn_slot (#155) ────────────────────────
+
+    /// Build a single-route AppConfig with the given targets/strategy/healthCheck.
+    fn single_route_config(
+        targets: Vec<&str>,
+        strategy: Option<LoadBalanceStrategy>,
+        max_conns_per_upstream: Option<u64>,
+    ) -> AppConfig {
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, UpstreamHealthCheck,
+        };
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: targets
+                    .into_iter()
+                    .map(|u| ProxyTarget::Simple(u.to_owned()))
+                    .collect(),
+                strategy,
+                health_check: max_conns_per_upstream.map(|max| UpstreamHealthCheck {
+                    max_connections_per_upstream: Some(max),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+        );
+        AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn round_robin_populates_url_without_conn_slot() {
+        // Default strategy, no maxConnectionsPerUpstream: proxy_upstream_url
+        // must still be Some (for passive-health attribution), but
+        // upstream_conn_slot must be false (no conn_count slot was acquired).
+        let config = single_route_config(vec!["http://a:4000", "http://b:4000"], None, None);
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(
+            ctx.proxy_upstream_url.is_some(),
+            "URL must be populated for passive-health attribution regardless of strategy"
+        );
+        assert!(
+            !ctx.upstream_conn_slot,
+            "round-robin without a connection cap must not claim a conn_count slot"
+        );
+    }
+
+    #[test]
+    fn least_conn_populates_url_with_conn_slot() {
+        let config = single_route_config(
+            vec!["http://a:4000", "http://b:4000"],
+            Some(LoadBalanceStrategy::LeastConn),
+            None,
+        );
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(ctx.proxy_upstream_url.is_some());
+        assert!(
+            ctx.upstream_conn_slot,
+            "least-conn always acquires a conn_count slot"
+        );
+    }
+
+    #[test]
+    fn round_robin_with_max_conns_populates_url_with_conn_slot() {
+        // Default strategy but maxConnectionsPerUpstream set: circuit_tracking
+        // kicks in, so a slot IS acquired even though the strategy isn't least-conn.
+        let config = single_route_config(vec!["http://a:4000", "http://b:4000"], None, Some(5));
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(ctx.proxy_upstream_url.is_some());
+        assert!(
+            ctx.upstream_conn_slot,
+            "round-robin with maxConnectionsPerUpstream set must acquire a conn_count slot"
+        );
+    }
+
+    #[test]
+    fn attribution_only_route_does_not_corrupt_shared_conn_count() {
+        // Two routes share the same target X: /lc is least-conn (acquires a
+        // slot), /rr is plain round-robin (attribution only, no slot). Routing
+        // /rr must NOT touch X's conn_count -- otherwise a later logging()
+        // decrement for the /rr request would phantom-decrement /lc's slot.
+        use crate::config::schema::{ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget};
+        use indexmap::IndexMap;
+
+        const SHARED: &str = "http://x:4000";
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/lc".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple(SHARED.to_owned())],
+                strategy: Some(LoadBalanceStrategy::LeastConn),
+                ..Default::default()
+            })),
+        );
+        routes.insert(
+            "/rr".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple(SHARED.to_owned())],
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+
+        let ctx_lc = route_request(
+            &config,
+            "localhost",
+            "/lc",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(ctx_lc.upstream_conn_slot);
+        assert_eq!(
+            reg.conn_load(SHARED),
+            1,
+            "least-conn route must have claimed exactly one slot"
+        );
+
+        let ctx_rr = route_request(
+            &config,
+            "localhost",
+            "/rr",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(
+            ctx_rr.proxy_upstream_url.is_some(),
+            "round-robin route still gets the URL for attribution"
+        );
+        assert!(
+            !ctx_rr.upstream_conn_slot,
+            "round-robin route on a shared target must not claim a slot"
+        );
+        assert_eq!(
+            reg.conn_load(SHARED),
+            1,
+            "the round-robin route must not have touched the shared conn_count"
         );
     }
 
