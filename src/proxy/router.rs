@@ -2711,22 +2711,35 @@ mod tests {
             &reg,
             None,
         );
-        match &ctx.upstream {
+        let chosen_url = match &ctx.upstream {
             UpstreamTarget::Proxy { addr, .. } => {
                 assert!(
                     addr == "a:4000" || addr == "b:4000",
                     "forged cookie must still resolve to a real upstream via normal \
                      load-balancing: {addr}"
                 );
+                format!("http://{addr}")
             }
             other => panic!("expected Proxy upstream, got {:?}", other),
-        }
+        };
         // Normal sticky-cookie-setting behavior must still apply to whichever
         // upstream was actually chosen (the forged cookie is ignored for
-        // *selection*, not for the response-side re-signing).
+        // *selection*, not for the response-side re-signing) -- verify the
+        // replacement cookie is both correctly named AND actually signed for
+        // the upstream that was picked, not merely present. A regression that
+        // set the wrong cookie name or signed for the wrong upstream must fail
+        // this test.
+        let (cookie_name, cookie_value) = ctx
+            .sticky_set_cookie
+            .as_ref()
+            .expect("a fresh signed cookie must still be set for the chosen upstream");
+        assert_eq!(
+            cookie_name, "srv_id",
+            "cookie name must match sticky.cookie"
+        );
         assert!(
-            ctx.sticky_set_cookie.is_some(),
-            "a fresh signed cookie must still be set for the chosen upstream"
+            hmac_verify_sticky(&chosen_url, cookie_value, "s3cret"),
+            "fresh cookie must be validly signed for the actually-chosen upstream {chosen_url}"
         );
     }
 
