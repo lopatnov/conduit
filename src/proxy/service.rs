@@ -540,9 +540,7 @@ mod tests {
     fn eventloop_lag_ms_gauge_set_and_get() {
         let metrics = ConduitMetrics::global();
         metrics.eventloop_lag_ms.set(3.25);
-        // Value should be >= 3.25 (another test may set it too, but we just
-        // verify the set → get round-trip works).
-        assert!(metrics.eventloop_lag_ms.get() > 0.0);
+        assert_eq!(metrics.eventloop_lag_ms.get(), 3.25);
         // Reset to avoid affecting other tests.
         metrics.eventloop_lag_ms.set(0.0);
     }

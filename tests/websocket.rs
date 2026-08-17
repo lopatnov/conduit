@@ -179,12 +179,7 @@ fn sha1(data: &[u8]) -> [u8; 20] {
 
         let [mut a, mut b, mut c, mut d, mut e] = h;
 
-        // `i` is used both to index `w` and to select the SHA-1 round
-        // constant via `match i` below — `.iter().enumerate()` wouldn't
-        // give a value usable for the range match, so the index-based loop
-        // is clearer here than the suggested rewrite.
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..80 {
+        for (i, &w_i) in w.iter().enumerate() {
             let (f, k) = match i {
                 0..=19 => ((b & c) | (!b & d), K[0]),
                 20..=39 => (b ^ c ^ d, K[1]),
@@ -196,7 +191,7 @@ fn sha1(data: &[u8]) -> [u8; 20] {
                 .wrapping_add(f)
                 .wrapping_add(e)
                 .wrapping_add(k)
-                .wrapping_add(w[i]);
+                .wrapping_add(w_i);
             e = d;
             d = c;
             c = b.rotate_left(30);

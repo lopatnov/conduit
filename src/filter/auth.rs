@@ -167,7 +167,7 @@ pub fn check_api_key(cfg: &ApiKeyConfig, session: &Session) -> bool {
 /// matching** consumer wins.  A consumer can use one of two credential types:
 ///
 /// - **API key** — value in the `apiKeyHeader` request header (default:
-///   `x-api-key`).  Constant-time comparison (`==`) is used.
+///   `x-api-key`).  Compared with [`ct_eq_str`] (constant-time).
 /// - **Basic Auth** — `Authorization: Basic <base64(username:password)>` where
 ///   the username must equal `consumer.username`.
 ///
@@ -286,7 +286,11 @@ fn check_consumer_basic(username: &str, password: &str, session: &Session) -> bo
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let encoded = auth_header.strip_prefix("Basic ").unwrap_or("").trim();
+    let (scheme, encoded) = auth_header.split_once(' ').unwrap_or(("", ""));
+    if !scheme.eq_ignore_ascii_case("Basic") {
+        return false;
+    }
+    let encoded = encoded.trim();
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .ok();
