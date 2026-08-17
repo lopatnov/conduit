@@ -1359,6 +1359,11 @@ load-balance strategy, across all three config shapes (`proxy: {}` map,
   they forward-probe to the next candidate on the ring. This means only the
   client(s) whose preferred peer is currently saturated get relocated (to a
   deterministic fallback peer); every other client's mapping is unaffected.
+  For sticky sessions specifically, a capacity relocation does **not**
+  re-sign the session cookie — the client keeps its original pin and
+  retries it on the next request, so the session genuinely returns to its
+  original upstream once that upstream has capacity again, rather than
+  permanently migrating to the fallback.
 - The cap is a **soft limit** under concurrency: it is checked, then
   acquired, in two separate steps (not atomically), so a burst of
   simultaneously-arriving requests can briefly overshoot it by the number of

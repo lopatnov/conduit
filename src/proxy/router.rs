@@ -467,7 +467,27 @@ fn resolve_proxy_routes(
 
     // HMAC sticky: sign the chosen upstream URL and schedule a Set-Cookie
     // injection on the response side.
-    let sticky_set_cookie = make_sticky_cookie(opts.sticky, &chosen_url);
+    //
+    // Skip re-signing when this pick was a capacity relocation away from a
+    // still-healthy pinned peer (#156 review finding): re-signing the cookie
+    // to the relocated fallback would permanently migrate the session to it,
+    // since the next request's hash input is derived from the *pinned URL
+    // string itself* (see `selection_hash_val`), not the client's original
+    // identity — the fallback would then stay "pinned to itself" even after
+    // the originally-preferred peer frees capacity. Leaving the existing
+    // cookie untouched means the next request retries the original pin, so
+    // sticky sessions genuinely self-heal once capacity is available again,
+    // matching the same self-healing property already tested for plain
+    // (non-sticky) hash routing.
+    let sticky_relocated = matches!(
+        &sticky_override,
+        Some(pinned) if pinned != &chosen_url && healthy_urls.contains(pinned)
+    );
+    let sticky_set_cookie = if sticky_relocated {
+        None
+    } else {
+        make_sticky_cookie(opts.sticky, &chosen_url)
+    };
 
     Some(RouteResolution {
         upstream,
@@ -2878,6 +2898,115 @@ mod tests {
         match &ctx.upstream {
             UpstreamTarget::Proxy { addr, .. } => {
                 assert_eq!(addr, "b:4000", "must route to the HMAC-pinned upstream");
+            }
+            other => panic!("expected Proxy upstream, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sticky_capacity_relocation_does_not_re_pin_and_self_heals() {
+        // #156 review finding (Gitar): re-signing the sticky cookie to a
+        // capacity-relocated fallback would permanently migrate the session
+        // to it, since the next request's hash input is derived from the
+        // pinned URL string itself. Prove: (1) relocating away from a
+        // saturated-but-healthy pin does NOT re-sign the cookie, and (2)
+        // once the original pin frees capacity, presenting the SAME
+        // (unchanged) original cookie routes back to it.
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, StickyConfig,
+            UpstreamHealthCheck,
+        };
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://a:4000".to_owned()),
+                    ProxyTarget::Simple("http://b:4000".to_owned()),
+                ],
+                sticky: Some(StickyConfig {
+                    cookie: "srv_id".to_owned(),
+                    secret: Some("s3cret".to_owned()),
+                    strict: None,
+                }),
+                health_check: Some(UpstreamHealthCheck {
+                    max_connections_per_upstream: Some(1),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+
+        // Pin the cookie to "a", then saturate "a" at its cap (still
+        // healthy, just at capacity) so the pick must relocate.
+        let signed_a = hmac_sign_sticky("http://a:4000", "s3cret");
+        let mut headers = http::HeaderMap::new();
+        headers.insert("cookie", format!("srv_id={signed_a}").parse().unwrap());
+        reg.conn_inc("http://a:4000");
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &headers,
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        match &ctx.upstream {
+            UpstreamTarget::Proxy { addr, .. } => {
+                assert_eq!(
+                    addr, "b:4000",
+                    "must relocate off the saturated pinned peer"
+                );
+            }
+            other => panic!("expected Proxy upstream, got {:?}", other),
+        }
+        assert!(
+            ctx.sticky_set_cookie.is_none(),
+            "capacity relocation must NOT re-sign the cookie — doing so would \
+             permanently migrate the session to the fallback peer: {:?}",
+            ctx.sticky_set_cookie
+        );
+
+        // Free "a"'s slot and present the SAME original cookie again (no new
+        // cookie was issued, so the client would still be holding this one).
+        reg.conn_dec("http://a:4000");
+        let ctx2 = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &headers,
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        match &ctx2.upstream {
+            UpstreamTarget::Proxy { addr, .. } => {
+                assert_eq!(
+                    addr, "a:4000",
+                    "must self-heal back to the original pin once capacity frees"
+                );
             }
             other => panic!("expected Proxy upstream, got {:?}", other),
         }
