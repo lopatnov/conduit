@@ -43,10 +43,15 @@ jobs:
         run: cargo fmt --check
 
       - name: clippy
-        run: cargo clippy -- -D warnings
+        # --workspace covers member crates too (e.g. conduit-core, #114/#126) --
+        # they have no [features] of their own, so this job (matrix'd across
+        # all 3 OSes) is where they get exercised; ci-features/ci-standard
+        # stay root-package-only since those exist to test feature combos the
+        # member crates don't have.
+        run: cargo clippy --workspace -- -D warnings
 
       - name: test
-        run: cargo test
+        run: cargo test --workspace
 
   # ── Build + test with all optional features enabled ─────────────────────────
   ci-features:
