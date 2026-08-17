@@ -190,9 +190,10 @@ for genuinely idle firings, not a guaranteed periodic pass.)
 - For a mechanical "extract conduit-X" sub-issue, delegate to
   **`crate-extractor`** with the sub-issue's spec. For a seam refactor or
   anything needing judgment, implement it yourself.
-- Every PR into the 2.0 branch bumps the workspace minor version
-  (2.1.0, 2.2.0, ...) per the user's standing decision — bump
-  `[workspace.package] version` as part of the same commit.
+- Do **not** bump `[workspace.package] version` per PR. 2.0.0 hasn't
+  shipped yet — the version stays pinned at `2.0.0` until an actual release
+  is being cut (2026-08-17: reverted from an earlier per-PR minor-bump
+  convention that had inflated it to 2.11.0 with nothing published).
 - Open the PR against `claude/cargo-workspace-features-23qxfr` (draft is
   fine), and `subscribe_pr_activity` on it.
 
