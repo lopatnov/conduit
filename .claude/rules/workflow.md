@@ -22,6 +22,7 @@ chains are expensive and lose context — avoid them.
 | New/changed Cargo dependency, especially behind a `--features` flag | `lawyer` |
 | PR readiness, CI failure triage, merge-order across PRs, cutting a release (`v<x.y.z>` tag) | `release-engineer` |
 | A file crosses the 400-line soft limit (or sits at/near the 1000-line hard limit), or a bigger architecture/design question needs a concrete decomposition plan | `architect` (opus, advisory only — see note below) |
+| Need to find candidate code duplication in one or more files before deciding what (if anything) to extract | `duplication-scanner` (haiku, read-only — several files can be scanned in parallel calls) |
 
 ## When NOT to call an agent (economy)
 
