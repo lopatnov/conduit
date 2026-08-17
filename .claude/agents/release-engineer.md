@@ -82,6 +82,10 @@ triage").
 - A release-blocking security finding → `security-engineer`, may hold the release.
 - Ambiguous version bump (does this change warrant minor vs patch?) → ask the conductor/user;
   don't guess on semver for a public crate + npm package + Docker tags.
+- Note: a "go" from this agent is not itself sufficient to merge any individual PR —
+  `security-engineer` sign-off is a separate, unconditional gate on every merge regardless
+  of release readiness (see `.claude/rules/workflow.md` "Security review is unconditional").
+  A merge-order plan from here still needs that sign-off per PR before the conductor acts on it.
 
 ## Definition of Done
 - Release readiness question answered with a concrete merge order and CI status per PR, OR
