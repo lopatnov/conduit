@@ -854,24 +854,28 @@ mod tests {
 
     #[test]
     fn slow_start_no_recovery_time_returns_one() {
-        let mut e = UpstreamEntry::default();
-        e.recovery_time_secs = None;
+        // recovery_time_secs is already None by default.
+        let e = UpstreamEntry::default();
         assert_eq!(slow_start_fraction(&e, 30), 1.0);
     }
 
     #[test]
     fn slow_start_already_elapsed_returns_one() {
-        let mut e = UpstreamEntry::default();
         // Set recovery time far in the past so elapsed >= window.
-        e.recovery_time_secs = Some(now_secs().saturating_sub(60));
+        let e = UpstreamEntry {
+            recovery_time_secs: Some(now_secs().saturating_sub(60)),
+            ..Default::default()
+        };
         assert_eq!(slow_start_fraction(&e, 30), 1.0);
     }
 
     #[test]
     fn slow_start_halfway_returns_roughly_half() {
-        let mut e = UpstreamEntry::default();
         // Set recovery 15 seconds ago with a 30-second window → ~0.5
-        e.recovery_time_secs = Some(now_secs().saturating_sub(15));
+        let e = UpstreamEntry {
+            recovery_time_secs: Some(now_secs().saturating_sub(15)),
+            ..Default::default()
+        };
         let fraction = slow_start_fraction(&e, 30);
         assert!(
             fraction > 0.3 && fraction < 0.7,

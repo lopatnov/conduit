@@ -1,3 +1,11 @@
+// Shared test-infrastructure module included via `mod common;` by ~40
+// separate integration-test binaries. Each binary only calls the subset of
+// this API it needs, so any individual item can legitimately look "unused"
+// from a single binary's own dead-code analysis even though it's exercised
+// by others — see e.g. `start_minimal`/`admin_url` (health_and_admin.rs,
+// upstream_health.rs), `rewrite_config`/`reload` (security.rs, hot_reload.rs).
+#![allow(dead_code)]
+
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command};

@@ -128,6 +128,39 @@ pub fn validate_cert_key_pem(cert_pem: &str, key_pem: &str) -> anyhow::Result<()
     Ok(())
 }
 
+/// Load CA certificates from a PEM file and build a `WebPkiClientVerifier`.
+fn build_client_verifier(
+    ca_path: &str,
+    optional: bool,
+) -> anyhow::Result<Arc<dyn ClientCertVerifier>> {
+    let mut root_store = RootCertStore::empty();
+
+    // pingora_core::tls::load_ca_file_into_store loads all CA certs from a PEM file.
+    pingora_core::tls::load_ca_file_into_store(ca_path, &mut root_store)
+        .map_err(|e| anyhow::anyhow!("failed to load CA certs from {ca_path}: {e}"))?;
+
+    if root_store.is_empty() {
+        anyhow::bail!("no CA certificates found in {ca_path}");
+    }
+
+    let root_store = Arc::new(root_store);
+    let verifier: Arc<dyn ClientCertVerifier> = if optional {
+        // Request cert but do not require it (nginx ssl_verify_client optional).
+        // `.allow_unauthenticated()` makes the certificate optional.
+        WebPkiClientVerifier::builder(root_store)
+            .allow_unauthenticated()
+            .build()
+            .map_err(|e| anyhow::anyhow!("build optional client verifier: {e}"))?
+    } else {
+        // Require a valid client certificate — reject the handshake otherwise.
+        WebPkiClientVerifier::builder(root_store)
+            .build()
+            .map_err(|e| anyhow::anyhow!("build required client verifier: {e}"))?
+    };
+
+    Ok(verifier)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -300,37 +333,4 @@ mod tests {
         let result = build_client_verifier(ca_path.to_str().unwrap(), false);
         assert!(result.is_err(), "empty CA file must return error");
     }
-}
-
-/// Load CA certificates from a PEM file and build a `WebPkiClientVerifier`.
-fn build_client_verifier(
-    ca_path: &str,
-    optional: bool,
-) -> anyhow::Result<Arc<dyn ClientCertVerifier>> {
-    let mut root_store = RootCertStore::empty();
-
-    // pingora_core::tls::load_ca_file_into_store loads all CA certs from a PEM file.
-    pingora_core::tls::load_ca_file_into_store(ca_path, &mut root_store)
-        .map_err(|e| anyhow::anyhow!("failed to load CA certs from {ca_path}: {e}"))?;
-
-    if root_store.is_empty() {
-        anyhow::bail!("no CA certificates found in {ca_path}");
-    }
-
-    let root_store = Arc::new(root_store);
-    let verifier: Arc<dyn ClientCertVerifier> = if optional {
-        // Request cert but do not require it (nginx ssl_verify_client optional).
-        // `.allow_unauthenticated()` makes the certificate optional.
-        WebPkiClientVerifier::builder(root_store)
-            .allow_unauthenticated()
-            .build()
-            .map_err(|e| anyhow::anyhow!("build optional client verifier: {e}"))?
-    } else {
-        // Require a valid client certificate — reject the handshake otherwise.
-        WebPkiClientVerifier::builder(root_store)
-            .build()
-            .map_err(|e| anyhow::anyhow!("build required client verifier: {e}"))?
-    };
-
-    Ok(verifier)
 }

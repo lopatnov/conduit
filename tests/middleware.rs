@@ -195,6 +195,7 @@ fn validate_rejects_script_entry_without_path() {
 // ── Demo middleware integration tests ─────────────────────────────────────────
 
 /// Helper: write a Rhai script to `dir` and return its path string.
+#[cfg(feature = "rhai")]
 fn write_script(dir: &tempfile::TempDir, name: &str, src: &str) -> String {
     let p = dir.path().join(name);
     std::fs::write(&p, src).unwrap();
@@ -202,6 +203,7 @@ fn write_script(dir: &tempfile::TempDir, name: &str, src: &str) -> String {
 }
 
 /// Helper: compile WAT → WASM bytes and write to `dir`, return path.
+#[cfg(feature = "wasm")]
 fn compile_wat_to_file(dir: &tempfile::TempDir, name: &str, wat_src: &str) -> String {
     let bytes = wat::parse_str(wat_src).expect("WAT must compile");
     let p = dir.path().join(name);
@@ -212,6 +214,7 @@ fn compile_wat_to_file(dir: &tempfile::TempDir, name: &str, wat_src: &str) -> St
 // ── Rhai api-gate demo ───────────────────────────────────────────────────────
 
 /// Helper: build a gate config where all requests go to an echo upstream.
+#[cfg(feature = "rhai")]
 fn api_gate_config(
     port: u16,
     admin_port: u16,

@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn normalize_single_site_wraps_in_vec() {
-        let out = normalize(ConfigFile::Single(Box::new(SiteConfig::default())));
+        let out = normalize(ConfigFile::Single(Box::default()));
         assert_eq!(out.sites.len(), 1);
         assert!(out.global.is_none());
     }

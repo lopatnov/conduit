@@ -382,7 +382,7 @@ fn reload_log_file_switch_takes_effect() {
     assert!(log_path.exists(), "log file must be created after reload");
     let lines: Vec<String> = BufReader::new(std::fs::File::open(&log_path).expect("open log"))
         .lines()
-        .filter_map(|l| l.ok())
+        .map_while(Result::ok)
         .collect();
     assert!(
         !lines.is_empty(),

@@ -81,9 +81,11 @@ mod tests {
     #[test]
     fn thresholds_are_sane() {
         // Unhealthy threshold > healthy threshold so recovery is fast.
-        assert!(DEFAULT_UNHEALTHY_THRESHOLD > DEFAULT_HEALTHY_THRESHOLD);
-        assert!(DEFAULT_SHUTDOWN_TIMEOUT_SECS > 0);
-        assert!(DEFAULT_HEALTH_CHECK_INTERVAL_SECS > 0);
+        // These compare `const` values, so the check happens at compile
+        // time via an inline const block rather than at test runtime.
+        const { assert!(DEFAULT_UNHEALTHY_THRESHOLD > DEFAULT_HEALTHY_THRESHOLD) };
+        const { assert!(DEFAULT_SHUTDOWN_TIMEOUT_SECS > 0) };
+        const { assert!(DEFAULT_HEALTH_CHECK_INTERVAL_SECS > 0) };
     }
 
     #[test]

@@ -881,8 +881,10 @@ mod tests {
     #[test]
     fn make_cache_control_with_max_age_returns_public() {
         use crate::config::schema::StaticOptions;
-        let mut opts = StaticOptions::default();
-        opts.max_age = Some("1h".to_owned());
+        let opts = StaticOptions {
+            max_age: Some("1h".to_owned()),
+            ..Default::default()
+        };
         let cc = make_cache_control(&opts);
         assert!(
             cc.starts_with("public, max-age="),
@@ -894,8 +896,10 @@ mod tests {
     #[test]
     fn make_cache_control_invalid_duration_returns_no_cache() {
         use crate::config::schema::StaticOptions;
-        let mut opts = StaticOptions::default();
-        opts.max_age = Some("not-a-duration".to_owned());
+        let opts = StaticOptions {
+            max_age: Some("not-a-duration".to_owned()),
+            ..Default::default()
+        };
         assert_eq!(make_cache_control(&opts), "no-cache");
     }
 

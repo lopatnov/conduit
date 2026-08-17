@@ -1,8 +1,10 @@
 mod common;
 
 use base64::Engine as _;
+#[cfg(feature = "jwt")]
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::blocking::Client;
+#[cfg(feature = "jwt")]
 use serde_json::json;
 
 // ── helpers ──────────────────────────────────────────────────────────────────

@@ -43,7 +43,7 @@ jobs:
         run: cargo fmt --check
 
       - name: clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --tests -- -D warnings
 
       - name: test
         run: cargo test
@@ -69,7 +69,7 @@ jobs:
         continue-on-error: true
 
       - name: clippy (all features)
-        run: cargo clippy --features full -- -D warnings
+        run: cargo clippy --features full --tests -- -D warnings
 
       - name: test (all features)
         run: cargo test --features full
@@ -97,7 +97,7 @@ jobs:
         continue-on-error: true  # transient cache failures must not abort the build
 
       - name: clippy (standard features)
-        run: cargo clippy --features standard -- -D warnings
+        run: cargo clippy --features standard --tests -- -D warnings
 
       - name: test (standard features)
         run: cargo test --features standard

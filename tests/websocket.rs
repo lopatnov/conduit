@@ -85,10 +85,7 @@ fn send_ws_101(writer: &mut std::net::TcpStream, key: &str) {
 /// (server never masks outgoing frames per RFC 6455).
 fn ws_echo_loop(raw: &mut std::net::TcpStream, writer: &mut std::net::TcpStream) {
     let mut buf = [0u8; 4096];
-    loop {
-        let Some((fin_opcode, payload)) = read_ws_frame(raw, &mut buf) else {
-            break;
-        };
+    while let Some((fin_opcode, payload)) = read_ws_frame(raw, &mut buf) {
         writer.write_all(&[fin_opcode, payload.len() as u8]).ok();
         writer.write_all(&payload).ok();
         if fin_opcode & 0x0f == 0x8 {
@@ -182,6 +179,11 @@ fn sha1(data: &[u8]) -> [u8; 20] {
 
         let [mut a, mut b, mut c, mut d, mut e] = h;
 
+        // `i` is used both to index `w` and to select the SHA-1 round
+        // constant via `match i` below — `.iter().enumerate()` wouldn't
+        // give a value usable for the range match, so the index-based loop
+        // is clearer here than the suggested rewrite.
+        #[allow(clippy::needless_range_loop)]
         for i in 0..80 {
             let (f, k) = match i {
                 0..=19 => ((b & c) | (!b & d), K[0]),

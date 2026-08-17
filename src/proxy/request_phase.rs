@@ -3160,13 +3160,15 @@ mod tests {
 
         // Build an AppConfig with outlier detection enabled on site 0.
         let mut config = AppConfig::default();
-        let mut site = crate::config::schema::SiteConfig::default();
-        site.outlier_detection = Some(crate::config::schema::OutlierDetectionConfig {
-            consecutive_5xx: Some(1),
-            base_ejection_time_secs: Some(5),
-            max_ejection_time_secs: Some(30),
-            max_ejection_percent: Some(50),
-        });
+        let site = crate::config::schema::SiteConfig {
+            outlier_detection: Some(crate::config::schema::OutlierDetectionConfig {
+                consecutive_5xx: Some(1),
+                base_ejection_time_secs: Some(5),
+                max_ejection_time_secs: Some(30),
+                max_ejection_percent: Some(50),
+            }),
+            ..Default::default()
+        };
         config.sites = vec![site];
 
         // Must not panic — exercises the maybe_eject() call inside the if-let branch.
