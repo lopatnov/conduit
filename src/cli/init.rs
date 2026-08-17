@@ -72,6 +72,14 @@ impl Format {
             _ => None,
         }
     }
+
+    /// Serialize `value` in this format.
+    fn serialize(self, value: &Value) -> anyhow::Result<String> {
+        match self {
+            Format::Yaml => to_yaml_string(value),
+            Format::Json => Ok(serde_json::to_string_pretty(value)?),
+        }
+    }
 }
 
 // ── TLS helper ────────────────────────────────────────────────────────────────
@@ -273,21 +281,101 @@ fn ask_logging(opts: &InitOptions<'_>) -> anyhow::Result<Option<Value>> {
 
 // ── Main entry point ──────────────────────────────────────────────────────────
 
+/// Warn on stderr when `--format` was given but isn't recognised (falls back
+/// to yaml via `resolve_format`).
+fn warn_unknown_format(opts: &InitOptions<'_>) {
+    let Some(fmt_str) = opts.format else {
+        return;
+    };
+    if Format::from_str(fmt_str).is_none() {
+        eprintln!(
+            "warning: unknown output format '{fmt_str}' — falling back to yaml. \
+             Valid values: yaml, json"
+        );
+    }
+}
+
+/// Prompt to overwrite an existing config file. `Ok(false)` means the caller
+/// should abort without writing (already printed "Aborted.").
+fn confirm_overwrite(path: &Path, resolved_path: &str, yes: bool) -> anyhow::Result<bool> {
+    if !path.exists() || yes {
+        return Ok(true);
+    }
+    let overwrite = Confirm::new()
+        .with_prompt(format!("{resolved_path} already exists. Overwrite?"))
+        .default(false)
+        .interact()?;
+    if !overwrite {
+        println!("Aborted.");
+    }
+    Ok(overwrite)
+}
+
+/// The six wizard answers, in the order they are prompted.
+struct Answers {
+    port: u16,
+    static_dir: Option<String>,
+    proxy_url: Option<String>,
+    tls: Option<Value>,
+    health: bool,
+    logging: Option<Value>,
+}
+
+fn collect_answers(opts: &InitOptions<'_>) -> anyhow::Result<Answers> {
+    Ok(Answers {
+        port: ask_port(opts)?,
+        static_dir: ask_static_dir(opts)?,
+        proxy_url: ask_proxy_url(opts)?,
+        tls: ask_tls_config(opts)?,
+        health: ask_health(opts)?,
+        logging: ask_logging(opts)?,
+    })
+}
+
+/// Assemble the site config object; keys are added only when configured.
+fn assemble_site(answers: Answers) -> Value {
+    let mut site = json!({ "port": answers.port });
+
+    if let Some(dir) = answers.static_dir {
+        site["static"] = json!(dir);
+    }
+    if let Some(url) = answers.proxy_url {
+        site["proxy"] = json!(url);
+    }
+    if let Some(tls) = answers.tls {
+        site["tls"] = tls;
+    }
+    if answers.health {
+        site["healthCheck"] = json!(true);
+    }
+    if let Some(logging) = answers.logging {
+        site["logging"] = logging;
+    }
+
+    site
+}
+
+/// Print the post-write summary (quiet in `-y` mode).
+fn print_outcome(yes: bool, resolved_path: &str, config_str: &str) {
+    if yes {
+        println!("Wrote {resolved_path}");
+    } else {
+        println!("\nWrote {resolved_path}:\n");
+        println!("{config_str}");
+        println!(
+            "Run `conduit -c {resolved_path}` to start, or \
+             `conduit validate -c {resolved_path}` to check the config."
+        );
+    }
+}
+
 /// Run the `conduit init` wizard with the given options.
 ///
 /// In non-interactive mode (`yes == true`) every unspecified option uses its
 /// built-in default. Any flag that was explicitly set takes priority regardless
 /// of the `yes` flag.
 pub fn run_init(opts: InitOptions<'_>) -> anyhow::Result<()> {
-    // Warn when --format is provided but not recognised.
-    if let Some(fmt_str) = opts.format {
-        if Format::from_str(fmt_str).is_none() {
-            eprintln!(
-                "warning: unknown output format '{fmt_str}' — falling back to yaml. \
-                 Valid values: yaml, json"
-            );
-        }
-    }
+    warn_unknown_format(&opts);
     let format = resolve_format(&opts);
 
     if !opts.yes {
@@ -300,61 +388,16 @@ pub fn run_init(opts: InitOptions<'_>) -> anyhow::Result<()> {
         .unwrap_or_else(|| format.default_filename().to_owned());
     let path = Path::new(&resolved_path);
 
-    if path.exists() && !opts.yes {
-        let overwrite = Confirm::new()
-            .with_prompt(format!("{resolved_path} already exists. Overwrite?"))
-            .default(false)
-            .interact()?;
-        if !overwrite {
-            println!("Aborted.");
-            return Ok(());
-        }
+    if !confirm_overwrite(path, &resolved_path, opts.yes)? {
+        return Ok(());
     }
 
-    let port = ask_port(&opts)?;
-    let static_dir = ask_static_dir(&opts)?;
-    let proxy_url = ask_proxy_url(&opts)?;
-    let tls_config = ask_tls_config(&opts)?;
-    let want_health = ask_health(&opts)?;
-    let logging_value = ask_logging(&opts)?;
-
-    // ── Assemble ─────────────────────────────────────────────────────────────
-    let mut site = json!({ "port": port });
-
-    if let Some(dir) = static_dir {
-        site["static"] = json!(dir);
-    }
-    if let Some(url) = proxy_url {
-        site["proxy"] = json!(url);
-    }
-    if let Some(tls) = tls_config {
-        site["tls"] = tls;
-    }
-    if want_health {
-        site["healthCheck"] = json!(true);
-    }
-    if let Some(logging) = logging_value {
-        site["logging"] = logging;
-    }
-
-    // ── Serialize ─────────────────────────────────────────────────────────────
-    let config_str = match format {
-        Format::Yaml => to_yaml_string(&site)?,
-        Format::Json => serde_json::to_string_pretty(&site)?,
-    };
+    let answers = collect_answers(&opts)?;
+    let site = assemble_site(answers);
+    let config_str = format.serialize(&site)?;
 
     std::fs::write(path, &config_str)?;
-
-    if opts.yes {
-        println!("Wrote {resolved_path}");
-    } else {
-        println!("\nWrote {resolved_path}:\n");
-        println!("{config_str}");
-        println!(
-            "Run `conduit -c {resolved_path}` to start, or \
-             `conduit validate -c {resolved_path}` to check the config."
-        );
-    }
+    print_outcome(opts.yes, &resolved_path, &config_str);
 
     Ok(())
 }
