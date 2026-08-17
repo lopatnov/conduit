@@ -89,7 +89,7 @@ libc      = "0.2" # O_NOFOLLOW for atomic symlink-safe file open (Unix)
 url       = "2"   # URL parsing for proxy-loop and SSRF detection
 httpdate  = "1"
 http      = "1"
-base64    = "0.22"
+base64    = "0.23"
 hmac      = "0.13"
 sha2      = "0.11"
 
