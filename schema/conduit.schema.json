@@ -223,6 +223,14 @@
         "httpRedirectPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "versions":         { "type": "array", "items": { "type": "string" } },
         "ciphers":          { "type": "array", "items": { "type": "string" } },
+        "clientAuth": {
+          "type": "object",
+          "required": ["ca"],
+          "properties": {
+            "ca":       { "type": "string", "description": "Path to the CA certificate file (PEM format) used to verify client certs." },
+            "optional": { "type": "boolean", "default": false, "description": "When true, client certificates are requested but not required." }
+          }
+        },
         "acme": {
           "type": "object",
           "required": ["email"],

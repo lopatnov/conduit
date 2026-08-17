@@ -73,8 +73,9 @@ pub fn make_tls_settings_with_client_auth(
 ///
 /// Parses both PEM strings and attempts to build a `rustls::ServerConfig` from
 /// them.  Returns `Ok(())` when they form a valid, matching pair; otherwise
-/// returns an error message describing what is wrong (expired, mismatched key,
-/// no certificate found, …).
+/// returns an error message describing what is wrong (mismatched key, no
+/// certificate found, malformed PEM, …). Does not check certificate expiry —
+/// an already-expired but key-matched pair passes this check.
 ///
 /// This is used by `POST /certs/reload` to reject invalid certs before writing
 /// anything to disk.

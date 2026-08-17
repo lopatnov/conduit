@@ -88,7 +88,7 @@ impl TestServer {
                 Err(e) => panic!("could not check server liveness: {e}"),
             }
 
-            if !proxy_ok && probe_proxy(&health_http, &health_https, &insecure) {
+            if !proxy_ok && probe_proxy(&health_http, &health_https, &insecure, self.port) {
                 proxy_ok = true;
             }
             if !admin_ok && probe_admin(&admin_url) {
@@ -151,8 +151,15 @@ fn is_ready_status(r: reqwest::blocking::Response) -> bool {
 
 /// Poll both the HTTP and HTTPS health endpoints once.
 ///
-/// Returns `true` if either endpoint replies with a "ready" status.
-fn probe_proxy(http: &str, https: &str, insecure: &reqwest::blocking::Client) -> bool {
+/// Returns `true` if either endpoint replies with a "ready" status. Falls
+/// back to a bare TCP connect on `port` when both app-layer probes fail —
+/// needed for `tls.clientAuth.optional: false` sites, where this probe (no
+/// client cert) is correctly rejected at the TLS layer before any HTTP
+/// response exists, but the listener is nonetheless fully up. A TCP connect
+/// alone can't succeed before the process has actually bound the port, so
+/// this doesn't mask a genuine "not started yet" state — see
+/// `mtls_required_*` in `tests/mtls.rs` for the scenario this unblocks.
+fn probe_proxy(http: &str, https: &str, insecure: &reqwest::blocking::Client, port: u16) -> bool {
     let http_ok = reqwest::blocking::get(http)
         .map(is_ready_status)
         .unwrap_or(false);
@@ -161,7 +168,13 @@ fn probe_proxy(http: &str, https: &str, insecure: &reqwest::blocking::Client) ->
         .send()
         .map(is_ready_status)
         .unwrap_or(false);
-    http_ok || https_ok
+    http_ok
+        || https_ok
+        || std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            Duration::from_millis(200),
+        )
+        .is_ok()
 }
 
 /// Poll the admin `/status` endpoint once.  Returns `true` on a 2xx response.
