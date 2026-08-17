@@ -661,3 +661,123 @@ fn per_peer_response_breakdown_for_random_strategy() {
         "the 500 upstream must have recorded hits; {list:?}"
     );
 }
+
+// ── Circuit breaker capacity enforcement across strategies (#156) ─────────────
+
+#[test]
+fn circuit_breaker_round_robin_skips_saturated_upstream_with_multiple_targets() {
+    // Before #156, RoundRobin never checked conn_load when choosing among
+    // MULTIPLE targets, so it kept alternating onto an already-saturated peer
+    // (the single-target case in `circuit_breaker_limits_connections` above
+    // always worked, since "all peers maxed" was already handled). Asserts
+    // by hit count, not wall-clock timing, to stay flake-resistant in CI.
+    let slow = SlowUpstream::start(3000);
+    let fast = MockUpstream::start(200);
+    let port = common::free_port();
+    let admin_port = common::free_port();
+
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": {
+                    "/": {
+                        "targets": [ slow.url(), fast.url() ],
+                        "healthCheck": { "maxConnectionsPerUpstream": 1 }
+                    }
+                }
+            }]
+        }),
+    );
+
+    // Occupy the slow upstream's single connection slot in the background.
+    let bg_client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let bg_url = srv.url("/");
+    std::thread::spawn(move || {
+        let _ = bg_client.get(&bg_url).send();
+    });
+    std::thread::sleep(Duration::from_millis(200)); // let it register as in-flight
+
+    // Foreground requests must all land on `fast` — a short client timeout
+    // means a request that (incorrectly) got routed to the still-busy `slow`
+    // upstream fails fast instead of hanging the test for 3s.
+    let fg_client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(800))
+        .build()
+        .unwrap();
+    for i in 0..4 {
+        let resp = fg_client
+            .get(srv.url("/"))
+            .send()
+            .unwrap_or_else(|e| panic!("request {i} must not hang on the saturated peer: {e}"));
+        assert_eq!(resp.status().as_u16(), 200, "request {i}");
+    }
+    assert_eq!(
+        fast.hit_count(),
+        4,
+        "every foreground request must land on the free upstream, not the saturated one"
+    );
+}
+
+#[test]
+fn routes_array_honors_max_connections_per_upstream() {
+    // Before #156, `src/proxy/routes.rs` had zero circuit-breaker code —
+    // `healthCheck.maxConnectionsPerUpstream` was silently ignored for the
+    // `routes[]`-array config path entirely (unlike the legacy `proxy: {}`
+    // map path). Proves the routes[]-array path now enforces it too.
+    let slow = SlowUpstream::start(3000);
+    let fast = MockUpstream::start(200);
+    let port = common::free_port();
+    let admin_port = common::free_port();
+
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "routes": [{
+                    "match": { "path": "/**" },
+                    "proxy": {
+                        "targets": [ slow.url(), fast.url() ],
+                        "healthCheck": { "maxConnectionsPerUpstream": 1 }
+                    }
+                }]
+            }]
+        }),
+    );
+
+    let bg_client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let bg_url = srv.url("/");
+    std::thread::spawn(move || {
+        let _ = bg_client.get(&bg_url).send();
+    });
+    std::thread::sleep(Duration::from_millis(200));
+
+    let fg_client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(800))
+        .build()
+        .unwrap();
+    for i in 0..4 {
+        let resp = fg_client
+            .get(srv.url("/"))
+            .send()
+            .unwrap_or_else(|e| panic!("request {i} must not hang on the saturated peer: {e}"));
+        assert_eq!(resp.status().as_u16(), 200, "request {i}");
+    }
+    assert_eq!(
+        fast.hit_count(),
+        4,
+        "routes[]-array path must also skip the saturated upstream"
+    );
+}
