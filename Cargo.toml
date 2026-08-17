@@ -231,7 +231,7 @@ full = [
 reqwest     = { version = "0.13", default-features = false, features = ["http2", "rustls", "blocking", "json", "multipart"] }
 criterion   = { version = "0.8", features = ["html_reports"] }
 tempfile    = "3"
-serial_test = "3"
+serial_test = "4"
 time        = { version = "0.3", features = ["std"] }
 # wat: parse WebAssembly Text Format in tests (compile inline WAT → wasm bytes)
 wat         = "1"
