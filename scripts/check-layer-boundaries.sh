@@ -48,12 +48,17 @@ for manifest in crates/*/Cargo.toml; do
   [[ -d "$crate_dir/src" ]] || continue
 
   checked=$((checked + 1))
-  # Exclude line (//, ///, //!) and block (/* */-style, best-effort: lines
-  # starting with * after trimming) comments -- a Layer-1 crate's own doc
-  # comment explaining *why* it avoids SiteConfig/AppConfig (a natural thing
-  # to write) would otherwise false-positive as a real reference.
+  # Exclude line comments (//, ///, //!) -- a Layer-1 crate's own doc comment
+  # explaining *why* it avoids SiteConfig/AppConfig (a natural thing to
+  # write) would otherwise false-positive as a real reference. `//` is
+  # unambiguous: valid Rust code can never start a statement/expression with
+  # it, unlike `*` (dereference-assignment, e.g. `*guard = AppConfig::…`, is
+  # completely valid Rust and must NOT be excluded here -- deliberately not
+  # attempting to also strip /* */ block comments, since a false negative on
+  # real code is far worse than an occasional false positive on the rare
+  # block comment in this codebase's line-comment-only doc style).
   hits="$(grep -rn -E '\b(SiteConfig|AppConfig)\b' "$crate_dir/src" \
-    | grep -v -E '^[^:]+:[0-9]+:\s*(//|\*)' || true)"
+    | grep -v -E '^[^:]+:[0-9]+:\s*//' || true)"
   if [[ -n "$hits" ]]; then
     echo "::error::$crate_name (Layer-1 feature crate) references SiteConfig/AppConfig directly:"
     echo "$hits"
