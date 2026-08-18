@@ -21,6 +21,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -1187,12 +1188,28 @@ pub(super) async fn upstream_peer(
         }
     }
 
-    let socket_addr: SocketAddr = addr_str.parse().map_err(|_| {
-        pingora_core::Error::explain(
-            pingora_core::ErrorType::ConnectProxyFailure,
-            format!("invalid upstream address: {addr_str}"),
-        )
-    })?;
+    // Derive fallback timeout from `limits.timeoutSecs` on the matched site.
+    // Computed here (rather than only below, before `apply_peer_options`) so
+    // the same effective connect deadline also bounds DNS resolution below —
+    // otherwise a stalled resolver could hold a request open indefinitely
+    // with no timeout at all (CodeRabbit finding on PR #227).
+    let limits_timeout_secs = {
+        let cfg = proxy.state.config.load();
+        cfg.sites
+            .get(req_ctx.site_idx)
+            .and_then(|s| s.limits.as_ref())
+            .and_then(|l| l.timeout_secs)
+    };
+    let resolution_timeout = req_ctx
+        .proxy_timeout
+        .as_ref()
+        .and_then(|t| t.connect_ms)
+        .or_else(|| limits_timeout_secs.map(|s| s.saturating_mul(1000)))
+        .map(Duration::from_millis);
+
+    let resolve_start = Instant::now();
+    let socket_addr = resolve_socket_addr(&addr_str, resolution_timeout).await?;
+    let resolve_elapsed = resolve_start.elapsed();
     let mut peer = HttpPeer::new(socket_addr, tls, sni);
 
     // Negotiate HTTP/2 with the upstream when the route sets `http2: true`.
@@ -1221,15 +1238,6 @@ pub(super) async fn upstream_peer(
         let _ = sni; // sni already used in HttpPeer::new above
     }
 
-    // Derive fallback timeout from `limits.timeoutSecs` on the matched site.
-    let limits_timeout_secs = {
-        let cfg = proxy.state.config.load();
-        cfg.sites
-            .get(req_ctx.site_idx)
-            .and_then(|s| s.limits.as_ref())
-            .and_then(|l| l.timeout_secs)
-    };
-
     apply_peer_options(
         &mut peer,
         req_ctx.proxy_timeout.as_ref(),
@@ -1237,7 +1245,28 @@ pub(super) async fn upstream_peer(
         limits_timeout_secs,
     );
 
+    // Gitar finding on PR #227: `resolution_timeout` above and
+    // `connection_timeout` here are derived from the same configured value,
+    // but were two independent deadlines — a hostname upstream stalling at
+    // both DNS resolution and TCP connect could consume up to 2x the
+    // configured `connectMs`. Sharing one budget instead.
+    peer.options.connection_timeout =
+        remaining_budget(peer.options.connection_timeout, resolve_elapsed);
+
     Ok(Box::new(peer))
+}
+
+/// Subtract time already spent (e.g. on DNS resolution) from a connect
+/// deadline, so two sequential phases share one budget instead of each
+/// getting a fresh full timeout.
+///
+/// `saturating_sub` floors at zero rather than going negative, so a phase
+/// that already consumed the whole budget correctly leaves zero time for
+/// the next one (which then fails immediately) rather than silently
+/// granting it a fresh deadline. `None` (no deadline configured) passes
+/// through unchanged — there is no budget to share.
+fn remaining_budget(deadline: Option<Duration>, elapsed: Duration) -> Option<Duration> {
+    deadline.map(|d| d.saturating_sub(elapsed))
 }
 
 /// Body of [`pingora_proxy::ProxyHttp::request_body_filter`].
@@ -1795,6 +1824,78 @@ pub(super) fn resolve_peer_addr(
             )),
         }
     }
+}
+
+/// Resolve a `host:port` string to a [`SocketAddr`], accepting both IP
+/// literals and hostnames.
+///
+/// IP literals take a fast synchronous path (no behavior change from before
+/// hostname support was added). Hostnames go through async DNS resolution
+/// via [`tokio::net::lookup_host`] — this must NOT be `HttpPeer::new`'s own
+/// resolution: that constructor takes `impl std::net::ToSocketAddrs`, which
+/// resolves *synchronously* (blocking the async runtime thread) and
+/// `.unwrap()`s the result (panics on resolution failure) — unacceptable
+/// inside a per-request async hook. Resolving here first, then handing
+/// `HttpPeer::new` an already-concrete `SocketAddr`, sidesteps both.
+///
+/// `resolution_timeout` bounds the DNS lookup with the same effective
+/// connect deadline `apply_peer_options` derives for the connection itself
+/// (`proxy.*.timeout.connectMs`, falling back to `limits.timeoutSecs`) —
+/// without it, a stalled resolver could hold a request open indefinitely
+/// with no deadline at all (CodeRabbit finding on PR #227). `None` (no
+/// configured timeout at all) resolves without a deadline, matching
+/// `apply_peer_options`'s own "absent config = no enforced timeout" default.
+async fn resolve_socket_addr(
+    addr_str: &str,
+    resolution_timeout: Option<Duration>,
+) -> pingora_core::Result<SocketAddr> {
+    if let Ok(addr) = addr_str.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+    let lookup = tokio::net::lookup_host(addr_str);
+    let addrs = match resolution_timeout {
+        Some(d) => tokio::time::timeout(d, lookup).await.map_err(|_| {
+            pingora_core::Error::explain(
+                pingora_core::ErrorType::ConnectTimedout,
+                format!("DNS resolution timed out for upstream address {addr_str}"),
+            )
+        })?,
+        None => lookup.await,
+    }
+    .map_err(|e| {
+        pingora_core::Error::explain(
+            pingora_core::ErrorType::ConnectProxyFailure,
+            format!("DNS resolution failed for upstream address {addr_str}: {e}"),
+        )
+    })?;
+    pick_preferred_addr(addrs).ok_or_else(|| {
+        pingora_core::Error::explain(
+            pingora_core::ErrorType::ConnectProxyFailure,
+            format!("no addresses found for upstream address {addr_str}"),
+        )
+    })
+}
+
+/// Pick a single address out of a hostname's DNS results, preferring IPv4.
+///
+/// `HttpPeer` accepts exactly one concrete `SocketAddr` — Pingora has no
+/// multi-address / Happy-Eyeballs fallback (an unrelated Happy-Eyeballs
+/// backlog item is `[🚫 BLOCKED]` in `CLAUDE.md` for the same reason: no
+/// public API for parallel connection attempts). When a hostname resolves
+/// to both families, the OS resolver's ordering is not a reliable signal
+/// for which family the upstream actually listens on — glibc's
+/// `getaddrinfo` prefers IPv6 by RFC 3484 default regardless of whether
+/// the target has a real IPv6 listener. Preferring IPv4 deterministically
+/// matches the overwhelmingly common case for self-hosted upstreams
+/// (Docker service names, `localhost`, bare local dev servers) instead of
+/// silently depending on resolver-order luck.
+fn pick_preferred_addr(addrs: impl Iterator<Item = SocketAddr>) -> Option<SocketAddr> {
+    let addrs: Vec<SocketAddr> = addrs.collect();
+    addrs
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or_else(|| addrs.first())
+        .copied()
 }
 
 /// Apply per-route timeout, connection-pool settings, and global limits to an
@@ -2503,6 +2604,168 @@ mod tests {
         assert!(
             resolve_peer_addr(&mut ctx).is_err(),
             "local handler must return error"
+        );
+    }
+
+    // ── resolve_socket_addr (#225: hostname upstreams) ──────────────────────────
+
+    #[tokio::test]
+    async fn resolve_socket_addr_ipv4_literal_fast_path() {
+        let addr = resolve_socket_addr("127.0.0.1:4000", None).await.unwrap();
+        assert_eq!(addr, "127.0.0.1:4000".parse().unwrap());
+    }
+
+    #[tokio::test]
+    async fn resolve_socket_addr_ipv6_literal_fast_path() {
+        let addr = resolve_socket_addr("[::1]:4000", None).await.unwrap();
+        assert_eq!(addr, "[::1]:4000".parse().unwrap());
+    }
+
+    #[tokio::test]
+    async fn resolve_socket_addr_resolves_localhost_hostname() {
+        // The exact regression case from #225: "localhost:4000" previously
+        // failed SocketAddr::parse and every request to such an upstream
+        // would 502. localhost resolves via the OS hosts file/resolver
+        // without needing network access, so this is safe to run in CI.
+        let addr = resolve_socket_addr("localhost:4000", None).await.unwrap();
+        assert!(
+            addr.ip().is_loopback(),
+            "localhost must resolve to a loopback address, got {addr}"
+        );
+        assert_eq!(addr.port(), 4000);
+    }
+
+    #[tokio::test]
+    async fn resolve_socket_addr_unresolvable_hostname_returns_error() {
+        let result = resolve_socket_addr("this-host-does-not-exist.invalid:4000", None).await;
+        assert!(
+            result.is_err(),
+            "an unresolvable hostname must return an error, not panic"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_socket_addr_ip_literal_ignores_zero_timeout() {
+        // The IP-literal fast path never touches the resolver at all, so
+        // even a timeout of 0 (which would fire instantly on any real DNS
+        // lookup) must not affect it — this is the "no behavior change for
+        // the previously-working case" guarantee from the PR description.
+        let addr = resolve_socket_addr("127.0.0.1:4000", Some(Duration::ZERO))
+            .await
+            .unwrap();
+        assert_eq!(addr, "127.0.0.1:4000".parse().unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resolve_socket_addr_hostname_respects_timeout() {
+        // CodeRabbit finding on PR #227: without a bound, a stalled resolver
+        // could hold the request open indefinitely. Racing a zero-duration
+        // timeout against a *real* DNS lookup would be flaky — `localhost`
+        // often resolves fast enough to win that race on some hosts (this
+        // was caught locally: the first version of this test used a real
+        // clock and failed non-deterministically). Using a paused virtual
+        // clock instead makes this deterministic: `tokio::net::lookup_host`
+        // runs on Tokio's blocking-thread pool, so it always returns
+        // `Poll::Pending` on its first poll — it cannot complete
+        // synchronously within that same poll. The zero-duration deadline
+        // has therefore already elapsed on the paused clock by the time
+        // `Timeout` checks it, so the timeout branch always wins.
+        let result = resolve_socket_addr("localhost:4000", Some(Duration::ZERO)).await;
+        assert!(
+            result.is_err(),
+            "a hostname lookup must respect an expired timeout, not block indefinitely"
+        );
+    }
+
+    // ── pick_preferred_addr (Gitar finding on PR #227) ──────────────────────────
+
+    fn v4(port: u16) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    fn v6(port: u16) -> SocketAddr {
+        SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port))
+    }
+
+    #[test]
+    fn pick_preferred_addr_empty_returns_none() {
+        assert_eq!(pick_preferred_addr(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn pick_preferred_addr_only_ipv6_returns_it() {
+        let addr = v6(4000);
+        assert_eq!(pick_preferred_addr(std::iter::once(addr)), Some(addr));
+    }
+
+    #[test]
+    fn pick_preferred_addr_only_ipv4_returns_it() {
+        let addr = v4(4000);
+        assert_eq!(pick_preferred_addr(std::iter::once(addr)), Some(addr));
+    }
+
+    #[test]
+    fn pick_preferred_addr_prefers_ipv4_when_ipv6_listed_first() {
+        // The exact failure mode Gitar flagged on PR #227: glibc's
+        // getaddrinfo (RFC 3484) commonly lists the IPv6 record before the
+        // IPv4 one for "localhost", even when the target only listens on
+        // IPv4. Taking .next() unconditionally would pick the IPv6 address
+        // and fail to connect.
+        let ipv4 = v4(4000);
+        let ipv6 = v6(4000);
+        let picked = pick_preferred_addr(vec![ipv6, ipv4].into_iter());
+        assert_eq!(picked, Some(ipv4), "must prefer IPv4 regardless of order");
+    }
+
+    #[test]
+    fn pick_preferred_addr_prefers_ipv4_when_ipv4_listed_first() {
+        let ipv4 = v4(4000);
+        let ipv6 = v6(4000);
+        let picked = pick_preferred_addr(vec![ipv4, ipv6].into_iter());
+        assert_eq!(picked, Some(ipv4));
+    }
+
+    // ── remaining_budget (Gitar finding on PR #227: shared connect budget) ──────
+
+    #[test]
+    fn remaining_budget_none_deadline_stays_none() {
+        // No timeout configured at all -- nothing to share, passes through.
+        assert_eq!(remaining_budget(None, Duration::from_millis(500)), None);
+    }
+
+    #[test]
+    fn remaining_budget_subtracts_elapsed() {
+        let deadline = Duration::from_millis(5000);
+        let elapsed = Duration::from_millis(1200);
+        assert_eq!(
+            remaining_budget(Some(deadline), elapsed),
+            Some(Duration::from_millis(3800))
+        );
+    }
+
+    #[test]
+    fn remaining_budget_zero_elapsed_is_unchanged() {
+        // The IP-literal fast path in resolve_socket_addr never awaits DNS,
+        // so elapsed is ~0 -- the configured deadline must be preserved
+        // exactly, not just "close to" it.
+        let deadline = Duration::from_millis(5000);
+        assert_eq!(
+            remaining_budget(Some(deadline), Duration::ZERO),
+            Some(deadline)
+        );
+    }
+
+    #[test]
+    fn remaining_budget_elapsed_exceeding_deadline_saturates_to_zero() {
+        // A resolution that already consumed the whole budget (or more, if
+        // resolution_timeout itself elapsed) must leave zero time for the
+        // next phase -- not underflow/panic, and not silently grant a fresh
+        // deadline by wrapping.
+        let deadline = Duration::from_millis(1000);
+        let elapsed = Duration::from_millis(1500);
+        assert_eq!(
+            remaining_budget(Some(deadline), elapsed),
+            Some(Duration::ZERO)
         );
     }
 
