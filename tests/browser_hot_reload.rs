@@ -226,9 +226,9 @@ fn hot_reload_file_change_triggers_reload_event() {
         std::thread::spawn(move || {
             let mut stream =
                 TcpStream::connect(format!("127.0.0.1:{port}")).expect("TCP connect for SSE");
-            let req = format!(
+            let req =
                 "GET /__hot-reload__ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
-            );
+                    .to_string();
             stream.write_all(req.as_bytes()).expect("write SSE request");
 
             // Read until we see the initial `: connected` frame so we know the
@@ -289,9 +289,9 @@ fn hot_reload_extension_filter_ignores_non_matching() {
         std::thread::spawn(move || {
             let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
                 .expect("TCP connect for extension-filter SSE");
-            let req = format!(
+            let req =
                 "GET /__hot-reload__ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
-            );
+                    .to_string();
             stream.write_all(req.as_bytes()).expect("write SSE request");
 
             // Wait for `: connected`.

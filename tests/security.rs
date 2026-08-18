@@ -505,6 +505,64 @@ fn priority_routing_above_threshold_sheds_low_priority() {
     );
 }
 
+// ── Request header count limit ───────────────────────────────────────────────
+
+/// `limits.maxRequestHeaders` uses `>`, not `>=`: exactly the configured count
+/// is allowed, one more is rejected with 431. Uses raw TCP (not reqwest) to
+/// control the exact header count on the wire; `maxRequestHeaders: 3` is
+/// calibrated against what Pingora's `req_header().headers.len()` actually
+/// reports for a bare `Host` + `Connection` request (3, not 2 — Pingora
+/// counts one entry beyond what's literally written on the wire).
+#[test]
+#[serial]
+fn max_request_headers_boundary_is_exact() {
+    use std::io::{Read, Write};
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let _srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "limits": { "maxRequestHeaders": 3 }
+            }]
+        }),
+    );
+
+    let send_raw = |extra_headers: &str| -> String {
+        let raw_req = format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{extra_headers}Connection: close\r\n\r\n"
+        );
+        let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        stream.write_all(raw_req.as_bytes()).unwrap();
+        let mut response = String::new();
+        let _ = stream.read_to_string(&mut response);
+        response
+    };
+
+    // Host + Connection only — counted as exactly 3 by Pingora — must NOT be rejected.
+    let resp_ok = send_raw("");
+    assert!(
+        !resp_ok.starts_with("HTTP/1.1 431"),
+        "exactly maxRequestHeaders headers must be accepted: {:.60}",
+        resp_ok
+    );
+
+    // One extra header pushes the counted total to 4 — must be rejected with 431.
+    let resp_over = send_raw("X-A: 1\r\n");
+    assert!(
+        resp_over.starts_with("HTTP/1.1 431"),
+        "maxRequestHeaders + 1 headers must be rejected with 431: {:.60}",
+        resp_over
+    );
+}
+
 // ── X-Priority header must not be trusted from clients ───────────────────────
 
 /// A client sending X-Priority: 100 must not bypass load shedding.

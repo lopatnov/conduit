@@ -437,58 +437,6 @@ impl UpstreamRegistry {
         Some(chosen)
     }
 
-    /// Atomically increment the inflight count for `url` **only if** the current
-    /// count is strictly less than `max`.
-    ///
-    /// Returns `true` when the slot was acquired, `false` when the upstream is
-    /// already at or over the limit (no increment performed).
-    pub fn conn_inc_if_below(&self, url: &str, max: u64) -> bool {
-        use std::sync::atomic::Ordering::{Relaxed, SeqCst};
-        let counter = self
-            .conn_count
-            .entry(url.to_owned())
-            .or_insert_with(|| AtomicUsize::new(0));
-        // Spin CAS: try to increment only while value < max.
-        loop {
-            let current = counter.load(Relaxed);
-            if current >= max as usize {
-                return false;
-            }
-            if counter
-                .compare_exchange(current, current + 1, SeqCst, Relaxed)
-                .is_ok()
-            {
-                return true;
-            }
-        }
-    }
-
-    /// Like [`pick_least_conn`] but respects a per-upstream connection limit.
-    ///
-    /// Picks the URL with the lowest load that is **below `max_conns`** and
-    /// increments its counter.  Returns `None` when ALL URLs are at or above
-    /// `max_conns` (circuit breaker: caller should return 503).
-    pub fn pick_least_conn_with_max(&self, urls: &[String], max_conns: u64) -> Option<String> {
-        // Find the candidate: minimum load among URLs below max.
-        let chosen = urls
-            .iter()
-            .filter(|url| self.conn_load(url) < max_conns as usize)
-            .min_by_key(|url| self.conn_load(url))?
-            .clone();
-        // Atomically acquire the slot — may fail if a concurrent request raced us.
-        if self.conn_inc_if_below(&chosen, max_conns) {
-            Some(chosen)
-        } else {
-            // Race: the slot filled up; retry with remaining candidates.
-            let remaining: Vec<String> = urls
-                .iter()
-                .filter(|u| u.as_str() != chosen.as_str())
-                .cloned()
-                .collect();
-            self.pick_least_conn_with_max(&remaining, max_conns)
-        }
-    }
-
     // ── Health helpers ────────────────────────────────────────────────────────
 
     /// Return `true` if `url` is currently considered healthy.
@@ -906,24 +854,28 @@ mod tests {
 
     #[test]
     fn slow_start_no_recovery_time_returns_one() {
-        let mut e = UpstreamEntry::default();
-        e.recovery_time_secs = None;
+        // recovery_time_secs is already None by default.
+        let e = UpstreamEntry::default();
         assert_eq!(slow_start_fraction(&e, 30), 1.0);
     }
 
     #[test]
     fn slow_start_already_elapsed_returns_one() {
-        let mut e = UpstreamEntry::default();
         // Set recovery time far in the past so elapsed >= window.
-        e.recovery_time_secs = Some(now_secs().saturating_sub(60));
+        let e = UpstreamEntry {
+            recovery_time_secs: Some(now_secs().saturating_sub(60)),
+            ..Default::default()
+        };
         assert_eq!(slow_start_fraction(&e, 30), 1.0);
     }
 
     #[test]
     fn slow_start_halfway_returns_roughly_half() {
-        let mut e = UpstreamEntry::default();
         // Set recovery 15 seconds ago with a 30-second window → ~0.5
-        e.recovery_time_secs = Some(now_secs().saturating_sub(15));
+        let e = UpstreamEntry {
+            recovery_time_secs: Some(now_secs().saturating_sub(15)),
+            ..Default::default()
+        };
         let fraction = slow_start_fraction(&e, 30);
         assert!(
             fraction > 0.3 && fraction < 0.7,
@@ -1536,30 +1488,6 @@ mod tests {
         reg.conn_dec("http://never-seen:4000");
     }
 
-    // ── conn_inc_if_below ─────────────────────────────────────────────────────
-
-    #[test]
-    fn conn_inc_if_below_acquires_slot_when_below_max() {
-        let reg = UpstreamRegistry::new();
-        let url = "http://a:4000";
-        assert!(reg.conn_inc_if_below(url, 3), "first slot must be acquired");
-        assert_eq!(reg.conn_load(url), 1);
-    }
-
-    #[test]
-    fn conn_inc_if_below_rejects_when_at_max() {
-        let reg = UpstreamRegistry::new();
-        let url = "http://a:4000";
-        reg.conn_inc(url); // count = 1
-        reg.conn_inc(url); // count = 2
-        reg.conn_inc(url); // count = 3
-        assert!(
-            !reg.conn_inc_if_below(url, 3),
-            "at max (3) must be rejected"
-        );
-        assert_eq!(reg.conn_load(url), 3, "count must not change");
-    }
-
     // ── pick_least_conn ───────────────────────────────────────────────────────
 
     #[test]
@@ -1576,27 +1504,6 @@ mod tests {
         reg.conn_inc(&a);
         reg.conn_inc(&a); // a = 2, b = 0
         let chosen = reg.pick_least_conn(&[a.clone(), b.clone()]);
-        assert_eq!(chosen.as_deref(), Some(b.as_str()), "b has lower load");
-    }
-
-    // ── pick_least_conn_with_max ──────────────────────────────────────────────
-
-    #[test]
-    fn pick_least_conn_with_max_returns_none_when_all_at_max() {
-        let reg = UpstreamRegistry::new();
-        let url = "http://a:4000".to_owned();
-        reg.conn_inc(&url); // = 1 = max
-        let result = reg.pick_least_conn_with_max(&[url], 1);
-        assert!(result.is_none(), "all at max → None (circuit breaker)");
-    }
-
-    #[test]
-    fn pick_least_conn_with_max_picks_below_max_url() {
-        let reg = UpstreamRegistry::new();
-        let a = "http://a:4000".to_owned();
-        let b = "http://b:4000".to_owned();
-        reg.conn_inc(&a); // a = 1, b = 0; max = 2
-        let chosen = reg.pick_least_conn_with_max(&[a.clone(), b.clone()], 2);
         assert_eq!(chosen.as_deref(), Some(b.as_str()), "b has lower load");
     }
 

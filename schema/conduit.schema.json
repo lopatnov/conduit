@@ -428,7 +428,7 @@
             "unhealthyThreshold": { "type": "integer", "minimum": 1 },
             "healthyThreshold":   { "type": "integer", "minimum": 1 },
             "slowStartSecs":      { "type": "integer", "minimum": 0, "description": "Slow-start ramp-up window in seconds after recovery." },
-            "maxConnectionsPerUpstream": { "type": "integer", "minimum": 1, "description": "Circuit breaker: max concurrent connections per upstream. Returns 503 when all upstreams are at this limit." }
+            "maxConnectionsPerUpstream": { "type": "integer", "minimum": 1, "description": "Circuit breaker: max concurrent connections per upstream, enforced for every load-balance strategy. Skips at-capacity peers in favor of under-capacity ones; returns 503 when all upstreams are at this limit. Soft limit under concurrency (brief overshoot possible, self-corrects)." }
           }
         },
         "mirror": { "type": "string", "format": "uri", "description": "Fire-and-forget mirror URL. V1: headers only." },

@@ -82,9 +82,10 @@ impl ConduitProxy {
     /// - Runs outlier-detection ejection (`maybe_eject`) if configured.
     /// - Decrements the Prometheus `upstream_active_connections` gauge and
     ///   increments `upstream_requests_total` / `upstream_latency_seconds`.
-    /// - Appends the failed attempt to `failed_upstream_attempts` for structured
-    ///   logging, then clears `proxy_upstream_url` and `upstream_conn_slot` so
-    ///   the next `upstream_peer()` starts fresh with no inherited slot.
+    /// - Appends the failed attempt to `failed_upstream_attempts` (currently
+    ///   write-only — see that field's doc comment and issue #218), then
+    ///   clears `proxy_upstream_url` and `upstream_conn_slot` so the next
+    ///   `upstream_peer()` starts fresh with no inherited slot.
     ///
     /// Without this, a successful retry on a different backend would silently
     /// absorb the failure without updating the health record of the backend that
@@ -3159,13 +3160,15 @@ mod tests {
 
         // Build an AppConfig with outlier detection enabled on site 0.
         let mut config = AppConfig::default();
-        let mut site = crate::config::schema::SiteConfig::default();
-        site.outlier_detection = Some(crate::config::schema::OutlierDetectionConfig {
-            consecutive_5xx: Some(1),
-            base_ejection_time_secs: Some(5),
-            max_ejection_time_secs: Some(30),
-            max_ejection_percent: Some(50),
-        });
+        let site = crate::config::schema::SiteConfig {
+            outlier_detection: Some(crate::config::schema::OutlierDetectionConfig {
+                consecutive_5xx: Some(1),
+                base_ejection_time_secs: Some(5),
+                max_ejection_time_secs: Some(30),
+                max_ejection_percent: Some(50),
+            }),
+            ..Default::default()
+        };
         config.sites = vec![site];
 
         // Must not panic — exercises the maybe_eject() call inside the if-let branch.

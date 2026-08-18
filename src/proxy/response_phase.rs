@@ -381,7 +381,7 @@ mod tests {
         resp.insert_header("date", date_str).unwrap();
         let age = compute_response_age(&resp);
         // Allow ±2s for test execution time.
-        assert!(age >= 58 && age <= 62, "age should be ~60s, got {age}");
+        assert!((58..=62).contains(&age), "age should be ~60s, got {age}");
     }
 
     #[cfg(feature = "cache")]

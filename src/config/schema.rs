@@ -1439,18 +1439,19 @@ pub struct UpstreamHealthCheck {
     /// Maximum number of concurrent in-flight requests to any single upstream
     /// in this route's target pool.
     ///
-    /// When ALL healthy upstreams reach this limit Conduit returns
-    /// `503 Service Unavailable` immediately (circuit breaker / back-pressure).
+    /// Enforced for every load-balance strategy, across the legacy `proxy: {}`
+    /// map, the `routes[]` array, and `groups`: a request is only routed to an
+    /// upstream currently below this cap. When ALL healthy upstreams for the
+    /// route are at or above it, Conduit returns `503 Service Unavailable`
+    /// immediately (circuit breaker / back-pressure). `IpHash`/`ConsistentHash`
+    /// (and sticky sessions) forward-probe to the next ring position instead
+    /// of shrinking the hash domain, so only clients whose preferred peer is
+    /// currently saturated get relocated.
     ///
-    /// **Known limitation** (2026-08-03 integrity audit, see tracking issue):
-    /// the "single upstream at max is skipped in favor of under-capacity
-    /// peers" behavior described above is only guaranteed for the `LeastConn`
-    /// strategy today — it always selects the true minimum-load candidate.
-    /// The other 7 strategies (including the `RoundRobin` default) do not
-    /// currently re-check per-upstream connection load during selection, so
-    /// they may still route to an at-limit upstream as long as at least one
-    /// other candidate is under the cap. The all-upstreams-maxed → 503
-    /// behavior above holds for every strategy.
+    /// This is a **soft** limit: the check-then-acquire isn't atomic, so a
+    /// burst of concurrent requests can briefly overshoot it by the number of
+    /// simultaneous racers — self-correcting on the next request, and the
+    /// same trade-off as `retry.budgetPercent`'s soft enforcement.
     ///
     /// Defaults to unlimited (`None`).
     ///

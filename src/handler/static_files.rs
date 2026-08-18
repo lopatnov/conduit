@@ -701,6 +701,9 @@ fn decode_rel_path(req_path: &str, strip_prefix: Option<&str>) -> String {
 mod tests {
     use super::*;
 
+    // Windows symlink creation requires elevated privileges in CI, so this test only
+    // runs on unix — `std::os::unix::fs::symlink` isn't available on Windows anyway.
+    #[cfg(unix)]
     #[tokio::test]
     async fn symlink_in_static_root_is_not_served() {
         // stat_no_symlink must return None for symlinks — serving them would
@@ -711,13 +714,8 @@ mod tests {
 
         // Create a symlink pointing to the real file.
         let link_path = dir.path().join("link.txt");
-        #[cfg(unix)]
         std::os::unix::fs::symlink(&real_file, &link_path).unwrap();
-        #[cfg(windows)]
-        {
-            // Skip symlink test on Windows (requires privileges).
-            return;
-        }
+
         // stat_no_symlink must reject the symlink.
         assert!(
             stat_no_symlink(&link_path).await.is_none(),
@@ -881,8 +879,10 @@ mod tests {
     #[test]
     fn make_cache_control_with_max_age_returns_public() {
         use crate::config::schema::StaticOptions;
-        let mut opts = StaticOptions::default();
-        opts.max_age = Some("1h".to_owned());
+        let opts = StaticOptions {
+            max_age: Some("1h".to_owned()),
+            ..Default::default()
+        };
         let cc = make_cache_control(&opts);
         assert!(
             cc.starts_with("public, max-age="),
@@ -894,8 +894,10 @@ mod tests {
     #[test]
     fn make_cache_control_invalid_duration_returns_no_cache() {
         use crate::config::schema::StaticOptions;
-        let mut opts = StaticOptions::default();
-        opts.max_age = Some("not-a-duration".to_owned());
+        let opts = StaticOptions {
+            max_age: Some("not-a-duration".to_owned()),
+            ..Default::default()
+        };
         assert_eq!(make_cache_control(&opts), "no-cache");
     }
 

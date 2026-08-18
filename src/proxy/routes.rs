@@ -10,12 +10,10 @@ use std::sync::{Arc, OnceLock};
 use dashmap::DashMap;
 use regex::Regex;
 
-use crate::config::schema::{
-    LoadBalanceStrategy, MatchConfig, ProxyRouteTarget, RouteConfig, StaticOptions,
-};
+use crate::config::schema::{MatchConfig, ProxyRouteTarget, RouteConfig, StaticOptions};
 use crate::proxy::ctx::{LocalHandler, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
-use crate::proxy::{router, upstream};
+use crate::proxy::{capacity, router, upstream};
 
 /// Result type shared with the main router.
 type RouteResult = router::RouteResultAlias;
@@ -238,42 +236,56 @@ fn full_cfg_to_result(
     // Filter to healthy upstreams; fail-open when all are down.
     let healthy = upstream_health.filter_healthy(&all_urls);
     let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
+
+    if urls.is_empty() {
+        return fallback_result();
+    }
+
+    // Circuit breaker: per-upstream capacity filtering (#156), shared with
+    // the legacy `proxy` map and `groups` paths via `capacity::pick_bounded`.
+    let max_conns = cfg
+        .health_check
+        .as_ref()
+        .and_then(|h| h.max_connections_per_upstream);
+    let route_key = path; // stable key for round-robin counters
+    let capacity = capacity::Capacity::evaluate(&urls, max_conns, route_key, upstream_health);
+    if matches!(capacity, capacity::Capacity::Exhausted) {
+        // Distinct from `fallback_result()`: capacity exhaustion is a 503,
+        // not "no route matched" — matches the legacy `proxy` map path.
+        return overloaded_result();
+    }
+
     let weighted: Vec<(String, u32)> = all_weighted
         .iter()
         .filter(|(u, _)| urls.contains(u))
         .cloned()
         .collect();
 
-    if urls.is_empty() {
-        return fallback_result();
-    }
-
     // Use path as the hash input since client IP is not available at
     // route-match time (the routes array doesn't carry it through).
     let hash_val = upstream::fnv1a_hash(path);
+    let strategy = cfg.strategy.as_ref();
 
-    // Pick URL using the configured strategy.
-    let strategy = cfg
-        .strategy
-        .as_ref()
-        .unwrap_or(&LoadBalanceStrategy::RoundRobin);
-    let route_key = path; // stable key for round-robin counters
-    let pick_result = pick_by_strategy(
+    let input = capacity::BoundedPick {
         strategy,
-        &urls,
-        &weighted,
-        hash_val,
+        healthy: &urls,
+        capacity: &capacity,
+        weighted: &weighted,
         route_key,
+        hash_val,
         counters,
-        upstream_health,
-    );
-
-    let Some((chosen_url, is_least_conn)) = pick_result else {
+        health: upstream_health,
+    };
+    let Some((chosen_url, is_least_conn)) = capacity::pick_bounded(&input) else {
         return fallback_result();
     };
 
     let strip = cfg.strip_prefix.unwrap_or(false).then(|| path.to_string());
 
+    // url_to_proxy_upstream may return None for a malformed URL. Parse
+    // BEFORE acquiring the circuit_tracking slot below (matches the
+    // ordering invariant in router.rs's resolve_proxy_routes) so a
+    // malformed-URL request can never leak a slot nothing will release.
     let upstream = match router::url_to_proxy_upstream(&chosen_url, strip) {
         Some(u) => u,
         None => {
@@ -284,6 +296,19 @@ fn full_cfg_to_result(
         }
     };
 
+    // Same accounting shape as the legacy `proxy` map path (#155/#156): a
+    // slot is only acquired when least-conn didn't already track it but a
+    // cap is configured, so the capacity check above stays fed for every
+    // strategy.
+    let circuit_tracking = max_conns.is_some() && !is_least_conn;
+    if circuit_tracking {
+        upstream_health.conn_inc(&chosen_url);
+    }
+
+    // KNOWN GAP (issue #217): `retry.urls` is built from the raw,
+    // unfiltered target list, not the health/capacity-filtered candidates —
+    // unlike router.rs's `resolve_proxy_routes`, a retry on this path can
+    // rotate into a peer already known unhealthy or at its connection cap.
     let retry = cfg.retry.as_ref().map(|r| RetryState {
         urls: all_urls.clone(),
         attempt: 0,
@@ -297,7 +322,7 @@ fn full_cfg_to_result(
 
     // proxy_upstream_url is populated unconditionally (#155) so passive-health
     // attribution works for every strategy; upstream_conn_slot tracks whether
-    // this request actually holds the conn_count slot least-conn acquired.
+    // this request actually holds a conn_count slot to release.
     let proxy_upstream_url = Some(chosen_url.clone());
 
     router::RouteResolution {
@@ -307,7 +332,7 @@ fn full_cfg_to_result(
         proxy_pool: cfg.pool.clone(),
         proxy_http2: cfg.http2.unwrap_or(false),
         proxy_upstream_url,
-        upstream_conn_slot: is_least_conn,
+        upstream_conn_slot: is_least_conn || circuit_tracking,
         proxy_cache_cfg: cfg.cache.clone(),
         passive_unhealthy_status: cfg
             .health_check
@@ -320,48 +345,6 @@ fn full_cfg_to_result(
             .and_then(|hc| hc.unhealthy_latency_ms),
         websocket_allowed: cfg.websocket.unwrap_or(false),
         sticky_set_cookie: None, // routes.rs path: sticky is handled in router.rs
-    }
-}
-
-/// Select an upstream URL from `urls` using the given strategy.
-///
-/// Returns `Some((url, is_least_conn))` or `None` if no peer is available.
-fn pick_by_strategy(
-    strategy: &LoadBalanceStrategy,
-    urls: &[String],
-    weighted: &[(String, u32)],
-    hash_val: u64,
-    route_key: &str,
-    counters: &DashMap<String, AtomicUsize>,
-    upstream_health: &UpstreamRegistry,
-) -> Option<(String, bool)> {
-    match strategy {
-        LoadBalanceStrategy::Random => {
-            upstream::pick_random(urls, route_key, counters).map(|u| (u, false))
-        }
-        LoadBalanceStrategy::LeastConn => upstream_health.pick_least_conn(urls).map(|u| (u, true)),
-        LoadBalanceStrategy::WeightedRoundRobin => {
-            upstream::pick_weighted_round_robin(weighted, route_key, counters).map(|u| (u, false))
-        }
-        LoadBalanceStrategy::IpHash | LoadBalanceStrategy::ConsistentHash => {
-            upstream::pick_by_hash(urls, hash_val).map(|u| (u, false))
-        }
-        LoadBalanceStrategy::LeastResponseTime => {
-            upstream::pick_least_response_time(urls, upstream_health, route_key, counters)
-                .map(|u| (u, false))
-        }
-        LoadBalanceStrategy::RoundRobin => {
-            upstream::pick_round_robin(urls, route_key, counters).map(|u| (u, false))
-        }
-        LoadBalanceStrategy::P2c => crate::proxy::strategy::from_config(&LoadBalanceStrategy::P2c)
-            .pick(
-                urls,
-                weighted,
-                route_key,
-                hash_val,
-                counters,
-                upstream_health,
-            ),
     }
 }
 
@@ -391,6 +374,14 @@ fn round_robin_target_to_result(
 #[inline]
 fn fallback_result() -> RouteResult {
     router::RouteResolution::local(UpstreamTarget::Local(LocalHandler::Fallback))
+}
+
+/// Convenience: return the canonical "circuit open, 503" result. Distinct
+/// from [`fallback_result`] — capacity exhaustion means every healthy peer
+/// is at its connection cap, not "no route matched" (#156).
+#[inline]
+fn overloaded_result() -> RouteResult {
+    router::RouteResolution::local(UpstreamTarget::Local(LocalHandler::Overloaded))
 }
 
 // ── Glob path matching ────────────────────────────────────────────────────────
@@ -1251,6 +1242,116 @@ mod tests {
         assert_eq!(
             conn_count, 0,
             "conn counter must be zero after invalid-URL fallback"
+        );
+    }
+
+    // ── circuit breaker capacity enforcement (#156) ───────────────────────────
+
+    #[test]
+    fn route_to_result_full_proxy_capacity_exhausted_gives_overloaded_not_fallback() {
+        // Before #156, this config path had zero circuit-breaker code at all —
+        // maxConnectionsPerUpstream was silently ignored. Also asserts the
+        // 503 shape: capacity exhaustion must NOT reuse fallback_result().
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig, UpstreamHealthCheck,
+        };
+        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
+
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://only:4000".to_string())],
+                health_check: Some(UpstreamHealthCheck {
+                    max_connections_per_upstream: Some(1),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        registry.conn_inc("http://only:4000"); // saturate the only target
+
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
+        assert!(
+            matches!(target, UpstreamTarget::Local(LocalHandler::Overloaded)),
+            "capacity-exhausted routes[] route must return Overloaded (503), got {target:?}"
+        );
+    }
+
+    #[test]
+    fn route_to_result_full_proxy_circuit_tracking_sets_upstream_conn_slot() {
+        // RoundRobin (not least-conn) + a configured cap: circuit_tracking
+        // must acquire a conn_count slot so the capacity check has real data
+        // to filter on for subsequent requests.
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig, UpstreamHealthCheck,
+        };
+
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://only:4000".to_string())],
+                health_check: Some(UpstreamHealthCheck {
+                    max_connections_per_upstream: Some(5),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+
+        let result = route_to_result(&route, "/api", &counters, &registry, None);
+        assert!(
+            result.upstream_conn_slot,
+            "round-robin with maxConnectionsPerUpstream set must acquire a conn_count slot"
+        );
+        assert_eq!(
+            registry.conn_load("http://only:4000"),
+            1,
+            "circuit_tracking must have called conn_inc"
+        );
+    }
+
+    #[test]
+    fn route_to_result_full_proxy_malformed_url_with_capacity_configured_leaks_no_slot() {
+        // LeastConn + an invalid URL + a cap also configured: the malformed-URL
+        // release path must still fire, and circuit_tracking's conn_inc must
+        // never have run (it happens only after a successful URL parse), so
+        // conn_load ends at exactly zero either way.
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig, UpstreamHealthCheck,
+        };
+        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
+
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://".to_string())],
+                strategy: Some(LoadBalanceStrategy::LeastConn),
+                health_check: Some(UpstreamHealthCheck {
+                    max_connections_per_upstream: Some(5),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+
+        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
+        assert!(matches!(
+            target,
+            UpstreamTarget::Local(LocalHandler::Fallback)
+        ));
+        assert_eq!(
+            registry.conn_load("http://"),
+            0,
+            "malformed-URL release must leave no leaked slot even with a cap configured"
         );
     }
 

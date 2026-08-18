@@ -382,8 +382,8 @@ fn reload_log_file_switch_takes_effect() {
     assert!(log_path.exists(), "log file must be created after reload");
     let lines: Vec<String> = BufReader::new(std::fs::File::open(&log_path).expect("open log"))
         .lines()
-        .filter_map(|l| l.ok())
-        .collect();
+        .collect::<std::io::Result<Vec<_>>>()
+        .expect("read log");
     assert!(
         !lines.is_empty(),
         "log file must contain at least one entry"

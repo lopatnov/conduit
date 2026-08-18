@@ -3,6 +3,7 @@ mod cache_common;
 pub mod cache_disk;
 #[cfg(feature = "redis")]
 pub mod cache_redis;
+pub(crate) mod capacity;
 pub mod ctx;
 pub mod health;
 mod logging_phase;

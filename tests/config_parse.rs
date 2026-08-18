@@ -1,23 +1,9 @@
 use conduit::config::{
     from_str,
     schema::{
-        CompressionConfig,
-        CorsConfig,
-        // New Phase 4 types
-        ForwardAuthConfig,
-        HealthCheckConfig,
-        HotReloadConfig,
-        JwtAuthConfig,
-        LoadBalanceStrategy,
-        LogFormat,
-        LoggingConfig,
-        ProxyConfig,
-        ProxyRouteTarget,
-        ProxyTarget,
-        ResponseTimeConfig,
-        SecurityHeadersConfig,
-        StaticConfig,
-        UpstreamTlsConfig,
+        CompressionConfig, CorsConfig, HealthCheckConfig, HotReloadConfig, LoadBalanceStrategy,
+        LogFormat, LoggingConfig, ProxyConfig, ProxyRouteTarget, ProxyTarget, ResponseTimeConfig,
+        SecurityHeadersConfig, StaticConfig,
     },
 };
 use serial_test::serial;

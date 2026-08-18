@@ -796,13 +796,13 @@ mod tests {
     #[test]
     fn json_bool_true_becomes_dynamic_bool() {
         let d = json_to_dynamic(&serde_json::json!(true));
-        assert_eq!(d.as_bool().unwrap(), true);
+        assert!(d.as_bool().unwrap());
     }
 
     #[test]
     fn json_bool_false_becomes_dynamic_bool() {
         let d = json_to_dynamic(&serde_json::json!(false));
-        assert_eq!(d.as_bool().unwrap(), false);
+        assert!(!d.as_bool().unwrap());
     }
 
     #[test]
@@ -813,10 +813,10 @@ mod tests {
 
     #[test]
     fn json_float_becomes_dynamic_float() {
-        let d = json_to_dynamic(&serde_json::json!(3.14f64));
+        let d = json_to_dynamic(&serde_json::json!(3.25f64));
         // Rhai's Dynamic::as_float returns f64.
         let f = d.as_float().unwrap();
-        assert!((f - 3.14).abs() < 0.001, "expected 3.14, got {f}");
+        assert!((f - 3.25).abs() < 0.001, "expected 3.25, got {f}");
     }
 
     #[test]

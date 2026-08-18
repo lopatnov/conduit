@@ -85,10 +85,7 @@ fn send_ws_101(writer: &mut std::net::TcpStream, key: &str) {
 /// (server never masks outgoing frames per RFC 6455).
 fn ws_echo_loop(raw: &mut std::net::TcpStream, writer: &mut std::net::TcpStream) {
     let mut buf = [0u8; 4096];
-    loop {
-        let Some((fin_opcode, payload)) = read_ws_frame(raw, &mut buf) else {
-            break;
-        };
+    while let Some((fin_opcode, payload)) = read_ws_frame(raw, &mut buf) {
         writer.write_all(&[fin_opcode, payload.len() as u8]).ok();
         writer.write_all(&payload).ok();
         if fin_opcode & 0x0f == 0x8 {
@@ -182,7 +179,7 @@ fn sha1(data: &[u8]) -> [u8; 20] {
 
         let [mut a, mut b, mut c, mut d, mut e] = h;
 
-        for i in 0..80 {
+        for (i, &w_i) in w.iter().enumerate() {
             let (f, k) = match i {
                 0..=19 => ((b & c) | (!b & d), K[0]),
                 20..=39 => (b ^ c ^ d, K[1]),
@@ -194,7 +191,7 @@ fn sha1(data: &[u8]) -> [u8; 20] {
                 .wrapping_add(f)
                 .wrapping_add(e)
                 .wrapping_add(k)
-                .wrapping_add(w[i]);
+                .wrapping_add(w_i);
             e = d;
             d = c;
             c = b.rotate_left(30);

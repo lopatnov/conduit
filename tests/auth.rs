@@ -1,8 +1,10 @@
 mod common;
 
 use base64::Engine as _;
+#[cfg(feature = "jwt")]
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::blocking::Client;
+#[cfg(feature = "jwt")]
 use serde_json::json;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -832,6 +834,25 @@ mod consumers_tests {
             resp.status().as_u16(),
             401,
             "valid Basic Auth consumer must be accepted"
+        );
+    }
+
+    /// The `Basic` scheme token is case-insensitive per RFC 7235 — a client
+    /// sending `authorization: basic ...` (lowercase) must be accepted, same
+    /// as the top-level `basicAuth` guard already handles.
+    #[test]
+    fn consumers_basic_auth_lowercase_scheme_passes() {
+        let srv = server_with_consumers();
+        let header_val = basic_header("carol", "carol-pass").replacen("Basic ", "basic ", 1);
+        let resp = plain_client()
+            .get(srv.url("/"))
+            .header("authorization", header_val)
+            .send()
+            .expect("GET /");
+        assert_ne!(
+            resp.status().as_u16(),
+            401,
+            "lowercase 'basic' scheme must be accepted"
         );
     }
 

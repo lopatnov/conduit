@@ -10,6 +10,7 @@ use crate::config::schema::{
     ProxyRouteTarget, ProxyTimeout, RetryConfig, RewriteRule, SiteConfig, StaticConfig,
     StickyConfig, UpstreamGroup, UpstreamTlsConfig,
 };
+use crate::proxy::capacity;
 use crate::proxy::ctx::{LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
 use crate::proxy::upstream;
@@ -353,28 +354,14 @@ fn resolve_proxy_routes(
     // ── Two-level (grouped) routing ─────────────────────────────────────────
     // When the route config has `groups`, bypass flat-target logic and
     // resolve via pick_group → pick_within_group.
+    let opts = RouteOptions::from_target(route_target);
+
     if let ProxyRouteTarget::Full(cfg) = route_target {
         if let Some(groups) = &cfg.groups {
-            return resolve_grouped(
-                cfg.group_strategy.as_ref(),
-                groups,
-                cfg.hash_key.as_deref().unwrap_or("ip"),
-                route_key,
-                ctx.path,
-                ctx.client_ip,
-                ctx.counters,
-                ctx.upstream_health,
-                cfg.strip_prefix.unwrap_or(false),
-                cfg.timeout.clone(),
-                cfg.pool.clone(),
-                cfg.http2.unwrap_or(false),
-                cfg.cache.clone(),
-                cfg.rewrite.clone(),
-            );
+            return resolve_grouped(cfg.group_strategy.as_ref(), groups, route_key, ctx, &opts);
         }
     }
 
-    let opts = RouteOptions::from_target(route_target);
     let (all_urls, all_weighted_base) = effective_targets(route_target, route_key, ctx);
 
     // Failover: when a backup URL is configured and all primary upstreams
@@ -385,22 +372,25 @@ fn resolve_proxy_routes(
 
     // Filter to healthy upstreams; if all are down keep all (fail-open).
     let healthy = ctx.upstream_health.filter_healthy(&all_urls);
-    let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
+    let healthy_urls: Vec<String> = healthy.iter().cloned().cloned().collect();
 
-    // Circuit breaker: if ALL healthy upstreams are at max capacity → 503.
-    if circuit_open(
-        &urls,
+    // Circuit breaker: per-upstream capacity filtering (#156). `Exhausted`
+    // means every healthy peer is at its connection cap → 503.
+    let capacity = capacity::Capacity::evaluate(
+        &healthy_urls,
         opts.max_conns_per_upstream,
         route_key,
         ctx.upstream_health,
-    ) {
+    );
+    if matches!(capacity, capacity::Capacity::Exhausted) {
         return Some(overloaded());
     }
 
-    // Build weighted list filtered to healthy targets.
+    // Build weighted list filtered to healthy targets. `pick_bounded` further
+    // filters this to the admissible (under-capacity) subset internally.
     let weighted: Vec<(String, u32)> = all_weighted_base
         .into_iter()
-        .filter(|(url, _)| urls.contains(url))
+        .filter(|(url, _)| healthy_urls.contains(url))
         .collect();
 
     // Sticky sessions: extract and optionally verify the session cookie.
@@ -421,19 +411,28 @@ fn resolve_proxy_routes(
     // cookie value is always used for backend selection.
     let strategy = effective_strategy(sticky_override.is_some(), opts.strategy);
 
-    let hash_ctx = HashCtx {
-        weighted: &weighted,
-        hash_val,
+    // With retry configured, bypass the strategy entirely and rotate a
+    // capacity-filtered candidate list (don't retry into a peer already
+    // known to be saturated) — mirrors the pre-#156 retry-bypasses-strategy
+    // behavior, now capacity-aware.
+    let (chosen_url, retry_state, is_least_conn) = if let Some(retry) = opts.retry {
+        let candidates = capacity.candidates(&healthy_urls)?;
+        let (url, state) = pick_with_retry(candidates, route_key, ctx.counters, retry)?;
+        (url, Some(state), false)
+    } else {
+        let input = capacity::BoundedPick {
+            strategy,
+            healthy: &healthy_urls,
+            capacity: &capacity,
+            weighted: &weighted,
+            route_key,
+            hash_val,
+            counters: ctx.counters,
+            health: ctx.upstream_health,
+        };
+        let (url, is_lc) = capacity::pick_bounded(&input)?;
+        (url, None, is_lc)
     };
-    let (chosen_url, retry_state, is_least_conn) = pick_url_by_strategy(
-        urls,
-        route_key,
-        ctx.counters,
-        opts.retry,
-        strategy,
-        ctx.upstream_health,
-        &hash_ctx,
-    )?;
 
     let strip = opts
         .strip_prefix
@@ -441,7 +440,9 @@ fn resolve_proxy_routes(
 
     // url_to_proxy_upstream may return None for a malformed URL. If
     // least-conn already incremented the inflight counter, build_proxy_upstream
-    // releases it — the logging() hook won't run on this request.
+    // releases it — the logging() hook won't run on this request. Parsing
+    // BEFORE the circuit_tracking conn_inc below (see it) means a malformed
+    // URL can never leak a circuit-tracking slot nothing will release.
     let upstream = build_proxy_upstream(
         &chosen_url,
         strip,
@@ -466,7 +467,27 @@ fn resolve_proxy_routes(
 
     // HMAC sticky: sign the chosen upstream URL and schedule a Set-Cookie
     // injection on the response side.
-    let sticky_set_cookie = make_sticky_cookie(opts.sticky, &chosen_url);
+    //
+    // Skip re-signing when this pick was a capacity relocation away from a
+    // still-healthy pinned peer (#156 review finding): re-signing the cookie
+    // to the relocated fallback would permanently migrate the session to it,
+    // since the next request's hash input is derived from the *pinned URL
+    // string itself* (see `selection_hash_val`), not the client's original
+    // identity — the fallback would then stay "pinned to itself" even after
+    // the originally-preferred peer frees capacity. Leaving the existing
+    // cookie untouched means the next request retries the original pin, so
+    // sticky sessions genuinely self-heal once capacity is available again,
+    // matching the same self-healing property already tested for plain
+    // (non-sticky) hash routing.
+    let sticky_relocated = matches!(
+        &sticky_override,
+        Some(pinned) if pinned != &chosen_url && healthy_urls.contains(pinned)
+    );
+    let sticky_set_cookie = if sticky_relocated {
+        None
+    } else {
+        make_sticky_cookie(opts.sticky, &chosen_url)
+    };
 
     Some(RouteResolution {
         upstream,
@@ -523,33 +544,6 @@ fn resolve_backup(
     let backup = backup?;
     tracing::info!(backup = %backup, "all primary upstreams unhealthy — routing to backup");
     Some(url_to_proxy_upstream(backup, None).map(RouteResolution::local))
-}
-
-/// `true` when every healthy upstream is at or above
-/// `maxConnectionsPerUpstream` — caller returns 503 Overloaded.
-fn circuit_open(
-    urls: &[String],
-    max_conns: Option<u64>,
-    route_key: &str,
-    upstream_health: &UpstreamRegistry,
-) -> bool {
-    let Some(max_conns) = max_conns else {
-        return false;
-    };
-    if urls.is_empty() {
-        return false;
-    }
-    let all_at_limit = urls
-        .iter()
-        .all(|u| upstream_health.conn_load(u) >= max_conns as usize);
-    if all_at_limit {
-        tracing::debug!(
-            route = route_key,
-            max_conns,
-            "circuit open: all upstreams at connection limit"
-        );
-    }
-    all_at_limit
 }
 
 /// Outcome of evaluating the sticky-session cookie.
@@ -699,50 +693,41 @@ fn overloaded() -> RouteResult {
 /// - `hash_key = "ip"` → hash client IP across groups (sticky per client)
 /// - `hash_key = "url"` → hash request path across groups
 /// - Other strategies (round-robin, random, least-conn, …) work as usual.
-#[allow(clippy::too_many_arguments)]
 fn resolve_grouped(
     group_strategy: Option<&LoadBalanceStrategy>,
     groups: &[UpstreamGroup],
-    hash_key: &str,
     route_key: &str,
-    path: &str,
-    client_ip: &str,
-    counters: &DashMap<String, AtomicUsize>,
-    upstream_health: &UpstreamRegistry,
-    strip_prefix_flag: bool,
-    proxy_timeout: Option<crate::config::schema::ProxyTimeout>,
-    proxy_pool: Option<crate::config::schema::ConnectionPoolConfig>,
-    proxy_http2: bool,
-    cache_cfg: Option<crate::config::schema::CacheConfig>,
-    rewrite_rules: Option<Vec<crate::config::schema::RewriteRule>>,
+    ctx: &ProxyCtx<'_>,
+    opts: &RouteOptions<'_>,
 ) -> Option<RouteResult> {
     if groups.is_empty() {
         return None;
     }
 
-    // Outer pick: choose which group handles this request.
+    // Outer pick: choose which group handles this request. Group selection
+    // itself is not capacity-aware — see the inner pick below for that.
     let group_key = format!("{route_key}__group");
-    let hash_input = if hash_key == "url" || client_ip.is_empty() {
-        path
+    let hash_input = if opts.hash_key == "url" || ctx.client_ip.is_empty() {
+        ctx.path
     } else {
-        client_ip
+        ctx.client_ip
     };
     let hash_val = upstream::fnv1a_hash(hash_input);
 
     let group_names: Vec<String> = groups.iter().map(|g| g.name.clone()).collect();
     let picked_name = {
-        let ctx = HashCtx {
+        let hash_ctx = HashCtx {
             weighted: &[],
             hash_val,
         };
         pick_url_by_strategy(
-            group_names.clone(),
+            &group_names,
             &group_key,
-            counters,
+            ctx.counters,
             None,
             group_strategy,
-            upstream_health,
-            &ctx,
+            ctx.upstream_health,
+            &hash_ctx,
         )
         .map(|(name, _, _)| name)?
     };
@@ -767,29 +752,52 @@ fn resolve_grouped(
         })
         .collect();
 
-    let healthy = upstream_health.filter_healthy(&all_urls);
-    let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
+    let healthy = ctx.upstream_health.filter_healthy(&all_urls);
+    let healthy_urls: Vec<String> = healthy.iter().cloned().cloned().collect();
+    // WeightedRoundRobin reads `weighted`, not the healthy URL list — filter
+    // it to health here (capacity-filtering happens inside `pick_bounded`).
     let weighted_healthy: Vec<(String, u32)> = weighted
         .into_iter()
-        .filter(|(u, _)| urls.contains(u))
+        .filter(|(u, _)| healthy_urls.contains(u))
         .collect();
 
+    // Circuit breaker: same per-upstream capacity filtering as the flat-route
+    // path (#156). V1 semantic: all targets in the *selected* group at cap →
+    // 503, even if a different group had room — group selection is usually
+    // affinity-driven, so silently jumping groups would surprise more than
+    // shedding does.
+    let capacity = capacity::Capacity::evaluate(
+        &healthy_urls,
+        opts.max_conns_per_upstream,
+        route_key,
+        ctx.upstream_health,
+    );
+    if matches!(capacity, capacity::Capacity::Exhausted) {
+        // Explicit, not `?` — capacity exhaustion is a 503, not "no route
+        // matched"; letting it propagate as `None` here would fall all the
+        // way through to a generic Fallback instead.
+        return Some(overloaded());
+    }
     let inner_key = format!("{route_key}__group__{}", group.name);
-    let inner_ctx = HashCtx {
+    let inner_input = capacity::BoundedPick {
+        strategy: group.strategy.as_ref(),
+        healthy: &healthy_urls,
+        capacity: &capacity,
         weighted: &weighted_healthy,
+        route_key: &inner_key,
         hash_val,
+        counters: ctx.counters,
+        health: ctx.upstream_health,
     };
-    let (chosen_url, retry_state, is_least_conn) = pick_url_by_strategy(
-        urls,
-        &inner_key,
-        counters,
-        None,
-        group.strategy.as_ref(),
-        upstream_health,
-        &inner_ctx,
-    )?;
+    let (chosen_url, is_least_conn) = capacity::pick_bounded(&inner_input)?;
+    let retry_state: Option<RetryState> = None; // groups don't support retry in V1
 
-    let strip = strip_prefix_flag.then(|| route_key.trim_end_matches('/').to_string());
+    // Parse BEFORE acquiring the circuit_tracking slot below — matches the
+    // flat-route path's ordering (#156) so a malformed URL can never leak a
+    // slot nothing will release.
+    let strip = opts
+        .strip_prefix
+        .then(|| route_key.trim_end_matches('/').to_string());
     let upstream = match url_to_proxy_upstream(&chosen_url, strip) {
         Some(UpstreamTarget::Proxy {
             addr,
@@ -802,32 +810,41 @@ fn resolve_grouped(
             tls,
             sni,
             strip_prefix,
-            rewrite: rewrite_rules,
+            rewrite: opts.rewrite.map(<[_]>::to_vec),
             mirror_url: None, // groups don't support mirror in V1
             upstream_tls: None,
         },
         Some(other) => other,
         None => {
             if is_least_conn {
-                upstream_health.conn_dec(&chosen_url);
+                ctx.upstream_health.conn_dec(&chosen_url);
             }
             return None;
         }
     };
 
+    // Same accounting shape as the flat-route path (#155/#156): a slot is
+    // only acquired when least-conn didn't already track it but a cap is
+    // configured, so the capacity check above stays fed for every strategy.
+    // Placed after the successful parse — see the ordering note above.
+    let circuit_tracking = opts.max_conns_per_upstream.is_some() && !is_least_conn;
+    if circuit_tracking {
+        ctx.upstream_health.conn_inc(&chosen_url);
+    }
+
     // proxy_upstream_url is populated unconditionally (#155) so passive-health
     // attribution works for every strategy; upstream_conn_slot tracks whether
-    // this request actually holds the conn_count slot least-conn acquired.
+    // this request actually holds a conn_count slot to release.
     let proxy_upstream_url = Some(chosen_url.clone());
     Some(RouteResolution {
         upstream,
         retry: retry_state,
-        proxy_timeout,
-        proxy_pool,
-        proxy_http2,
+        proxy_timeout: opts.timeout.cloned(),
+        proxy_pool: opts.pool.cloned(),
+        proxy_http2: opts.http2,
         proxy_upstream_url,
-        upstream_conn_slot: is_least_conn,
-        proxy_cache_cfg: cache_cfg,
+        upstream_conn_slot: is_least_conn || circuit_tracking,
+        proxy_cache_cfg: opts.cache.cloned(),
         passive_unhealthy_status: Vec::new(), // groups don't have per-route healthCheck
         passive_unhealthy_latency_ms: None,
         websocket_allowed: false, // groups don't support websocket config in V1
@@ -854,7 +871,7 @@ struct HashCtx<'a> {
 /// load-balancing strategy, implement [`crate::proxy::strategy::LoadBalancingStrategy`]
 /// there and map it in `strategy::from_config`. This function does not need to change.
 fn pick_url_by_strategy(
-    urls: Vec<String>,
+    urls: &[String],
     route_key: &str,
     counters: &DashMap<String, AtomicUsize>,
     retry_cfg: Option<&RetryConfig>,
@@ -871,7 +888,7 @@ fn pick_url_by_strategy(
     let s =
         crate::proxy::strategy::from_config(strategy.unwrap_or(&LoadBalanceStrategy::RoundRobin));
     let (url, is_least_conn) = s.pick(
-        &urls,
+        urls,
         hash_ctx.weighted,
         route_key,
         hash_ctx.hash_val,
@@ -904,7 +921,7 @@ pub fn url_to_proxy_upstream(url: &str, strip_prefix: Option<String>) -> Option<
 /// Pick a starting URL and build retry state, rotating the URL list so that
 /// `upstream_peer()` can walk it on each attempt.
 fn pick_with_retry(
-    urls: Vec<String>,
+    urls: &[String],
     route_key: &str,
     counters: &DashMap<String, AtomicUsize>,
     retry: &RetryConfig,
@@ -1442,7 +1459,7 @@ mod tests {
             budget_percent: None,
             backoff_jitter: None,
         };
-        let (url, state) = pick_with_retry(urls, "r", &counters, &retry).unwrap();
+        let (url, state) = pick_with_retry(&urls, "r", &counters, &retry).unwrap();
         assert_eq!(url, "http://a:4000");
         assert_eq!(state.max_attempts, 3);
         assert!(state.has_condition("5xx"));
@@ -1460,7 +1477,7 @@ mod tests {
             budget_percent: None,
             backoff_jitter: None,
         };
-        let (url, state) = pick_with_retry(urls.clone(), "r", &counters, &retry).unwrap();
+        let (url, state) = pick_with_retry(&urls, "r", &counters, &retry).unwrap();
         assert!(urls.contains(&url));
         assert_eq!(state.urls.len(), 2);
         assert_eq!(state.backoff_ms, Some(50));
@@ -1476,7 +1493,7 @@ mod tests {
             budget_percent: None,
             backoff_jitter: None,
         };
-        assert!(pick_with_retry(vec![], "r", &counters, &retry).is_none());
+        assert!(pick_with_retry(&[], "r", &counters, &retry).is_none());
     }
 
     // ── pick_url_by_strategy ──────────────────────────────────────────────────
@@ -1494,8 +1511,7 @@ mod tests {
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
         let (url, retry, is_lc) =
-            pick_url_by_strategy(urls.clone(), "r", &counters, None, None, &reg, &no_hash())
-                .unwrap();
+            pick_url_by_strategy(&urls, "r", &counters, None, None, &reg, &no_hash()).unwrap();
         assert!(urls.contains(&url));
         assert!(retry.is_none());
         assert!(!is_lc);
@@ -1507,7 +1523,7 @@ mod tests {
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
         let (url, _, is_lc) = pick_url_by_strategy(
-            urls.clone(),
+            &urls,
             "r",
             &counters,
             None,
@@ -1526,7 +1542,7 @@ mod tests {
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
         let (url, _, is_lc) = pick_url_by_strategy(
-            urls.clone(),
+            &urls,
             "r",
             &counters,
             None,
@@ -1557,7 +1573,7 @@ mod tests {
             backoff_jitter: None,
         };
         let (url, retry, is_lc) = pick_url_by_strategy(
-            urls.clone(),
+            &urls,
             "r",
             &counters,
             Some(&retry_cfg),
@@ -1575,9 +1591,7 @@ mod tests {
     fn strategy_empty_urls_returns_none() {
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
-        assert!(
-            pick_url_by_strategy(vec![], "r", &counters, None, None, &reg, &no_hash()).is_none()
-        );
+        assert!(pick_url_by_strategy(&[], "r", &counters, None, None, &reg, &no_hash()).is_none());
     }
 
     #[test]
@@ -1596,7 +1610,7 @@ mod tests {
         let results: Vec<_> = (0..4)
             .map(|_| {
                 pick_url_by_strategy(
-                    urls.clone(),
+                    &urls,
                     "r",
                     &counters,
                     None,
@@ -1626,7 +1640,7 @@ mod tests {
             hash_val,
         };
         let first = pick_url_by_strategy(
-            urls.clone(),
+            &urls,
             "r",
             &counters,
             None,
@@ -1637,7 +1651,7 @@ mod tests {
         .unwrap()
         .0;
         let second = pick_url_by_strategy(
-            urls.clone(),
+            &urls,
             "r",
             &counters,
             None,
@@ -1659,7 +1673,7 @@ mod tests {
         let reg = UpstreamRegistry::new();
         let urls = vec!["http://a:4000".to_string(), "http://b:4000".to_string()];
         let (url, _, is_lc) = pick_url_by_strategy(
-            urls.clone(),
+            &urls,
             "r",
             &counters,
             None,
@@ -2515,6 +2529,195 @@ mod tests {
         );
     }
 
+    #[test]
+    fn circuit_breaker_round_robin_skips_at_capacity_peer() {
+        // #156: before the fix, RoundRobin never checked conn_load, so a
+        // saturated peer would still receive traffic as long as it was
+        // "healthy" in the round-robin rotation. Saturate peer A at its cap
+        // and assert every pick lands on B.
+        let config = single_route_config(
+            vec!["http://a:4000", "http://b:4000"],
+            None, // default RoundRobin
+            Some(1),
+        );
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        reg.conn_inc("http://a:4000"); // saturate A at the cap
+
+        for _ in 0..5 {
+            let ctx = route_request(
+                &config,
+                "localhost",
+                "/",
+                "GET",
+                &http::HeaderMap::new(),
+                None,
+                "127.0.0.1",
+                80,
+                &counters,
+                &reg,
+                None,
+            );
+            match &ctx.upstream {
+                UpstreamTarget::Proxy { addr, .. } => {
+                    assert_eq!(addr, "b:4000", "must never pick the saturated peer");
+                }
+                other => panic!("expected Proxy, got {other:?}"),
+            }
+            // circuit_tracking acquired a real conn_count slot for B (since
+            // RoundRobin isn't least-conn); release it to simulate the
+            // request completing, matching what logging() does in production
+            // — otherwise B would itself saturate after the first iteration.
+            assert!(
+                ctx.upstream_conn_slot,
+                "round-robin with a cap set must acquire a slot via circuit_tracking"
+            );
+            reg.conn_dec("http://b:4000");
+        }
+    }
+
+    #[test]
+    fn circuit_breaker_hash_strategy_preserves_affinity_while_one_peer_capped() {
+        // #156: naive filtering before a hash pick would remap most clients
+        // whenever any single peer saturates. Forward-probing must keep an
+        // under-cap client's mapping unchanged, and relocate deterministically
+        // only for the client(s) whose preferred peer is at capacity.
+        let config = single_route_config(
+            vec!["http://a:4000", "http://b:4000", "http://c:4000"],
+            Some(LoadBalanceStrategy::IpHash),
+            Some(1),
+        );
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+
+        // circuit_tracking acquires a real conn_count slot on every pick
+        // (IpHash isn't least-conn, and a cap is configured); release it
+        // immediately so consecutive calls simulate independent requests
+        // rather than accumulating load against each other. Only the
+        // explicit conn_inc/conn_dec calls around `pick()` below represent
+        // "real" outstanding load for this test.
+        let pick = |reg: &UpstreamRegistry| -> String {
+            let ctx = route_request(
+                &config,
+                "localhost",
+                "/",
+                "GET",
+                &http::HeaderMap::new(),
+                None,
+                "127.0.0.1",
+                80,
+                &counters,
+                reg,
+                None,
+            );
+            let addr = match ctx.upstream {
+                UpstreamTarget::Proxy { addr, .. } => addr,
+                other => panic!("expected Proxy, got {other:?}"),
+            };
+            if ctx.upstream_conn_slot {
+                reg.conn_dec(&format!("http://{addr}"));
+            }
+            addr
+        };
+
+        // Learn this client's preferred peer under no load.
+        let preferred = pick(&reg);
+        assert_eq!(
+            pick(&reg),
+            preferred,
+            "mapping must be stable under no load"
+        );
+
+        // Saturate a DIFFERENT peer and confirm the mapping is unaffected.
+        let other = ["a:4000", "b:4000", "c:4000"]
+            .into_iter()
+            .find(|p| *p != preferred)
+            .unwrap();
+        reg.conn_inc(&format!("http://{other}"));
+        assert_eq!(
+            pick(&reg),
+            preferred,
+            "an unrelated peer saturating must not move this client's mapping"
+        );
+        reg.conn_dec(&format!("http://{other}"));
+
+        // Saturate the PREFERRED peer: the client must relocate.
+        reg.conn_inc(&format!("http://{preferred}"));
+        let relocated = pick(&reg);
+        assert_ne!(
+            relocated, preferred,
+            "must relocate off the now-saturated preferred peer"
+        );
+
+        // Free the slot: mapping returns to the original preference.
+        reg.conn_dec(&format!("http://{preferred}"));
+        assert_eq!(
+            pick(&reg),
+            preferred,
+            "mapping must return once the preferred peer has capacity again"
+        );
+    }
+
+    #[test]
+    fn circuit_breaker_grouped_route_returns_overloaded_when_selected_group_saturated() {
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, UpstreamGroup,
+            UpstreamHealthCheck,
+        };
+        use indexmap::IndexMap;
+
+        let groups = vec![UpstreamGroup {
+            name: "only-group".to_owned(),
+            targets: vec![ProxyTarget::Simple("http://g1:4000".to_owned())],
+            strategy: None,
+        }];
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                groups: Some(groups),
+                targets: vec![],
+                health_check: Some(UpstreamHealthCheck {
+                    max_connections_per_upstream: Some(1),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        reg.conn_inc("http://g1:4000"); // saturate the only target in the only group
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(
+            matches!(
+                ctx.upstream,
+                UpstreamTarget::Local(LocalHandler::Overloaded)
+            ),
+            "grouped route must 503 when every target in the selected group is at capacity: {:?}",
+            ctx.upstream
+        );
+    }
+
     // ── failover to backup upstream ───────────────────────────────────────────
 
     #[test]
@@ -2695,6 +2898,115 @@ mod tests {
         match &ctx.upstream {
             UpstreamTarget::Proxy { addr, .. } => {
                 assert_eq!(addr, "b:4000", "must route to the HMAC-pinned upstream");
+            }
+            other => panic!("expected Proxy upstream, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sticky_capacity_relocation_does_not_re_pin_and_self_heals() {
+        // #156 review finding (Gitar): re-signing the sticky cookie to a
+        // capacity-relocated fallback would permanently migrate the session
+        // to it, since the next request's hash input is derived from the
+        // pinned URL string itself. Prove: (1) relocating away from a
+        // saturated-but-healthy pin does NOT re-sign the cookie, and (2)
+        // once the original pin frees capacity, presenting the SAME
+        // (unchanged) original cookie routes back to it.
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, StickyConfig,
+            UpstreamHealthCheck,
+        };
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://a:4000".to_owned()),
+                    ProxyTarget::Simple("http://b:4000".to_owned()),
+                ],
+                sticky: Some(StickyConfig {
+                    cookie: "srv_id".to_owned(),
+                    secret: Some("s3cret".to_owned()),
+                    strict: None,
+                }),
+                health_check: Some(UpstreamHealthCheck {
+                    max_connections_per_upstream: Some(1),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+
+        // Pin the cookie to "a", then saturate "a" at its cap (still
+        // healthy, just at capacity) so the pick must relocate.
+        let signed_a = hmac_sign_sticky("http://a:4000", "s3cret");
+        let mut headers = http::HeaderMap::new();
+        headers.insert("cookie", format!("srv_id={signed_a}").parse().unwrap());
+        reg.conn_inc("http://a:4000");
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &headers,
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        match &ctx.upstream {
+            UpstreamTarget::Proxy { addr, .. } => {
+                assert_eq!(
+                    addr, "b:4000",
+                    "must relocate off the saturated pinned peer"
+                );
+            }
+            other => panic!("expected Proxy upstream, got {:?}", other),
+        }
+        assert!(
+            ctx.sticky_set_cookie.is_none(),
+            "capacity relocation must NOT re-sign the cookie — doing so would \
+             permanently migrate the session to the fallback peer: {:?}",
+            ctx.sticky_set_cookie
+        );
+
+        // Free "a"'s slot and present the SAME original cookie again (no new
+        // cookie was issued, so the client would still be holding this one).
+        reg.conn_dec("http://a:4000");
+        let ctx2 = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &headers,
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        match &ctx2.upstream {
+            UpstreamTarget::Proxy { addr, .. } => {
+                assert_eq!(
+                    addr, "a:4000",
+                    "must self-heal back to the original pin once capacity frees"
+                );
             }
             other => panic!("expected Proxy upstream, got {:?}", other),
         }
@@ -3075,7 +3387,7 @@ mod tests {
             hash_val: 0,
         };
         let result = pick_url_by_strategy(
-            urls.clone(),
+            &urls,
             "route",
             &counters,
             None,
@@ -3101,7 +3413,7 @@ mod tests {
             hash_val: 0,
         };
         let result = pick_url_by_strategy(
-            vec![],
+            &[],
             "route",
             &counters,
             None,
@@ -3129,7 +3441,7 @@ mod tests {
             backoff_jitter: None,
         };
         let result = pick_url_by_strategy(
-            urls,
+            &urls,
             "route",
             &counters,
             Some(&retry),
