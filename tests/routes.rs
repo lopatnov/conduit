@@ -55,6 +55,49 @@ fn routes_path_glob_matches() {
     );
 }
 
+/// #225 regression: a proxy target configured by *hostname* (not IP literal)
+/// must actually route successfully. Before the fix, `upstream_peer()` only
+/// accepted `SocketAddr`-parseable addresses, so any hostname target —
+/// including `localhost`, exactly as shipped in `examples/minimal.yaml` —
+/// failed every single request with a connect error. No other test in this
+/// suite exercises a non-IP-literal target end-to-end.
+#[test]
+#[serial]
+fn routes_hostname_upstream_resolves_and_proxies() {
+    let upstream_port = common::free_port();
+    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{upstream_port}")).expect("bind");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { continue };
+            let mut buf = [0u8; 4096];
+            std::io::Read::read(&mut s, &mut buf).ok();
+            let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK";
+            std::io::Write::write_all(&mut s, resp.as_bytes()).ok();
+        }
+    });
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": { "/api": format!("http://localhost:{upstream_port}") }
+            }]
+        }),
+    );
+
+    let resp = reqwest::blocking::get(srv.url("/api")).expect("GET /api");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "hostname-based upstream target must resolve and proxy successfully"
+    );
+}
+
 /// First matching route wins — ordering is respected.
 #[test]
 #[serial]

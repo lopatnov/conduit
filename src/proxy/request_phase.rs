@@ -1187,12 +1187,7 @@ pub(super) async fn upstream_peer(
         }
     }
 
-    let socket_addr: SocketAddr = addr_str.parse().map_err(|_| {
-        pingora_core::Error::explain(
-            pingora_core::ErrorType::ConnectProxyFailure,
-            format!("invalid upstream address: {addr_str}"),
-        )
-    })?;
+    let socket_addr = resolve_socket_addr(&addr_str).await?;
     let mut peer = HttpPeer::new(socket_addr, tls, sni);
 
     // Negotiate HTTP/2 with the upstream when the route sets `http2: true`.
@@ -1795,6 +1790,38 @@ pub(super) fn resolve_peer_addr(
             )),
         }
     }
+}
+
+/// Resolve a `host:port` string to a [`SocketAddr`], accepting both IP
+/// literals and hostnames.
+///
+/// IP literals take a fast synchronous path (no behavior change from before
+/// hostname support was added). Hostnames go through async DNS resolution
+/// via [`tokio::net::lookup_host`] — this must NOT be `HttpPeer::new`'s own
+/// resolution: that constructor takes `impl std::net::ToSocketAddrs`, which
+/// resolves *synchronously* (blocking the async runtime thread) and
+/// `.unwrap()`s the result (panics on resolution failure) — unacceptable
+/// inside a per-request async hook. Resolving here first, then handing
+/// `HttpPeer::new` an already-concrete `SocketAddr`, sidesteps both.
+async fn resolve_socket_addr(addr_str: &str) -> pingora_core::Result<SocketAddr> {
+    if let Ok(addr) = addr_str.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+    tokio::net::lookup_host(addr_str)
+        .await
+        .map_err(|e| {
+            pingora_core::Error::explain(
+                pingora_core::ErrorType::ConnectProxyFailure,
+                format!("DNS resolution failed for upstream address {addr_str}: {e}"),
+            )
+        })?
+        .next()
+        .ok_or_else(|| {
+            pingora_core::Error::explain(
+                pingora_core::ErrorType::ConnectProxyFailure,
+                format!("no addresses found for upstream address {addr_str}"),
+            )
+        })
 }
 
 /// Apply per-route timeout, connection-pool settings, and global limits to an
@@ -2503,6 +2530,43 @@ mod tests {
         assert!(
             resolve_peer_addr(&mut ctx).is_err(),
             "local handler must return error"
+        );
+    }
+
+    // ── resolve_socket_addr (#225: hostname upstreams) ──────────────────────────
+
+    #[tokio::test]
+    async fn resolve_socket_addr_ipv4_literal_fast_path() {
+        let addr = resolve_socket_addr("127.0.0.1:4000").await.unwrap();
+        assert_eq!(addr, "127.0.0.1:4000".parse().unwrap());
+    }
+
+    #[tokio::test]
+    async fn resolve_socket_addr_ipv6_literal_fast_path() {
+        let addr = resolve_socket_addr("[::1]:4000").await.unwrap();
+        assert_eq!(addr, "[::1]:4000".parse().unwrap());
+    }
+
+    #[tokio::test]
+    async fn resolve_socket_addr_resolves_localhost_hostname() {
+        // The exact regression case from #225: "localhost:4000" previously
+        // failed SocketAddr::parse and every request to such an upstream
+        // would 502. localhost resolves via the OS hosts file/resolver
+        // without needing network access, so this is safe to run in CI.
+        let addr = resolve_socket_addr("localhost:4000").await.unwrap();
+        assert!(
+            addr.ip().is_loopback(),
+            "localhost must resolve to a loopback address, got {addr}"
+        );
+        assert_eq!(addr.port(), 4000);
+    }
+
+    #[tokio::test]
+    async fn resolve_socket_addr_unresolvable_hostname_returns_error() {
+        let result = resolve_socket_addr("this-host-does-not-exist.invalid:4000").await;
+        assert!(
+            result.is_err(),
+            "an unresolvable hostname must return an error, not panic"
         );
     }
 
