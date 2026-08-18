@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-pub const CONFIG_VERSION: u32 = 1;
+pub use conduit_config_core::parse::CONFIG_VERSION;
 
 // ── Top-level entry point ──────────────────────────────────────────────────
 

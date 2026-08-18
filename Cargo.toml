@@ -26,7 +26,8 @@ pingora-cache = { version = "0.8", features = ["rustls"] }
 # --- Conduit workspace member crates ---
 # path + version so `cargo publish` can resolve this as a real dependency
 # once member crates start publishing (see #114's crates.io-publishing risk).
-lopatnov-conduit-core = { path = "crates/conduit-core", version = "2.0.0" }
+lopatnov-conduit-core        = { path = "crates/conduit-core", version = "2.0.0" }
+lopatnov-conduit-config-core = { path = "crates/conduit-config-core", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -170,15 +171,15 @@ pingora-proxy.workspace = true
 pingora-cache.workspace = true
 
 # --- Conduit workspace member crates ---
-lopatnov-conduit-core.workspace = true
+lopatnov-conduit-core.workspace        = true
+lopatnov-conduit-config-core.workspace = true
 
 # --- Config & parsing ---
-serde.workspace               = true
-serde_json.workspace          = true
-serde_yaml.workspace          = true
-serde_path_to_error.workspace = true
-indexmap.workspace            = true
-humantime.workspace           = true
+serde.workspace      = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+indexmap.workspace   = true
+humantime.workspace  = true
 
 # --- CLI ---
 clap.workspace          = true
