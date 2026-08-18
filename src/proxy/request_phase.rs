@@ -1807,21 +1807,40 @@ async fn resolve_socket_addr(addr_str: &str) -> pingora_core::Result<SocketAddr>
     if let Ok(addr) = addr_str.parse::<SocketAddr>() {
         return Ok(addr);
     }
-    tokio::net::lookup_host(addr_str)
-        .await
-        .map_err(|e| {
-            pingora_core::Error::explain(
-                pingora_core::ErrorType::ConnectProxyFailure,
-                format!("DNS resolution failed for upstream address {addr_str}: {e}"),
-            )
-        })?
-        .next()
-        .ok_or_else(|| {
-            pingora_core::Error::explain(
-                pingora_core::ErrorType::ConnectProxyFailure,
-                format!("no addresses found for upstream address {addr_str}"),
-            )
-        })
+    let addrs = tokio::net::lookup_host(addr_str).await.map_err(|e| {
+        pingora_core::Error::explain(
+            pingora_core::ErrorType::ConnectProxyFailure,
+            format!("DNS resolution failed for upstream address {addr_str}: {e}"),
+        )
+    })?;
+    pick_preferred_addr(addrs).ok_or_else(|| {
+        pingora_core::Error::explain(
+            pingora_core::ErrorType::ConnectProxyFailure,
+            format!("no addresses found for upstream address {addr_str}"),
+        )
+    })
+}
+
+/// Pick a single address out of a hostname's DNS results, preferring IPv4.
+///
+/// `HttpPeer` accepts exactly one concrete `SocketAddr` — Pingora has no
+/// multi-address / Happy-Eyeballs fallback (an unrelated Happy-Eyeballs
+/// backlog item is `[🚫 BLOCKED]` in `CLAUDE.md` for the same reason: no
+/// public API for parallel connection attempts). When a hostname resolves
+/// to both families, the OS resolver's ordering is not a reliable signal
+/// for which family the upstream actually listens on — glibc's
+/// `getaddrinfo` prefers IPv6 by RFC 3484 default regardless of whether
+/// the target has a real IPv6 listener. Preferring IPv4 deterministically
+/// matches the overwhelmingly common case for self-hosted upstreams
+/// (Docker service names, `localhost`, bare local dev servers) instead of
+/// silently depending on resolver-order luck.
+fn pick_preferred_addr(addrs: impl Iterator<Item = SocketAddr>) -> Option<SocketAddr> {
+    let addrs: Vec<SocketAddr> = addrs.collect();
+    addrs
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or_else(|| addrs.first())
+        .copied()
 }
 
 /// Apply per-route timeout, connection-pool settings, and global limits to an
@@ -2568,6 +2587,54 @@ mod tests {
             result.is_err(),
             "an unresolvable hostname must return an error, not panic"
         );
+    }
+
+    // ── pick_preferred_addr (Gitar finding on PR #227) ──────────────────────────
+
+    fn v4(port: u16) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    fn v6(port: u16) -> SocketAddr {
+        SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port))
+    }
+
+    #[test]
+    fn pick_preferred_addr_empty_returns_none() {
+        assert_eq!(pick_preferred_addr(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn pick_preferred_addr_only_ipv6_returns_it() {
+        let addr = v6(4000);
+        assert_eq!(pick_preferred_addr(std::iter::once(addr)), Some(addr));
+    }
+
+    #[test]
+    fn pick_preferred_addr_only_ipv4_returns_it() {
+        let addr = v4(4000);
+        assert_eq!(pick_preferred_addr(std::iter::once(addr)), Some(addr));
+    }
+
+    #[test]
+    fn pick_preferred_addr_prefers_ipv4_when_ipv6_listed_first() {
+        // The exact failure mode Gitar flagged on PR #227: glibc's
+        // getaddrinfo (RFC 3484) commonly lists the IPv6 record before the
+        // IPv4 one for "localhost", even when the target only listens on
+        // IPv4. Taking .next() unconditionally would pick the IPv6 address
+        // and fail to connect.
+        let ipv4 = v4(4000);
+        let ipv6 = v6(4000);
+        let picked = pick_preferred_addr(vec![ipv6, ipv4].into_iter());
+        assert_eq!(picked, Some(ipv4), "must prefer IPv4 regardless of order");
+    }
+
+    #[test]
+    fn pick_preferred_addr_prefers_ipv4_when_ipv4_listed_first() {
+        let ipv4 = v4(4000);
+        let ipv6 = v6(4000);
+        let picked = pick_preferred_addr(vec![ipv4, ipv6].into_iter());
+        assert_eq!(picked, Some(ipv4));
     }
 
     // ── apply_peer_options ───────────────────────────────────────────────────
