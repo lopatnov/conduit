@@ -323,6 +323,10 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
   Review-фидбек (Gemini ×4 — &str-borrow path + Option::take) применён коммитом `7a9dedb`.
   Вне scope остались 3 старых S3776: `router.rs::route_request` CC 79,
   `config/validate.rs` CC 21, `cli/init.rs` CC 16 (если делать — отдельным пунктом).
+  **Все три закрыты 2026-08-17** — см. запись в конце этого файла
+  ("Реализовано в сессии 2026-08-17"), включая поправку: CC 79 был не в
+  `route_request` (плоский `match`, CC ~7), а в безымянном теле match-arm
+  внутри `resolve_proxy`, теперь названном `resolve_proxy_routes`.
 
 - [x] **1b. Config-snapshot drift в post-route хелперах `request_phase.rs`** (CodeRabbit
   на PR #91, Major) — РЕАЛИЗОВАНО и СМЕРДЖЕНО в main
@@ -1094,7 +1098,9 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   прошёл; remote-ветку удалил вручную через `gh api -X DELETE`.
 - Вне scope: 3 старых S3776 (`router.rs::route_request` CC 79,
   `config/validate.rs` CC 21, `cli/init.rs` CC 16) — зафиксировано в
-  пункте 1a бэклога.
+  пункте 1a бэклога. **Закрыты 2026-08-17**, см. соответствующую запись
+  ниже — `route_request` в этой заметке был мислейблом, реальная функция —
+  `resolve_proxy`/`resolve_proxy_routes`.
 
 ### Реализовано в сессии 2026-06-13 (пункт 1b — единый config-снапшот в post-route хелперах)
 
@@ -1246,3 +1252,45 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   же файлу) — ложное срабатывание, отклонён с обоснованием (дневниковая запись, не
   текущая документация); CodeRabbit сам отозвал finding и записал learning.
   Все 3 треда на #152 отвечены и resolved.
+
+### Реализовано в сессии 2026-08-17 (закрытие "3 старых S3776" + прочее на `main`)
+
+- **PR #193** (мигрейшн-ветка) — `crates/conduit-core` добавлен как первый Layer-0
+  workspace-член (`FilterOutcome`/`FilterContext`/`RequestFilter`,
+  `ResponseFilterOutcome`/`ResponseCtx`/`ResponseFilter`, `is_path_skipped`,
+  `LocalHandlerImpl`, `write_denied`/`write_redirect`/`write_response`,
+  `AcceptEncoding`, `content_type`, `LogWriter`), `src/` держит тонкие facade
+  ре-экспорты. По ходу найден и исправлен реальный баг в
+  `scripts/check-layer-boundaries.sh` (#125/#186) — неверные имена крейтов в
+  `ALLOWED_CRATES` и небезопасная эвристика распознавания комментариев
+  (исключение строк с `*` ловило валидный `*guard = ...` код, а не только
+  block-comment continuation) — поймано `security-engineer`'s ревью.
+  CI/coverage довинчены под новый workspace-член (`ci.yml --workspace`,
+  `sonar.yml --workspace`, `sonar-project.properties`).
+- **PR #204/#206/#208** — все 3 давних CRITICAL rust:S3776, отложенных
+  PR #91 (2026-06-13), закрыты: `config/validate.rs::validate_site` CC 21→0,
+  `cli/init.rs::run_init` CC 16→2, `proxy/router.rs::resolve_proxy` CC 79→~4.
+  `architect` (opus) дал план разбиения для всех трёх. Поправка, найденная
+  при разборе: CLAUDE.md 2026-06-13 назвал CC-79 функцию
+  `router.rs::route_request` — та функция плоский `match`, CC ~7; реальное
+  тело было безымянным match-arm внутри `resolve_proxy`, теперь названным
+  `resolve_proxy_routes`. Перед рефактором `resolve_proxy` отдельным PR #207
+  добавлены 4 unit-теста на sticky/HMAC-роутинг и malformed-backup-URL —
+  путей без покрытия выше HMAC-примитивов не было вообще; один тест поймал
+  реальный неверный assumption (`"not-a-url"` парсится нормально через
+  `url_to_host_port`, понадобился `"http://"` для настоящего failure path).
+  `security-engineer` дал PR #208 повышенное внимание (независимый построчный
+  разбор диффа, не просто доверие тестам) — само по себе поймал слабый
+  assert в новом sticky-тесте (CodeRabbit) на #207, исправлено до мерджа.
+- **12 Dependabot PR смерджены** (#194-203, включая `jsonwebtoken` 10→11 и
+  `redis` 1.3→1.5, оба MAJOR/значимые minor на security-relevant крейтах —
+  `security-engineer` проверил changelog'и, PASS на оба; `base64` 0.22→0.23
+  смерджен вместе с jsonwebtoken как transitive dep).
+- **Issue #181 закрыт** (PR #205) — 7 файлов в `sonar.coverage.exclusions`
+  исключали реально протестированный код (85 `#[test]` суммарно, включая
+  security-sensitive `tls.rs`/`cache_disk.rs`/`cache_redis.rs`). SonarCloud
+  dashboard/API недоступны из этого окружения (тот же блокер, что и у автора
+  issue) — проверено напрямую через `cargo llvm-cov --lib --features full`
+  локально, реальное покрытие 57–85% на всех 7 файлах.
+  Итого за сессию: 8 PR смерджено в `main` (#193 на мигрейшн-ветку,
+  #204-208 + #199/#200/#203 отдельно среди 12 dependabot).

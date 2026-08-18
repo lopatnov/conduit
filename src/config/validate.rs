@@ -518,22 +518,48 @@ fn validate_http_redirect_ports(config: &AppConfig, errors: &mut Vec<ValidationE
 // ── Per-site checks ────────────────────────────────────────────────────────
 
 fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
+    validate_site_transport(site, prefix, errors);
+    validate_site_routing(site, prefix, errors);
+    validate_site_request_handling(site, prefix, errors);
+    validate_site_auth(site, prefix, errors);
+    validate_site_limits(site, prefix, errors);
+}
+
+/// `tls` / `tcp`.
+fn validate_site_transport(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
     if let Some(tls) = &site.tls {
         validate_tls(tls, &format!("{prefix}.tls"), errors);
     }
     if let Some(tcp) = &site.tcp {
         validate_tcp_site(tcp, site, prefix, errors);
     }
+}
+
+/// `proxy` / `routes`.
+fn validate_site_routing(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
     if let Some(proxy) = &site.proxy {
         validate_proxy(proxy, &format!("{prefix}.proxy"), errors);
     }
-    if let Some(routes) = &site.routes {
-        for (i, route) in routes.iter().enumerate() {
-            if let Some(ProxyRouteTarget::Full(cfg)) = &route.proxy {
-                validate_route_config(cfg, &format!("{prefix}.routes[{i}].proxy"), errors);
-            }
+    validate_site_routes(site, prefix, errors);
+}
+
+fn validate_site_routes(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
+    let Some(routes) = &site.routes else {
+        return;
+    };
+    for (i, route) in routes.iter().enumerate() {
+        if let Some(ProxyRouteTarget::Full(cfg)) = &route.proxy {
+            validate_route_config(cfg, &format!("{prefix}.routes[{i}].proxy"), errors);
         }
     }
+}
+
+/// `ipFilter` / `upload` / `metrics` / `rateLimit` / `redirects` / `fallback` / `middleware`.
+fn validate_site_request_handling(
+    site: &SiteConfig,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
     if let Some(ip_filter) = &site.ip_filter {
         validate_ip_filter(ip_filter, prefix, errors);
     }
@@ -555,6 +581,10 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
     if let Some(middleware) = &site.middleware {
         validate_middleware(middleware, prefix, errors);
     }
+}
+
+/// `apiKey` / `jwtAuth` / `forwardAuth` / `consumers`.
+fn validate_site_auth(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
     if let Some(api_key_cfg) = &site.api_key {
         validate_api_key(api_key_cfg, prefix, errors);
     }
@@ -567,6 +597,10 @@ fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationErr
     if let Some(c) = &site.consumers {
         validate_consumers(c, &format!("{prefix}.consumers"), errors);
     }
+}
+
+/// `limits`.
+fn validate_site_limits(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
     if let Some(ref limits) = site.limits {
         validate_limits(limits, &format!("{prefix}.limits"), errors);
     }

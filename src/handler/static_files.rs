@@ -220,6 +220,11 @@ async fn open_no_follow(path: &Path) -> std::io::Result<tokio::fs::File> {
     }
 }
 
+/// Map a file I/O error to a Pingora-level internal error.
+fn io_err(e: std::io::Error) -> Box<pingora_core::Error> {
+    pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
+}
+
 /// Check `path` metadata WITHOUT following symlinks.
 ///
 /// Returns `None` when the path does not exist or is a symbolic link.
@@ -423,15 +428,11 @@ async fn stream_file_compressed(
     encoding: &str,
     level: u8,
 ) -> Result<()> {
-    let mut file = open_no_follow(path).await.map_err(|e| {
-        pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
-    })?;
+    let mut file = open_no_follow(path).await.map_err(io_err)?;
     if offset > 0 {
         file.seek(std::io::SeekFrom::Start(offset))
             .await
-            .map_err(|e| {
-                pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
-            })?;
+            .map_err(io_err)?;
     }
 
     // Limit the file reader to `length` bytes.
@@ -472,9 +473,7 @@ async fn stream_encoded<R: AsyncRead + Unpin>(session: &mut Session, mut reader:
     let mut pending: Option<Bytes> = None;
 
     loop {
-        let n = reader.read(&mut buf).await.map_err(|e| {
-            pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
-        })?;
+        let n = reader.read(&mut buf).await.map_err(io_err)?;
 
         if n == 0 {
             // EOF — flush whatever is pending (may be None if the file was empty).
@@ -495,23 +494,17 @@ async fn stream_encoded<R: AsyncRead + Unpin>(session: &mut Session, mut reader:
 /// Stream `length` bytes from `file` starting at `offset` in 64 KiB chunks.
 async fn stream_file(session: &mut Session, path: &Path, offset: u64, length: u64) -> Result<()> {
     const CHUNK: usize = 64 * 1024;
-    let mut file = open_no_follow(path).await.map_err(|e| {
-        pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
-    })?;
+    let mut file = open_no_follow(path).await.map_err(io_err)?;
     if offset > 0 {
         file.seek(std::io::SeekFrom::Start(offset))
             .await
-            .map_err(|e| {
-                pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
-            })?;
+            .map_err(io_err)?;
     }
     let mut remaining = length;
     let mut buf = vec![0u8; CHUNK];
     while remaining > 0 {
         let to_read = (remaining as usize).min(CHUNK);
-        let n = file.read(&mut buf[..to_read]).await.map_err(|e| {
-            pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
-        })?;
+        let n = file.read(&mut buf[..to_read]).await.map_err(io_err)?;
         if n == 0 {
             break; // Unexpected EOF — client will detect truncation.
         }

@@ -82,11 +82,15 @@ fn release_proxy_upstream(proxy: &ConduitProxy, session: &Session, ctx: &Option<
     {
         proxy.state.retry_inflight.fetch_sub(1, Ordering::Relaxed);
     }
-    // For least-conn routes, release the per-upstream slot.
+    // proxy_upstream_url is populated for every proxied request (#155) so
+    // passive-health attribution below runs regardless of strategy; only
+    // release the conn_count slot when this request actually holds one.
     let Some(ref url) = req_ctx.proxy_upstream_url else {
         return;
     };
-    proxy.state.upstream_health.conn_dec(url);
+    if req_ctx.upstream_conn_slot {
+        proxy.state.upstream_health.conn_dec(url);
+    }
 
     // Update Peak EWMA latency and passive health tracking.
     let elapsed_us = req_ctx.start_time.elapsed().as_micros() as u64;

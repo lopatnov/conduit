@@ -471,3 +471,193 @@ fn circuit_breaker_allows_when_under_limit() {
     let resp = reqwest::blocking::get(srv.url("/")).expect("GET /");
     assert_eq!(resp.status().as_u16(), 200, "under limit: should succeed");
 }
+
+// ── Passive health tracking without least-conn / maxConnectionsPerUpstream (#155) ─
+
+#[test]
+fn passive_stats_tracked_for_round_robin_without_conn_cap() {
+    // Default strategy (RoundRobin), no healthCheck, no maxConnectionsPerUpstream.
+    // Before #155's fix, proxy_upstream_url stayed None for this shape of route,
+    // so none of EWMA/outlier/per-peer stats ever recorded anything.
+    let up1 = MockUpstream::start(200);
+    let up2 = MockUpstream::start(200);
+    let port = common::free_port();
+    let admin_port = common::free_port();
+
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": {
+                    "/": { "targets": [up1.url(), up2.url()] }
+                }
+            }]
+        }),
+    );
+
+    for _ in 0..10 {
+        let resp = reqwest::blocking::get(srv.url("/")).expect("GET");
+        assert_eq!(resp.status(), 200);
+    }
+
+    let resp = reqwest::blocking::get(srv.admin_url("/upstreams")).expect("GET /upstreams");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().expect("parse JSON");
+    let list = body["upstreams"].as_array().expect("array");
+    assert_eq!(
+        list.len(),
+        2,
+        "both upstreams should be tracked once passively recorded; body: {body}"
+    );
+
+    let selected_total: u64 = list
+        .iter()
+        .map(|e| e["selected"]["total"].as_u64().unwrap_or(0))
+        .sum();
+    let responses_2xx: u64 = list
+        .iter()
+        .map(|e| e["responses"]["2xx"].as_u64().unwrap_or(0))
+        .sum();
+    assert_eq!(
+        selected_total, 10,
+        "selected.total must cover every request; {list:?}"
+    );
+    assert_eq!(
+        responses_2xx, 10,
+        "responses.2xx must cover every request; {list:?}"
+    );
+}
+
+#[test]
+fn outlier_detection_ejects_with_round_robin() {
+    // RoundRobin (default) + outlierDetection, no maxConnectionsPerUpstream.
+    // Before #155's fix, maybe_eject() never ran for this route shape, so a
+    // permanently-failing upstream was never ejected.
+    let bad = MockUpstream::start(500);
+    let good = MockUpstream::start(200);
+    let port = common::free_port();
+    let admin_port = common::free_port();
+
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "outlierDetection": {
+                    "consecutive5xx": 2,
+                    "baseEjectionTimeSecs": 30,
+                    "maxEjectionPercent": 50
+                },
+                "proxy": {
+                    "/": { "targets": [bad.url(), good.url()] }
+                }
+            }]
+        }),
+    );
+
+    // Round-robin alternates bad,good,bad,... — by request 3 `bad` has 2
+    // consecutive 5xx responses and gets ejected; from then on filter_healthy
+    // excludes it so every further request lands on `good`.
+    for _ in 0..5 {
+        let _ = reqwest::blocking::get(srv.url("/")).expect("GET");
+    }
+
+    let resp = reqwest::blocking::get(srv.admin_url("/upstreams")).expect("GET /upstreams");
+    let body: serde_json::Value = resp.json().expect("parse JSON");
+    let list = body["upstreams"].as_array().expect("array");
+    let bad_entry = list
+        .iter()
+        .find(|e| e["url"].as_str() == Some(bad.url().as_str()))
+        .expect("bad upstream must be tracked");
+    assert!(
+        bad_entry["ejected"].as_bool().unwrap_or(false),
+        "bad upstream should be ejected after consecutive 5xx; entry: {bad_entry}"
+    );
+    assert_eq!(bad_entry["state"].as_str(), Some("ejected"));
+
+    let bad_hits_before = bad.hit_count();
+    let good_hits_before = good.hit_count();
+
+    // With `bad` ejected, every further request must be routed to `good` only.
+    for _ in 0..4 {
+        let resp = reqwest::blocking::get(srv.url("/")).expect("GET");
+        assert_eq!(
+            resp.status(),
+            200,
+            "ejected upstream must not receive traffic"
+        );
+    }
+
+    assert_eq!(
+        bad.hit_count(),
+        bad_hits_before,
+        "ejected upstream must receive no further requests"
+    );
+    assert_eq!(
+        good.hit_count(),
+        good_hits_before + 4,
+        "all post-ejection requests must land on the healthy upstream"
+    );
+}
+
+#[test]
+fn per_peer_response_breakdown_for_random_strategy() {
+    // strategy: "random", no maxConnectionsPerUpstream — another non-least-conn
+    // shape that record_response_status() never saw before #155's fix.
+    let good = MockUpstream::start(200);
+    let bad = MockUpstream::start(500);
+    let port = common::free_port();
+    let admin_port = common::free_port();
+
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": {
+                    "/": {
+                        "targets": [good.url(), bad.url()],
+                        "strategy": "random"
+                    }
+                }
+            }]
+        }),
+    );
+
+    for _ in 0..20 {
+        let _ = reqwest::blocking::get(srv.url("/")).expect("GET");
+    }
+
+    let resp = reqwest::blocking::get(srv.admin_url("/upstreams")).expect("GET /upstreams");
+    let body: serde_json::Value = resp.json().expect("parse JSON");
+    let list = body["upstreams"].as_array().expect("array");
+
+    let total_2xx: u64 = list
+        .iter()
+        .map(|e| e["responses"]["2xx"].as_u64().unwrap_or(0))
+        .sum();
+    let total_5xx: u64 = list
+        .iter()
+        .map(|e| e["responses"]["5xx"].as_u64().unwrap_or(0))
+        .sum();
+    assert_eq!(
+        total_2xx + total_5xx,
+        20,
+        "every response must be attributed to some upstream; {list:?}"
+    );
+    assert!(
+        total_2xx > 0,
+        "the 200 upstream must have recorded hits; {list:?}"
+    );
+    assert!(
+        total_5xx > 0,
+        "the 500 upstream must have recorded hits; {list:?}"
+    );
+}

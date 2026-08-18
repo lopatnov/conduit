@@ -295,7 +295,10 @@ fn full_cfg_to_result(
         is_retrying: false,
     });
 
-    let upstream_url_for_lc = is_least_conn.then(|| chosen_url.clone());
+    // proxy_upstream_url is populated unconditionally (#155) so passive-health
+    // attribution works for every strategy; upstream_conn_slot tracks whether
+    // this request actually holds the conn_count slot least-conn acquired.
+    let proxy_upstream_url = Some(chosen_url.clone());
 
     router::RouteResolution {
         upstream,
@@ -303,7 +306,8 @@ fn full_cfg_to_result(
         proxy_timeout: cfg.timeout.clone(),
         proxy_pool: cfg.pool.clone(),
         proxy_http2: cfg.http2.unwrap_or(false),
-        proxy_upstream_url: upstream_url_for_lc,
+        proxy_upstream_url,
+        upstream_conn_slot: is_least_conn,
         proxy_cache_cfg: cfg.cache.clone(),
         passive_unhealthy_status: cfg
             .health_check

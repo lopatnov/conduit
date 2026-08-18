@@ -136,6 +136,12 @@ the check twice.
 ## Subagents available here
 
 - `build-validator` (haiku, read-only) — fmt/clippy/test verdicts, called via `/build`.
+- `duplication-scanner` (haiku, read-only) — finds candidate code duplication in given
+  file(s)/directories (repeated blocks, near-identical struct/impl pairs, copy-pasted
+  closures). Reports `file:line` locations only; the conductor judges whether/how to
+  extract — safe extraction often depends on call-site intent (e.g. a documented perf
+  property, a test's structural assumption) that a mechanical scan can't see. Cheap
+  enough to call several times in parallel across unrelated files.
 - `release-engineer` (sonnet) — release readiness, CI failure triage, merge-order planning,
   driving the tag → `release.yml` pipeline.
 - `security-engineer` (sonnet) — auth/secrets/TLS/guard-chain review, scanner-finding triage

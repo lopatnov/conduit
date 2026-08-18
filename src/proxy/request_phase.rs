@@ -74,16 +74,17 @@ impl ConduitProxy {
     /// Updates all passive health state for the upstream that just returned
     /// `status`:
     ///
-    /// - Releases the connection slot (`conn_dec`) so the next `upstream_peer()`
-    ///   call can acquire a new slot for the retry target.
+    /// - Releases the connection slot (`conn_dec`) — only if this attempt
+    ///   actually held one (`upstream_conn_slot`) — so the next
+    ///   `upstream_peer()` call can acquire a new slot for the retry target.
     /// - Records latency into the EWMA and increments `consecutive_5xx` via
     ///   `record_request_latency`.
     /// - Runs outlier-detection ejection (`maybe_eject`) if configured.
     /// - Decrements the Prometheus `upstream_active_connections` gauge and
     ///   increments `upstream_requests_total` / `upstream_latency_seconds`.
     /// - Appends the failed attempt to `failed_upstream_attempts` for structured
-    ///   logging, then clears `proxy_upstream_url` so the next `upstream_peer()`
-    ///   starts fresh.
+    ///   logging, then clears `proxy_upstream_url` and `upstream_conn_slot` so
+    ///   the next `upstream_peer()` starts fresh with no inherited slot.
     ///
     /// Without this, a successful retry on a different backend would silently
     /// absorb the failure without updating the health record of the backend that
@@ -104,10 +105,17 @@ impl ConduitProxy {
             Some(u) => u,
             None => return,
         };
+        // Also clear the slot flag: the next attempt's URL (set below by
+        // upstream_peer's retry-restore) never goes through conn_inc, so it
+        // must start without an inherited slot to release.
+        let had_conn_slot = std::mem::take(&mut req_ctx_mut.upstream_conn_slot);
 
         let elapsed_us = req_ctx_mut.start_time.elapsed().as_micros() as u64;
-        // Release the connection slot for the failed upstream immediately.
-        self.state.upstream_health.conn_dec(&url);
+        // Release the connection slot for the failed upstream immediately —
+        // only if this request actually held one.
+        if had_conn_slot {
+            self.state.upstream_health.conn_dec(&url);
+        }
         crate::proxy::health::record_request_latency(
             &self.state.upstream_health,
             &url,
@@ -1173,6 +1181,11 @@ pub(super) async fn upstream_peer(
             // This is a retry (attempt was >0 before incrementing).
             let idx = (retry.attempt - 1) % retry.urls.len();
             req_ctx.proxy_upstream_url = Some(retry.urls[idx].clone());
+            // This attempt never went through conn_inc, so it must not
+            // inherit a slot to release (record_failed_upstream_for_retry
+            // already clears this, but assert the invariant here too since
+            // this is the exact site a future change could reintroduce it).
+            req_ctx.upstream_conn_slot = false;
         }
     }
 

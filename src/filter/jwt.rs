@@ -30,9 +30,21 @@ struct JwksCache {
     fetched_at: Instant,
 }
 
+#[derive(Clone)]
 enum CachedKey {
-    Rsa { n: String, e: String },
-    Ec { x: String, y: String, crv: String },
+    Rsa {
+        n: String,
+        e: String,
+    },
+    Ec {
+        x: String,
+        y: String,
+        // Parsed from the JWK for completeness but not currently consulted —
+        // `DecodingKey::from_ec_components` infers the curve from the JWT's
+        // `alg` header (ES256 → P-256, ES384 → P-384), not from this field.
+        #[allow(dead_code)]
+        crv: String,
+    },
 }
 
 /// Global JWKS caches keyed by JWKS URL.
@@ -131,28 +143,7 @@ fn get_jwks_keys(url: &str, refresh_secs: u64) -> Option<Arc<HashMap<String, Cac
         if let Some(entry) = cache.get(url) {
             if entry.fetched_at.elapsed().as_secs() < refresh_secs {
                 // Build a temporary Arc-wrapped copy of the keys.
-                return Some(Arc::new(
-                    entry
-                        .keys
-                        .iter()
-                        .map(|(k, v)| {
-                            (
-                                k.clone(),
-                                match v {
-                                    CachedKey::Rsa { n, e } => CachedKey::Rsa {
-                                        n: n.clone(),
-                                        e: e.clone(),
-                                    },
-                                    CachedKey::Ec { x, y, crv } => CachedKey::Ec {
-                                        x: x.clone(),
-                                        y: y.clone(),
-                                        crv: crv.clone(),
-                                    },
-                                },
-                            )
-                        })
-                        .collect(),
-                ));
+                return Some(Arc::new(entry.keys.clone()));
             }
         }
     }
@@ -176,25 +167,7 @@ fn get_jwks_keys(url: &str, refresh_secs: u64) -> Option<Arc<HashMap<String, Cac
         cache.insert(
             url.to_owned(),
             JwksCache {
-                keys: keys_arc
-                    .iter()
-                    .map(|(k, v)| {
-                        (
-                            k.clone(),
-                            match v {
-                                CachedKey::Rsa { n, e } => CachedKey::Rsa {
-                                    n: n.clone(),
-                                    e: e.clone(),
-                                },
-                                CachedKey::Ec { x, y, crv } => CachedKey::Ec {
-                                    x: x.clone(),
-                                    y: y.clone(),
-                                    crv: crv.clone(),
-                                },
-                            },
-                        )
-                    })
-                    .collect(),
+                keys: (*keys_arc).clone(),
                 fetched_at: Instant::now(),
             },
         );
@@ -212,25 +185,36 @@ pub enum JwtCheckResult {
     Denied { reason: &'static str },
 }
 
+/// Shared skip-path + bearer-extraction prelude for [`check_jwt`] and
+/// [`check_jwt_extracting`].
+///
+/// Returns `Ok(token)` when the request should proceed to signature
+/// validation, or `Err(result)` with the early-return result (`Allowed` for
+/// a skipped path, `Denied` for a missing/malformed header) otherwise.
+fn jwt_prelude<'a>(
+    cfg: &JwtAuthConfig,
+    path: &str,
+    auth_header: Option<&'a str>,
+) -> Result<&'a str, JwtCheckResult> {
+    if let Some(skip) = &cfg.skip_paths {
+        if is_path_skipped(Some(skip.as_slice()), path) {
+            return Err(JwtCheckResult::Allowed);
+        }
+    }
+    extract_bearer(auth_header).ok_or(JwtCheckResult::Denied {
+        reason: "missing or malformed Bearer token",
+    })
+}
+
 /// Validate the `Authorization: Bearer` token for the current request.
 ///
 /// Returns [`JwtCheckResult::Allowed`] when:
 /// - The request path is in `skip_paths`, OR
 /// - The token is present and valid.
 pub fn check_jwt(cfg: &JwtAuthConfig, path: &str, auth_header: Option<&str>) -> JwtCheckResult {
-    if let Some(skip) = &cfg.skip_paths {
-        if is_path_skipped(Some(skip.as_slice()), path) {
-            return JwtCheckResult::Allowed;
-        }
-    }
-
-    let raw_token = match extract_bearer(auth_header) {
-        Some(t) => t,
-        None => {
-            return JwtCheckResult::Denied {
-                reason: "missing or malformed Bearer token",
-            }
-        }
+    let raw_token = match jwt_prelude(cfg, path, auth_header) {
+        Ok(token) => token,
+        Err(result) => return result,
     };
 
     match validate_token(cfg, raw_token) {
@@ -256,22 +240,9 @@ pub fn check_jwt_extracting(
     JwtCheckResult,
     Option<std::collections::HashMap<String, serde_json::Value>>,
 ) {
-    use crate::filter::auth::is_path_skipped;
-    if let Some(skip) = &cfg.skip_paths {
-        if is_path_skipped(Some(skip.as_slice()), path) {
-            return (JwtCheckResult::Allowed, None);
-        }
-    }
-    let raw_token = match extract_bearer(auth_header) {
-        Some(t) => t,
-        None => {
-            return (
-                JwtCheckResult::Denied {
-                    reason: "missing or malformed Bearer token",
-                },
-                None,
-            )
-        }
+    let raw_token = match jwt_prelude(cfg, path, auth_header) {
+        Ok(token) => token,
+        Err(result) => return (result, None),
     };
     match validate_token(cfg, raw_token) {
         Ok(()) => {

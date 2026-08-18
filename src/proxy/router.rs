@@ -7,7 +7,8 @@ use dashmap::DashMap;
 
 use crate::config::schema::{
     AppConfig, CacheConfig, ConnectionPoolConfig, LoadBalanceStrategy, ProxyConfig,
-    ProxyRouteTarget, ProxyTimeout, RetryConfig, SiteConfig, StaticConfig, UpstreamGroup,
+    ProxyRouteTarget, ProxyTimeout, RetryConfig, RewriteRule, SiteConfig, StaticConfig,
+    StickyConfig, UpstreamGroup, UpstreamTlsConfig,
 };
 use crate::proxy::ctx::{LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
@@ -29,9 +30,15 @@ pub struct RouteResolution {
     pub proxy_pool: Option<ConnectionPoolConfig>,
     /// Negotiate HTTP/2 with the upstream when `true`.
     pub proxy_http2: bool,
-    /// Selected upstream URL — `Some` for least-conn / circuit-breaker routes
-    /// so `logging()` can decrement the per-upstream counter after the response.
+    /// Selected upstream URL — `Some` for every proxy route so passive-health
+    /// attribution (EWMA, Outlier Detection, per-peer stats) works regardless
+    /// of load-balancing strategy. See `upstream_conn_slot` for whether a
+    /// `conn_count` slot also needs releasing.
     pub proxy_upstream_url: Option<String>,
+    /// `true` when a `conn_count` slot was acquired for `proxy_upstream_url`
+    /// and must be released by `logging()` via `conn_dec`. `false` means the
+    /// URL above is for attribution only — no slot to release.
+    pub upstream_conn_slot: bool,
     /// Per-route cache config, if caching is enabled.
     pub proxy_cache_cfg: Option<CacheConfig>,
     /// Passive health: HTTP status codes that count as upstream failures.
@@ -61,6 +68,7 @@ impl RouteResolution {
             proxy_pool: None,
             proxy_http2: false,
             proxy_upstream_url: None,
+            upstream_conn_slot: false,
             proxy_cache_cfg: None,
             passive_unhealthy_status: Vec::new(),
             passive_unhealthy_latency_ms: None,
@@ -137,6 +145,7 @@ pub fn route_request(
     ctx.passive_unhealthy_latency_ms = res.passive_unhealthy_latency_ms;
     ctx.websocket_allowed = res.websocket_allowed;
     ctx.sticky_set_cookie = res.sticky_set_cookie;
+    ctx.upstream_conn_slot = res.upstream_conn_slot;
     ctx
 }
 
@@ -170,15 +179,15 @@ fn route_site(
         return result;
     }
     if let Some(proxy_cfg) = &site.proxy {
-        if let Some(result) = resolve_proxy(
-            proxy_cfg,
+        let proxy_ctx = ProxyCtx {
             path,
             client_ip,
             req_headers,
             counters,
             upstream_health,
-            &site_label,
-        ) {
+            site_label: &site_label,
+        };
+        if let Some(result) = resolve_proxy(proxy_cfg, &proxy_ctx) {
             return result;
         }
     }
@@ -243,346 +252,444 @@ fn match_static_or_fallback(site: &SiteConfig, path: &str) -> RouteResult {
     RouteResolution::local(UpstreamTarget::Local(LocalHandler::Fallback))
 }
 
-fn resolve_proxy(
-    config: &ProxyConfig,
-    path: &str,
-    client_ip: &str,
-    req_headers: &http::HeaderMap,
-    counters: &DashMap<String, AtomicUsize>,
-    upstream_health: &UpstreamRegistry,
-    site_label: &str,
-) -> Option<RouteResult> {
-    match config {
-        ProxyConfig::Single(url) => Some(RouteResolution::local(url_to_proxy_upstream(url, None)?)),
-        ProxyConfig::Routes(routes) => {
-            let (route_key, route_target) = find_route(routes, path)?;
+/// Inputs that stay constant while resolving one request's upstream.
+struct ProxyCtx<'a> {
+    path: &'a str,
+    client_ip: &'a str,
+    req_headers: &'a http::HeaderMap,
+    counters: &'a DashMap<String, AtomicUsize>,
+    upstream_health: &'a UpstreamRegistry,
+    site_label: &'a str,
+}
 
-            // ── Two-level (grouped) routing ───────────────────────────────────
-            // When the route config has `groups`, bypass flat-target logic and
-            // resolve via pick_group → pick_within_group.
-            if let ProxyRouteTarget::Full(cfg) = route_target {
-                if let Some(groups) = &cfg.groups {
-                    return resolve_grouped(
-                        cfg.group_strategy.as_ref(),
-                        groups,
-                        cfg.hash_key.as_deref().unwrap_or("ip"),
-                        route_key,
-                        path,
-                        client_ip,
-                        counters,
-                        upstream_health,
-                        cfg.strip_prefix.unwrap_or(false),
-                        cfg.timeout.clone(),
-                        cfg.pool.clone(),
-                        cfg.http2.unwrap_or(false),
-                        cfg.cache.clone(),
-                        cfg.rewrite.clone(),
-                    );
-                }
-            }
+/// Per-route proxy settings, read once from `ProxyRouteTarget::Full`. All
+/// fields borrow from the route config; shorthand targets (`Url` /
+/// `RoundRobin`) get the documented defaults.
+struct RouteOptions<'a> {
+    retry: Option<&'a RetryConfig>,
+    timeout: Option<&'a ProxyTimeout>,
+    pool: Option<&'a ConnectionPoolConfig>,
+    strategy: Option<&'a LoadBalanceStrategy>,
+    http2: bool,
+    hash_key: &'a str,
+    cache: Option<&'a CacheConfig>,
+    rewrite: Option<&'a [RewriteRule]>,
+    mirror: Option<&'a str>,
+    upstream_tls: Option<&'a UpstreamTlsConfig>,
+    max_conns_per_upstream: Option<u64>,
+    websocket: bool,
+    unhealthy_status: &'a [u16],
+    unhealthy_latency_ms: Option<u64>,
+    backup: Option<&'a str>,
+    sticky: Option<&'a StickyConfig>,
+    strip_prefix: bool,
+}
 
-            // ── Runtime override check ────────────────────────────────────────
-            // When the operator has issued `conduit upstreams add/remove/weight`,
-            // those targets replace the config-file targets for this route.
-            let runtime_targets = upstream_health.get_override_targets(site_label, route_key);
-            let (all_urls, all_weighted_base): (Vec<String>, Vec<(String, u32)>) =
-                if let Some(ref ov) = runtime_targets {
-                    let urls = ov.iter().map(|(u, _)| u.clone()).collect();
-                    (urls, ov.clone())
-                } else {
-                    (
-                        upstream::target_urls(route_target),
-                        upstream::weighted_targets(route_target),
-                    )
-                };
-
-            let (
-                retry_cfg,
-                proxy_timeout,
-                proxy_pool,
-                strategy,
-                proxy_http2,
-                hash_key,
-                cache_cfg,
-                rewrite_rules,
-                mirror_url,
-                upstream_tls,
-                max_conns_per_upstream,
-                websocket_allowed,
-            ) = match route_target {
-                ProxyRouteTarget::Full(cfg) => (
-                    cfg.retry.as_ref(),
-                    cfg.timeout.clone(),
-                    cfg.pool.clone(),
-                    cfg.strategy.as_ref(),
-                    cfg.http2.unwrap_or(false),
-                    cfg.hash_key.as_deref().unwrap_or("ip"),
-                    cfg.cache.clone(),
-                    cfg.rewrite.clone(),
-                    cfg.mirror.clone(),
-                    cfg.upstream_tls.clone(),
-                    cfg.health_check
-                        .as_ref()
-                        .and_then(|hc| hc.max_connections_per_upstream),
-                    cfg.websocket.unwrap_or(false),
-                ),
-                _ => (
-                    None, None, None, None, false, "ip", None, None, None, None, None, false,
-                ),
-            };
-
-            // Passive health thresholds — extracted after the match via a separate
-            // if-let so cfg is in scope.
-            let passive_unhealthy_status: Vec<u16> =
-                if let ProxyRouteTarget::Full(cfg) = route_target {
-                    cfg.health_check
-                        .as_ref()
-                        .and_then(|hc| hc.unhealthy_status.clone())
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
-            let passive_unhealthy_latency_ms: Option<u64> =
-                if let ProxyRouteTarget::Full(cfg) = route_target {
-                    cfg.health_check
-                        .as_ref()
-                        .and_then(|hc| hc.unhealthy_latency_ms)
-                } else {
-                    None
-                };
-
-            // Failover: when a backup URL is configured and all primary upstreams
-            // are unhealthy, route to the backup instead.
-            let backup_url: Option<String> = if let ProxyRouteTarget::Full(cfg) = route_target {
-                cfg.backup.clone()
-            } else {
-                None
-            };
-            let all_unhealthy =
-                !all_urls.is_empty() && all_urls.iter().all(|u| !upstream_health.is_healthy(u));
-            if all_unhealthy {
-                if let Some(ref backup) = backup_url {
-                    tracing::info!(backup = %backup, "all primary upstreams unhealthy — routing to backup");
-                    return url_to_proxy_upstream(backup, None).map(RouteResolution::local);
-                }
-            }
-
-            // Filter to healthy upstreams; if all are down keep all (fail-open).
-            let healthy = upstream_health.filter_healthy(&all_urls);
-            let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
-
-            // Circuit breaker: if maxConnectionsPerUpstream is configured, filter
-            // out upstreams that are at or above the limit.
-            // If ALL healthy upstreams are at max capacity → return Overloaded (503).
-            if let Some(max_conns) = max_conns_per_upstream {
-                let under_limit: Vec<String> = urls
-                    .iter()
-                    .filter(|u| upstream_health.conn_load(u) < max_conns as usize)
-                    .cloned()
-                    .collect();
-                if under_limit.is_empty() && !urls.is_empty() {
-                    tracing::debug!(
-                        route = route_key,
-                        max_conns,
-                        "circuit open: all upstreams at connection limit"
-                    );
-                    return Some(RouteResolution::local(UpstreamTarget::Local(
-                        LocalHandler::Overloaded,
-                    )));
-                }
-                // Use only under-limit upstreams from here on.
-                // (If under_limit is empty but urls is also empty, fall through
-                //  to the normal no-URL path.)
-                let _ = under_limit; // URLs already filtered above; strategy will re-check conn_load
-            }
-
-            // Build weighted list filtered to healthy targets.
-            let weighted: Vec<(String, u32)> = all_weighted_base
-                .into_iter()
-                .filter(|(url, _)| urls.contains(url))
-                .collect();
-
-            // Sticky sessions: extract and optionally verify the session cookie.
-            //
-            // When `sticky.secret` is set, verify the HMAC-SHA256 of each candidate
-            // upstream URL to find the pinned backend.  A forged or unmatched cookie
-            // falls through to normal load-balancing (or returns 503 in strict mode).
-            // Without `secret`, the raw cookie value is used as the consistent-hash
-            // key (legacy behavior).
-            let sticky_cfg = if let ProxyRouteTarget::Full(cfg) = route_target {
-                cfg.sticky.as_ref()
-            } else {
-                None
-            };
-            let sticky_cookie_name: Option<&str> = sticky_cfg.map(|s| s.cookie.as_str());
-            let sticky_cookie_val: Option<String> =
-                sticky_cookie_name.and_then(|name| extract_cookie(req_headers, name));
-
-            // HMAC sticky: find which healthy upstream the cookie was signed for.
-            // `pinned_url` = Some(url) if cookie is a valid HMAC of that URL.
-            let pinned_url: Option<String> =
-                if let (Some(val), Some(cfg)) = (sticky_cookie_val.as_deref(), sticky_cfg) {
-                    if let Some(ref secret) = cfg.secret {
-                        // Try to find the upstream whose HMAC matches the cookie.
-                        all_urls
-                            .iter()
-                            .find(|u| hmac_verify_sticky(u, val, secret))
-                            .cloned()
-                    } else {
-                        None // No secret: use raw cookie as hash input (below)
-                    }
-                } else {
-                    None
-                };
-
-            // Strict mode: if the client presented a signed cookie for a peer
-            // that is now unhealthy, refuse the request rather than silently
-            // routing to a different upstream (which would break session affinity).
-            if let (Some(ref url), Some(cfg)) = (pinned_url.as_ref(), sticky_cfg) {
-                if cfg.strict.unwrap_or(false) && !upstream_health.is_healthy(url) {
-                    tracing::debug!(
-                        url = %url,
-                        "sticky strict mode: pinned upstream unhealthy — returning 503"
-                    );
-                    return Some(RouteResolution::local(UpstreamTarget::Local(
-                        LocalHandler::Overloaded,
-                    )));
-                }
-            }
-
-            // Determine the hash / override value for consistent-hash selection.
-            //
-            // Security: when a secret is configured (HMAC mode), a cookie that
-            // fails signature verification must NOT influence routing — otherwise
-            // a client could forge/manipulate their cookie to steer to specific
-            // upstreams.  Raw cookie values are only used when no secret is set
-            // (legacy, non-HMAC sticky).
-            let hmac_mode = sticky_cfg.and_then(|cfg| cfg.secret.as_ref()).is_some();
-            let sticky_override: Option<String> = if let Some(ref pinned) = pinned_url {
-                // HMAC-verified: pin to the exact upstream.
-                Some(pinned.clone())
-            } else if !hmac_mode {
-                // No secret configured: use raw cookie as consistent-hash input.
-                sticky_cookie_val
-            } else {
-                // HMAC mode but cookie failed verification: ignore — fall through
-                // to the configured load-balancing strategy.
-                None
-            };
-
-            // Compute hash value for ip-hash, consistent-hash, and sticky.
-            // Priority: sticky cookie > hash_key config > client IP.
-            let hash_input: &str = if let Some(ref cookie_val) = sticky_override {
-                cookie_val.as_str()
-            } else if hash_key == "url" || client_ip.is_empty() {
-                path
-            } else {
-                client_ip
-            };
-
-            // When sticky is active, override strategy to consistent-hash so
-            // the cookie value is always used for backend selection.
-            let effective_strategy: Option<LoadBalanceStrategy>;
-            let strategy = if sticky_override.is_some() {
-                effective_strategy = Some(LoadBalanceStrategy::ConsistentHash);
-                effective_strategy.as_ref()
-            } else {
-                strategy
-            };
-
-            let hash_val = upstream::fnv1a_hash(hash_input);
-
-            let hash_ctx = HashCtx {
-                weighted: &weighted,
-                hash_val,
-            };
-            let (chosen_url, retry_state, is_least_conn) = pick_url_by_strategy(
-                urls,
-                route_key,
-                counters,
-                retry_cfg,
-                strategy,
-                upstream_health,
-                &hash_ctx,
-            )?;
-
-            let strip = if upstream::strip_prefix_enabled(route_target) {
-                Some(route_key.trim_end_matches('/').to_string())
-            } else {
-                None
-            };
-
-            // url_to_proxy_upstream may return None for a malformed URL.
-            // If least-conn already incremented the inflight counter we must
-            // release it here — the logging() hook won't run on this request.
-            let upstream = match url_to_proxy_upstream(&chosen_url, strip) {
-                Some(UpstreamTarget::Proxy {
-                    addr,
-                    tls,
-                    sni,
-                    strip_prefix,
-                    ..
-                }) => UpstreamTarget::Proxy {
-                    addr,
-                    tls,
-                    sni,
-                    strip_prefix,
-                    rewrite: rewrite_rules,
-                    mirror_url: mirror_url.clone(),
-                    upstream_tls: upstream_tls.clone(),
-                },
-                Some(other) => other,
-                None => {
-                    if is_least_conn {
-                        upstream_health.conn_dec(&chosen_url);
-                    }
-                    return None;
-                }
-            };
-
-            // When maxConnectionsPerUpstream is set and the strategy is NOT
-            // least-conn (which already tracks conn_count), we increment the
-            // counter manually here so the circuit breaker sees accurate load.
-            // The conn_count is decremented by logging() via proxy_upstream_url.
-            let circuit_tracking = max_conns_per_upstream.is_some() && !is_least_conn;
-            if circuit_tracking {
-                upstream_health.conn_inc(&chosen_url);
-            }
-
-            // Store the upstream URL so logging() can:
-            // (a) decrement least-conn counter, and
-            // (b) decrement circuit-breaker counter (when not LeastConn).
-            let proxy_upstream_url =
-                (is_least_conn || circuit_tracking).then(|| chosen_url.clone());
-
-            // HMAC sticky: sign the chosen upstream URL and schedule a
-            // Set-Cookie injection on the response side.
-            let sticky_set_cookie: Option<(String, String)> = if let Some(cfg) = sticky_cfg {
-                if let Some(ref secret) = cfg.secret {
-                    let signed = hmac_sign_sticky(&chosen_url, secret);
-                    Some((cfg.cookie.clone(), signed))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            Some(RouteResolution {
-                upstream,
-                retry: retry_state,
-                proxy_timeout,
-                proxy_pool,
-                proxy_http2,
-                proxy_upstream_url,
-                proxy_cache_cfg: cache_cfg,
-                passive_unhealthy_status,
-                passive_unhealthy_latency_ms,
-                websocket_allowed,
-                sticky_set_cookie,
-            })
+impl<'a> RouteOptions<'a> {
+    fn from_target(target: &'a ProxyRouteTarget) -> Self {
+        let ProxyRouteTarget::Full(cfg) = target else {
+            return Self::shorthand();
+        };
+        let hc = cfg.health_check.as_ref();
+        Self {
+            retry: cfg.retry.as_ref(),
+            timeout: cfg.timeout.as_ref(),
+            pool: cfg.pool.as_ref(),
+            strategy: cfg.strategy.as_ref(),
+            http2: cfg.http2.unwrap_or(false),
+            hash_key: cfg.hash_key.as_deref().unwrap_or("ip"),
+            cache: cfg.cache.as_ref(),
+            rewrite: cfg.rewrite.as_deref(),
+            mirror: cfg.mirror.as_deref(),
+            upstream_tls: cfg.upstream_tls.as_ref(),
+            max_conns_per_upstream: hc.and_then(|h| h.max_connections_per_upstream),
+            websocket: cfg.websocket.unwrap_or(false),
+            unhealthy_status: hc
+                .and_then(|h| h.unhealthy_status.as_deref())
+                .unwrap_or(&[]),
+            unhealthy_latency_ms: hc.and_then(|h| h.unhealthy_latency_ms),
+            backup: cfg.backup.as_deref(),
+            sticky: cfg.sticky.as_ref(),
+            strip_prefix: cfg.strip_prefix.unwrap_or(false),
         }
     }
+
+    fn shorthand() -> Self {
+        Self {
+            retry: None,
+            timeout: None,
+            pool: None,
+            strategy: None,
+            http2: false,
+            hash_key: "ip",
+            cache: None,
+            rewrite: None,
+            mirror: None,
+            upstream_tls: None,
+            max_conns_per_upstream: None,
+            websocket: false,
+            unhealthy_status: &[],
+            unhealthy_latency_ms: None,
+            backup: None,
+            sticky: None,
+            strip_prefix: false,
+        }
+    }
+}
+
+fn resolve_proxy(config: &ProxyConfig, ctx: &ProxyCtx<'_>) -> Option<RouteResult> {
+    match config {
+        ProxyConfig::Single(url) => Some(RouteResolution::local(url_to_proxy_upstream(url, None)?)),
+        ProxyConfig::Routes(routes) => resolve_proxy_routes(routes, ctx),
+    }
+}
+
+fn resolve_proxy_routes(
+    routes: &indexmap::IndexMap<String, ProxyRouteTarget>,
+    ctx: &ProxyCtx<'_>,
+) -> Option<RouteResult> {
+    let (route_key, route_target) = find_route(routes, ctx.path)?;
+
+    // ── Two-level (grouped) routing ─────────────────────────────────────────
+    // When the route config has `groups`, bypass flat-target logic and
+    // resolve via pick_group → pick_within_group.
+    if let ProxyRouteTarget::Full(cfg) = route_target {
+        if let Some(groups) = &cfg.groups {
+            return resolve_grouped(
+                cfg.group_strategy.as_ref(),
+                groups,
+                cfg.hash_key.as_deref().unwrap_or("ip"),
+                route_key,
+                ctx.path,
+                ctx.client_ip,
+                ctx.counters,
+                ctx.upstream_health,
+                cfg.strip_prefix.unwrap_or(false),
+                cfg.timeout.clone(),
+                cfg.pool.clone(),
+                cfg.http2.unwrap_or(false),
+                cfg.cache.clone(),
+                cfg.rewrite.clone(),
+            );
+        }
+    }
+
+    let opts = RouteOptions::from_target(route_target);
+    let (all_urls, all_weighted_base) = effective_targets(route_target, route_key, ctx);
+
+    // Failover: when a backup URL is configured and all primary upstreams
+    // are unhealthy, route to the backup instead.
+    if let Some(result) = resolve_backup(&all_urls, opts.backup, ctx.upstream_health) {
+        return result;
+    }
+
+    // Filter to healthy upstreams; if all are down keep all (fail-open).
+    let healthy = ctx.upstream_health.filter_healthy(&all_urls);
+    let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
+
+    // Circuit breaker: if ALL healthy upstreams are at max capacity → 503.
+    if circuit_open(
+        &urls,
+        opts.max_conns_per_upstream,
+        route_key,
+        ctx.upstream_health,
+    ) {
+        return Some(overloaded());
+    }
+
+    // Build weighted list filtered to healthy targets.
+    let weighted: Vec<(String, u32)> = all_weighted_base
+        .into_iter()
+        .filter(|(url, _)| urls.contains(url))
+        .collect();
+
+    // Sticky sessions: extract and optionally verify the session cookie.
+    let sticky_override = match resolve_sticky(opts.sticky, &all_urls, ctx) {
+        Sticky::Reject => return Some(overloaded()),
+        Sticky::Key(key) => Some(key),
+        Sticky::None => None,
+    };
+
+    // Priority: sticky cookie > hash_key config > client IP.
+    let hash_val = selection_hash_val(
+        sticky_override.as_deref(),
+        opts.hash_key,
+        ctx.path,
+        ctx.client_ip,
+    );
+    // When sticky is active, override strategy to consistent-hash so the
+    // cookie value is always used for backend selection.
+    let strategy = effective_strategy(sticky_override.is_some(), opts.strategy);
+
+    let hash_ctx = HashCtx {
+        weighted: &weighted,
+        hash_val,
+    };
+    let (chosen_url, retry_state, is_least_conn) = pick_url_by_strategy(
+        urls,
+        route_key,
+        ctx.counters,
+        opts.retry,
+        strategy,
+        ctx.upstream_health,
+        &hash_ctx,
+    )?;
+
+    let strip = opts
+        .strip_prefix
+        .then(|| route_key.trim_end_matches('/').to_string());
+
+    // url_to_proxy_upstream may return None for a malformed URL. If
+    // least-conn already incremented the inflight counter, build_proxy_upstream
+    // releases it — the logging() hook won't run on this request.
+    let upstream = build_proxy_upstream(
+        &chosen_url,
+        strip,
+        &opts,
+        is_least_conn,
+        ctx.upstream_health,
+    )?;
+
+    // When maxConnectionsPerUpstream is set and the strategy is NOT
+    // least-conn (which already tracks conn_count), increment the counter
+    // manually here so the circuit breaker sees accurate load. Decremented
+    // by logging() via proxy_upstream_url, gated on upstream_conn_slot.
+    let circuit_tracking = opts.max_conns_per_upstream.is_some() && !is_least_conn;
+    if circuit_tracking {
+        ctx.upstream_health.conn_inc(&chosen_url);
+    }
+    // proxy_upstream_url is populated unconditionally (#155) so passive-health
+    // attribution works for every strategy; upstream_conn_slot separately
+    // tracks whether this request actually holds a conn_count slot to release.
+    let proxy_upstream_url = Some(chosen_url.clone());
+    let upstream_conn_slot = is_least_conn || circuit_tracking;
+
+    // HMAC sticky: sign the chosen upstream URL and schedule a Set-Cookie
+    // injection on the response side.
+    let sticky_set_cookie = make_sticky_cookie(opts.sticky, &chosen_url);
+
+    Some(RouteResolution {
+        upstream,
+        retry: retry_state,
+        proxy_timeout: opts.timeout.cloned(),
+        proxy_pool: opts.pool.cloned(),
+        proxy_http2: opts.http2,
+        proxy_upstream_url,
+        upstream_conn_slot,
+        proxy_cache_cfg: opts.cache.cloned(),
+        passive_unhealthy_status: opts.unhealthy_status.to_vec(),
+        passive_unhealthy_latency_ms: opts.unhealthy_latency_ms,
+        websocket_allowed: opts.websocket,
+        sticky_set_cookie,
+    })
+}
+
+/// Runtime-override-aware target list. When the operator has issued
+/// `conduit upstreams add/remove/weight`, those targets replace the
+/// config-file targets for this route.
+fn effective_targets(
+    route_target: &ProxyRouteTarget,
+    route_key: &str,
+    ctx: &ProxyCtx<'_>,
+) -> (Vec<String>, Vec<(String, u32)>) {
+    let Some(ov) = ctx
+        .upstream_health
+        .get_override_targets(ctx.site_label, route_key)
+    else {
+        return (
+            upstream::target_urls(route_target),
+            upstream::weighted_targets(route_target),
+        );
+    };
+    let urls = ov.iter().map(|(u, _)| u.clone()).collect();
+    (urls, ov)
+}
+
+/// `None` when failover does not apply (caller continues normal
+/// load-balancing); `Some(inner)` when it does apply — and `inner` may
+/// itself be `None` if the configured backup URL is malformed, which must
+/// propagate out of `resolve_proxy_routes` (falls through to
+/// static/fallback), exactly as a normal unresolved route would.
+fn resolve_backup(
+    all_urls: &[String],
+    backup: Option<&str>,
+    upstream_health: &UpstreamRegistry,
+) -> Option<Option<RouteResult>> {
+    let all_unhealthy =
+        !all_urls.is_empty() && all_urls.iter().all(|u| !upstream_health.is_healthy(u));
+    if !all_unhealthy {
+        return None;
+    }
+    let backup = backup?;
+    tracing::info!(backup = %backup, "all primary upstreams unhealthy — routing to backup");
+    Some(url_to_proxy_upstream(backup, None).map(RouteResolution::local))
+}
+
+/// `true` when every healthy upstream is at or above
+/// `maxConnectionsPerUpstream` — caller returns 503 Overloaded.
+fn circuit_open(
+    urls: &[String],
+    max_conns: Option<u64>,
+    route_key: &str,
+    upstream_health: &UpstreamRegistry,
+) -> bool {
+    let Some(max_conns) = max_conns else {
+        return false;
+    };
+    if urls.is_empty() {
+        return false;
+    }
+    let all_at_limit = urls
+        .iter()
+        .all(|u| upstream_health.conn_load(u) >= max_conns as usize);
+    if all_at_limit {
+        tracing::debug!(
+            route = route_key,
+            max_conns,
+            "circuit open: all upstreams at connection limit"
+        );
+    }
+    all_at_limit
+}
+
+/// Outcome of evaluating the sticky-session cookie.
+enum Sticky {
+    /// No sticky config, no cookie, or an unverifiable cookie in HMAC mode —
+    /// use the configured load-balancing strategy.
+    None,
+    /// Consistent-hash key: a verified pinned upstream URL, or (legacy,
+    /// no-secret mode) the raw cookie value.
+    Key(String),
+    /// `sticky.strict` and the pinned peer is unhealthy — refuse with 503.
+    Reject,
+}
+
+/// When `sticky.secret` is set, verify the HMAC-SHA256 of each candidate
+/// upstream URL to find the pinned backend. A forged or unmatched cookie
+/// falls through to normal load-balancing (or returns `Reject` in strict
+/// mode). Without `secret`, the raw cookie value is used as the
+/// consistent-hash key (legacy behavior).
+///
+/// Security: a cookie that fails signature verification must NOT influence
+/// routing — otherwise a client could forge/manipulate their cookie to
+/// steer to specific upstreams. Raw cookie values are only used when no
+/// secret is set (legacy, non-HMAC sticky).
+fn resolve_sticky(
+    sticky: Option<&StickyConfig>,
+    all_urls: &[String],
+    ctx: &ProxyCtx<'_>,
+) -> Sticky {
+    let Some(cfg) = sticky else {
+        return Sticky::None;
+    };
+    let Some(cookie_val) = extract_cookie(ctx.req_headers, &cfg.cookie) else {
+        return Sticky::None;
+    };
+    let Some(secret) = cfg.secret.as_deref() else {
+        // No secret configured: use raw cookie as consistent-hash input.
+        return Sticky::Key(cookie_val);
+    };
+    // Try to find the upstream whose HMAC matches the cookie.
+    let Some(pinned) = all_urls
+        .iter()
+        .find(|u| hmac_verify_sticky(u, &cookie_val, secret))
+    else {
+        // HMAC mode but cookie failed verification: ignore — fall through
+        // to the configured load-balancing strategy.
+        return Sticky::None;
+    };
+    // Strict mode: if the client presented a signed cookie for a peer that
+    // is now unhealthy, refuse the request rather than silently routing to
+    // a different upstream (which would break session affinity).
+    if cfg.strict.unwrap_or(false) && !ctx.upstream_health.is_healthy(pinned) {
+        tracing::debug!(
+            url = %pinned,
+            "sticky strict mode: pinned upstream unhealthy — returning 503"
+        );
+        return Sticky::Reject;
+    }
+    Sticky::Key(pinned.clone())
+}
+
+/// Hash key for ip-hash / consistent-hash / sticky selection.
+/// Priority: sticky cookie > `hashKey: "url"` (or empty client IP) > client IP.
+fn selection_hash_val(
+    sticky_override: Option<&str>,
+    hash_key: &str,
+    path: &str,
+    client_ip: &str,
+) -> u64 {
+    let hash_input = if let Some(cookie_val) = sticky_override {
+        cookie_val
+    } else if hash_key == "url" || client_ip.is_empty() {
+        path
+    } else {
+        client_ip
+    };
+    upstream::fnv1a_hash(hash_input)
+}
+
+/// Sticky sessions always select by consistent hash of the cookie value.
+static STICKY_STRATEGY: LoadBalanceStrategy = LoadBalanceStrategy::ConsistentHash;
+
+fn effective_strategy(
+    sticky_active: bool,
+    configured: Option<&LoadBalanceStrategy>,
+) -> Option<&LoadBalanceStrategy> {
+    if sticky_active {
+        Some(&STICKY_STRATEGY)
+    } else {
+        configured
+    }
+}
+
+/// Build the final `UpstreamTarget::Proxy`, attaching per-route rewrite /
+/// mirror / upstream-TLS settings. Releases the least-conn inflight slot
+/// when the URL is malformed — `logging()` will not run for this request.
+fn build_proxy_upstream(
+    chosen_url: &str,
+    strip: Option<String>,
+    opts: &RouteOptions<'_>,
+    is_least_conn: bool,
+    upstream_health: &UpstreamRegistry,
+) -> Option<UpstreamTarget> {
+    match url_to_proxy_upstream(chosen_url, strip) {
+        Some(UpstreamTarget::Proxy {
+            addr,
+            tls,
+            sni,
+            strip_prefix,
+            ..
+        }) => Some(UpstreamTarget::Proxy {
+            addr,
+            tls,
+            sni,
+            strip_prefix,
+            rewrite: opts.rewrite.map(<[_]>::to_vec),
+            mirror_url: opts.mirror.map(str::to_owned),
+            upstream_tls: opts.upstream_tls.cloned(),
+        }),
+        Some(other) => Some(other),
+        None => {
+            if is_least_conn {
+                upstream_health.conn_dec(chosen_url);
+            }
+            None
+        }
+    }
+}
+
+/// HMAC-signed sticky cookie to set on the response, when `sticky.secret` is set.
+fn make_sticky_cookie(sticky: Option<&StickyConfig>, chosen_url: &str) -> Option<(String, String)> {
+    let cfg = sticky?;
+    let secret = cfg.secret.as_deref()?;
+    let signed = hmac_sign_sticky(chosen_url, secret);
+    Some((cfg.cookie.clone(), signed))
+}
+
+/// 503 — circuit open / sticky strict reject.
+fn overloaded() -> RouteResult {
+    RouteResolution::local(UpstreamTarget::Local(LocalHandler::Overloaded))
 }
 
 /// Two-level load balancing: pick a group via `group_strategy`, then pick a
@@ -708,7 +815,10 @@ fn resolve_grouped(
         }
     };
 
-    let proxy_upstream_url = is_least_conn.then(|| chosen_url.clone());
+    // proxy_upstream_url is populated unconditionally (#155) so passive-health
+    // attribution works for every strategy; upstream_conn_slot tracks whether
+    // this request actually holds the conn_count slot least-conn acquired.
+    let proxy_upstream_url = Some(chosen_url.clone());
     Some(RouteResolution {
         upstream,
         retry: retry_state,
@@ -716,6 +826,7 @@ fn resolve_grouped(
         proxy_pool,
         proxy_http2,
         proxy_upstream_url,
+        upstream_conn_slot: is_least_conn,
         proxy_cache_cfg: cache_cfg,
         passive_unhealthy_status: Vec::new(), // groups don't have per-route healthCheck
         passive_unhealthy_latency_ms: None,
@@ -2463,6 +2574,493 @@ mod tests {
             }
             other => panic!("expected Proxy upstream, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn malformed_backup_url_falls_through_to_fallback() {
+        use crate::config::schema::{ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget};
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://primary:4000".to_owned())],
+                // `url_to_host_port` (upstream.rs) is lenient about bare hostnames
+                // ("not-a-url" alone parses fine, host="not-a-url", default port) --
+                // the only input it actually rejects is an empty host portion after
+                // scheme-trimming, e.g. a scheme with nothing after it. Matches the
+                // existing `url_to_host_port_empty_host_returns_none` unit test.
+                backup: Some("http://".to_owned()),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        // Mark the primary as unhealthy so the (malformed) backup path is tried.
+        {
+            let mut entry = reg
+                .statuses
+                .entry("http://primary:4000".to_owned())
+                .or_default();
+            entry.healthy = false;
+        }
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        // A malformed backup URL must not panic and must not silently load-balance
+        // across the known-unhealthy primaries -- it falls through to
+        // match_static_or_fallback (no static config here -> Fallback).
+        assert!(
+            matches!(ctx.upstream, UpstreamTarget::Local(LocalHandler::Fallback)),
+            "malformed backup URL must fall through to Fallback, got {:?}",
+            ctx.upstream
+        );
+    }
+
+    // ── sticky sessions: HMAC-verified routing ────────────────────────────────
+
+    #[test]
+    fn sticky_hmac_routes_to_pinned_upstream() {
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, StickyConfig,
+        };
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://a:4000".to_owned()),
+                    ProxyTarget::Simple("http://b:4000".to_owned()),
+                ],
+                sticky: Some(StickyConfig {
+                    cookie: "srv_id".to_owned(),
+                    secret: Some("s3cret".to_owned()),
+                    strict: None,
+                }),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+
+        // Cookie signed specifically for "b", not "a" -- pinning must follow the
+        // signature, not round-robin/hash selection.
+        let signed = hmac_sign_sticky("http://b:4000", "s3cret");
+        let mut headers = http::HeaderMap::new();
+        headers.insert("cookie", format!("srv_id={signed}").parse().unwrap());
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &headers,
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        match &ctx.upstream {
+            UpstreamTarget::Proxy { addr, .. } => {
+                assert_eq!(addr, "b:4000", "must route to the HMAC-pinned upstream");
+            }
+            other => panic!("expected Proxy upstream, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sticky_strict_mode_returns_503_when_pinned_upstream_unhealthy() {
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, StickyConfig,
+        };
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://a:4000".to_owned()),
+                    ProxyTarget::Simple("http://b:4000".to_owned()),
+                ],
+                sticky: Some(StickyConfig {
+                    cookie: "srv_id".to_owned(),
+                    secret: Some("s3cret".to_owned()),
+                    strict: Some(true),
+                }),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        // Pin the cookie to "a", then mark "a" unhealthy -- strict mode must
+        // refuse rather than silently fail over to "b" (which would break the
+        // session-affinity guarantee strict mode exists to provide).
+        {
+            let mut entry = reg.statuses.entry("http://a:4000".to_owned()).or_default();
+            entry.healthy = false;
+        }
+        let signed = hmac_sign_sticky("http://a:4000", "s3cret");
+        let mut headers = http::HeaderMap::new();
+        headers.insert("cookie", format!("srv_id={signed}").parse().unwrap());
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &headers,
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(
+            matches!(
+                ctx.upstream,
+                UpstreamTarget::Local(LocalHandler::Overloaded)
+            ),
+            "strict mode must return Overloaded when the pinned upstream is unhealthy: {:?}",
+            ctx.upstream
+        );
+    }
+
+    #[test]
+    fn sticky_forged_cookie_ignored_falls_back_to_load_balancing() {
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, StickyConfig,
+        };
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://a:4000".to_owned()),
+                    ProxyTarget::Simple("http://b:4000".to_owned()),
+                ],
+                sticky: Some(StickyConfig {
+                    cookie: "srv_id".to_owned(),
+                    secret: Some("s3cret".to_owned()),
+                    strict: None,
+                }),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        // A cookie that doesn't match either upstream's HMAC -- must not steer
+        // routing to an attacker-chosen peer; must fall through to normal
+        // load-balancing across the healthy set instead.
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "cookie",
+            "srv_id=not-a-valid-hmac-signature".parse().unwrap(),
+        );
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &headers,
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        let chosen_url = match &ctx.upstream {
+            UpstreamTarget::Proxy { addr, .. } => {
+                assert!(
+                    addr == "a:4000" || addr == "b:4000",
+                    "forged cookie must still resolve to a real upstream via normal \
+                     load-balancing: {addr}"
+                );
+                format!("http://{addr}")
+            }
+            other => panic!("expected Proxy upstream, got {:?}", other),
+        };
+        // Normal sticky-cookie-setting behavior must still apply to whichever
+        // upstream was actually chosen (the forged cookie is ignored for
+        // *selection*, not for the response-side re-signing) -- verify the
+        // replacement cookie is both correctly named AND actually signed for
+        // the upstream that was picked, not merely present. A regression that
+        // set the wrong cookie name or signed for the wrong upstream must fail
+        // this test.
+        let (cookie_name, cookie_value) = ctx
+            .sticky_set_cookie
+            .as_ref()
+            .expect("a fresh signed cookie must still be set for the chosen upstream");
+        assert_eq!(
+            cookie_name, "srv_id",
+            "cookie name must match sticky.cookie"
+        );
+        assert!(
+            hmac_verify_sticky(&chosen_url, cookie_value, "s3cret"),
+            "fresh cookie must be validly signed for the actually-chosen upstream {chosen_url}"
+        );
+    }
+
+    // ── proxy_upstream_url / upstream_conn_slot (#155) ────────────────────────
+
+    /// Build a single-route AppConfig with the given targets/strategy/healthCheck.
+    fn single_route_config(
+        targets: Vec<&str>,
+        strategy: Option<LoadBalanceStrategy>,
+        max_conns_per_upstream: Option<u64>,
+    ) -> AppConfig {
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, UpstreamHealthCheck,
+        };
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: targets
+                    .into_iter()
+                    .map(|u| ProxyTarget::Simple(u.to_owned()))
+                    .collect(),
+                strategy,
+                health_check: max_conns_per_upstream.map(|max| UpstreamHealthCheck {
+                    max_connections_per_upstream: Some(max),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+        );
+        AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn round_robin_populates_url_without_conn_slot() {
+        // Default strategy, no maxConnectionsPerUpstream: proxy_upstream_url
+        // must still be Some (for passive-health attribution), but
+        // upstream_conn_slot must be false (no conn_count slot was acquired).
+        let config = single_route_config(vec!["http://a:4000", "http://b:4000"], None, None);
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(
+            ctx.proxy_upstream_url.is_some(),
+            "URL must be populated for passive-health attribution regardless of strategy"
+        );
+        assert!(
+            !ctx.upstream_conn_slot,
+            "round-robin without a connection cap must not claim a conn_count slot"
+        );
+    }
+
+    #[test]
+    fn least_conn_populates_url_with_conn_slot() {
+        let config = single_route_config(
+            vec!["http://a:4000", "http://b:4000"],
+            Some(LoadBalanceStrategy::LeastConn),
+            None,
+        );
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(ctx.proxy_upstream_url.is_some());
+        assert!(
+            ctx.upstream_conn_slot,
+            "least-conn always acquires a conn_count slot"
+        );
+    }
+
+    #[test]
+    fn round_robin_with_max_conns_populates_url_with_conn_slot() {
+        // Default strategy but maxConnectionsPerUpstream set: circuit_tracking
+        // kicks in, so a slot IS acquired even though the strategy isn't least-conn.
+        let config = single_route_config(vec!["http://a:4000", "http://b:4000"], None, Some(5));
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(ctx.proxy_upstream_url.is_some());
+        assert!(
+            ctx.upstream_conn_slot,
+            "round-robin with maxConnectionsPerUpstream set must acquire a conn_count slot"
+        );
+    }
+
+    #[test]
+    fn attribution_only_route_does_not_corrupt_shared_conn_count() {
+        // Two routes share the same target X: /lc is least-conn (acquires a
+        // slot), /rr is plain round-robin (attribution only, no slot). Routing
+        // /rr must NOT touch X's conn_count -- otherwise a later logging()
+        // decrement for the /rr request would phantom-decrement /lc's slot.
+        use crate::config::schema::{ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget};
+        use indexmap::IndexMap;
+
+        const SHARED: &str = "http://x:4000";
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/lc".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple(SHARED.to_owned())],
+                strategy: Some(LoadBalanceStrategy::LeastConn),
+                ..Default::default()
+            })),
+        );
+        routes.insert(
+            "/rr".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple(SHARED.to_owned())],
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+
+        let ctx_lc = route_request(
+            &config,
+            "localhost",
+            "/lc",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(ctx_lc.upstream_conn_slot);
+        assert_eq!(
+            reg.conn_load(SHARED),
+            1,
+            "least-conn route must have claimed exactly one slot"
+        );
+
+        let ctx_rr = route_request(
+            &config,
+            "localhost",
+            "/rr",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(
+            ctx_rr.proxy_upstream_url.is_some(),
+            "round-robin route still gets the URL for attribution"
+        );
+        assert!(
+            !ctx_rr.upstream_conn_slot,
+            "round-robin route on a shared target must not claim a slot"
+        );
+        assert_eq!(
+            reg.conn_load(SHARED),
+            1,
+            "the round-robin route must not have touched the shared conn_count"
+        );
     }
 
     // ── pick_url_by_strategy direct tests ─────────────────────────────────────

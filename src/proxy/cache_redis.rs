@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use pingora_cache::{
-    storage::{HandleHit, HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeType, Storage},
+    storage::{HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeType, Storage},
     trace::SpanHandle,
     CacheKey, CacheMeta,
 };
@@ -35,6 +35,8 @@ use pingora_core::Result as PingoraResult;
 use pingora_core::{Error, ErrorType};
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+
+use super::cache_common::{bytes_to_hex, SimpleHitHandler};
 
 // ── Registry of per-URL storage instances ────────────────────────────────────
 
@@ -114,11 +116,6 @@ impl RedisCacheStorage {
     }
 }
 
-/// Encode a 16-byte hash as a 32-character lowercase hex string.
-fn bytes_to_hex(b: &[u8; 16]) -> String {
-    b.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 // ── Storage impl ──────────────────────────────────────────────────────────────
 
 #[async_trait]
@@ -143,9 +140,7 @@ impl Storage for RedisCacheStorage {
         match result {
             Ok((Some(m0), Some(m1), Some(body))) => match CacheMeta::deserialize(&m0, &m1) {
                 Ok(meta) => {
-                    let handler = Box::new(RedisHitHandler {
-                        body: Some(Bytes::from(body)),
-                    }) as HitHandler;
+                    let handler = Box::new(SimpleHitHandler::new(Bytes::from(body))) as HitHandler;
                     Ok(Some((meta, handler)))
                 }
                 Err(e) => {
@@ -236,36 +231,6 @@ impl Storage for RedisCacheStorage {
     }
 }
 
-// ── RedisHitHandler ───────────────────────────────────────────────────────────
-
-struct RedisHitHandler {
-    body: Option<Bytes>,
-}
-
-#[async_trait]
-impl HandleHit for RedisHitHandler {
-    async fn read_body(&mut self) -> PingoraResult<Option<Bytes>> {
-        Ok(self.body.take())
-    }
-
-    async fn finish(
-        self: Box<Self>,
-        _storage: &'static (dyn Storage + Sync),
-        _key: &CacheKey,
-        _trace: &SpanHandle,
-    ) -> PingoraResult<()> {
-        Ok(())
-    }
-
-    fn as_any(&self) -> &(dyn Any + Send + Sync) {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut (dyn Any + Send + Sync) {
-        self
-    }
-}
-
 // ── RedisMissHandler ──────────────────────────────────────────────────────────
 
 struct RedisMissHandler {
@@ -340,34 +305,6 @@ mod tests {
         assert!(
             hex_part.chars().all(|c| c.is_ascii_hexdigit()),
             "non-hex chars in key: {hex_part}"
-        );
-    }
-
-    #[test]
-    fn bytes_to_hex_all_zeros() {
-        let b = [0u8; 16];
-        let h = bytes_to_hex(&b);
-        assert_eq!(h, "0".repeat(32));
-    }
-
-    #[test]
-    fn bytes_to_hex_all_ff() {
-        let b = [0xFFu8; 16];
-        let h = bytes_to_hex(&b);
-        assert_eq!(h, "ff".repeat(16));
-    }
-
-    #[test]
-    fn bytes_to_hex_known_value() {
-        let b: [u8; 16] = [
-            0x00, 0x01, 0x0F, 0x10, 0xAB, 0xCD, 0xEF, 0xFE, 0x80, 0x7F, 0x55, 0xAA, 0x11, 0x22,
-            0x33, 0x44,
-        ];
-        let h = bytes_to_hex(&b);
-        assert_eq!(
-            h,
-            "00010f10abcdeffе807f55aa11223344".replace('е', "e"),
-            "hex: {h}"
         );
     }
 

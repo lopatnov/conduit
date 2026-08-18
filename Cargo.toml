@@ -88,7 +88,7 @@ libc      = "0.2" # O_NOFOLLOW for atomic symlink-safe file open (Unix)
 url       = "2"   # URL parsing for proxy-loop and SSRF detection
 httpdate  = "1"
 http      = "1"
-base64    = "0.22"
+base64    = "0.23"
 hmac      = "0.13"
 sha2      = "0.11"
 
@@ -97,7 +97,7 @@ rhai = { version = "1", features = ["sync"] }
 
 # --- JWT bearer-token authentication (feature: jwt) ---
 # Verifies HS256 (HMAC secret) and RS256/ES256 (JWKS/PEM).
-jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 
 # --- HTTP client (feature: jwt for JWKS, forward-auth, mirroring) ---
 # `default-features = false` avoids native-tls; rustls keeps TLS consistent.
