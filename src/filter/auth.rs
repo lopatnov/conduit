@@ -148,12 +148,17 @@ pub fn check_api_key(cfg: &ApiKeyConfig, session: &Session) -> bool {
 /// Attempt to identify the request's consumer from the configured list.
 ///
 /// Evaluation order: consumers are checked in declaration order; the **first
-/// matching** consumer wins.  A consumer can use one of two credential types:
+/// matching** consumer wins.  A consumer can use one of four credential types:
 ///
 /// - **API key** — value in the `apiKeyHeader` request header (default:
 ///   `x-api-key`).  Compared with [`ct_eq_str`] (constant-time).
 /// - **Basic Auth** — `Authorization: Basic <base64(username:password)>` where
 ///   the username must equal `consumer.username`.
+/// - **Per-consumer JWT** (V2, feature `jwt`) — a bearer token validated
+///   against that consumer's own `secret`/`jwksUrl`.
+/// - **Shared JWT** (V3, feature `jwt`) — one JWKS/secret shared across all
+///   consumers, identified by a claim (default `sub`) matching
+///   `consumer.username`; checked once up front before per-consumer checks.
 ///
 /// Returns `None` when no consumer matches (caller should return 401).
 #[cfg(feature = "consumers")]
