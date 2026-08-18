@@ -21,6 +21,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -1206,7 +1207,9 @@ pub(super) async fn upstream_peer(
         .or_else(|| limits_timeout_secs.map(|s| s.saturating_mul(1000)))
         .map(Duration::from_millis);
 
+    let resolve_start = Instant::now();
     let socket_addr = resolve_socket_addr(&addr_str, resolution_timeout).await?;
+    let resolve_elapsed = resolve_start.elapsed();
     let mut peer = HttpPeer::new(socket_addr, tls, sni);
 
     // Negotiate HTTP/2 with the upstream when the route sets `http2: true`.
@@ -1242,7 +1245,28 @@ pub(super) async fn upstream_peer(
         limits_timeout_secs,
     );
 
+    // Gitar finding on PR #227: `resolution_timeout` above and
+    // `connection_timeout` here are derived from the same configured value,
+    // but were two independent deadlines — a hostname upstream stalling at
+    // both DNS resolution and TCP connect could consume up to 2x the
+    // configured `connectMs`. Sharing one budget instead.
+    peer.options.connection_timeout =
+        remaining_budget(peer.options.connection_timeout, resolve_elapsed);
+
     Ok(Box::new(peer))
+}
+
+/// Subtract time already spent (e.g. on DNS resolution) from a connect
+/// deadline, so two sequential phases share one budget instead of each
+/// getting a fresh full timeout.
+///
+/// `saturating_sub` floors at zero rather than going negative, so a phase
+/// that already consumed the whole budget correctly leaves zero time for
+/// the next one (which then fails immediately) rather than silently
+/// granting it a fresh deadline. `None` (no deadline configured) passes
+/// through unchanged — there is no budget to share.
+fn remaining_budget(deadline: Option<Duration>, elapsed: Duration) -> Option<Duration> {
+    deadline.map(|d| d.saturating_sub(elapsed))
 }
 
 /// Body of [`pingora_proxy::ProxyHttp::request_body_filter`].
@@ -2699,6 +2723,50 @@ mod tests {
         let ipv6 = v6(4000);
         let picked = pick_preferred_addr(vec![ipv4, ipv6].into_iter());
         assert_eq!(picked, Some(ipv4));
+    }
+
+    // ── remaining_budget (Gitar finding on PR #227: shared connect budget) ──────
+
+    #[test]
+    fn remaining_budget_none_deadline_stays_none() {
+        // No timeout configured at all -- nothing to share, passes through.
+        assert_eq!(remaining_budget(None, Duration::from_millis(500)), None);
+    }
+
+    #[test]
+    fn remaining_budget_subtracts_elapsed() {
+        let deadline = Duration::from_millis(5000);
+        let elapsed = Duration::from_millis(1200);
+        assert_eq!(
+            remaining_budget(Some(deadline), elapsed),
+            Some(Duration::from_millis(3800))
+        );
+    }
+
+    #[test]
+    fn remaining_budget_zero_elapsed_is_unchanged() {
+        // The IP-literal fast path in resolve_socket_addr never awaits DNS,
+        // so elapsed is ~0 -- the configured deadline must be preserved
+        // exactly, not just "close to" it.
+        let deadline = Duration::from_millis(5000);
+        assert_eq!(
+            remaining_budget(Some(deadline), Duration::ZERO),
+            Some(deadline)
+        );
+    }
+
+    #[test]
+    fn remaining_budget_elapsed_exceeding_deadline_saturates_to_zero() {
+        // A resolution that already consumed the whole budget (or more, if
+        // resolution_timeout itself elapsed) must leave zero time for the
+        // next phase -- not underflow/panic, and not silently grant a fresh
+        // deadline by wrapping.
+        let deadline = Duration::from_millis(1000);
+        let elapsed = Duration::from_millis(1500);
+        assert_eq!(
+            remaining_budget(Some(deadline), elapsed),
+            Some(Duration::ZERO)
+        );
     }
 
     // ── apply_peer_options ───────────────────────────────────────────────────
