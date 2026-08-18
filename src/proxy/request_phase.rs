@@ -1187,7 +1187,26 @@ pub(super) async fn upstream_peer(
         }
     }
 
-    let socket_addr = resolve_socket_addr(&addr_str).await?;
+    // Derive fallback timeout from `limits.timeoutSecs` on the matched site.
+    // Computed here (rather than only below, before `apply_peer_options`) so
+    // the same effective connect deadline also bounds DNS resolution below —
+    // otherwise a stalled resolver could hold a request open indefinitely
+    // with no timeout at all (CodeRabbit finding on PR #227).
+    let limits_timeout_secs = {
+        let cfg = proxy.state.config.load();
+        cfg.sites
+            .get(req_ctx.site_idx)
+            .and_then(|s| s.limits.as_ref())
+            .and_then(|l| l.timeout_secs)
+    };
+    let resolution_timeout = req_ctx
+        .proxy_timeout
+        .as_ref()
+        .and_then(|t| t.connect_ms)
+        .or_else(|| limits_timeout_secs.map(|s| s.saturating_mul(1000)))
+        .map(Duration::from_millis);
+
+    let socket_addr = resolve_socket_addr(&addr_str, resolution_timeout).await?;
     let mut peer = HttpPeer::new(socket_addr, tls, sni);
 
     // Negotiate HTTP/2 with the upstream when the route sets `http2: true`.
@@ -1215,15 +1234,6 @@ pub(super) async fn upstream_peer(
         // but explicit here for clarity).
         let _ = sni; // sni already used in HttpPeer::new above
     }
-
-    // Derive fallback timeout from `limits.timeoutSecs` on the matched site.
-    let limits_timeout_secs = {
-        let cfg = proxy.state.config.load();
-        cfg.sites
-            .get(req_ctx.site_idx)
-            .and_then(|s| s.limits.as_ref())
-            .and_then(|l| l.timeout_secs)
-    };
 
     apply_peer_options(
         &mut peer,
@@ -1803,11 +1813,32 @@ pub(super) fn resolve_peer_addr(
 /// `.unwrap()`s the result (panics on resolution failure) — unacceptable
 /// inside a per-request async hook. Resolving here first, then handing
 /// `HttpPeer::new` an already-concrete `SocketAddr`, sidesteps both.
-async fn resolve_socket_addr(addr_str: &str) -> pingora_core::Result<SocketAddr> {
+///
+/// `resolution_timeout` bounds the DNS lookup with the same effective
+/// connect deadline `apply_peer_options` derives for the connection itself
+/// (`proxy.*.timeout.connectMs`, falling back to `limits.timeoutSecs`) —
+/// without it, a stalled resolver could hold a request open indefinitely
+/// with no deadline at all (CodeRabbit finding on PR #227). `None` (no
+/// configured timeout at all) resolves without a deadline, matching
+/// `apply_peer_options`'s own "absent config = no enforced timeout" default.
+async fn resolve_socket_addr(
+    addr_str: &str,
+    resolution_timeout: Option<Duration>,
+) -> pingora_core::Result<SocketAddr> {
     if let Ok(addr) = addr_str.parse::<SocketAddr>() {
         return Ok(addr);
     }
-    let addrs = tokio::net::lookup_host(addr_str).await.map_err(|e| {
+    let lookup = tokio::net::lookup_host(addr_str);
+    let addrs = match resolution_timeout {
+        Some(d) => tokio::time::timeout(d, lookup).await.map_err(|_| {
+            pingora_core::Error::explain(
+                pingora_core::ErrorType::ConnectTimedout,
+                format!("DNS resolution timed out for upstream address {addr_str}"),
+            )
+        })?,
+        None => lookup.await,
+    }
+    .map_err(|e| {
         pingora_core::Error::explain(
             pingora_core::ErrorType::ConnectProxyFailure,
             format!("DNS resolution failed for upstream address {addr_str}: {e}"),
@@ -2556,13 +2587,13 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_socket_addr_ipv4_literal_fast_path() {
-        let addr = resolve_socket_addr("127.0.0.1:4000").await.unwrap();
+        let addr = resolve_socket_addr("127.0.0.1:4000", None).await.unwrap();
         assert_eq!(addr, "127.0.0.1:4000".parse().unwrap());
     }
 
     #[tokio::test]
     async fn resolve_socket_addr_ipv6_literal_fast_path() {
-        let addr = resolve_socket_addr("[::1]:4000").await.unwrap();
+        let addr = resolve_socket_addr("[::1]:4000", None).await.unwrap();
         assert_eq!(addr, "[::1]:4000".parse().unwrap());
     }
 
@@ -2572,7 +2603,7 @@ mod tests {
         // failed SocketAddr::parse and every request to such an upstream
         // would 502. localhost resolves via the OS hosts file/resolver
         // without needing network access, so this is safe to run in CI.
-        let addr = resolve_socket_addr("localhost:4000").await.unwrap();
+        let addr = resolve_socket_addr("localhost:4000", None).await.unwrap();
         assert!(
             addr.ip().is_loopback(),
             "localhost must resolve to a loopback address, got {addr}"
@@ -2582,10 +2613,43 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_socket_addr_unresolvable_hostname_returns_error() {
-        let result = resolve_socket_addr("this-host-does-not-exist.invalid:4000").await;
+        let result = resolve_socket_addr("this-host-does-not-exist.invalid:4000", None).await;
         assert!(
             result.is_err(),
             "an unresolvable hostname must return an error, not panic"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_socket_addr_ip_literal_ignores_zero_timeout() {
+        // The IP-literal fast path never touches the resolver at all, so
+        // even a timeout of 0 (which would fire instantly on any real DNS
+        // lookup) must not affect it — this is the "no behavior change for
+        // the previously-working case" guarantee from the PR description.
+        let addr = resolve_socket_addr("127.0.0.1:4000", Some(Duration::ZERO))
+            .await
+            .unwrap();
+        assert_eq!(addr, "127.0.0.1:4000".parse().unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resolve_socket_addr_hostname_respects_timeout() {
+        // CodeRabbit finding on PR #227: without a bound, a stalled resolver
+        // could hold the request open indefinitely. Racing a zero-duration
+        // timeout against a *real* DNS lookup would be flaky — `localhost`
+        // often resolves fast enough to win that race on some hosts (this
+        // was caught locally: the first version of this test used a real
+        // clock and failed non-deterministically). Using a paused virtual
+        // clock instead makes this deterministic: `tokio::net::lookup_host`
+        // runs on Tokio's blocking-thread pool, so it always returns
+        // `Poll::Pending` on its first poll — it cannot complete
+        // synchronously within that same poll. The zero-duration deadline
+        // has therefore already elapsed on the paused clock by the time
+        // `Timeout` checks it, so the timeout branch always wins.
+        let result = resolve_socket_addr("localhost:4000", Some(Duration::ZERO)).await;
+        assert!(
+            result.is_err(),
+            "a hostname lookup must respect an expired timeout, not block indefinitely"
         );
     }
 

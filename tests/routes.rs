@@ -64,17 +64,32 @@ fn routes_path_glob_matches() {
 #[test]
 #[serial]
 fn routes_hostname_upstream_resolves_and_proxies() {
+    fn serve_ok(listener: std::net::TcpListener) {
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let mut buf = [0u8; 4096];
+                std::io::Read::read(&mut s, &mut buf).ok();
+                let resp =
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK";
+                std::io::Write::write_all(&mut s, resp.as_bytes()).ok();
+            }
+        });
+    }
+
     let upstream_port = common::free_port();
-    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{upstream_port}")).expect("bind");
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut s) = stream else { continue };
-            let mut buf = [0u8; 4096];
-            std::io::Read::read(&mut s, &mut buf).ok();
-            let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK";
-            std::io::Write::write_all(&mut s, resp.as_bytes()).ok();
-        }
-    });
+    let listener_v4 =
+        std::net::TcpListener::bind(format!("127.0.0.1:{upstream_port}")).expect("bind v4");
+    serve_ok(listener_v4);
+    // Best-effort IPv6 listener on the same port. `pick_preferred_addr`
+    // deterministically prefers IPv4 when "localhost" resolves to both
+    // families, so this normally goes unused -- it only matters as a
+    // fallback on a host whose resolver returns *only* ::1 for "localhost"
+    // (no IPv4 loopback entry), where IPv4 preference has nothing to pick
+    // and the real resolved address is IPv6 (CodeRabbit finding on PR #227).
+    if let Ok(listener_v6) = std::net::TcpListener::bind(format!("[::1]:{upstream_port}")) {
+        serve_ok(listener_v6);
+    }
 
     let port = common::free_port();
     let admin_port = common::free_port();
