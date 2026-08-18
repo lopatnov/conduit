@@ -35,3 +35,7 @@ target
 /*.log
 /.mcp.json
 /.env
+
+# Reference clones of third-party projects (pingora, etc.) for source-reading
+# during research/design work. Cloned on demand, never committed.
+/.reference/
