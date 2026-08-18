@@ -12,7 +12,6 @@ use serial_test::serial;
 struct MockUpstream {
     port: u16,
     hits: Arc<AtomicUsize>,
-    label: &'static str,
 }
 
 impl MockUpstream {
@@ -39,7 +38,7 @@ impl MockUpstream {
                 });
             }
         });
-        MockUpstream { port, hits, label }
+        MockUpstream { port, hits }
     }
 
     fn url(&self) -> String {

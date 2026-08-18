@@ -139,18 +139,29 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 
 - [x] **X-Request-ID injection** — `XRequestIdGuard` в `filter/chain.rs`. UUID v4 если absent, forward если present. Первый guard в FilterChain.
 - [x] **Outlier Detection** — `outlierDetection: { consecutive5xx, baseEjectionTimeSecs, maxEjectionTimeSecs, maxEjectionPercent }`. `maybe_eject()` + `UpstreamEntry.ejected_until_secs/ejection_count`. Exponential backoff. Max ejection % enforcement.
-  **Caveat found 2026-08-03 (integrity audit, Step 1c)**: only actually tracks/ejects
-  when strategy is `LeastConn` or `healthCheck.maxConnectionsPerUpstream` is also set
-  (gated by `RequestCtx.proxy_upstream_url`) — no-ops for the other 6 strategies
-  otherwise, including the `RoundRobin` default. Tracked as a GitHub issue, not yet fixed.
-- [x] **Circuit Breaker** — `healthCheck.maxConnectionsPerUpstream: u64`. When ALL healthy upstreams ≥ limit → `LocalHandler::Overloaded` → 503 — this part holds for every strategy. 2 integration tests.
-  **Correction 2026-08-03 (integrity audit, Step 1c)**: "Works for all LB strategies"
-  was inaccurate — the *all-maxed → 503* case holds everywhere, but skipping a single
-  at-limit upstream in favor of under-capacity peers is only guaranteed for `LeastConn`
-  today (it always picks true min-load). `conn_inc_if_below()`/`pick_least_conn_with_max()`
-  are dead code (never called outside their own unit tests) — the real live mechanism is
-  inline in `router.rs` (`under_limit` computed then discarded, `:374-397`). Tracked as a
-  GitHub issue, not yet fixed.
+  **2026-08-03 caveat (found by integrity audit) — fixed 2026-08-17 by #214 (issue
+  #155)**: was gated behind `RequestCtx.proxy_upstream_url`, only populated for
+  `LeastConn`/circuit-tracking — #214 made it unconditional for every strategy, so this
+  now tracks/ejects for all 8 load-balance strategies.
+- [x] **Circuit Breaker** — `healthCheck.maxConnectionsPerUpstream: u64`. Enforced for
+  every load-balance strategy, across `proxy: {}`, `routes[]`, and `groups` — a request
+  only routes to an upstream currently under the cap; ALL healthy upstreams at/over it →
+  `LocalHandler::Overloaded` → 503. `IpHash`/`ConsistentHash` (incl. sticky) forward-probe
+  the unshrunk hash ring rather than filtering it, so only clients whose preferred peer is
+  saturated relocate. Soft limit (TOCTOU overshoot accepted, matches `retry.budgetPercent`).
+  New `src/proxy/capacity.rs` module (`Capacity`/`pick_bounded`) is the single evaluation
+  point shared by all three routing paths — `router.rs`/`routes.rs` never match on
+  `LoadBalanceStrategy` variants for capacity purposes, only `capacity.rs` does.
+  **2026-08-03 correction (integrity audit) — fixed 2026-08-17 (issue #156)**: "works for
+  all LB strategies" was inaccurate until this fix — only `LeastConn` (7/8 non-`LeastConn`
+  strategies, including `RoundRobin`, never re-checked `conn_load`). `conn_inc_if_below()`/
+  `pick_least_conn_with_max()` (the previously-dead mis-designed helpers) deleted outright
+  rather than reused. Also fixed as a documented side effect: `cache.earlyRefreshSecs`
+  (closed feature issue #31) was silently gated by the same `proxy_upstream_url` condition
+  and was already fixed by #214 before #156 started — no code change needed for it.
+  Follow-ups filed, not fixed in #156: #216 (retry attempts bypass the cap and undercount
+  `conn_count`), #217 (`routes[]` retry list not health/capacity-filtered), #218
+  (`failed_upstream_attempts` is write-only state).
 - [x] **Forward Auth** — `forwardAuth: { url, requestHeaders?, responseHeaders?, timeoutMs?, skipPaths? }`. `ForwardAuthGuard` (6d в chain). Subrequest через `reqwest::Client` singleton. 2xx=allow+inject headers, 4xx/5xx=deny, unreachable=fail closed. 5 integration tests.
 - [x] **Service Failover** — `ProxyRouteConfig.backup`. Когда все primary unhealthy → route to backup. Логика в `resolve_proxy()`.
 - [x] **Inflight request limit** — `LimitsConfig.maxInflightRequests`. `LimitsGuard` проверяет `inflight` перед прочими лимитами. 503 при превышении.
@@ -927,7 +938,7 @@ Tokio "full" features уже включены. Ключевые находки �
 - **Validation**: forwardAuth.url format, timeoutMs > 0, mirror URL format
 - **Admin API auth**: `global.admin.token` — Bearer token middleware via Axum `from_fn_with_state`
 - **Upstream TLS**: `upstreamTls: { verify, serverName }` in `ProxyRouteConfig` + `UpstreamTarget::Proxy`
-- **Circuit Breaker**: `healthCheck.maxConnectionsPerUpstream` → `LocalHandler::Overloaded` → 503 (all-maxed case, all strategies). Live per-upstream-skip mechanism is inline in `router.rs` (`under_limit` computed, `:374-397`) — reliable for `LeastConn` only. `conn_inc_if_below()`/`pick_least_conn_with_max()` in health.rs are dead code (not called from `router.rs`), despite the name suggesting they're the mechanism — corrected 2026-08-03 (integrity audit).
+- **Circuit Breaker**: `healthCheck.maxConnectionsPerUpstream` → `LocalHandler::Overloaded` → 503 (all-maxed case, all strategies). Per-upstream-skip mechanism now lives in `src/proxy/capacity.rs` (`Capacity`/`pick_bounded`) and works for every strategy, not just `LeastConn` — fixed 2026-08-17, issue #156 (see the dated backlog entry above for detail). The old inline `under_limit`-computed-then-discarded mechanism this note originally described no longer exists.
 - **JSON Schema sync**: `schema/conduit.schema.json` обновлён со всеми Phase 4 полями + новые $defs.
 - **conduit probe параллельный**: `std::thread::spawn` per URL, сортировка, ✓/✗, итог.
 - **Header Transform V2 (JWT templates)**: `{{ jwt.<claim> }}` в requestTransform.setHeaders. `extract_claims()` + `RequestCtx.jwt_claims` + `expand_jwt_templates()` pub(crate) в service.rs.
@@ -1295,3 +1306,53 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   локально, реальное покрытие 57–85% на всех 7 файлах.
   Итого за сессию: 8 PR смерджено в `main` (#193 на мигрейшн-ветку,
   #204-208 + #199/#200/#203 отдельно среди 12 dependabot).
+
+### Реализовано в сессии 2026-08-17 (часть 2 — issue #155 и #156, passive-health + circuit breaker)
+
+- **#155 закрыт** ([PR #214](https://github.com/lopatnov/conduit/pull/214), squash-merge
+  `1264312`) — `RequestCtx.proxy_upstream_url` теперь заполняется безусловно для любой
+  стратегии во всех трёх routing-путях (`resolve_proxy_routes`, `resolve_grouped`,
+  `routes.rs::full_cfg_to_result`), так что Peak EWMA/Outlier Detection/per-peer stats
+  реально работают вне `LeastConn`. Новое поле `RequestCtx.upstream_conn_slot: bool`
+  (зеркалируется на `router.rs::RouteResolution`) отдельно трекает, держит ли запрос
+  реальный `conn_count`-слот — иначе два маршрута на общий upstream (один `least-conn`,
+  другой нет) портили бы общий счётчик фантомными декрементами. 4 unit + 3 integration
+  теста, включая `attribution_only_route_does_not_corrupt_shared_conn_count`, которая
+  специально доказывает отсутствие этого фантомного декремента.
+- **#156 закрыт** (ветка `fix/circuit-breaker-capacity-enforcement-156`) — `maxConnectionsPerUpstream`
+  теперь реально enforced для всех 8 стратегий (issue называл 6, на деле было 7 —
+  `LeastResponseTime` тоже пропущен — плюс sticky-роуты, которые принудительно используют
+  `ConsistentHash`), и во всех трёх форматов конфига (`proxy: {}`, `routes[]`, `groups` —
+  `routes[]`/`groups` раньше вообще не имели circuit-breaker кода). Новый модуль
+  `src/proxy/capacity.rs`: `Capacity` enum (`Unlimited`/`Under`/`Exhausted`) + единая точка
+  диспетчеризации `pick_bounded`/`BoundedPick` — ни `router.rs`, ни `routes.rs` не матчатся
+  по вариантам `LoadBalanceStrategy` для целей capacity, весь match — только внутри
+  `capacity.rs` (сохраняет гарантию decision #22 "router.rs не трогать при добавлении
+  стратегии", а не нарушает её, как предполагал один из промежуточных планов).
+  Для `IpHash`/`ConsistentHash` — forward-probing по несужаемому hash-кольцу
+  (`hash_pick_bounded`), а не наивная фильтрация кандидатов: `pick_by_hash` — наивный
+  modulo, не настоящий hash ring с virtual nodes, так что сужение домена на один элемент
+  ремапнуло бы почти всех клиентов, а не только тех, чей peer выбыл — особенно опасно
+  здесь, поскольку conn_count меняется на каждый запрос (в отличие от health, который
+  меняется раз в ~10s). Cap — мягкий (soft limit, TOCTOU overshoot допустим, тот же
+  trade-off что и `retry.budgetPercent`). Мёртвый код `conn_inc_if_below`/
+  `pick_least_conn_with_max` (+ 4 их теста) удалён — после фикса живой механизм ровно
+  один. ~13 новых тестов (4 unit в `router.rs`, 3 unit в `routes.rs`, ~19 unit в новом
+  `capacity.rs`, 2 integration в `tests/upstream_health.rs`).
+  Попутно подтверждено и задокументировано: `cache.earlyRefreshSecs` (закрытый
+  feature-issue #31) был гейтирован тем же условием `proxy_upstream_url` и уже
+  автоматически починен побочным эффектом #214 — отдельного кода не потребовалось.
+  Найдены и заведены 3 отдельных issue, не в этот PR: **#216** (retry-попытки обходят
+  cap и недоучитываются в `conn_count`), **#217** (`routes[]` retry-список не
+  health/capacity-фильтрован), **#218** (`RequestCtx.failed_upstream_attempts` —
+  write-only состояние, doc-comment утверждал обратное — поправлен на месте).
+- **Процессная находка**: план для #156 прогонялся через `architect` дважды — первый
+  прогон (до мерджа #214, доступен только по моему пересказу в чате, не raw-отчёт) и
+  второй (после #214, свежий против актуального кода) разошлись в нескольких местах
+  (где жить диспетчеру стратегий, статус `cache.earlyRefreshSecs`, WeightedRoundRobin,
+  один PR vs отдельный PR C для `routes[]`/`groups`). Пользователь заметил расхождение и
+  остановил реализацию; потребовался третий, явно реконсиляционный прогон `architect`
+  с обоими планами целиком в промпте, который разрешил все 4 спорных пункта с
+  аргументацией и явно указал, где какой план был прав/неправ. Урок: не полагаться на
+  собственный пересказ прошлого agent-вызова как на источник истины, когда есть
+  расхождение с новым прогоном — давать обоим полный текст и просить явную реконсиляцию.

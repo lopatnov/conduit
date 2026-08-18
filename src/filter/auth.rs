@@ -143,6 +143,164 @@ pub fn check_api_key(cfg: &ApiKeyConfig, session: &Session) -> bool {
         .fold(false, |found, k| found | ct_eq_str(k, provided))
 }
 
+// ── Consumer model ─────────────────────────────────────────────────────────
+
+/// Attempt to identify the request's consumer from the configured list.
+///
+/// Evaluation order: consumers are checked in declaration order; the **first
+/// matching** consumer wins.  A consumer can use one of two credential types:
+///
+/// - **API key** — value in the `apiKeyHeader` request header (default:
+///   `x-api-key`).  Compared with [`ct_eq_str`] (constant-time).
+/// - **Basic Auth** — `Authorization: Basic <base64(username:password)>` where
+///   the username must equal `consumer.username`.
+///
+/// Returns `None` when no consumer matches (caller should return 401).
+#[cfg(feature = "consumers")]
+pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Option<&'a Consumer> {
+    let api_key_header = cfg.api_key_header.as_deref().unwrap_or("x-api-key");
+
+    // ── V3: Shared JWT — validate once, identify by claim value ───────────────
+    #[cfg(feature = "jwt")]
+    if let Some(ref shared) = cfg.shared_jwt {
+        if let Some(consumer) = check_shared_jwt_consumer(shared, &cfg.consumers, session) {
+            return Some(consumer);
+        }
+    }
+
+    cfg.consumers
+        .iter()
+        .find(|consumer| check_consumer_credentials(consumer, api_key_header, session))
+}
+
+/// Try to identify a consumer via the shared JWT (V3 / Auth0 / Cognito pattern).
+///
+/// Returns `Some(&Consumer)` when the JWT is valid and a matching consumer is
+/// found by the configured `username_claim` (default: `"sub"`).
+#[cfg(all(feature = "consumers", feature = "jwt"))]
+fn check_shared_jwt_consumer<'a>(
+    shared: &crate::config::schema::ConsumersSharedJwtConfig,
+    consumers: &'a [Consumer],
+    session: &Session,
+) -> Option<&'a Consumer> {
+    let jwt_cfg = build_jwt_auth_cfg(
+        shared.secret.clone(),
+        shared.jwks_url.clone(),
+        shared.audience.clone(),
+        shared.issuer.clone(),
+    );
+    let auth_hdr = session
+        .req_header()
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok());
+
+    let (jwt_result, maybe_claims) = jwt::check_jwt_extracting(&jwt_cfg, "", auth_hdr);
+    if let jwt::JwtCheckResult::Allowed = jwt_result {
+        if let Some(claims) = maybe_claims {
+            let claim_key = shared.username_claim.as_deref().unwrap_or("sub");
+            if let Some(serde_json::Value::String(sub)) = claims.get(claim_key) {
+                let sub = sub.clone();
+                return consumers.iter().find(|c| c.username == sub);
+            }
+        }
+    }
+    None
+}
+
+/// Check whether a request matches a single consumer's credentials.
+///
+/// Returns `true` when any credential matches (API key, Basic Auth, or JWT V2).
+#[cfg(feature = "consumers")]
+fn check_consumer_credentials(
+    consumer: &Consumer,
+    api_key_header: &str,
+    session: &Session,
+) -> bool {
+    // ── API key check ─────────────────────────────────────────────────────────
+    if let Some(ref expected_key) = consumer.api_key {
+        if let Some(provided) = session
+            .req_header()
+            .headers
+            .get(api_key_header)
+            .and_then(|v| v.to_str().ok())
+        {
+            if ct_eq_str(provided, expected_key.as_str()) {
+                return true;
+            }
+        }
+    }
+
+    // ── Basic Auth check ──────────────────────────────────────────────────────
+    if let Some(ref basic) = consumer.basic_auth {
+        if check_consumer_basic(&consumer.username, &basic.password, session) {
+            return true;
+        }
+    }
+
+    // ── JWT check (V2) — requires `jwt` feature ───────────────────────────────
+    #[cfg(feature = "jwt")]
+    if let Some(ref consumer_jwt) = consumer.jwt {
+        let jwt_cfg = build_jwt_auth_cfg(
+            consumer_jwt.secret.clone(),
+            consumer_jwt.jwks_url.clone(),
+            consumer_jwt.audience.clone(),
+            consumer_jwt.issuer.clone(),
+        );
+        let auth_hdr = session
+            .req_header()
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok());
+        if let jwt::JwtCheckResult::Allowed = jwt::check_jwt(&jwt_cfg, "", auth_hdr) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Validate `Authorization: Basic <b64>` against a consumer's username and password.
+#[cfg(feature = "consumers")]
+fn check_consumer_basic(username: &str, password: &str, session: &Session) -> bool {
+    let auth_header = session
+        .req_header()
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let (scheme, encoded) = auth_header.split_once(' ').unwrap_or(("", ""));
+    if !scheme.eq_ignore_ascii_case("Basic") {
+        return false;
+    }
+    let encoded = encoded.trim();
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok();
+    let decoded = match decoded {
+        Some(d) => d,
+        None => return false,
+    };
+    let decoded_str = match std::str::from_utf8(&decoded) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    // Format: "username:password" — split only on the first colon.
+    let (provided_user, provided_pass) = match decoded_str.split_once(':') {
+        Some(pair) => pair,
+        None => return false,
+    };
+
+    // Evaluate both comparisons unconditionally (bitwise AND, not &&) to prevent
+    // username-validity leakage via timing: `&&` would skip the password check
+    // when the username fails, creating a measurable timing difference.
+    let user_ok = ct_eq_str(provided_user, username);
+    let pass_ok = ct_eq_str(provided_pass, password);
+    user_ok & pass_ok
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,158 +511,4 @@ mod tests {
         );
         assert_eq!(cfg.issuer.as_deref(), Some("https://auth.example.com/"));
     }
-}
-
-// ── Consumer model ─────────────────────────────────────────────────────────
-
-/// Attempt to identify the request's consumer from the configured list.
-///
-/// Evaluation order: consumers are checked in declaration order; the **first
-/// matching** consumer wins.  A consumer can use one of two credential types:
-///
-/// - **API key** — value in the `apiKeyHeader` request header (default:
-///   `x-api-key`).  Constant-time comparison (`==`) is used.
-/// - **Basic Auth** — `Authorization: Basic <base64(username:password)>` where
-///   the username must equal `consumer.username`.
-///
-/// Returns `None` when no consumer matches (caller should return 401).
-#[cfg(feature = "consumers")]
-pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Option<&'a Consumer> {
-    let api_key_header = cfg.api_key_header.as_deref().unwrap_or("x-api-key");
-
-    // ── V3: Shared JWT — validate once, identify by claim value ───────────────
-    #[cfg(feature = "jwt")]
-    if let Some(ref shared) = cfg.shared_jwt {
-        if let Some(consumer) = check_shared_jwt_consumer(shared, &cfg.consumers, session) {
-            return Some(consumer);
-        }
-    }
-
-    cfg.consumers
-        .iter()
-        .find(|consumer| check_consumer_credentials(consumer, api_key_header, session))
-}
-
-/// Try to identify a consumer via the shared JWT (V3 / Auth0 / Cognito pattern).
-///
-/// Returns `Some(&Consumer)` when the JWT is valid and a matching consumer is
-/// found by the configured `username_claim` (default: `"sub"`).
-#[cfg(all(feature = "consumers", feature = "jwt"))]
-fn check_shared_jwt_consumer<'a>(
-    shared: &crate::config::schema::ConsumersSharedJwtConfig,
-    consumers: &'a [Consumer],
-    session: &Session,
-) -> Option<&'a Consumer> {
-    let jwt_cfg = build_jwt_auth_cfg(
-        shared.secret.clone(),
-        shared.jwks_url.clone(),
-        shared.audience.clone(),
-        shared.issuer.clone(),
-    );
-    let auth_hdr = session
-        .req_header()
-        .headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok());
-
-    let (jwt_result, maybe_claims) = jwt::check_jwt_extracting(&jwt_cfg, "", auth_hdr);
-    if let jwt::JwtCheckResult::Allowed = jwt_result {
-        if let Some(claims) = maybe_claims {
-            let claim_key = shared.username_claim.as_deref().unwrap_or("sub");
-            if let Some(serde_json::Value::String(sub)) = claims.get(claim_key) {
-                let sub = sub.clone();
-                return consumers.iter().find(|c| c.username == sub);
-            }
-        }
-    }
-    None
-}
-
-/// Check whether a request matches a single consumer's credentials.
-///
-/// Returns `true` when any credential matches (API key, Basic Auth, or JWT V2).
-#[cfg(feature = "consumers")]
-fn check_consumer_credentials(
-    consumer: &Consumer,
-    api_key_header: &str,
-    session: &Session,
-) -> bool {
-    // ── API key check ─────────────────────────────────────────────────────────
-    if let Some(ref expected_key) = consumer.api_key {
-        if let Some(provided) = session
-            .req_header()
-            .headers
-            .get(api_key_header)
-            .and_then(|v| v.to_str().ok())
-        {
-            if ct_eq_str(provided, expected_key.as_str()) {
-                return true;
-            }
-        }
-    }
-
-    // ── Basic Auth check ──────────────────────────────────────────────────────
-    if let Some(ref basic) = consumer.basic_auth {
-        if check_consumer_basic(&consumer.username, &basic.password, session) {
-            return true;
-        }
-    }
-
-    // ── JWT check (V2) — requires `jwt` feature ───────────────────────────────
-    #[cfg(feature = "jwt")]
-    if let Some(ref consumer_jwt) = consumer.jwt {
-        let jwt_cfg = build_jwt_auth_cfg(
-            consumer_jwt.secret.clone(),
-            consumer_jwt.jwks_url.clone(),
-            consumer_jwt.audience.clone(),
-            consumer_jwt.issuer.clone(),
-        );
-        let auth_hdr = session
-            .req_header()
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok());
-        if let jwt::JwtCheckResult::Allowed = jwt::check_jwt(&jwt_cfg, "", auth_hdr) {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Validate `Authorization: Basic <b64>` against a consumer's username and password.
-#[cfg(feature = "consumers")]
-fn check_consumer_basic(username: &str, password: &str, session: &Session) -> bool {
-    let auth_header = session
-        .req_header()
-        .headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    let encoded = auth_header.strip_prefix("Basic ").unwrap_or("").trim();
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .ok();
-    let decoded = match decoded {
-        Some(d) => d,
-        None => return false,
-    };
-    let decoded_str = match std::str::from_utf8(&decoded) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-
-    // Format: "username:password" — split only on the first colon.
-    let (provided_user, provided_pass) = match decoded_str.split_once(':') {
-        Some(pair) => pair,
-        None => return false,
-    };
-
-    // Evaluate both comparisons unconditionally (bitwise AND, not &&) to prevent
-    // username-validity leakage via timing: `&&` would skip the password check
-    // when the username fails, creating a measurable timing difference.
-    let user_ok = ct_eq_str(provided_user, username);
-    let pass_ok = ct_eq_str(provided_pass, password);
-    user_ok & pass_ok
 }

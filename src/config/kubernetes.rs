@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn build_app_config_multiple_sites() {
-        let sites = vec![
+        let sites = [
             make_crd("site-a", make_spec(8080, Some("a.example.com"))),
             make_crd("site-b", make_spec(8081, Some("b.example.com"))),
         ];

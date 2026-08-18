@@ -39,9 +39,11 @@ proxy:
       healthyThreshold: 1
 
       # ── Circuit Breaker ─────────────────────────────────────────────────────
-      # When ALL three upstreams hit 100 concurrent connections each, Conduit
-      # stops routing new requests to them and immediately returns 503.
-      # This prevents a slow upstream from exhausting connection pools.
+      # Enforced for every strategy, not just least-conn (used here): a
+      # single upstream hitting 100 concurrent connections is skipped in
+      # favor of upstreams still under the cap. When ALL three hit the cap,
+      # Conduit stops routing new requests to them and immediately returns
+      # 503. This prevents a slow upstream from exhausting connection pools.
       maxConnectionsPerUpstream: 100
 
     # ── Failover ──────────────────────────────────────────────────────────────

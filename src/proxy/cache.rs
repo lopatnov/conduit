@@ -740,7 +740,7 @@ mod tests {
                 .unwrap_or_default()
                 .as_secs();
             assert!(
-                fresh_secs >= 115 && fresh_secs <= 125,
+                (115..=125).contains(&fresh_secs),
                 "s-maxage=120 must override config ttl=60; got ~{fresh_secs}s"
             );
         }

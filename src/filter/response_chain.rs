@@ -563,6 +563,21 @@ impl ResponseFilter for MiddlewareResponseFilter {
     }
 }
 
+/// Apply header mutations to a Pingora response header.
+#[cfg(any(feature = "rhai", feature = "wasm"))]
+fn apply_response_mutations(
+    resp: &mut ResponseHeader,
+    added: Vec<(String, String)>,
+    removed: Vec<String>,
+) {
+    for name in removed {
+        resp.remove_header(&name);
+    }
+    for (name, value) in added {
+        let _ = resp.insert_header(name.clone(), value.as_str());
+    }
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1421,20 +1436,5 @@ mod tests {
             1,
             "chunked must appear exactly once: {val}"
         );
-    }
-}
-
-/// Apply header mutations to a Pingora response header.
-#[cfg(any(feature = "rhai", feature = "wasm"))]
-fn apply_response_mutations(
-    resp: &mut ResponseHeader,
-    added: Vec<(String, String)>,
-    removed: Vec<String>,
-) {
-    for name in removed {
-        resp.remove_header(&name);
-    }
-    for (name, value) in added {
-        let _ = resp.insert_header(name.clone(), value.as_str());
     }
 }

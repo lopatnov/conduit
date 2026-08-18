@@ -47,8 +47,10 @@ jobs:
         # they have no [features] of their own, so this job (matrix'd across
         # all 3 OSes) is where they get exercised; ci-features/ci-standard
         # stay root-package-only since those exist to test feature combos the
-        # member crates don't have.
-        run: cargo clippy --workspace -- -D warnings
+        # member crates don't have. --tests lints #[cfg(test)] code too (#219) --
+        # without it, cfg(test) never activates and inline test blocks are
+        # silently never linted at all.
+        run: cargo clippy --workspace --tests -- -D warnings
 
       - name: test
         run: cargo test --workspace
@@ -74,7 +76,7 @@ jobs:
         continue-on-error: true
 
       - name: clippy (all features)
-        run: cargo clippy --features full -- -D warnings
+        run: cargo clippy --features full --tests -- -D warnings
 
       - name: test (all features)
         run: cargo test --features full
@@ -102,7 +104,7 @@ jobs:
         continue-on-error: true  # transient cache failures must not abort the build
 
       - name: clippy (standard features)
-        run: cargo clippy --features standard -- -D warnings
+        run: cargo clippy --features standard --tests -- -D warnings
 
       - name: test (standard features)
         run: cargo test --features standard

@@ -62,7 +62,7 @@ fn response_time_value_is_numeric_ms() {
     );
     let ms: f64 = numeric.parse().unwrap();
     assert!(
-        ms >= 0.0 && ms < 60_000.0,
+        (0.0..60_000.0).contains(&ms),
         "X-Response-Time value unreasonable: {ms} ms"
     );
 }

@@ -129,8 +129,6 @@ fn server_with_tls() -> (common::TestServer, std::path::PathBuf, std::path::Path
         }),
     );
     // Keep dir alive by leaking it (test process exits shortly after anyway).
-    let cert_path = cert_path;
-    let key_path = key_path;
     std::mem::forget(dir);
     (srv, cert_path, key_path)
 }

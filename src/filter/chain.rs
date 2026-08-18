@@ -310,7 +310,7 @@ impl RequestFilter for LimitsGuard {
             return Ok(FilterOutcome::Handled);
         }
 
-        // Request header count limit.
+        // Request header count limit. `>`, not `>=` — exactly max_hdrs headers is allowed.
         if let Some(max_hdrs) = self.cfg.max_request_headers {
             let count = ctx.session.req_header().headers.len() as u32;
             if count > max_hdrs {
@@ -1267,18 +1267,6 @@ mod tests {
             let has_bad = h.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0);
             assert!(!has_bad, "expected normal host to pass: {h:?}");
         }
-    }
-
-    // ── maxRequestHeaders ────────────────────────────────────────────────────
-
-    #[test]
-    fn max_request_headers_threshold() {
-        // Verify the comparison logic used inside LimitsGuard.
-        assert!(50u32 > 49u32, "50 headers should exceed limit of 49");
-        assert!(
-            !(50u32 > 50u32),
-            "50 headers at limit should not exceed limit of 50"
-        );
     }
 
     // ── limits_rejection body/header messages ─────────────────────────────────

@@ -125,10 +125,14 @@ pub struct RequestCtx {
     /// Failed upstream attempts that need EWMA/health tracking after a retry.
     ///
     /// When `RetryOnErrorFilter` fires `RetryUpstream`, the current upstream's
-    /// URL and status are pushed here before clearing `proxy_upstream_url`.
-    /// `logging()` iterates this list to record latency and ejection status for
-    /// each failed attempt — preventing the "won by retry" blind-spot where a
-    /// successful final attempt masks prior 5xx failures.
+    /// URL and status are pushed here before clearing `proxy_upstream_url` —
+    /// the actual latency/ejection recording for each failed attempt happens
+    /// inline, at the point of failure, in `record_failed_upstream_for_retry`.
+    ///
+    /// Currently write-only: nothing reads this field outside its own tests.
+    /// It exists for potential future use (e.g. surfacing retry history in
+    /// structured access logs) — see issue #218 for the decision on whether
+    /// to wire it up or remove it.
     pub failed_upstream_attempts: Vec<(String, u16)>,
     /// Age in seconds to inject as the `Age` response header for cache hits.
     ///
