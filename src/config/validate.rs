@@ -3,6 +3,8 @@ use std::time::{Duration, SystemTime};
 
 use url::Url as ParsedUrl;
 
+pub use conduit_config_core::validation::ValidationError;
+
 use crate::config::schema::{
     ApiKeyConfig, AppConfig, Consumer, ConsumerJwtConfig, ConsumersSharedJwtConfig, FallbackConfig,
     IpFilterConfig, LoadBalanceStrategy, MetricsConfig, MiddlewareEntry, ProxyConfig,
@@ -11,21 +13,6 @@ use crate::config::schema::{
 };
 
 // ── Public API ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, PartialEq, Clone, serde::Serialize)]
-pub struct ValidationError {
-    pub path: String,
-    pub message: String,
-}
-
-impl ValidationError {
-    fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            path: path.into(),
-            message: message.into(),
-        }
-    }
-}
 
 pub fn validate(config: &AppConfig) -> Vec<ValidationError> {
     let mut errors = Vec::new();
