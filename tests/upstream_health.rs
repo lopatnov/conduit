@@ -704,11 +704,14 @@ fn circuit_breaker_round_robin_skips_saturated_upstream_with_multiple_targets() 
     });
     std::thread::sleep(Duration::from_millis(200)); // let it register as in-flight
 
-    // Foreground requests must all land on `fast` — a short client timeout
-    // means a request that (incorrectly) got routed to the still-busy `slow`
-    // upstream fails fast instead of hanging the test for 3s.
+    // Foreground requests must all land on `fast`. The client timeout is set
+    // above SlowUpstream's 3s hold (not below it): if the background
+    // request's slot hasn't registered yet when the loop starts, a still-
+    // correctly-routed request could legitimately land on `slow` — a short
+    // timeout would then panic on a timing race rather than a real bug.
+    // `fast.hit_count()` below is the actual detector either way.
     let fg_client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(800))
+        .timeout(Duration::from_millis(4000))
         .build()
         .unwrap();
     for i in 0..4 {
@@ -764,8 +767,11 @@ fn routes_array_honors_max_connections_per_upstream() {
     });
     std::thread::sleep(Duration::from_millis(200));
 
+    // See the comment on the equivalent fg_client above: timeout stays above
+    // SlowUpstream's 3s hold so a timing-race pick doesn't panic the test
+    // instead of failing the real fast.hit_count() assertion below.
     let fg_client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(800))
+        .timeout(Duration::from_millis(4000))
         .build()
         .unwrap();
     for i in 0..4 {
