@@ -168,9 +168,9 @@ fn sha1(data: &[u8]) -> [u8; 20] {
     msg.extend_from_slice(&bit_len.to_be_bytes());
 
     // Process each 512-bit block.
-    for block in msg.chunks_exact(64) {
+    for block in msg.as_chunks::<64>().0 {
         let mut w = [0u32; 80];
-        for (i, chunk) in block.chunks_exact(4).enumerate() {
+        for (i, chunk) in block.as_chunks::<4>().0.iter().enumerate() {
             w[i] = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
         for i in 16..80 {
