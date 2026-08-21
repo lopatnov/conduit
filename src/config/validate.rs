@@ -733,6 +733,9 @@ fn validate_consumer_entry(
             ));
         }
     }
+    if let Some(ref rl) = c.rate_limit {
+        validate_rate_limit(rl, &entry_prefix, errors);
+    }
 }
 
 /// Validate a consumer-level JWT config block.
@@ -2467,6 +2470,25 @@ mod tests {
         assert!(
             e.iter().any(|err| err.path.contains("basicAuth")),
             "empty basicAuth password must be rejected: {e:?}"
+        );
+    }
+
+    #[test]
+    fn consumer_zero_rate_limit_is_rejected() {
+        // limit=0/windowSecs=0 would silently lock this consumer out of every
+        // request (TokenBucket::new(0, 0) starts with zero capacity) with no
+        // config-time error — same class of bug as the site-level rateLimit
+        // checks above, now enforced for consumer-level rateLimit too.
+        let e = errs(
+            r#"{ "port": 8080,
+                 "consumers": { "consumers": [
+                     { "username": "alice", "apiKey": "key",
+                       "rateLimit": { "limit": 0, "windowSecs": 0 } }
+                 ] } }"#,
+        );
+        assert!(
+            e.iter().any(|err| err.path.contains("rateLimit")),
+            "consumer rateLimit of 0 must be rejected: {e:?}"
         );
     }
 

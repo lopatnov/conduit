@@ -552,7 +552,8 @@ impl RequestFilter for RateLimitGuard {
 /// Consumer-model authentication guard.
 ///
 /// Identifies the caller by checking configured consumers' credentials
-/// (API key or Basic Auth) in declaration order.  On success:
+/// (API key, Basic Auth, per-consumer JWT, or shared JWT) in declaration
+/// order.  On success:
 ///   - Injects `X-Consumer-ID: <username>` (or the configured `idHeader`)
 ///   - Applies per-consumer rate limit using the shared limiter
 ///   - Injects any per-consumer custom headers

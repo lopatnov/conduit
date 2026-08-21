@@ -92,7 +92,7 @@
 request_filter()
   ├─ inflight++, active_connections.inc()
   ├─ FilterChain: XRequestIdGuard → IpGuard → CorsPreflight → HealthBypass → LimitsGuard
-  │              → RateLimitGuard → BasicAuthGuard → ApiKeyGuard → JwtGuard (6c)
+  │              → RateLimitGuard → ConsumersGuard (6) → BasicAuthGuard → ApiKeyGuard → JwtGuard (6c)
   │              → ForwardAuthGuard (6d) → RedirectGuard → FaultInjectionGuard
   │              → MiddlewareGuard (Rhai + WASM in order)
   ├─ Per-route rate limit check (post-routing, key "route:{key}:{ip}")
