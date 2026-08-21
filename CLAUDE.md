@@ -83,6 +83,12 @@
 27. **MiddlewareGuard** — объединяет Rhai ("script") и WASM ("wasm") в `src/filter/chain.rs`. Порядок entries соблюдается. `ScriptGuard` = type alias для совместимости.
 28. **CGI** — не входит в Conduit, отдельный проект.
 29. **Тесты** — port 0, rcgen, serial_test для Admin API, mock = `TcpListener` без Axum.
+30. **`RequestCtx` per-request state (Conduit 2.0 migration, #114)** — поля остаются в корневом крейте
+    (status quo), НЕ выносятся в type-erased extension slot и НЕ через отдельный trait в `conduit-core`.
+    Каждое feature-specific поле — через `#[cfg(feature = "x")]` по образцу уже существующих
+    `otel_span`/`early_refresh_upstream_url`. Решение пользователя 2026-08-21 по итогам `architect`-аудита
+    Phase 2 facade-checkpoint (issue #128) — снимает блокировку с #129 (`conduit-otlp`) и последующих
+    #131/#133/#135/#141/#142. Не пересматривать без явного обсуждения (см. заголовок раздела).
 
 ---
 
