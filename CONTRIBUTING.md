@@ -6,6 +6,7 @@ Thank you for your interest in contributing! This document explains how to get s
 
 - [Development Setup](#development-setup)
 - [Project Structure](#project-structure)
+- [Cargo Workspace Crate Extraction Recipe](#cargo-workspace-crate-extraction-recipe)
 - [Running Tests](#running-tests)
 - [Code Style](#code-style)
 - [Submitting Changes](#submitting-changes)
@@ -98,6 +99,72 @@ src/
     ├── path.rs          path utilities
     └── net.rs           network utilities
 ```
+
+---
+
+## Cargo Workspace Crate Extraction Recipe
+
+Conduit 2.0 (issue [#114](https://github.com/lopatnov/conduit/issues/114)) moves each
+Cargo feature into its own workspace member crate under `crates/`. Every extraction —
+`conduit-otlp`, `conduit-acme`, `conduit-auth-jwt`, ... — follows the same recipe, derived
+from how `conduit-core` ([#126](https://github.com/lopatnov/conduit/issues/126)) and
+`conduit-config-core` ([#127](https://github.com/lopatnov/conduit/issues/127)) were
+actually built and independently audited. Read this before extracting a new crate,
+whether by hand or via the `crate-extractor` agent.
+
+### The four rules
+
+1. **Re-export at the original location.** Every relocated item gets a `pub use` at its
+   original file (and, where practical, its original line) in the root crate — e.g.
+   `src/config/schema.rs` still has `CONFIG_VERSION` at the same line it always did, now
+   as `pub use conduit_config_core::parse::CONFIG_VERSION;`. This is what keeps
+   `conduit::`-prefixed paths — and therefore every existing integration test — compiling
+   unchanged. Never do one blanket top-level re-export (`pub use conduit_x as x;` in
+   `lib.rs`) — if the root already has a real module at that name (e.g. `conduit::config`
+   holding `AppConfig`/`SiteConfig`), a blanket re-export conflicts with it instead of
+   extending it.
+
+2. **Generic-in-crate, bound-by-type-alias-in-root.** If the extracted item became generic
+   over the config payload type (because the member crate can't know about `AppConfig`),
+   root binds it: `pub type X = crate_x::X<AppConfig>;` plus a constructor that injects any
+   root-only policy (a validator closure, etc.). See `Provider<C>`/`FileProvider<C>` in
+   `crates/README.md` for the worked example. Path preserved; signature intentionally
+   changed — record that as a deliberate break, don't pretend it's transparent.
+
+3. **Schema-bound wrapper, same name and signature.** If the extracted item is generic
+   *and* root's version does extra schema-specific work on top, keep a wrapper in root with
+   the **identical pre-migration name and signature** that calls the generic version and
+   then does the schema step — e.g. `src/config/parse.rs`'s `load_config`/`from_str`/
+   `from_yaml` call `conduit_config_core::parse::{load_file, from_json_str, from_yaml_str}`
+   and then `normalize()` into `AppConfig`.
+
+4. **Anything not re-exported must be `pub(crate)`, not `pub`.** A member crate's `pub` API
+   is a semver commitment once these crates start publishing to crates.io (see the
+   `crates.io publishing` risk in [#114](https://github.com/lopatnov/conduit/issues/114)).
+   Before merging an extraction, grep the new crate for `pub fn`/`pub struct`/`pub enum`
+   and confirm each either has a re-export site in root or is genuinely meant to be public
+   API — don't leave something `pub` just because it compiles. (This rule exists because
+   `conduit_core::filter::path::path_matches` was accidentally hoisted from `pub(crate)` to
+   `pub` during the `conduit-core` extraction and caught only in a later audit — see
+   `crates/conduit-core/src/filter/path.rs`.)
+
+### Two things that are *not* part of the recipe (deliberately)
+
+- **`conduit-core` dependency is opt-in, not automatic.** Only depend on
+  `lopatnov-conduit-core` if the new crate implements a chain trait (`RequestFilter`,
+  `ResponseFilter`) and therefore needs `&mut Session`/pingora types. A crate with no
+  request-lifecycle behavior (like `conduit-otlp`'s tracer init) takes primitives
+  (`&str`, `u16`, ...) instead and has no pingora dependency at all.
+- **Chain assembly and ordering stay in the root crate.** `src/filter/chain.rs` decides
+  guard order (see `CLAUDE.md` decision #20); a feature crate exports a filter
+  implementation and a constructor, never a chain position.
+
+### Watch for name collisions during extraction
+
+Two functions can share a name and *look* like duplication candidates without being
+duplicates — e.g. `conduit_core::filter::path::path_matches` (exact-only fallback) vs.
+`src/proxy/cache.rs`'s private `path_matches` (prefix-matches even without `/**`). Check
+behavior, not just the signature, before "deduplicating" anything found this way.
 
 ---
 

@@ -13,7 +13,13 @@ pub fn is_path_skipped(skip_paths: Option<&[String]>, path: &str) -> bool {
     paths.iter().any(|p| path_matches(p, path))
 }
 
-pub fn path_matches(pattern: &str, path: &str) -> bool {
+// Not `pub`: pre-migration this was `pub(crate)`, and root's own
+// `src/proxy/cache.rs` has an unrelated private `path_matches` with
+// materially different semantics (its glob prefix-matches even without a
+// trailing `/**`) — widening this to a crate-published API surface would
+// be an accidental semver commitment once member crates start publishing
+// to crates.io (issue #114, Phase-2 facade-checkpoint audit).
+fn path_matches(pattern: &str, path: &str) -> bool {
     if let Some(prefix) = pattern.strip_suffix("/**") {
         path == prefix || path.starts_with(&format!("{prefix}/"))
     } else {
