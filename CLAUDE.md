@@ -1365,3 +1365,56 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   аргументацией и явно указал, где какой план был прав/неправ. Урок: не полагаться на
   собственный пересказ прошлого agent-вызова как на источник истины, когда есть
   расхождение с новым прогоном — давать обоим полный текст и просить явную реконсиляцию.
+
+### Реализовано в сессии 2026-08-21 (Phase 2 facade re-audit + RequestCtx decision #30)
+
+- **[PR #230](https://github.com/lopatnov/conduit/pull/230)
+  `chore(workspace): Phase 2 facade audit follow-up + crate-extraction recipe`**
+  (ветка `chore/phase2-cleanup-recipe-114` → `claude/cargo-workspace-features-23qxfr`,
+  squash-merge `0f6b921`) — по итогам независимого `architect`-аудита Phase 2
+  (Layer-0 crate extraction) facade-checkpoint (issue #128, закрыт ранее): фасад
+  реально держит форму, но найдены 2 небольших пробела + 1 недодокументированный
+  паттерн. Исправлено: `conduit_core::filter::path::path_matches` был случайно
+  расширен с `pub(crate)` (до миграции) до `pub` при извлечении `conduit-core`
+  (#126) без единого re-export — вернули `pub(crate)` (единственный вызывающий —
+  `is_path_skipped`, тот же модуль); задокументирована коллизия имён с
+  `src/proxy/cache.rs`'s собственным `path_matches` (иная семантика — префиксное
+  совпадение без `/**`); `Provider<C>` задокументирован в `crates/README.md` как
+  намеренный слом API 2.0; новый раздел "Cargo Workspace Crate Extraction Recipe"
+  в `CONTRIBUTING.md` (4 правила извлечения крейтов — раньше не существовал нигде,
+  хотя агент `crate-extractor` в своём же описании ссылался на него).
+- **`CLAUDE.md` decision #30** — `RequestCtx` per-request state: поля остаются в
+  корневом крейте (status quo), НЕ через type-erased extension slot и НЕ через
+  отдельный trait в `conduit-core`. Каждое feature-specific поле — через
+  `#[cfg(feature = "x")]`, по образцу уже существующих `otel_span`/
+  `early_refresh_upstream_url`. Решение пользователя, снимает блокировку с #129
+  (`conduit-otlp`) и последующих #131/#133/#135/#141/#142.
+- **[PR #231](https://github.com/lopatnov/conduit/pull/231)
+  `fix(tests): unblock CI after Rust 1.98.0 toolchain-lint upgrade`** (ветка
+  `fix/clippy-chunks-exact-lint-main` → `main`, squash-merge `9d3d1e6`) — CI-раннеры
+  подхватили Rust 1.98.0 с двумя новыми clippy-линтами под `-D warnings`, ломающими
+  несвязанный код: `clippy::chunks_exact_to_as_chunks` в SHA-1 test helper'е
+  `tests/websocket.rs` (`chunks_exact(N)` → `as_chunks::<N>().0`, поведенчески
+  идентично — проверено на `sha1_rfc6455_test_vector`) и `clippy::result_large_err`
+  в `src/upload/server.rs` (`#[allow]` на `process_upload_field`/
+  `save_upload_file`, по образцу уже существующего на `check_mime_type` в том же
+  файле). Идентичные фиксы применены на обеих ветках (`main` через #231, миграционная
+  ветка — прямо в #230, т.к. содержала тот же непочиненный код).
+  Обе PR прошли обязательный `security-engineer` gate (оба PASS, вердикты записаны
+  комментариями на PR). CodeRabbit на #230 упёрся в собственный review-rate-limit
+  ("next review available in 58 minutes") — пользователь явно разрешил не ждать;
+  Gitar одобрил оба PR ("No issues found").
+- **Отдельно найден и исправлен процессный gap**: "Dependabot & branch hygiene
+  reflex check" простаивал >24ч (последняя запись 2026-08-18) — прогнан вручную
+  (0 открытых Dependabot PR, orphan-веток нет за пределами собственной работы этой
+  сессии), залогирован отдельной строкой в таблице выше.
+- Миграционная ветка синхронизирована с `main` после мерджа #231 (merge, без
+  конфликтов — идентичные фиксы в обоих файлах), `cargo build --workspace` +
+  `cargo test --workspace` зелёные после синка.
+- **Запланировано пользователем**: 17 разовых (`run_once_at`) вызовов
+  `/feature-workspace-cycle` каждые ~5 часов с 2026-08-21 20:00 UTC по
+  2026-08-25 19:00 UTC (self-bind в эту же сессию, как и штатный ежедневный
+  Routine) — 3 слота из исходных 20 пропущены намеренно из-за коллизии по времени
+  с уже существующими Routine (штатный ежедневный `feature-workspace-cycle` в
+  01:00 UTC, `Mise /evolve` в 06:00 UTC, `doc2html` QA в 11:00 UTC 2026-08-22),
+  чтобы не создавать одновременные срабатывания на один и тот же слот сессии.
