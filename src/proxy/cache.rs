@@ -277,6 +277,14 @@ fn parse_cc_directive(resp: &ResponseHeader, directive: &str) -> u32 {
 /// Patterns ending with `/**` match the prefix itself and all sub-paths.
 /// Everything else is an exact prefix match (path == pattern or
 /// path starts with `pattern/`).
+///
+/// NOT the same as `conduit_core::filter::path::path_matches` (issue #114,
+/// Phase-2 audit) — that one falls through to an *exact-only* match when
+/// there's no `/**` suffix, so `path_matches("/api/auth", "/api/auth/login")`
+/// is `true` here but `false` there. Don't "deduplicate" these without
+/// checking `noCachePaths` vs. `skipPaths` callers actually want the same
+/// semantics; #135 (extracting `conduit-cache`) is where this collision
+/// will next come up.
 fn path_matches(pattern: &str, path: &str) -> bool {
     let prefix = pattern.strip_suffix("/**").unwrap_or(pattern);
     path == prefix

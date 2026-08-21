@@ -98,6 +98,10 @@ async fn upload_handler(
 /// Process a single multipart field: validate type, check sizes, write to disk.
 ///
 /// Returns `Ok(json_entry)` on success or `Err(error_response)` on rejection.
+// `Response` as the Err type is the idiomatic Axum short-circuit-to-HTTP-error
+// pattern used throughout this file (via `err_response()` and `?`) -- boxing
+// it would only add an allocation on the error path without changing behavior.
+#[allow(clippy::result_large_err)]
 async fn process_upload_field(
     field: axum::extract::multipart::Field<'_>,
     cfg: &crate::config::schema::UploadConfig,
@@ -185,6 +189,8 @@ fn check_mime_type(
 }
 
 /// Write `data` to a new UUID-named file under `dir` and return the file name.
+// See `process_upload_field`'s allow above -- same idiomatic pattern.
+#[allow(clippy::result_large_err)]
 async fn save_upload_file(dir: &str, original_name: &str, data: &[u8]) -> Result<String, Response> {
     let ext = Path::new(original_name)
         .extension()
