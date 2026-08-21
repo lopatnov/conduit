@@ -872,6 +872,124 @@ mod consumers_tests {
     }
 
     #[test]
+    fn consumers_basic_auth_x_consumer_id_injected() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{Arc, Mutex};
+
+        let captured = Arc::new(Mutex::new(String::new()));
+        let cap_clone = captured.clone();
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in upstream.incoming() {
+                let Ok(mut s) = stream else { break };
+                let cap = cap_clone.clone();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    *cap.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+                });
+            }
+        });
+
+        let port = common::free_port();
+        let admin_port = common::free_port();
+        let srv = common::TestServer::start_with_config(
+            port,
+            admin_port,
+            serde_json::json!({
+                "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+                "sites": [{
+                    "port": port,
+                    "proxy": format!("http://{upstream_addr}"),
+                    "consumers": {
+                        "consumers": [
+                            { "username": "carol", "basicAuth": { "password": "carol-pass" } }
+                        ]
+                    }
+                }]
+            }),
+        );
+
+        plain_client()
+            .get(srv.url("/"))
+            .header("authorization", basic_header("carol", "carol-pass"))
+            .send()
+            .expect("GET /");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let req_text = captured.lock().unwrap().clone();
+        assert!(
+            req_text
+                .to_ascii_lowercase()
+                .contains("x-consumer-id: carol"),
+            "X-Consumer-ID header must be injected for Basic Auth consumer; got:\n{req_text}"
+        );
+    }
+
+    #[test]
+    fn consumers_custom_headers_injected() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{Arc, Mutex};
+
+        let captured = Arc::new(Mutex::new(String::new()));
+        let cap_clone = captured.clone();
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in upstream.incoming() {
+                let Ok(mut s) = stream else { break };
+                let cap = cap_clone.clone();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    *cap.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+                });
+            }
+        });
+
+        let port = common::free_port();
+        let admin_port = common::free_port();
+        let srv = common::TestServer::start_with_config(
+            port,
+            admin_port,
+            serde_json::json!({
+                "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+                "sites": [{
+                    "port": port,
+                    "proxy": format!("http://{upstream_addr}"),
+                    "consumers": {
+                        "consumers": [
+                            {
+                                "username": "alice",
+                                "apiKey": "key-alice-secret",
+                                "headers": { "X-Tier": "free" }
+                            }
+                        ]
+                    }
+                }]
+            }),
+        );
+
+        plain_client()
+            .get(srv.url("/"))
+            .header("x-api-key", "key-alice-secret")
+            .send()
+            .expect("GET /");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let req_text = captured.lock().unwrap().clone();
+        assert!(
+            req_text.to_ascii_lowercase().contains("x-tier: free"),
+            "consumer.headers custom header must be injected into upstream request; got:\n{req_text}"
+        );
+    }
+
+    #[test]
     fn consumers_skip_path_bypasses_auth() {
         let srv = server_with_consumers();
         let resp = plain_client()
@@ -1218,6 +1336,130 @@ mod consumers_tests {
             resp.status().as_u16(),
             401,
             "JWT signed with wrong shared secret must be rejected"
+        );
+    }
+
+    #[cfg(feature = "jwt")]
+    #[test]
+    fn consumers_shared_jwt_x_consumer_id_injected() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{Arc, Mutex};
+
+        let captured = Arc::new(Mutex::new(String::new()));
+        let cap_clone = captured.clone();
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in upstream.incoming() {
+                let Ok(mut s) = stream else { break };
+                let cap = cap_clone.clone();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    *cap.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+                });
+            }
+        });
+
+        let secret = "shared-jwt-id-inject-secret";
+        let port = common::free_port();
+        let admin_port = common::free_port();
+        let srv = common::TestServer::start_with_config(
+            port,
+            admin_port,
+            serde_json::json!({
+                "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+                "sites": [{
+                    "port": port,
+                    "proxy": format!("http://{upstream_addr}"),
+                    "consumers": {
+                        "sharedJwt": { "secret": secret },
+                        "consumers": [
+                            { "username": "alice-sub" }
+                        ]
+                    }
+                }]
+            }),
+        );
+
+        use serde_json::json;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let exp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600;
+        let claims = json!({ "sub": "alice-sub", "exp": exp });
+        let key = jsonwebtoken::EncodingKey::from_secret(secret.as_bytes());
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &claims,
+            &key,
+        )
+        .unwrap();
+
+        plain_client()
+            .get(srv.url("/"))
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .expect("GET /");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let req_text = captured.lock().unwrap().clone();
+        assert!(
+            req_text
+                .to_ascii_lowercase()
+                .contains("x-consumer-id: alice-sub"),
+            "X-Consumer-ID header must be injected for sharedJwt consumer; got:\n{req_text}"
+        );
+    }
+
+    #[cfg(feature = "jwt")]
+    #[test]
+    fn consumers_shared_jwt_per_consumer_rate_limit() {
+        let secret = "shared-jwt-rate-limit-secret";
+        let srv = server_with_shared_jwt(secret);
+        // alice-sub has rateLimit: { windowSecs: 3600, limit: 5 } in the fixture.
+        use serde_json::json;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let exp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600;
+        let claims = json!({ "sub": "alice-sub", "exp": exp });
+        let key = jsonwebtoken::EncodingKey::from_secret(secret.as_bytes());
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &claims,
+            &key,
+        )
+        .unwrap();
+
+        for _ in 0..5 {
+            let resp = plain_client()
+                .get(srv.url("/"))
+                .header("authorization", format!("Bearer {token}"))
+                .send()
+                .expect("GET /");
+            assert_ne!(
+                resp.status().as_u16(),
+                429,
+                "within-limit requests must not be rate-limited"
+            );
+        }
+
+        let resp = plain_client()
+            .get(srv.url("/"))
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .expect("GET /");
+        assert_eq!(
+            resp.status().as_u16(),
+            429,
+            "6th request must hit per-consumer rate limit (limit=5) via the sharedJwt path"
         );
     }
 

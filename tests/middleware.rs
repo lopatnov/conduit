@@ -602,6 +602,25 @@ fn redis_without_feature_generates_warning() {
     );
 }
 
+/// When jwt feature is off, configuring jwtAuth generates a warning.
+///
+/// Every sibling feature-warning check in this file has a dedicated test but
+/// this one didn't (found by `integrity-auditor`, 2026-08-21 audit of
+/// `src/filter/auth.rs`/consumer auth) even though the warning itself has
+/// existed in `check_site_simple_feature_warnings` since JWT auth shipped.
+#[test]
+#[cfg(not(feature = "jwt"))]
+fn jwt_auth_without_feature_generates_warning() {
+    let config =
+        conduit::config::from_str(r#"{ "port": 8080, "jwtAuth": { "secret": "test-secret" } }"#)
+            .expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("jwtAuth")),
+        "missing jwtAuth without feature warning: {warnings:?}"
+    );
+}
+
 /// When fault-injection feature is off, configuring faultInjection generates a warning.
 #[test]
 #[cfg(not(feature = "fault-injection"))]

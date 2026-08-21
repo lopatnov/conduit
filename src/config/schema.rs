@@ -140,7 +140,8 @@ pub struct SiteConfig {
     pub api_key: Option<ApiKeyConfig>,
     /// Named-consumer authentication model.
     ///
-    /// Each consumer has its own credentials (API key or Basic Auth) and
+    /// Each consumer has its own credentials (API key, Basic Auth, or
+    /// per-consumer JWT — or none, when identified via `sharedJwt`) and
     /// per-consumer policies (rate limit, upstream header injection).
     /// After identification the consumer's username is injected as
     /// `X-Consumer-ID` into the upstream request.
