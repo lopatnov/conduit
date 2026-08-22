@@ -305,12 +305,16 @@ fn full_cfg_to_result(
         upstream_health.conn_inc(&chosen_url);
     }
 
-    // KNOWN GAP (issue #217): `retry.urls` is built from the raw,
-    // unfiltered target list, not the health/capacity-filtered candidates —
-    // unlike router.rs's `resolve_proxy_routes`, a retry on this path can
-    // rotate into a peer already known unhealthy or at its connection cap.
+    // Fixed (#217): retry.urls now comes from the same health/capacity-
+    // filtered candidate list used to pick chosen_url above, matching
+    // router.rs's resolve_proxy_routes — a retry can no longer rotate into a
+    // peer already known unhealthy or at its connection cap. `capacity` was
+    // evaluated against `urls` (the health-filtered list) a few lines up,
+    // and the `Exhausted` case already returned before this point, so
+    // `candidates()` is always `Some` here; `unwrap_or(&urls)` is just a
+    // defensive fallback, not an expected path.
     let retry = cfg.retry.as_ref().map(|r| RetryState {
-        urls: all_urls.clone(),
+        urls: capacity.candidates(&urls).unwrap_or(&urls).to_vec(),
         attempt: 0,
         max_attempts: r.attempts as usize,
         conditions: r.conditions.clone(),
@@ -1126,6 +1130,57 @@ mod tests {
         let retry = _res.retry;
         assert!(matches!(target, UpstreamTarget::Proxy { .. }));
         assert!(retry.is_some(), "expected retry state to be populated");
+    }
+
+    /// Regression test for #217: `retry.urls` must come from the
+    /// health-filtered candidate list, not the raw config target list — a
+    /// retry must never be able to rotate into a peer already known
+    /// unhealthy. Reverting the fix (`urls: all_urls.clone()`) would make
+    /// this test fail, since `all_urls` still contains the unhealthy target.
+    #[test]
+    fn route_to_result_retry_urls_exclude_unhealthy_targets() {
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RetryConfig, RouteConfig,
+        };
+        use crate::proxy::health::UpstreamEntry;
+
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        // Mark b2 unhealthy; b1 stays healthy (default).
+        registry.statuses.insert(
+            "http://b2:4000".to_string(),
+            UpstreamEntry {
+                healthy: false,
+                ..Default::default()
+            },
+        );
+
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://b1:4000".to_string()),
+                    ProxyTarget::Simple("http://b2:4000".to_string()),
+                ],
+                strategy: Some(LoadBalanceStrategy::RoundRobin),
+                retry: Some(RetryConfig {
+                    attempts: 2,
+                    conditions: vec!["connection_error".to_string()],
+                    backoff_ms: Some(50),
+                    backoff_jitter: None,
+                    budget_percent: None,
+                }),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+        let res = route_to_result(&route, "/api/users", &counters, &registry, None);
+        let retry = res.retry.expect("retry state must be populated");
+        assert_eq!(
+            retry.urls,
+            vec!["http://b1:4000".to_string()],
+            "retry candidate list must exclude the unhealthy target"
+        );
     }
 
     #[test]

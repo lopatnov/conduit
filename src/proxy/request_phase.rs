@@ -82,10 +82,8 @@ impl ConduitProxy {
     ///   `record_request_latency`.
     /// - Runs outlier-detection ejection (`maybe_eject`) if configured.
     /// - Decrements the Prometheus `upstream_active_connections` gauge and
-    ///   increments `upstream_requests_total` / `upstream_latency_seconds`.
-    /// - Appends the failed attempt to `failed_upstream_attempts` (currently
-    ///   write-only — see that field's doc comment and issue #218), then
-    ///   clears `proxy_upstream_url` and `upstream_conn_slot` so the next
+    ///   increments `upstream_requests_total` / `upstream_latency_seconds`,
+    ///   then clears `proxy_upstream_url` and `upstream_conn_slot` so the next
     ///   `upstream_peer()` starts fresh with no inherited slot.
     ///
     /// Without this, a successful retry on a different backend would silently
@@ -159,10 +157,8 @@ impl ConduitProxy {
                 .observe(upstream_secs);
         }
         // Reset upstream_start for the retry attempt.
-        req_ctx_mut.upstream_start = None;
-        // Push to failed list for structured logging / future use.
         // proxy_upstream_url was already cleared by the take() above.
-        req_ctx_mut.failed_upstream_attempts.push((url, status));
+        req_ctx_mut.upstream_start = None;
     }
 
     /// Check the retry budget and increment `retry_inflight` if a retry is allowed.
@@ -3376,8 +3372,7 @@ mod tests {
         proxy.record_failed_upstream_for_retry(&mut ctx, &config, 500);
     }
 
-    /// ctx is Some but proxy_upstream_url is None → function returns early,
-    /// failed_upstream_attempts stays empty.
+    /// ctx is Some but proxy_upstream_url is None → function returns early.
     #[test]
     fn record_failed_upstream_url_none_returns_early() {
         let proxy = make_proxy();
@@ -3386,13 +3381,12 @@ mod tests {
         assert!(inner.proxy_upstream_url.is_none());
         let mut ctx = Some(inner);
         let config = AppConfig::default();
+        // Must not panic on the early-return path.
         proxy.record_failed_upstream_for_retry(&mut ctx, &config, 503);
-        // No attempt should have been pushed.
-        assert!(ctx.unwrap().failed_upstream_attempts.is_empty());
     }
 
-    /// Happy path: URL is set → it is taken (cleared), the attempt is pushed,
-    /// and upstream_start is reset to None.
+    /// Happy path: URL is set → it is taken (cleared) and upstream_start is
+    /// reset to None.
     #[test]
     fn record_failed_upstream_records_attempt_and_clears_url() {
         let proxy = make_proxy();
@@ -3405,10 +3399,6 @@ mod tests {
         let req = ctx.as_ref().unwrap();
         // URL must have been taken (cleared).
         assert!(req.proxy_upstream_url.is_none());
-        // The failed attempt must be recorded.
-        assert_eq!(req.failed_upstream_attempts.len(), 1);
-        assert_eq!(req.failed_upstream_attempts[0].0, "http://backend:4000");
-        assert_eq!(req.failed_upstream_attempts[0].1, 502);
         // upstream_start should remain None (wasn't set).
         assert!(req.upstream_start.is_none());
     }
@@ -3427,7 +3417,6 @@ mod tests {
         let req = ctx.as_ref().unwrap();
         // upstream_start reset to None after recording.
         assert!(req.upstream_start.is_none());
-        assert_eq!(req.failed_upstream_attempts.len(), 1);
     }
 
     /// When the site config has outlier_detection set, maybe_eject() is called.
@@ -3454,7 +3443,5 @@ mod tests {
 
         // Must not panic — exercises the maybe_eject() call inside the if-let branch.
         proxy.record_failed_upstream_for_retry(&mut ctx, &config, 503);
-        let req = ctx.as_ref().unwrap();
-        assert_eq!(req.failed_upstream_attempts.len(), 1);
     }
 }

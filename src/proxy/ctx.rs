@@ -122,18 +122,6 @@ pub struct RequestCtx {
     /// (the default), any `101 Switching Protocols` response from upstream is
     /// rejected with `502 Bad Gateway` to prevent unexpected protocol tunnelling.
     pub websocket_allowed: bool,
-    /// Failed upstream attempts that need EWMA/health tracking after a retry.
-    ///
-    /// When `RetryOnErrorFilter` fires `RetryUpstream`, the current upstream's
-    /// URL and status are pushed here before clearing `proxy_upstream_url` —
-    /// the actual latency/ejection recording for each failed attempt happens
-    /// inline, at the point of failure, in `record_failed_upstream_for_retry`.
-    ///
-    /// Currently write-only: nothing reads this field outside its own tests.
-    /// It exists for potential future use (e.g. surfacing retry history in
-    /// structured access logs) — see issue #218 for the decision on whether
-    /// to wire it up or remove it.
-    pub failed_upstream_attempts: Vec<(String, u16)>,
     /// Age in seconds to inject as the `Age` response header for cache hits.
     ///
     /// Computed in `upstream_response_filter` from the cached response's `Date`
@@ -201,7 +189,6 @@ impl RequestCtx {
             passive_unhealthy_status: Vec::new(),
             passive_unhealthy_latency_ms: None,
             websocket_allowed: false,
-            failed_upstream_attempts: Vec::new(),
             cache_age_secs: None,
             sticky_set_cookie: None,
             upload_excess_bytes: 0.0,

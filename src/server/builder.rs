@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use pingora_core::apps::HttpServerOptions;
-use pingora_core::server::configuration::Opt;
+use pingora_core::server::configuration::{Opt, ServerConf};
 use pingora_core::server::Server;
 use pingora_core::services::background::background_service;
 use pingora_core::services::listening::Service as ListeningService;
@@ -178,6 +178,25 @@ fn connect_redis_rate_limiter_if_configured(
     }
 }
 
+/// Build the Pingora `ServerConf` from `global.workers` (issue #226).
+///
+/// Previously `global.workers` was parsed and tracked as a cold-reload
+/// field but never threaded into the actual server construction, so it had
+/// zero effect regardless of what an operator set. `ServerConf::threads` is
+/// "how many threads each service gets" (pingora-core's own doc comment);
+/// falls back to `ServerConf::default().threads` when unset, matching
+/// pingora's own default and this field's pre-existing (accidental) effect.
+fn build_server_conf(config: &AppConfig) -> ServerConf {
+    ServerConf {
+        threads: config
+            .global
+            .as_ref()
+            .and_then(|g| g.workers)
+            .unwrap_or_else(|| ServerConf::default().threads),
+        ..Default::default()
+    }
+}
+
 /// Start the Conduit server.
 ///
 /// - `config` — initial [`AppConfig`] to serve
@@ -256,7 +275,8 @@ pub fn run_server(
         test: false,
         conf: None,
     };
-    let mut server = Server::new(Some(opt))?;
+    let server_conf = build_server_conf(&config);
+    let mut server = Server::new_with_opt_and_conf(Some(opt), server_conf);
     server.bootstrap();
 
     let proxy = ConduitProxy {
@@ -496,4 +516,45 @@ fn obtain_acme_certs(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::schema::GlobalConfig;
+
+    /// Regression test for #226: `global.workers` must actually reach
+    /// `ServerConf.threads`, not just round-trip through parsing/validation.
+    #[test]
+    fn build_server_conf_uses_configured_workers() {
+        let config = AppConfig {
+            global: Some(GlobalConfig {
+                workers: Some(8),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(build_server_conf(&config).threads, 8);
+    }
+
+    #[test]
+    fn build_server_conf_defaults_when_workers_unset() {
+        let config = AppConfig {
+            global: Some(GlobalConfig::default()),
+            ..Default::default()
+        };
+        assert_eq!(
+            build_server_conf(&config).threads,
+            ServerConf::default().threads
+        );
+    }
+
+    #[test]
+    fn build_server_conf_defaults_when_global_absent() {
+        let config = AppConfig::default();
+        assert_eq!(
+            build_server_conf(&config).threads,
+            ServerConf::default().threads
+        );
+    }
 }
