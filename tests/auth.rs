@@ -598,6 +598,77 @@ mod jwt {
         assert_eq!(resp.status().as_u16(), 200);
     }
 
+    /// Regression test: on a `skipPaths` route, `JwtGuard` never checks the
+    /// token's signature at all (see `jwt::jwt_prelude`) — so
+    /// `{{ jwt.<claim> }}` header-template substitution must not trust an
+    /// unverified token's claims either, or an attacker could forge
+    /// arbitrary claim values (e.g. spoof `{{ jwt.sub }}` into an
+    /// upstream-trusted identity header) simply by hitting a path the
+    /// operator intentionally exempted from JWT auth.
+    #[test]
+    fn jwt_skip_path_does_not_trust_forged_claims_in_templates() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{Arc, Mutex};
+
+        let captured = Arc::new(Mutex::new(String::new()));
+        let cap_clone = captured.clone();
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in upstream.incoming() {
+                let Ok(mut s) = stream else { break };
+                let cap = cap_clone.clone();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    *cap.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+                });
+            }
+        });
+
+        let port = common::free_port();
+        let admin_port = common::free_port();
+        let srv = common::TestServer::start_with_config(
+            port,
+            admin_port,
+            serde_json::json!({
+                "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+                "sites": [{
+                    "port": port,
+                    "proxy": format!("http://{upstream_addr}"),
+                    "jwtAuth": {
+                        "secret": jwt_secret(),
+                        "skipPaths": ["/public/**"]
+                    },
+                    "requestTransform": {
+                        "setHeaders": { "X-User": "{{ jwt.sub }}" }
+                    }
+                }]
+            }),
+        );
+
+        // Token signed with a completely different secret than jwtAuth's own —
+        // insecure_decode doesn't check the signature at all, so this "attacker"
+        // token decodes cleanly if (and only if) the vulnerable path is hit.
+        let forged_token = make_jwt("attacker-controlled-secret-not-jwtauths", 3600);
+
+        plain_client()
+            .get(srv.url("/public/anything"))
+            .header("authorization", format!("Bearer {forged_token}"))
+            .send()
+            .expect("GET /public/anything");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let req_text = captured.lock().unwrap().clone();
+        assert!(
+            !req_text.to_ascii_lowercase().contains("testuser"),
+            "forged/unverified JWT claims on a skipPaths route must NOT reach \
+             {{{{ jwt.<claim> }}}} template substitution; got upstream request:\n{req_text}"
+        );
+    }
+
     #[test]
     fn jwt_www_authenticate_header_on_401() {
         let srv = server_with_jwt_auth();
