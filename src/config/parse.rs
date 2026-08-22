@@ -20,7 +20,7 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
         .with_context(|| format!("Cannot read config file: {}", path.display()))?;
     let ext = path
         .extension()
-        .and_then(|e| e.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .map(str::to_lowercase)
         .unwrap_or_else(|| "json".to_owned());
     match ext.as_str() {

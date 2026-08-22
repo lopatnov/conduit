@@ -474,7 +474,7 @@ fn cmd_fmt(config_path: &str, write: bool) {
     // Preserve the input format: YAML files stay YAML, JSON files stay JSON.
     let ext = path
         .extension()
-        .and_then(|e| e.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("")
         .to_lowercase();
     let is_yaml = ext == "yaml" || ext == "yml";
