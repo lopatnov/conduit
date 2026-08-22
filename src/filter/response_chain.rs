@@ -272,7 +272,7 @@ fn dedup_chunked_transfer_encoding(resp: &mut ResponseHeader) {
     let other_directives: Vec<&str> = te_values
         .iter()
         .flat_map(|v| v.split(','))
-        .map(|s| s.trim())
+        .map(str::trim)
         .filter(|s| !s.eq_ignore_ascii_case("chunked"))
         .collect();
     resp.headers.remove("transfer-encoding");

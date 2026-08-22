@@ -40,7 +40,7 @@ use super::cache_common::{bytes_to_hex, SimpleHitHandler};
 
 // ── Registry of per-URL storage instances ────────────────────────────────────
 
-static REDIS_STORES: OnceLock<DashMap<String, &'static RedisCacheStorage>> = OnceLock::new();
+static REDIS_STORES: OnceLock<DashMap<String, &RedisCacheStorage>> = OnceLock::new();
 
 fn redis_stores() -> &'static DashMap<String, &'static RedisCacheStorage> {
     REDIS_STORES.get_or_init(DashMap::new)
