@@ -225,7 +225,7 @@ pub fn check_jwt(cfg: &JwtAuthConfig, path: &str, auth_header: Option<&str>) -> 
 
 /// Validate the JWT **and** return the decoded claims in a single pass.
 ///
-/// Equivalent to calling [`check_jwt`] followed by [`extract_claims_unchecked`] but
+/// Equivalent to calling [`check_jwt`] followed by `extract_claims_unchecked` but
 /// avoids the second base64-decode + JSON-parse that the two-step pattern
 /// requires.  Returns `(Allowed, Some(claims))` on success or
 /// `(Denied, None)` on failure.
