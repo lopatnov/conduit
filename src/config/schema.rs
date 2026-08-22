@@ -356,17 +356,9 @@ pub struct TlsClientAuth {
     pub optional: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct AcmeConfig {
-    pub email: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub directory: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub storage: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub challenge: Option<String>,
-}
+// Extracted into crates/conduit-acme (#114/#130) — always compiled (like
+// `conduit_otlp::OtlpConfig`) so `tls.acme` stays parseable in every build.
+pub use conduit_acme::AcmeConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]

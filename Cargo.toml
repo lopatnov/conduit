@@ -29,6 +29,7 @@ pingora-cache = { version = "0.8", features = ["rustls"] }
 lopatnov-conduit-core        = { path = "crates/conduit-core", version = "2.0.0" }
 lopatnov-conduit-config-core = { path = "crates/conduit-config-core", version = "2.0.0" }
 lopatnov-conduit-otlp        = { path = "crates/conduit-otlp", version = "2.0.0" }
+lopatnov-conduit-acme        = { path = "crates/conduit-acme", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -74,7 +75,11 @@ uuid       = { version = "1", features = ["v4"] }
 # --- TLS (always needed) ---
 x509-parser = "0.18"
 
-# --- ACME / auto-TLS (feature: acme) ---
+# --- ACME / auto-TLS (crates/conduit-acme, its own `acme` feature) ---
+# instant-acme is only ever used by crates/conduit-acme. rcgen is used both
+# there (via instant-acme's "rcgen" feature) and unconditionally by the root
+# crate's dev-dependencies (test cert generation) — kept as a shared
+# workspace dependency for that reason.
 instant-acme = { version = "0.8", features = ["rcgen"] }
 rcgen        = "0.14"
 # ring is the crypto provider for rustls; needed to install before TLS starts.
@@ -180,6 +185,12 @@ lopatnov-conduit-config-core.workspace = true
 # instead of the value silently landing nowhere. Only the real exporter is
 # gated, via `lopatnov-conduit-otlp/otlp` in the `otlp` feature below.
 lopatnov-conduit-otlp.workspace        = true
+# Mandatory (like the crates above), not `optional = true`: `AcmeConfig` and
+# the `tls.acme` field must stay parseable in every build so
+# `feature_warnings()` can keep warning on a config-without-feature mismatch.
+# Only the real ACME flow is gated, via `lopatnov-conduit-acme/acme` in the
+# `acme` feature below.
+lopatnov-conduit-acme.workspace        = true
 
 # --- Config & parsing ---
 serde.workspace      = true
@@ -226,9 +237,6 @@ uuid.workspace       = true
 # --- TLS (always needed) ---
 x509-parser.workspace = true
 
-# --- ACME / auto-TLS (feature: acme) ---
-instant-acme = { workspace = true, optional = true }
-rcgen        = { workspace = true, optional = true }
 rustls.workspace         = true
 rustls-pemfile.workspace = true
 
@@ -320,7 +328,10 @@ disk-cache = ["cache"]
 
 # ── Auto-TLS ──────────────────────────────────────────────────────────────────
 # ACME / Let's Encrypt automatic certificate provisioning (tls.acme config).
-acme = ["dep:instant-acme", "dep:rcgen"]
+# `AcmeConfig` moved to `crates/conduit-acme` (#114/#130) and is always a
+# dependency (see the [dependencies] comment above); this only forwards into
+# that crate's own `acme` feature, which gates the real ACME flow.
+acme = ["lopatnov-conduit-acme/acme"]
 
 # ── Testing / chaos ───────────────────────────────────────────────────────────
 # Fault injection for chaos testing (faultInjection config). NOT for production.

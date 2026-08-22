@@ -57,3 +57,31 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   `pingora_proxy::Session`/`RequestCtx`, which this crate has no dependency
   on at all (matches `CONTRIBUTING.md`'s "conduit-core dependency is opt-in,
   not automatic" note).
+
+- **`conduit-acme`** (Phase 3.2, [#130](https://github.com/lopatnov/conduit/issues/130))
+  — ACME (Let's Encrypt) auto-TLS. Owns `AcmeConfig` (the `tls.acme` config
+  struct, `src/config.rs`), the HTTP-01 certificate flow (`flow` — account
+  management, order/challenge negotiation, renewal), and the HTTP-01
+  challenge-response handler (`challenge`). `AcmeConfig` is compiled into
+  every build like `conduit-otlp`'s `OtlpConfig` above — `TlsConfig.acme`
+  isn't itself feature-gated, so it must stay parseable (and warn via
+  `feature_warnings()`) without `--features acme`. Unlike `conduit-otlp`,
+  though, `flow`/`challenge` have **no unconditional counterpart** at
+  all — the pre-extraction `src/server/acme.rs` and
+  `src/handler/acme_challenge.rs` were both already whole-file
+  `#![cfg(feature = "acme")]`, so both modules are declared behind this
+  crate's own `acme` feature in `lib.rs` rather than getting a no-op stub;
+  the root crate's own module declarations (`src/server/mod.rs`,
+  `src/handler/mod.rs`) already gate inclusion of the facade files the same
+  way. `challenge` is this workspace's first feature crate to depend on
+  `lopatnov-conduit-core` — it implements `LocalHandlerImpl`, which needs
+  `&mut pingora_proxy::Session` (see `CONTRIBUTING.md`'s "conduit-core
+  dependency is opt-in, not automatic": opt in when a chain/handler trait is
+  implemented, skip it otherwise). `AppState.acme_challenges:
+  Arc<DashMap<String, String>>` (`src/proxy/service.rs`) deliberately stays
+  in the root crate — it's a plain third-party type shared with
+  `RedirectProxy` (`src/server/redirect.rs`, always compiled), not an
+  ACME-specific type to extract. `instant-acme`/`rcgen` are now path-dep-only
+  behind this crate's `acme` feature; `rcgen` remains an unconditional root
+  `[dev-dependencies]` entry for in-memory TLS test certificates, unrelated
+  to ACME.
