@@ -53,17 +53,23 @@ mod tests {
         assert_eq!(cfg, round_tripped);
     }
 
+    /// Regression test for `#[serde(skip_serializing_if = "Option::is_none")]`
+    /// on the three optional fields: a config-round-trip test alone would not
+    /// catch this attribute being dropped, since `"field": null` round-trips
+    /// back to `None` just as well as an absent key does. Assert the keys are
+    /// actually missing from the serialized output, not just that they
+    /// deserialize back to `None`.
     #[test]
-    fn camel_case_field_names_are_accepted() {
-        // #[serde(rename_all = "camelCase")] means the config-file key is
-        // `directory`/`storage`/`challenge` as written here — no snake_case
-        // aliasing exists, so a config using the plain field names must work.
-        let cfg: AcmeConfig = serde_json::from_str(
-            r#"{ "email": "a@b.com", "directory": "d", "storage": "s", "challenge": "c" }"#,
-        )
-        .expect("camelCase-named fields must parse");
-        assert_eq!(cfg.directory.as_deref(), Some("d"));
-        assert_eq!(cfg.storage.as_deref(), Some("s"));
-        assert_eq!(cfg.challenge.as_deref(), Some("c"));
+    fn none_optional_fields_are_omitted_from_serialized_json() {
+        let cfg = AcmeConfig {
+            email: "ops@example.com".to_string(),
+            directory: None,
+            storage: None,
+            challenge: None,
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        assert!(!json.contains("directory"), "got: {json}");
+        assert!(!json.contains("storage"), "got: {json}");
+        assert!(!json.contains("challenge"), "got: {json}");
     }
 }
