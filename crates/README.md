@@ -37,3 +37,23 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   is a schema decision coupled to `AppConfig`/`SiteConfig` (moves with them
   in Phase 3), the latter is mostly dead/per-feature policy, not a Layer-0
   concern.
+
+- **`conduit-otlp`** (Phase 3.1, [#129](https://github.com/lopatnov/conduit/issues/129))
+  — the template extraction for every subsequent feature crate. Owns
+  `OtlpConfig` (the `global.otlp` config struct) and the OTLP tracer-provider
+  lifecycle (`tracer::init_tracer`/`tracer::shutdown_tracer`). Compiled into
+  every build like `conduit-core`/`conduit-config-core` above — not gated
+  behind `optional = true` — because `GlobalConfig.otlp` is not itself
+  feature-gated: a config that sets `global.otlp` without `--features otlp`
+  must still parse cleanly and get an explicit `feature_warnings()` warning,
+  not silently vanish. Only the real exporter wiring is gated, behind this
+  crate's *own* `otlp` Cargo feature (mirroring the pre-extraction
+  `src/server/otel.rs`'s internal `#[cfg(feature = "otlp")]` stub/impl split);
+  the root crate's `otlp` feature forwards into it via
+  `lopatnov-conduit-otlp/otlp`. Per-request span creation/finishing
+  (`RequestCtx.otel_span`, `src/proxy/request_phase.rs`,
+  `src/proxy/logging_phase.rs`) deliberately stays in the root crate — see
+  `CLAUDE.md`'s architectural decision #30 — since it needs
+  `pingora_proxy::Session`/`RequestCtx`, which this crate has no dependency
+  on at all (matches `CONTRIBUTING.md`'s "conduit-core dependency is opt-in,
+  not automatic" note).

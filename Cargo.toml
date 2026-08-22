@@ -28,6 +28,7 @@ pingora-cache = { version = "0.8", features = ["rustls"] }
 # once member crates start publishing (see #114's crates.io-publishing risk).
 lopatnov-conduit-core        = { path = "crates/conduit-core", version = "2.0.0" }
 lopatnov-conduit-config-core = { path = "crates/conduit-config-core", version = "2.0.0" }
+lopatnov-conduit-otlp        = { path = "crates/conduit-otlp", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -173,6 +174,12 @@ pingora-cache.workspace = true
 # --- Conduit workspace member crates ---
 lopatnov-conduit-core.workspace        = true
 lopatnov-conduit-config-core.workspace = true
+# Mandatory (like the two crates above), not `optional = true`: `OtlpConfig`
+# and the `global.otlp` field must stay parseable in every build so
+# `feature_warnings()` can keep warning on a config-without-feature mismatch
+# instead of the value silently landing nowhere. Only the real exporter is
+# gated, via `lopatnov-conduit-otlp/otlp` in the `otlp` feature below.
+lopatnov-conduit-otlp.workspace        = true
 
 # --- Config & parsing ---
 serde.workspace      = true
@@ -262,9 +269,13 @@ futures     = { workspace = true, optional = true }
 wasmtime = { workspace = true, optional = true }
 
 # --- OpenTelemetry OTLP tracing (optional feature) ---
-opentelemetry      = { workspace = true, optional = true }
-opentelemetry_sdk  = { workspace = true, optional = true }
-opentelemetry-otlp = { workspace = true, optional = true }
+# `opentelemetry` (base API) is still needed directly here for per-request
+# span creation/finishing (`RequestCtx.otel_span`, `request_phase.rs`,
+# `logging_phase.rs`) — that stays in the root crate per CLAUDE.md decision
+# #30. `opentelemetry_sdk`/`opentelemetry-otlp` (tracer-provider + exporter
+# construction) moved to `crates/conduit-otlp` (#129) and are no longer a
+# direct root dependency.
+opentelemetry = { workspace = true, optional = true }
 
 
 [features]
@@ -316,8 +327,10 @@ acme = ["dep:instant-acme", "dep:rcgen"]
 fault-injection = []
 
 # ── Observability ─────────────────────────────────────────────────────────────
-# OpenTelemetry OTLP distributed tracing (global.otlp config).
-otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
+# OpenTelemetry OTLP distributed tracing (global.otlp config). `dep:opentelemetry`
+# covers this crate's own per-request span code (RequestCtx.otel_span);
+# `lopatnov-conduit-otlp/otlp` forwards into the tracer-provider crate (#129).
+otlp = ["dep:opentelemetry", "lopatnov-conduit-otlp/otlp"]
 # Tokio event-loop lag gauge (conduit_eventloop_lag_ms).
 # Uses a yield-probe task that measures scheduling delay — no external deps,
 # no tokio_unstable required.  Safe to enable in production.

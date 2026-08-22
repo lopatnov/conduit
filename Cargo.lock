@@ -2915,11 +2915,10 @@ dependencies = [
  "libc",
  "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
+ "lopatnov-conduit-otlp",
  "mime_guess",
  "notify",
  "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
  "pingora-cache",
  "pingora-core",
  "pingora-http",
@@ -2980,6 +2979,18 @@ dependencies = [
  "pingora-http",
  "pingora-proxy",
  "tempfile",
+]
+
+[[package]]
+name = "lopatnov-conduit-otlp"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "serde",
+ "tracing",
 ]
 
 [[package]]
