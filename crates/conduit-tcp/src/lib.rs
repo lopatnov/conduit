@@ -5,14 +5,14 @@
 //! ## Scope
 //!
 //! Owns [`TcpConfig`] (the `sites[].tcp` config struct) and the real
-//! [`proxy::TcpProxy`] implementation (a Pingora `ServerApp` that relays
+//! `proxy::TcpProxy` implementation (a Pingora `ServerApp` that relays
 //! bytes bidirectionally between a client and a chosen upstream address).
 //! `TcpConfig` is compiled into **every** conduit build — like
 //! `AcmeConfig`/`OtlpConfig` — because `SiteConfig.tcp` is not itself
 //! feature-gated (a config file that sets `tcp` without `--features tcp`
 //! must still parse cleanly and get an explicit `feature_warnings()`
 //! warning, not a silent-drop or a hard parse error). Only the real
-//! [`proxy::TcpProxy`] is gated behind this crate's own `tcp` Cargo feature;
+//! `proxy::TcpProxy` is gated behind this crate's own `tcp` Cargo feature;
 //! the root crate's `tcp` feature forwards into it via
 //! `lopatnov-conduit-tcp/tcp`.
 //!

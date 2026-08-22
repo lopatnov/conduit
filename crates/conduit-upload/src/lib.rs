@@ -5,7 +5,7 @@
 //! ## Scope
 //!
 //! Owns [`UploadConfig`] (the `sites[].upload` config struct) and the real
-//! Axum-based upload server ([`server`] — `UploadService`,
+//! Axum-based upload server (`server` — `UploadService`,
 //! `make_upload_router`, `run_upload_server`, `upload_handler`).
 //! `UploadConfig` is compiled into **every** conduit build — like
 //! `AcmeConfig`/`OtlpConfig`/`TcpConfig` — because `SiteConfig.upload` is not
@@ -26,10 +26,10 @@
 //!
 //! The pre-extraction code took/held `Arc<AppState>` — the root crate's big
 //! application-state struct — which would create a circular dependency if
-//! moved here verbatim. Instead, [`server::UploadConfigSource`] captures the
+//! moved here verbatim. Instead, `server::UploadConfigSource` captures the
 //! *one* thing this crate actually needs (looking up the active
-//! [`UploadConfig`] for a given site index), and [`server::UploadService`],
-//! [`server::make_upload_router`], and [`server::run_upload_server`] are all
+//! [`UploadConfig`] for a given site index), and `server::UploadService`,
+//! `server::make_upload_router`, and `server::run_upload_server` are all
 //! generic over it. The root crate implements the trait for its own
 //! `AppState` and re-exports a concrete `UploadService` type alias bound to
 //! it — see `CONTRIBUTING.md`'s crate-extraction recipe,

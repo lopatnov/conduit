@@ -2,9 +2,13 @@
 //! Facade for the real upload server implementation, which lives in
 //! `crates/conduit-upload` (issue #114/#131). This file implements that
 //! crate's `UploadConfigSource` trait for the root crate's `AppState` and
-//! re-exports concrete, non-generic aliases so `crate::upload::UploadService`
-//! / `crate::upload::run_upload_server` keep resolving at the same location
-//! with the same call-site shape for every existing call site.
+//! re-exports `UploadService` as a concrete alias bound to `AppState`, so
+//! `crate::upload::UploadService` keeps resolving at the same location with
+//! the same call-site shape as every existing call site. `run_upload_server`
+//! stays generic on re-export — it has no call sites outside this crate, so
+//! there's nothing to bind it against yet (recipe rule 1 says preserve the
+//! original public shape rather than drop it, not force a concrete binding
+//! with no caller to justify it).
 
 use crate::proxy::service::AppState;
 
