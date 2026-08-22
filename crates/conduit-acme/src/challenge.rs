@@ -1,14 +1,19 @@
-#![cfg(feature = "acme")]
+//! ACME HTTP-01 challenge-response handler.
+//!
+//! Compiled only with this crate's own `acme` Cargo feature — mirrors the
+//! pre-extraction `#![cfg(feature = "acme")]` file-level gate on
+//! `src/handler/acme_challenge.rs` (issue #114/#130). The root crate's
+//! `src/handler/acme_challenge.rs` is now a thin facade re-exporting this
+//! module's public items.
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use conduit_core::handler::response;
+use conduit_core::handler::LocalHandlerImpl;
 use dashmap::DashMap;
 use pingora_core::Result;
 use pingora_proxy::Session;
-
-use crate::handler::response;
-use crate::handler::LocalHandlerImpl;
 
 /// Handler struct for ACME HTTP-01 challenge responses.
 pub struct AcmeChallengeHandler {

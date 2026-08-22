@@ -1,4 +1,9 @@
-#![cfg(feature = "acme")]
+//! ACME (Let's Encrypt) HTTP-01 certificate flow.
+//!
+//! Compiled only with this crate's own `acme` Cargo feature — mirrors the
+//! pre-extraction `#![cfg(feature = "acme")]` file-level gate on
+//! `src/server/acme.rs` (issue #114/#130). The root crate's `src/server/acme.rs`
+//! is now a thin facade re-exporting this module's public items.
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -10,7 +15,7 @@ use instant_acme::{
     NewAccount, NewOrder, RetryPolicy,
 };
 
-use crate::config::schema::AcmeConfig;
+use crate::config::AcmeConfig;
 
 /// How many days before certificate expiry to trigger automatic renewal.
 const RENEWAL_THRESHOLD_DAYS: i64 = 30;
