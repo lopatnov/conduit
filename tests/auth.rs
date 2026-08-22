@@ -663,6 +663,10 @@ mod jwt {
 
         let req_text = captured.lock().unwrap().clone();
         assert!(
+            !req_text.is_empty(),
+            "upstream never received the request; test would pass vacuously"
+        );
+        assert!(
             !req_text.to_ascii_lowercase().contains("testuser"),
             "forged/unverified JWT claims on a skipPaths route must NOT reach \
              {{{{ jwt.<claim> }}}} template substitution; got upstream request:\n{req_text}"
