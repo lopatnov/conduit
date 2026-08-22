@@ -154,7 +154,21 @@ fn certs_reload_accepts_valid_pair() {
     assert_eq!(body["status"], "ok");
     assert!(body["cert_path"].is_string());
     assert!(body["key_path"].is_string());
-    assert!(body["note"].as_str().unwrap().contains("restart"));
+    let note = body["note"].as_str().unwrap();
+    assert!(note.contains("restart"));
+    // Regression test for #190: the response must not imply POST /reload can
+    // activate a rotated cert on its own — /reload's cold-field detection
+    // compares config *values*, and this endpoint only changes file
+    // *content* at the same path, so /reload silently no-ops here. Only a
+    // real process restart activates the new certificate.
+    assert!(
+        note.to_lowercase().contains("not yet active"),
+        "note must warn the cert is not yet active: {note}"
+    );
+    assert!(
+        note.contains("will not activate"),
+        "note must be explicit that /reload does not activate a rotated cert: {note}"
+    );
 
     // New cert must be on disk.
     let written = std::fs::read_to_string(&cert_path).unwrap();

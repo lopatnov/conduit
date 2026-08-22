@@ -333,8 +333,14 @@ fn run_server(config_path: &str) {
         }
     };
     let errors = validate::validate(&cfg);
-    if !errors.is_empty() {
-        for e in &errors {
+    let (warnings, hard_errors) = validate::partition_by_severity(errors);
+    // Advisory findings (e.g. a still-valid cert nearing expiry, issue #191)
+    // are logged but must not block startup — only a real config error does.
+    for w in &warnings {
+        tracing::warn!("config: {}: {}", w.path, w.message);
+    }
+    if !hard_errors.is_empty() {
+        for e in &hard_errors {
             eprintln!("config error at {}: {}", e.path, e.message);
         }
         process::exit(1);

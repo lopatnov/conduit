@@ -554,8 +554,12 @@ curl -X DELETE http://localhost:2019/ip-deny \
 ### POST /certs/reload
 
 Validate a new TLS certificate + private key and write them atomically to the
-file paths configured in `tls.cert` / `tls.key`. A **restart** or `conduit reload`
-is required afterwards for the new certificate to take effect on new connections.
+file paths configured in `tls.cert` / `tls.key`. A **restart is required
+afterwards** for the new certificate to take effect on new connections —
+`conduit reload` (`POST /reload`) does **not** activate it (issue #190): this
+endpoint only rewrites file *content* at the existing paths, so `/reload`'s
+cold-field detection (which compares config *values*) never sees a change
+and reports success without the new certificate ever being loaded.
 
 > **Why a restart?** Pingora 0.8's rustls backend builds an immutable
 > `ServerConfig` at startup and has no runtime cert-swap API. Writing the
@@ -606,7 +610,7 @@ jq -n --rawfile cert /tmp/new-server.crt \
   "status": "ok",
   "cert_path": "/etc/conduit/tls/server.crt",
   "key_path": "/etc/conduit/tls/server.key",
-  "note": "certificate written to disk — restart or POST /reload to activate"
+  "note": "certificate written to disk but NOT yet active — the running TLS listener was built once at startup and does not re-read cert/key files; POST /reload will not activate it either, since the config paths themselves haven't changed. Restart the process (or use --upgrade for a zero-downtime process swap) to actually serve the new certificate."
 }
 ```
 
