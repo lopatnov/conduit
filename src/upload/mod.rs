@@ -31,3 +31,81 @@ pub type UploadService = conduit_upload::server::UploadService<AppState>;
 // sites outside this crate currently use it, but recipe rule 1 says preserve
 // the original public shape rather than drop it).
 pub use conduit_upload::server::run_upload_server;
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use conduit_upload::server::UploadConfigSource;
+    use conduit_upload::UploadConfig;
+
+    use super::*;
+    use crate::config::schema::{AppConfig, SiteConfig};
+
+    fn state_with_sites(sites: Vec<SiteConfig>) -> AppState {
+        AppState::new(
+            AppConfig {
+                sites,
+                ..Default::default()
+            },
+            PathBuf::new(),
+            None,
+        )
+    }
+
+    #[test]
+    fn upload_config_returns_site_config_when_present() {
+        let upload = UploadConfig {
+            path: "/upload".to_string(),
+            dir: "./uploads".to_string(),
+            max_file_size_bytes: None,
+            max_total_size_bytes: None,
+            max_files: None,
+            allowed_mime_types: None,
+            field_name: None,
+        };
+        let state = state_with_sites(vec![SiteConfig {
+            upload: Some(upload.clone()),
+            ..Default::default()
+        }]);
+        assert_eq!(state.upload_config(0), Some(upload));
+    }
+
+    #[test]
+    fn upload_config_returns_none_when_site_has_no_upload_block() {
+        let state = state_with_sites(vec![SiteConfig::default()]);
+        assert_eq!(state.upload_config(0), None);
+    }
+
+    #[test]
+    fn upload_config_returns_none_for_out_of_range_index() {
+        let state = state_with_sites(vec![SiteConfig::default()]);
+        assert_eq!(state.upload_config(5), None);
+    }
+
+    /// Regression test for the `site_idx` lookup itself: proves the trait
+    /// impl actually indexes into `sites[site_idx]` rather than, say, always
+    /// returning the first (or last) site's upload config regardless of the
+    /// index passed in.
+    #[test]
+    fn upload_config_picks_the_site_matching_the_given_index_not_just_any_site() {
+        let upload_for_site_1 = UploadConfig {
+            path: "/site1-upload".to_string(),
+            dir: "./site1-uploads".to_string(),
+            max_file_size_bytes: None,
+            max_total_size_bytes: None,
+            max_files: None,
+            allowed_mime_types: None,
+            field_name: None,
+        };
+        let state = state_with_sites(vec![
+            SiteConfig::default(),
+            SiteConfig {
+                upload: Some(upload_for_site_1.clone()),
+                ..Default::default()
+            },
+        ]);
+        assert_eq!(state.upload_config(0), None);
+        assert_eq!(state.upload_config(1), Some(upload_for_site_1));
+    }
+}

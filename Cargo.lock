@@ -3038,6 +3038,7 @@ dependencies = [
  "pingora-core",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",

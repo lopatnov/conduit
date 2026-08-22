@@ -271,3 +271,89 @@ async fn save_upload_file(dir: &str, original_name: &str, data: &[u8]) -> Result
     })?;
     Ok(save_name)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_allowlist_accepts_any_content_type_including_absent() {
+        assert!(check_mime_type(Some("image/png"), None).is_ok());
+        assert!(check_mime_type(None, None).is_ok());
+    }
+
+    #[test]
+    fn allowlist_accepts_matching_prefix() {
+        let allowed = vec!["image/".to_string(), "text/plain".to_string()];
+        assert!(check_mime_type(Some("image/png"), Some(&allowed)).is_ok());
+        assert!(check_mime_type(Some("text/plain"), Some(&allowed)).is_ok());
+    }
+
+    #[test]
+    fn allowlist_rejects_non_matching_type_with_415() {
+        let allowed = vec!["image/".to_string()];
+        let err = check_mime_type(Some("application/pdf"), Some(&allowed)).unwrap_err();
+        assert_eq!(err.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    #[test]
+    fn missing_content_type_with_allowlist_is_rejected() {
+        let allowed = vec!["image/".to_string()];
+        let err = check_mime_type(None, Some(&allowed)).unwrap_err();
+        assert_eq!(err.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    /// Regression test for the `!ct.is_empty()` guard specifically: without
+    /// it, `allowed.iter().any(|a| ct.starts_with(a))` on an empty `ct`
+    /// (missing Content-Type) matches an allowlist that happens to contain an
+    /// empty-string entry — e.g. from a stray trailing comma in a YAML/JSON
+    /// `allowedMimeTypes` list — since `"".starts_with("")` is `true`. That
+    /// would silently accept an upload with no Content-Type instead of
+    /// rejecting it. Verified empirically: removing the guard makes this
+    /// test fail (content type wrongly accepted); restoring it makes it pass.
+    #[test]
+    fn missing_content_type_is_rejected_even_with_empty_string_allowlist_entry() {
+        let allowed = vec!["".to_string()];
+        let result = check_mime_type(None, Some(&allowed));
+        assert!(
+            result.is_err(),
+            "missing Content-Type must never be accepted, even against a \
+             degenerate allowlist containing an empty string"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_upload_file_preserves_extension_and_writes_real_bytes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dir_path = dir.path().to_str().expect("utf8 path");
+        let data = b"hello upload";
+
+        let save_name = save_upload_file(dir_path, "photo.JPG", data)
+            .await
+            .expect("save should succeed");
+
+        assert!(
+            save_name.ends_with(".JPG"),
+            "extension from original_name must be preserved verbatim: {save_name}"
+        );
+        let written = tokio::fs::read(dir.path().join(&save_name))
+            .await
+            .expect("saved file must exist with the exact returned name");
+        assert_eq!(written, data, "saved file content must match input bytes");
+    }
+
+    #[tokio::test]
+    async fn save_upload_file_without_extension_has_no_dot_suffix() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dir_path = dir.path().to_str().expect("utf8 path");
+
+        let save_name = save_upload_file(dir_path, "noextension", b"data")
+            .await
+            .expect("save should succeed");
+
+        assert!(
+            !save_name.contains('.'),
+            "a name with no extension must not gain a spurious '.': {save_name}"
+        );
+    }
+}
