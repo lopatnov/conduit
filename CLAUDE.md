@@ -1271,3 +1271,60 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   аргументацией и явно указал, где какой план был прав/неправ. Урок: не полагаться на
   собственный пересказ прошлого agent-вызова как на источник истины, когда есть
   расхождение с новым прогоном — давать обоим полный текст и просить явную реконсиляцию.
+
+### Реализовано в сессии 2026-08-22 (SonarCloud D Security Rating — rust:S5659 false positive)
+
+- **Проблема**: SonarCloud Quality Gate на `main` падал с `new_security_rating = 4` (D,
+  требуется ≤1/A) после мерджа [PR #237](https://github.com/lopatnov/conduit/pull/237)
+  (fix(jwt): honor skipPaths when extracting claims) и
+  [PR #238](https://github.com/lopatnov/conduit/pull/238) (fix(jwt): scope extract_claims
+  to pub(crate), rename to extract_claims_unchecked) — оба смерджены той же сессией
+  раньше в тот же день. Изначальное предположение (что причина — уже триаженный
+  rust:S5659 JWT hotspot) оказалось **неверным**: `show_rule` подтвердил, что
+  `rust:S5659` имеет `type: VULNERABILITY`, а не Hotspot (`search_security_hotspots`
+  на `src/filter/jwt.rs` вернул 0 записей) — Security Rating считается по
+  Vulnerabilities, не по Hotspots, и #238 (переименование + `pub(crate)`) адресовал
+  hotspot-подобную находку, но не закрыл саму Vulnerability, которая осталась `OPEN`
+  с момента первого появления (2026-06-06, JWT auth feature).
+- **Находка**: `AaAlsvdOLm9l5kt0_A2m`, rule `rust:S5659` "JWT should be signed and
+  verified", `src/filter/jwt.rs:277` — вызов `jsonwebtoken::dangerous::insecure_decode`
+  внутри `extract_claims_unchecked()`. Правило флагает любой вызов `insecure_decode`
+  безусловно (текстовый/структурный паттерн-матч), без interprocedural-анализа —
+  не видит, что вызывающий код уже верифицировал подпись раньше в том же запросе.
+- **Аудит вызовов** (сам + `security-engineer`, независимо и адверсариально):
+  3 продакшн call site, все безопасны —
+  1. `check_jwt_extracting()` (jwt.rs) — `extract_claims_unchecked` вызывается только
+     внутри `Ok(())`-ветки `validate_token()`, в той же функции.
+  2. `check_shared_jwt_consumer()` (`src/filter/auth.rs:219`) — тот же паттерн через
+     `check_jwt_extracting`; синтетический `JwtAuthConfig` жёстко ставит
+     `skip_paths: None` (auth.rs:45, "handled at ConsumersConfig level"), так что
+     `jwt_prelude` не может обойти `validate_token` для этого вызова.
+  3. `jwt_claims_from_session()` (`src/proxy/request_phase.rs:2082`, добавлена
+     #237/#238) — не вызывает `validate_token` сама, но достижима только после того,
+     как `JwtGuard` (шаг 6c в `run_guard_filters`) уже пропустил запрос
+     (`check_jwt` → `Allowed`) на **том же** `jwt_auth_cfg`-клоне с **того же**
+     `config.load_full()`-снепшота, что и routing (гарантия PR #92, без
+     routing/guard config drift). На `skipPaths`-путях, где `JwtGuard` не
+     верифицирует подпись, функция независимо повторяет ту же проверку
+     `skip_paths` и возвращает `None` вместо доверия непроверенному токену —
+     это и есть фикс #237. `HealthBypass` теоретически может пропустить
+     `JwtGuard` целиком, но для health/ACME/hot-reload путей `req_ctx.jwt_claims`
+     никогда не читается (`upstream_request_filter` для локальных хендлеров не
+     вызывается) — инертно, не эксплуатируемо.
+  Структурный фикс (newtype `VerifiedToken`, конструируемый только через
+  `validate_token`) рассмотрен и отклонён как непропорциональный: правило
+  паттерн-матчит сам вызов `insecure_decode` вне зависимости от типа аргумента,
+  так что находка осталась бы даже за обёрткой — не стоит делать в реакции
+  на этот тикет (может быть отдельным defense-in-depth пунктом бэклога, не сейчас).
+- **Вердикт**: безопасно по конструкции, сканер не видит инвариант через границы
+  функций/модулей — тот же класс, что и OSV-suppression precedent 2026-06-12
+  (proc-macro-error2/daemonize/rsa/protobuf). Код не менялся.
+- **Резолюция**: SonarCloud issue `AaAlsvdOLm9l5kt0_A2m` → `falsepositive` (не
+  `wontfix`/accept — здесь не "принимаем риск", а "паттерн, который правило ищет,
+  здесь отсутствует по построению") через `change_sonar_issue_status` MCP-тул.
+  API `change_sonar_issue_status` не принимает комментарий — обоснование живёт
+  здесь, а не только в SonarCloud UI (тот же принцип, что и `osv-scanner.toml`
+  suppression comments). PR: только этот файл (без изменений кода) —
+  `docs/sonarcloud-s5659-false-positive`.
+- Ветка миграции `claude/cargo-workspace-features-23qxfr` синхронизирована с `main`
+  после мерджа (см. ниже, если применимо).
