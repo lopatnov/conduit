@@ -2917,6 +2917,7 @@ dependencies = [
  "lopatnov-conduit-core",
  "lopatnov-conduit-otlp",
  "lopatnov-conduit-tcp",
+ "lopatnov-conduit-upload",
  "mime_guess",
  "notify",
  "opentelemetry",
@@ -3025,6 +3026,21 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "lopatnov-conduit-upload"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "mime_guess",
+ "pingora-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

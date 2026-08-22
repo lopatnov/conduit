@@ -1,29 +1,96 @@
-#![cfg(feature = "upload")]
 use std::path::Path;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use axum::extract::{Multipart, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use axum::Router;
+use pingora_core::server::ShutdownWatch;
+use pingora_core::services::background::BackgroundService;
 use serde_json::json;
 use tokio::net::TcpListener;
 
-use crate::proxy::service::AppState;
+use crate::config::UploadConfig;
 
 /// Header injected by the proxy to tell the upload server which site's config to use.
 pub const SITE_IDX_HEADER: &str = "x-conduit-site-idx";
 
+/// Supplies the active [`UploadConfig`] for a given site index at request time.
+///
+/// Lets this crate serve uploads without depending on the root crate's
+/// `AppConfig`/`SiteConfig` types — see `CONTRIBUTING.md`'s crate-extraction
+/// recipe, "Generic-in-crate, bound-by-type-alias-in-root".
+pub trait UploadConfigSource: Send + Sync + 'static {
+    /// Look up the current `upload` config for the site at `site_idx`, if any.
+    fn upload_config(&self, site_idx: usize) -> Option<UploadConfig>;
+}
+
+/// Pingora `BackgroundService` that drives the Axum file-upload server.
+///
+/// The underlying `std::net::TcpListener` is pre-bound by the caller so that
+/// the OS-assigned port is known before Pingora starts accepting proxy
+/// traffic.  The listener is converted to a Tokio listener inside `start()`,
+/// which runs on Pingora's async runtime.
+pub struct UploadService<S: UploadConfigSource> {
+    pub state: Arc<S>,
+    /// Pre-bound standard listener.  Wrapped in a `Mutex<Option<…>>` so it
+    /// can be taken exactly once when `start()` is called.
+    listener: tokio::sync::Mutex<Option<std::net::TcpListener>>,
+}
+
+impl<S: UploadConfigSource> UploadService<S> {
+    pub fn new(state: Arc<S>, listener: std::net::TcpListener) -> Self {
+        Self {
+            state,
+            listener: tokio::sync::Mutex::new(Some(listener)),
+        }
+    }
+}
+
+#[async_trait]
+impl<S: UploadConfigSource> BackgroundService for UploadService<S> {
+    async fn start(&self, mut shutdown: ShutdownWatch) {
+        let std_listener = self
+            .listener
+            .lock()
+            .await
+            .take()
+            .expect("UploadService::start called twice");
+
+        let listener = match tokio::net::TcpListener::from_std(std_listener) {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!("upload server: failed to convert listener: {e}");
+                return;
+            }
+        };
+
+        if let Ok(addr) = listener.local_addr() {
+            tracing::info!("upload server listening on http://{addr}");
+        }
+
+        if let Err(e) = axum::serve(listener, make_upload_router(self.state.clone()))
+            .with_graceful_shutdown(async move {
+                shutdown.changed().await.ok();
+            })
+            .await
+        {
+            tracing::error!("upload server exited with error: {e}");
+        }
+    }
+}
+
 /// Build the Axum `Router` for the upload server.
 ///
-/// Exposed so that [`crate::upload::UploadService`] can serve it with a
-/// graceful-shutdown handle, while tests can drive it directly.
-pub fn make_upload_router(state: Arc<AppState>) -> Router {
+/// Exposed so that [`UploadService`] can serve it with a graceful-shutdown
+/// handle, while tests can drive it directly.
+pub fn make_upload_router<S: UploadConfigSource>(state: Arc<S>) -> Router {
     Router::new()
         // Accept POST to any path — the actual upload.path matching is done
         // by the Pingora router before the request reaches this server.
-        .route("/{*path}", post(upload_handler))
+        .route("/{*path}", post(upload_handler::<S>))
         .with_state(state)
 }
 
@@ -31,13 +98,13 @@ pub fn make_upload_router(state: Arc<AppState>) -> Router {
 /// requests until the process exits.
 ///
 /// `state` is shared with the Pingora proxy so that the server can read the
-/// current `upload` configuration from `AppState.config`.
-pub async fn run_upload_server(listener: TcpListener, state: Arc<AppState>) {
+/// current `upload` configuration for a given site.
+pub async fn run_upload_server<S: UploadConfigSource>(listener: TcpListener, state: Arc<S>) {
     axum::serve(listener, make_upload_router(state)).await.ok();
 }
 
-async fn upload_handler(
-    State(state): State<Arc<AppState>>,
+async fn upload_handler<S: UploadConfigSource>(
+    State(state): State<Arc<S>>,
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
@@ -47,12 +114,9 @@ async fn upload_handler(
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    let cfg = {
-        let config = state.config.load();
-        match config.sites.get(site_idx).and_then(|s| s.upload.as_ref()) {
-            Some(c) => c.clone(),
-            None => return err_response(StatusCode::NOT_FOUND, "no upload config for this site"),
-        }
+    let cfg = match state.upload_config(site_idx) {
+        Some(c) => c,
+        None => return err_response(StatusCode::NOT_FOUND, "no upload config for this site"),
     };
 
     if let Err(e) = tokio::fs::create_dir_all(&cfg.dir).await {
@@ -104,7 +168,7 @@ async fn upload_handler(
 #[allow(clippy::result_large_err)]
 async fn process_upload_field(
     field: axum::extract::multipart::Field<'_>,
-    cfg: &crate::config::schema::UploadConfig,
+    cfg: &UploadConfig,
     total_bytes: &mut u64,
 ) -> Result<serde_json::Value, Response> {
     let original_name = field.file_name().unwrap_or("upload").to_owned();
