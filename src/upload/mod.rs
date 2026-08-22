@@ -1,66 +1,33 @@
 #![cfg(feature = "upload")]
-use std::sync::Arc;
-
-use async_trait::async_trait;
-use pingora_core::server::ShutdownWatch;
-use pingora_core::services::background::BackgroundService;
+//! Facade for the real upload server implementation, which lives in
+//! `crates/conduit-upload` (issue #114/#131). This file implements that
+//! crate's `UploadConfigSource` trait for the root crate's `AppState` and
+//! re-exports `UploadService` as a concrete alias bound to `AppState`, so
+//! `crate::upload::UploadService` keeps resolving at the same location with
+//! the same call-site shape as every existing call site. `run_upload_server`
+//! stays generic on re-export — it has no call sites outside this crate, so
+//! there's nothing to bind it against yet (recipe rule 1 says preserve the
+//! original public shape rather than drop it, not force a concrete binding
+//! with no caller to justify it).
 
 use crate::proxy::service::AppState;
 
-pub mod server;
-pub use server::run_upload_server;
-
-/// Pingora `BackgroundService` that drives the Axum file-upload server.
-///
-/// The underlying `std::net::TcpListener` is pre-bound in [`run_server`] so
-/// that the OS-assigned port is known before Pingora starts accepting proxy
-/// traffic.  The listener is converted to a Tokio listener inside `start()`,
-/// which runs on Pingora's async runtime.
-pub struct UploadService {
-    pub state: Arc<AppState>,
-    /// Pre-bound standard listener.  Wrapped in a `Mutex<Option<…>>` so it
-    /// can be taken exactly once when `start()` is called.
-    listener: tokio::sync::Mutex<Option<std::net::TcpListener>>,
-}
-
-impl UploadService {
-    pub fn new(state: Arc<AppState>, listener: std::net::TcpListener) -> Self {
-        Self {
-            state,
-            listener: tokio::sync::Mutex::new(Some(listener)),
-        }
+impl conduit_upload::server::UploadConfigSource for AppState {
+    fn upload_config(&self, site_idx: usize) -> Option<conduit_upload::UploadConfig> {
+        self.config
+            .load()
+            .sites
+            .get(site_idx)
+            .and_then(|s| s.upload.clone())
     }
 }
 
-#[async_trait]
-impl BackgroundService for UploadService {
-    async fn start(&self, mut shutdown: ShutdownWatch) {
-        let std_listener = self
-            .listener
-            .lock()
-            .await
-            .take()
-            .expect("UploadService::start called twice");
+/// Pingora `BackgroundService` that drives the Axum file-upload server,
+/// bound to the root crate's `AppState`. See `conduit_upload::server::UploadService`
+/// for the generic implementation.
+pub type UploadService = conduit_upload::server::UploadService<AppState>;
 
-        let listener = match tokio::net::TcpListener::from_std(std_listener) {
-            Ok(l) => l,
-            Err(e) => {
-                tracing::error!("upload server: failed to convert listener: {e}");
-                return;
-            }
-        };
-
-        if let Ok(addr) = listener.local_addr() {
-            tracing::info!("upload server listening on http://{addr}");
-        }
-
-        if let Err(e) = axum::serve(listener, server::make_upload_router(self.state.clone()))
-            .with_graceful_shutdown(async move {
-                shutdown.changed().await.ok();
-            })
-            .await
-        {
-            tracing::error!("upload server exited with error: {e}");
-        }
-    }
-}
+// Re-exported for API-shape parity with the pre-extraction module (no call
+// sites outside this crate currently use it, but recipe rule 1 says preserve
+// the original public shape rather than drop it).
+pub use conduit_upload::server::run_upload_server;

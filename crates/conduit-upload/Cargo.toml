@@ -1,0 +1,42 @@
+[package]
+name        = "lopatnov-conduit-upload"
+version.workspace    = true
+edition.workspace    = true
+description = "File-upload handler config + Axum server for conduit's feature-driven workspace (issue #114/#131)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_upload"
+path = "src/lib.rs"
+
+[dependencies]
+# UploadConfig itself is always compiled — see src/lib.rs doc comment.
+serde = { workspace = true }
+
+# Everything below is only needed by the real upload server (`server`),
+# gated behind this crate's own `upload` feature (mirrors the
+# pre-extraction `#![cfg(feature = "upload")]` file-level gate). The root
+# crate's `upload` feature forwards into this one via
+# `lopatnov-conduit-upload/upload`.
+serde_json   = { workspace = true, optional = true }
+axum         = { workspace = true, optional = true }
+tokio        = { workspace = true, optional = true }
+async-trait  = { workspace = true, optional = true }
+pingora-core = { workspace = true, optional = true }
+tracing      = { workspace = true, optional = true }
+mime_guess   = { workspace = true, optional = true }
+uuid         = { workspace = true, optional = true }
+
+[features]
+upload = [
+    "dep:serde_json",
+    "dep:axum",
+    "axum/multipart",
+    "dep:tokio",
+    "dep:async-trait",
+    "dep:pingora-core",
+    "dep:tracing",
+    "dep:mime_guess",
+    "dep:uuid",
+]
