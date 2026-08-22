@@ -2037,14 +2037,32 @@ pub(super) fn extract_host(session: &Session) -> String {
 /// Extract JWT claims from the `Authorization: Bearer` header for header
 /// template substitution (`{{ jwt.<claim> }}`).
 ///
-/// Returns `None` when JWT auth is not configured, the header is missing or
-/// not a Bearer token, or the token cannot be decoded.
+/// Returns `None` when JWT auth is not configured, the current path is in
+/// `jwtAuth.skipPaths`, the header is missing or not a Bearer token, or the
+/// token cannot be decoded.
+///
+/// The `skipPaths` check is required here, not just in [`JwtGuard`]: on a
+/// skipped path `JwtGuard` lets the request through *without* verifying the
+/// token's signature at all (see `jwt::jwt_prelude`), so if this function
+/// didn't apply the same check it would decode and trust an attacker-forged,
+/// unsigned token's claims for header-template substitution — effectively
+/// spoofing `{{ jwt.<claim> }}` values (e.g. `{{ jwt.sub }}`) into whatever
+/// upstream header a route's `requestTransform` injects them into, on any
+/// path the operator intentionally exempted from auth.
+///
+/// [`JwtGuard`]: crate::filter::chain::JwtGuard
 #[cfg(feature = "jwt")]
 fn jwt_claims_from_session(
     session: &Session,
     jwt_cfg: Option<&crate::config::schema::JwtAuthConfig>,
 ) -> Option<std::collections::HashMap<String, serde_json::Value>> {
     let jwt_cfg = jwt_cfg?;
+    let path = session.req_header().uri.path();
+    if let Some(skip) = &jwt_cfg.skip_paths {
+        if crate::filter::auth::is_path_skipped(Some(skip.as_slice()), path) {
+            return None;
+        }
+    }
     let auth_hdr = session
         .req_header()
         .headers
