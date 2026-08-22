@@ -19,6 +19,7 @@ pub fn validate(config: &AppConfig) -> Vec<ValidationError> {
 
     validate_no_duplicate_host_port(config, &mut errors);
     validate_http_redirect_ports(config, &mut errors);
+    validate_global(config, &mut errors);
 
     for (i, site) in config.sites.iter().enumerate() {
         validate_site(site, &format!("sites[{i}]"), &mut errors);
@@ -479,6 +480,23 @@ fn validate_no_duplicate_host_port(config: &AppConfig, errors: &mut Vec<Validati
             check_tcp_site_port_conflicts(i, port, &mut tcp_ports, &seen, errors);
         } else {
             check_http_site_port_conflicts(i, site, port, &tcp_ports, &mut seen, errors);
+        }
+    }
+}
+
+/// `global.workers: 0` used to be silently inert (issue #226 — the field was
+/// parsed but never applied), so a typo'd `0` had no real effect. Now that it
+/// actually reaches Pingora's `ServerConf.threads`, `0` would mean the server
+/// spawns no worker threads at all — reject it at validate-time rather than
+/// let it reach `Server::new_with_opt_and_conf` (found by CodeRabbit/Gitar
+/// review on the #226 fix itself).
+fn validate_global(config: &AppConfig, errors: &mut Vec<ValidationError>) {
+    if let Some(workers) = config.global.as_ref().and_then(|g| g.workers) {
+        if workers == 0 {
+            errors.push(ValidationError::new(
+                "global.workers",
+                "must be greater than 0 (0 would run the server with no worker threads)",
+            ));
         }
     }
 }
@@ -1401,6 +1419,27 @@ mod tests {
         let e = errs(r#"[{ "port": 8080 }, { "port": 8080 }]"#);
         assert_eq!(e.len(), 1);
         assert!(e[0].message.contains("Duplicate"), "got: {}", e[0].message);
+    }
+
+    /// Regression test for the #226 fix: `global.workers: 0` used to be
+    /// silently inert, but now reaches `ServerConf.threads` directly — must
+    /// be rejected at validate-time rather than let the server start with
+    /// zero worker threads.
+    #[test]
+    fn global_workers_zero_is_rejected() {
+        let e = errs(r#"{ "global": { "workers": 0 }, "sites": [{ "port": 8080 }] }"#);
+        assert_eq!(e.len(), 1, "got: {e:?}");
+        assert_eq!(e[0].path, "global.workers");
+    }
+
+    #[test]
+    fn global_workers_positive_is_accepted() {
+        assert!(errs(r#"{ "global": { "workers": 4 }, "sites": [{ "port": 8080 }] }"#).is_empty());
+    }
+
+    #[test]
+    fn global_workers_absent_is_accepted() {
+        assert!(errs(r#"{ "sites": [{ "port": 8080 }] }"#).is_empty());
     }
 
     #[test]

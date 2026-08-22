@@ -100,7 +100,9 @@ pub fn make_upload_router<S: UploadConfigSource>(state: Arc<S>) -> Router {
 /// `state` is shared with the Pingora proxy so that the server can read the
 /// current `upload` configuration for a given site.
 pub async fn run_upload_server<S: UploadConfigSource>(listener: TcpListener, state: Arc<S>) {
-    axum::serve(listener, make_upload_router(state)).await.ok();
+    if let Err(e) = axum::serve(listener, make_upload_router(state)).await {
+        tracing::error!("upload server exited with error: {e}");
+    }
 }
 
 async fn upload_handler<S: UploadConfigSource>(
