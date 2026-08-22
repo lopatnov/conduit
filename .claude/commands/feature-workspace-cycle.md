@@ -40,8 +40,24 @@ Model assignment (already encoded in each agent's frontmatter — don't override
 
 ## Step 1 — PR triage (Dependabot + the user's own PRs)
 
-- Call **`dependency-steward`** to list open Dependabot PRs, classify semver
-  risk, group related bumps, and check their CI.
+- **Fast path first, added 2026-08-22 at the user's explicit request to cut
+  cycle overhead**: before spawning `dependency-steward`, do a cheap direct
+  check yourself (`search_pull_requests author:app/dependabot` or
+  `list_pull_requests`) and glance at `CLAUDE.md`'s hygiene log. If the log's
+  newest row is within ~24h *and* the direct check confirms nothing new (0
+  open Dependabot PRs, or the same PRs already logged as triaged), log "still
+  clean" and move straight to the rest of this step — don't spawn the agent
+  or spend extra reasoning manufacturing something to do. Only call
+  `dependency-steward` when there's actually real triage work: 2+ open
+  Dependabot PRs, or a PR needing the changelog/semver-risk read the agent is
+  for. **This fast path is scoped to Dependabot/branch-hygiene checks only —
+  it does not touch Step 1c's integrity audits.** Those keep running on their
+  own cadence regardless: they've surfaced real, valuable findings all
+  through this migration (#164, #163, #216–#220, #157, #158, #185, #189–#191,
+  #232, #247, #248, ...), and the user has explicitly confirmed that's a
+  feature of this process, not overhead to trim.
+- Otherwise, call **`dependency-steward`** to list open Dependabot PRs,
+  classify semver risk, group related bumps, and check their CI.
 - Also list the user's own open, non-draft PRs against `main` (`lopatnov`-
   authored, not this migration's own PRs against the 2.0 branch — those are
   Step 7's job). For each: check CI (`get_check_runs`), check for unresolved
@@ -165,6 +181,16 @@ for genuinely idle firings, not a guaranteed periodic pass.)
 - Look at #114's open sub-issues (`mcp__github__issue_read` /
   `list_issues` filtered to sub-issues of #114). Pick the next one in
   phase order (Phase 0 → 6) unless a dependency isn't merged yet.
+- **Batch small independent leaves, per the user's explicit go-ahead
+  (2026-08-22)**: if the next 2-3 sub-issues in phase order are each small,
+  independent (no shared code, no ordering dependency between them — like
+  #131's `conduit-tcp` + `conduit-upload`, already batched by the issue's own
+  scope), fold them into one branch/PR instead of insisting on strictly one
+  sub-issue per PR. This isn't a license to bundle just anything — a
+  seam-refactor sub-issue, or one that touches shared state (`RequestCtx`,
+  `AppState`), still gets its own PR. The bar is the same "small independent
+  leaf" test #131 already met, applied proactively rather than only when an
+  issue happens to already say "batched."
 - If the task genuinely needs "how do others solve this" input before you can
   implement it, call **`prior-art-researcher`** first and fold its
   recommendation into the approach. This isn't only for brand-new work: if
