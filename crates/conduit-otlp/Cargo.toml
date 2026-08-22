@@ -1,0 +1,28 @@
+[package]
+name        = "lopatnov-conduit-otlp"
+version.workspace    = true
+edition.workspace    = true
+description = "OpenTelemetry OTLP tracing config + tracer lifecycle for conduit's feature-driven workspace (issue #114/#129)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_otlp"
+path = "src/lib.rs"
+
+[dependencies]
+serde       = { workspace = true }
+anyhow      = { workspace = true }
+tracing     = { workspace = true }
+# The real tracer-provider implementation only compiles with this crate's own
+# `otlp` feature (mirrors the pre-extraction `src/server/otel.rs` pattern:
+# `OtlpConfig` + no-op `init_tracer`/`shutdown_tracer` stubs are always
+# compiled so `GlobalConfig.otlp` stays parseable in every build; only the
+# real exporter wiring is feature-gated). The root crate's own `otlp`
+# feature forwards into this one via `lopatnov-conduit-otlp/otlp`.
+opentelemetry      = { workspace = true, optional = true }
+opentelemetry_sdk  = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+
+[features]
+otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
