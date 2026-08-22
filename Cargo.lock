@@ -2916,6 +2916,7 @@ dependencies = [
  "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
  "lopatnov-conduit-otlp",
+ "lopatnov-conduit-tcp",
  "mime_guess",
  "notify",
  "opentelemetry",
@@ -3012,6 +3013,17 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "serde",
+ "tracing",
+]
+
+[[package]]
+name = "lopatnov-conduit-tcp"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "pingora-core",
+ "serde",
+ "tokio",
  "tracing",
 ]
 

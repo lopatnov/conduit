@@ -30,6 +30,7 @@ lopatnov-conduit-core        = { path = "crates/conduit-core", version = "2.0.0"
 lopatnov-conduit-config-core = { path = "crates/conduit-config-core", version = "2.0.0" }
 lopatnov-conduit-otlp        = { path = "crates/conduit-otlp", version = "2.0.0" }
 lopatnov-conduit-acme        = { path = "crates/conduit-acme", version = "2.0.0" }
+lopatnov-conduit-tcp         = { path = "crates/conduit-tcp", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -191,6 +192,12 @@ lopatnov-conduit-otlp.workspace        = true
 # Only the real ACME flow is gated, via `lopatnov-conduit-acme/acme` in the
 # `acme` feature below.
 lopatnov-conduit-acme.workspace        = true
+# Mandatory (like the crates above), not `optional = true`: `TcpConfig` and
+# the `sites[].tcp` field must stay parseable in every build so
+# `feature_warnings()` can keep warning on a config-without-feature mismatch.
+# Only the real TcpProxy is gated, via `lopatnov-conduit-tcp/tcp` in the
+# `tcp` feature below.
+lopatnov-conduit-tcp.workspace         = true
 
 # --- Config & parsing ---
 serde.workspace      = true
@@ -312,8 +319,11 @@ rhai = ["dep:rhai"]
 wasm = ["dep:wasmtime"]
 
 # ── Protocol extensions ────────────────────────────────────────────────────────
-# TCP passthrough proxy (type: "tcp" site config).
-tcp = []
+# TCP passthrough proxy (type: "tcp" site config). `TcpConfig` moved to
+# `crates/conduit-tcp` (#114/#131) and is always a dependency (see the
+# [dependencies] comment above); this only forwards into that crate's own
+# `tcp` feature, which gates the real `TcpProxy`.
+tcp = ["lopatnov-conduit-tcp/tcp"]
 # File upload handler (upload: { path, dir } site config).
 # Enables axum/multipart (which internally pulls in multer) — not needed otherwise.
 upload = ["axum/multipart"]
