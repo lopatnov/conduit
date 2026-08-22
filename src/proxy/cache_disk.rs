@@ -46,7 +46,7 @@ use super::cache_common::{bytes_to_hex, SimpleHitHandler};
 
 // ── Registry of per-path storage instances ───────────────────────────────────
 
-static DISK_STORES: OnceLock<DashMap<String, &'static DiskCacheStorage>> = OnceLock::new();
+static DISK_STORES: OnceLock<DashMap<String, &DiskCacheStorage>> = OnceLock::new();
 
 fn disk_stores() -> &'static DashMap<String, &'static DiskCacheStorage> {
     DISK_STORES.get_or_init(DashMap::new)

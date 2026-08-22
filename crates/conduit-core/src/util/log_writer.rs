@@ -56,7 +56,10 @@ impl LogWriter {
         }
 
         let file = OpenOptions::new().create(true).append(true).open(path)?;
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.file = Some(BufWriter::new(file));
         inner.path = Some(path.to_owned());
         Ok(())
@@ -64,14 +67,20 @@ impl LogWriter {
 
     /// Close the current file and revert to stdout output.
     pub fn use_stdout(&self) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.file = None;
         inner.path = None;
     }
 
     /// Path of the currently-open log file, or `None` if writing to stdout.
     pub fn current_path(&self) -> Option<String> {
-        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.path.clone()
     }
 
@@ -79,7 +88,10 @@ impl LogWriter {
     ///
     /// Errors are silently ignored — a logging failure must not abort a request.
     pub fn write_line(&self, line: &str) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(ref mut w) = inner.file {
             let _ = writeln!(w, "{line}");
             // Flush every line so that log tailing works correctly.

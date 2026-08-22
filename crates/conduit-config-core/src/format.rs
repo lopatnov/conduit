@@ -15,7 +15,7 @@ impl ConfigFormat {
     pub fn from_path(path: &Path) -> Self {
         let ext = path
             .extension()
-            .and_then(|e| e.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .map(str::to_lowercase)
             .unwrap_or_default();
         match ext.as_str() {
