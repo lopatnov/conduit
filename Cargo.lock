@@ -2908,11 +2908,11 @@ dependencies = [
  "humantime",
  "indexmap 2.14.0",
  "indicatif",
- "instant-acme",
  "jsonwebtoken",
  "k8s-openapi",
  "kube",
  "libc",
+ "lopatnov-conduit-acme",
  "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
  "lopatnov-conduit-otlp",
@@ -2948,6 +2948,27 @@ dependencies = [
  "uuid",
  "wasmtime",
  "wat",
+ "x509-parser 0.18.1",
+]
+
+[[package]]
+name = "lopatnov-conduit-acme"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bytes",
+ "dashmap",
+ "instant-acme",
+ "lopatnov-conduit-core",
+ "pingora-core",
+ "pingora-proxy",
+ "rcgen",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
  "x509-parser 0.18.1",
 ]
 

@@ -1,0 +1,57 @@
+//! ACME HTTP-01 challenge-response handler.
+//!
+//! Compiled only with this crate's own `acme` Cargo feature — mirrors the
+//! pre-extraction `#![cfg(feature = "acme")]` file-level gate on
+//! `src/handler/acme_challenge.rs` (issue #114/#130). The root crate's
+//! `src/handler/acme_challenge.rs` is now a thin facade re-exporting this
+//! module's public items.
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use conduit_core::handler::response;
+use conduit_core::handler::LocalHandlerImpl;
+use dashmap::DashMap;
+use pingora_core::Result;
+use pingora_proxy::Session;
+
+/// Handler struct for ACME HTTP-01 challenge responses.
+pub struct AcmeChallengeHandler {
+    pub token: String,
+    pub challenges: Arc<DashMap<String, String>>,
+    pub extra_headers: Vec<(String, String)>,
+}
+
+#[async_trait]
+impl LocalHandlerImpl for AcmeChallengeHandler {
+    async fn handle(&mut self, session: &mut Session) -> Result<()> {
+        handle_acme_challenge(session, &self.token, &self.challenges).await
+    }
+}
+
+/// Serve an ACME HTTP-01 challenge token response.
+///
+/// Looks up `token` in the shared challenge store; returns the key-authorization
+/// string with `Content-Type: text/plain` when found, or 404 when not found.
+pub async fn handle_acme_challenge(
+    session: &mut Session,
+    token: &str,
+    challenges: &Arc<DashMap<String, String>>,
+) -> Result<()> {
+    match challenges.get(token) {
+        Some(key_auth) => {
+            let body = Bytes::copy_from_slice(key_auth.as_bytes());
+            response::write_response(session, 200, "text/plain; charset=utf-8", body, &[]).await
+        }
+        None => {
+            response::write_response(
+                session,
+                404,
+                "text/plain",
+                Bytes::from_static(b"challenge not found"),
+                &[],
+            )
+            .await
+        }
+    }
+}
