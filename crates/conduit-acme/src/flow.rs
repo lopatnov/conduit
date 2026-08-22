@@ -375,3 +375,55 @@ pub fn spawn_renewal_task(
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a self-signed cert PEM with a caller-controlled `not_after`, so
+    /// tests can exercise both "far from expiry" and "expiring soon"
+    /// branches of `cert_expires_within_days` deterministically.
+    fn self_signed_cert_with_not_after(not_after: time::OffsetDateTime) -> String {
+        let key_pair = rcgen::KeyPair::generate().expect("keygen");
+        let mut params =
+            rcgen::CertificateParams::new(vec!["example.com".to_string()]).expect("params");
+        params.not_after = not_after;
+        params
+            .self_signed(&key_pair)
+            .expect("self-signed cert")
+            .pem()
+    }
+
+    #[test]
+    fn invalid_pem_is_treated_as_expiring() {
+        assert!(
+            cert_expires_within_days("not a valid pem", 30),
+            "unparseable input must fail safe (treated as expiring) rather than silently \
+             skipping renewal"
+        );
+    }
+
+    #[test]
+    fn cert_far_from_expiry_is_not_flagged() {
+        let pem = self_signed_cert_with_not_after(
+            time::OffsetDateTime::now_utc() + time::Duration::days(365),
+        );
+        assert!(!cert_expires_within_days(&pem, RENEWAL_THRESHOLD_DAYS));
+    }
+
+    #[test]
+    fn cert_expiring_within_threshold_is_flagged() {
+        let pem = self_signed_cert_with_not_after(
+            time::OffsetDateTime::now_utc() + time::Duration::days(10),
+        );
+        assert!(cert_expires_within_days(&pem, RENEWAL_THRESHOLD_DAYS));
+    }
+
+    #[test]
+    fn already_expired_cert_is_flagged() {
+        let pem = self_signed_cert_with_not_after(
+            time::OffsetDateTime::now_utc() - time::Duration::days(1),
+        );
+        assert!(cert_expires_within_days(&pem, RENEWAL_THRESHOLD_DAYS));
+    }
+}

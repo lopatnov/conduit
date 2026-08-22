@@ -34,6 +34,9 @@ instant-acme          = { workspace = true, optional = true }
 rcgen                 = { workspace = true, optional = true }
 x509-parser           = { workspace = true, optional = true }
 
+[dev-dependencies]
+time = { workspace = true }
+
 [features]
 acme = [
     "dep:anyhow",
