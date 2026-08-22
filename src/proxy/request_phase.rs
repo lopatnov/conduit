@@ -2096,7 +2096,7 @@ fn jwt_claims_from_session(
         .get("authorization")
         .and_then(|v| v.to_str().ok())?;
     let token = crate::filter::jwt::extract_bearer(Some(auth_hdr))?;
-    crate::filter::jwt::extract_claims(token, jwt_cfg)
+    crate::filter::jwt::extract_claims_unchecked(token)
 }
 
 /// Append `X-Forwarded-For` and `X-Forwarded-Proto` headers to the upstream request.

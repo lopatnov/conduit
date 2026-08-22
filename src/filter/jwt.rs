@@ -225,7 +225,7 @@ pub fn check_jwt(cfg: &JwtAuthConfig, path: &str, auth_header: Option<&str>) -> 
 
 /// Validate the JWT **and** return the decoded claims in a single pass.
 ///
-/// Equivalent to calling [`check_jwt`] followed by [`extract_claims`] but
+/// Equivalent to calling [`check_jwt`] followed by `extract_claims_unchecked` but
 /// avoids the second base64-decode + JSON-parse that the two-step pattern
 /// requires.  Returns `(Allowed, Some(claims))` on success or
 /// `(Denied, None)` on failure.
@@ -246,27 +246,34 @@ pub fn check_jwt_extracting(
     };
     match validate_token(cfg, raw_token) {
         Ok(()) => {
-            let claims = extract_claims(raw_token, cfg);
+            let claims = extract_claims_unchecked(raw_token);
             (JwtCheckResult::Allowed, claims)
         }
         Err(reason) => (JwtCheckResult::Denied { reason }, None),
     }
 }
 
-/// Extract the JWT payload claims as a key→value map.
+/// Extract the JWT payload claims as a key→value map, **without verifying
+/// the signature**.
 ///
-/// Returns `None` when the token is invalid or the claims can't be parsed.
-/// Only call this after [`check_jwt`] has already validated the token
-/// (fast second decode — no remote I/O).
+/// Returns `None` when the token can't be decoded or the claims can't be
+/// parsed.
+///
+/// # Safety contract (not type-enforced)
+/// The caller MUST have already confirmed the token's signature and
+/// standard claims are valid — via [`check_jwt`] or [`validate_token`] —
+/// before calling this. Never call this directly on a token whose
+/// provenance you haven't verified. `pub(crate)`-scoped precisely so this
+/// can't be reached from outside the crate (also published as a library
+/// on crates.io) by a caller unaware of that contract.
+///
 /// Prefer [`check_jwt_extracting`] when both validation and claims are needed.
-pub fn extract_claims(
+pub(crate) fn extract_claims_unchecked(
     token: &str,
-    cfg: &JwtAuthConfig,
 ) -> Option<std::collections::HashMap<String, serde_json::Value>> {
-    // Decode without validation (already validated by check_jwt earlier).
+    // Decode without validation — see safety contract above.
     // Use the dedicated insecure_decode API instead of the deprecated
     // `Validation::insecure_disable_signature_validation()` method.
-    let _ = cfg; // sig already verified; we only need the payload here
     let data = jsonwebtoken::dangerous::insecure_decode::<serde_json::Value>(token).ok()?;
 
     if let serde_json::Value::Object(map) = data.claims {
@@ -506,7 +513,7 @@ mod tests {
         ));
     }
 
-    // ── extract_claims / template substitution ────────────────────────────────
+    // ── extract_claims_unchecked / template substitution ───────────────────────
 
     #[test]
     fn extract_claims_returns_sub() {
@@ -515,11 +522,7 @@ mod tests {
             secret,
             json!({ "sub": "user42", "email": "u@example.com", "exp": exp_future() }),
         );
-        let cfg = JwtAuthConfig {
-            secret: Some(secret.into()),
-            ..Default::default()
-        };
-        let claims = extract_claims(&token, &cfg).expect("claims should be extracted");
+        let claims = extract_claims_unchecked(&token).expect("claims should be extracted");
         assert_eq!(
             claims.get("sub").and_then(|v| v.as_str()),
             Some("user42"),
@@ -691,16 +694,12 @@ mod tests {
     #[test]
     fn non_object_claims_returns_none_from_extract() {
         // A JWT whose payload is a JSON array (not an object) can't be
-        // extracted as a HashMap<String, Value> — extract_claims must
-        // return None rather than panicking or silently discarding data.
-        let cfg = JwtAuthConfig {
-            secret: Some("secret".into()),
-            ..Default::default()
-        };
+        // extracted as a HashMap<String, Value> — extract_claims_unchecked
+        // must return None rather than panicking or silently discarding data.
         let secret = "secret";
         let token = make_hs256_token(secret, json!(["not", "an", "object"]));
         assert!(
-            extract_claims(&token, &cfg).is_none(),
+            extract_claims_unchecked(&token).is_none(),
             "non-object payload must yield None, not a HashMap"
         );
     }
