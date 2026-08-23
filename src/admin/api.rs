@@ -313,12 +313,18 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
     let new_config = config::load_config(&state.config_path)
         .map_err(|e| AdminError::ServerError(format!("failed to parse config: {e}")))?;
 
-    // Validate the new config before applying it.
+    // Validate the new config before applying it. Advisory findings (e.g. a
+    // still-valid cert nearing expiry, issue #191) are logged but must not
+    // block a reload — only a real config error does.
     let errors = validate::validate(&new_config);
-    if !errors.is_empty() {
+    let (warnings, hard_errors) = validate::partition_by_severity(errors);
+    for w in &warnings {
+        tracing::warn!("config: {}: {}", w.path, w.message);
+    }
+    if !hard_errors.is_empty() {
         return Err(AdminError::ServerError(format!(
             "config validation failed: {}",
-            errors
+            hard_errors
                 .iter()
                 .map(|e| format!("{}: {}", e.path, e.message))
                 .collect::<Vec<_>>()
@@ -962,8 +968,20 @@ struct CertReloadRequest {
 ///
 /// The new certificate is validated (cert/key must match and be parseable),
 /// then written atomically to the file paths configured in `tls.cert` /
-/// `tls.key`.  After writing, a `conduit reload` or process restart will
-/// activate the new certificate for new TLS connections.
+/// `tls.key`.
+///
+/// # Activation requires a process restart — `conduit reload`/`/reload` will NOT do it (issue #190)
+///
+/// This endpoint only rewrites file *content* at the existing `tls.cert`/
+/// `tls.key` paths — the paths themselves don't change. Pingora's TLS
+/// listener loads its `rustls::ServerConfig` once at startup and never
+/// re-reads the cert/key files afterward, so the running listener keeps
+/// serving the *old* certificate until the process actually restarts.
+/// `detect_cold_changes()` (used by `/reload`) compares config *values*, not
+/// file contents — since the path strings are unchanged, it cannot detect
+/// this case either, so a `/reload` after this endpoint returns `200 OK`
+/// without having activated anything. There is no config-only way to make
+/// `/reload` pick up a rotated certificate; only a real restart does.
 ///
 /// # Notes on zero-downtime rotation
 ///
@@ -1022,7 +1040,11 @@ async fn certs_reload_handler(
         "status": "ok",
         "cert_path": cert_path,
         "key_path": key_path,
-        "note": "certificate written to disk — restart or POST /reload (if not a cold-field change) to activate"
+        "note": "certificate written to disk but NOT yet active — the running TLS listener \
+                 was built once at startup and does not re-read cert/key files; POST /reload \
+                 will not activate it either, since the config paths themselves haven't \
+                 changed. A restart of the process (or --upgrade for a zero-downtime process \
+                 swap) is required to actually serve the new certificate."
     })))
 }
 
