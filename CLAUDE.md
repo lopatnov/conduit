@@ -1423,3 +1423,65 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   с уже существующими Routine (штатный ежедневный `feature-workspace-cycle` в
   01:00 UTC, `Mise /evolve` в 06:00 UTC, `doc2html` QA в 11:00 UTC 2026-08-22),
   чтобы не создавать одновременные срабатывания на один и тот же слот сессии.
+
+### Реализовано в сессии 2026-08-23 (#132 conduit-faults + #164 JWKS test coverage)
+
+- **[PR #255](https://github.com/lopatnov/conduit/pull/255)
+  `feat(workspace): extract conduit-faults crate (#132)`** (ветка
+  `feat/extract-conduit-faults-132` → `claude/cargo-workspace-features-23qxfr`,
+  squash `624d24e`) — `FaultInjectionConfig`/`FaultAbort`/`FaultDelay` и
+  `FaultInjectionGuard` в `crates/conduit-faults`, за существующей фичей
+  `fault-injection`. Конфиг-структуры остаются всегда скомпилированными (чтобы
+  `feature_warnings()` продолжал предупреждать при конфиге без фичи), гейтится
+  только сам guard. Facade re-export на прежних местах — вызывающий код не менялся.
+  `crate-extractor` + независимая проверка кондактором напрямую (диск кончился у
+  четырёх параллельных verification worktree — освобождено удалением уже
+  завершённых worktree, затем полный `cargo build/clippy/test --features full`
+  вручную) + `feature-matrix-runner` + `footprint-auditor` (бинарник практически
+  не изменился, -384 байта). `security-engineer` PASS.
+- **[PR #256](https://github.com/lopatnov/conduit/pull/256)
+  `test(jwt): cover the JWKS/RS256/ES256 code path (#164)`** (ветка
+  `fix/jwt-jwks-test-coverage-164` → `main`, squash `f746ce8`, issue #164 CLOSED)
+  — прерог для #133 по coupling-таблице #114 (перенос кода без тестов на половину
+  путей сделал бы "не сломал ли перенос?" непроверяемым). 11 unit-тестов
+  (`fetch_jwks` против raw-TCP мок JWKS-эндпоинта + `validate_with_jwks`
+  full round-trip, включая тест на RS256→HS256 algorithm-confusion атаку — подписание
+  токена HS256 с использованием опубликованного в JWKS RSA `n` как HMAC-секрета,
+  отклоняется) + 3 integration-теста (реальные RS256/ES256 токены через полный
+  guard chain). По ходу — два реальных review-finding'а, оба исправлены до мерджа:
+  - **SonarCloud "E Security Rating"**: первая версия PR встраивала статические
+    RSA/EC private-key PEM-константы как тестовые фикстуры — триггернуло правило
+    hardcoded-credentials, хотя ключи одноразовые и нигде больше не используются.
+    Исправлено — генерация RSA-2048/P-256 ключей в рантайме теста (`rsa`/`p256`
+    как dev-dependencies, версии уже разрешены транзитивно через `jsonwebtoken`'s
+    `rust_crypto` backend, в граф зависимостей ничего нового не добавилось), по
+    аналогии с `rcgen` "no checked-in cert fixtures". SonarCloud Quality Gate
+    после фикса — PASSED (0 new issues, 0 hotspots).
+  - **Gitar: `jwt.rs` превысил жёсткий лимит 1000 строк** — вызвано ростом файла
+    из-за инлайн JWKS-тестов. Разбито через план `architect`: продакшн-код
+    (365 строк) остался в `jwt.rs` без изменений, старые HS256-тесты перенесены
+    в `src/filter/jwt/tests.rs`, новый JWKS-материал — в
+    `src/filter/jwt/tests/jwks.rs`. Видимость не расширялась
+    (`pub(crate) fn extract_claims_unchecked` осталась как есть).
+  - Попутно (по явному запросу пользователя) поправлен сам лимит в
+    `.claude/rules/conventions.md`: правило 400/1000 строк всегда имелось в виду
+    только для продакшн-кода, не для тестов — большой инлайн `mod tests` сам по
+    себе не повод для разбиения.
+  - Gitar отдельно поймал, что integration-тесты в `tests/auth.rs` генерировали
+    RSA-2048 ключ заново в каждом тесте вместо кэша через `OnceLock` (как unit-тесты)
+    — исправлено, время прогона файла упало с ~7.8с до ~3.7с.
+  - `security-engineer` PASS (независимо перепроверил алгоритм confusion-теста
+    против реальной логики `validate_with_jwks`, а не только текста теста) +
+    `lawyer`-проверка двух новых dev-only транзитивных крейтов (`pem` MIT,
+    `simple_asn1` ISC) — без блокирующих находок.
+- Миграционная ветка синхронизирована с `main` дважды за сессию (после #255 — без
+  конфликтов; после #256 — один реальный конфликт в `src/filter/jwt.rs`: миграционная
+  ветка уже независимо перенесла `expand_jwt_templates` в `crate::util::jwt_template`
+  (issue #123), так что её копия тестов `jwt.rs` уже отличалась от версии на `main`
+  до PR #256 — разрешено взятием уже корректного содержимого тестов миграционной
+  ветки + добавлением нового `jwks`-подмодуля). `Cargo.lock`-конфликт разрешён не
+  через full re-lock (`cargo generate-lockfile` неожиданно предлагал bump версий
+  несвязанных пакетов), а через инкрементальный `cargo check` поверх "нашей" копии
+  лока — добавился ровно один новый пакет (`simple_asn1`), без постороннего churn'а.
+  `cargo build/clippy/test --workspace --features full` (1156 lib-тестов + 54
+  integration в `auth.rs`) зелёные после синка, запушено.
