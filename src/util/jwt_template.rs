@@ -75,4 +75,20 @@ mod tests {
         let result = expand_jwt_templates("{{ jwt.sub }}", &None);
         assert_eq!(result, "");
     }
+
+    #[test]
+    fn expand_jwt_templates_non_string_claim_is_json_serialized() {
+        let mut claims = std::collections::HashMap::new();
+        claims.insert("age".to_string(), serde_json::json!(42));
+        claims.insert("roles".to_string(), serde_json::json!(["admin", "user"]));
+
+        assert_eq!(
+            expand_jwt_templates("{{ jwt.age }}", &Some(claims.clone())),
+            "42"
+        );
+        assert_eq!(
+            expand_jwt_templates("{{ jwt.roles }}", &Some(claims)),
+            r#"["admin","user"]"#
+        );
+    }
 }

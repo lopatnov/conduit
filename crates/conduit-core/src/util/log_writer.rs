@@ -113,6 +113,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_impl_matches_new() {
+        let w = LogWriter::default();
+        let inner = w.inner.lock().unwrap();
+        assert!(inner.file.is_none(), "default writer should write to stdout");
+        assert!(inner.path.is_none());
+    }
+
+    #[test]
     fn new_writer_uses_stdout() {
         let w = LogWriter::new();
         let inner = w.inner.lock().unwrap();
