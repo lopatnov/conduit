@@ -706,7 +706,9 @@ fn consumers_shared_jwt_without_jwt_feature_generates_warning() {
     .expect("parse ok");
     let warnings = conduit::config::validate::feature_warnings(&config);
     assert!(
-        warnings.iter().any(|w| w.contains("jwt")),
+        warnings
+            .iter()
+            .any(|w| w.contains("compiled without the `jwt` feature")),
         "missing consumers sharedJwt without jwt feature warning: {warnings:?}"
     );
 }
@@ -716,13 +718,19 @@ fn consumers_shared_jwt_without_jwt_feature_generates_warning() {
 #[test]
 #[cfg(all(feature = "consumers", not(feature = "jwt")))]
 fn consumers_per_consumer_jwt_without_jwt_feature_generates_warning() {
+    // Secret is >= 32 bytes so this test doesn't also trigger the unrelated
+    // short-secret warning (check_consumer_jwt_secret_warnings), which would
+    // let the assertion below pass even if the disabled-feature warning were
+    // missing or broken.
     let config = conduit::config::from_str(
-        r#"{ "port": 8080, "consumers": { "consumers": [{ "username": "user-a", "jwt": { "secret": "test-secret" } }] } }"#,
+        r#"{ "port": 8080, "consumers": { "consumers": [{ "username": "user-a", "jwt": { "secret": "0123456789abcdef0123456789abcdef" } }] } }"#,
     )
     .expect("parse ok");
     let warnings = conduit::config::validate::feature_warnings(&config);
     assert!(
-        warnings.iter().any(|w| w.contains("jwt")),
+        warnings
+            .iter()
+            .any(|w| w.contains("compiled without the `jwt` feature")),
         "missing per-consumer jwt without jwt feature warning: {warnings:?}"
     );
 }
