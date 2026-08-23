@@ -680,6 +680,61 @@ fn cache_without_feature_generates_warning() {
     );
 }
 
+/// When consumers feature is off, configuring consumers generates a warning.
+#[test]
+#[cfg(not(feature = "consumers"))]
+fn consumers_without_feature_generates_warning() {
+    let config = conduit::config::from_str(
+        r#"{ "port": 8080, "consumers": { "consumers": [{ "username": "test", "apiKey": "abc" }] } }"#,
+    )
+    .expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("consumers")),
+        "missing consumers without feature warning: {warnings:?}"
+    );
+}
+
+/// When consumers is on but jwt is off, a consumer using `sharedJwt` or a
+/// per-consumer `jwt` credential is silently unreachable — must warn.
+#[test]
+#[cfg(all(feature = "consumers", not(feature = "jwt")))]
+fn consumers_shared_jwt_without_jwt_feature_generates_warning() {
+    let config = conduit::config::from_str(
+        r#"{ "port": 8080, "consumers": { "sharedJwt": { "jwksUrl": "https://example.com/jwks" }, "consumers": [{ "username": "user-a" }] } }"#,
+    )
+    .expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("compiled without the `jwt` feature")),
+        "missing consumers sharedJwt without jwt feature warning: {warnings:?}"
+    );
+}
+
+/// Same narrower case, but via a per-consumer `jwt` credential (V2) instead
+/// of the shared `consumers.sharedJwt` block (V3).
+#[test]
+#[cfg(all(feature = "consumers", not(feature = "jwt")))]
+fn consumers_per_consumer_jwt_without_jwt_feature_generates_warning() {
+    // Secret is >= 32 bytes so this test doesn't also trigger the unrelated
+    // short-secret warning (check_consumer_jwt_secret_warnings), which would
+    // let the assertion below pass even if the disabled-feature warning were
+    // missing or broken.
+    let config = conduit::config::from_str(
+        r#"{ "port": 8080, "consumers": { "consumers": [{ "username": "user-a", "jwt": { "secret": "0123456789abcdef0123456789abcdef" } }] } }"#,
+    )
+    .expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("compiled without the `jwt` feature")),
+        "missing per-consumer jwt without jwt feature warning: {warnings:?}"
+    );
+}
+
 /// A middleware entry with an unknown type is rejected during validation.
 #[test]
 fn validate_rejects_unknown_middleware_type() {

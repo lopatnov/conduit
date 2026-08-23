@@ -248,6 +248,36 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
         ));
     }
 
+    // ── Consumers (feature: consumers) ────────────────────────────────────────
+    #[cfg(not(feature = "consumers"))]
+    if site.consumers.is_some() {
+        warnings.push(format!(
+            "sites[{i}].consumers is configured but Conduit was compiled without the \
+             `consumers` feature — consumer authentication will be disabled and every \
+             request will bypass it. \
+             Recompile with `--features consumers` to enable."
+        ));
+    }
+
+    // ── Consumer JWT / sharedJwt without the `jwt` feature ────────────────────
+    // `consumers` alone doesn't imply `jwt` — a consumer whose only credential
+    // is `jwt` (V2) or a `consumers.sharedJwt` block (V3) is silently
+    // unreachable without it (see `check_consumer_credentials`/
+    // `identify_consumer` in `src/filter/auth.rs`, both `jwt`-gated).
+    #[cfg(all(feature = "consumers", not(feature = "jwt")))]
+    if let Some(ref consumers_cfg) = site.consumers {
+        let has_shared_jwt = consumers_cfg.shared_jwt.is_some();
+        let any_consumer_jwt = consumers_cfg.consumers.iter().any(|c| c.jwt.is_some());
+        if has_shared_jwt || any_consumer_jwt {
+            warnings.push(format!(
+                "sites[{i}].consumers uses `sharedJwt` or a consumer `jwt` credential but \
+                 Conduit was compiled without the `jwt` feature — those consumers will be \
+                 permanently unreachable. \
+                 Recompile with `--features jwt` to enable."
+            ));
+        }
+    }
+
     // Suppress unused-variable warning when all per-site features are enabled.
     #[cfg(all(
         feature = "jwt",
@@ -257,7 +287,8 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
         feature = "redis",
         feature = "cache",
         feature = "upload",
-        feature = "fault-injection"
+        feature = "fault-injection",
+        feature = "consumers"
     ))]
     let _ = (i, site, warnings);
 }
