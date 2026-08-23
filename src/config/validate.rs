@@ -12,10 +12,23 @@ use crate::config::schema::{
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
+/// Distinguishes a hard config error (must not start/reload) from an
+/// advisory one (worth surfacing, but shouldn't block startup/reload) —
+/// see issue #191. `conduit validate`'s pre-flight check treats both the
+/// same way (exit non-zero on either), by design: its whole purpose is to
+/// surface anything worth an operator's attention before a real deploy.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
 #[derive(Debug, PartialEq, Clone, serde::Serialize)]
 pub struct ValidationError {
     pub path: String,
     pub message: String,
+    pub severity: Severity,
 }
 
 impl ValidationError {
@@ -23,8 +36,36 @@ impl ValidationError {
         Self {
             path: path.into(),
             message: message.into(),
+            severity: Severity::Error,
         }
     }
+
+    /// An advisory finding: worth surfacing, but must not by itself block
+    /// server startup or `/reload` (issue #191) — e.g. a still-valid cert
+    /// that's merely close to expiring. `conduit validate` still treats this
+    /// the same as [`Self::new`] (see `Severity`'s doc comment).
+    fn warning(path: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            message: message.into(),
+            severity: Severity::Warning,
+        }
+    }
+}
+
+/// Split validation errors into `(warnings, hard_errors)` by severity (#191).
+///
+/// Callers that gate startup/reload on validation (`run_server()`,
+/// `/reload`) should log `warnings` and continue, only refusing to proceed
+/// when `hard_errors` is non-empty. `conduit validate`'s CLI pre-flight
+/// check deliberately does *not* use this split — it exits non-zero on
+/// either kind, by design (see `Severity`'s doc comment).
+pub fn partition_by_severity(
+    errors: Vec<ValidationError>,
+) -> (Vec<ValidationError>, Vec<ValidationError>) {
+    errors
+        .into_iter()
+        .partition(|e| e.severity == Severity::Warning)
 }
 
 pub fn validate(config: &AppConfig) -> Vec<ValidationError> {
@@ -1120,9 +1161,11 @@ fn validate_tls_client_auth(
 
 /// Check a PEM certificate file for expiry.
 ///
-/// - If the cert is already expired → validation error.
-/// - If the cert expires within 30 days → validation error with "WARNING:" prefix
-///   (surfaced as an error so `conduit validate` exits non-zero, prompting renewal).
+/// - If the cert is already expired → hard validation error (blocks startup/reload).
+/// - If the cert expires within 30 days → advisory `Severity::Warning` (issue #191):
+///   `conduit validate` still exits non-zero on it (prompting renewal before a real
+///   deploy), but `run_server()`/`/reload` log it and continue rather than refusing
+///   to start on an otherwise-valid certificate.
 /// - If the file does not exist yet → silently ignored (cert may be provisioned later).
 /// - If the file cannot be parsed → silently ignored (startup will fail with a clearer error).
 fn check_cert_expiry(cert_path: &str, prefix: &str, errors: &mut Vec<ValidationError>) {
@@ -1161,7 +1204,7 @@ fn check_cert_expiry(cert_path: &str, prefix: &str, errors: &mut Vec<ValidationE
         ));
     } else if expires_at <= warn_threshold {
         let days_left = expires_at.duration_since(now).unwrap_or_default().as_secs() / 86400;
-        errors.push(ValidationError::new(
+        errors.push(ValidationError::warning(
             prefix,
             format!("WARNING: TLS certificate expires in {days_left} day(s) — renew soon"),
         ));
@@ -1983,6 +2026,15 @@ mod tests {
             "expired cert must produce an expiry error: {:?}",
             e
         );
+        // Regression test for #191: an actually-expired cert must stay a
+        // hard error (Severity::Error) — only the "still valid, but soon"
+        // case (see cert_expiry_soon_returns_warning below) becomes advisory.
+        assert!(
+            e.iter()
+                .any(|err| err.message.contains("expired") && err.severity == Severity::Error),
+            "expired cert must be Severity::Error, not just Severity::Warning: {:?}",
+            e
+        );
     }
 
     #[test]
@@ -2004,6 +2056,44 @@ mod tests {
             e.iter().any(|err| err.message.contains("WARNING")),
             "soon-expiring cert must produce a WARNING: {:?}",
             e
+        );
+        // Regression test for #191: a still-valid-but-soon-expiring cert must
+        // be Severity::Warning (advisory — must not block startup/reload),
+        // not Severity::Error (which would hard-fail the server).
+        assert!(
+            e.iter()
+                .any(|err| err.message.contains("WARNING") && err.severity == Severity::Warning),
+            "soon-expiring cert must be Severity::Warning, not Severity::Error: {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn partition_by_severity_splits_warnings_from_hard_errors() {
+        let errors = vec![
+            ValidationError::new("a", "hard 1"),
+            ValidationError::warning("b", "soft 1"),
+            ValidationError::new("c", "hard 2"),
+            ValidationError::warning("d", "soft 2"),
+        ];
+        let (warnings, hard_errors) = partition_by_severity(errors);
+        assert_eq!(warnings.len(), 2, "got: {warnings:?}");
+        assert!(warnings.iter().all(|w| w.severity == Severity::Warning));
+        assert_eq!(hard_errors.len(), 2, "got: {hard_errors:?}");
+        assert!(hard_errors.iter().all(|e| e.severity == Severity::Error));
+    }
+
+    #[test]
+    fn partition_by_severity_all_warnings_yields_no_hard_errors() {
+        let errors = vec![
+            ValidationError::warning("a", "soft 1"),
+            ValidationError::warning("b", "soft 2"),
+        ];
+        let (warnings, hard_errors) = partition_by_severity(errors);
+        assert_eq!(warnings.len(), 2);
+        assert!(
+            hard_errors.is_empty(),
+            "an all-warnings input must never produce a hard error: {hard_errors:?}"
         );
     }
 
