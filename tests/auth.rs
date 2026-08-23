@@ -945,7 +945,11 @@ MBdVbndLwtz+I5BBg5yFxotFl9oEJsFbskyQBFV5Lx5glUzRJD5+D+p6
             .header("authorization", format!("Bearer {token}"))
             .send()
             .expect("GET /");
-        assert_eq!(resp.status().as_u16(), 401, "kid with no matching JWKS key must be rejected");
+        assert_eq!(
+            resp.status().as_u16(),
+            401,
+            "kid with no matching JWKS key must be rejected"
+        );
     }
 } // mod jwt
 

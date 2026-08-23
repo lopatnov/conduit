@@ -848,7 +848,11 @@ MBdVbndLwtz+I5BBg5yFxotFl9oEJsFbskyQBFV5Lx5glUzRJD5+D+p6
         encode(&header, &claims, &key).unwrap()
     }
 
-    fn make_hs256_token_with_kid(kid: &str, secret_bytes: &[u8], claims: serde_json::Value) -> String {
+    fn make_hs256_token_with_kid(
+        kid: &str,
+        secret_bytes: &[u8],
+        claims: serde_json::Value,
+    ) -> String {
         let key = EncodingKey::from_secret(secret_bytes);
         let mut header = Header::new(Algorithm::HS256);
         header.kid = Some(kid.to_owned());
