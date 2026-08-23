@@ -758,51 +758,61 @@ mod jwt {
 
     // ── JWKS / RS256 / ES256 end-to-end (issue #164) ──────────────────────────
     //
-    // Same throwaway RSA-2048 / P-256 key material as
-    // `src/filter/jwt.rs`'s unit tests — duplicated here since integration
-    // tests are a separate compilation unit. See that file's test module
-    // for provenance (generated once via openssl, not checked-in fixtures).
+    // RSA-2048 / P-256 test key material is generated fresh at test-run
+    // time (not embedded as static PEM literals) — matches the `rcgen`
+    // "no checked-in cert fixtures" idiom already used for TLS test certs
+    // (`.claude/skills/testing/SKILL.md`). Same approach as
+    // `src/filter/jwt.rs`'s unit tests; duplicated here since integration
+    // tests are a separate compilation unit.
 
-    const JWKS_TEST_RSA_PRIVATE_PEM: &str = "-----BEGIN PRIVATE KEY-----
-MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDNWnf0LvkZ5S5x
-eRyvsL+ItXjrVF9Rxpkja1QCtbGI4kSIYpeNexcdCRbpylB2SgB39v4g/xRktBBk
-7brOQbn9kBLDa49vpnGlHrViA2e8dmwC3OLLAza64p5hItraLJ909XOeck/sKyCx
-o3dHFsz74xhLyqZv6kGjm67GVN6+rdR/ItCcMgEk5pbA1apW2659H7T9MkqCP2g2
-xKLaTCWeCFVVCBCGCXOxESlGdXmZq/4VT+q7gtq0d3f6XuCIE+5dvREO8lPBG+hq
-sjKCnEpddWxfPwy/085r8vLwBFKo7GgndwRPEmoboQUEy4n4+QbLDpKfidPfo/b2
-GQBAhlqjAgMBAAECggEARev3CirwYLPbk4GkleH95aO874xEBIk13YyPB3ksYSqC
-IVpItkDiRt2wcpyTtyNNc4ujTkLsg7mYF3Wm9NIGbWMgMHAwX9jxu0JwilYUfWRp
-NLRXeL64ZPwC55pBoKYvCVkGLD5KHmU09aduVsNZuq7BuBThhRvji7zXzupZCd10
-ZrjigojOlbVD7qUd50Hxm4MBmWR81uEGIocZjaeIyJBVI5jZHdo2SthXI0WESgSl
-5GBIptdCDdBRFP9NdmkjqvkG4sjg3NC58LqRLLVit2q0sJUF1Djq20hYnFRG3amX
-swPggHMeCY3b1ofKZPbe4DBPW48oCeICqcrS82zjMQKBgQDnTgk/ljSyl1uUhI3n
-sMB/N0LNSxqotxenTIdGWQjNZPCuPqODYZ/QTfs1CGxpy30zZMyrU4XlUerYJfSB
-K7c3OfcQc4PaXFMd9xfD4HGFfQsY+AxVH0I5JbXbHwKkgQCBZlY51RCVn6sS8Y6B
-FC/Yap8SHOmM765O0Y3FWdnCawKBgQDjRyJuiI+zdKOHW9nZ7tRhYLk5vVV/l02N
-0sm7qzods+NyUQy/RG1x/73WSBmzimUUKwVxu57sQ4k087fuHIk0C/X69wzrYk+j
-AVjEVqDYttL5HUZx0RBt42plyNnnfoTmk0pZMoGCSlVmhiWzi0cIL3WB0c/nBMT5
-cqPutkOGqQKBgGXIois4BtJ75lHRjrxgvCR/BcdfAEkz4JW/CFv9e/EeNQcIC14a
-DIBWgG+S2FopsFt4RNQzed0ykfwxn4lj2kjUGhNEMcZaED1EaVHJp0rNfp+rL4oZ
-qkOJg5/74mbPWZCXnuPuDVE6JMa+Qy4r2u4J5RvMWz2ojvSiJBeu9TMnAoGAPcqn
-R9oFB8tccn68eg3+3ALKGTKqvifKxBZdFpL1GAJCgmAa0R2vi+D2If40TqX/2T3h
-GwzhpmauNSFWDnzfqLDfzb3BW3W9JRpGogrTbFg4f9Y/ws4OY3IDCW1UISY6x92f
-xyR+JYhEM72hHnFtfII6tnLuzWZ0j0Vl4I7ZSRECgYBDjd0Q4xNMh86Ww33Jw00s
-u4DwNPb1Ej548zHBzLhLYEvjI55HfzdMC3gWyFN61OmBn/cW3ICRpdIWY8SBjCcD
-PbDYkdfi3nNWacEhvLerpi6H9btsbmkhJGCtN8XER/1TopD+rMfa9h3Z8dUx5XF/
-LfRIVRjRYsggsiOofp2hgQ==
------END PRIVATE KEY-----
-";
-    const JWKS_TEST_RSA_N: &str = "zVp39C75GeUucXkcr7C_iLV461RfUcaZI2tUArWxiOJEiGKXjXsXHQkW6cpQdkoAd_b-IP8UZLQQZO26zkG5_ZASw2uPb6ZxpR61YgNnvHZsAtziywM2uuKeYSLa2iyfdPVznnJP7CsgsaN3RxbM--MYS8qmb-pBo5uuxlTevq3UfyLQnDIBJOaWwNWqVtuufR-0_TJKgj9oNsSi2kwlnghVVQgQhglzsREpRnV5mav-FU_qu4LatHd3-l7giBPuXb0RDvJTwRvoarIygpxKXXVsXz8Mv9POa_Ly8ARSqOxoJ3cETxJqG6EFBMuJ-PkGyw6Sn4nT36P29hkAQIZaow";
-    const JWKS_TEST_RSA_E: &str = "AQAB";
+    struct JwksTestRsaKey {
+        pem: String,
+        n: String,
+        e: String,
+    }
 
-    const JWKS_TEST_EC_PRIVATE_PEM: &str = "-----BEGIN PRIVATE KEY-----
-MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgO+vG0gJqP/s7JUdy
-BwPeilrWBLT5dNFHVXKlX6uu12yhRANCAASe6tX2EgNOmZZVXoVAqvJTQKashueQ
-MBdVbndLwtz+I5BBg5yFxotFl9oEJsFbskyQBFV5Lx5glUzRJD5+D+p6
------END PRIVATE KEY-----
-";
-    const JWKS_TEST_EC_X: &str = "nurV9hIDTpmWVV6FQKryU0CmrIbnkDAXVW53S8Lc_iM";
-    const JWKS_TEST_EC_Y: &str = "kEGDnIXGi0WX2gQmwVuyTJAEVXkvHmCVTNEkPn4P6no";
+    fn gen_jwks_test_rsa_key() -> JwksTestRsaKey {
+        use rsa::pkcs1::EncodeRsaPrivateKey;
+        use rsa::traits::PublicKeyParts;
+        let private_key =
+            rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048).expect("RSA-2048 keygen");
+        let pem = private_key
+            .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
+            .expect("RSA PKCS#1 PEM encode")
+            .to_string();
+        let public_key = private_key.to_public_key();
+        JwksTestRsaKey {
+            pem,
+            n: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(public_key.n().to_bytes_be()),
+            e: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(public_key.e().to_bytes_be()),
+        }
+    }
+
+    struct JwksTestEcKey {
+        pem: String,
+        x: String,
+        y: String,
+    }
+
+    fn gen_jwks_test_ec_key() -> JwksTestEcKey {
+        use p256::elliptic_curve::sec1::ToEncodedPoint;
+        use p256::pkcs8::EncodePrivateKey;
+        let secret_key = p256::SecretKey::random(&mut rand::thread_rng());
+        let pem = secret_key
+            .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
+            .expect("EC PKCS#8 PEM encode")
+            .to_string();
+        let point = secret_key.public_key().to_encoded_point(false);
+        JwksTestEcKey {
+            pem,
+            x: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(point.x().expect("uncompressed point has x")),
+            y: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(point.y().expect("uncompressed point has y")),
+        }
+    }
 
     /// Raw-TCP mock JWKS endpoint (see `.claude/skills/testing/SKILL.md`
     /// "Mock upstream = raw TcpListener, not Axum") — returns `body` as a
@@ -862,13 +872,15 @@ MBdVbndLwtz+I5BBg5yFxotFl9oEJsFbskyQBFV5Lx5glUzRJD5+D+p6
 
     #[test]
     fn jwt_jwks_rs256_valid_token_passes() {
+        let rsa = gen_jwks_test_rsa_key();
         let jwks_body = format!(
-            r#"{{"keys":[{{"kty":"RSA","kid":"rsa-1","n":"{JWKS_TEST_RSA_N}","e":"{JWKS_TEST_RSA_E}"}}]}}"#
+            r#"{{"keys":[{{"kty":"RSA","kid":"rsa-1","n":"{}","e":"{}"}}]}}"#,
+            rsa.n, rsa.e
         );
         let jwks_addr = spawn_mock_jwks_server(jwks_body);
         let srv = server_with_jwks_auth(&format!("http://{jwks_addr}/jwks"));
 
-        let key = EncodingKey::from_rsa_pem(JWKS_TEST_RSA_PRIVATE_PEM.as_bytes()).unwrap();
+        let key = EncodingKey::from_rsa_pem(rsa.pem.as_bytes()).unwrap();
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some("rsa-1".into());
         let token = encode(
@@ -892,13 +904,15 @@ MBdVbndLwtz+I5BBg5yFxotFl9oEJsFbskyQBFV5Lx5glUzRJD5+D+p6
 
     #[test]
     fn jwt_jwks_es256_valid_token_passes() {
+        let ec = gen_jwks_test_ec_key();
         let jwks_body = format!(
-            r#"{{"keys":[{{"kty":"EC","kid":"ec-1","crv":"P-256","x":"{JWKS_TEST_EC_X}","y":"{JWKS_TEST_EC_Y}"}}]}}"#
+            r#"{{"keys":[{{"kty":"EC","kid":"ec-1","crv":"P-256","x":"{}","y":"{}"}}]}}"#,
+            ec.x, ec.y
         );
         let jwks_addr = spawn_mock_jwks_server(jwks_body);
         let srv = server_with_jwks_auth(&format!("http://{jwks_addr}/jwks"));
 
-        let key = EncodingKey::from_ec_pem(JWKS_TEST_EC_PRIVATE_PEM.as_bytes()).unwrap();
+        let key = EncodingKey::from_ec_pem(ec.pem.as_bytes()).unwrap();
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some("ec-1".into());
         let token = encode(
@@ -924,13 +938,15 @@ MBdVbndLwtz+I5BBg5yFxotFl9oEJsFbskyQBFV5Lx5glUzRJD5+D+p6
     fn jwt_jwks_wrong_kid_returns_401() {
         // JWKS only advertises "rsa-other" — a token signed with kid
         // "rsa-1" has no matching key to verify against.
+        let rsa = gen_jwks_test_rsa_key();
         let jwks_body = format!(
-            r#"{{"keys":[{{"kty":"RSA","kid":"rsa-other","n":"{JWKS_TEST_RSA_N}","e":"{JWKS_TEST_RSA_E}"}}]}}"#
+            r#"{{"keys":[{{"kty":"RSA","kid":"rsa-other","n":"{}","e":"{}"}}]}}"#,
+            rsa.n, rsa.e
         );
         let jwks_addr = spawn_mock_jwks_server(jwks_body);
         let srv = server_with_jwks_auth(&format!("http://{jwks_addr}/jwks"));
 
-        let key = EncodingKey::from_rsa_pem(JWKS_TEST_RSA_PRIVATE_PEM.as_bytes()).unwrap();
+        let key = EncodingKey::from_rsa_pem(rsa.pem.as_bytes()).unwrap();
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some("rsa-1".into());
         let token = encode(

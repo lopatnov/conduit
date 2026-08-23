@@ -237,6 +237,16 @@ time        = { version = "0.3", features = ["std"] }
 wat         = "1"
 # rcgen is used in tests for cert generation even without the acme feature.
 rcgen       = "0.14"
+# rsa/p256/rand: generate throwaway RSA-2048 and P-256 keypairs at test-run
+# time for JWKS/RS256/ES256 coverage (issue #164) — same versions already
+# resolved transitively via jsonwebtoken's rust_crypto backend, so this adds
+# no new entries to the dependency graph, just a direct dev-dep edge to what
+# was already there. Generating at runtime (not embedding static PEM
+# literals) matches the `rcgen` "no checked-in cert fixtures" idiom above
+# and avoids tripping secret-scanners on fake-but-key-shaped source text.
+rsa         = "0.9"
+p256        = "0.13"
+rand        = "0.8"
 # jsonwebtoken is used in auth integration tests to generate test tokens.
 # Listed as dev-dep so tests compile without --features jwt. `use_pem` is
 # needed only here (RS256/ES256 JWKS test tokens, issue #164) — the main

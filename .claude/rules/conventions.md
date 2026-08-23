@@ -46,11 +46,22 @@ whether something is patch/minor/major.
 - **Zero warnings** is the bar — both default and `--features full` builds (`-D warnings`).
 - English only — code, comments, commit messages, CLI output, errors, logs, docs
   (CLAUDE.md "Language & Localization" — this overrides any default behavior).
-- **File length**: soft limit 400 lines, hard limit 1000 lines per source file. Crossing
-  400 is a signal to split into modules/helpers (see the `logging_phase.rs` /
-  `request_phase.rs` phase-orchestrator pattern from PR #91/#92); a file must never reach
-  1000 lines — split it before that point, not after. When a file crosses the limit, call
-  the **`architect`** subagent (opus) for a concrete split plan before implementing it.
+- **File length**: soft limit 400 lines, hard limit 1000 lines — **counts production code
+  only, not tests.** Crossing 400 lines of production code is a signal to split into
+  modules/helpers (see the `logging_phase.rs` / `request_phase.rs` phase-orchestrator
+  pattern from PR #91/#92); production code must never reach 1000 lines — split it before
+  that point, not after. When production code crosses the limit, call the **`architect`**
+  subagent (opus) for a concrete split plan before implementing it.
+  Test code is explicitly exempt from this count — an inline `#[cfg(test)] mod tests { ... }`
+  block (or a dedicated `tests.rs`/`tests/` submodule) can be as long as the feature genuinely
+  needs, and a large test module is not by itself a reason to split. (Clarified 2026-08-23 at
+  the user's explicit request, after a CI review bot flagged `src/filter/jwt.rs` for crossing
+  1000 total lines when its production code was ~365 lines and the rest was new JWKS test
+  coverage — the rule's intent was always about production code complexity, not test volume.)
+  If a test module genuinely gets unwieldy to navigate, splitting it into a logical
+  `tests/<topic>.rs` submodule (Rust's directory-module convention — `foo.rs` + `foo/tests.rs`)
+  is still fine as an organizational choice; it's just not *mandated* by this limit the way a
+  production-code split is.
 
 ## PR checklist (gate before merge)
 
