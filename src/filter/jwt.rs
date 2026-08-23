@@ -703,4 +703,336 @@ mod tests {
             "non-object payload must yield None, not a HashMap"
         );
     }
+
+    // ── JWKS / RS256 / ES256 (issue #164) ─────────────────────────────────────
+    //
+    // Everything below exercises the JWKS code path — fetch_jwks,
+    // get_jwks_keys, and validate_with_jwks — which previously had zero
+    // automated coverage despite being half of what this feature advertises
+    // ("HS256 + RS256/ES256 via JWKS", CLAUDE.md / docs/configuration.md).
+    //
+    // Test key material below is a throwaway RSA-2048 and P-256 keypair
+    // generated once via:
+    //   openssl genrsa 2048
+    //   openssl ecparam -genkey -noout -name prime256v1 \
+    //       | openssl pkcs8 -topk8 -nocrypt
+    // with their public JWK components (n/e, x/y) derived from the same
+    // keys. Not used anywhere outside this module — kept as source literals
+    // rather than a checked-in file fixture, same rationale as the `rcgen`
+    // idiom used for TLS test certs (`.claude/skills/testing/SKILL.md`).
+
+    const TEST_RSA_PRIVATE_PEM: &str = "-----BEGIN PRIVATE KEY-----
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDNWnf0LvkZ5S5x
+eRyvsL+ItXjrVF9Rxpkja1QCtbGI4kSIYpeNexcdCRbpylB2SgB39v4g/xRktBBk
+7brOQbn9kBLDa49vpnGlHrViA2e8dmwC3OLLAza64p5hItraLJ909XOeck/sKyCx
+o3dHFsz74xhLyqZv6kGjm67GVN6+rdR/ItCcMgEk5pbA1apW2659H7T9MkqCP2g2
+xKLaTCWeCFVVCBCGCXOxESlGdXmZq/4VT+q7gtq0d3f6XuCIE+5dvREO8lPBG+hq
+sjKCnEpddWxfPwy/085r8vLwBFKo7GgndwRPEmoboQUEy4n4+QbLDpKfidPfo/b2
+GQBAhlqjAgMBAAECggEARev3CirwYLPbk4GkleH95aO874xEBIk13YyPB3ksYSqC
+IVpItkDiRt2wcpyTtyNNc4ujTkLsg7mYF3Wm9NIGbWMgMHAwX9jxu0JwilYUfWRp
+NLRXeL64ZPwC55pBoKYvCVkGLD5KHmU09aduVsNZuq7BuBThhRvji7zXzupZCd10
+ZrjigojOlbVD7qUd50Hxm4MBmWR81uEGIocZjaeIyJBVI5jZHdo2SthXI0WESgSl
+5GBIptdCDdBRFP9NdmkjqvkG4sjg3NC58LqRLLVit2q0sJUF1Djq20hYnFRG3amX
+swPggHMeCY3b1ofKZPbe4DBPW48oCeICqcrS82zjMQKBgQDnTgk/ljSyl1uUhI3n
+sMB/N0LNSxqotxenTIdGWQjNZPCuPqODYZ/QTfs1CGxpy30zZMyrU4XlUerYJfSB
+K7c3OfcQc4PaXFMd9xfD4HGFfQsY+AxVH0I5JbXbHwKkgQCBZlY51RCVn6sS8Y6B
+FC/Yap8SHOmM765O0Y3FWdnCawKBgQDjRyJuiI+zdKOHW9nZ7tRhYLk5vVV/l02N
+0sm7qzods+NyUQy/RG1x/73WSBmzimUUKwVxu57sQ4k087fuHIk0C/X69wzrYk+j
+AVjEVqDYttL5HUZx0RBt42plyNnnfoTmk0pZMoGCSlVmhiWzi0cIL3WB0c/nBMT5
+cqPutkOGqQKBgGXIois4BtJ75lHRjrxgvCR/BcdfAEkz4JW/CFv9e/EeNQcIC14a
+DIBWgG+S2FopsFt4RNQzed0ykfwxn4lj2kjUGhNEMcZaED1EaVHJp0rNfp+rL4oZ
+qkOJg5/74mbPWZCXnuPuDVE6JMa+Qy4r2u4J5RvMWz2ojvSiJBeu9TMnAoGAPcqn
+R9oFB8tccn68eg3+3ALKGTKqvifKxBZdFpL1GAJCgmAa0R2vi+D2If40TqX/2T3h
+GwzhpmauNSFWDnzfqLDfzb3BW3W9JRpGogrTbFg4f9Y/ws4OY3IDCW1UISY6x92f
+xyR+JYhEM72hHnFtfII6tnLuzWZ0j0Vl4I7ZSRECgYBDjd0Q4xNMh86Ww33Jw00s
+u4DwNPb1Ej548zHBzLhLYEvjI55HfzdMC3gWyFN61OmBn/cW3ICRpdIWY8SBjCcD
+PbDYkdfi3nNWacEhvLerpi6H9btsbmkhJGCtN8XER/1TopD+rMfa9h3Z8dUx5XF/
+LfRIVRjRYsggsiOofp2hgQ==
+-----END PRIVATE KEY-----
+";
+    const TEST_RSA_N: &str = "zVp39C75GeUucXkcr7C_iLV461RfUcaZI2tUArWxiOJEiGKXjXsXHQkW6cpQdkoAd_b-IP8UZLQQZO26zkG5_ZASw2uPb6ZxpR61YgNnvHZsAtziywM2uuKeYSLa2iyfdPVznnJP7CsgsaN3RxbM--MYS8qmb-pBo5uuxlTevq3UfyLQnDIBJOaWwNWqVtuufR-0_TJKgj9oNsSi2kwlnghVVQgQhglzsREpRnV5mav-FU_qu4LatHd3-l7giBPuXb0RDvJTwRvoarIygpxKXXVsXz8Mv9POa_Ly8ARSqOxoJ3cETxJqG6EFBMuJ-PkGyw6Sn4nT36P29hkAQIZaow";
+    const TEST_RSA_E: &str = "AQAB";
+
+    // A second, unrelated RSA private key — same shape, different key
+    // material. Used only to prove JWKS signature verification actually
+    // checks the signature, not just kid presence / structural validity.
+    const OTHER_RSA_PRIVATE_PEM: &str = "-----BEGIN PRIVATE KEY-----
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCRWwkHNyEaS2Zy
+x4pAQr685oc7A+QReSIIvuihvdZ1pQCIbKax7xdkCTGJ1gJy+Z1w/qF4PE3Om6RZ
+HBzjajNtKJDQUNdOO+qGB2Kul7/wETuZxzwY0KLcwwDmjYJiYH0iSaWWQFkNsPcz
+xsk7EBzm6GAAP5dYvYtIrDLdFmzSq4gchpZFjFqGR/iPrRH/RcY+KpwijWPxN9fk
+0kFOom05W3CN2naMPG25EZRwB8OCgnyZIqaSBA+XLUH8x+UkqdhM1tuRP9wmJyP7
+mSBNGDU+c/BdGIwJqM5zDE/RjHZqb/NaCubqoAtR4bAInygp9xRe1yEqFwZ62CJv
+UNetpGJLAgMBAAECggEARRDghVEopXnWQAuYIViVkORotR3wLG1GQqmTl+bAFD5G
+towJ2NomXx4PL9NEbqU0rhAPYTYmMlm6Ca1V/KjlrqRrys/evgmyMeUoepUYWlWV
+4EfOwmvANu1hbCspHN2EF9qul2oT5nGDxFJcI3hQg1c+5l9Q5pWJrQpFUM/q/V5U
+M3uDZWN1ZfHMWNmB94hfRd6skSJP9Djnd5uOXth5fQIIPv/UqY+Xa/nuCHUI4rud
+XiKdlZSpBWrzOuqvXl2kbJC8E4MsHIPbdjlEowknpQ2OuNJyAF1Bp3gwjbrwAQGm
+ueFkiM+1FZN8YESOxacL7QXoKoezrvy5OQX0c2xMQQKBgQDM53MrWnXLh28gcVYA
+QUlNVDCUbTcMK501xbZpLwN8GwQXj36IFgNLmrK/9hyXvC2vnyispxZymUHyIdlE
+Y5wajS+5fJhbYcYlizC/tupNQEf0Ole9ulKFloVc8jnDDmLBOCW3rDtv5+lNj+gF
+RaRRjPQUY4fXGlla8HcWsakfiQKBgQC1mimwbVmeVzZYxVdoakcg1TYF3lHULuQI
+SYEC4rJfmIIefCOJ5FDeBRrG6JSC4r0bbDb6V/PGJS7ATWJ90qvKW5xoYlT3xqXr
+HoVsSm7toXZvgVmgWSR7ZdWjrCj9YaDQLPF2lVXs46sXf6VreyVmvqrwwUyLXRJs
+88JUGEnKMwKBgHUqyAV7Va5LRHU1uaqtql/Ii3rkNL0F14CfDN56nrCBtkZOrFje
+1YWO8TWpYtI1LZ6mERkg9koTbs0pI9biaqoYH7keEPT4JNjlDbwiuTnxTvPNxMxd
+1cBDwQDUFcl+2WOJWq/7kYU9BIBwkIkrOHnVcuCRxWRv0baZmE9mycGZAoGAQE20
+UVqHD0BGaCyIhNqNER0uIenVA9MOv7h3TDRFgQAZov3F/7+uus8H6kLUw3vSBnHN
+Ddwy34ivAzzjkTYVynOh8HxRJeNbQOPvzqaUnOQ9ccJVoCeweVlXyrrdUMtPDCe9
+4IWEhXsgTBPQ2TwjxDvjf5iSqA5uxdGSkACBsG0CgYBiR8vCK1i1Q2XaGrYgactQ
+9PucxLwA7FJieoxhszuCMjUvRUfxS3eSTKShbR/mP0Da3q3ku3kzlRF57kjA9Wd9
+iRx9uVETgyq9g3iT+TYRuSg5WwEvUfisqbNL/Zsc4W8KM7sDM1YPuSH0tbu1V/VT
+CGSyIC/d2C9tqL5Ay/de+w==
+-----END PRIVATE KEY-----
+";
+
+    const TEST_EC_PRIVATE_PEM: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgO+vG0gJqP/s7JUdy
+BwPeilrWBLT5dNFHVXKlX6uu12yhRANCAASe6tX2EgNOmZZVXoVAqvJTQKashueQ
+MBdVbndLwtz+I5BBg5yFxotFl9oEJsFbskyQBFV5Lx5glUzRJD5+D+p6
+-----END PRIVATE KEY-----
+";
+    const TEST_EC_X: &str = "nurV9hIDTpmWVV6FQKryU0CmrIbnkDAXVW53S8Lc_iM";
+    const TEST_EC_Y: &str = "kEGDnIXGi0WX2gQmwVuyTJAEVXkvHmCVTNEkPn4P6no";
+
+    /// Bare-TCP HTTP server (see `.claude/skills/testing/SKILL.md` "Mock
+    /// upstream = raw TcpListener, not Axum") that returns `body` with
+    /// `status_line` for every connection it accepts, until the test
+    /// process exits. Returns the `http://127.0.0.1:PORT` base URL.
+    fn spawn_mock_http_server(status_line: &str, body: &str) -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let status_line = status_line.to_owned();
+        let body = body.to_owned();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let status_line = status_line.clone();
+                let body = body.clone();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let _ = s.read(&mut buf);
+                    let response = format!(
+                        "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = s.write_all(response.as_bytes());
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn rsa_jwks_body(kid: &str, n: &str, e: &str) -> String {
+        format!(r#"{{"keys":[{{"kty":"RSA","kid":"{kid}","n":"{n}","e":"{e}"}}]}}"#)
+    }
+
+    fn ec_jwks_body(kid: &str, x: &str, y: &str) -> String {
+        format!(r#"{{"keys":[{{"kty":"EC","kid":"{kid}","crv":"P-256","x":"{x}","y":"{y}"}}]}}"#)
+    }
+
+    fn make_rs256_token(kid: &str, private_pem: &str, claims: serde_json::Value) -> String {
+        let key = EncodingKey::from_rsa_pem(private_pem.as_bytes()).unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(kid.to_owned());
+        encode(&header, &claims, &key).unwrap()
+    }
+
+    fn make_es256_token(kid: &str, private_pem: &str, claims: serde_json::Value) -> String {
+        let key = EncodingKey::from_ec_pem(private_pem.as_bytes()).unwrap();
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some(kid.to_owned());
+        encode(&header, &claims, &key).unwrap()
+    }
+
+    fn make_hs256_token_with_kid(kid: &str, secret_bytes: &[u8], claims: serde_json::Value) -> String {
+        let key = EncodingKey::from_secret(secret_bytes);
+        let mut header = Header::new(Algorithm::HS256);
+        header.kid = Some(kid.to_owned());
+        encode(&header, &claims, &key).unwrap()
+    }
+
+    // ── fetch_jwks ────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_jwks_parses_valid_rsa_key() {
+        let body = rsa_jwks_body("rsa-1", TEST_RSA_N, TEST_RSA_E);
+        let base = spawn_mock_http_server("HTTP/1.1 200 OK", &body);
+        let keys = fetch_jwks(&format!("{base}/jwks"))
+            .await
+            .expect("fetch should succeed");
+        assert_eq!(keys.len(), 1);
+        match keys.get("rsa-1").expect("rsa-1 key must be present") {
+            CachedKey::Rsa { n, e } => {
+                assert_eq!(n, TEST_RSA_N);
+                assert_eq!(e, TEST_RSA_E);
+            }
+            CachedKey::Ec { .. } => panic!("expected an RSA key, got EC"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_jwks_parses_valid_ec_key() {
+        let body = ec_jwks_body("ec-1", TEST_EC_X, TEST_EC_Y);
+        let base = spawn_mock_http_server("HTTP/1.1 200 OK", &body);
+        let keys = fetch_jwks(&format!("{base}/jwks"))
+            .await
+            .expect("fetch should succeed");
+        assert_eq!(keys.len(), 1);
+        match keys.get("ec-1").expect("ec-1 key must be present") {
+            CachedKey::Ec { x, y, .. } => {
+                assert_eq!(x, TEST_EC_X);
+                assert_eq!(y, TEST_EC_Y);
+            }
+            CachedKey::Rsa { .. } => panic!("expected an EC key, got RSA"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_jwks_skips_rsa_key_missing_e() {
+        // No "e" field — the RSA branch in fetch_jwks must warn and skip
+        // this key rather than erroring the whole fetch or panicking.
+        let body = r#"{"keys":[{"kty":"RSA","kid":"rsa-bad","n":"abc"}]}"#;
+        let base = spawn_mock_http_server("HTTP/1.1 200 OK", body);
+        let keys = fetch_jwks(&format!("{base}/jwks"))
+            .await
+            .expect("fetch should still succeed for the response as a whole");
+        assert!(
+            keys.is_empty(),
+            "key missing a required component must be skipped, not partially inserted"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_jwks_malformed_json_returns_err() {
+        let base = spawn_mock_http_server("HTTP/1.1 200 OK", "not valid json{");
+        assert!(fetch_jwks(&format!("{base}/jwks")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_jwks_non_200_status_returns_err() {
+        let base = spawn_mock_http_server("HTTP/1.1 404 Not Found", "{}");
+        assert!(fetch_jwks(&format!("{base}/jwks")).await.is_err());
+    }
+
+    // ── validate_with_jwks (full round-trip: fetch + kid match + verify) ──────
+
+    #[test]
+    fn validate_with_jwks_rs256_valid_token_passes() {
+        let body = rsa_jwks_body("rsa-1", TEST_RSA_N, TEST_RSA_E);
+        let jwks_url = format!("{}/jwks", spawn_mock_http_server("HTTP/1.1 200 OK", &body));
+        let cfg = JwtAuthConfig {
+            jwks_url: Some(jwks_url.clone()),
+            ..Default::default()
+        };
+        let token = make_rs256_token(
+            "rsa-1",
+            TEST_RSA_PRIVATE_PEM,
+            json!({ "sub": "u", "exp": exp_future() }),
+        );
+        assert!(validate_with_jwks(&cfg, &token, &jwks_url).is_ok());
+    }
+
+    #[test]
+    fn validate_with_jwks_es256_valid_token_passes() {
+        let body = ec_jwks_body("ec-1", TEST_EC_X, TEST_EC_Y);
+        let jwks_url = format!("{}/jwks", spawn_mock_http_server("HTTP/1.1 200 OK", &body));
+        let cfg = JwtAuthConfig {
+            jwks_url: Some(jwks_url.clone()),
+            ..Default::default()
+        };
+        let token = make_es256_token(
+            "ec-1",
+            TEST_EC_PRIVATE_PEM,
+            json!({ "sub": "u", "exp": exp_future() }),
+        );
+        assert!(validate_with_jwks(&cfg, &token, &jwks_url).is_ok());
+    }
+
+    #[test]
+    fn validate_with_jwks_kid_mismatch_denied() {
+        let body = rsa_jwks_body("rsa-other", TEST_RSA_N, TEST_RSA_E);
+        let jwks_url = format!("{}/jwks", spawn_mock_http_server("HTTP/1.1 200 OK", &body));
+        let cfg = JwtAuthConfig {
+            jwks_url: Some(jwks_url.clone()),
+            ..Default::default()
+        };
+        let token = make_rs256_token(
+            "rsa-1",
+            TEST_RSA_PRIVATE_PEM,
+            json!({ "sub": "u", "exp": exp_future() }),
+        );
+        assert!(validate_with_jwks(&cfg, &token, &jwks_url).is_err());
+    }
+
+    #[test]
+    fn validate_with_jwks_wrong_rsa_key_signature_denied() {
+        let body = rsa_jwks_body("rsa-1", TEST_RSA_N, TEST_RSA_E);
+        let jwks_url = format!("{}/jwks", spawn_mock_http_server("HTTP/1.1 200 OK", &body));
+        let cfg = JwtAuthConfig {
+            jwks_url: Some(jwks_url.clone()),
+            ..Default::default()
+        };
+        // Signed with a *different* RSA private key than the one JWKS
+        // advertises under the same kid — proves signature verification
+        // actually happens, not just kid lookup / structural well-formedness.
+        let token = make_rs256_token(
+            "rsa-1",
+            OTHER_RSA_PRIVATE_PEM,
+            json!({ "sub": "u", "exp": exp_future() }),
+        );
+        assert!(validate_with_jwks(&cfg, &token, &jwks_url).is_err());
+    }
+
+    #[test]
+    fn validate_with_jwks_hs256_algorithm_confusion_rejected() {
+        // Classic RS256->HS256 algorithm-confusion attack: the JWKS
+        // endpoint's public RSA key material is, by definition, public —
+        // an attacker signs an HS256 token using that public key's
+        // components as the HMAC secret, hoping a naive verifier reuses the
+        // same key material for HMAC validation. `validate_with_jwks` picks
+        // its `Validation` algorithm from the *token's own* header (falling
+        // back to RS256 for anything outside the RS/ES set), so an HS256
+        // header here selects Validation::new(RS256) — and jsonwebtoken's
+        // decode() cross-checks the header's actual alg against that,
+        // rejecting the mismatch before any key material is even used to
+        // verify. This test backs the "checked and found clean" note in
+        // issue #164 with an actual assertion against this codebase.
+        let body = rsa_jwks_body("rsa-1", TEST_RSA_N, TEST_RSA_E);
+        let jwks_url = format!("{}/jwks", spawn_mock_http_server("HTTP/1.1 200 OK", &body));
+        let cfg = JwtAuthConfig {
+            jwks_url: Some(jwks_url.clone()),
+            ..Default::default()
+        };
+        let token = make_hs256_token_with_kid(
+            "rsa-1",
+            TEST_RSA_N.as_bytes(),
+            json!({ "sub": "attacker", "exp": exp_future() }),
+        );
+        assert!(
+            validate_with_jwks(&cfg, &token, &jwks_url).is_err(),
+            "an HS256 token signed with the RSA public key material must not be \
+             accepted via the RS256 JWKS path"
+        );
+    }
+
+    #[test]
+    fn validate_with_jwks_unreachable_endpoint_denied() {
+        // Nothing listening on port 1 — same "unreachable" idiom already
+        // used for the Redis fail-open tests in this codebase.
+        let jwks_url = "http://127.0.0.1:1/jwks".to_owned();
+        let cfg = JwtAuthConfig {
+            jwks_url: Some(jwks_url.clone()),
+            ..Default::default()
+        };
+        let token = make_rs256_token(
+            "rsa-1",
+            TEST_RSA_PRIVATE_PEM,
+            json!({ "sub": "u", "exp": exp_future() }),
+        );
+        assert!(validate_with_jwks(&cfg, &token, &jwks_url).is_err());
+    }
 }
