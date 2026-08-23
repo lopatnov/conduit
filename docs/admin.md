@@ -522,6 +522,12 @@ curl -X POST http://localhost:2019/ip-deny \
 { "status": "ok", "action": "added", "cidr": "203.0.113.0/24" }
 ```
 
+An invalid CIDR/IP returns `400 Bad Request`:
+
+```json
+{ "status": "error", "message": "invalid CIDR or IP address: \"not-an-ip\"" }
+```
+
 To make the deny **permanent** (survives restarts), add the CIDR to
 `ipFilter.deny` in the config file and run `POST /reload`.
 

@@ -170,12 +170,17 @@ pub struct IpGuard {
 impl RequestFilter for IpGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
         // Fast path: no static rules and no dynamic denies — nothing to check.
+        // Recover from lock poisoning here too (not just in is_dynamic_denied
+        // below) — otherwise a poisoned lock with no static rules configured
+        // short-circuits to Continue before is_dynamic_denied's own recovery
+        // logic is ever reached, silently disabling the whole dynamic deny
+        // list for exactly the sites relying on it most (dynamic-only setups).
         let has_static = self.cfg.allow.is_some() || self.cfg.deny.is_some();
         let has_dynamic = self
             .dynamic_deny
             .read()
             .map(|l| !l.is_empty())
-            .unwrap_or(false);
+            .unwrap_or_else(|e| !e.into_inner().is_empty());
         if !has_static && !has_dynamic {
             return Ok(FilterOutcome::Continue);
         }
@@ -186,11 +191,13 @@ impl RequestFilter for IpGuard {
             // Dry-run mode (nginx `limit_conn_module dry_run` pattern):
             // log the violation but allow the request through.
             if self.cfg.dry_run.unwrap_or(false) {
-                let client_ip = ctx
-                    .session
-                    .client_addr()
-                    .and_then(|a| a.as_inet())
-                    .map(|a| a.ip().to_string())
+                // Use the same trust_proxy-aware resolution as the actual
+                // filtering decision above — otherwise the logged IP can
+                // diverge from the IP that was actually evaluated (e.g. the
+                // direct TCP peer instead of the trusted XFF entry).
+                let trust_proxy = self.cfg.trust_proxy.unwrap_or(false);
+                let client_ip = ip_filter::client_ip_for_check(ctx.session, trust_proxy)
+                    .map(|ip| ip.to_string())
                     .unwrap_or_else(|| "unknown".to_owned());
                 tracing::warn!(
                     ip = %client_ip,
@@ -219,9 +226,12 @@ impl IpGuard {
     /// Holds the read lock only for the duration of the check — avoids the
     /// previous `deny_list.clone()` that allocated a full Vec per request.
     fn is_dynamic_denied(&self, session: &pingora_proxy::Session) -> bool {
-        let Ok(deny_list) = self.dynamic_deny.read() else {
-            return false;
-        };
+        // Recover from lock poisoning instead of fail-open — a panic while
+        // another request held the write lock (e.g. inside the Admin API's
+        // POST/DELETE /ip-deny handler) must not silently disable the whole
+        // dynamic deny list for every subsequent request. Matches the
+        // recovery pattern already used on the admin write-side.
+        let deny_list = self.dynamic_deny.read().unwrap_or_else(|e| e.into_inner());
         if deny_list.is_empty() {
             return false;
         }
@@ -1198,43 +1208,14 @@ mod tests {
     }
 
     // ── IpGuard dynamic deny list ────────────────────────────────────────────
-
-    #[test]
-    fn ip_guard_empty_dynamic_deny_returns_false() {
-        use std::sync::RwLock;
-        let guard = IpGuard {
-            cfg: crate::config::schema::IpFilterConfig {
-                allow: None,
-                deny: None,
-                trust_proxy: None,
-                dry_run: None,
-            },
-            dynamic_deny: std::sync::Arc::new(RwLock::new(vec![])),
-        };
-        // No session needed since list is empty — returns false immediately.
-        let deny_list = guard.dynamic_deny.read().unwrap();
-        assert!(deny_list.is_empty());
-    }
-
-    // ── IpGuard with populated dynamic deny list ──────────────────────────────
-
-    #[test]
-    fn ip_guard_with_cidr_in_dynamic_deny() {
-        use std::sync::RwLock;
-        let guard = IpGuard {
-            cfg: crate::config::schema::IpFilterConfig {
-                allow: None,
-                deny: None,
-                trust_proxy: None,
-                dry_run: None,
-            },
-            dynamic_deny: std::sync::Arc::new(RwLock::new(vec!["10.0.0.0/8".to_owned()])),
-        };
-        // Can read the deny list and verify it's non-empty.
-        let deny_list = guard.dynamic_deny.read().unwrap();
-        assert!(!deny_list.is_empty());
-        assert_eq!(deny_list[0], "10.0.0.0/8");
-    }
+    //
+    // `is_dynamic_denied` takes a `&pingora_proxy::Session`, which this crate
+    // has no unit-test helper to construct without real I/O — so real
+    // end-to-end coverage (a request actually blocked/allowed by a dynamic
+    // deny entry added via `POST /ip-deny`) lives in `tests/ip_filter.rs`
+    // instead. `client_ip_for_check` and `is_in_deny_list`, the two pieces
+    // `is_dynamic_denied` composes, each have direct unit coverage in
+    // `ip_filter.rs`.
 
     // ── FilterChain builder ───────────────────────────────────────────────────
 

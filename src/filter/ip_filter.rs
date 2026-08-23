@@ -98,7 +98,12 @@ fn matches_rule(ip: &IpAddr, rule: &str) -> bool {
         }
         return false;
     }
-    rule.parse::<IpAddr>().map(|a| a == *ip).unwrap_or(false)
+    // Normalize both sides so an IPv4-mapped IPv6 address (e.g. from a
+    // trustProxy XFF chain) matches a plain IPv4 rule — mirrors the
+    // normalization `in_subnet` already does for the CIDR branch above.
+    rule.parse::<IpAddr>()
+        .map(|a| a.to_canonical() == ip.to_canonical())
+        .unwrap_or(false)
 }
 
 fn in_subnet(ip: &IpAddr, net: &IpAddr, prefix: u32) -> bool {
@@ -191,6 +196,17 @@ mod tests {
         let ip: IpAddr = "2001:db8::1".parse().unwrap();
         assert!(matches_rule(&ip, "2001:db8::/32"));
         assert!(!matches_rule(&ip, "2001:db9::/32"));
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_matches_plain_ipv4_rule() {
+        // ::ffff:203.0.113.5 is the IPv4-mapped IPv6 form of 203.0.113.5.
+        // A plain (non-CIDR) rule of "203.0.113.5" must still match it —
+        // the equivalent CIDR rule "203.0.113.5/32" already does via
+        // in_subnet's normalization; the exact-match branch must too.
+        let ip: IpAddr = "::ffff:203.0.113.5".parse().unwrap();
+        assert!(matches_rule(&ip, "203.0.113.5"));
+        assert!(!matches_rule(&ip, "203.0.113.6"));
     }
 
     #[test]
