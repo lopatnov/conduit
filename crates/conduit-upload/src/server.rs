@@ -260,7 +260,7 @@ fn check_mime_type(
 async fn save_upload_file(dir: &str, original_name: &str, data: &[u8]) -> Result<String, Response> {
     let ext = Path::new(original_name)
         .extension()
-        .and_then(|e| e.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .map(|e| format!(".{e}"))
         .unwrap_or_default();
     let save_name = format!("{}{ext}", uuid::Uuid::new_v4());
