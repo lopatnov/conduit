@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [1.2.0] — 2026-08-23
+
 ### Security
 
 - **`AllowedHostsGuard` is now secure by default.** Previously, Host-header
@@ -21,6 +25,56 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `400 Bad Request`. Catch-all sites (`host` unset or `"*"`) are unaffected
   and continue to accept any `Host`. Explicit `allowedHosts` configuration
   still takes precedence when present.
+- **JWT header-template claim spoofing on `skipPaths` routes fixed.** `{{
+  jwt.<claim> }}` header-template substitution decoded and trusted
+  `Authorization: Bearer` tokens unconditionally, even on `jwtAuth.skipPaths`
+  routes where `JwtGuard` never verifies the token's signature. An attacker
+  could forge an unsigned token on a skipped path and have arbitrary claim
+  values spoofed into upstream-trusted headers.
+- **Consumer authentication silent-bypass warning added.** `feature_warnings()`
+  now warns when `sites[].consumers` is configured but Conduit was compiled
+  without `--features consumers` (consumer auth is fully disabled and every
+  request bypasses it) or when a consumer's `sharedJwt`/per-consumer `jwt`
+  credential is configured without `--features jwt` (those consumers are
+  permanently unreachable) — previously silent, unlike every sibling feature.
+- **`anyhow` bumped `1.0.102 → 1.0.104`** — fixes RUSTSEC-2026-0190
+  (unsoundness advisory).
+- **IP filter hardening**: IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) are
+  now normalized before CIDR matching, so an IPv4-only rule correctly matches
+  a client arriving over an IPv4-mapped IPv6 socket; the dynamic deny-list
+  now recovers from `RwLock` poisoning instead of failing open.
+
+### Fixed
+
+- **Hostname-based upstream targets work again.** Previously only IP-literal
+  upstream addresses were accepted — any hostname target (Docker service
+  names, `localhost`, etc.) failed every request.
+- **`global.workers` is now actually applied.** The setting was parsed and
+  validated but never reached Pingora's server construction — the proxy
+  always ran with Pingora's default thread count regardless of what was
+  configured.
+- **Circuit breaker (`healthCheck.maxConnectionsPerUpstream`) now enforced
+  for every load-balance strategy**, not just `LeastConn` — the other 7
+  strategies (including the default `RoundRobin`) never checked connection
+  load when selecting among healthy candidates. Also now enforced for the
+  `routes[]` and `groups` config paths, which previously had no
+  circuit-breaker logic at all.
+- **Passive health tracking (Outlier Detection, Peak EWMA latency, per-peer
+  response stats) now works for every load-balance strategy**, not just
+  `LeastConn`.
+- **`routes[]` retry no longer rotates into an already-unhealthy peer** — the
+  retry candidate list is now health/capacity-filtered the same way the
+  top-level `proxy` routing path already was.
+- **TLS certificate near-expiry now warns instead of blocking startup.** A
+  certificate within its expiry window previously hard-failed server
+  startup/`/reload`; it now logs a warning and continues (`conduit validate`
+  CLI is unchanged — still exits non-zero on any finding, by design).
+  `POST /certs/reload` documentation corrected: the endpoint rewrites the
+  cert/key files on disk but a restart (not `/reload`) is required to
+  activate a rotated certificate, since Pingora 0.8 has no hot-swap API.
+- **Consumer `rateLimit.limit`/`windowSecs` of `0` is now rejected at
+  config-validation time**, instead of silently locking the consumer out of
+  every request at runtime.
 
 ---
 
