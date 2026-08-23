@@ -610,7 +610,7 @@ jq -n --rawfile cert /tmp/new-server.crt \
   "status": "ok",
   "cert_path": "/etc/conduit/tls/server.crt",
   "key_path": "/etc/conduit/tls/server.key",
-  "note": "certificate written to disk but NOT yet active — the running TLS listener was built once at startup and does not re-read cert/key files; POST /reload will not activate it either, since the config paths themselves haven't changed. Restart the process (or use --upgrade for a zero-downtime process swap) to actually serve the new certificate."
+  "note": "certificate written to disk but NOT yet active — the running TLS listener was built once at startup and does not re-read cert/key files; POST /reload will not activate it either, since the config paths themselves haven't changed. A restart of the process (or --upgrade for a zero-downtime process swap) is required to actually serve the new certificate."
 }
 ```
 
