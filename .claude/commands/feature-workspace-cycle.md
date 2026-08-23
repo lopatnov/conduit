@@ -163,10 +163,12 @@ for genuinely idle firings, not a guaranteed periodic pass.)
     only applies to #114 PRs.
   - **A real behavioral bug, or anything needing design judgment** → file a
     GitHub issue with the specifics (`scrum-master`) rather than
-    stealth-fixing it inline. This becomes ordinary repo backlog — note that
-    Step 2 below only selects #114 sub-issues, so don't promise it'll be
-    picked up by a future firing of *this* command; it's there for the user
-    or a normal (non-#114) session to pick up.
+    stealth-fixing it inline. **Updated 2026-08-23 (user's explicit
+    instruction)**: this is no longer "someone else's backlog, not this
+    command's job" — Step 2 below now interleaves these bug/gap issues with
+    #114 sub-issues in the same pick-next-task pass, so a firing of this
+    command genuinely may pick one up next. Filing it here still stands; just
+    don't assume it's parked outside this cycle's reach anymore.
   - If the auditor flags that a gap looks like "missing a known-good
     pattern" rather than just a missing test/doc line, loop in
     **`prior-art-researcher`** before deciding the fix — see the note in
@@ -178,6 +180,20 @@ for genuinely idle firings, not a guaranteed periodic pass.)
 
 ## Step 2 — pick the next task (skip if Step 0 found unfinished work)
 
+- **Interleave bug-fix issues with #114 sub-issues, per the user's explicit
+  instruction (2026-08-23)** — not "sub-issues only, bugs are someone else's
+  problem." This session (and Step 1c audits before it) has been filing real
+  bug issues along the way — #157, #158, #163, #164, #185, #189, #190, #191,
+  #216, #217, #218, #220, #226, #233, #234, #253, and more as they're found —
+  and they were previously treated as "ordinary repo backlog, not picked up
+  by this command." That's now wrong: check for open bug/gap issues filed by
+  this migration's own work (search issues, or check the "Owner decisions"
+  section of #114's body and its "Related bug/backlog issues" table) and mix
+  them into the same phase-ordered queue as #114's sub-issues — pick whichever
+  is next in priority, not strictly sub-issues-first. A bug affecting `main`
+  (not migration-branch-only) still gets its own PR against `main`, same as
+  before (Step 1c's merge path) — this bullet is about *scheduling* which
+  task a firing picks up next, not about changing where the fix lands.
 - Look at #114's open sub-issues (`mcp__github__issue_read` /
   `list_issues` filtered to sub-issues of #114). Pick the next one in
   phase order (Phase 0 → 6) unless a dependency isn't merged yet.
