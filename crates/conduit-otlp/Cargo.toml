@@ -24,5 +24,11 @@ opentelemetry      = { workspace = true, optional = true }
 opentelemetry_sdk  = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 
+[dev-dependencies]
+# Test-only: init_tracer/shutdown_tracer touch a process-wide global
+# (opentelemetry::global's tracer provider), so tests need #[serial].
+tokio       = { workspace = true }
+serial_test = { workspace = true }
+
 [features]
 otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]

@@ -204,6 +204,17 @@ mod tests {
         assert_eq!(proxy.connect_timeout, Duration::from_secs(5));
     }
 
+    #[tokio::test]
+    async fn process_new_with_no_targets_returns_none_without_connecting() {
+        let proxy = Arc::new(make_proxy(&[], None));
+        let (_client_side, server_side) = tokio::io::duplex(64);
+        let downstream: Stream = Box::new(server_side);
+        let (_tx, shutdown) = tokio::sync::watch::channel(false);
+
+        let result = proxy.process_new(downstream, &shutdown).await;
+        assert!(result.is_none(), "no targets configured must return None");
+    }
+
     #[test]
     fn custom_connect_timeout() {
         use crate::config::TcpConfig;

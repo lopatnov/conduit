@@ -55,3 +55,92 @@ pub async fn handle_acme_challenge(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    /// Build a real `pingora_proxy::Session` with a parsed GET request
+    /// already read off the wire — see `.claude/skills/testing/SKILL.md`'s
+    /// coverage-driven exception (added alongside #248) for why this is a
+    /// unit test rather than an integration test.
+    async fn session_with_request() -> (Session, tokio::io::DuplexStream) {
+        let (server_side, mut client_side) = tokio::io::duplex(4096);
+        client_side
+            .write_all(b"GET /.well-known/acme-challenge/tok123 HTTP/1.1\r\nHost: test\r\n\r\n")
+            .await
+            .unwrap();
+
+        let stream: pingora_core::protocols::Stream = Box::new(server_side);
+        let mut session = Session::new_h1(stream);
+        session
+            .as_downstream_mut()
+            .read_request()
+            .await
+            .expect("read_request");
+
+        (session, client_side)
+    }
+
+    async fn read_response(client_side: &mut tokio::io::DuplexStream) -> String {
+        let mut buf = vec![0u8; 512];
+        let n = client_side.read(&mut buf).await.expect("read response");
+        String::from_utf8_lossy(&buf[..n]).into_owned()
+    }
+
+    #[tokio::test]
+    async fn known_token_returns_200_with_key_authorization_body() {
+        let (mut session, mut client_side) = session_with_request().await;
+        let challenges = Arc::new(DashMap::new());
+        challenges.insert("tok123".to_owned(), "tok123.thumbprint-abc".to_owned());
+
+        handle_acme_challenge(&mut session, "tok123", &challenges)
+            .await
+            .expect("handle_acme_challenge");
+
+        let response = read_response(&mut client_side).await;
+        assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+        assert!(
+            response.contains("tok123.thumbprint-abc"),
+            "got: {response}"
+        );
+        assert!(
+            response.to_lowercase().contains("text/plain"),
+            "got: {response}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_token_returns_404() {
+        let (mut session, mut client_side) = session_with_request().await;
+        let challenges: Arc<DashMap<String, String>> = Arc::new(DashMap::new());
+
+        handle_acme_challenge(&mut session, "nonexistent", &challenges)
+            .await
+            .expect("handle_acme_challenge");
+
+        let response = read_response(&mut client_side).await;
+        assert!(response.starts_with("HTTP/1.1 404"), "got: {response}");
+        assert!(response.contains("challenge not found"), "got: {response}");
+    }
+
+    #[tokio::test]
+    async fn handler_delegates_to_handle_acme_challenge() {
+        let (mut session, mut client_side) = session_with_request().await;
+        let challenges = Arc::new(DashMap::new());
+        challenges.insert("tok123".to_owned(), "key-auth-value".to_owned());
+        let mut handler = AcmeChallengeHandler {
+            token: "tok123".to_owned(),
+            challenges,
+            extra_headers: vec![],
+        };
+
+        handler.handle(&mut session).await.expect("handle");
+
+        let response = read_response(&mut client_side).await;
+        assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+        assert!(response.contains("key-auth-value"), "got: {response}");
+    }
+}

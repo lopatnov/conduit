@@ -119,4 +119,73 @@ mod otlp_impl {
             }
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use serial_test::serial;
+
+        use super::*;
+
+        /// `SpanExporter::builder()...build()` constructs a lazy tonic gRPC
+        /// channel — it does not connect eagerly, so `init_tracer` is fully
+        /// testable without a live OTLP collector (the actual network call
+        /// only happens on the first batched export, which these tests never
+        /// trigger). `#[serial]` because `init_tracer`/`shutdown_tracer`
+        /// touch a process-wide global (`opentelemetry::global`'s tracer
+        /// provider) — see `.claude/skills/testing/SKILL.md` idiom 3.
+        fn cfg(sample_rate: Option<f64>) -> OtlpConfig {
+            OtlpConfig {
+                endpoint: "http://localhost:4317".to_owned(),
+                service_name: Some("conduit-test".to_owned()),
+                sample_rate,
+                timeout_ms: Some(1_000),
+            }
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn init_tracer_always_on_sampler_succeeds() {
+            assert!(init_tracer(&cfg(Some(1.0))).is_ok());
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn init_tracer_always_off_sampler_succeeds() {
+            assert!(init_tracer(&cfg(Some(0.0))).is_ok());
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn init_tracer_ratio_based_sampler_succeeds() {
+            assert!(init_tracer(&cfg(Some(0.5))).is_ok());
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn init_tracer_defaults_service_name_and_sample_rate() {
+            let cfg = OtlpConfig {
+                endpoint: "http://localhost:4317".to_owned(),
+                service_name: None,
+                sample_rate: None,
+                timeout_ms: None,
+            };
+            assert!(init_tracer(&cfg).is_ok());
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn shutdown_tracer_after_init_does_not_panic() {
+            init_tracer(&cfg(Some(1.0))).expect("init_tracer");
+            shutdown_tracer();
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn shutdown_tracer_without_init_does_not_panic() {
+            // Only meaningful in isolation; other #[serial] tests in this
+            // module may have already set TRACER_PROVIDER by the time this
+            // runs, but shutdown_tracer() must be safe to call regardless.
+            shutdown_tracer();
+        }
+    }
 }

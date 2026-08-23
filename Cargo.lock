@@ -3009,6 +3009,7 @@ dependencies = [
  "pingora-http",
  "pingora-proxy",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -3019,6 +3020,7 @@ dependencies = [
  "bytes",
  "lopatnov-conduit-core",
  "pingora-core",
+ "pingora-proxy",
  "serde",
  "tokio",
 ]
@@ -3032,6 +3034,8 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "serde",
+ "serial_test",
+ "tokio",
  "tracing",
 ]
 

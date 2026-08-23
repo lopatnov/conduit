@@ -25,6 +25,13 @@ tokio                 = { workspace = true, optional = true }
 pingora-core          = { workspace = true, optional = true }
 lopatnov-conduit-core = { workspace = true, optional = true }
 
+[dev-dependencies]
+# Test-only: pingora_proxy::Session::new_h1() over a loopback socket, used by
+# guard.rs's own unit tests to get real --lib coverage credit on Session-
+# touching code (see .claude/skills/testing/SKILL.md's narrow exception for
+# this, added 2026-08-23 alongside #248).
+pingora-proxy = { workspace = true }
+
 [features]
 fault-injection = [
     "dep:async-trait",
