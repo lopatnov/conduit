@@ -1536,3 +1536,50 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   лока — добавился ровно один новый пакет (`simple_asn1`), без постороннего churn'а.
   `cargo build/clippy/test --workspace --features full` (1156 lib-тестов + 54
   integration в `auth.rs`) зелёные после синка, запушено.
+
+### Реализовано в сессии 2026-08-23 (часть 3 — #233, `consumers` feature-warning gap)
+
+- **[PR #261](https://github.com/lopatnov/conduit/pull/261)
+  `fix(validate): warn when consumers auth is silently disabled or unreachable (#233)`**
+  (ветка `fix/consumers-feature-warning-233` → `main`, squash `ebd6791`, issue #233
+  CLOSED) — закрывает находку 2026-08-21 `integrity-auditor`-аудита `auth.rs`:
+  `feature_warnings()` не имел кейса для `consumers` вовсе, в отличие от всех
+  8 соседних фич. Два новых предупреждения в
+  `check_site_simple_feature_warnings`: (1) `sites[i].consumers` задан, но фича
+  `consumers` не скомпилирована → consumer-авторизация полностью отключена,
+  все запросы её обходят; (2) `consumers` скомпилирован, но `jwt` — нет, а
+  конфиг использует `consumers.sharedJwt` (V3) или per-consumer `jwt` (V2) →
+  эти конкретные consumer'ы навсегда недостижимы (`check_consumer_credentials`/
+  `identify_consumer` в `filter/auth.rs` оба `jwt`-гейтированы). 3 новых
+  integration-теста в `tests/middleware.rs`. Новых полей конфига нет — схема/доки
+  не менялись (как и у всех 8 соседних предупреждений).
+- **Диск закончился при первом прогоне полного `cargo test`** (default features,
+  0 available bytes) — тот же паттерн, что уже встречался в сессии ранее;
+  устранено удалением `target/debug/{incremental,build,deps}` (~23 ГБ
+  освобождено), после чего оба профиля (`default` + `--features full`) прошли
+  зелёными без единого failed теста.
+- **`security-engineer` перепроверялся трижды за один PR** — наглядная
+  демонстрация правила "PASS валиден только для точного проверенного SHA"
+  (`.claude/rules/workflow.md`): первый PASS на `5762f21`; `gitar-bot` нашёл
+  реальный naming-issue (`shared_jwt_only` OR'д с `any_consumer_jwt`, название
+  подразумевает эксклюзивность, которой нет) → фикс → новый SHA `dec900a` →
+  agent перепроверен по тому же `agentId` через `SendMessage` (не пересоздан с
+  нуля) → PASS #2; затем CodeRabbit (после перевода PR из draft) нашёл реальный
+  test-quality gap — `consumers_per_consumer_jwt_without_jwt_feature_generates_warning`
+  использовал 11-байтный секрет, который сам по себе триггерит несвязанное
+  предупреждение `check_consumer_jwt_secret_warnings` (не gated фичей), содержащее
+  подстроку "jwt" — из-за чего тест мог пройти и при полностью сломанной новой
+  логике. Исправлено (32-байтный секрет + assert на уникальный для нового
+  предупреждения текст, та же правка применена и к соседнему `sharedJwt`-тесту
+  для консистентности) → SHA `bc2cbea` → PASS #3, на этот раз с живым
+  negative-control (агент временно вырезал новый код предупреждения, убедился
+  что оба теста корректно падают, вернул код обратно, убедился что снова
+  проходят) — прямое подтверждение того, что тесты являются настоящей гарантией,
+  а не тавтологией.
+- Все три раунда ревью (gitar-bot, CodeRabbit, SonarCloud) прошли зелёными;
+  находки обоих ботов — реальные и по существу, оба исправлены с ответом в
+  тред + resolve.
+- Миграционная ветка синхронизирована с `main` (merge, без конфликтов —
+  `src/config/validate.rs` затронут в обеих ветках, но в непересекающихся
+  местах), `cargo check` (default + `--features full`) зелёный, запушено
+  (`14c7500`).
