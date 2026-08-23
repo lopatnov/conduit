@@ -32,6 +32,7 @@ lopatnov-conduit-otlp        = { path = "crates/conduit-otlp", version = "2.0.0"
 lopatnov-conduit-acme        = { path = "crates/conduit-acme", version = "2.0.0" }
 lopatnov-conduit-tcp         = { path = "crates/conduit-tcp", version = "2.0.0" }
 lopatnov-conduit-upload      = { path = "crates/conduit-upload", version = "2.0.0" }
+lopatnov-conduit-faults      = { path = "crates/conduit-faults", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -205,6 +206,13 @@ lopatnov-conduit-tcp.workspace         = true
 # Only the real upload server is gated, via `lopatnov-conduit-upload/upload`
 # in the `upload` feature below.
 lopatnov-conduit-upload.workspace      = true
+# Mandatory (like the crates above), not `optional = true`: `FaultInjectionConfig`
+# and the `sites[].faultInjection` field must stay parseable in every build
+# so `feature_warnings()` can keep warning on a config-without-feature
+# mismatch. Only the real `FaultInjectionGuard` is gated, via
+# `lopatnov-conduit-faults/fault-injection` in the `fault-injection` feature
+# below.
+lopatnov-conduit-faults.workspace      = true
 
 # --- Config & parsing ---
 serde.workspace      = true
@@ -356,7 +364,11 @@ acme = ["lopatnov-conduit-acme/acme"]
 
 # ── Testing / chaos ───────────────────────────────────────────────────────────
 # Fault injection for chaos testing (faultInjection config). NOT for production.
-fault-injection = []
+# `FaultInjectionConfig` moved to `crates/conduit-faults` (#114/#132) and is
+# always a dependency (see the [dependencies] comment above); this only
+# forwards into that crate's own `fault-injection` feature, which gates the
+# real `FaultInjectionGuard`.
+fault-injection = ["lopatnov-conduit-faults/fault-injection"]
 
 # ── Observability ─────────────────────────────────────────────────────────────
 # OpenTelemetry OTLP distributed tracing (global.otlp config). `dep:opentelemetry`

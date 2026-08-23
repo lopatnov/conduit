@@ -2915,6 +2915,7 @@ dependencies = [
  "lopatnov-conduit-acme",
  "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
+ "lopatnov-conduit-faults",
  "lopatnov-conduit-otlp",
  "lopatnov-conduit-tcp",
  "lopatnov-conduit-upload",
@@ -3003,6 +3004,18 @@ dependencies = [
  "pingora-http",
  "pingora-proxy",
  "tempfile",
+]
+
+[[package]]
+name = "lopatnov-conduit-faults"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "lopatnov-conduit-core",
+ "pingora-core",
+ "serde",
+ "tokio",
 ]
 
 [[package]]
