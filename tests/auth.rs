@@ -755,6 +755,231 @@ mod jwt {
             "3rd request must be rate-limited (per-route limit=2)"
         );
     }
+
+    // ── JWKS / RS256 / ES256 end-to-end (issue #164) ──────────────────────────
+    //
+    // RSA-2048 / P-256 test key material is generated fresh at test-run
+    // time (not embedded as static PEM literals) — matches the `rcgen`
+    // "no checked-in cert fixtures" idiom already used for TLS test certs
+    // (`.claude/skills/testing/SKILL.md`). Same approach as
+    // `src/filter/jwt.rs`'s unit tests; duplicated here since integration
+    // tests are a separate compilation unit.
+
+    struct JwksTestRsaKey {
+        pem: String,
+        n: String,
+        e: String,
+    }
+
+    fn gen_jwks_test_rsa_key() -> JwksTestRsaKey {
+        use rsa::pkcs1::EncodeRsaPrivateKey;
+        use rsa::traits::PublicKeyParts;
+        let private_key =
+            rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048).expect("RSA-2048 keygen");
+        let pem = private_key
+            .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
+            .expect("RSA PKCS#1 PEM encode")
+            .to_string();
+        let public_key = private_key.to_public_key();
+        JwksTestRsaKey {
+            pem,
+            n: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(public_key.n().to_bytes_be()),
+            e: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(public_key.e().to_bytes_be()),
+        }
+    }
+
+    struct JwksTestEcKey {
+        pem: String,
+        x: String,
+        y: String,
+    }
+
+    fn gen_jwks_test_ec_key() -> JwksTestEcKey {
+        use p256::elliptic_curve::sec1::ToEncodedPoint;
+        use p256::pkcs8::EncodePrivateKey;
+        let secret_key = p256::SecretKey::random(&mut rand::thread_rng());
+        let pem = secret_key
+            .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
+            .expect("EC PKCS#8 PEM encode")
+            .to_string();
+        let point = secret_key.public_key().to_encoded_point(false);
+        JwksTestEcKey {
+            pem,
+            x: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(point.x().expect("uncompressed point has x")),
+            y: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(point.y().expect("uncompressed point has y")),
+        }
+    }
+
+    /// RSA-2048 keygen is comparatively slow — generate once per test
+    /// binary and share read-only across tests (the key material itself
+    /// doesn't need to vary between them).
+    fn rsa_key() -> &'static JwksTestRsaKey {
+        static KEY: std::sync::OnceLock<JwksTestRsaKey> = std::sync::OnceLock::new();
+        KEY.get_or_init(gen_jwks_test_rsa_key)
+    }
+
+    fn ec_key() -> &'static JwksTestEcKey {
+        static KEY: std::sync::OnceLock<JwksTestEcKey> = std::sync::OnceLock::new();
+        KEY.get_or_init(gen_jwks_test_ec_key)
+    }
+
+    /// Raw-TCP mock JWKS endpoint (see `.claude/skills/testing/SKILL.md`
+    /// "Mock upstream = raw TcpListener, not Axum") — returns `body` as a
+    /// `200 application/json` response for every connection it accepts.
+    fn spawn_mock_jwks_server(body: String) -> std::net::SocketAddr {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let body = body.clone();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let _ = s.read(&mut buf);
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = s.write_all(resp.as_bytes());
+                });
+            }
+        });
+        addr
+    }
+
+    fn server_with_jwks_auth(jwks_url: &str) -> common::TestServer {
+        let port = common::free_port();
+        let admin_port = common::free_port();
+        common::TestServer::start_with_config(
+            port,
+            admin_port,
+            serde_json::json!({
+                "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+                "sites": [{
+                    "port": port,
+                    "healthCheck": true,
+                    "jwtAuth": {
+                        "jwksUrl": jwks_url,
+                        "skipPaths": ["/__health__"]
+                    }
+                }]
+            }),
+        )
+    }
+
+    fn jwks_exp_future() -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600
+    }
+
+    #[test]
+    fn jwt_jwks_rs256_valid_token_passes() {
+        let rsa = rsa_key();
+        let jwks_body = format!(
+            r#"{{"keys":[{{"kty":"RSA","kid":"rsa-1","n":"{}","e":"{}"}}]}}"#,
+            rsa.n, rsa.e
+        );
+        let jwks_addr = spawn_mock_jwks_server(jwks_body);
+        let srv = server_with_jwks_auth(&format!("http://{jwks_addr}/jwks"));
+
+        let key = EncodingKey::from_rsa_pem(rsa.pem.as_bytes()).unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("rsa-1".into());
+        let token = encode(
+            &header,
+            &json!({ "sub": "u", "exp": jwks_exp_future() }),
+            &key,
+        )
+        .unwrap();
+
+        let resp = plain_client()
+            .get(srv.url("/"))
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .expect("GET /");
+        assert_ne!(
+            resp.status().as_u16(),
+            401,
+            "valid RS256/JWKS token should not be rejected"
+        );
+    }
+
+    #[test]
+    fn jwt_jwks_es256_valid_token_passes() {
+        let ec = ec_key();
+        let jwks_body = format!(
+            r#"{{"keys":[{{"kty":"EC","kid":"ec-1","crv":"P-256","x":"{}","y":"{}"}}]}}"#,
+            ec.x, ec.y
+        );
+        let jwks_addr = spawn_mock_jwks_server(jwks_body);
+        let srv = server_with_jwks_auth(&format!("http://{jwks_addr}/jwks"));
+
+        let key = EncodingKey::from_ec_pem(ec.pem.as_bytes()).unwrap();
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some("ec-1".into());
+        let token = encode(
+            &header,
+            &json!({ "sub": "u", "exp": jwks_exp_future() }),
+            &key,
+        )
+        .unwrap();
+
+        let resp = plain_client()
+            .get(srv.url("/"))
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .expect("GET /");
+        assert_ne!(
+            resp.status().as_u16(),
+            401,
+            "valid ES256/JWKS token should not be rejected"
+        );
+    }
+
+    #[test]
+    fn jwt_jwks_wrong_kid_returns_401() {
+        // JWKS only advertises "rsa-other" — a token signed with kid
+        // "rsa-1" has no matching key to verify against.
+        let rsa = rsa_key();
+        let jwks_body = format!(
+            r#"{{"keys":[{{"kty":"RSA","kid":"rsa-other","n":"{}","e":"{}"}}]}}"#,
+            rsa.n, rsa.e
+        );
+        let jwks_addr = spawn_mock_jwks_server(jwks_body);
+        let srv = server_with_jwks_auth(&format!("http://{jwks_addr}/jwks"));
+
+        let key = EncodingKey::from_rsa_pem(rsa.pem.as_bytes()).unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("rsa-1".into());
+        let token = encode(
+            &header,
+            &json!({ "sub": "u", "exp": jwks_exp_future() }),
+            &key,
+        )
+        .unwrap();
+
+        let resp = plain_client()
+            .get(srv.url("/"))
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .expect("GET /");
+        assert_eq!(
+            resp.status().as_u16(),
+            401,
+            "kid with no matching JWKS key must be rejected"
+        );
+    }
 } // mod jwt
 
 // ── Consumer model tests (require --features consumers) ───────────────────────

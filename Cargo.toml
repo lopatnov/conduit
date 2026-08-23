@@ -109,6 +109,18 @@ rhai = { version = "1", features = ["sync"] }
 # Verifies HS256 (HMAC secret) and RS256/ES256 (JWKS/PEM).
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 
+# --- Test-only: generate throwaway RSA-2048 / P-256 keypairs at test-run
+# time for JWKS/RS256/ES256 coverage (issue #164), instead of embedding
+# static PEM literals — matches the `rcgen` "no checked-in cert fixtures"
+# idiom above and avoids tripping secret-scanners on fake-but-key-shaped
+# source text. Same versions already resolved transitively via
+# jsonwebtoken's rust_crypto backend, so this adds no new entries to the
+# dependency graph — just a direct dev-dep edge to what was already there.
+# Only ever referenced from [dev-dependencies] below.
+rsa  = "0.9"
+p256 = "0.13"
+rand = "0.8"
+
 # --- HTTP client (feature: jwt for JWKS, forward-auth, mirroring) ---
 # `default-features = false` avoids native-tls; rustls keeps TLS consistent.
 # Base feature set covers main-crate usage (JWKS/ForwardAuth/mirroring); the
@@ -426,9 +438,19 @@ time.workspace          = true
 wat.workspace           = true
 # rcgen is used in tests for cert generation even without the acme feature.
 rcgen.workspace         = true
+# rsa/p256/rand: generate throwaway RSA-2048 and P-256 keypairs at test-run
+# time for JWKS/RS256/ES256 coverage (issue #164) — see the workspace.dependencies
+# comment above. Only referenced here.
+rsa.workspace           = true
+p256.workspace          = true
+rand.workspace          = true
 # jsonwebtoken is used in auth integration tests to generate test tokens.
-# Listed as dev-dep so tests compile without --features jwt.
-jsonwebtoken.workspace  = true
+# Listed as dev-dep so tests compile without --features jwt. `use_pem` is
+# needed only here (RS256/ES256 JWKS test tokens, issue #164) — added via
+# feature union on top of the workspace base set (same pattern as reqwest
+# above); the main [dependencies] entry stays without it since production
+# code only ever consumes JWKS keys as raw n/e/x/y components, never PEM.
+jsonwebtoken = { workspace = true, features = ["use_pem"] }
 
 [[test]]
 name = "acme"
