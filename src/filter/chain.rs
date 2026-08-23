@@ -23,8 +23,6 @@ use pingora_proxy::Session;
 
 #[cfg(feature = "consumers")]
 use crate::config::schema::ConsumersConfig;
-#[cfg(feature = "fault-injection")]
-use crate::config::schema::FaultInjectionConfig;
 #[cfg(feature = "forward-auth")]
 use crate::config::schema::ForwardAuthConfig;
 #[cfg(feature = "jwt")]
@@ -846,64 +844,15 @@ fn forward_auth_inject_response_headers(
     }
 }
 
-/// Injects artificial faults (aborts or delays) for chaos-engineering and
-/// testing retry/circuit-breaker behaviour.
-///
-/// **Should not be used in production.**  Use it in staging or test
-/// environments to validate that your clients handle upstream failures
-/// gracefully.
+/// Extracted into `crates/conduit-faults` (issue #114/#132) — this is a
+/// facade re-export so `crate::filter::chain::FaultInjectionGuard` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test. See that crate's `src/guard.rs` for the implementation:
+/// injects artificial faults (aborts or delays) for chaos-engineering and
+/// testing retry/circuit-breaker behaviour. **Should not be used in
+/// production.**
 #[cfg(feature = "fault-injection")]
-pub struct FaultInjectionGuard {
-    pub cfg: FaultInjectionConfig,
-}
-
-#[cfg(feature = "fault-injection")]
-#[async_trait]
-impl RequestFilter for FaultInjectionGuard {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        // Use a simple pseudo-random roll based on the current time nanoseconds.
-        // Good enough for percentage-based fault injection; not cryptographically
-        // random, but that's not required here.
-        let roll: f64 = {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let ns = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .subsec_nanos() as f64;
-            (ns % 10_000.0) / 100.0 // 0.0 – 99.99
-        };
-
-        // Abort injection — checked first.
-        if let Some(ref abort) = self.cfg.abort {
-            if roll < abort.percent {
-                let status = abort.status.unwrap_or(503).clamp(100, 999);
-                let body = abort
-                    .body
-                    .clone()
-                    .unwrap_or_else(|| "Fault injected".to_owned());
-                response::write_response(
-                    ctx.session,
-                    status,
-                    "text/plain",
-                    Bytes::from(body),
-                    ctx.extra_headers,
-                )
-                .await?;
-                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(FilterOutcome::Handled);
-            }
-        }
-
-        // Delay injection.
-        if let Some(ref delay) = self.cfg.delay {
-            if roll < delay.percent {
-                tokio::time::sleep(std::time::Duration::from_millis(delay.ms)).await;
-            }
-        }
-
-        Ok(FilterOutcome::Continue)
-    }
-}
+pub use conduit_faults::guard::FaultInjectionGuard;
 
 /// Handles configured URL redirects (301/302/307/308).
 pub struct RedirectGuard {

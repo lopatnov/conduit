@@ -1,0 +1,35 @@
+[package]
+name        = "lopatnov-conduit-faults"
+version.workspace    = true
+edition.workspace    = true
+description = "Fault-injection (chaos testing) config + guard for conduit's feature-driven workspace (issue #114/#132)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_faults"
+path = "src/lib.rs"
+
+[dependencies]
+# FaultInjectionConfig itself is always compiled — see src/lib.rs doc comment.
+serde = { workspace = true }
+
+# Everything below is only needed by the real FaultInjectionGuard (`guard`),
+# gated behind this crate's own `fault-injection` feature (mirrors the
+# pre-extraction `#[cfg(feature = "fault-injection")]` gates in
+# src/filter/chain.rs). The root crate's `fault-injection` feature forwards
+# into this one via `lopatnov-conduit-faults/fault-injection`.
+async-trait           = { workspace = true, optional = true }
+bytes                 = { workspace = true, optional = true }
+tokio                 = { workspace = true, optional = true }
+pingora-core          = { workspace = true, optional = true }
+lopatnov-conduit-core = { workspace = true, optional = true }
+
+[features]
+fault-injection = [
+    "dep:async-trait",
+    "dep:bytes",
+    "dep:tokio",
+    "dep:pingora-core",
+    "dep:lopatnov-conduit-core",
+]

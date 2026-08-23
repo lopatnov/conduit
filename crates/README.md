@@ -85,3 +85,25 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   behind this crate's `acme` feature; `rcgen` remains an unconditional root
   `[dev-dependencies]` entry for in-memory TLS test certificates, unrelated
   to ACME.
+
+- **`conduit-faults`** (Phase 3.4, [#132](https://github.com/lopatnov/conduit/issues/132))
+  — fault injection (chaos testing). Owns `FaultInjectionConfig`/`FaultAbort`/
+  `FaultDelay` (the `sites[].faultInjection` config structs) and the real
+  `guard::FaultInjectionGuard` — a request guard that aborts or delays a
+  configurable percentage of requests. `FaultInjectionConfig` is compiled
+  into every build like `conduit-otlp`'s `OtlpConfig` above —
+  `SiteConfig.fault_injection` isn't itself feature-gated, so it must stay
+  parseable (and warn via `feature_warnings()`) without `--features
+  fault-injection`. Only the real `guard::FaultInjectionGuard` is gated
+  behind this crate's own `fault-injection` Cargo feature; the root crate's
+  `fault-injection` feature forwards into it via
+  `lopatnov-conduit-faults/fault-injection`. This is #114's deliberately
+  "smallest guard-shaped extraction" — `FaultInjectionGuard` implements
+  `conduit-core`'s `RequestFilter` chain trait directly (the same trait
+  every other in-chain guard implements, unlike the handler/service-shaped
+  `conduit-otlp`/`conduit-acme` extractions above), so this crate depends on
+  `lopatnov-conduit-core` (see `CONTRIBUTING.md`'s "conduit-core dependency
+  is opt-in, not automatic" — `conduit-acme`'s `challenge` module was the
+  first crate to take this dependency; this is the second). Chain assembly
+  and guard ordering stay in the root crate's `src/filter/chain.rs`
+  (`CLAUDE.md` decision #20).
