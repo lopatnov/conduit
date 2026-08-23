@@ -71,6 +71,111 @@ fn ip_no_filter_allows_all() {
     assert_eq!(resp.status(), 200);
 }
 
+#[test]
+#[serial]
+fn ip_filter_dry_run_logs_but_allows() {
+    // A deny rule that *would* block the request must still let it through
+    // when dryRun: true — only the enforcing (non-dry-run) path returns 403.
+    let server = server_with_ip_filter(serde_json::json!({
+        "deny": ["127.0.0.1", "::1"],
+        "dryRun": true
+    }));
+    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    assert_eq!(
+        resp.status(),
+        200,
+        "dryRun: true must allow a request that would otherwise be denied"
+    );
+}
+
+#[test]
+#[serial]
+fn ip_filter_dry_run_false_still_enforces() {
+    // Sanity check for the test above: with dryRun explicitly false, the
+    // same deny rule must actually block.
+    let server = server_with_ip_filter(serde_json::json!({
+        "deny": ["127.0.0.1", "::1"],
+        "dryRun": false
+    }));
+    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    assert_eq!(resp.status(), 403);
+}
+
+// ── Dynamic deny list (Admin API POST/DELETE /ip-deny) ───────────────────────
+
+#[test]
+#[serial]
+fn dynamic_deny_list_blocks_after_admin_add_and_unblocks_after_remove() {
+    // No static ipFilter rules — starts open.
+    let server = server_with_ip_filter(serde_json::json!({}));
+    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    assert_eq!(resp.status(), 200, "no rules yet — must be open");
+
+    let client = reqwest::blocking::Client::new();
+
+    // Add both loopback forms via the Admin API so the test is portable
+    // across IPv4/IPv6 test runners, same as the static-config tests above.
+    for cidr in ["127.0.0.1", "::1"] {
+        let resp = client
+            .post(server.admin_url("/ip-deny"))
+            .json(&serde_json::json!({ "cidr": cidr }))
+            .send()
+            .expect("POST /ip-deny");
+        assert_eq!(resp.status(), 200, "POST /ip-deny for {cidr} must succeed");
+    }
+
+    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    assert_eq!(
+        resp.status(),
+        403,
+        "dynamic deny entry added via the Admin API must actually block IpGuard"
+    );
+
+    for cidr in ["127.0.0.1", "::1"] {
+        let resp = client
+            .delete(server.admin_url("/ip-deny"))
+            .json(&serde_json::json!({ "cidr": cidr }))
+            .send()
+            .expect("DELETE /ip-deny");
+        assert_eq!(
+            resp.status(),
+            200,
+            "DELETE /ip-deny for {cidr} must succeed"
+        );
+    }
+
+    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    assert_eq!(
+        resp.status(),
+        200,
+        "removing the dynamic deny entry must unblock again"
+    );
+}
+
+#[test]
+#[serial]
+fn ip_deny_add_invalid_cidr_returns_400() {
+    let server = server_with_ip_filter(serde_json::json!({}));
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(server.admin_url("/ip-deny"))
+        .json(&serde_json::json!({ "cidr": "not-an-ip" }))
+        .send()
+        .expect("POST /ip-deny");
+    assert_eq!(
+        resp.status(),
+        400,
+        "an invalid CIDR must be rejected with 400"
+    );
+    let body: serde_json::Value = resp.json().unwrap();
+    assert_eq!(body["status"], "error");
+
+    // The rejected entry must not have been added — the deny list is still
+    // effectively empty, so a plain request must still pass.
+    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    assert_eq!(resp.status(), 200);
+}
+
 // ── Request limits ─────────────────────────────────────────────────────────
 
 #[test]
@@ -220,5 +325,25 @@ fn trust_proxy_false_uses_direct_ip_not_xff() {
         resp.status().as_u16(),
         200,
         "without trustProxy, XFF should be ignored and 127.0.0.1 passes the deny:1.2.3.4 rule"
+    );
+}
+
+#[test]
+#[serial]
+fn trust_proxy_true_without_xff_header_falls_back_to_direct_ip() {
+    // trustProxy: true but the client sends no X-Forwarded-For header at all
+    // (e.g. a direct connection, not behind the configured proxy). Must fall
+    // back to the real connection IP rather than treating "no XFF" as
+    // "unknown IP, fail open" — deny 127.0.0.1/::1 directly and confirm it's
+    // still enforced.
+    let server = server_with_ip_filter(serde_json::json!({
+        "deny": ["127.0.0.1", "::1"],
+        "trustProxy": true
+    }));
+    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "trustProxy: true with no XFF header must still enforce against the direct IP"
     );
 }

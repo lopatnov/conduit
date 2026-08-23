@@ -918,12 +918,12 @@ fn validate_cidr(s: &str) -> bool {
 async fn ip_deny_add_handler(
     State(state): State<Arc<AppState>>,
     Json(body): Json<IpDenyBody>,
-) -> Json<Value> {
+) -> AdminResult<Json<Value>> {
     let cidr = body.cidr.trim().to_owned();
     if !validate_cidr(&cidr) {
-        return Json(
-            json!({ "status": "error", "message": format!("invalid CIDR or IP address: {cidr:?}") }),
-        );
+        return Err(AdminError::BadRequest(format!(
+            "invalid CIDR or IP address: {cidr:?}"
+        )));
     }
     {
         let mut list = state
@@ -934,7 +934,9 @@ async fn ip_deny_add_handler(
             list.push(cidr.clone());
         }
     }
-    Json(json!({ "status": "ok", "action": "added", "cidr": cidr }))
+    Ok(Json(
+        json!({ "status": "ok", "action": "added", "cidr": cidr }),
+    ))
 }
 
 /// `DELETE /ip-deny` — remove a CIDR from the runtime deny-list.

@@ -104,7 +104,9 @@
           "properties": {
             "allow":      { "type": "array", "items": { "type": "string" } },
             "deny":       { "type": "array", "items": { "type": "string" } },
-            "trustProxy": { "type": "boolean" }
+            "trustProxy": { "type": "boolean" },
+            "dryRun":     { "type": "boolean",
+                            "description": "Log would-be blocks instead of enforcing them. Default false." }
           }
         },
         "limits": {

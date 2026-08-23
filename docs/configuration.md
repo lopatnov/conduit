@@ -2786,6 +2786,13 @@ ipFilter:
   deny:
     - "192.0.2.0/24"
   dryRun: true
+
+# IPv6 CIDR ranges are supported alongside IPv4
+ipFilter:
+  allow:
+    - "2001:db8::/32"
+    - "::1"          # exact match, not just CIDR
+    - "10.0.0.0/8"    # IPv4 and IPv6 rules can be mixed freely
 ```
 
 ```json
