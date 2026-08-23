@@ -133,7 +133,12 @@ logging()
   └─ cache hit/miss counters
 ```
 
-Health / ACME / HotReload — bypass всех guard-фильтров.
+Health / ACME / HotReload — `HealthBypass` bypasses everything *after* it in the chain
+(LimitsGuard onward: rate limit, auth, ForwardAuth, redirect, fault injection, middleware).
+`XRequestIdGuard` and `IpGuard` run *before* `HealthBypass` and still apply — an IP-denied
+client cannot reach `/__health__` either. (Corrected 2026-08-23, Step 1c audit of
+`src/filter/ip_filter.rs` — this note previously said "bypass всех guard-фильтров",
+i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs above.)
 
 ---
 
@@ -406,8 +411,12 @@ Health / ACME / HotReload — bypass всех guard-фильтров.
 
 - [x] **Deny list / CIDR block API** — Admin API `POST /ip-deny { cidr: "1.2.3.0/24" }`.
   Динамическое добавление/удаление deny-CIDRs без reload.
-  Хранить в `Arc<RwLock<Vec<IpNet>>>` в AppState. IpGuard читает.
+  Хранится в `Arc<RwLock<Vec<String>>>` (`AppState.dynamic_deny`, raw CIDR strings, не
+  `IpNet` — парсится на каждый чек через `matches_rule()`, тот же путь что и статический
+  `ipFilter.deny`). `IpGuard.dynamic_deny` — тот же `Arc`, читает в `is_dynamic_denied()`.
   Паттерн: envoy Network RBAC filter.
+  (Тип поправлен 2026-08-23, Step 1c аудит `ip_filter.rs` — было ошибочно указано
+  `Vec<IpNet>`, реальный тип не менялся с момента реализации.)
 
 ---
 
