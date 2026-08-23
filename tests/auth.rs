@@ -814,6 +814,19 @@ mod jwt {
         }
     }
 
+    /// RSA-2048 keygen is comparatively slow — generate once per test
+    /// binary and share read-only across tests (the key material itself
+    /// doesn't need to vary between them).
+    fn rsa_key() -> &'static JwksTestRsaKey {
+        static KEY: std::sync::OnceLock<JwksTestRsaKey> = std::sync::OnceLock::new();
+        KEY.get_or_init(gen_jwks_test_rsa_key)
+    }
+
+    fn ec_key() -> &'static JwksTestEcKey {
+        static KEY: std::sync::OnceLock<JwksTestEcKey> = std::sync::OnceLock::new();
+        KEY.get_or_init(gen_jwks_test_ec_key)
+    }
+
     /// Raw-TCP mock JWKS endpoint (see `.claude/skills/testing/SKILL.md`
     /// "Mock upstream = raw TcpListener, not Axum") — returns `body` as a
     /// `200 application/json` response for every connection it accepts.
@@ -872,7 +885,7 @@ mod jwt {
 
     #[test]
     fn jwt_jwks_rs256_valid_token_passes() {
-        let rsa = gen_jwks_test_rsa_key();
+        let rsa = rsa_key();
         let jwks_body = format!(
             r#"{{"keys":[{{"kty":"RSA","kid":"rsa-1","n":"{}","e":"{}"}}]}}"#,
             rsa.n, rsa.e
@@ -904,7 +917,7 @@ mod jwt {
 
     #[test]
     fn jwt_jwks_es256_valid_token_passes() {
-        let ec = gen_jwks_test_ec_key();
+        let ec = ec_key();
         let jwks_body = format!(
             r#"{{"keys":[{{"kty":"EC","kid":"ec-1","crv":"P-256","x":"{}","y":"{}"}}]}}"#,
             ec.x, ec.y
@@ -938,7 +951,7 @@ mod jwt {
     fn jwt_jwks_wrong_kid_returns_401() {
         // JWKS only advertises "rsa-other" — a token signed with kid
         // "rsa-1" has no matching key to verify against.
-        let rsa = gen_jwks_test_rsa_key();
+        let rsa = rsa_key();
         let jwks_body = format!(
             r#"{{"keys":[{{"kty":"RSA","kid":"rsa-other","n":"{}","e":"{}"}}]}}"#,
             rsa.n, rsa.e
