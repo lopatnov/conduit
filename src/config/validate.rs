@@ -274,9 +274,9 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
     // `identify_consumer` in `src/filter/auth.rs`, both `jwt`-gated).
     #[cfg(all(feature = "consumers", not(feature = "jwt")))]
     if let Some(ref consumers_cfg) = site.consumers {
-        let shared_jwt_only = consumers_cfg.shared_jwt.is_some();
+        let has_shared_jwt = consumers_cfg.shared_jwt.is_some();
         let any_consumer_jwt = consumers_cfg.consumers.iter().any(|c| c.jwt.is_some());
-        if shared_jwt_only || any_consumer_jwt {
+        if has_shared_jwt || any_consumer_jwt {
             warnings.push(format!(
                 "sites[{i}].consumers uses `sharedJwt` or a consumer `jwt` credential but \
                  Conduit was compiled without the `jwt` feature — those consumers will be \
