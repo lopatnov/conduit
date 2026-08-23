@@ -248,10 +248,7 @@ fn missing_config_file_prints_init_and_help_hint() {
 #[test]
 fn serve_with_no_config_file_prints_hint_and_exits_nonzero() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let out = conduit()
-        .current_dir(dir.path())
-        .output()
-        .expect("run");
+    let out = conduit().current_dir(dir.path()).output().expect("run");
     assert!(
         !out.status.success(),
         "expected nonzero exit when no config file exists anywhere"
