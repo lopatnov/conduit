@@ -2650,12 +2650,14 @@ dependencies = [
  "js-sys",
  "p256",
  "p384",
+ "pem",
  "rand 0.8.6",
  "rsa",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "signature",
+ "simple_asn1",
  "zeroize",
 ]
 
@@ -2918,6 +2920,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "p256",
  "pingora",
  "pingora-cache",
  "pingora-core",
@@ -2925,11 +2928,13 @@ dependencies = [
  "pingora-load-balancing",
  "pingora-proxy",
  "prometheus 0.14.0",
+ "rand 0.8.6",
  "rcgen",
  "redis",
  "regex",
  "reqwest",
  "rhai",
+ "rsa",
  "rustls",
  "rustls-pemfile",
  "schemars",
@@ -5075,6 +5080,18 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "simple_asn1"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d585997b0ac10be3c5ee635f1bab02d512760d14b7c468801ac8a01d9ae5f1d"
+dependencies = [
+ "num-bigint",
+ "num-traits",
+ "thiserror 2.0.20",
+ "time",
+]
 
 [[package]]
 name = "slab"
