@@ -217,6 +217,71 @@ fn validate_missing_file_exits_nonzero() {
     );
 }
 
+/// A missing config file should print guidance pointing to `conduit init`
+/// and `--help`, not just a bare "cannot read" error — see the report that
+/// prompted this: a fresh binary run with no config anywhere in sight gave
+/// no indication of what to do next.
+#[test]
+fn missing_config_file_prints_init_and_help_hint() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("no-such-file.json");
+    let out = conduit()
+        .arg("validate")
+        .arg("--config")
+        .arg(&missing)
+        .output()
+        .expect("run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("conduit init"),
+        "expected a `conduit init` hint in stderr, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("conduit --help"),
+        "expected a `conduit --help` hint in stderr, got: {stderr}"
+    );
+}
+
+/// The default (no-subcommand) server-start path shares the same config-load
+/// error handling — running with no config file anywhere should fail fast
+/// with the same hint, not attempt to bind and hang.
+#[test]
+fn serve_with_no_config_file_prints_hint_and_exits_nonzero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = conduit()
+        .current_dir(dir.path())
+        .output()
+        .expect("run");
+    assert!(
+        !out.status.success(),
+        "expected nonzero exit when no config file exists anywhere"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("conduit init"),
+        "expected a `conduit init` hint in stderr, got: {stderr}"
+    );
+}
+
+/// A parse error on an *existing* file is a different problem than a missing
+/// file — it should not get the "no config file found" hint, since the user
+/// already has a config file and needs to fix its content, not create a new one.
+#[test]
+fn parse_error_on_existing_file_does_not_print_missing_config_hint() {
+    let (_dir, path) = write_invalid_config();
+    let out = conduit()
+        .arg("validate")
+        .arg("--config")
+        .arg(&path)
+        .output()
+        .expect("run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("No config file found"),
+        "an existing-but-invalid file should not get the missing-file hint, got: {stderr}"
+    );
+}
+
 // ── conduit fmt ─────────────────────────────────────────────────────────────
 
 #[test]
