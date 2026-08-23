@@ -170,12 +170,17 @@ pub struct IpGuard {
 impl RequestFilter for IpGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
         // Fast path: no static rules and no dynamic denies — nothing to check.
+        // Recover from lock poisoning here too (not just in is_dynamic_denied
+        // below) — otherwise a poisoned lock with no static rules configured
+        // short-circuits to Continue before is_dynamic_denied's own recovery
+        // logic is ever reached, silently disabling the whole dynamic deny
+        // list for exactly the sites relying on it most (dynamic-only setups).
         let has_static = self.cfg.allow.is_some() || self.cfg.deny.is_some();
         let has_dynamic = self
             .dynamic_deny
             .read()
             .map(|l| !l.is_empty())
-            .unwrap_or(false);
+            .unwrap_or_else(|e| !e.into_inner().is_empty());
         if !has_static && !has_dynamic {
             return Ok(FilterOutcome::Continue);
         }

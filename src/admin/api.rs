@@ -1114,6 +1114,92 @@ mod tests {
         assert!(!validate_cidr(""));
     }
 
+    // ── ip_deny_add_handler (direct call, no HTTP server needed) ─────────────
+
+    fn app_state_for_ip_deny() -> Arc<AppState> {
+        Arc::new(AppState::new(
+            crate::config::schema::AppConfig::default(),
+            std::path::PathBuf::from("."),
+            None,
+        ))
+    }
+
+    #[tokio::test]
+    async fn ip_deny_add_handler_valid_cidr_adds_to_list() {
+        let state = app_state_for_ip_deny();
+        let result = ip_deny_add_handler(
+            State(state.clone()),
+            axum::Json(IpDenyBody {
+                cidr: "203.0.113.0/24".to_owned(),
+            }),
+        )
+        .await;
+        let body = result.expect("valid CIDR must be accepted").0;
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["action"], "added");
+        assert_eq!(body["cidr"], "203.0.113.0/24");
+        assert_eq!(
+            state.dynamic_deny.read().unwrap().as_slice(),
+            ["203.0.113.0/24"]
+        );
+    }
+
+    #[tokio::test]
+    async fn ip_deny_add_handler_invalid_cidr_returns_bad_request() {
+        let state = app_state_for_ip_deny();
+        let result = ip_deny_add_handler(
+            State(state.clone()),
+            axum::Json(IpDenyBody {
+                cidr: "not-an-ip".to_owned(),
+            }),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(AdminError::BadRequest(_))),
+            "an invalid CIDR must be rejected as a typed AdminError::BadRequest"
+        );
+        assert!(
+            state.dynamic_deny.read().unwrap().is_empty(),
+            "the rejected entry must not have been added"
+        );
+    }
+
+    #[tokio::test]
+    async fn ip_deny_add_handler_duplicate_cidr_not_added_twice() {
+        let state = app_state_for_ip_deny();
+        for _ in 0..2 {
+            let _ = ip_deny_add_handler(
+                State(state.clone()),
+                axum::Json(IpDenyBody {
+                    cidr: "10.0.0.0/8".to_owned(),
+                }),
+            )
+            .await
+            .expect("valid CIDR must be accepted");
+        }
+        assert_eq!(state.dynamic_deny.read().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn ip_deny_remove_handler_removes_from_list() {
+        let state = app_state_for_ip_deny();
+        state
+            .dynamic_deny
+            .write()
+            .unwrap()
+            .push("192.0.2.0/24".to_owned());
+        let result = ip_deny_remove_handler(
+            State(state.clone()),
+            axum::Json(IpDenyBody {
+                cidr: "192.0.2.0/24".to_owned(),
+            }),
+        )
+        .await;
+        assert_eq!(result.0["status"], "ok");
+        assert_eq!(result.0["action"], "removed");
+        assert!(state.dynamic_deny.read().unwrap().is_empty());
+    }
+
     // ── detect_cold_changes ──────────────────────────────────────────────────
 
     fn cfg(json: &str) -> crate::config::schema::AppConfig {
