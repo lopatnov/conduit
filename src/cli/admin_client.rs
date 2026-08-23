@@ -57,51 +57,50 @@ pub fn admin_post_json(path: &str, addr: &str, json_body: &str) {
 }
 
 pub(crate) fn http_get(path: &str, addr: &str) -> anyhow::Result<String> {
-    let sock = addr
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr}"))?;
-    let mut stream = TcpStream::connect_timeout(&sock, Duration::from_secs(5))?;
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    write!(
-        stream,
-        "GET /{path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
-    )?;
-    stream.flush()?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response)?;
-    Ok(extract_body(&response))
+    http_request("GET", path, addr, None)
 }
 
 fn http_post(path: &str, addr: &str) -> anyhow::Result<String> {
-    let sock = addr
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr}"))?;
-    let mut stream = TcpStream::connect_timeout(&sock, Duration::from_secs(5))?;
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    write!(
-        stream,
-        "POST /{path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-    )?;
-    stream.flush()?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response)?;
-    Ok(extract_body(&response))
+    http_request("POST", path, addr, None)
 }
 
 fn http_post_json(path: &str, addr: &str, json_body: &str) -> anyhow::Result<String> {
+    http_request("POST", path, addr, Some(json_body))
+}
+
+/// Send a blocking HTTP/1.1 request to the Admin API over a plain TCP
+/// stream and return the response body. `json_body` of `None` sends no
+/// body (`Content-Length: 0` for `POST`, no body headers at all for `GET`,
+/// matching prior per-method behavior); `Some` sends it as
+/// `application/json`.
+fn http_request(
+    method: &str,
+    path: &str,
+    addr: &str,
+    json_body: Option<&str>,
+) -> anyhow::Result<String> {
     let sock = addr
         .to_socket_addrs()?
         .next()
         .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr}"))?;
     let mut stream = TcpStream::connect_timeout(&sock, Duration::from_secs(5))?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    write!(
-        stream,
-        "POST /{path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{json_body}",
-        len = json_body.len()
-    )?;
+
+    let mut request = format!("{method} /{path} HTTP/1.1\r\nHost: {addr}\r\n");
+    match json_body {
+        Some(body) => {
+            request.push_str("Content-Type: application/json\r\n");
+            request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        }
+        None if method == "POST" => request.push_str("Content-Length: 0\r\n"),
+        None => {}
+    }
+    request.push_str("Connection: close\r\n\r\n");
+    if let Some(body) = json_body {
+        request.push_str(body);
+    }
+
+    stream.write_all(request.as_bytes())?;
     stream.flush()?;
     let mut response = String::new();
     stream.read_to_string(&mut response)?;

@@ -221,6 +221,11 @@ fn validate_missing_file_exits_nonzero() {
 /// and `--help`, not just a bare "cannot read" error — see the report that
 /// prompted this: a fresh binary run with no config anywhere in sight gave
 /// no indication of what to do next.
+///
+/// This uses an explicit `-c` path, so the hint must name that specific
+/// path rather than claiming to have searched the default filenames — see
+/// `explicit_config_path_hint_does_not_claim_auto_discovery` below, which
+/// covers the case gitar-bot flagged on PR #263.
 #[test]
 fn missing_config_file_prints_init_and_help_hint() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -242,6 +247,33 @@ fn missing_config_file_prints_init_and_help_hint() {
     );
 }
 
+/// gitar-bot's finding on PR #263: `print_missing_config_hint` used to claim
+/// "looked for conduit.json, conduit.yaml, conduit.yml" even when an
+/// explicit `-c` path was given — but `resolve_config_path` only ever
+/// auto-probes the YAML alternatives when the argument is literally
+/// `"conduit.json"`, so that claim was false for any other explicit path.
+#[test]
+fn explicit_config_path_hint_does_not_claim_auto_discovery() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("my-custom-config.json");
+    let out = conduit()
+        .arg("validate")
+        .arg("--config")
+        .arg(&missing)
+        .output()
+        .expect("run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!("No config file found at {}", missing.display())),
+        "expected the hint to name the specific missing path, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("looked for conduit.json"),
+        "an explicit non-default path was never auto-discovered, so the \
+         hint must not claim it was — got: {stderr}"
+    );
+}
+
 /// The default (no-subcommand) server-start path shares the same config-load
 /// error handling — running with no config file anywhere should fail fast
 /// with the same hint, not attempt to bind and hang.
@@ -257,6 +289,11 @@ fn serve_with_no_config_file_prints_hint_and_exits_nonzero() {
     assert!(
         stderr.contains("conduit init"),
         "expected a `conduit init` hint in stderr, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("looked for conduit.json, conduit.yaml, conduit.yml"),
+        "the default path genuinely is auto-discovery-probed for all three \
+         names, so the hint should say so — got: {stderr}"
     );
 }
 
