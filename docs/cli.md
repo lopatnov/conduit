@@ -324,7 +324,7 @@ conduit status --upstream
 
 ```json
 {
-  "version": "1.1.2",
+  "version": "1.2.0",
   "uptime_secs": 3600,
   "inflight": 42,
   "sites": 2
