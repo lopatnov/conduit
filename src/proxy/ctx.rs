@@ -62,11 +62,18 @@ pub struct RequestCtx {
     /// Static header transform applied to every upstream response.
     /// Populated from `SiteConfig.response_transform`.
     pub response_transform: Option<HeaderTransformConfig>,
-    /// JWT claims extracted by `JwtGuard` — available for template substitution
-    /// in `requestTransform.setHeaders` values using `{{ jwt.<claim> }}` syntax.
+    /// JWT claims extracted after the guard chain runs — available for
+    /// template substitution in `requestTransform.setHeaders` values using
+    /// `{{ jwt.<claim> }}` syntax.
     ///
-    /// Only populated when `jwtAuth` is configured and a valid token is present.
-    pub jwt_claims: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// Only populated when `jwtAuth` is configured and a valid token is
+    /// present. `#[cfg(feature = "jwt")]`-gated like `otel_span`/
+    /// `early_refresh_upstream_url` below (`CLAUDE.md` decision #30) — use
+    /// [`RequestCtx::jwt_claims`] to read this from always-compiled call
+    /// sites (e.g. header-template expansion) without `#[cfg]`-branching at
+    /// the call site itself.
+    #[cfg(feature = "jwt")]
+    pub jwt: Option<conduit_auth_jwt::guard::JwtReqState>,
     /// Active OpenTelemetry span for this request.
     ///
     /// Created at the start of `do_request_filter` and ended in `logging()`.
@@ -183,7 +190,8 @@ impl RequestCtx {
             body_buffer: Vec::new(),
             body_too_large: false,
             actual_body_bytes: 0,
-            jwt_claims: None,
+            #[cfg(feature = "jwt")]
+            jwt: None,
             upstream_start: None,
             ip_conn_slot: None,
             passive_unhealthy_status: Vec::new(),
@@ -198,6 +206,36 @@ impl RequestCtx {
             #[cfg(feature = "otlp")]
             otel_span: None,
         }
+    }
+
+    /// Borrow the JWT claims extracted for this request, if any.
+    ///
+    /// Used by the root crate's always-compiled `{{ jwt.<claim> }}`
+    /// header-template expansion (`apply_header_transform_request_with_claims`
+    /// in `request_phase.rs`, backed by `conduit_auth_jwt::template::
+    /// expand_jwt_templates`) — that call site is unconditional (a config
+    /// can reference the template syntax regardless of whether `--features
+    /// jwt` is compiled in), so this accessor exists specifically to keep
+    /// the `#[cfg]` branching contained here instead of at every call site.
+    /// Returns a static empty reference when the `jwt` feature is off or no
+    /// claims were extracted for this request.
+    #[cfg(feature = "jwt")]
+    pub fn jwt_claims(&self) -> &Option<std::collections::HashMap<String, serde_json::Value>> {
+        const NO_CLAIMS: Option<std::collections::HashMap<String, serde_json::Value>> = None;
+        self.jwt
+            .as_ref()
+            .map(|state| &state.claims)
+            .unwrap_or(&NO_CLAIMS)
+    }
+
+    /// See the `#[cfg(feature = "jwt")]` overload above — stub for builds
+    /// without the `jwt` feature, always returning `None` so
+    /// `{{ jwt.<claim> }}` templates resolve to `""` (matching the
+    /// documented always-compiled behavior of `expand_jwt_templates`).
+    #[cfg(not(feature = "jwt"))]
+    pub fn jwt_claims(&self) -> &Option<std::collections::HashMap<String, serde_json::Value>> {
+        const NO_CLAIMS: Option<std::collections::HashMap<String, serde_json::Value>> = None;
+        &NO_CLAIMS
     }
 }
 
