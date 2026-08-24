@@ -33,6 +33,7 @@ lopatnov-conduit-acme        = { path = "crates/conduit-acme", version = "2.0.0"
 lopatnov-conduit-tcp         = { path = "crates/conduit-tcp", version = "2.0.0" }
 lopatnov-conduit-upload      = { path = "crates/conduit-upload", version = "2.0.0" }
 lopatnov-conduit-faults      = { path = "crates/conduit-faults", version = "2.0.0" }
+lopatnov-conduit-auth-jwt    = { path = "crates/conduit-auth-jwt", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -105,8 +106,11 @@ sha2      = "0.11"
 # --- Rhai scripting middleware (feature: rhai) ---
 rhai = { version = "1", features = ["sync"] }
 
-# --- JWT bearer-token authentication (feature: jwt) ---
-# Verifies HS256 (HMAC secret) and RS256/ES256 (JWKS/PEM).
+# --- JWT bearer-token authentication (crates/conduit-auth-jwt, its own
+# `jwt` feature, forwarded from the root crate's `jwt` feature — #114/#133)
+# ---
+# Verifies HS256 (HMAC secret) and RS256/ES256 (JWKS/PEM). Also used by the
+# root crate's own [dev-dependencies] (tests/auth.rs generates test tokens).
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 
 # --- Test-only: generate throwaway RSA-2048 / P-256 keypairs at test-run
@@ -116,16 +120,19 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 # source text. Same versions already resolved transitively via
 # jsonwebtoken's rust_crypto backend, so this adds no new entries to the
 # dependency graph — just a direct dev-dep edge to what was already there.
-# Only ever referenced from [dev-dependencies] below.
+# Referenced from crates/conduit-auth-jwt's [dev-dependencies] and the root
+# crate's own [dev-dependencies] below (tests/auth.rs).
 rsa  = "0.9"
 p256 = "0.13"
 rand = "0.8"
 
-# --- HTTP client (feature: jwt for JWKS, forward-auth, mirroring) ---
+# --- HTTP client (feature: jwt for JWKS via crates/conduit-auth-jwt,
+# forward-auth, mirroring) ---
 # `default-features = false` avoids native-tls; rustls keeps TLS consistent.
-# Base feature set covers main-crate usage (JWKS/ForwardAuth/mirroring); the
-# dev-dependency below adds test-only extras (http2/blocking/multipart) on
-# top via feature union, since workspace-inherited features are additive.
+# Base feature set covers main-crate usage (ForwardAuth/mirroring) and
+# crates/conduit-auth-jwt's JWKS fetch; the dev-dependency below adds
+# test-only extras (http2/blocking/multipart) on top via feature union,
+# since workspace-inherited features are additive.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 # --- Redis-backed rate limiting & caching (feature: redis) ---
@@ -225,6 +232,13 @@ lopatnov-conduit-upload.workspace      = true
 # `lopatnov-conduit-faults/fault-injection` in the `fault-injection` feature
 # below.
 lopatnov-conduit-faults.workspace      = true
+# Mandatory (like the crates above), not `optional = true`: `JwtAuthConfig`
+# and the `sites[].jwtAuth` field must stay parseable in every build so
+# `feature_warnings()` can keep warning on a config-without-feature
+# mismatch. Only the real JWKS/HS256/RS256/ES256 validation and
+# `guard::JwtGuard` are gated, via `lopatnov-conduit-auth-jwt/jwt` in the
+# `jwt` feature below.
+lopatnov-conduit-auth-jwt.workspace    = true
 
 # --- Config & parsing ---
 serde.workspace      = true
@@ -290,12 +304,13 @@ sha2.workspace      = true
 # --- Rhai scripting middleware (feature: rhai) ---
 rhai = { workspace = true, optional = true }
 
-# --- JWT bearer-token authentication (feature: jwt) ---
-jsonwebtoken = { workspace = true, optional = true }
-
-# --- HTTP client (feature: jwt for JWKS, forward-auth, mirroring) ---
+# --- HTTP client (feature: jwt for JWKS via crates/conduit-auth-jwt,
+# forward-auth, mirroring) ---
 # reqwest is NOT optional because traffic mirroring (basic feature) uses it.
 # When jwt/forward-auth are disabled, reqwest is still used for mirroring.
+# `jsonwebtoken` itself moved to `crates/conduit-auth-jwt` (#114/#133) and is
+# no longer a direct root-crate [dependencies] entry — only a
+# [dev-dependencies] one below (tests/auth.rs generates test tokens).
 reqwest.workspace = true
 
 # --- Redis-backed rate limiting & caching (feature: redis) ---
@@ -332,7 +347,11 @@ default = []
 
 # ── Authentication ─────────────────────────────────────────────────────────────
 # JWT bearer-token validation (HS256 + RS256/ES256 via JWKS URL).
-jwt = ["dep:jsonwebtoken"]
+# `JwtAuthConfig` moved to `crates/conduit-auth-jwt` (#114/#133) and is
+# always a dependency (see the [dependencies] comment above); this only
+# forwards into that crate's own `jwt` feature, which gates the real JWKS
+# fetch/validation and `guard::JwtGuard`.
+jwt = ["lopatnov-conduit-auth-jwt/jwt"]
 # Consumer model: per-consumer API-key / Basic Auth / JWT credentials +
 # per-consumer rate limits and header injection.
 consumers = []
@@ -440,16 +459,18 @@ wat.workspace           = true
 rcgen.workspace         = true
 # rsa/p256/rand: generate throwaway RSA-2048 and P-256 keypairs at test-run
 # time for JWKS/RS256/ES256 coverage (issue #164) — see the workspace.dependencies
-# comment above. Only referenced here.
+# comment above. Used here for tests/auth.rs; crates/conduit-auth-jwt has its
+# own identical dev-dependency edge for its own JWKS unit tests (#133).
 rsa.workspace           = true
 p256.workspace          = true
 rand.workspace          = true
-# jsonwebtoken is used in auth integration tests to generate test tokens.
-# Listed as dev-dep so tests compile without --features jwt. `use_pem` is
-# needed only here (RS256/ES256 JWKS test tokens, issue #164) — added via
-# feature union on top of the workspace base set (same pattern as reqwest
-# above); the main [dependencies] entry stays without it since production
-# code only ever consumes JWKS keys as raw n/e/x/y components, never PEM.
+# jsonwebtoken is used in auth integration tests (tests/auth.rs) to generate
+# test tokens. Listed as dev-dep (not [dependencies], which no longer has a
+# jsonwebtoken entry at all — the real JWT validation code moved to
+# crates/conduit-auth-jwt, #114/#133) so these tests compile without
+# --features jwt. `use_pem` is needed only here (RS256/ES256 JWKS test
+# tokens, issue #164) — added via feature union on top of the workspace base
+# set (same pattern as reqwest above).
 jsonwebtoken = { workspace = true, features = ["use_pem"] }
 
 [[test]]

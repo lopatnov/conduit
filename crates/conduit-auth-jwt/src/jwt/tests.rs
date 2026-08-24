@@ -3,7 +3,7 @@
 //! JWKS (RS256/ES256) coverage lives in the `jwks` submodule.
 
 use super::*;
-use crate::config::schema::JwtAuthConfig;
+use crate::config::JwtAuthConfig;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde_json::json;
 
@@ -171,10 +171,12 @@ fn extract_claims_returns_sub() {
     );
 }
 
-// Note: `expand_jwt_templates` itself moved to `crate::util::jwt_template`
-// (#123) — it's called from the always-compiled requestTransform code
-// path, so it can't live in this `#[cfg(feature = "jwt")]`-gated module.
-// See `util::jwt_template::tests` for its coverage.
+// Note: `expand_jwt_templates` itself lives in `crate::template` (moved out
+// of the root crate's `crate::util::jwt_template` in #123, into this crate
+// in #133) — it's called from the root crate's always-compiled
+// requestTransform code path, so it can't live in this
+// `#[cfg(feature = "jwt")]`-gated module. See `template::tests` for its
+// coverage.
 
 // ── check_jwt_extracting ──────────────────────────────────────────────────
 

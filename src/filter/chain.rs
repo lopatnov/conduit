@@ -25,14 +25,10 @@ use pingora_proxy::Session;
 use crate::config::schema::ConsumersConfig;
 #[cfg(feature = "forward-auth")]
 use crate::config::schema::ForwardAuthConfig;
-#[cfg(feature = "jwt")]
-use crate::config::schema::JwtAuthConfig;
 use crate::config::schema::{
     ApiKeyConfig, BasicAuthConfig, CorsConfig, IpFilterConfig, LimitsConfig, MiddlewareEntry,
     RateLimitConfig,
 };
-#[cfg(feature = "jwt")]
-use crate::filter::jwt;
 use crate::filter::rate_limit::RateLimiter;
 #[cfg(feature = "redis")]
 use crate::filter::rate_limit_redis::RedisRateLimiter;
@@ -662,39 +658,15 @@ impl RequestFilter for ApiKeyGuard {
     }
 }
 
-/// JWT bearer-token authentication guard.
-///
-/// Validates the `Authorization: Bearer <token>` header using either an HMAC
-/// secret (`jwtAuth.secret`) or a remote JWKS endpoint (`jwtAuth.jwksUrl`).
+/// Extracted into `crates/conduit-auth-jwt` (issue #114/#133) — this is a
+/// facade re-export so `crate::filter::chain::JwtGuard` keeps resolving to
+/// the same type at the same location for every existing call site/test.
+/// See that crate's `src/guard.rs` for the implementation: validates the
+/// `Authorization: Bearer <token>` header using either an HMAC secret
+/// (`jwtAuth.secret`) or a remote JWKS endpoint (`jwtAuth.jwksUrl`).
 /// Returns `401 Unauthorized` when the token is absent or invalid.
 #[cfg(feature = "jwt")]
-pub struct JwtGuard {
-    pub cfg: JwtAuthConfig,
-    pub path: String,
-}
-
-#[cfg(feature = "jwt")]
-#[async_trait]
-impl RequestFilter for JwtGuard {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        let auth_header = ctx
-            .session
-            .req_header()
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok());
-
-        match jwt::check_jwt(&self.cfg, &self.path, auth_header) {
-            jwt::JwtCheckResult::Allowed => Ok(FilterOutcome::Continue),
-            jwt::JwtCheckResult::Denied { reason } => {
-                tracing::debug!(reason, "JWT validation denied");
-                response::write_denied(ctx.session, Some("Bearer"), ctx.extra_headers).await?;
-                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                Ok(FilterOutcome::Handled)
-            }
-        }
-    }
-}
+pub use conduit_auth_jwt::guard::JwtGuard;
 
 /// Forward Auth guard — delegates authentication/authorization to an external service.
 ///

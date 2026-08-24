@@ -2915,6 +2915,7 @@ dependencies = [
  "kube",
  "libc",
  "lopatnov-conduit-acme",
+ "lopatnov-conduit-auth-jwt",
  "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
  "lopatnov-conduit-faults",
@@ -2979,6 +2980,28 @@ dependencies = [
  "tokio",
  "tracing",
  "x509-parser 0.18.1",
+]
+
+[[package]]
+name = "lopatnov-conduit-auth-jwt"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "jsonwebtoken",
+ "lopatnov-conduit-core",
+ "p256",
+ "pingora-core",
+ "pingora-proxy",
+ "rand 0.8.6",
+ "regex",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
