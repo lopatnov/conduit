@@ -246,7 +246,7 @@ rcgen       = "0.14"
 # and avoids tripping secret-scanners on fake-but-key-shaped source text.
 rsa         = "0.9"
 p256        = "0.13"
-rand        = "0.8"
+rand        = "0.9"
 # jsonwebtoken is used in auth integration tests to generate test tokens.
 # Listed as dev-dep so tests compile without --features jwt. `use_pem` is
 # needed only here (RS256/ES256 JWKS test tokens, issue #164) — the main

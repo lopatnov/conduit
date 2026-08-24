@@ -611,7 +611,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93f85c3824e4191621dec0551e3cef3d511f329da9a8990bf3e450a85651d97e"
 dependencies = [
  "backtrace",
- "rand 0.8.6",
+ "rand 0.8.7",
  "tokio",
  "trackable",
 ]
@@ -2651,7 +2651,7 @@ dependencies = [
  "p256",
  "p384",
  "pem",
- "rand 0.8.6",
+ "rand 0.8.7",
  "rsa",
  "serde",
  "serde_json",
@@ -2928,7 +2928,7 @@ dependencies = [
  "pingora-load-balancing",
  "pingora-proxy",
  "prometheus 0.14.0",
- "rand 0.8.6",
+ "rand 0.9.4",
  "rcgen",
  "redis",
  "regex",
@@ -3208,7 +3208,7 @@ dependencies = [
  "num-integer",
  "num-iter",
  "num-traits",
- "rand 0.8.6",
+ "rand 0.8.7",
  "smallvec",
  "zeroize",
 ]
@@ -3650,7 +3650,7 @@ dependencies = [
  "pingora-http",
  "pingora-lru",
  "pingora-timeout",
- "rand 0.8.6",
+ "rand 0.8.7",
  "regex",
  "rmp",
  "rmp-serde",
@@ -3696,7 +3696,7 @@ dependencies = [
  "pingora-rustls",
  "pingora-timeout",
  "prometheus 0.13.4",
- "rand 0.8.6",
+ "rand 0.8.7",
  "regex",
  "serde",
  "serde_yaml",
@@ -3773,7 +3773,7 @@ dependencies = [
  "pingora-http",
  "pingora-ketama",
  "pingora-runtime",
- "rand 0.8.6",
+ "rand 0.8.7",
  "tokio",
 ]
 
@@ -3786,7 +3786,7 @@ dependencies = [
  "arrayvec",
  "hashbrown 0.17.1",
  "parking_lot",
- "rand 0.8.6",
+ "rand 0.8.7",
 ]
 
 [[package]]
@@ -3822,7 +3822,7 @@ dependencies = [
  "pingora-core",
  "pingora-error",
  "pingora-http",
- "rand 0.8.6",
+ "rand 0.8.7",
  "regex",
  "tokio",
 ]
@@ -3834,7 +3834,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "41815a13691a3e7d9ad0e34767d4140284132e31b95a4481f5e73ab6f407f834"
 dependencies = [
  "once_cell",
- "rand 0.8.6",
+ "rand 0.8.7",
  "thread_local",
  "tokio",
 ]
@@ -4206,9 +4206,9 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rand"
-version = "0.8.6"
+version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
+checksum = "22f6172bdec972074665ed81ed53b71da00bfc44b65a753cfde883ec4c702a1a"
 dependencies = [
  "libc",
  "rand_chacha 0.3.1",
