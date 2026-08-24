@@ -1584,3 +1584,69 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   `src/config/validate.rs` затронут в обеих ветках, но в непересекающихся
   местах), `cargo check` (default + `--features full`) зелёный, запушено
   (`14c7500`).
+
+### Реализовано в сессии 2026-08-24 (Phase 3.5 — #133 conduit-auth-jwt + verification-agent isolation incident)
+
+- **[PR #264](https://github.com/lopatnov/conduit/pull/264)
+  `feat(workspace): extract conduit-auth-jwt crate (#133)`**
+  (ветка `feat/extract-conduit-auth-jwt-133` → `claude/cargo-workspace-features-23qxfr`,
+  squash `d3e8685`, issue #133 CLOSED) — завершает Phase 3.5. `JwtAuthConfig`,
+  `filter/jwt.rs` (JWKS cache/fetch, HS256/RS256/ES256), `JwtGuard` и
+  `{{ jwt.<claim> }}` template expansion перенесены в `crates/conduit-auth-jwt`
+  по шаблону `conduit-faults` (#132): `JwtAuthConfig` + `template::
+  expand_jwt_templates` остаются always-compiled (конфиг с `jwtAuth`/
+  `{{ jwt.* }}` парсится и warns без `--features jwt`), реальный JWKS/guard-код
+  — за фичей `jwt` нового крейта, форвардится из корневой фичи `jwt`.
+  `RequestCtx.jwt_claims` → `#[cfg(feature = "jwt")]`-гейтированное
+  `RequestCtx.jwt: Option<JwtReqState>` (решение #30), с accessor'ом
+  `jwt_claims()`, абсорбирующим `#[cfg]`-ветвление для always-compiled
+  call site (header-template expansion). `extract_claims_from_session`
+  (бывший `jwt_claims_from_session`) перенесён дословно, включая
+  `skipPaths` re-check (класс уязвимости #237). Делегировано
+  `crate-extractor` с полностью резолвленным заранее спеком (шаблон
+  `conduit-faults`, always-compiled/gated split, cfg-accessor паттерн) —
+  агент сам обнаружил, что готового "root-calls-into-crate" паттерна для
+  `request_phase.rs` не было ни у одной из предыдущих экстракций, и выбрал
+  прямые quilified-вызовы. Верификация: fmt/clippy (default+full) чисто,
+  `cargo test --workspace` (default/full/`--features jwt` отдельно) все
+  зелёные, `cargo hack --each-feature` 20/20 + `--feature-powerset --depth 2`
+  136/136, `footprint-auditor` подтвердил нулевую дельту для non-jwt
+  профилей и отсутствие `jsonwebtoken` в дереве зависимостей.
+  `security-engineer` PASS на точном SHA `054f141`, вердикт запощен на PR
+  перед мерджем. Найден (не самой экстракцией, подтверждено через
+  `git stash` на pre-extraction коде) pre-existing gap: `cargo hack
+  --features jwt` (без `consumers`) даёт 2 warning'а (`unused import`,
+  dead `build_jwt_auth_cfg` в `filter/auth.rs`) — не в scope #133, касается
+  территории #134, не исправлено.
+
+- **Инцидент: параллельные "изолированные" verification-агенты сбежали из
+  своих worktree** — при запуске `build-validator`/`feature-matrix-runner`/
+  `footprint-auditor` с `isolation: "worktree"` (Step 5) два из трёх агентов
+  всё равно выполнили `cargo`-команды с абсолютным `--manifest-path
+  /home/user/conduit/Cargo.toml` вместо пути внутри своего собственного
+  worktree — сам `cwd` был правильным (worktree), но явно захардкоженный
+  `--manifest-path` в команде проигнорировал изоляцию и записал/стёр
+  состояние прямо в общий чекаут кондактора. `cargo-hack --no-dev-deps`
+  временно стирает секции `[dev-dependencies]` из манифестов на время
+  прогона каждой feature-комбинации — пока один из renegade-процессов был
+  жив, `git status` в основном чекауте показывал `[dev-dependencies]`
+  стёртыми из ВСЕХ `Cargo.toml` воркспейса (корневого + 7 крейтов). Это
+  вызвало ложноотрицательный RED от `build-validator` ("Missing
+  [dev-dependencies] section" — на самом деле временный артефакт гонки, не
+  реальный регресс), той же формы, что и задокументированный инцидент
+  2026-08-15 (только там причиной был параллельный Bash conductor'а, здесь
+  — сами агенты, несмотря на явный `isolation: "worktree"`). Восстановлено:
+  `kill -TERM` на захваченные PID (по `ps aux` + `/proc/<pid>/cwd` для
+  подтверждения, что именно они целятся в `/home/user/conduit`, а не в
+  свои worktree), `git checkout -- Cargo.toml Cargo.lock crates/*/Cargo.toml`
+  для отката до состояния коммита `054f141`, независимая повторная
+  верификация (`cargo build/test/fmt/clippy` вручную) вместо доверия
+  единственному ложному RED. Оба агента при повторном/продолжающемся
+  прогоне (после `kill`) корректно перешли на действительно изолированные
+  пути (`/tmp/conduit-parent`) и вернули настоящий GREEN. Урок для будущих
+  сессий: `isolation: "worktree"` гарантирует изолированный `cwd` для
+  Bash-вызовов агента, но НЕ мешает агенту самому передать абсолютный путь
+  к основному чекауту в `--manifest-path`/аналогичных флагах — при
+  параллельном запуске нескольких verification-агентов стоит быть готовым
+  сверить `ps aux`/`/proc/<pid>/cwd` при подозрительном `git status`
+  в основном чекауте, а не сразу доверять отчёту агента.
