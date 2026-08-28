@@ -294,10 +294,11 @@ fn record_cache_metrics(proxy: &ConduitProxy, session: &Session, ctx: &Option<Re
 /// request is still in flight.
 #[cfg(feature = "cache")]
 fn spawn_early_cache_refresh(session: &Session, ctx: &Option<RequestCtx>) {
-    let Some(early_url) = ctx
-        .as_ref()
-        .and_then(|c| c.early_refresh_upstream_url.as_deref().map(str::to_owned))
-    else {
+    let Some(early_url) = ctx.as_ref().and_then(|c| {
+        c.cache
+            .as_ref()
+            .and_then(|s| s.early_refresh_upstream_url.as_deref().map(str::to_owned))
+    }) else {
         return;
     };
     let path = session

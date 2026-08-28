@@ -129,12 +129,16 @@ pub struct RequestCtx {
     /// (the default), any `101 Switching Protocols` response from upstream is
     /// rejected with `502 Bad Gateway` to prevent unexpected protocol tunnelling.
     pub websocket_allowed: bool,
-    /// Age in seconds to inject as the `Age` response header for cache hits.
+    /// Per-request cache state (`Age` header value, early-refresh upstream
+    /// URL) — see [`CacheReqState`](conduit_cache::CacheReqState).
     ///
-    /// Computed in `upstream_response_filter` from the cached response's `Date`
-    /// header (RFC 7234 §5.1): `age = now − date`.  `None` for non-cached
-    /// responses or when the cache feature is disabled.
-    pub cache_age_secs: Option<u64>,
+    /// `#[cfg(feature = "cache")]`-gated like `jwt`/`otel_span` above
+    /// (`CLAUDE.md` decision #30) — use [`RequestCtx::cache_age_secs`] to
+    /// read the `Age`-header value from always-compiled call sites (the
+    /// `ResponseCtx` trait impl in `filter/response_chain.rs`) without
+    /// `#[cfg]`-branching at the call site itself.
+    #[cfg(feature = "cache")]
+    pub cache: Option<conduit_cache::CacheReqState>,
     /// Sticky-session cookie to set on the response when HMAC signing is enabled.
     ///
     /// Populated during routing when `sticky.secret` is configured.
@@ -149,14 +153,6 @@ pub struct RequestCtx {
     pub upload_excess_bytes: f64,
     /// Timestamp of the last body chunk received, used by the upload-rate checker.
     pub upload_last_chunk: Option<std::time::Instant>,
-    /// Upstream URL to refresh in the background after this cache-hit response
-    /// is served (early refresh, #31).
-    ///
-    /// Set by `response_filter` when the cache entry's remaining TTL is within
-    /// `earlyRefreshSecs`.  `logging()` spawns a fire-and-forget GET task.
-    /// `None` when early refresh is not configured or the TTL is not yet close.
-    #[cfg(feature = "cache")]
-    pub early_refresh_upstream_url: Option<String>,
 }
 
 impl RequestCtx {
@@ -197,12 +193,11 @@ impl RequestCtx {
             passive_unhealthy_status: Vec::new(),
             passive_unhealthy_latency_ms: None,
             websocket_allowed: false,
-            cache_age_secs: None,
+            #[cfg(feature = "cache")]
+            cache: None,
             sticky_set_cookie: None,
             upload_excess_bytes: 0.0,
             upload_last_chunk: None,
-            #[cfg(feature = "cache")]
-            early_refresh_upstream_url: None,
             #[cfg(feature = "otlp")]
             otel_span: None,
         }
@@ -236,6 +231,26 @@ impl RequestCtx {
     pub fn jwt_claims(&self) -> &Option<std::collections::HashMap<String, serde_json::Value>> {
         const NO_CLAIMS: Option<std::collections::HashMap<String, serde_json::Value>> = None;
         &NO_CLAIMS
+    }
+
+    /// Age in seconds for the `Age` response header on cache hits (RFC 7234
+    /// §5.1).
+    ///
+    /// Backed by [`cache`](Self::cache)'s `CacheReqState` when the `cache`
+    /// feature is compiled in; always `None` otherwise. Exists so the
+    /// always-compiled `ResponseCtx` trait impl (`filter/response_chain.rs`)
+    /// doesn't need `#[cfg]`-branching at its call site — matches the
+    /// `jwt_claims()` pattern above (`CLAUDE.md` decision #30).
+    #[cfg(feature = "cache")]
+    pub fn cache_age_secs(&self) -> Option<u64> {
+        self.cache.as_ref().and_then(|c| c.cache_age_secs)
+    }
+
+    /// See the `#[cfg(feature = "cache")]` overload above — stub for builds
+    /// without the `cache` feature, always returning `None`.
+    #[cfg(not(feature = "cache"))]
+    pub fn cache_age_secs(&self) -> Option<u64> {
+        None
     }
 }
 

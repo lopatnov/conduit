@@ -107,3 +107,34 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   first crate to take this dependency; this is the second). Chain assembly
   and guard ordering stay in the root crate's `src/filter/chain.rs`
   (`CLAUDE.md` decision #20).
+
+- **`conduit-cache`** (Phase 3.7, [#135](https://github.com/lopatnov/conduit/issues/135))
+  — HTTP response caching. Owns `CacheConfig` (the `proxy.*.cache` config
+  struct, `src/config.rs`), the always-compiled cache-key/policy logic
+  (`cache` module — `build_cache_key`, `should_cache_request`,
+  `response_cacheable`, `cache_storage`, `cache_lock`), the disk storage
+  backend (`disk` module), the Redis storage backend (`redis` module, gated
+  behind this crate's own `redis` feature), and `ctx::CacheReqState` — the
+  per-request cache state struct. `CacheConfig` is compiled into every build
+  like `conduit-otlp`'s `OtlpConfig` above. Unlike the guard-shaped
+  extractions above, most of this crate's own code is *also* always
+  compiled — not gated behind `optional = true` internal `#[cfg]`s beyond
+  what it already had pre-extraction: Pingora's `ProxyHttp` trait calls
+  `cache_key_callback`/`response_cache_filter` on every request regardless
+  of the `cache` feature, and the Admin API's cache-purge handler calls
+  `cache::build_cache_key`/`cache::cache_storage` unconditionally too — so
+  `src/proxy/cache.rs`/`cache_disk.rs` had no file-level feature gate before
+  this move, and neither do their new homes (`cache`/`disk` modules here).
+  Only `cache::should_early_refresh` and the entire `redis` module are
+  genuinely gated, via this crate's own `cache`/`redis` Cargo features
+  (`redis` forwarded from the root as a plain, not weak, dependency
+  feature — see that crate's `src/lib.rs` doc comment for why the `?/`
+  syntax doesn't apply to a mandatory dependency). Has no dependency on
+  `lopatnov-conduit-core` — nothing here implements `RequestFilter`/
+  `ResponseFilter`; the Pingora `ProxyHttp` trait-method bodies stay in the
+  root crate's `request_phase.rs`/`response_phase.rs`, calling into this
+  crate's plain functions. Per-request `cache_age_secs`/
+  `early_refresh_upstream_url` state moved into `ctx::CacheReqState`, held
+  behind a `#[cfg(feature = "cache")]`-gated `RequestCtx.cache` field in the
+  root crate (`CLAUDE.md` decision #30) — same pattern as
+  `conduit-auth-jwt`'s `JwtReqState`/`RequestCtx.jwt`.

@@ -2918,6 +2918,7 @@ dependencies = [
  "lopatnov-conduit-auth-consumers",
  "lopatnov-conduit-auth-forward",
  "lopatnov-conduit-auth-jwt",
+ "lopatnov-conduit-cache",
  "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
  "lopatnov-conduit-faults",
@@ -3033,6 +3034,26 @@ dependencies = [
  "rsa",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "lopatnov-conduit-cache"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "dashmap",
+ "http",
+ "pingora-cache",
+ "pingora-core",
+ "pingora-http",
+ "redis",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]

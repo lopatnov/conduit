@@ -36,6 +36,7 @@ lopatnov-conduit-faults      = { path = "crates/conduit-faults", version = "2.0.
 lopatnov-conduit-auth-jwt    = { path = "crates/conduit-auth-jwt", version = "2.0.0" }
 lopatnov-conduit-auth-forward   = { path = "crates/conduit-auth-forward", version = "2.0.0" }
 lopatnov-conduit-auth-consumers = { path = "crates/conduit-auth-consumers", version = "2.0.0" }
+lopatnov-conduit-cache          = { path = "crates/conduit-cache", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -258,6 +259,15 @@ lopatnov-conduit-auth-forward.workspace   = true
 # (issue #114/#134: it also needs this crate's own not-yet-extracted
 # `RateLimiter`).
 lopatnov-conduit-auth-consumers.workspace = true
+# Mandatory (like the crates above), not `optional = true`: `CacheConfig`
+# and the `proxy.*.cache` field must stay parseable in every build so
+# `feature_warnings()` can keep warning on a config-without-feature
+# mismatch. Most of the crate's `cache` module is *also* always compiled
+# (matches its pre-extraction gating exactly — see that crate's `src/lib.rs`
+# doc comment); only `cache::should_early_refresh` and the entire `redis`
+# module are gated, via `lopatnov-conduit-cache/cache` and
+# `lopatnov-conduit-cache?/redis` below.
+lopatnov-conduit-cache.workspace          = true
 
 # --- Config & parsing ---
 serde.workspace      = true
@@ -414,12 +424,32 @@ tcp = ["lopatnov-conduit-tcp/tcp"]
 upload = ["lopatnov-conduit-upload/upload"]
 
 # ── Storage backends ───────────────────────────────────────────────────────────
-# Redis-backed rate limiting (rateLimit.store: "redis://...") and caching.
-redis = ["dep:redis"]
-# Response caching (proxy.*.cache config). Requires pingora-cache (always a dep).
-cache = []
-# Disk cache backend (cache.store: "disk:/path").
-disk-cache = ["cache"]
+# Redis-backed rate limiting (rateLimit.store: "redis://...", not yet
+# extracted — issue #137) AND caching (cache.store: "redis://...",
+# `crates/conduit-cache`'s own `redis` feature, #114/#135). `dep:redis`
+# covers the former; `lopatnov-conduit-cache/redis` forwards into the
+# latter. Cargo's weak-dependency-feature syntax (`pkg?/feature`) was
+# considered here to keep the two `redis` crate call sites from bleeding into
+# each other via Cargo feature unification, but it only applies to
+# *optional* dependencies — `cargo check` rejects `?` on
+# `lopatnov-conduit-cache` because it's a mandatory dependency (same as every
+# other extracted feature crate, since `CacheConfig` must stay
+# always-compiled; see the [dependencies] comment above), so the plain form
+# is used instead. The underlying concern is still addressed structurally:
+# `conduit-cache`'s `redis` Cargo feature is its own crate-local namespace,
+# entirely separate from this crate's `dep:redis` toggle — enabling one never
+# implicitly enables the other, regardless of `?`.
+redis = ["dep:redis", "lopatnov-conduit-cache/redis"]
+# Response caching (proxy.*.cache config). `CacheConfig` moved to
+# `crates/conduit-cache` (#114/#135) and is always a dependency (see the
+# [dependencies] comment above); this forwards into that crate's own `cache`
+# feature (a marker feature there too, matching pre-extraction — see that
+# crate's `src/lib.rs` doc comment).
+cache = ["lopatnov-conduit-cache/cache"]
+# Disk cache backend (cache.store: "disk:/path"). Forwards into
+# `crates/conduit-cache`'s own `disk-cache` feature (also a marker feature —
+# the `disk` module itself has no feature gate, matching pre-extraction).
+disk-cache = ["cache", "lopatnov-conduit-cache/disk-cache"]
 
 # ── Auto-TLS ──────────────────────────────────────────────────────────────────
 # ACME / Let's Encrypt automatic certificate provisioning (tls.acme config).
