@@ -263,7 +263,8 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
     // `consumers` alone doesn't imply `jwt` — a consumer whose only credential
     // is `jwt` (V2) or a `consumers.sharedJwt` block (V3) is silently
     // unreachable without it (see `check_consumer_credentials`/
-    // `identify_consumer` in `src/filter/auth.rs`, both `jwt`-gated).
+    // `identify_consumer` in `crates/conduit-auth-consumers/src/identify.rs`,
+    // both `jwt`-gated).
     #[cfg(all(feature = "consumers", not(feature = "jwt")))]
     if let Some(ref consumers_cfg) = site.consumers {
         let has_shared_jwt = consumers_cfg.shared_jwt.is_some();
