@@ -40,54 +40,17 @@ Model assignment (already encoded in each agent's frontmatter — don't override
 
 ## Step 0a — session rotation check (long-session hygiene)
 
-This session is bound to the routine in **self-bind mode** — every daily
-firing continues the same conversation, so context never resets on its own.
-Left unrotated, this accumulates for as long as the routine keeps firing
-(this session ran continuously from 2026-07-29 to at least 2026-08-28 before
-this check existed) and eventually costs real capability: on 2026-08-28
-~16:2x UTC this exact session hit the account's session-wide model rate
-limit *mid-firing*, while triaging a security-alert batch, and had to stop
-delegating to subagents entirely until the quota reset at 8pm UTC. Periodic
-rotation to a fresh session avoids repeating that.
+This session is bound to the routine in **self-bind mode** — context never resets on its
+own between firings (see `.claude/commands/session-rotate.md` for why this matters and
+the full rotation mechanism; kept as a separate command rather than inlined here so the
+procedure only loads into context on the firings that actually need it).
 
-- Check `CLAUDE.md`'s **"Session rotation log"** table (near the end of the
-  file) for its most recent row's date (empty table = no rotation has ever
-  happened, treat as "long overdue" only once accumulated firings actually
-  cross the threshold below — don't force a rotation just because the table
-  is empty on the very first check). Count how many dated firing-log
-  entries ("Реализовано в сессии ..." section headings, plus "Dependabot &
-  branch hygiene log" rows) have landed since that date.
-- If that count is **≥ ~15** (the rough midpoint of a 10-20 target — this is
-  a coarse trigger, not a hard limit; don't spend effort trying to count
-  precisely) — rotate now, before doing anything else this firing:
-  1. Make sure `CLAUDE.md`'s state is actually current (if the previous
-     firing already did its Step 8 log, this is likely already true).
-  2. `mcp__Claude_Code_Remote__create_session` — new session, same
-     environment (omit `environment_id` to inherit this one's), with an
-     initial `prompt` telling it to read `CLAUDE.md` — especially the
-     newest "Реализовано в сессии" entries and the "Session rotation log"
-     itself — to pick up full context, then wait for its next
-     `/feature-workspace-cycle` firing (don't have it start Step 1-9 work
-     immediately from the handoff prompt itself — let the routine's own
-     next scheduled firing, now pointed at it, drive that normally).
-  3. `mcp__Claude_Code_Remote__list_triggers` — find this routine's own
-     `trigger_id`, and note its exact `cron_expression` (needed verbatim
-     for step 4 — don't guess it from memory).
-  4. `mcp__Claude_Code_Remote__create_trigger` — same `cron_expression`
-     and the same prompt this routine already fires (the literal
-     `"/feature-workspace-cycle"` invocation text), with
-     `persistent_session_id` set to the new session's ID (mode 2 — fire
-     into a specific other session, not self-bind, since the caller here
-     is the *old* session creating a trigger for someone else).
-  5. `mcp__Claude_Code_Remote__delete_trigger` on the **old** trigger_id —
-     this session stops receiving future firings once this succeeds.
-  6. Append one row to `CLAUDE.md`'s "Session rotation log": date, old
-     session ID, new session ID, approximate firing count since the last
-     rotation, and a one-line reason (e.g. "scheduled rotation at ~15
-     firings" or "rate limit hit mid-firing").
-  7. **End this firing here.** Don't also attempt Step 1 onward in the same
-     turn — the new session's next scheduled firing picks that up fresh.
-- Below ~15, skip this step entirely and continue to Step 1 as normal.
+Check `CLAUDE.md`'s **"Session rotation log"** table for its most recent row's date
+(empty table = no rotation yet — that alone isn't a reason to rotate, only actual
+accumulated firings are). Count dated firing-log entries ("Реализовано в сессии ..."
+headings + "Dependabot & branch hygiene log" rows) since that date. If it's **≥ ~15**
+(rough midpoint of a 10-20 target, not a precise count), invoke `/session-rotate` now,
+before Step 1 — it ends the firing itself once done. Below ~15, skip straight to Step 1.
 
 ## Step 1 — PR triage (Dependabot + the user's own PRs)
 
