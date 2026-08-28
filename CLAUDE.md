@@ -877,6 +877,7 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 
 | Date/time (UTC) | New Dependabot PRs found/acted on | Orphan branches flagged | Notes |
 |---|---|---|---|
+| 2026-08-28 ~15:30 (resumed after a 4-day connection gap) | 10 found (#265-274), 9 merged (#265-271, #273, #274), 1 held (`rand` 0.8→0.9, real CI red on full-feature builds, likely `thread_rng()` rename in a test-only dep) | 0 new (2 branches auto-deleted for #276's own extraction PR + the 9 merged Dependabot PRs, netting to no orphan growth) | Full sweep after resuming from a 4-day idle gap (queued notifications, no autonomous work happened in between — working tree was exactly as left mid-extraction). Completed PR #276 (#134 conduit-auth-forward + conduit-auth-consumers), triaged CodeRabbit's full 18-finding review on PR #152 (12 filed as issues #277-288, 2 already tracked, 1 already-triaged Sonar hotspot resurfacing), triaged and merged 9/10 Dependabot PRs. Migration branch synced with `main` twice (PR #276's own merge, then the 9 Dependabot merges) — 1 real `Cargo.toml` conflict (`wasmtime` version bump inside `[workspace.dependencies]` where `optional = true` isn't valid), resolved cleanly. Found and fixed a real local-environment toolchain gap along the way: this session's `rustc` was pinned at 1.94.1, `wasmtime` 48 needs 1.95.0+ — `rustup update stable` → 1.98.0 fixed it (GitHub's own CI runners were already ahead). See the "Реализовано" log entry for full detail. |
 | 2026-08-24 ~01:10 (`/feature-workspace-cycle` daily firing) | 0 open (confirmed via `search_pull_requests author:app/dependabot`) | not re-checked separately (only 1 open PR total: #152 tracking, correctly still draft) | Between this firing and the last (2026-08-23 ~08:05), the conductor merged two of its own PRs directly into `main` outside this cycle (user-initiated, not #114 work): #262 (chore: bump version to 1.2.0 — including a curated `CHANGELOG.md` [1.2.0] entry, since the prior `[Unreleased]` section held one real unshipped security fix) and #263 (fix(cli): missing-config-file hint pointing to `conduit init`/`--help`, which triggered an `architect`-planned split of `src/main.rs` into 8 new `src/cli/*.rs` modules after the fix pushed it over the 1000-line hard limit). Both had `security-engineer` PASS (re-run against each new head SHA after review-driven follow-up commits) and green CI before merging; `v1.2.0` was tagged and released (GitHub Release + both Docker manifests + npm all verified — `cargo publish` alone failed with a `403 authentication failed`, flagged to the user as a `CARGO_REGISTRY_TOKEN` rotation needed, not something fixable from this session). Migration branch was 2 commits behind afterward — synced (`git merge origin/main`, merge commit `7f16878`). 2 real conflicts: `Cargo.toml` (main's pre-workspace `[package]` header block vs. the migration branch's `[workspace]` header — kept the workspace block, since main's fields are already superseded by the workspace-ized `[package]` section further down the same file using `version.workspace = true`) and `Cargo.lock` (matching `lopatnov-conduit` version-string conflict, `2.0.0` kept per the "don't bump per PR" rule — main's independent `1.2.0` release stays isolated to the 1.x line). `sonar-project.properties` and `CHANGELOG.md` auto-merged cleanly despite both branches having independently added content to them. Verified after resolving: `cargo check/clippy --workspace` and `--workspace --features full` (both 0 warnings), `cargo fmt --check` clean, `cargo test --workspace` (48 test binaries, 0 failed) and `cargo test --workspace --features full` (53 test binaries, 0 failed). Pushed. Proceeding to Step 2 (next #114 sub-issue). |
 | 2026-08-23 ~08:05 (`/feature-workspace-cycle` firing) | 0 open (confirmed via `search_pull_requests author:app/dependabot`) | not re-checked separately (fast path — log's newest row was <1h old) | Fast path (Step 1): 0 open Dependabot PRs, only open PR is #152 (tracking, correctly still draft, base SHA `f746ce8` matches migration branch's actual tip — no sync needed). Prior firing's own #255/#256 work (extract conduit-faults + JWKS test coverage for #164) already merged and synced before this firing started. Proceeded to Step 2. |
 | 2026-08-23 ~07:01 (`/feature-workspace-cycle` firing, ad-hoc 07:00 UTC slot) | 0 open (confirmed via `search_pull_requests author:app/dependabot`) | not re-checked separately (fast path — log's newest row was <24h old, no dedicated branch sweep needed) | Fast path (Step 1): 0 open Dependabot PRs, only open PR is #152 (tracking, correctly still draft). Migration branch already at `main`'s tip (`624d24e`, synced twice earlier today for #252/#254 and #255) — no sync needed. Proceeded straight to Step 2 (next #114 sub-issue). |
@@ -1650,3 +1651,109 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   параллельном запуске нескольких verification-агентов стоит быть готовым
   сверить `ps aux`/`/proc/<pid>/cwd` при подозрительном `git status`
   в основном чекауте, а не сразу доверять отчёту агента.
+
+### Реализовано в сессии 2026-08-28 (Phase 3.6 — #134 conduit-auth-forward + conduit-auth-consumers, после 4-дневного разрыва соединения)
+
+- **[PR #276](https://github.com/lopatnov/conduit/pull/276)
+  `feat(workspace): extract conduit-auth-forward + conduit-auth-consumers (#134)`**
+  (ветка `feat/extract-conduit-auth-forward-consumers-134` →
+  `claude/cargo-workspace-features-23qxfr`, squash `a99e42c`, issue #134
+  CLOSED) — `conduit-auth-forward` — чистая полная экстракция
+  (`ForwardAuthConfig` + `ForwardAuthGuard` + process-wide `reqwest::Client`
+  singleton) по шаблону `conduit-faults`/`conduit-auth-jwt`.
+  `conduit-auth-consumers` — **первое отступление от чистого паттерна**:
+  `ConsumersConfig`+вложенные типы и чистая `identify_consumer`
+  (API key/Basic Auth/per-consumer JWT V2/shared JWT V3) переехали, но
+  **`ConsumersGuard` остался в корневом крейте** (`src/filter/chain.rs`) —
+  ему нужен ещё не экстрагированный `RateLimiter`/`TokenBucket` (#137),
+  экстракция guard'а создала бы именно ту преждевременную обратную связку,
+  ради избежания которой затеян весь workspace split. `ConsumersGuard::apply`
+  теперь зовёт `conduit_auth_consumers::identify_consumer` только для шага
+  идентификации. `Consumer.rate_limit` — намеренно продублированный локальный
+  `RateLimitConfig` (задокументировано, консолидация — после #137);
+  `validate_rate_limit` в `validate.rs` переведён на примитивные поля вместо
+  конкретной структуры, чтобы оба call site (site-level и per-consumer)
+  продолжали использовать один реальный набор правил валидации.
+  `ct_eq_str` (constant-time сравнение) повышен до
+  `conduit_core::util::crypto` — настоящая дедупликация (не фасад), делится
+  между always-on Basic Auth/API-key guards корневого крейта и новым
+  consumers-крейтом. Feature-графа: корневая `jwt` форвардит теперь И в
+  `lopatnov-conduit-auth-jwt/jwt`, И в `lopatnov-conduit-auth-consumers/jwt`
+  — без второго форварда per-consumer JWT (V2) и sharedJwt (V3) молча
+  переставали бы компилироваться при `--features jwt,consumers` вместе.
+  `security-engineer` PASS дважды (SHA `639c13a`, затем `7ec67bf` после
+  тривиального фикса устаревшего doc-комментария, найденного самим
+  security-engineer). CodeRabbit поднял валидный scope-вопрос (issue #134
+  дословно называет `ConsumersGuard` в скоупе) — закрыт explicit-комментарием
+  на #134, документирующим partial-extraction решение и его обоснование,
+  вместо молчаливого игнорирования замечания бота.
+- **Инцидент: 4-дневный разрыв соединения между спавном crate-extractor'а и
+  получением его результата** — первый спавн (foreground background agent)
+  оборвался на `API Error: Connection lost mid-response` на моменте написания
+  `crates/conduit-auth-forward/src/guard.rs`; восстановлен через `SendMessage`
+  тому же `agentId` (не пересоздан с нуля) с описанием прогресса — агент
+  успешно продолжил и завершил обе экстракции. Далее вся сессия простаивала
+  ~4 дня (множественные пропущенные срабатывания `/feature-workspace-cycle`,
+  видны как накопившиеся уведомления) до реального возобновления обработки.
+  За это время на GitHub успело накопиться: полный (не draft-skip) обзор
+  CodeRabbit на PR #152 (18 замечаний, "Merge Risk: High") и 10 новых
+  Dependabot PR. Ничего не потеряно — рабочее дерево осталось ровно в том
+  состоянии, где остановился агент (проверено `git status`/`git diff` перед
+  продолжением), никакой автономной работы за время простоя не произошло.
+- **Триаж полного CodeRabbit-обзора PR #152** — 18 замечаний. 2 совпали с уже
+  существующими issues (#163 — JWKS синхронный fetch; #251 — DNS-кэш для
+  `resolve_socket_addr`, закрыт `not_planned`), 1 — тот же уже разобранный
+  Sonar hotspot `rust:S5659` на `insecure_decode` (issue #238), просто
+  всплывший заново из-за file-move. Оставшиеся 12 реальных находок заведены
+  как отдельные issues **#277-#288**: upload memory exhaustion (буферизация
+  всего файла до проверки лимита), ACME-секреты без 0600, ACME cleanup не
+  гарантирован на error-путях, log writer symlink TOCTOU (нужен O_NOFOLLOW),
+  JWKS kid-less key lookup mismatch, fault-injection delay range bug,
+  config provider empty-parent-path ломает hot-reload watcher, Accept-Encoding
+  qvalue parser не распознаёт `q=0.00`/`q=0.000`, OTLP double-init теряет
+  provider, upload router не матчит root `/` (axum 0.8 wildcard), schema.json
+  рассинхронизация (`SiteConfig.extra`, `global.workers` minimum),
+  `check-layer-boundaries.sh` падает целиком на одном manifest без `name=`.
+  Мелкие doc/process nits (русский текст в doc-комментарии, doc-link в
+  `conduit-faults`, недостающие unit-тесты для `ValidationError`,
+  `.claude/settings.json` fmt-hook scope, дублирующийся security-review
+  раздел в `workflow.md`) — не заведены отдельными issues, оставлены на
+  случайный подхват.
+- **10 Dependabot PR** (#265-274) — `dependency-steward` дважды упёрся в
+  отсутствие GitHub MCP tools в своём гранте (тот же паттерн, что и
+  2026-08-05 в этом же журнале) — корректно остановился и сообщил вместо
+  обхода. Conductor сам проверил CI (`get_check_runs`) для всех: `rand`
+  0.8.6→0.9.4 (MAJOR) — реальный CI red на `--features full`/`standard`
+  (похоже, `rand::thread_rng()` переименован/устарел в 0.9, ломает
+  test-only использование в `crates/conduit-auth-jwt/src/jwt/tests/jwks.rs`)
+  — **HOLD**, не смерджен. `wasmtime` 46.0.1→48.0.0 (2 major) — полностью
+  зелёный CI на всей feature-матрице; `security-engineer` независимо
+  проверил все 4 GHSA в диапазоне версий против реального usage в
+  `src/filter/wasm.rs` — ни один не применим (нет `wasmtime-wasi` в дереве
+  зависимостей, один статический `Engine`, только fuel-based лимитирование,
+  без epoch callbacks). Остальные 8 (`futures`/`clap_mangen`/`rustls`/`time`/
+  `async-trait`/`libc`/`wat`/`clap_complete`) — patch/minor, зелёный CI,
+  `security-engineer` PASS батчем (agent resumed после инструмента-геп
+  повторно, дообогащён conductor'ом реальным diff'ом #269 и подтверждённым
+  provenance/advisory-анализом вместо повторного tool-gap отказа). Все 9
+  смерджены, `rand` оставлен открытым.
+- **Миграционная ветка синхронизирована с `main` дважды** (после PR #276 и
+  после 9 Dependabot-мерджей) — 1 реальный конфликт в `Cargo.toml`:
+  `wasmtime` version bump (`"46"`→`"48"`) внутри `[workspace.dependencies]`,
+  где `optional = true` (валидный на `main`'s pre-workspace layout) невалиден
+  — разрешено взятием версии из `main` при сохранении структуры миграционной
+  ветки (без `optional`, т.к. реальный gate — отдельная строка
+  `wasmtime.workspace = true, optional = true` в `[dependencies]`).
+  По ходу обнаружен и исправлен **реальный toolchain-разрыв**: локальный
+  `rustc` в этом окружении был 1.94.1, `wasmtime` 48 требует 1.95.0+ —
+  `rustup update stable` подтянул 1.98.0 (GitHub Actions runners явно уже
+  используют актуальный stable, раз CI PR #269 прошёл). Также словлен и
+  устранён рецидивирующий ENOSPC (toolchain update + полный ребилд съели
+  оставшееся место) — `rm -rf target/debug/{incremental,build,deps}`
+  освободил ~27GB. `cargo build/test --workspace` (default + `--features
+  full`) зелёные на обоих синках (1010/1117 тестов, 0 failed).
+- **Процессная находка**: `mcp__github__update_pull_request` (draft→ready)
+  снова упёрся в API rate limit несколько раз подряд (тот же повторяющийся
+  квирк, что и в записях 2026-08-21/22 этого файла) — на этот раз
+  пользователь вручную нажал "Ready for review" в GitHub UI, пока conductor
+  ждал; `issue_write` (закрытие #134) тоже словил тот же rate limit отдельно.
