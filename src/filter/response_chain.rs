@@ -37,7 +37,10 @@ pub use conduit_core::filter::response_chain::{
 
 impl ResponseCtx for RequestCtx {
     fn cache_age_secs(&self) -> Option<u64> {
-        self.cache_age_secs
+        // Calls the inherent `RequestCtx::cache_age_secs` accessor (defined
+        // in `proxy/ctx.rs`) — Rust resolves inherent methods before trait
+        // methods on `self.method()` calls, so this is not recursive.
+        self.cache_age_secs()
     }
 }
 
@@ -1141,14 +1144,18 @@ mod tests {
 
     // ── InjectExtraHeadersFilter — Age header (RFC 7234 §5.1, #49) ──────────
 
+    #[cfg(feature = "cache")]
     #[test]
     fn inject_filter_injects_age_header_when_cache_age_set() {
-        // When RequestCtx.cache_age_secs is Some, the filter must inject
+        // When RequestCtx.cache_age_secs() is Some, the filter must inject
         // an `Age` header with the computed value.
         let filter = InjectExtraHeadersFilter { headers: vec![] };
         let mut resp = make_resp(200);
         let mut ctx = dummy_ctx();
-        ctx.cache_age_secs = Some(42);
+        ctx.cache = Some(conduit_cache::CacheReqState {
+            cache_age_secs: Some(42),
+            ..Default::default()
+        });
         filter.apply(&mut resp, &ctx).unwrap();
         assert_eq!(
             resp.headers.get("age").and_then(|v| v.to_str().ok()),
@@ -1170,6 +1177,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "cache")]
     #[test]
     fn inject_filter_replaces_existing_age_header() {
         // When the cached response already carries an Age header from a prior
@@ -1179,7 +1187,10 @@ mod tests {
         let mut resp = make_resp(200);
         resp.insert_header("age", "10").unwrap(); // stale Age from stored response
         let mut ctx = dummy_ctx();
-        ctx.cache_age_secs = Some(75);
+        ctx.cache = Some(conduit_cache::CacheReqState {
+            cache_age_secs: Some(75),
+            ..Default::default()
+        });
         filter.apply(&mut resp, &ctx).unwrap();
         let values: Vec<_> = resp.headers.get_all("age").iter().collect();
         assert_eq!(values.len(), 1, "exactly one Age header must remain");
