@@ -7,8 +7,9 @@
 ## Related rule files
 
 - **`conventions.md`** — commits (Conventional Commits + `Co-Authored-By`), SemVer/version
-  lockstep, branch naming, push-frequency economy, zero-warnings/English-only bar, PR
-  checklist, and the literal CodeRabbit reply/resolve pattern from PR #70.
+  lockstep, branch naming, push-frequency economy, zero-warnings/English-only bar, and the
+  PR checklist (which points at the `coderabbit-reply` skill for the reply/resolve
+  mechanics from PR #70).
 - **`workflow.md`** — trigger table mapping "what's happening → which subagent to call",
   example walk-throughs (trivial fix / bug fix / feature / release), and session-budget
   discipline. Read this before deciding whether (and which) subagent to spawn.
@@ -139,9 +140,11 @@ is referenced from the "Skills available here" list below) — never the procedu
   commit where it started failing — don't assume the newest commit is the cause.
 - Before reporting a failure as a regression: check whether the **same commit** passed on a
   different run. Network/registry blips (`curl failed`, `SSL_read: unexpected eof`,
-  `download of <crate> failed`) on crates.io/ghcr.io are common and transient — `gh run rerun
-  <id> --failed` rather than treating them as code problems. Only escalate as a real bug if
-  the same commit fails consistently across reruns.
+  `download of <crate> failed`) on crates.io/ghcr.io are common and transient — re-run via
+  `mcp__github__actions_run_trigger` (`method: "rerun_failed_jobs"`, run_id from the failing
+  workflow run; this environment has no `gh` CLI, only the GitHub MCP tools) rather than
+  treating them as code problems. Only escalate as a real bug if the same commit fails
+  consistently across reruns.
 - See `release-engineer` (`.claude/agents/release-engineer.md`) for merge-order planning
   across dependent PRs and for driving the actual `v<x.y.z>` tag → release pipeline.
 - **A `check_run.completed`/comment webhook event can arrive for an already-superseded
@@ -171,38 +174,13 @@ is referenced from the "Skills available here" list below) — never the procedu
 
 ## Dependabot & branch hygiene reflex check
 
-> Added 2026-08-01 after PR #101 (kube 3→4.0.0) sat "held for dedicated review" for
-> ~5 weeks and PR #151 (an all-actions Dependabot bump) went untriaged for a while — both
-> because the only routine check was the daily `/feature-workspace-cycle` firing at 4AM
-> (changed from hourly per the user's own request), and no other session touching this
-> repo's GitHub state repeated the check in between. This closes that gap.
-
 Any session that calls a GitHub tool against this repo for *any* reason — not just a
-`/feature-workspace-cycle` firing — should, as a cheap side effect, check whether this
-sweep has run in the last ~24h (see the log in `CLAUDE.md` "Dependabot & branch hygiene
-log"). If the newest row is older than that (or the table is still empty):
-
-- List open Dependabot PRs and triage/merge/hold each by the usual bar (green, clean, no
-  unaddressed finding) — same as `/feature-workspace-cycle` Step 1.
-- List all branches and cross-reference against PRs in every state. A branch with **no
-  PR at all** is a genuine orphan worth a one-line flag to the user (could be real
-  unfinished work, not touched further without asking). A branch whose PR is merged or
-  closed is just leftover clutter — note it, don't spend effort chasing deletion: `git
-  push --delete` is blocked from inside a Claude Code session by this environment's git
-  proxy (a 403 on every attempt so far), so cleanup has to happen from the user's own
-  machine or by enabling the setting below.
-- **Recommend the user enable "Automatically delete head branches"** (repo Settings →
-  General → Pull Requests section) if it isn't already — this is the permanent fix for
-  branch clutter after merges and doesn't depend on any session remembering to check.
-  There's no API tool available here to flip it directly; it has to be the user's own
-  action.
-- Log the result — even "nothing new" — as a new row in `CLAUDE.md`'s table, so the next
-  session (or the next daily firing) can see it was already checked and skip.
-
-This is a *cheap* reflex check (a couple of list calls), not a deep audit — skip it
-outright if the log shows it ran within the last ~24h. A `/feature-workspace-cycle`
-firing that completes its own Step 1 satisfies this for the day; it doesn't need to run
-the check twice.
+`/feature-workspace-cycle` firing — should, as a cheap side effect, check whether
+`.claude/logs/dependabot-hygiene.md`'s newest row is older than ~24h (or the log is still
+empty) and, if so, run **`/dependabot-hygiene`** (`.claude/commands/dependabot-hygiene.md`
+— moved out of this file 2026-08-28, see "New `.claude/` process content" above). Added
+2026-08-01 after PR #101 sat "held for dedicated review" for ~5 weeks and PR #151 went
+untriaged for a while, both because nothing but the daily cycle firing repeated this check.
 
 ## Subagents available here
 
@@ -274,10 +252,21 @@ it — call them whenever the same shape of task comes up outside that cycle too
 - **`session-rotate`** (`.claude/commands/session-rotate.md`) — hands a self-bind Routine
   session off to a fresh one once it's accumulated too much context (checked at
   `feature-workspace-cycle.md` Step 0a, roughly every 10-20 firings; also fine to invoke
-  ad hoc if a session is visibly struggling before that). Logs each handoff in `CLAUDE.md`'s
-  "Session rotation log".
+  ad hoc if a session is visibly struggling before that). Logs each handoff in
+  `.claude/logs/session-rotation.md`.
+- **`dependabot-hygiene`** (`.claude/commands/dependabot-hygiene.md`) — the reflex check
+  described above; run it whenever `.claude/logs/dependabot-hygiene.md` is stale.
+- **`coderabbit-reply`** (`.claude/skills/coderabbit-reply/SKILL.md`) — reply-then-resolve
+  mechanics for CodeRabbit/reviewer threads on a PR, via the actual `mcp__github__*` tools
+  (this environment has no `gh` CLI). Referenced from `conventions.md`'s PR checklist.
 
 > `.claude/` and `CLAUDE.md` are tracked in git for this repo (not gitignored — they ship
 > with the source tree so cloud/remote sessions get the same tooling as local ones) but are
 > excluded from the *published crate* via `Cargo.toml` `[package] exclude` — they never end
 > up in the `cargo publish` source package or release artifacts.
+>
+> **Append-only logs live in `.claude/logs/*.md`, not inline in `CLAUDE.md`** (split out
+> 2026-08-28 — same rationale as "New `.claude/` process content" above: `CLAUDE.md` loads
+> into every session's context in full, every turn, and these logs only ever grow. `CLAUDE.md`
+> keeps just the newest row or two of each plus a pointer; read the full file when you
+> actually need history older than that, e.g. to count firings since the last rotation.

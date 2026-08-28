@@ -45,20 +45,22 @@ own between firings (see `.claude/commands/session-rotate.md` for why this matte
 the full rotation mechanism; kept as a separate command rather than inlined here so the
 procedure only loads into context on the firings that actually need it).
 
-Check `CLAUDE.md`'s **"Session rotation log"** table for its most recent row's date
-(empty table = no rotation yet — that alone isn't a reason to rotate, only actual
-accumulated firings are). Count dated firing-log entries ("Реализовано в сессии ..."
-headings + "Dependabot & branch hygiene log" rows) since that date. If it's **≥ ~15**
-(rough midpoint of a 10-20 target, not a precise count), invoke `/session-rotate` now,
-before Step 1 — it ends the firing itself once done. Below ~15, skip straight to Step 1.
+Check `.claude/logs/session-rotation.md`'s most recent row's date (empty table = no
+rotation yet — that alone isn't a reason to rotate, only actual accumulated firings are).
+Count dated firing-log entries ("Реализовано в сессии ..." headings in `CLAUDE.md` +
+`.claude/logs/dependabot-hygiene.md` rows) since that date. If it's **≥ ~15** (rough
+midpoint of a 10-20 target, not a precise count), invoke `/session-rotate` now, before
+Step 1 — it ends the firing itself once done. Below ~15, skip straight to Step 1.
 
 ## Step 1 — PR triage (Dependabot + the user's own PRs)
 
 - **Fast path first, added 2026-08-22 at the user's explicit request to cut
   cycle overhead**: before spawning `dependency-steward`, do a cheap direct
   check yourself (`search_pull_requests author:app/dependabot` or
-  `list_pull_requests`) and glance at `CLAUDE.md`'s hygiene log. If the log's
-  newest row is within ~24h *and* the direct check confirms nothing new (0
+  `list_pull_requests`) and glance at `.claude/logs/dependabot-hygiene.md`
+  (moved out of `CLAUDE.md` 2026-08-28 — see `.claude/commands/dependabot-hygiene.md`
+  for the full reflex-check procedure this step is also satisfying for the day).
+  If the log's newest row is within ~24h *and* the direct check confirms nothing new (0
   open Dependabot PRs, or the same PRs already logged as triaged), log "still
   clean" and move straight to the rest of this step — don't spawn the agent
   or spend extra reasoning manufacturing something to do. Only call
@@ -124,15 +126,15 @@ before Step 1 — it ends the firing itself once done. Below ~15, skip straight 
   manifest variants, npm package version) per the skill's Step 3/4 — a tag
   push that triggers a workflow which then fails partway is not a shipped
   release.
-- This step **is** the daily instance of the "Dependabot & branch hygiene
-  reflex check" (`.claude/rules/index.md`) — also list all branches and
+- This step **is** the daily instance of `/dependabot-hygiene`
+  (`.claude/commands/dependabot-hygiene.md`) — also list all branches and
   cross-reference against PRs in every state (not just Dependabot's): a
   branch with no PR at all is a genuine orphan worth flagging to the user;
   one whose PR is merged/closed is just leftover clutter, noted but not
-  worth chasing deletion (blocked from inside a session — see that rule).
-  Log the outcome as a row in `CLAUDE.md`'s "Dependabot & branch hygiene
-  log" — this satisfies the reflex check's ~24h cadence for the day, so an
-  ad hoc session later that day can skip re-running it.
+  worth chasing deletion (blocked from inside a session — see that command).
+  Log the outcome as a row in `.claude/logs/dependabot-hygiene.md` — this
+  satisfies the reflex check's ~24h cadence for the day, so an ad hoc session
+  later that day can skip re-running it.
 - **Keep the migration branch in sync with `main`**: every merge in this step
   moves `main` independently of `claude/cargo-workspace-features-23qxfr` —
   nothing propagates those commits to the migration branch automatically. If
@@ -187,10 +189,11 @@ for genuinely idle firings, not a guaranteed periodic pass.)
     pattern" rather than just a missing test/doc line, loop in
     **`prior-art-researcher`** before deciding the fix — see the note in
     Step 2 below.
-- Log what you audited and found (even "no gaps") in `CLAUDE.md`'s
-  **"Integrity audit log (Conduit 2.0 cycle, Step 1c)"** table — one row per
-  audit, newest on top. This log is also what you check against for the
-  cadence rule above — no separate counter needed.
+- Log what you audited and found (even "no gaps") in
+  `.claude/logs/integrity-audit.md` — one row per audit, newest on top (moved
+  out of `CLAUDE.md` 2026-08-28, which now keeps only the newest row inline).
+  This log is also what you check against for the cadence rule above — no
+  separate counter needed.
 
 ## Step 2 — pick the next task (skip if Step 0 found unfinished work)
 

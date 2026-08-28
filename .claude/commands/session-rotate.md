@@ -67,13 +67,24 @@ noticeably slower/costlier turns) well before the usual threshold.
    session's ID from step 1 (mode 2: "fire into a specific other session" — not
    self-bind, since the caller here is the *old* session creating a trigger on behalf of
    someone else).
+   > **Caveat observed 2026-08-28** (first real use of this exact step, confirmed working):
+   > the call returns a warning — *"this trigger stores no MCP connectors, so the sessions
+   > it fires will run without connector tools"*. This did **not** in practice strip GitHub
+   > MCP tools from the target session (a `persistent_session_id` firing just resumes that
+   > session as-is; it isn't a fresh session whose tool grant the trigger's own `connectors`
+   > field would need to supply). Still worth a quick sanity check (`mcp__github__get_me` or
+   > similar) at the *next actual firing* of the new trigger, not just right after creating
+   > it — this was only verified by the session existing beforehand, not by an actual
+   > Routine-driven wake.
 4. **`mcp__Claude_Code_Remote__delete_trigger`** on the *old* trigger_id from step 2.
    Once this succeeds, this session stops receiving future firings.
-5. **Append one row** to `CLAUDE.md`'s "Session rotation log" table: date, old session
-   ID, new session ID, approximate firing count since the last rotation (or since the
-   Routine was first created, if the table was empty), and a one-line reason (e.g.
-   "scheduled rotation at ~15 firings" or "rate limit hit mid-firing"). Commit and push
-   this alongside whatever other `CLAUDE.md` updates are pending.
+5. **Append one row** to `.claude/logs/session-rotation.md` (moved out of `CLAUDE.md`
+   2026-08-28 — `CLAUDE.md` now keeps only the newest row inline, as a pointer): date, old
+   session ID, new session ID, approximate firing count since the last rotation (or since
+   the Routine was first created, if the table was empty), and a one-line reason (e.g.
+   "scheduled rotation at ~15 firings" or "rate limit hit mid-firing"). Also update the
+   inline copy of the newest row in `CLAUDE.md`'s own "Session rotation log" section so
+   the two don't drift. Commit and push this alongside whatever other updates are pending.
 6. **Stop.** Don't continue with whatever work the calling command was in the middle of
    — the new session's next firing picks that up fresh from `CLAUDE.md`. If the current
    firing had uncommitted/unpushed work in progress, commit and push it first (a rotation
