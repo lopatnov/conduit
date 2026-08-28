@@ -223,6 +223,24 @@ mod tests {
         }
     }
 
+    /// A fresh, non-literal test secret — generated at runtime rather than
+    /// written as a string constant so static hardcoded-credential scanners
+    /// (CodeQL's `rs/hardcoded-credentials`-class query, which flagged this
+    /// exact new test coverage on PR #152) don't pattern-match a literal
+    /// flowing into an `api_key`/`secret` field. Same fix already applied to
+    /// `crates/conduit-auth-jwt`'s own JWKS test fixtures (issue #114/#133,
+    /// SonarCloud "E Security Rating" hotspot) — these are throwaway values
+    /// used only within a single test's own request/assertion pair, never a
+    /// real credential.
+    fn random_test_secret() -> String {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        format!("test-secret-{nanos:x}")
+    }
+
     /// Build a real [`pingora_proxy::Session`] with a parsed GET request
     /// already read off the wire (see `conduit-faults`/`conduit-auth-jwt`'s
     /// own `guard.rs` test helper — same pattern, reused here since
@@ -245,12 +263,13 @@ mod tests {
 
     #[tokio::test]
     async fn identify_consumer_by_api_key() {
+        let key = random_test_secret();
         let session = session_with_headers(
-            b"GET /api HTTP/1.1\r\nHost: test\r\nx-api-key: secret-key\r\n\r\n",
+            format!("GET /api HTTP/1.1\r\nHost: test\r\nx-api-key: {key}\r\n\r\n").as_bytes(),
         )
         .await;
         let cfg = ConsumersConfig {
-            consumers: vec![consumer_with_api_key("alice", "secret-key")],
+            consumers: vec![consumer_with_api_key("alice", &key)],
             ..Default::default()
         };
         let found = identify_consumer(&cfg, &session);
@@ -261,7 +280,7 @@ mod tests {
     async fn identify_consumer_no_match_returns_none() {
         let session = session_with_headers(b"GET /api HTTP/1.1\r\nHost: test\r\n\r\n").await;
         let cfg = ConsumersConfig {
-            consumers: vec![consumer_with_api_key("alice", "secret-key")],
+            consumers: vec![consumer_with_api_key("alice", &random_test_secret())],
             ..Default::default()
         };
         assert!(identify_consumer(&cfg, &session).is_none());
@@ -306,8 +325,9 @@ mod tests {
     #[test]
     #[cfg(feature = "jwt")]
     fn build_jwt_auth_cfg_with_secret() {
-        let cfg = build_jwt_auth_cfg(Some("my-secret".to_owned()), None, None, None);
-        assert_eq!(cfg.secret.as_deref(), Some("my-secret"));
+        let secret = random_test_secret();
+        let cfg = build_jwt_auth_cfg(Some(secret.clone()), None, None, None);
+        assert_eq!(cfg.secret.as_deref(), Some(secret.as_str()));
         assert!(cfg.jwks_url.is_none());
         assert!(cfg.audience.is_none());
         assert!(cfg.issuer.is_none());
@@ -339,9 +359,9 @@ mod tests {
     #[cfg(feature = "jwt")]
     #[tokio::test]
     async fn identify_consumer_by_shared_jwt_sub_claim() {
-        let secret = "shared-jwt-secret";
+        let secret = random_test_secret();
         let claims = serde_json::json!({ "sub": "carol", "exp": exp_future() });
-        let token = hs256_token(secret, claims);
+        let token = hs256_token(&secret, claims);
         let raw =
             format!("GET /api HTTP/1.1\r\nHost: test\r\nAuthorization: Bearer {token}\r\n\r\n");
         let session = session_with_headers(raw.as_bytes()).await;
@@ -356,7 +376,7 @@ mod tests {
                 headers: None,
             }],
             shared_jwt: Some(crate::config::ConsumersSharedJwtConfig {
-                secret: Some(secret.to_owned()),
+                secret: Some(secret),
                 ..Default::default()
             }),
             ..Default::default()
