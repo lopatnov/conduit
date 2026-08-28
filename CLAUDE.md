@@ -1815,3 +1815,29 @@ the actual rule name + file/line for each alert.
   owner via the Security → Code scanning UI if a permanent dismissal is
   wanted. Left genuinely open rather than "fixed" with a change that would
   just break `--config` pointing anywhere the operator chooses.
+
+**Re-confirmed 2026-08-28 (user asked "did you fix the Sonar insecure_decode issue?" after seeing it
+resurface in a fresh check-run notification)**: PR #152's SonarCloud "D Security Rating on New Code"
+gate has now failed identically on every head SHA checked across two separate investigations 4 days
+apart (`d3e8685` on 2026-08-24, then `a99e42c`/`9133dcd`/`b304463`/`04130d8`/`8ec49d7` on 2026-08-28) —
+including `8ec49d7`, the head *after* this session's own PR #289 fix for the 3 real CodeQL
+hardcoded-credential findings landed. Root cause, independently re-confirmed: `sonarcloud.io` is
+blocked outright by this environment's egress proxy (`WebFetch` now returns `EGRESS_BLOCKED`, not just
+403/404 — confirmed directly this session, not inferred), so no session has ever been able to see the
+actual flagged item list, only the pass/fail check-run summary. The most likely (and previously
+diagnosed, 2026-08-24) explanation still holds: SonarCloud's PR-mode "New Code" for a long-lived
+tracking PR is the full diff against `main`, recomputed on *every* push — since `crates/conduit-auth-jwt`
+(and every other Layer-0/1 crate) doesn't exist on `main` yet, the already-reviewed `rust:S5659` hotspot
+on `extract_claims_unchecked`'s `insecure_decode` call (issue #238, mitigated by narrowing to
+`pub(crate)`, code verified intact at `crates/conduit-auth-jwt/src/jwt.rs:276` — this is the exact line
+the user's Sonar-issue text referenced, just at its post-#133-move path) keeps getting re-flagged as
+"new" on every single analysis, forever, regardless of what any individual commit changes. **The code
+fix is real and already shipped** (#238, 2026-08-22) — what's outstanding is a SonarCloud-dashboard-only
+action (mark the hotspot "Reviewed → Safe") that no session has tool access to perform, and that (per
+the move-detection theory) might not even stick across the next crate-extraction's file move regardless.
+Not re-posting a third near-identical PR comment about this (the 2026-08-24 comment already covers the
+mechanism in full and remains accurate) — logging here instead so a future session doesn't re-diagnose
+it a third time from scratch. This gate will most likely stay red for PR #152's entire remaining
+lifetime as a draft tracking PR; that's consistent with the PR's own documented design (not meant to
+merge until #114 is fully complete) and needs either the user's manual SonarCloud dashboard action or
+simply waiting for the eventual `main` merge to resolve on its own.
