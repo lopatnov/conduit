@@ -39,3 +39,7 @@ target
 # Reference clones of third-party projects (pingora, etc.) for source-reading
 # during research/design work. Cloned on demand, never committed.
 /.reference/
+
+# Isolated git worktrees created by the harness for background subagents
+# (Agent tool, isolation: "worktree") — transient working copies, never committed.
+/.claude/worktrees/
