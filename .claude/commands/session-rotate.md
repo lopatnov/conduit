@@ -18,6 +18,30 @@ noticeably slower/costlier turns) well before the usual threshold.
 > so the procedure only loads into context when actually needed, rather than on every
 > single turn of every session.
 
+## ⚠️ Known platform limitation — do not use `create_session` for the replacement
+
+> Confirmed by the user 2026-08-28, first hit by the very first rotation this
+> procedure ever ran: a session spawned via `mcp__Claude_Code_Remote__create_session`
+> (i.e. one Claude session creating another) comes up with **no GitHub API/MCP tool
+> access at all** — no `gh` CLI, no `mcp__github__*` tools, no GitHub entry in
+> `ListConnectors`. Only unauthenticated `WebFetch` on public pages and plain
+> `git clone`/`push` still work. A session the *user* creates directly does not have
+> this problem. Root cause unknown (the user's own words: "это твой баг" — a platform
+> bug, not something fixable from inside this repo). Since essentially every step of
+> `feature-workspace-cycle.md` (Steps 1, 2, 6-9) depends on GitHub MCP tools, a
+> replacement session spawned this way cannot actually run the cycle it was rotated
+> in to continue — it can orient and report, nothing more.
+>
+> **Until this is fixed upstream: do not execute Step 1 below (`create_session`) at
+> all.** Instead, stop and ask the user to create the new session themselves (however
+> they normally start a session against this repo) and give you its session ID. Only
+> proceed to Steps 2-5 once you have a session ID the user actually created. If a
+> rotation was already forced by something urgent (e.g. a rate-limit hit) before the
+> user could be consulted, the interim session should still orient and report back
+> per its handoff prompt, but must flag this exact limitation instead of silently
+> proceeding as if the cycle can resume normally — see the 2026-08-28 row in
+> `CLAUDE.md`'s "Session rotation log" for the precedent.
+
 ## Preconditions
 
 - Make sure `CLAUDE.md` is actually up to date before rotating — the whole point of the
@@ -27,13 +51,14 @@ noticeably slower/costlier turns) well before the usual threshold.
 
 ## Steps
 
-1. **`mcp__Claude_Code_Remote__create_session`** — spawn the new session. Omit
-   `environment_id` so it inherits this session's environment. Pass an initial `prompt`
-   telling it to read `CLAUDE.md` in full — especially the newest "Реализовано в сессии"
-   entries and the "Session rotation log" table — to pick up context, and then to wait
-   for its next scheduled firing rather than starting Step 1-9 work immediately from the
-   handoff prompt itself (let the Routine's own next tick, now pointed at it, drive that
-   normally).
+1. ~~`mcp__Claude_Code_Remote__create_session`~~ — **do not use this**, per the known
+   limitation above. Instead, ask the user to create the new session themselves and
+   supply its session ID. Once you have that ID, tell it (or make sure its own first
+   read of `CLAUDE.md` will tell it) to read `CLAUDE.md` in full — especially the
+   newest "Реализовано в сессии" entries and the "Session rotation log" table — to
+   pick up context, and then to wait for its next scheduled firing rather than
+   starting Step 1-9 work immediately (let the Routine's own next tick, now pointed
+   at it, drive that normally).
 2. **`mcp__Claude_Code_Remote__list_triggers`** — find the Routine currently bound to
    *this* session, and read its exact `cron_expression` and `prompt` verbatim (don't
    reconstruct these from memory — copy them from the tool result).
