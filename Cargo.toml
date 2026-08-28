@@ -266,7 +266,8 @@ lopatnov-conduit-auth-consumers.workspace = true
 # (matches its pre-extraction gating exactly — see that crate's `src/lib.rs`
 # doc comment); only `cache::should_early_refresh` and the entire `redis`
 # module are gated, via `lopatnov-conduit-cache/cache` and
-# `lopatnov-conduit-cache?/redis` below.
+# `lopatnov-conduit-cache/redis` below (plain, not weak `?/` — see the
+# `redis` feature's own comment for why weak syntax doesn't apply here).
 lopatnov-conduit-cache.workspace          = true
 
 # --- Config & parsing ---
