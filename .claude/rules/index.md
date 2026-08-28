@@ -68,6 +68,53 @@
 - This isn't specific to GitHub access — it's the general shape: a missing tool is a signal
   to hand back, not a puzzle to solve by finding a different door.
 
+## Known-blocked external endpoints — ask the user, don't keep retrying
+
+> Added 2026-08-28 after a session burned ~6 tool calls across `WebFetch` and
+> `get_check_run` rediscovering, one path at a time, that it has no way to see GitHub's
+> Security tab or SonarCloud's dashboard — a wall already hit and documented (in prose, not
+> as a checkable list) by multiple prior sessions.
+
+These are confirmed **unreachable from every session so far**, not worth retrying or
+probing a new URL variant of:
+- `sonarcloud.io` (any path) — `WebFetch` returns `EGRESS_BLOCKED` outright, confirmed
+  directly (not inferred from a 403).
+- `github.com/<owner>/<repo>/security` and `/security/code-scanning` (with or without a
+  `?query=` filter) via `WebFetch` — returns 404 (unauthenticated pages don't render the
+  real alert list).
+- `api.github.com/repos/<owner>/<repo>/code-scanning/alerts` via `WebFetch` — 403, even for
+  a public repo (this endpoint needs an authenticated token, which `WebFetch` doesn't carry).
+- `mcp__github__get_check_run`'s `output.text` — empty for CodeQL/SonarCloud check runs;
+  only `output.summary` (a short pass/fail blurb) is populated, no per-alert detail.
+
+What *does* work for CodeQL specifically: its inline `pull_request_review_comment.created`
+webhook events (delivered automatically to a subscribed PR) carry the real rule name,
+file, and line per alert — that's a live per-PR-diff feed, not a way to browse the full
+Security tab's historical/cumulative alert list, though. For the full list (all tools,
+full history, like the 23-open-alerts view a user showed via screenshot on 2026-08-28) —
+there is no working path from inside a session at all. Ask the user to paste/screenshot it
+immediately rather than spending calls confirming the wall exists yet again.
+
+## New `.claude/` process content: command/skill by default, not `rules/`
+
+> Added 2026-08-28 after a first draft of the session-rotation procedure went straight
+> into `rules/index.md` as an inline step-by-step block — the user pointed out (correctly)
+> that this permanently bloats every session's context with a procedure only a handful of
+> firings ever actually need, which is a strange way to solve a context-bloat problem.
+
+`rules/*.md` content loads into **every** session's context, every turn, unconditionally —
+reserve it for things that must be ambient because missing them even once is unacceptable
+(the unconditional security-review gate in `workflow.md` is the canonical example: it has
+to be impossible to forget, not just available on request). A multi-step procedure that
+only runs occasionally (session rotation, a release, a benchmark run) belongs in
+`.claude/commands/<name>.md` (or `.claude/skills/<name>/SKILL.md` for something more
+reference-shaped) and gets invoked by name — in this harness a `commands/` file is *also*
+directly invocable via the `Skill` tool, so there's no real capability gap from choosing
+`commands/` over `skills/`; it's purely an organizational choice (`commands/` for
+"execute this now," `skills/` for "load this playbook to follow"). `rules/*.md` should
+hold, at most, a one-or-two-line pointer to the actual procedure (see how `session-rotate`
+is referenced from the "Skills available here" list below) — never the procedure itself.
+
 ## Build discipline
 
 - Run **`/build`** (delegates to `build-validator`) after any non-trivial change, and before
@@ -97,6 +144,30 @@
   the same commit fails consistently across reruns.
 - See `release-engineer` (`.claude/agents/release-engineer.md`) for merge-order planning
   across dependent PRs and for driving the actual `v<x.y.z>` tag → release pipeline.
+- **A `check_run.completed`/comment webhook event can arrive for an already-superseded
+  commit** — on a fast-moving branch (many pushes close together), events sometimes land
+  late or out of order. Before reacting to one, compare its `head_sha` against the PR's
+  *current* head (`pull_request_read` `get`/`get_check_runs`); if the PR has already moved
+  past that SHA, the event is stale — check the current head's own status instead of
+  investigating a state that no longer exists. (Seen for real 2026-08-28: a CodeQL/
+  SonarCloud failure notification for a commit that had already been fixed and merged two
+  pushes earlier.)
+- **A bot that re-reviews on every push (Gitar, CodeRabbit) will re-post an identical
+  finding every time**, even when nothing about that finding changed — this is expected
+  noise on a long-lived, frequently-pushed PR, not a sign the finding was never handled.
+  Once a finding has a real disposition (fixed, filed as an issue, or explicitly accepted
+  with reasoning posted once), later identical re-postings of the *same* finding text are
+  safe to skip silently — don't re-investigate or re-reply each time it resurfaces.
+- **GraphQL-backed GitHub calls** (`get_review_comments`, `resolve_review_thread`,
+  `issue_write`'s issue-ID lookup) hit a separate rate-limit pool from the REST-backed ones
+  (`get`, `get_check_runs`, `list_pull_requests`, `merge_pull_request` all kept working fine
+  while these failed). Retrying every 2-5 minutes doesn't help — observed 9 consecutive
+  failures over 30+ minutes on 2026-08-28. If one fails, retry once or twice at most in the
+  moment, then space further retries out via `ScheduleWakeup` at 15-20+ minute intervals
+  instead of hammering it; if it's still blocked after a couple of spaced-out retries, say
+  so plainly and ask the user whether they'd rather act manually (they may be able to
+  resolve/close from the GitHub UI immediately, unblocked by whatever's rate-limiting the
+  API token).
 
 ## Dependabot & branch hygiene reflex check
 

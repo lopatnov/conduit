@@ -178,3 +178,13 @@ new state (`scrum-master`).
 - Finish what's started before chasing new ideas — park new ideas in the `CLAUDE.md` backlog.
 - If you see a real risk of running out of budget mid-task: stop, record state clearly
   (for the next session), leave a recommendation — don't push through and lose context.
+- **The account's session-wide model rate limit is a separate resource from the context
+  window, and delegating to a subagent doesn't dodge it** — a same-tier subagent call
+  (e.g. `security-engineer`, sonnet like the conductor) draws from the same pool, so a
+  string of subagent spawns can trip a 429 even with plenty of context headroom left. Hit
+  for real on 2026-08-28: a `security-engineer` delegation failed outright with
+  `rate_limit`/HTTP 429 mid-session. There's no workaround in the moment — report the
+  block to the user (with the stated reset time, if the error gives one) rather than
+  retrying immediately, and see `.claude/commands/session-rotate.md` for the longer-term
+  fix (a session accumulating a month of unrotated context is *why* it had no headroom
+  left when the limit hit).
