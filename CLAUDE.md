@@ -1757,3 +1757,61 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   квирк, что и в записях 2026-08-21/22 этого файла) — на этот раз
   пользователь вручную нажал "Ready for review" в GitHub UI, пока conductor
   ждал; `issue_write` (закрытие #134) тоже словил тот же rate limit отдельно.
+
+### CodeQL alert triage on PR #152 (2026-08-28, same session — 4 alerts fired at head `a99e42c`/`b304463`)
+
+`check_run.completed` webhook events on the tracking PR reported "4 new alerts
+including 3 critical severity security vulnerabilities" — investigated since
+`gh`/code-scanning API access isn't available from this session (both
+`GET /repos/.../code-scanning/alerts` and the Security tab UI returned
+403/404 without an authenticated browser session); GitHub Advanced Security's
+inline PR review-comment annotations (delivered as separate
+`pull_request_review_comment.created` webhook events, not visible via any
+`mcp__github__pull_request_read` method) turned out to be the only way to see
+the actual rule name + file/line for each alert.
+
+- **3× "Hard-coded cryptographic value... used as a password"**
+  (`crates/conduit-auth-consumers/src/identify.rs:278,292,301`) — real
+  finding. `git diff` against the pre-#134 `src/filter/auth.rs` confirmed
+  the `identify_consumer`/`check_consumer_basic`/shared-JWT unit tests these
+  lines belong to are genuinely new test coverage added during #134's
+  extraction (auth.rs had zero direct unit tests for consumer identification
+  before), not moved code — so unlike prior "false new-alert from a pure
+  code move" cases this session, CodeQL's finding was accurate: 4 literal
+  strings (`"secret-key"` ×2, `"my-secret"`, `"shared-jwt-secret"`) assigned
+  to `api_key`/`secret`-named fields, matching the count exactly.
+  Fixed in [PR #289](https://github.com/lopatnov/conduit/pull/289)
+  (`fix/codeql-hardcoded-test-secrets-152` → migration branch, commit
+  `23a86cf`) — a `random_test_secret()` helper (nanosecond-timestamp-seeded,
+  no new dependency) replaces all 4 literal call sites; same 8 tests, same
+  assertions, still green. Same fix pattern as `conduit-auth-jwt`'s own
+  JWKS test-fixture SonarCloud hotspot (#133). `security-engineer` PASS
+  recorded on PR #289 (independently re-ran the crate's tests/clippy/fmt,
+  confirmed the whole diff sits inside `#[cfg(test)] mod tests`, no
+  production-code reachability).
+- **1× "Uncontrolled data used in path expression"**
+  (`crates/conduit-config-core/src/parse.rs:52`,
+  `std::fs::read_to_string(path)` inside `load_file`) — assessed **false
+  positive**, no code change. Traced the full call chain: `load_file` ←
+  `FileProvider::load` ← `file_provider(path)`/`load_and_validate(path)` ←
+  `AppState.config_path`, set exactly once at startup in `main.rs` from
+  `resolve_config_path(config_arg)` (`src/cli/config_path.rs`), itself
+  sourced only from the `-c`/`--config` `clap` CLI flag or the
+  `conduit.json`/`.yaml`/`.yml` auto-discovery fallback in the cwd. The only
+  other caller (`admin/api.rs`'s `/reload` handler) re-reads that same
+  fixed startup-time path — never a path from the request body. No
+  HTTP-request-derived data reaches this function anywhere in the
+  codebase — this is the ordinary "CLI/server tool loads its own config
+  from an operator-specified path" pattern, the same trust boundary as
+  `cat $1` in a shell script, not a remote-attacker-controlled path
+  traversal. CodeQL's Rust query pack is new (this is the first session
+  it's fired any alert at all) and its default taint-source set for this
+  query class appears to treat generic CLI-argument flow as tainted with
+  no way to mark "this is the process's own startup argument." Documented
+  as a [comment on PR #152](https://github.com/lopatnov/conduit/pull/152)
+  rather than actually dismissed — this session has no tool that can
+  dismiss a code-scanning alert (same gap already logged for the
+  unreachable Dependabot `security/dependabot/3` alert); needs the repo
+  owner via the Security → Code scanning UI if a permanent dismissal is
+  wanted. Left genuinely open rather than "fixed" with a change that would
+  just break `--config` pointing anywhere the operator chooses.
