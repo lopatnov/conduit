@@ -8,8 +8,8 @@ pub use conduit_config_core::validation::{partition_by_severity, Severity, Valid
 use crate::config::schema::{
     ApiKeyConfig, AppConfig, Consumer, ConsumerJwtConfig, ConsumersSharedJwtConfig, FallbackConfig,
     IpFilterConfig, LoadBalanceStrategy, MetricsConfig, MiddlewareEntry, ProxyConfig,
-    ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig, RedirectRule, RewriteRule,
-    SiteConfig, TcpConfig, TlsClientAuth, TlsConfig, UploadConfig,
+    ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RedirectRule, RewriteRule, SiteConfig,
+    TcpConfig, TlsClientAuth, TlsConfig, UploadConfig,
 };
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -263,7 +263,8 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
     // `consumers` alone doesn't imply `jwt` — a consumer whose only credential
     // is `jwt` (V2) or a `consumers.sharedJwt` block (V3) is silently
     // unreachable without it (see `check_consumer_credentials`/
-    // `identify_consumer` in `src/filter/auth.rs`, both `jwt`-gated).
+    // `identify_consumer` in `crates/conduit-auth-consumers/src/identify.rs`,
+    // both `jwt`-gated).
     #[cfg(all(feature = "consumers", not(feature = "jwt")))]
     if let Some(ref consumers_cfg) = site.consumers {
         let has_shared_jwt = consumers_cfg.shared_jwt.is_some();
@@ -606,7 +607,13 @@ fn validate_site_request_handling(
         validate_metrics(metrics, prefix, errors);
     }
     if let Some(rate_limit) = &site.rate_limit {
-        validate_rate_limit(rate_limit, prefix, errors);
+        validate_rate_limit(
+            rate_limit.window_secs,
+            rate_limit.limit,
+            rate_limit.store.as_deref(),
+            prefix,
+            errors,
+        );
     }
     if let Some(redirects) = &site.redirects {
         validate_redirect_rules(redirects, prefix, errors);
@@ -816,7 +823,13 @@ fn validate_consumer_entry(
         }
     }
     if let Some(ref rl) = c.rate_limit {
-        validate_rate_limit(rl, &entry_prefix, errors);
+        validate_rate_limit(
+            rl.window_secs,
+            rl.limit,
+            rl.store.as_deref(),
+            &entry_prefix,
+            errors,
+        );
     }
 }
 
@@ -993,18 +1006,30 @@ fn validate_middleware(
     }
 }
 
+/// Validate the shared rate-limit rules (`windowSecs`/`limit`/`store`).
+///
+/// Takes primitive fields rather than a concrete `&RateLimitConfig` because
+/// two structurally-identical-but-nominally-distinct types now carry this
+/// data: the root crate's own `crate::config::schema::RateLimitConfig`
+/// (site-level/route-level `rateLimit`) and
+/// `conduit_auth_consumers::RateLimitConfig` (per-consumer `rateLimit` —
+/// see that type's own doc comment for why it's a separate type, issue
+/// #114/#134). Taking fields instead of a struct lets both call sites below
+/// share the one real set of validation rules instead of duplicating them.
 fn validate_rate_limit(
-    rate_limit: &RateLimitConfig,
+    window_secs: u64,
+    limit: u64,
+    store: Option<&str>,
     prefix: &str,
     errors: &mut Vec<ValidationError>,
 ) {
-    if rate_limit.window_secs == 0 {
+    if window_secs == 0 {
         errors.push(ValidationError::new(
             format!("{prefix}.rateLimit.windowSecs"),
             "windowSecs must be greater than 0",
         ));
     }
-    if rate_limit.limit == 0 {
+    if limit == 0 {
         errors.push(ValidationError::new(
             format!("{prefix}.rateLimit.limit"),
             "limit must be greater than 0",
@@ -1013,7 +1038,7 @@ fn validate_rate_limit(
     // Validate the store field: must be "memory", a redis:// URL (plaintext),
     // or a rediss:// URL (TLS — requires Redis with in-transit encryption,
     // e.g. AWS ElastiCache TLS, Azure Cache for Redis).
-    if let Some(store) = &rate_limit.store {
+    if let Some(store) = store {
         let valid_store =
             store == "memory" || store.starts_with("redis://") || store.starts_with("rediss://");
         if !valid_store {
