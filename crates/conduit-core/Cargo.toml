@@ -17,6 +17,10 @@ pingora-http  = { workspace = true }
 async-trait   = { workspace = true }
 bytes         = { workspace = true }
 mime_guess    = { workspace = true }
+# Constant-time string comparison (util::crypto::ct_eq_str), shared by the
+# root crate's always-on Basic Auth / API-key guards and
+# crates/conduit-auth-consumers' consumer-credential checks (#114/#134).
+subtle        = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

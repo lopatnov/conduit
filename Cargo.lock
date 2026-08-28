@@ -2915,6 +2915,8 @@ dependencies = [
  "kube",
  "libc",
  "lopatnov-conduit-acme",
+ "lopatnov-conduit-auth-consumers",
+ "lopatnov-conduit-auth-forward",
  "lopatnov-conduit-auth-jwt",
  "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
@@ -2983,6 +2985,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "lopatnov-conduit-auth-consumers"
+version = "2.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "indexmap 2.14.0",
+ "jsonwebtoken",
+ "lopatnov-conduit-auth-jwt",
+ "lopatnov-conduit-core",
+ "pingora-core",
+ "pingora-proxy",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "lopatnov-conduit-auth-forward"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "lopatnov-conduit-core",
+ "pingora-core",
+ "pingora-proxy",
+ "reqwest",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lopatnov-conduit-auth-jwt"
 version = "2.0.0"
 dependencies = [
@@ -3031,6 +3064,7 @@ dependencies = [
  "pingora-core",
  "pingora-http",
  "pingora-proxy",
+ "subtle",
  "tempfile",
  "tokio",
 ]

@@ -23,8 +23,6 @@ use pingora_proxy::Session;
 
 #[cfg(feature = "consumers")]
 use crate::config::schema::ConsumersConfig;
-#[cfg(feature = "forward-auth")]
-use crate::config::schema::ForwardAuthConfig;
 use crate::config::schema::{
     ApiKeyConfig, BasicAuthConfig, CorsConfig, IpFilterConfig, LimitsConfig, MiddlewareEntry,
     RateLimitConfig,
@@ -559,7 +557,13 @@ impl RequestFilter for ConsumersGuard {
         let _ = ctx.session.req_header_mut().remove_header(id_header_name);
 
         // Identify consumer from credentials in the request.
-        let consumer = auth::identify_consumer(&self.cfg, ctx.session);
+        //
+        // Extracted into `crates/conduit-auth-consumers` (issue #114/#134):
+        // `identify_consumer` moved there, but `ConsumersGuard` itself
+        // stays here — see that crate's `src/lib.rs` doc comment for why
+        // (this guard also needs `self.rate_limiter` below, which hasn't
+        // been extracted yet).
+        let consumer = conduit_auth_consumers::identify_consumer(&self.cfg, ctx.session);
         let Some(consumer) = consumer else {
             response::write_denied(ctx.session, None, ctx.extra_headers).await?;
             ctx.inflight.fetch_sub(1, Ordering::Relaxed);
@@ -668,163 +672,18 @@ impl RequestFilter for ApiKeyGuard {
 #[cfg(feature = "jwt")]
 pub use conduit_auth_jwt::guard::JwtGuard;
 
-/// Forward Auth guard — delegates authentication/authorization to an external service.
-///
-/// Sends the incoming request (filtered headers) to the configured auth URL.
+/// Extracted into `crates/conduit-auth-forward` (issue #114/#134) — this is
+/// a facade re-export so `crate::filter::chain::ForwardAuthGuard` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test. See that crate's `src/guard.rs` for the implementation:
+/// delegates authentication/authorization to an external service, sending
+/// the incoming request (filtered headers) to the configured auth URL.
 /// - **2xx** → auth passed; headers listed in `responseHeaders` are injected
 ///   into the upstream request so the upstream receives user identity/role info.
 /// - **4xx / 5xx** → auth denied; the auth service status is returned to the
 ///   client immediately.
-///
-/// Uses a process-wide `reqwest::Client` with a connection pool so that
-/// hot-path requests don't pay TCP setup overhead.
 #[cfg(feature = "forward-auth")]
-pub struct ForwardAuthGuard {
-    pub cfg: ForwardAuthConfig,
-    pub path: String,
-}
-
-/// Process-wide reqwest client for forward-auth and JWKS fetching.
-///
-/// Uses separate `connect_timeout` (TCP SYN + TLS handshake) and overall
-/// `timeout` (from connect to last body byte) so that both hung TCP
-/// connections AND slow auth servers are bounded.
-#[cfg(feature = "forward-auth")]
-fn forward_auth_client() -> &'static reqwest::Client {
-    use std::sync::OnceLock;
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(3)) // TCP+TLS max
-            .timeout(std::time::Duration::from_secs(10)) // total request max
-            .build()
-            .unwrap_or_default()
-    })
-}
-
-#[cfg(feature = "forward-auth")]
-#[async_trait]
-impl RequestFilter for ForwardAuthGuard {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        use crate::filter::auth::is_path_skipped;
-
-        // Bypass for configured skip paths.
-        if let Some(skip) = &self.cfg.skip_paths {
-            if is_path_skipped(Some(skip.as_slice()), &self.path) {
-                return Ok(FilterOutcome::Continue);
-            }
-        }
-
-        let auth_url = &self.cfg.url;
-        let timeout_ms = self.cfg.timeout_ms.unwrap_or(5000);
-        let client = forward_auth_client();
-
-        // Build the subrequest.
-        let method = ctx.session.req_header().method.as_str();
-        let uri = ctx
-            .session
-            .req_header()
-            .uri
-            .path_and_query()
-            .map(|pq| pq.as_str())
-            .unwrap_or("/");
-        let client_ip = ctx
-            .session
-            .client_addr()
-            .and_then(|a| a.as_inet())
-            .map(|a| a.ip().to_string())
-            .unwrap_or_default();
-
-        let mut req = client
-            .get(auth_url)
-            .timeout(std::time::Duration::from_millis(timeout_ms))
-            .header("X-Forwarded-Method", method)
-            .header("X-Forwarded-Uri", uri)
-            .header("X-Forwarded-For", &client_ip);
-
-        // Forward specific request headers if configured.
-        if let Some(fwd_hdrs) = &self.cfg.request_headers {
-            req = forward_auth_add_headers(req, fwd_hdrs, ctx.session);
-        }
-
-        // Make the subrequest.
-        let auth_resp = match req.send().await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(url = %auth_url, error = %e, "forward-auth service unreachable");
-                // Fail closed: treat unreachable auth service as 401.
-                response::write_denied(ctx.session, None, ctx.extra_headers).await?;
-                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(FilterOutcome::Handled);
-            }
-        };
-
-        let status = auth_resp.status();
-        if status.is_success() {
-            // Inject auth service response headers into the upstream request.
-            if let Some(copy_hdrs) = &self.cfg.response_headers {
-                forward_auth_inject_response_headers(&auth_resp, copy_hdrs, ctx.session);
-            }
-            Ok(FilterOutcome::Continue)
-        } else {
-            let status_code = status.as_u16();
-            let body = bytes::Bytes::from_static(if status_code == 403 {
-                b"Forbidden"
-            } else {
-                b"Unauthorized"
-            });
-            response::write_response(
-                ctx.session,
-                status_code,
-                "text/plain",
-                body,
-                ctx.extra_headers,
-            )
-            .await?;
-            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-            Ok(FilterOutcome::Handled)
-        }
-    }
-}
-
-/// Add configured request headers to a forward-auth subrequest.
-#[cfg(feature = "forward-auth")]
-fn forward_auth_add_headers(
-    mut req: reqwest::RequestBuilder,
-    fwd_hdrs: &[String],
-    session: &Session,
-) -> reqwest::RequestBuilder {
-    for name in fwd_hdrs {
-        if let Some(val) = session.req_header().headers.get(name.as_str()) {
-            if let Ok(v) = val.to_str() {
-                req = req.header(name.as_str(), v);
-            }
-        }
-    }
-    req
-}
-
-/// Copy configured response headers from a forward-auth response into the session.
-#[cfg(feature = "forward-auth")]
-fn forward_auth_inject_response_headers(
-    auth_resp: &reqwest::Response,
-    copy_hdrs: &[String],
-    session: &mut Session,
-) {
-    let to_inject: Vec<(String, String)> = copy_hdrs
-        .iter()
-        .filter_map(|name| {
-            auth_resp
-                .headers()
-                .get(name.as_str())
-                .and_then(|val| val.to_str().ok())
-                .map(|v| (name.clone(), v.to_owned()))
-        })
-        .collect();
-    for (name, value) in to_inject {
-        let _ = session.req_header_mut().insert_header(name, value);
-    }
-}
+pub use conduit_auth_forward::guard::ForwardAuthGuard;
 
 /// Extracted into `crates/conduit-faults` (issue #114/#132) — this is a
 /// facade re-export so `crate::filter::chain::FaultInjectionGuard` keeps
@@ -1126,19 +985,7 @@ mod tests {
 
     // ── FilterOutcome variants ────────────────────────────────────────────────
 
-    // ── forward_auth_client ───────────────────────────────────────────────────
-
-    #[test]
-    #[cfg(feature = "forward-auth")]
-    fn forward_auth_client_returns_same_singleton() {
-        let c1 = forward_auth_client();
-        let c2 = forward_auth_client();
-        // Both calls must return the same static reference.
-        assert!(
-            std::ptr::eq(c1 as *const _, c2 as *const _),
-            "forward_auth_client must be a singleton"
-        );
-    }
+    // ── forward_auth_client — moved to crates/conduit-auth-forward (#114/#134) ─
 
     // ── Host header validation (LimitsGuard) ─────────────────────────────────
 

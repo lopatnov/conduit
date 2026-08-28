@@ -34,6 +34,8 @@ lopatnov-conduit-tcp         = { path = "crates/conduit-tcp", version = "2.0.0" 
 lopatnov-conduit-upload      = { path = "crates/conduit-upload", version = "2.0.0" }
 lopatnov-conduit-faults      = { path = "crates/conduit-faults", version = "2.0.0" }
 lopatnov-conduit-auth-jwt    = { path = "crates/conduit-auth-jwt", version = "2.0.0" }
+lopatnov-conduit-auth-forward   = { path = "crates/conduit-auth-forward", version = "2.0.0" }
+lopatnov-conduit-auth-consumers = { path = "crates/conduit-auth-consumers", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -239,6 +241,23 @@ lopatnov-conduit-faults.workspace      = true
 # `guard::JwtGuard` are gated, via `lopatnov-conduit-auth-jwt/jwt` in the
 # `jwt` feature below.
 lopatnov-conduit-auth-jwt.workspace    = true
+# Mandatory (like the crates above), not `optional = true`: `ForwardAuthConfig`
+# and the `sites[].forwardAuth` field must stay parseable in every build so
+# `feature_warnings()` can keep warning on a config-without-feature
+# mismatch. Only the real `guard::ForwardAuthGuard` is gated, via
+# `lopatnov-conduit-auth-forward/forward-auth` in the `forward-auth` feature
+# below.
+lopatnov-conduit-auth-forward.workspace   = true
+# Mandatory (like the crates above), not `optional = true`: `ConsumersConfig`
+# and the `sites[].consumers` field must stay parseable in every build so
+# `feature_warnings()` can keep warning on a config-without-feature
+# mismatch. Only the real `identify::identify_consumer` is gated, via
+# `lopatnov-conduit-auth-consumers/consumers` in the `consumers` feature
+# below. `ConsumersGuard` itself stays in this crate's own
+# `src/filter/chain.rs` — see that crate's `src/lib.rs` doc comment for why
+# (issue #114/#134: it also needs this crate's own not-yet-extracted
+# `RateLimiter`).
+lopatnov-conduit-auth-consumers.workspace = true
 
 # --- Config & parsing ---
 serde.workspace      = true
@@ -348,15 +367,31 @@ default = []
 # ── Authentication ─────────────────────────────────────────────────────────────
 # JWT bearer-token validation (HS256 + RS256/ES256 via JWKS URL).
 # `JwtAuthConfig` moved to `crates/conduit-auth-jwt` (#114/#133) and is
-# always a dependency (see the [dependencies] comment above); this only
-# forwards into that crate's own `jwt` feature, which gates the real JWKS
-# fetch/validation and `guard::JwtGuard`.
-jwt = ["lopatnov-conduit-auth-jwt/jwt"]
+# always a dependency (see the [dependencies] comment above); this forwards
+# into that crate's own `jwt` feature (gates the real JWKS fetch/validation
+# and `guard::JwtGuard`) AND into `crates/conduit-auth-consumers`' own `jwt`
+# feature (#114/#134) — without the second forward, `--features jwt,consumers`
+# would compile `conduit-auth-jwt`'s real code but never activate the
+# JWT-credential-checking branch inside `conduit-auth-consumers` (its own
+# crate-local `jwt` feature would never be requested by anything), silently
+# dropping per-consumer-JWT (V2) and sharedJwt (V3) consumer identification
+# even though both root features are on. See that crate's `identify.rs`
+# module doc comment.
+jwt = ["lopatnov-conduit-auth-jwt/jwt", "lopatnov-conduit-auth-consumers/jwt"]
 # Consumer model: per-consumer API-key / Basic Auth / JWT credentials +
-# per-consumer rate limits and header injection.
-consumers = []
+# per-consumer rate limits and header injection. `ConsumersConfig` moved to
+# `crates/conduit-auth-consumers` (#114/#134) and is always a dependency
+# (see the [dependencies] comment above); this only forwards into that
+# crate's own `consumers` feature, which gates the real
+# `identify::identify_consumer`. `ConsumersGuard` itself (rate-limit step +
+# header injection) stays in this crate's `src/filter/chain.rs`.
+consumers = ["lopatnov-conduit-auth-consumers/consumers"]
 # ForwardAuth: delegate authentication to an external HTTP service.
-forward-auth = []
+# `ForwardAuthConfig` moved to `crates/conduit-auth-forward` (#114/#134) and
+# is always a dependency (see the [dependencies] comment above); this only
+# forwards into that crate's own `forward-auth` feature, which gates the
+# real `guard::ForwardAuthGuard`.
+forward-auth = ["lopatnov-conduit-auth-forward/forward-auth"]
 
 # ── Scripting & plugins ────────────────────────────────────────────────────────
 # Rhai scripting middleware (type: "script" in middleware[]).
