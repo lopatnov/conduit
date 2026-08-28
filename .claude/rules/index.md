@@ -68,6 +68,23 @@
 - This isn't specific to GitHub access — it's the general shape: a missing tool is a signal
   to hand back, not a puzzle to solve by finding a different door.
 
+## Long sessions — periodic rotation
+
+> Added 2026-08-28 at the user's explicit request, after this repo's self-bind
+> `/feature-workspace-cycle` session (alive continuously since 2026-07-29, never rotated)
+> hit the account's session-wide model rate limit mid-firing while triaging a security-alert
+> batch — an entirely predictable cost of one conversation accumulating a month of context
+> with no periodic reset.
+
+A session bound to a recurring Routine in self-bind mode never starts fresh on its own —
+every firing continues the same conversation indefinitely. Every ~10-20 firings, rotate to a
+new session rather than letting context grow without bound: full mechanism (counting firings
+via `CLAUDE.md`'s dated log entries, spinning up the new session, repointing the Routine via
+`create_trigger`/`delete_trigger`, logging the rotation) lives in
+`.claude/commands/feature-workspace-cycle.md` Step 0a — that's the concrete checklist to
+follow, this entry is just the pointer + rationale. Rotations themselves are logged in
+`CLAUDE.md`'s "Session rotation log" table.
+
 ## Build discipline
 
 - Run **`/build`** (delegates to `build-validator`) after any non-trivial change, and before

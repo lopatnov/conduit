@@ -1841,3 +1841,23 @@ it a third time from scratch. This gate will most likely stay red for PR #152's 
 lifetime as a draft tracking PR; that's consistent with the PR's own documented design (not meant to
 merge until #114 is fully complete) and needs either the user's manual SonarCloud dashboard action or
 simply waiting for the eventual `main` merge to resolve on its own.
+
+---
+
+## Session rotation log
+
+> Append-only. Заведено 2026-08-28 по прямому запросу пользователя после того, как эта же
+> непрерывная self-bind сессия (живая с 2026-07-29) реально упёрлась в session-wide rate limit
+> модели прямо посреди разбора security-алертов — из-за накопленного за месяц контекста без единой
+> ротации. Механизм: `.claude/commands/feature-workspace-cycle.md` Step 0a — каждое срабатывание
+> считает дневные лог-записи с последней ротации (или с начала, если таблица ниже пуста), и при
+> ~15 срабатываниях (середина целевого диапазона 10-20) старая сессия создаёт новую
+> (`create_session`), перевешивает Routine на неё (`create_trigger` с `persistent_session_id`) и
+> удаляет свою старую привязку (`delete_trigger`) — после чего перестаёт получать срабатывания.
+> Новая строка добавляется здесь при каждой такой ротации; новая сессия при первом же срабатывании
+> должна прочитать этот файл целиком (см. Step 0 самого `feature-workspace-cycle.md`), включая
+> собственно эту таблицу, чтобы знать когда была прошлая ротация.
+
+| Date | Old session | New session | ~Firings since last rotation | Reason |
+|---|---|---|---|---|
+| _(ещё не было ни одной ротации — таблица пуста до первого срабатывания правила)_ | | | | |
