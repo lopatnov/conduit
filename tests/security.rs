@@ -1259,7 +1259,7 @@ fn rate_limit_dry_run_false_still_enforces() {
     }
 
     assert!(
-        statuses.iter().any(|&s| s == 429),
+        statuses.contains(&429),
         "without dryRun, exceeding the limit must be rejected: {statuses:?}"
     );
 }
