@@ -1877,18 +1877,47 @@ fn dns_cache_store(key: String, addr: SocketAddr) {
     );
 }
 
+/// Abstraction over "resolve a hostname to a list of candidate addresses",
+/// so the DNS cache above can get genuine end-to-end test coverage — a fake
+/// resolver whose answers change *between* calls proves a cache hit really
+/// does skip re-resolution (the caller gets the stale answer until the TTL
+/// expires, then the fresh one), which two real calls to `localhost` can
+/// never prove since the OS resolver's answer never changes. This avoids
+/// needing to touch system-level DNS config (`/etc/hosts`, `resolv.conf`,
+/// or a container) from a test process — those are system-settings changes
+/// this session won't make even on request.
+#[async_trait]
+trait HostResolver: Send + Sync {
+    async fn lookup(&self, addr_str: &str) -> std::io::Result<Vec<SocketAddr>>;
+}
+
+/// Production resolver: delegates to the OS resolver via
+/// [`tokio::net::lookup_host`] — identical behavior to before this
+/// abstraction existed, just behind the trait so tests can substitute
+/// [`FakeHostResolver`] instead.
+struct TokioHostResolver;
+
+#[async_trait]
+impl HostResolver for TokioHostResolver {
+    async fn lookup(&self, addr_str: &str) -> std::io::Result<Vec<SocketAddr>> {
+        Ok(tokio::net::lookup_host(addr_str).await?.collect())
+    }
+}
+
 /// Resolve a `host:port` string to a [`SocketAddr`], accepting both IP
 /// literals and hostnames.
 ///
 /// IP literals take a fast synchronous path (no behavior change from before
 /// hostname support was added). Hostnames go through async DNS resolution
-/// via [`tokio::net::lookup_host`], short-circuited by [`DNS_CACHE`] when a
-/// fresh-enough entry already exists — this must NOT be `HttpPeer::new`'s
-/// own resolution: that constructor takes `impl std::net::ToSocketAddrs`,
-/// which resolves *synchronously* (blocking the async runtime thread) and
-/// `.unwrap()`s the result (panics on resolution failure) — unacceptable
-/// inside a per-request async hook. Resolving here first, then handing
-/// `HttpPeer::new` an already-concrete `SocketAddr`, sidesteps both.
+/// via the supplied [`HostResolver`] (production callers always use
+/// [`TokioHostResolver`] — see [`resolve_socket_addr`]), short-circuited by
+/// [`DNS_CACHE`] when a fresh-enough entry already exists. Resolving via a
+/// trait rather than calling `tokio::net::lookup_host` directly (or relying
+/// on `HttpPeer::new`'s own resolution — that constructor takes
+/// `impl std::net::ToSocketAddrs`, which resolves *synchronously* (blocking
+/// the async runtime thread) and `.unwrap()`s the result, unacceptable
+/// inside a per-request async hook) is what makes the cache's actual
+/// caching behavior (not just its output) testable.
 ///
 /// `resolution_timeout` bounds the DNS lookup with the same effective
 /// connect deadline `apply_peer_options` derives for the connection itself
@@ -1907,7 +1936,8 @@ fn dns_cache_store(key: String, addr: SocketAddr) {
 /// upstream URL to use — it has no interaction with `IpHash`/
 /// `ConsistentHash` forward-probing in `capacity.rs`, which hashes on the
 /// pre-resolution config URL, not the resolved IP.
-async fn resolve_socket_addr(
+async fn resolve_socket_addr_with(
+    resolver: &dyn HostResolver,
     addr_str: &str,
     resolution_timeout: Option<Duration>,
 ) -> pingora_core::Result<SocketAddr> {
@@ -1917,7 +1947,7 @@ async fn resolve_socket_addr(
     if let Some(cached) = dns_cache_lookup(addr_str) {
         return Ok(cached);
     }
-    let lookup = tokio::net::lookup_host(addr_str);
+    let lookup = resolver.lookup(addr_str);
     let addrs = match resolution_timeout {
         Some(d) => tokio::time::timeout(d, lookup).await.map_err(|_| {
             pingora_core::Error::explain(
@@ -1933,7 +1963,7 @@ async fn resolve_socket_addr(
             format!("DNS resolution failed for upstream address {addr_str}: {e}"),
         )
     })?;
-    let addr = pick_preferred_addr(addrs).ok_or_else(|| {
+    let addr = pick_preferred_addr(addrs.into_iter()).ok_or_else(|| {
         pingora_core::Error::explain(
             pingora_core::ErrorType::ConnectProxyFailure,
             format!("no addresses found for upstream address {addr_str}"),
@@ -1941,6 +1971,16 @@ async fn resolve_socket_addr(
     })?;
     dns_cache_store(addr_str.to_string(), addr);
     Ok(addr)
+}
+
+/// Production entry point: resolves via [`TokioHostResolver`] (the real OS
+/// resolver). See [`resolve_socket_addr_with`] for the full behavior —
+/// tests call that directly with a [`FakeHostResolver`] instead.
+async fn resolve_socket_addr(
+    addr_str: &str,
+    resolution_timeout: Option<Duration>,
+) -> pingora_core::Result<SocketAddr> {
+    resolve_socket_addr_with(&TokioHostResolver, addr_str, resolution_timeout).await
 }
 
 /// Pick a single address out of a hostname's DNS results, preferring IPv4.
@@ -2832,15 +2872,133 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_socket_addr_second_call_returns_cached_addr() {
+        // Integration-style sanity check of the real production entry point
+        // (`resolve_socket_addr`, wired to the real `TokioHostResolver`).
+        // The stronger proof that caching itself works — not just that two
+        // calls happen to agree — is
+        // `resolve_socket_addr_with_cache_hit_skips_resolver_call` below,
+        // which uses `FakeHostResolver` to change the answer between calls.
         let key = "localhost:4024";
         let first = resolve_socket_addr(key, None).await.unwrap();
-        // A second call for the same key must return the identical address
-        // via the cache rather than re-resolving — asserted functionally
-        // (same result) since proving "no DNS call happened" black-box
-        // would require mocking the resolver.
         let second = resolve_socket_addr(key, None).await.unwrap();
         assert_eq!(first, second);
         assert_eq!(dns_cache_lookup(key), Some(second));
+    }
+
+    /// Fake [`HostResolver`] whose answer for a given key can be changed
+    /// between calls, and which counts how many times it was actually
+    /// invoked — the two ingredients needed to prove the DNS cache really
+    /// short-circuits resolution rather than merely returning a value that
+    /// happens to match (which two real `localhost` lookups can never rule
+    /// out, since the OS resolver's answer for it never changes).
+    struct FakeHostResolver {
+        answers: std::sync::Mutex<std::collections::HashMap<String, Vec<SocketAddr>>>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeHostResolver {
+        fn new() -> Self {
+            Self {
+                answers: std::sync::Mutex::new(std::collections::HashMap::new()),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn set(&self, key: &str, addrs: Vec<SocketAddr>) {
+            self.answers.lock().unwrap().insert(key.to_owned(), addrs);
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl HostResolver for FakeHostResolver {
+        async fn lookup(&self, addr_str: &str) -> std::io::Result<Vec<SocketAddr>> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.answers
+                .lock()
+                .unwrap()
+                .get(addr_str)
+                .cloned()
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "no fake answer configured")
+                })
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_socket_addr_with_cache_hit_skips_resolver_call() {
+        let resolver = FakeHostResolver::new();
+        let key = "fake-cache-test.invalid:5000";
+        let first_addr = v4(5000);
+        resolver.set(key, vec![first_addr]);
+
+        let resolved = resolve_socket_addr_with(&resolver, key, None)
+            .await
+            .unwrap();
+        assert_eq!(resolved, first_addr);
+        assert_eq!(resolver.call_count(), 1, "first call must hit the resolver");
+
+        // Change what the resolver would answer *now* — if the cache is
+        // really being consulted (not just producing a coincidentally
+        // matching value), the stale `first_addr` must still come back.
+        let second_addr = v4(5001);
+        resolver.set(key, vec![second_addr]);
+
+        let resolved_again = resolve_socket_addr_with(&resolver, key, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            resolved_again, first_addr,
+            "a cache hit must return the stale cached address, not re-resolve"
+        );
+        assert_eq!(
+            resolver.call_count(),
+            1,
+            "a cache hit must not call the resolver again"
+        );
+
+        // Force the cached entry older than the TTL (same backdating
+        // technique as `dns_cache_lookup_expired_entry_returns_none`), then
+        // resolve once more — this must now pick up the resolver's new
+        // answer, proving expiry actually triggers re-resolution.
+        dns_cache().insert(
+            key.to_owned(),
+            DnsCacheEntry {
+                addr: first_addr,
+                resolved_at: Instant::now() - Duration::from_secs(DNS_CACHE_TTL_SECS + 1),
+            },
+        );
+        let resolved_after_expiry = resolve_socket_addr_with(&resolver, key, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            resolved_after_expiry, second_addr,
+            "after the cache entry expires, resolution must reflect the resolver's new answer"
+        );
+        assert_eq!(
+            resolver.call_count(),
+            2,
+            "an expired entry must trigger exactly one more resolver call"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_socket_addr_with_resolver_error_is_not_cached() {
+        // A failed resolution must not poison the cache with a bogus entry
+        // that a later, successful resolution would then be shadowed by.
+        let resolver = FakeHostResolver::new();
+        let key = "fake-error-test.invalid:5002";
+        // No answer configured for `key` -> FakeHostResolver::lookup errors.
+        let result = resolve_socket_addr_with(&resolver, key, None).await;
+        assert!(result.is_err());
+        assert_eq!(
+            dns_cache_lookup(key),
+            None,
+            "a failed resolution must not populate the cache"
+        );
     }
 
     // ── pick_preferred_addr (Gitar finding on PR #227) ──────────────────────────
