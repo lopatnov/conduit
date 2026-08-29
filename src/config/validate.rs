@@ -79,10 +79,16 @@ const DISABLED_KEY_OWNING_FEATURE: &[(&str, &str)] = &[
 /// Warn about unrecognized top-level site config keys (`SiteConfig.extra`):
 /// a specific "recompile with --features X" message when the key is known
 /// to belong to an optional feature, or a generic typo warning otherwise.
+///
+/// The key name itself is config-controlled (an arbitrary JSON/YAML object
+/// key) and is interpolated into the warning message below — routed through
+/// `sanitize_for_log()` for the same reason `check_proxy_loop_warnings`'s
+/// `target` is (issue #185, CWE-117-style log injection).
 fn check_extra_key_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
     for (i, site) in config.sites.iter().enumerate() {
         for key in site.extra.keys() {
-            match DISABLED_KEY_OWNING_FEATURE.iter().find(|(k, _)| k == key) {
+            let key = sanitize_for_log(key);
+            match DISABLED_KEY_OWNING_FEATURE.iter().find(|(k, _)| **k == key) {
                 Some((_, feature)) => warnings.push(format!(
                     "sites[{i}].{key} is configured but Conduit was compiled without the \
                      `{feature}` feature — this configuration will be ignored. \
@@ -95,6 +101,35 @@ fn check_extra_key_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
             }
         }
     }
+}
+
+/// Escapes control characters (newlines, carriage returns, and other
+/// non-printable bytes) in a config-controlled string before it's
+/// interpolated into a `feature_warnings()` message.
+///
+/// Issue #185 (CWE-117-style log injection): these warnings are written via
+/// `tracing::warn!("{w}")` at startup/hot-reload (`main.rs`) and returned
+/// verbatim in the Admin API `/reload` response's `warnings: [...]` field
+/// (`admin/api.rs`). A config value containing a literal newline — e.g. a
+/// proxy target URL, which is operator-supplied and not otherwise validated
+/// for control characters before this point — could forge additional fake
+/// log lines in the tracing output. Applied once centrally here rather than
+/// patched ad hoc per call site, so any future `check_*_warnings` function
+/// that interpolates a config-controlled string gets the same treatment by
+/// routing through this helper instead of re-deriving the fix.
+///
+/// Escaping (not stripping) preserves the operator's ability to see what the
+/// offending value actually contained, just rendered as a single log line.
+fn sanitize_for_log(s: &str) -> String {
+    s.chars()
+        .flat_map(|c| {
+            if c.is_control() {
+                c.escape_default().collect::<Vec<char>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
 }
 
 /// Check warnings for global-level feature flags (e.g. OTLP).
@@ -317,9 +352,10 @@ fn check_proxy_loop_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
             if let Some(port) = loopback_port(target) {
                 if listening_ports.contains(&port) {
                     warnings.push(format!(
-                        "sites[{i}] proxies to '{target}' which appears to point back to \
+                        "sites[{i}] proxies to '{}' which appears to point back to \
                          Conduit itself (loopback + port {port} is a configured listening port) \
-                         — this will create an infinite request loop."
+                         — this will create an infinite request loop.",
+                        sanitize_for_log(target)
                     ));
                 }
             }
@@ -1176,6 +1212,38 @@ fn validate_tls(tls: &TlsConfig, prefix: &str, errors: &mut Vec<ValidationError>
         validate_tls_client_auth(ca, prefix, has_cert, has_acme, errors);
     }
 
+    // tls.versions / tls.ciphers: parsed but never enforced (issue #189).
+    // Pingora 0.8.1's rustls `TlsSettings` gives conduit no hook to influence
+    // protocol-version or cipher-suite selection — `TlsSettings::build()`
+    // hardcodes `ServerConfig::builder_with_protocol_versions(&[TLS12, TLS13])`
+    // with the default rustls cipher suite set, all fields are private, and
+    // the only constructor (`intermediate()`) takes just a cert/key path pair
+    // (confirmed against vendored `pingora-core-0.8.1/src/listeners/tls/
+    // rustls/mod.rs`). Silently accepting these fields would let an operator
+    // believe they've restricted TLS versions/ciphers for compliance reasons
+    // when nothing is actually enforced — a hard validation error forces
+    // them to notice and remove the setting, rather than a warning they
+    // could miss in startup logs. Revisit once Pingora exposes a
+    // `ServerConfig`-customization hook (tracked in CLAUDE.md as blocked).
+    if tls.versions.is_some() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.versions"),
+            "tls.versions is not currently enforced — Pingora 0.8's rustls TLS backend gives \
+             Conduit no API to restrict protocol versions (TLS 1.2 and 1.3 are always both \
+             enabled). Remove this field; see \
+             https://github.com/lopatnov/conduit/issues/189 for status.",
+        ));
+    }
+    if tls.ciphers.is_some() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.ciphers"),
+            "tls.ciphers is not currently enforced — Pingora 0.8's rustls TLS backend gives \
+             Conduit no API to restrict cipher suites (the default rustls suite set is always \
+             used). Remove this field; see \
+             https://github.com/lopatnov/conduit/issues/189 for status.",
+        ));
+    }
+
     // Cert expiry check — only for manual certificates (ACME manages renewal itself).
     if !has_acme {
         if let Some(ref cert_path) = tls.cert {
@@ -1546,6 +1614,39 @@ mod tests {
     #[test]
     fn tls_cert_and_key_valid() {
         assert!(errs(r#"{ "tls": { "cert": "a.pem", "key": "a.key" } }"#).is_empty());
+    }
+
+    // ── tls.versions / tls.ciphers (issue #189: never enforced by Pingora 0.8) ─
+
+    #[test]
+    fn tls_versions_is_rejected() {
+        let e = errs(r#"{ "tls": { "cert": "a.pem", "key": "a.key", "versions": ["TLSv1.2"] } }"#);
+        assert!(!e.is_empty(), "tls.versions must be rejected: {e:?}");
+        assert!(
+            e.iter()
+                .any(|x| x.path.ends_with(".versions")
+                    && x.message.contains("not currently enforced")),
+            "got: {e:?}"
+        );
+        assert!(
+            e.iter().all(|x| x.severity == Severity::Error),
+            "must be a hard error, not a warning — silently accepting this field lets an \
+             operator believe TLS versions are actually restricted: {e:?}"
+        );
+    }
+
+    #[test]
+    fn tls_ciphers_is_rejected() {
+        let e = errs(
+            r#"{ "tls": { "cert": "a.pem", "key": "a.key", "ciphers": ["TLS13_AES_256_GCM_SHA384"] } }"#,
+        );
+        assert!(!e.is_empty(), "tls.ciphers must be rejected: {e:?}");
+        assert!(
+            e.iter()
+                .any(|x| x.path.ends_with(".ciphers")
+                    && x.message.contains("not currently enforced")),
+            "got: {e:?}"
+        );
     }
 
     #[test]
@@ -3174,6 +3275,54 @@ mod tests {
         assert!(
             w.iter().all(|m| !m.contains("loop")),
             "external host must not warn: {w:?}"
+        );
+    }
+
+    // ── sanitize_for_log (issue #185: CWE-117-style log injection) ────────────
+
+    #[test]
+    fn sanitize_for_log_leaves_plain_text_unchanged() {
+        assert_eq!(
+            sanitize_for_log("http://127.0.0.1:8080/path?q=1"),
+            "http://127.0.0.1:8080/path?q=1"
+        );
+    }
+
+    #[test]
+    fn sanitize_for_log_escapes_newline() {
+        // The exact forged-log-line shape issue #185 describes: a raw '\n'
+        // would let a config value start what looks like a second,
+        // independent log line.
+        assert_eq!(
+            sanitize_for_log("evil\nfake log line: [ERROR] pwned"),
+            "evil\\nfake log line: [ERROR] pwned"
+        );
+        assert!(
+            !sanitize_for_log("a\nb").contains('\n'),
+            "no raw newline must survive sanitization"
+        );
+    }
+
+    #[test]
+    fn sanitize_for_log_escapes_carriage_return() {
+        assert_eq!(sanitize_for_log("a\rb"), "a\\rb");
+    }
+
+    #[test]
+    fn sanitize_for_log_escapes_other_control_chars() {
+        // NUL and a bell character, as a stand-in for "any non-printable byte".
+        let out = sanitize_for_log("a\0b\x07c");
+        assert!(!out.contains('\0') && !out.contains('\x07'));
+        assert_eq!(out, "a\\u{0}b\\u{7}c");
+    }
+
+    #[test]
+    fn sanitize_for_log_preserves_unicode() {
+        // Non-control, non-ASCII text must pass through untouched -- this is
+        // an escaping filter for control characters, not an ASCII-only one.
+        assert_eq!(
+            sanitize_for_log("héllo — wörld 日本語"),
+            "héllo — wörld 日本語"
         );
     }
 

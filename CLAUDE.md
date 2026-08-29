@@ -313,6 +313,23 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 - [x] **Header injection protection** — CRLF: collect+remove headers от upstream с `\r`/`\n` в `upstream_response_filter` (Pingora HMap нет retain).
 - [🚫 BLOCKED] **OCSP stapling config** — expose через конфиг, сейчас rustls обрабатывает внутренне.
   **Причина:** Pingora rustls backend не имеет публичного API для управления OCSP stapling. Rustls обрабатывает его внутренне без конфигурации. Ждём Pingora 0.9+.
+- [🚫 BLOCKED] **`tls.versions`/`tls.ciphers` enforcement** (issue #189, найдено
+  `integrity-auditor` при Step 1c аудите `src/server/tls.rs`) — поля парсятся с самого первого
+  коммита (`58ec267`), но никогда не были подключены: `make_tls_settings()` не принимает
+  versions/ciphers параметр, `TlsPortMap` не имеет для них места, `detect_cold_changes()` их
+  тоже не проверял — полный silent no-op с 2026-мая. **Причина:** подтверждено через vendored
+  `pingora-core-0.8.1/src/listeners/tls/rustls/mod.rs:62-63` — `TlsSettings::build()` жёстко
+  зашивает `ServerConfig::builder_with_protocol_versions(&[TLS12, TLS13])` без cipher-suite
+  API, все поля `TlsSettings` приватные, единственный конструктор `intermediate()` берёт
+  только cert/key path, `add_tls_with_settings()` принимает исключительно `TlsSettings` —
+  никакого хука для кастомного `ServerConfig`/`Acceptor`. Ждём Pingora 0.9+
+  (`ResolvesServerCert`-подобный API или публичный доступ к builder).
+  **Фикс (2026-08-29, issue #189)**: раз честно wire-нуть нельзя — поля теперь **жёстко
+  отклоняются на `validate()`** (`Severity::Error`, блокирует старт и `/reload`) вместо
+  тихого игнорирования, чтобы оператор не решил, что TLS-версии/шифры реально ограничены.
+  `examples/security-hardened.{yaml,json}` и `docs/configuration.md`/`docs/admin.md`
+  поправлены (убрана ложная claim "requires cold restart" — теперь это hard validation error,
+  не cold-restart-only поле).
 
 ---
 
@@ -910,7 +927,9 @@ Tokio "full" features уже включены. Ключевые находки �
 - `schema/conduit.schema.json` — вручную синхронизировать со `schema.rs`. Обновлён 2026-05-31 со всеми Phase 4 полями. Валидировать: `node -e "JSON.parse(fs.readFileSync('schema/conduit.schema.json','utf8'))"`
 - HTTP/3 (Phase 5) — ждём Pingora Issue #95, ~август 2026
 - `src/main.rs` тонкий: CLI → `dispatch_command()` → command struct → `execute()`
-- `tls.ciphers` — rustls-строки, НЕ OpenSSL
+- `tls.versions`/`tls.ciphers` — **не работают, отклоняются на validate()** (issue #189,
+  2026-08-29). Pingora 0.8's rustls `TlsSettings` не даёт API для ограничения версий/шифров —
+  подробности в разделе "Безопасность" ниже.
 - Admin API bind — только loopback
 - `hotReload` при `static` как IndexMap — следить за ВСЕМИ директориями
 - `routes` backward-compatible с top-level `proxy`/`static`
