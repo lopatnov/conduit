@@ -1186,6 +1186,84 @@ fn rate_limit_burst_allows_burst_requests() {
     assert!(rejected >= 1, "must rate-limit after burst: {statuses:?}");
 }
 
+// ── Rate-limit dry-run ──────────────────────────────────────────────────────
+
+/// A site-level `rateLimit` with `dryRun: true` must log violations but let
+/// requests through — mirrors `ip_filter_dry_run_logs_but_allows` in
+/// tests/ip_filter.rs. Found uncovered by the 2026-08-30 Step 1c integrity
+/// audit of rate_limit.rs.
+#[test]
+#[serial]
+fn rate_limit_dry_run_logs_but_allows() {
+    let (echo_port, _echo) = common::start_echo_upstream();
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "rateLimit": { "windowSecs": 60, "limit": 1, "dryRun": true, "keyBy": "ip" },
+                "proxy": {
+                    "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] }
+                }
+            }]
+        }),
+    );
+
+    let client = Client::new();
+    let mut statuses: Vec<u16> = Vec::new();
+    for _ in 0..5 {
+        let s = client.get(srv.url("/")).send().unwrap().status().as_u16();
+        statuses.push(s);
+    }
+
+    assert!(
+        statuses.iter().all(|&s| s == 200),
+        "dryRun: true must allow every request through even past the limit: {statuses:?}"
+    );
+}
+
+/// Sanity check for the test above: with the same limit and `dryRun` absent
+/// (enforcement active), requests past the limit must actually 429.
+#[test]
+#[serial]
+fn rate_limit_dry_run_false_still_enforces() {
+    let (echo_port, _echo) = common::start_echo_upstream();
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "rateLimit": { "windowSecs": 60, "limit": 1, "keyBy": "ip" },
+                "proxy": {
+                    "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] }
+                }
+            }]
+        }),
+    );
+
+    let client = Client::new();
+    let mut statuses: Vec<u16> = Vec::new();
+    for _ in 0..5 {
+        let s = client.get(srv.url("/")).send().unwrap().status().as_u16();
+        statuses.push(s);
+    }
+
+    assert!(
+        statuses.iter().any(|&s| s == 429),
+        "without dryRun, exceeding the limit must be rejected: {statuses:?}"
+    );
+}
+
 // ── Feature warnings in reload response ──────────────────────────────────────
 
 #[test]
