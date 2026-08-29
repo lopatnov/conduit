@@ -40,18 +40,21 @@ fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-        // Deliberately no `.truncate(true)` here: OpenOptions truncates as
-        // part of the `open()` syscall itself, before this code gets a
-        // chance to chmod a pre-existing looser-permission file first —
-        // that would leave a window where the just-truncated (now empty)
-        // file is being refilled with fresh secret content while still at
-        // its *old* mode, e.g. `0644` (CodeRabbit finding on this PR).
-        // Truncating manually via `set_len(0)` *after* chmod closes that
-        // window: permissions are tightened before any content-modifying
+        // Deliberately `.truncate(false)` (explicit, not just omitted --
+        // clippy::suspicious_open_options requires stating the intent):
+        // OpenOptions::truncate(true) truncates as part of the `open()`
+        // syscall itself, before this code gets a chance to chmod a
+        // pre-existing looser-permission file first — that would leave a
+        // window where the just-truncated (now empty) file is being
+        // refilled with fresh secret content while still at its *old*
+        // mode, e.g. `0644` (CodeRabbit finding on this PR). Truncating
+        // manually via `set_len(0)` *after* chmod closes that window:
+        // permissions are tightened before any content-modifying
         // operation ever touches the file.
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(false)
             .mode(0o600)
             .open(path)?;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
