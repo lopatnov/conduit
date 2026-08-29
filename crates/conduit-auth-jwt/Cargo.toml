@@ -37,7 +37,7 @@ lopatnov-conduit-core = { workspace = true, optional = true }
 
 [dev-dependencies]
 # jsonwebtoken test-token generation (`use_pem` needed for RS256/ES256 JWKS
-# coverage, issue #164) + base64/rsa/p256/rand for the JWKS test key
+# coverage, issue #164) + base64/rsa/p256/rand_core for the JWKS test key
 # material — same set/rationale as the root crate's own dev-dependencies
 # before this extraction (see Cargo.toml `[workspace.dependencies]`
 # comments). Only referenced from `src/jwt/tests/`.
@@ -45,7 +45,7 @@ jsonwebtoken = { workspace = true, features = ["use_pem"] }
 base64       = { workspace = true }
 rsa          = { workspace = true }
 p256         = { workspace = true }
-rand         = { workspace = true }
+rand_core    = { workspace = true }
 
 [features]
 jwt = [
