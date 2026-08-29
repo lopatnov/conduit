@@ -20,6 +20,54 @@ use crate::config::AcmeConfig;
 /// How many days before certificate expiry to trigger automatic renewal.
 const RENEWAL_THRESHOLD_DAYS: i64 = 30;
 
+/// Writes `contents` to `path` with owner-only (0600) permissions on Unix,
+/// covering both initial creation and the overwrite case.
+///
+/// Issue #278: the TLS private key and ACME account credentials are
+/// secrets — plain `std::fs::write` can create files as `0644` (world-
+/// readable) under a permissive umask. `OpenOptions::mode()` only applies
+/// when `O_CREAT` actually creates the file, so a pre-existing file from
+/// before this fix (or one that somehow ended up with looser permissions)
+/// would keep its old mode on a mere re-open — the explicit
+/// `set_permissions` call after writing re-tightens it every time,
+/// covering the overwrite/renewal case, not just first creation.
+///
+/// On non-Unix platforms (no POSIX permission bits), falls back to a plain
+/// write.
+fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        // Deliberately `.truncate(false)` (explicit, not just omitted --
+        // clippy::suspicious_open_options requires stating the intent):
+        // OpenOptions::truncate(true) truncates as part of the `open()`
+        // syscall itself, before this code gets a chance to chmod a
+        // pre-existing looser-permission file first — that would leave a
+        // window where the just-truncated (now empty) file is being
+        // refilled with fresh secret content while still at its *old*
+        // mode, e.g. `0644` (CodeRabbit finding on this PR). Truncating
+        // manually via `set_len(0)` *after* chmod closes that window:
+        // permissions are tightened before any content-modifying
+        // operation ever touches the file.
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(path)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.set_len(0)?;
+        file.write_all(contents)?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)
+    }
+}
+
 // ── Per-port serialization lock ───────────────────────────────────────────────
 
 /// One `Mutex` per HTTP-01 challenge port, ensuring that concurrent
@@ -107,7 +155,9 @@ pub async fn load_or_obtain_certificate(
 
     std::fs::write(&cert_path, &cert_pem)
         .with_context(|| format!("writing cert to {cert_path:?}"))?;
-    std::fs::write(&key_path, &key_pem).with_context(|| format!("writing key to {key_path:?}"))?;
+    // Owner-only permissions: this is a private key (issue #278).
+    write_secret_file(&key_path, key_pem.as_bytes())
+        .with_context(|| format!("writing key to {key_path:?}"))?;
 
     Ok(AcmeCertPaths {
         cert: cert_path,
@@ -275,7 +325,9 @@ async fn load_or_create_account(
 
     std::fs::create_dir_all(storage)?;
     let json = serde_json::to_string_pretty(&credentials)?;
-    std::fs::write(&creds_path, json)
+    // Owner-only permissions: this file holds the ACME account's private
+    // key material (issue #278).
+    write_secret_file(&creds_path, json.as_bytes())
         .with_context(|| format!("saving ACME credentials to {creds_path:?}"))?;
     tracing::info!("new ACME account created and saved to {creds_path:?}");
 
@@ -425,5 +477,72 @@ mod tests {
             time::OffsetDateTime::now_utc() - time::Duration::days(1),
         );
         assert!(cert_expires_within_days(&pem, RENEWAL_THRESHOLD_DAYS));
+    }
+
+    // ── write_secret_file (issue #278: owner-only permissions) ────────────────
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_secret_file_creates_with_owner_only_permissions() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("secret.pem");
+        write_secret_file(&path, b"top secret key material").unwrap();
+        assert_eq!(
+            mode_of(&path),
+            0o600,
+            "a freshly created secret file must be owner-only, not umask-dependent"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"top secret key material");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_secret_file_tightens_permissions_on_overwrite() {
+        // Simulates a file that pre-dates this fix, or was otherwise created
+        // with looser permissions (e.g. by an older Conduit build) — the
+        // next write must re-tighten it to 0600, not just leave the
+        // existing mode alone (OpenOptions::mode() only applies when
+        // O_CREAT actually creates the file).
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("secret.pem");
+        std::fs::write(&path, b"old content").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(mode_of(&path), 0o644, "test setup sanity check");
+
+        write_secret_file(&path, b"new secret content").unwrap();
+
+        assert_eq!(
+            mode_of(&path),
+            0o600,
+            "overwriting a pre-existing file must re-tighten its permissions"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"new secret content");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_secret_file_shorter_overwrite_leaves_no_stale_trailing_bytes() {
+        // write_secret_file no longer uses OpenOptions::truncate(true)
+        // (removed per a CodeRabbit finding on this PR — see its doc
+        // comment) and truncates manually via set_len(0) instead. This
+        // proves that still correctly drops old trailing content when the
+        // new contents are shorter than what was there before, not just
+        // that permissions end up right.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("secret.pem");
+        write_secret_file(&path, b"a very long old secret payload").unwrap();
+        write_secret_file(&path, b"short").unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"short",
+            "no stale bytes from the longer previous content must survive"
+        );
     }
 }

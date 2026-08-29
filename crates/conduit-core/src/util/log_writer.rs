@@ -2,6 +2,30 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write as _};
 use std::sync::Mutex;
 
+/// Opens `path` for append (creating it if absent) without following a
+/// symlink at the final path component — see `switch_file`'s doc comment
+/// for the TOCTOU rationale (issue #280).
+///
+/// On Unix, `O_NOFOLLOW` makes the open syscall fail atomically (`ELOOP`)
+/// when the final component is a symlink. On non-Unix platforms (no
+/// `O_NOFOLLOW` concept, and symlinks there require elevated privileges to
+/// create in the first place — lower risk), falls back to a plain open.
+fn open_no_follow(path: &str) -> io::Result<File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+    }
+    #[cfg(not(unix))]
+    {
+        OpenOptions::new().create(true).append(true).open(path)
+    }
+}
+
 /// Writes access-log lines to either stdout or a file.
 ///
 /// Thread-safe: a single `LogWriter` is shared across all worker threads via
@@ -34,28 +58,23 @@ impl LogWriter {
     ///
     /// # Security
     ///
-    /// Refuses to open symlinks.  If an attacker can create a symlink at the
-    /// configured log path (e.g., pointing to `/etc/passwd`), the proxy
-    /// running as root would overwrite system files.  Checking for symlinks
-    /// before opening eliminates this local privilege-escalation vector.
+    /// Refuses to open symlinks, atomically. If an attacker can create a
+    /// symlink at the configured log path (e.g., pointing to `/etc/passwd`),
+    /// the proxy running as root would overwrite system files.
+    ///
+    /// Issue #280: an earlier version of this check used
+    /// `symlink_metadata()` followed by a *separate* `OpenOptions::open()`
+    /// call — two distinct syscalls, leaving a TOCTOU window where a local
+    /// attacker able to write to the log directory could swap the final
+    /// path component for a symlink between the check and the open, and
+    /// `open()` would follow it. `O_NOFOLLOW` (Unix) folds the check into
+    /// the open itself: the kernel fails the syscall atomically with
+    /// `ELOOP` if the final component is a symlink, with no window between
+    /// checking and opening. Same pattern already used for static-file
+    /// serving, see `open_no_follow()` in the root crate's
+    /// `handler/static_files.rs`.
     pub fn switch_file(&self, path: &str) -> io::Result<()> {
-        // Reject symlinks — follow-on writes would go to the link target,
-        // enabling a local privilege-escalation attack on systems where the
-        // proxy runs with elevated permissions.
-        match std::fs::symlink_metadata(path) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "log file '{path}' is a symbolic link — refusing to open \
-                         (symlink attack prevention)"
-                    ),
-                ));
-            }
-            _ => {} // File does not exist yet (will be created) or is a regular file.
-        }
-
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let file = open_no_follow(path)?;
         let mut inner = self
             .inner
             .lock()

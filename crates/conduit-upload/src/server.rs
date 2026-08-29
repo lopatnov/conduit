@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::extract::{Multipart, State};
+use axum::extract::{DefaultBodyLimit, Multipart, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
@@ -91,8 +91,27 @@ pub fn make_upload_router<S: UploadConfigSource>(state: Arc<S>) -> Router {
         // Accept POST to any path — the actual upload.path matching is done
         // by the Pingora router before the request reaches this server.
         .route("/{*path}", post(upload_handler::<S>))
+        // Hard backstop, independent of per-site `maxFileSizeBytes`/
+        // `maxTotalSizeBytes` (issue #277): those are `Option<u64>` and
+        // resolved per-request from site config the router doesn't have
+        // at construction time, so a site with no limits configured at all
+        // would otherwise have no upper bound whatsoever on request body
+        // size (streaming to disk closes the *memory*-exhaustion vector,
+        // but an unconfigured site could still fill the disk). This is a
+        // blunt, generous global ceiling meant to catch that
+        // no-limits-configured case, not to replace the precise per-site
+        // streaming checks in `check_chunk_limits` — those still run first
+        // and reject with the more specific 413 message.
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(state)
 }
+
+/// Absolute ceiling on a single upload request's body size, regardless of
+/// per-site config (see `make_upload_router`'s doc comment). 5 GiB —
+/// generous enough not to interfere with legitimate large-file uploads
+/// (video, datasets) while still bounding the worst case for a site that
+/// hasn't configured `maxFileSizeBytes`/`maxTotalSizeBytes` at all.
+const MAX_REQUEST_BODY_BYTES: usize = 5 * 1024 * 1024 * 1024;
 
 /// Start the Axum file-upload server on the given `listener` and serve
 /// requests until the process exits.
@@ -161,7 +180,8 @@ async fn upload_handler<S: UploadConfigSource>(
     Json(json!({ "status": "ok", "files": uploaded })).into_response()
 }
 
-/// Process a single multipart field: validate type, check sizes, write to disk.
+/// Process a single multipart field: validate type, stream to disk while
+/// enforcing size limits per chunk, and return the resulting JSON entry.
 ///
 /// Returns `Ok(json_entry)` on success or `Err(error_response)` on rejection.
 // `Response` as the Err type is the idiomatic Axum short-circuit-to-HTTP-error
@@ -178,36 +198,27 @@ async fn process_upload_field(
 
     check_mime_type(content_type_str.as_deref(), cfg.allowed_mime_types.as_ref())?;
 
-    let data = field
-        .bytes()
-        .await
-        .map_err(|e| err_response(StatusCode::BAD_REQUEST, &format!("read error: {e}")))?;
-
-    let file_bytes = data.len() as u64;
-    if cfg.max_file_size_bytes.is_some_and(|max| file_bytes > max) {
-        return Err(err_response(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "file exceeds maxFileSizeBytes",
-        ));
-    }
-    *total_bytes += file_bytes;
-    if cfg
-        .max_total_size_bytes
-        .is_some_and(|max| *total_bytes > max)
-    {
-        return Err(err_response(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "upload exceeds maxTotalSizeBytes",
-        ));
-    }
-
     let mime = content_type_str.unwrap_or_else(|| {
         mime_guess::from_path(&original_name)
             .first_or_octet_stream()
             .to_string()
     });
 
-    let save_name = save_upload_file(&cfg.dir, &original_name, &data).await?;
+    let (save_name, save_path) = destination_path(&cfg.dir, &original_name);
+
+    // Issue #277: stream the field to disk chunk by chunk instead of
+    // buffering the whole body in memory via `field.bytes()` before any
+    // size check ran — a client posting a part larger than the configured
+    // limit no longer forces the server to allocate (and hold) the entire
+    // body first. On any rejection or I/O error, remove the partially
+    // written file so a rejected upload never leaves debris on disk.
+    let file_bytes = match stream_field_to_file(field, &save_path, cfg, total_bytes).await {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&save_path).await;
+            return Err(e);
+        }
+    };
 
     Ok(json!({
         "name":         save_name,
@@ -215,6 +226,93 @@ async fn process_upload_field(
         "size":         file_bytes,
         "mimeType":     mime,
     }))
+}
+
+/// Whether writing `chunk_len` more bytes would push this field or the
+/// whole request over its configured limit.
+///
+/// Pure and side-effect-free so the actual enforcement boundary — checked
+/// as each chunk streams in, not once after the whole field has already
+/// been buffered — is directly unit-testable (issue #277).
+#[allow(clippy::result_large_err)]
+fn check_chunk_limits(
+    chunk_len: u64,
+    file_bytes_so_far: u64,
+    total_bytes_so_far: u64,
+    max_file_size_bytes: Option<u64>,
+    max_total_size_bytes: Option<u64>,
+) -> Result<(), Response> {
+    if max_file_size_bytes.is_some_and(|max| file_bytes_so_far + chunk_len > max) {
+        return Err(err_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "file exceeds maxFileSizeBytes",
+        ));
+    }
+    if max_total_size_bytes.is_some_and(|max| total_bytes_so_far + chunk_len > max) {
+        return Err(err_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "upload exceeds maxTotalSizeBytes",
+        ));
+    }
+    Ok(())
+}
+
+/// Stream `field`'s body to `save_path`, checking `check_chunk_limits`
+/// before writing each chunk. Returns the number of bytes written.
+// See `process_upload_field`'s allow above -- same idiomatic pattern.
+#[allow(clippy::result_large_err)]
+async fn stream_field_to_file(
+    mut field: axum::extract::multipart::Field<'_>,
+    save_path: &Path,
+    cfg: &UploadConfig,
+    total_bytes: &mut u64,
+) -> Result<u64, Response> {
+    let mut file = tokio::fs::File::create(save_path).await.map_err(|e| {
+        err_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("could not create destination file: {e}"),
+        )
+    })?;
+
+    let mut file_bytes: u64 = 0;
+    loop {
+        let chunk = match field.chunk().await {
+            Ok(Some(c)) => c,
+            Ok(None) => break,
+            Err(e) => {
+                return Err(err_response(
+                    StatusCode::BAD_REQUEST,
+                    &format!("read error: {e}"),
+                ))
+            }
+        };
+        // *total_bytes only accounts for *previously completed* fields --
+        // it's updated once, after this loop, not per chunk. Without adding
+        // file_bytes (this field's own running total), the request-wide
+        // check would stay frozen at the pre-field value for the entire
+        // duration of streaming this field, letting a single large field
+        // bypass maxTotalSizeBytes almost entirely (Gitar finding on this
+        // PR).
+        check_chunk_limits(
+            chunk.len() as u64,
+            file_bytes,
+            *total_bytes + file_bytes,
+            cfg.max_file_size_bytes,
+            cfg.max_total_size_bytes,
+        )?;
+        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+            .await
+            .map_err(|e| {
+                err_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("write error: {e}"),
+                )
+            })?;
+        file_bytes += chunk.len() as u64;
+    }
+
+    *total_bytes += file_bytes;
+    Ok(file_bytes)
 }
 
 // ── upload_handler helpers ────────────────────────────────────────────────────
@@ -254,10 +352,9 @@ fn check_mime_type(
     Err(err_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, &msg))
 }
 
-/// Write `data` to a new UUID-named file under `dir` and return the file name.
-// See `process_upload_field`'s allow above -- same idiomatic pattern.
-#[allow(clippy::result_large_err)]
-async fn save_upload_file(dir: &str, original_name: &str, data: &[u8]) -> Result<String, Response> {
+/// Compute a random UUID-based destination filename (preserving the
+/// original extension, verbatim) and its full path under `dir`.
+fn destination_path(dir: &str, original_name: &str) -> (String, std::path::PathBuf) {
     let ext = Path::new(original_name)
         .extension()
         .and_then(std::ffi::OsStr::to_str)
@@ -265,13 +362,7 @@ async fn save_upload_file(dir: &str, original_name: &str, data: &[u8]) -> Result
         .unwrap_or_default();
     let save_name = format!("{}{ext}", uuid::Uuid::new_v4());
     let save_path = Path::new(dir).join(&save_name);
-    tokio::fs::write(&save_path, data).await.map_err(|e| {
-        err_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("write error: {e}"),
-        )
-    })?;
-    Ok(save_name)
+    (save_name, save_path)
 }
 
 #[cfg(test)]
@@ -324,38 +415,80 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn save_upload_file_preserves_extension_and_writes_real_bytes() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let dir_path = dir.path().to_str().expect("utf8 path");
-        let data = b"hello upload";
-
-        let save_name = save_upload_file(dir_path, "photo.JPG", data)
-            .await
-            .expect("save should succeed");
-
+    #[test]
+    fn destination_path_preserves_extension_verbatim() {
+        let (save_name, save_path) = destination_path("/uploads", "photo.JPG");
         assert!(
             save_name.ends_with(".JPG"),
             "extension from original_name must be preserved verbatim: {save_name}"
         );
-        let written = tokio::fs::read(dir.path().join(&save_name))
-            .await
-            .expect("saved file must exist with the exact returned name");
-        assert_eq!(written, data, "saved file content must match input bytes");
+        assert_eq!(save_path, std::path::Path::new("/uploads").join(&save_name));
     }
 
-    #[tokio::test]
-    async fn save_upload_file_without_extension_has_no_dot_suffix() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let dir_path = dir.path().to_str().expect("utf8 path");
-
-        let save_name = save_upload_file(dir_path, "noextension", b"data")
-            .await
-            .expect("save should succeed");
-
+    #[test]
+    fn destination_path_without_extension_has_no_dot_suffix() {
+        let (save_name, _) = destination_path("/uploads", "noextension");
         assert!(
             !save_name.contains('.'),
             "a name with no extension must not gain a spurious '.': {save_name}"
         );
+    }
+
+    #[test]
+    fn destination_path_is_randomized_per_call() {
+        let (a, _) = destination_path("/uploads", "same.txt");
+        let (b, _) = destination_path("/uploads", "same.txt");
+        assert_ne!(
+            a, b,
+            "two uploads of the same original filename must not collide"
+        );
+    }
+
+    // ── check_chunk_limits (issue #277: incremental, not buffer-then-check) ────
+
+    #[test]
+    fn check_chunk_limits_no_limits_configured_always_allows() {
+        assert!(check_chunk_limits(1_000_000, 0, 0, None, None).is_ok());
+    }
+
+    #[test]
+    fn check_chunk_limits_rejects_when_file_limit_exceeded_by_this_chunk() {
+        // 5 bytes already written for this field + a 10-byte chunk = 15,
+        // over a 10-byte max_file_size_bytes.
+        let result = check_chunk_limits(10, 5, 5, Some(10), None);
+        assert!(
+            result.is_err(),
+            "must reject as soon as this chunk would cross the file limit"
+        );
+    }
+
+    #[test]
+    fn check_chunk_limits_allows_chunk_landing_exactly_on_the_limit() {
+        // 0 bytes so far + a 10-byte chunk = exactly 10, the configured max
+        // -- must be allowed (over, not at-or-over).
+        assert!(check_chunk_limits(10, 0, 0, Some(10), None).is_ok());
+    }
+
+    #[test]
+    fn check_chunk_limits_rejects_when_total_limit_exceeded_even_if_file_limit_is_fine() {
+        // This field's own running total (3) + chunk (5) = 8, well under a
+        // generous 1000-byte per-file cap -- but the *request-wide* running
+        // total (already at 95 from earlier fields) pushes the combined
+        // total to 100, over a 99-byte maxTotalSizeBytes. Proves the two
+        // limits are independent, not just the per-file one re-used twice.
+        let result = check_chunk_limits(5, 3, 95, Some(1000), Some(99));
+        assert!(
+            result.is_err(),
+            "the request-wide total limit must be enforced independently of the per-file limit"
+        );
+    }
+
+    #[test]
+    fn check_chunk_limits_first_chunk_over_limit_is_rejected_immediately() {
+        // The exact property issue #277 is about: a single chunk that by
+        // itself already exceeds the limit must be caught before it's ever
+        // written, not after accumulating the whole field first.
+        let result = check_chunk_limits(1_000_000, 0, 0, Some(1024), None);
+        assert!(result.is_err());
     }
 }
