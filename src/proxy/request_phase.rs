@@ -1881,15 +1881,47 @@ const DNS_CACHE_TTL_SECS: u64 = 30;
 
 /// Once [`dns_cache`]'s entry count reaches this, the next
 /// [`dns_cache_store`] call sweeps out every already-expired entry before
-/// inserting. Bounds long-running memory growth (CodeRabbit finding on this
-/// PR) without needing to hook cache pruning into the hot-reload path: a
-/// reload that stops using some hostname just leaves its entry to expire
-/// and get swept on the next store past this threshold, rather than living
-/// forever. Picked well above any realistic number of distinct hostname
-/// upstreams a single instance would proxy to, so the sweep is rare in
-/// normal operation and only actually engages for pathological long-running
-/// + high-hostname-churn deployments.
+/// inserting (rate-limited to once per [`DNS_CACHE_TTL_SECS`] window by
+/// [`sweep_due`] — see its doc comment). Bounds long-running memory growth
+/// (CodeRabbit finding on this PR) without needing to hook cache pruning
+/// into the hot-reload path: a reload that stops using some hostname just
+/// leaves its entry to expire and get swept on the next due store past this
+/// threshold, rather than living forever. Picked well above any realistic
+/// number of distinct hostname upstreams a single instance would proxy to,
+/// so the sweep is rare in normal operation and only actually engages for
+/// pathological long-running + high-hostname-churn deployments.
 const DNS_CACHE_SWEEP_THRESHOLD: usize = 512;
+
+/// Timestamp of the last completed sweep, gating how often [`dns_cache_store`]
+/// is willing to run one.
+static LAST_SWEEP: std::sync::OnceLock<std::sync::Mutex<Option<Instant>>> =
+    std::sync::OnceLock::new();
+
+/// Whether enough time has passed since the last sweep to run another one —
+/// at most once per [`DNS_CACHE_TTL_SECS`] window.
+///
+/// Gitar finding on this PR's first sweep implementation: gating purely on
+/// `cache.len() >= DNS_CACHE_SWEEP_THRESHOLD` means that once a deployment
+/// has more than [`DNS_CACHE_SWEEP_THRESHOLD`] *concurrently-live* (still
+/// within TTL) hostname upstreams, `cache.retain(...)` removes nothing but
+/// still pays a full O(n) scan on every single cache-miss store thereafter.
+/// Rate-limiting to once per TTL window means a saturated-but-live cache
+/// pays for at most one no-op scan per window instead of one per miss —
+/// entries only start expiring at the same TTL cadence this gate uses, so a
+/// sweep more often than that could never find anything new to remove
+/// anyway.
+fn sweep_due() -> bool {
+    let mut last = LAST_SWEEP
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap();
+    let now = Instant::now();
+    let due = last.is_none_or(|t| now.duration_since(t).as_secs() >= DNS_CACHE_TTL_SECS);
+    if due {
+        *last = Some(now);
+    }
+    due
+}
 
 fn round_robin_pick(entry: &DnsCacheEntry) -> SocketAddr {
     let idx = entry
@@ -1913,7 +1945,7 @@ fn dns_cache_store(key: String, addrs: Vec<SocketAddr>) -> SocketAddr {
         "dns_cache_store must not be called with an empty address list"
     );
     let cache = dns_cache();
-    if cache.len() >= DNS_CACHE_SWEEP_THRESHOLD {
+    if cache.len() >= DNS_CACHE_SWEEP_THRESHOLD && sweep_due() {
         cache.retain(|_, entry| entry.resolved_at.elapsed().as_secs() < DNS_CACHE_TTL_SECS);
     }
     let entry = DnsCacheEntry {
@@ -2604,6 +2636,7 @@ mod tests {
 
     use crate::config::schema::AppConfig;
     use crate::proxy::service::AppState;
+    use serial_test::serial;
 
     // ── jitter_backoff_ms ─────────────────────────────────────────────────────
 
@@ -2924,13 +2957,35 @@ mod tests {
         assert_eq!(dns_cache_lookup(key), Some(b));
     }
 
+    /// Resets the sweep-rate-limit cooldown ([`sweep_due`]/[`LAST_SWEEP`])
+    /// so a sweep-threshold test isn't at the mercy of whichever other
+    /// `#[serial(dns_cache_sweep)]` test happened to run immediately before
+    /// it in the same process. Test-only: production code never needs to
+    /// force a sweep to be due.
+    fn reset_sweep_cooldown_for_test() {
+        *LAST_SWEEP
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap() = None;
+    }
+
     #[test]
+    #[serial(dns_cache_sweep)]
     fn dns_cache_store_sweeps_expired_entries_past_threshold() {
         // Populate the cache with more already-expired entries than
         // DNS_CACHE_SWEEP_THRESHOLD, all under keys unique to this test (a
         // process-global static shared with every other test in this
         // module), then confirm the next `dns_cache_store` call both sweeps
         // them out and successfully inserts the new key.
+        //
+        // `#[serial(dns_cache_sweep)]` + the cooldown reset below: this test
+        // and `dns_cache_sweep_is_rate_limited_within_ttl_window` both
+        // depend on the sweep actually running on their first over-threshold
+        // store, but they share the same process-global sweep cooldown
+        // (`LAST_SWEEP`) — without serializing and resetting it, whichever
+        // test happens to run second could find the cooldown already
+        // consumed by the other and wrongly see no sweep happen.
+        reset_sweep_cooldown_for_test();
         let prefix = "cache-sweep-test.invalid";
         for i in 0..DNS_CACHE_SWEEP_THRESHOLD {
             dns_cache().insert(
@@ -2969,6 +3024,68 @@ mod tests {
                 "every expired entry from this test must have been swept"
             );
         }
+    }
+
+    #[test]
+    #[serial(dns_cache_sweep)]
+    fn dns_cache_sweep_is_rate_limited_within_ttl_window() {
+        // Gitar finding on this PR's sweep: a store past the threshold must
+        // not re-scan the whole map on *every* subsequent miss once the
+        // cache is saturated with still-live entries — only once per TTL
+        // window. See `reset_sweep_cooldown_for_test`'s doc comment for why
+        // this shares a `#[serial]` group with the sibling sweep test.
+        reset_sweep_cooldown_for_test();
+        let prefix = "cache-sweep-rate-limit-test.invalid";
+
+        // First batch past the threshold: the triggering store must sweep
+        // (proven in detail by the sibling test above; here just confirmed
+        // this batch is actually gone before moving on).
+        for i in 0..DNS_CACHE_SWEEP_THRESHOLD {
+            dns_cache().insert(
+                format!("{prefix}:a:{i}"),
+                DnsCacheEntry {
+                    addrs: vec![v4(1)],
+                    resolved_at: Instant::now() - Duration::from_secs(DNS_CACHE_TTL_SECS + 1),
+                    next: std::sync::atomic::AtomicUsize::new(0),
+                },
+            );
+        }
+        dns_cache_store(format!("{prefix}:trigger-a"), vec![v4(2)]);
+        assert!(
+            dns_cache().get(&format!("{prefix}:a:0")).is_none(),
+            "the first over-threshold store must sweep"
+        );
+
+        // Immediately push a *second* batch of expired entries past the
+        // threshold again, well within the same TTL window as the sweep
+        // that just ran, then store once more right away.
+        for i in 0..DNS_CACHE_SWEEP_THRESHOLD {
+            dns_cache().insert(
+                format!("{prefix}:b:{i}"),
+                DnsCacheEntry {
+                    addrs: vec![v4(1)],
+                    resolved_at: Instant::now() - Duration::from_secs(DNS_CACHE_TTL_SECS + 1),
+                    next: std::sync::atomic::AtomicUsize::new(0),
+                },
+            );
+        }
+        let before_second = dns_cache().len();
+        assert!(before_second >= DNS_CACHE_SWEEP_THRESHOLD);
+
+        dns_cache_store(format!("{prefix}:trigger-b"), vec![v4(3)]);
+
+        assert_eq!(
+            dns_cache().len(),
+            before_second + 1,
+            "a store within the same TTL window as the last sweep must not sweep again \
+             (Gitar finding: unconditional len-based gating would re-scan the whole map on \
+             every miss once saturated), it must only insert the new entry"
+        );
+        assert!(
+            dns_cache().get(&format!("{prefix}:b:0")).is_some(),
+            "the second expired batch must still be sitting there unswept, proving the \
+             rate limit actually suppressed the sweep rather than it just finding nothing to do"
+        );
     }
 
     #[tokio::test]
