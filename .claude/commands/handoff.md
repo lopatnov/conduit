@@ -55,6 +55,31 @@ policy that's already written down there), but **zero memory of this conversatio
 6. **Next concrete step** — the literal first thing the new session should do, not a vague
    "continue the migration." If it's "wait for CI on commit X then post a PR comment," say that.
 
+## Before writing the summary — this is the moment to check `/fork` and `/recap`
+
+> Added 2026-08-29: `/fork` and `/recap` are real built-in Claude Code commands (per
+> official docs, via `claude-code-guide`) that may make parts of this procedure
+> unnecessary — `/fork` might create a new session that *keeps* MCP/GitHub tool access
+> (unlike `create_session`, confirmed broken — see item 5 above), and `/recap` might
+> already produce what this command's own summary is manually built to produce. Neither
+> has been verified yet, and both are client-invoked (the user types them, not the agent),
+> so the only place to actually test them is a genuine handoff moment like this one —
+> **not** a disconnected "please go try this" ask outside of any real need.
+
+Since a real handoff is happening right now: **ask the user to try `/fork` and `/recap`
+here before falling back to the manual procedure above.** Specifically —
+- `/fork`: if it creates a session that already has GitHub/MCP tools, that may fix the
+  underlying problem item 5 works around, and steps 2-6 could target the forked session
+  directly instead of asking the user to create one from scratch.
+- `/recap`: compare its output against what this command would otherwise produce by hand
+  (items 1-6 above). If it already covers the same ground, say so.
+
+Report back whatever actually happens (tool access present or not; recap content
+sufficient or missing something) so this file and `.claude/rules/index.md` "Session
+rotation retired" can be corrected with a real result instead of staying speculative. If
+either doesn't pan out, fall back to the manual procedure in items 1-6 as normal — this
+check shouldn't block or delay the handoff itself.
+
 ## Format
 
 Plain text or light markdown, written in the second person to the future session ("You're
