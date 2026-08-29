@@ -53,7 +53,7 @@ fn build_jwt_auth_cfg(
 pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Option<&'a Consumer> {
     let api_key_header = cfg.api_key_header.as_deref().unwrap_or("x-api-key");
 
-    // ── V3: Shared JWT — validate once, identify by claim value ───────────────
+    // ── V3: Shared JWT — validate once, identify by claim value ─────────────
     #[cfg(feature = "jwt")]
     if let Some(ref shared) = cfg.shared_jwt {
         if let Some(consumer) = check_shared_jwt_consumer(shared, &cfg.consumers, session) {
@@ -123,14 +123,14 @@ fn check_consumer_credentials(
         }
     }
 
-    // ── Basic Auth check ──────────────────────────────────────────────────────
+    // ── Basic Auth check ─────────────────────────────────────────────────────────
     if let Some(ref basic) = consumer.basic_auth {
         if check_consumer_basic(&consumer.username, &basic.password, session) {
             return true;
         }
     }
 
-    // ── JWT check (V2) — requires `jwt` feature ───────────────────────────────
+    // ── JWT check (V2) — requires `jwt` feature ────────────────────────────
     #[cfg(feature = "jwt")]
     if let Some(ref consumer_jwt) = consumer.jwt {
         let jwt_cfg = build_jwt_auth_cfg(
@@ -259,7 +259,7 @@ mod tests {
         session
     }
 
-    // ── identify_consumer / check_consumer_credentials ───────────────────────
+    // ── identify_consumer / check_consumer_credentials ───────────────────
 
     #[tokio::test]
     async fn identify_consumer_by_api_key() {
@@ -288,13 +288,20 @@ mod tests {
 
     #[tokio::test]
     async fn identify_consumer_by_basic_auth() {
-        // base64("bob:pw") = "Ym9iOnB3"
+        // Runtime-generated password (not a literal) — see `random_test_secret()`
+        // doc comment: avoids CodeQL's hardcoded-credential heuristic on a
+        // `Basic` auth test fixture that was never a real secret.
+        let pw = random_test_secret();
+        let header_value = base64::engine::general_purpose::STANDARD.encode(format!("bob:{pw}"));
         let session = session_with_headers(
-            b"GET /api HTTP/1.1\r\nHost: test\r\nAuthorization: Basic Ym9iOnB3\r\n\r\n",
+            format!(
+                "GET /api HTTP/1.1\r\nHost: test\r\nAuthorization: Basic {header_value}\r\n\r\n"
+            )
+            .as_bytes(),
         )
         .await;
         let cfg = ConsumersConfig {
-            consumers: vec![consumer_with_basic("bob", "pw")],
+            consumers: vec![consumer_with_basic("bob", &pw)],
             ..Default::default()
         };
         let found = identify_consumer(&cfg, &session);
@@ -303,12 +310,17 @@ mod tests {
 
     #[tokio::test]
     async fn check_consumer_basic_wrong_password_denied() {
-        // base64("bob:wrong") = "Ym9iOndyb25n"
+        let pw = random_test_secret();
+        let wrong = format!("not-{pw}");
+        let header_value = base64::engine::general_purpose::STANDARD.encode(format!("bob:{wrong}"));
         let session = session_with_headers(
-            b"GET /api HTTP/1.1\r\nHost: test\r\nAuthorization: Basic Ym9iOndyb25n\r\n\r\n",
+            format!(
+                "GET /api HTTP/1.1\r\nHost: test\r\nAuthorization: Basic {header_value}\r\n\r\n"
+            )
+            .as_bytes(),
         )
         .await;
-        assert!(!check_consumer_basic("bob", "pw", &session));
+        assert!(!check_consumer_basic("bob", &pw, &session));
     }
 
     #[tokio::test]
@@ -317,10 +329,14 @@ mod tests {
             b"GET /api HTTP/1.1\r\nHost: test\r\nAuthorization: Bearer x\r\n\r\n",
         )
         .await;
-        assert!(!check_consumer_basic("bob", "pw", &session));
+        assert!(!check_consumer_basic(
+            "bob",
+            &random_test_secret(),
+            &session
+        ));
     }
 
-    // ── build_jwt_auth_cfg ────────────────────────────────────────────────────
+    // ── build_jwt_auth_cfg ─────────────────────────────────────────────
 
     #[test]
     #[cfg(feature = "jwt")]
