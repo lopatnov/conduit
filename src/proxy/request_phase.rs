@@ -1822,14 +1822,70 @@ pub(super) fn resolve_peer_addr(
     }
 }
 
+/// In-memory cache of resolved hostname → [`SocketAddr`], keyed by the exact
+/// `host:port` string passed to [`resolve_socket_addr`].
+///
+/// Issue #232: without this, every proxied request to a hostname-based
+/// upstream (Docker/k8s service names, `localhost`, etc.) paid a blocking-
+/// pool `getaddrinfo` call on every single request and again on every
+/// retry — no caching layer at all. IP-literal upstreams (the common
+/// load-balancer case) already take the fast synchronous path below and
+/// never touch this cache.
+///
+/// **Cache key space is bounded by configured upstream endpoints, not by
+/// client input**: `addr_str` always originates from `sites[].proxy` /
+/// `routes[]` / retry-URL config (see `resolve_peer_addr`), never from a
+/// client-supplied header or path — a client cannot grow this map. Its size
+/// is capped by however many distinct hostname upstreams the operator has
+/// configured, so no LRU/eviction policy is needed beyond TTL expiry.
+static DNS_CACHE: std::sync::OnceLock<DashMap<String, DnsCacheEntry>> = std::sync::OnceLock::new();
+
+fn dns_cache() -> &'static DashMap<String, DnsCacheEntry> {
+    DNS_CACHE.get_or_init(DashMap::new)
+}
+
+struct DnsCacheEntry {
+    addr: SocketAddr,
+    resolved_at: Instant,
+}
+
+/// How long a resolved hostname→address mapping stays valid before the next
+/// lookup for that hostname triggers a fresh DNS resolution.
+///
+/// Deliberately short and not (yet) exposed as config: this is a pure
+/// perf/scalability fix, not a correctness knob a deployment would need to
+/// tune (unlike `jwksRefreshSecs`/`cache.earlyRefreshSecs`, which gate real
+/// security/freshness tradeoffs). 30s also answers the "hot-reload staleness"
+/// question the issue raised: an upstream URL changed via `conduit reload`
+/// is served from a stale cached address for at most one TTL window — short
+/// enough that no explicit reload-triggered cache invalidation is needed,
+/// the cache self-heals regardless of when a reload happens to land.
+const DNS_CACHE_TTL_SECS: u64 = 30;
+
+fn dns_cache_lookup(key: &str) -> Option<SocketAddr> {
+    let entry = dns_cache().get(key)?;
+    (entry.resolved_at.elapsed().as_secs() < DNS_CACHE_TTL_SECS).then_some(entry.addr)
+}
+
+fn dns_cache_store(key: String, addr: SocketAddr) {
+    dns_cache().insert(
+        key,
+        DnsCacheEntry {
+            addr,
+            resolved_at: Instant::now(),
+        },
+    );
+}
+
 /// Resolve a `host:port` string to a [`SocketAddr`], accepting both IP
 /// literals and hostnames.
 ///
 /// IP literals take a fast synchronous path (no behavior change from before
 /// hostname support was added). Hostnames go through async DNS resolution
-/// via [`tokio::net::lookup_host`] — this must NOT be `HttpPeer::new`'s own
-/// resolution: that constructor takes `impl std::net::ToSocketAddrs`, which
-/// resolves *synchronously* (blocking the async runtime thread) and
+/// via [`tokio::net::lookup_host`], short-circuited by [`DNS_CACHE`] when a
+/// fresh-enough entry already exists — this must NOT be `HttpPeer::new`'s
+/// own resolution: that constructor takes `impl std::net::ToSocketAddrs`,
+/// which resolves *synchronously* (blocking the async runtime thread) and
 /// `.unwrap()`s the result (panics on resolution failure) — unacceptable
 /// inside a per-request async hook. Resolving here first, then handing
 /// `HttpPeer::new` an already-concrete `SocketAddr`, sidesteps both.
@@ -1841,12 +1897,25 @@ pub(super) fn resolve_peer_addr(
 /// with no deadline at all (CodeRabbit finding on PR #227). `None` (no
 /// configured timeout at all) resolves without a deadline, matching
 /// `apply_peer_options`'s own "absent config = no enforced timeout" default.
+/// A cache hit never awaits, so it costs none of this budget regardless —
+/// `upstream_peer`'s `remaining_budget()` call already handles that
+/// correctly with no special-casing needed, since it subtracts *actual*
+/// elapsed resolution time, which stays ~0 on a hit.
+///
+/// This cache operates purely on the already-selected target's `host:port`
+/// string, strictly *after* routing/load-balancing has picked which
+/// upstream URL to use — it has no interaction with `IpHash`/
+/// `ConsistentHash` forward-probing in `capacity.rs`, which hashes on the
+/// pre-resolution config URL, not the resolved IP.
 async fn resolve_socket_addr(
     addr_str: &str,
     resolution_timeout: Option<Duration>,
 ) -> pingora_core::Result<SocketAddr> {
     if let Ok(addr) = addr_str.parse::<SocketAddr>() {
         return Ok(addr);
+    }
+    if let Some(cached) = dns_cache_lookup(addr_str) {
+        return Ok(cached);
     }
     let lookup = tokio::net::lookup_host(addr_str);
     let addrs = match resolution_timeout {
@@ -1864,12 +1933,14 @@ async fn resolve_socket_addr(
             format!("DNS resolution failed for upstream address {addr_str}: {e}"),
         )
     })?;
-    pick_preferred_addr(addrs).ok_or_else(|| {
+    let addr = pick_preferred_addr(addrs).ok_or_else(|| {
         pingora_core::Error::explain(
             pingora_core::ErrorType::ConnectProxyFailure,
             format!("no addresses found for upstream address {addr_str}"),
         )
-    })
+    })?;
+    dns_cache_store(addr_str.to_string(), addr);
+    Ok(addr)
 }
 
 /// Pick a single address out of a hostname's DNS results, preferring IPv4.
@@ -2684,11 +2755,92 @@ mod tests {
         // synchronously within that same poll. The zero-duration deadline
         // has therefore already elapsed on the paused clock by the time
         // `Timeout` checks it, so the timeout branch always wins.
-        let result = resolve_socket_addr("localhost:4000", Some(Duration::ZERO)).await;
+        //
+        // Uses a port no other hostname-resolving test in this file uses
+        // (#232's DNS_CACHE is a process-global static): if this shared
+        // "localhost:4000" key were already cached by
+        // `resolve_socket_addr_resolves_localhost_hostname` racing on
+        // another thread, this call would hit the cache and return `Ok`
+        // instead of exercising the timeout path at all.
+        let result = resolve_socket_addr("localhost:4001", Some(Duration::ZERO)).await;
         assert!(
             result.is_err(),
             "a hostname lookup must respect an expired timeout, not block indefinitely"
         );
+    }
+
+    // ── DNS resolution cache (#232) ──────────────────────────────────────────
+
+    #[test]
+    fn dns_cache_lookup_miss_returns_none_for_unknown_key() {
+        assert_eq!(dns_cache_lookup("never-inserted.invalid:9999"), None);
+    }
+
+    #[test]
+    fn dns_cache_lookup_hit_returns_stored_addr_within_ttl() {
+        let key = "cache-hit-test.invalid:4020";
+        let addr = v4(4020);
+        dns_cache_store(key.to_owned(), addr);
+        assert_eq!(dns_cache_lookup(key), Some(addr));
+    }
+
+    #[test]
+    fn dns_cache_lookup_expired_entry_returns_none() {
+        // Constructs an entry directly (bypassing `dns_cache_store`, which
+        // always stamps `Instant::now()`) to simulate one that was resolved
+        // longer ago than DNS_CACHE_TTL_SECS, without an actual sleep.
+        let key = "cache-expiry-test.invalid:4021";
+        let addr = v4(4021);
+        dns_cache().insert(
+            key.to_owned(),
+            DnsCacheEntry {
+                addr,
+                resolved_at: Instant::now() - Duration::from_secs(DNS_CACHE_TTL_SECS + 1),
+            },
+        );
+        assert_eq!(
+            dns_cache_lookup(key),
+            None,
+            "an entry older than the TTL must not be served"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_socket_addr_hostname_populates_cache() {
+        let key = "localhost:4022";
+        let addr = resolve_socket_addr(key, None).await.unwrap();
+        assert_eq!(
+            dns_cache_lookup(key),
+            Some(addr),
+            "a successful hostname resolution must populate the cache for reuse"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_socket_addr_ip_literal_never_touches_cache() {
+        // The IP-literal fast path returns before the cache is consulted at
+        // all — issue #232 explicitly calls out that IP-literal upstreams
+        // (the common load-balancer case) must stay unaffected.
+        let key = "127.0.0.1:4023";
+        let _ = resolve_socket_addr(key, None).await.unwrap();
+        assert_eq!(
+            dns_cache_lookup(key),
+            None,
+            "the IP-literal fast path must not populate the DNS cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_socket_addr_second_call_returns_cached_addr() {
+        let key = "localhost:4024";
+        let first = resolve_socket_addr(key, None).await.unwrap();
+        // A second call for the same key must return the identical address
+        // via the cache rather than re-resolving — asserted functionally
+        // (same result) since proving "no DNS call happened" black-box
+        // would require mocking the resolver.
+        let second = resolve_socket_addr(key, None).await.unwrap();
+        assert_eq!(first, second);
+        assert_eq!(dns_cache_lookup(key), Some(second));
     }
 
     // ── pick_preferred_addr (Gitar finding on PR #227) ──────────────────────────
