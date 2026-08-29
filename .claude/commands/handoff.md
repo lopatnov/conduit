@@ -35,17 +35,20 @@ policy that's already written down there), but **zero memory of this conversatio
    this session (`persistent_session_id` = this session's own ID, "self-bind" mode) will **not**
    deliver into the new session — it keeps firing into this one, which is about to go away or be
    archived.
-   - **If this repo already has `.claude/commands/session-rotate.md`** (check before writing
-     anything here — conduit does, and other repos may too): that command is the tested,
-     canonical procedure for exactly this handoff. Don't re-derive the trigger-recreation steps
-     yourself — tell the reader to run `/session-rotate` instead, and stop there. Note its two
-     load-bearing details so they aren't missed: (a) the *old* session creates the new trigger
-     bound to the new session's ID (mode 2, "fire into a specific other session"), not the other
-     way around — the new session never calls `create_trigger` on itself for this; (b) do **not**
-     spawn the replacement session via `mcp__Claude_Code_Remote__create_session` — a confirmed
-     platform bug leaves that session with zero GitHub MCP tool access. The user creates the new
-     session themselves and hands back its ID.
-   - **Otherwise** (no `session-rotate` in this repo): call `list_triggers` fresh (don't guess
+   - **First check — on the actual branch/ref this work is based on, not just any branch of the
+     repo — whether `.claude/commands/session-rotate.md` already exists** (`git show` or
+     `mcp__github__get_file_contents` with an explicit `ref`; don't assume it does or doesn't
+     from memory or from a different branch's content — a sibling long-running branch can have
+     process tooling that was never merged to the one actually in use here). If it exists on
+     *this* branch: don't re-derive the trigger-recreation steps yourself — tell the reader to
+     run `/session-rotate` instead, and stop there. Note its two load-bearing details so they
+     aren't missed: (a) the *old* session creates the new trigger bound to the new session's ID
+     (mode 2, "fire into a specific other session"), not the other way around — the new session
+     never calls `create_trigger` on itself for this; (b) do **not** spawn the replacement
+     session via `mcp__Claude_Code_Remote__create_session` — a confirmed platform bug leaves
+     that session with zero GitHub MCP tool access. The user creates the new session themselves
+     and hands back its ID.
+   - **Otherwise** (no `session-rotate` on this branch): call `list_triggers` fresh (don't guess
      from memory) and tell the user, for each Routine bound to this session: its `trig_id`, name,
      cron schedule, and that — because a session can't create a trigger bound to a session that
      doesn't exist yet — the *old* session should create the replacement trigger (mode 2, pointed
