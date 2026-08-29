@@ -775,7 +775,7 @@ mod jwt {
         use rsa::pkcs1::EncodeRsaPrivateKey;
         use rsa::traits::PublicKeyParts;
         let private_key =
-            rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048).expect("RSA-2048 keygen");
+            rsa::RsaPrivateKey::new(&mut rand_core::OsRng, 2048).expect("RSA-2048 keygen");
         let pem = private_key
             .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
             .expect("RSA PKCS#1 PEM encode")
@@ -799,7 +799,7 @@ mod jwt {
     fn gen_jwks_test_ec_key() -> JwksTestEcKey {
         use p256::elliptic_curve::sec1::ToEncodedPoint;
         use p256::pkcs8::EncodePrivateKey;
-        let secret_key = p256::SecretKey::random(&mut rand::thread_rng());
+        let secret_key = p256::SecretKey::random(&mut rand_core::OsRng);
         let pem = secret_key
             .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
             .expect("EC PKCS#8 PEM encode")

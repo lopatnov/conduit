@@ -2928,7 +2928,7 @@ dependencies = [
  "pingora-load-balancing",
  "pingora-proxy",
  "prometheus 0.14.0",
- "rand 0.8.6",
+ "rand_core 0.6.4",
  "rcgen",
  "redis",
  "regex",
