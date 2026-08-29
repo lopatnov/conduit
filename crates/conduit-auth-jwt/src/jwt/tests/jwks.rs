@@ -30,7 +30,7 @@ struct RsaTestKey {
 
 fn gen_rsa_test_key() -> RsaTestKey {
     let private_key =
-        rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048).expect("RSA-2048 keygen");
+        rsa::RsaPrivateKey::new(&mut rand_core::OsRng, 2048).expect("RSA-2048 keygen");
     let pem = private_key
         .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
         .expect("RSA PKCS#1 PEM encode")
@@ -66,7 +66,7 @@ struct EcTestKey {
 }
 
 fn gen_ec_test_key() -> EcTestKey {
-    let secret_key = p256::SecretKey::random(&mut rand::thread_rng());
+    let secret_key = p256::SecretKey::random(&mut rand_core::OsRng);
     let pem = secret_key
         .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
         .expect("EC PKCS#8 PEM encode")
@@ -140,7 +140,7 @@ fn make_hs256_token_with_kid(kid: &str, secret_bytes: &[u8], claims: serde_json:
     encode(&header, &claims, &key).unwrap()
 }
 
-// ── fetch_jwks ────────────────────────────────────────────────────────────
+// ── fetch_jwks ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn fetch_jwks_parses_valid_rsa_key() {
