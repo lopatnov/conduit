@@ -1822,8 +1822,8 @@ pub(super) fn resolve_peer_addr(
     }
 }
 
-/// In-memory cache of resolved hostname → [`SocketAddr`], keyed by the exact
-/// `host:port` string passed to [`resolve_socket_addr`].
+/// In-memory cache of resolved hostname → candidate [`SocketAddr`]s, keyed
+/// by the exact `host:port` string passed to [`resolve_socket_addr`].
 ///
 /// Issue #232: without this, every proxied request to a hostname-based
 /// upstream (Docker/k8s service names, `localhost`, etc.) paid a blocking-
@@ -1835,9 +1835,15 @@ pub(super) fn resolve_peer_addr(
 /// **Cache key space is bounded by configured upstream endpoints, not by
 /// client input**: `addr_str` always originates from `sites[].proxy` /
 /// `routes[]` / retry-URL config (see `resolve_peer_addr`), never from a
-/// client-supplied header or path — a client cannot grow this map. Its size
-/// is capped by however many distinct hostname upstreams the operator has
-/// configured, so no LRU/eviction policy is needed beyond TTL expiry.
+/// client-supplied header or path — a client cannot grow this map *within a
+/// single running config*. Across many `conduit reload`s over a
+/// long-running process's lifetime, though, the set of *ever*-configured
+/// hostnames only grows (Gitar/CodeRabbit findings on this PR: an entry
+/// whose hostname later drops out of config, or whose TTL simply expires,
+/// stops being *served* but was never actually removed) — [`dns_cache_store`]
+/// sweeps every expired entry out once the map crosses
+/// [`DNS_CACHE_SWEEP_THRESHOLD`], so long-running memory use stays bounded
+/// near that threshold rather than growing forever.
 static DNS_CACHE: std::sync::OnceLock<DashMap<String, DnsCacheEntry>> = std::sync::OnceLock::new();
 
 fn dns_cache() -> &'static DashMap<String, DnsCacheEntry> {
@@ -1845,12 +1851,23 @@ fn dns_cache() -> &'static DashMap<String, DnsCacheEntry> {
 }
 
 struct DnsCacheEntry {
-    addr: SocketAddr,
+    /// Every resolved address of the preferred family (see
+    /// [`filter_preferred_family`]) — never empty, since
+    /// [`dns_cache_store`] is only ever called with a non-empty list.
+    addrs: Vec<SocketAddr>,
     resolved_at: Instant,
+    /// Round-robin cursor, advanced (mod `addrs.len()`) on every pick —
+    /// including the very first one, at resolution time — so repeated
+    /// cache hits for a multi-A-record hostname (e.g. a Kubernetes
+    /// headless service, or round-robin DNS used as a poor-man's load
+    /// balancer) rotate through every resolved address instead of pinning
+    /// all traffic onto whichever one happened to be picked first for the
+    /// full TTL window (Gitar finding on this PR).
+    next: std::sync::atomic::AtomicUsize,
 }
 
-/// How long a resolved hostname→address mapping stays valid before the next
-/// lookup for that hostname triggers a fresh DNS resolution.
+/// How long a resolved hostname→addresses mapping stays valid before the
+/// next lookup for that hostname triggers a fresh DNS resolution.
 ///
 /// Deliberately short and not (yet) exposed as config: this is a pure
 /// perf/scalability fix, not a correctness knob a deployment would need to
@@ -1862,19 +1879,51 @@ struct DnsCacheEntry {
 /// the cache self-heals regardless of when a reload happens to land.
 const DNS_CACHE_TTL_SECS: u64 = 30;
 
-fn dns_cache_lookup(key: &str) -> Option<SocketAddr> {
-    let entry = dns_cache().get(key)?;
-    (entry.resolved_at.elapsed().as_secs() < DNS_CACHE_TTL_SECS).then_some(entry.addr)
+/// Once [`dns_cache`]'s entry count reaches this, the next
+/// [`dns_cache_store`] call sweeps out every already-expired entry before
+/// inserting. Bounds long-running memory growth (CodeRabbit finding on this
+/// PR) without needing to hook cache pruning into the hot-reload path: a
+/// reload that stops using some hostname just leaves its entry to expire
+/// and get swept on the next store past this threshold, rather than living
+/// forever. Picked well above any realistic number of distinct hostname
+/// upstreams a single instance would proxy to, so the sweep is rare in
+/// normal operation and only actually engages for pathological long-running
+/// + high-hostname-churn deployments.
+const DNS_CACHE_SWEEP_THRESHOLD: usize = 512;
+
+fn round_robin_pick(entry: &DnsCacheEntry) -> SocketAddr {
+    let idx = entry
+        .next
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        % entry.addrs.len();
+    entry.addrs[idx]
 }
 
-fn dns_cache_store(key: String, addr: SocketAddr) {
-    dns_cache().insert(
-        key,
-        DnsCacheEntry {
-            addr,
-            resolved_at: Instant::now(),
-        },
+fn dns_cache_lookup(key: &str) -> Option<SocketAddr> {
+    let entry = dns_cache().get(key)?;
+    (entry.resolved_at.elapsed().as_secs() < DNS_CACHE_TTL_SECS).then(|| round_robin_pick(&entry))
+}
+
+/// Stores a freshly-resolved address list and returns the first pick from
+/// it (round-robin cursor starts at 0), so callers don't need a separate
+/// lookup immediately after storing.
+fn dns_cache_store(key: String, addrs: Vec<SocketAddr>) -> SocketAddr {
+    debug_assert!(
+        !addrs.is_empty(),
+        "dns_cache_store must not be called with an empty address list"
     );
+    let cache = dns_cache();
+    if cache.len() >= DNS_CACHE_SWEEP_THRESHOLD {
+        cache.retain(|_, entry| entry.resolved_at.elapsed().as_secs() < DNS_CACHE_TTL_SECS);
+    }
+    let entry = DnsCacheEntry {
+        addrs,
+        resolved_at: Instant::now(),
+        next: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let picked = round_robin_pick(&entry);
+    cache.insert(key, entry);
+    picked
 }
 
 /// Abstraction over "resolve a hostname to a list of candidate addresses",
@@ -1936,6 +1985,11 @@ impl HostResolver for TokioHostResolver {
 /// upstream URL to use — it has no interaction with `IpHash`/
 /// `ConsistentHash` forward-probing in `capacity.rs`, which hashes on the
 /// pre-resolution config URL, not the resolved IP.
+///
+/// Caches every resolved address of the preferred family, not just one —
+/// see [`DnsCacheEntry`]'s doc comment for why: caching a single picked
+/// address for the full TTL would silently defeat DNS-level round-robin
+/// for a multi-A-record hostname.
 async fn resolve_socket_addr_with(
     resolver: &dyn HostResolver,
     addr_str: &str,
@@ -1963,14 +2017,14 @@ async fn resolve_socket_addr_with(
             format!("DNS resolution failed for upstream address {addr_str}: {e}"),
         )
     })?;
-    let addr = pick_preferred_addr(addrs.into_iter()).ok_or_else(|| {
-        pingora_core::Error::explain(
+    let preferred = filter_preferred_family(addrs.into_iter());
+    if preferred.is_empty() {
+        return Err(pingora_core::Error::explain(
             pingora_core::ErrorType::ConnectProxyFailure,
             format!("no addresses found for upstream address {addr_str}"),
-        )
-    })?;
-    dns_cache_store(addr_str.to_string(), addr);
-    Ok(addr)
+        ));
+    }
+    Ok(dns_cache_store(addr_str.to_string(), preferred))
 }
 
 /// Production entry point: resolves via [`TokioHostResolver`] (the real OS
@@ -1983,26 +2037,32 @@ async fn resolve_socket_addr(
     resolve_socket_addr_with(&TokioHostResolver, addr_str, resolution_timeout).await
 }
 
-/// Pick a single address out of a hostname's DNS results, preferring IPv4.
-///
-/// `HttpPeer` accepts exactly one concrete `SocketAddr` — Pingora has no
-/// multi-address / Happy-Eyeballs fallback (an unrelated Happy-Eyeballs
+/// Filter a hostname's DNS results down to every address of the preferred
+/// family, preferring IPv4 — every connection attempt still hands
+/// `HttpPeer` exactly one concrete `SocketAddr` (Pingora has no
+/// multi-address / Happy-Eyeballs fallback; an unrelated Happy-Eyeballs
 /// backlog item is `[🚫 BLOCKED]` in `CLAUDE.md` for the same reason: no
-/// public API for parallel connection attempts). When a hostname resolves
-/// to both families, the OS resolver's ordering is not a reliable signal
-/// for which family the upstream actually listens on — glibc's
-/// `getaddrinfo` prefers IPv6 by RFC 3484 default regardless of whether
-/// the target has a real IPv6 listener. Preferring IPv4 deterministically
-/// matches the overwhelmingly common case for self-hosted upstreams
-/// (Docker service names, `localhost`, bare local dev servers) instead of
-/// silently depending on resolver-order luck.
-fn pick_preferred_addr(addrs: impl Iterator<Item = SocketAddr>) -> Option<SocketAddr> {
+/// public API for parallel connection attempts), but keeping the *whole*
+/// preferred-family list — rather than collapsing to one address here —
+/// lets [`resolve_socket_addr_with`] cache all of them and round-robin
+/// across requests instead of pinning every request onto a single address
+/// for the DNS cache's full TTL.
+///
+/// When a hostname resolves to both families, the OS resolver's ordering
+/// is not a reliable signal for which family the upstream actually listens
+/// on — glibc's `getaddrinfo` prefers IPv6 by RFC 3484 default regardless
+/// of whether the target has a real IPv6 listener. Preferring IPv4
+/// deterministically matches the overwhelmingly common case for
+/// self-hosted upstreams (Docker service names, `localhost`, bare local
+/// dev servers) instead of silently depending on resolver-order luck.
+fn filter_preferred_family(addrs: impl Iterator<Item = SocketAddr>) -> Vec<SocketAddr> {
     let addrs: Vec<SocketAddr> = addrs.collect();
-    addrs
-        .iter()
-        .find(|a| a.is_ipv4())
-        .or_else(|| addrs.first())
-        .copied()
+    let ipv4: Vec<SocketAddr> = addrs.iter().copied().filter(SocketAddr::is_ipv4).collect();
+    if ipv4.is_empty() {
+        addrs
+    } else {
+        ipv4
+    }
 }
 
 /// Apply per-route timeout, connection-pool settings, and global limits to an
@@ -2820,7 +2880,7 @@ mod tests {
     fn dns_cache_lookup_hit_returns_stored_addr_within_ttl() {
         let key = "cache-hit-test.invalid:4020";
         let addr = v4(4020);
-        dns_cache_store(key.to_owned(), addr);
+        dns_cache_store(key.to_owned(), vec![addr]);
         assert_eq!(dns_cache_lookup(key), Some(addr));
     }
 
@@ -2834,8 +2894,9 @@ mod tests {
         dns_cache().insert(
             key.to_owned(),
             DnsCacheEntry {
-                addr,
+                addrs: vec![addr],
                 resolved_at: Instant::now() - Duration::from_secs(DNS_CACHE_TTL_SECS + 1),
+                next: std::sync::atomic::AtomicUsize::new(0),
             },
         );
         assert_eq!(
@@ -2843,6 +2904,71 @@ mod tests {
             None,
             "an entry older than the TTL must not be served"
         );
+    }
+
+    #[test]
+    fn dns_cache_round_robins_across_multiple_addrs() {
+        // Foundation of the Gitar-flagged round-robin fix: a multi-address
+        // cache entry must rotate through every address on successive
+        // lookups, not pin every caller onto the first one.
+        let key = "cache-round-robin-test.invalid:4025";
+        let a = v4(4025);
+        let b = v4(4026);
+        let c = v4(4027);
+        dns_cache_store(key.to_owned(), vec![a, b, c]);
+        // dns_cache_store already consumed index 0 (returned `a`), so the
+        // next three lookups continue the rotation and then wrap around.
+        assert_eq!(dns_cache_lookup(key), Some(b));
+        assert_eq!(dns_cache_lookup(key), Some(c));
+        assert_eq!(dns_cache_lookup(key), Some(a));
+        assert_eq!(dns_cache_lookup(key), Some(b));
+    }
+
+    #[test]
+    fn dns_cache_store_sweeps_expired_entries_past_threshold() {
+        // Populate the cache with more already-expired entries than
+        // DNS_CACHE_SWEEP_THRESHOLD, all under keys unique to this test (a
+        // process-global static shared with every other test in this
+        // module), then confirm the next `dns_cache_store` call both sweeps
+        // them out and successfully inserts the new key.
+        let prefix = "cache-sweep-test.invalid";
+        for i in 0..DNS_CACHE_SWEEP_THRESHOLD {
+            dns_cache().insert(
+                format!("{prefix}:{i}"),
+                DnsCacheEntry {
+                    addrs: vec![v4(1)],
+                    resolved_at: Instant::now() - Duration::from_secs(DNS_CACHE_TTL_SECS + 1),
+                    next: std::sync::atomic::AtomicUsize::new(0),
+                },
+            );
+        }
+        let before = dns_cache().len();
+        assert!(
+            before >= DNS_CACHE_SWEEP_THRESHOLD,
+            "test setup must actually reach the sweep threshold"
+        );
+
+        let new_key = format!("{prefix}:fresh");
+        let new_addr = v4(2);
+        dns_cache_store(new_key.clone(), vec![new_addr]);
+
+        assert_eq!(
+            dns_cache_lookup(&new_key),
+            Some(new_addr),
+            "the triggering store must still succeed"
+        );
+        assert!(
+            dns_cache().len() < before,
+            "crossing the sweep threshold must remove expired entries, not just add to them \
+             (before: {before}, after: {})",
+            dns_cache().len()
+        );
+        for i in 0..DNS_CACHE_SWEEP_THRESHOLD {
+            assert!(
+                dns_cache().get(&format!("{prefix}:{i}")).is_none(),
+                "every expired entry from this test must have been swept"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2967,8 +3093,9 @@ mod tests {
         dns_cache().insert(
             key.to_owned(),
             DnsCacheEntry {
-                addr: first_addr,
+                addrs: vec![first_addr],
                 resolved_at: Instant::now() - Duration::from_secs(DNS_CACHE_TTL_SECS + 1),
+                next: std::sync::atomic::AtomicUsize::new(0),
             },
         );
         let resolved_after_expiry = resolve_socket_addr_with(&resolver, key, None)
@@ -3001,7 +3128,8 @@ mod tests {
         );
     }
 
-    // ── pick_preferred_addr (Gitar finding on PR #227) ──────────────────────────
+    // ── filter_preferred_family / pick_preferred_addr (Gitar finding on PR #227,
+    //    extended for #296's round-robin caching) ────────────────────────────
 
     fn v4(port: u16) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], port))
@@ -3012,24 +3140,24 @@ mod tests {
     }
 
     #[test]
-    fn pick_preferred_addr_empty_returns_none() {
-        assert_eq!(pick_preferred_addr(std::iter::empty()), None);
+    fn filter_preferred_family_empty_returns_empty() {
+        assert_eq!(filter_preferred_family(std::iter::empty()), Vec::new());
     }
 
     #[test]
-    fn pick_preferred_addr_only_ipv6_returns_it() {
+    fn filter_preferred_family_only_ipv6_returns_it() {
         let addr = v6(4000);
-        assert_eq!(pick_preferred_addr(std::iter::once(addr)), Some(addr));
+        assert_eq!(filter_preferred_family(std::iter::once(addr)), vec![addr]);
     }
 
     #[test]
-    fn pick_preferred_addr_only_ipv4_returns_it() {
+    fn filter_preferred_family_only_ipv4_returns_it() {
         let addr = v4(4000);
-        assert_eq!(pick_preferred_addr(std::iter::once(addr)), Some(addr));
+        assert_eq!(filter_preferred_family(std::iter::once(addr)), vec![addr]);
     }
 
     #[test]
-    fn pick_preferred_addr_prefers_ipv4_when_ipv6_listed_first() {
+    fn filter_preferred_family_prefers_ipv4_when_ipv6_listed_first() {
         // The exact failure mode Gitar flagged on PR #227: glibc's
         // getaddrinfo (RFC 3484) commonly lists the IPv6 record before the
         // IPv4 one for "localhost", even when the target only listens on
@@ -3037,16 +3165,50 @@ mod tests {
         // and fail to connect.
         let ipv4 = v4(4000);
         let ipv6 = v6(4000);
-        let picked = pick_preferred_addr(vec![ipv6, ipv4].into_iter());
-        assert_eq!(picked, Some(ipv4), "must prefer IPv4 regardless of order");
+        let filtered = filter_preferred_family(vec![ipv6, ipv4].into_iter());
+        assert_eq!(
+            filtered,
+            vec![ipv4],
+            "must prefer IPv4 regardless of order, and drop the IPv6 entry entirely"
+        );
     }
 
     #[test]
-    fn pick_preferred_addr_prefers_ipv4_when_ipv4_listed_first() {
+    fn filter_preferred_family_prefers_ipv4_when_ipv4_listed_first() {
         let ipv4 = v4(4000);
         let ipv6 = v6(4000);
-        let picked = pick_preferred_addr(vec![ipv4, ipv6].into_iter());
-        assert_eq!(picked, Some(ipv4));
+        let filtered = filter_preferred_family(vec![ipv4, ipv6].into_iter());
+        assert_eq!(filtered, vec![ipv4]);
+    }
+
+    #[test]
+    fn filter_preferred_family_keeps_every_ipv4_address() {
+        // Foundation of the round-robin fix (Gitar finding on #296): a
+        // multi-A-record hostname (Kubernetes headless service, DNS-based
+        // round-robin) must keep *all* its IPv4 candidates, not collapse to
+        // the first one — collapsing here is what would have silently
+        // frozen every request onto one backend for the cache's full TTL.
+        let a = v4(4001);
+        let b = v4(4002);
+        let c = v4(4003);
+        let filtered = filter_preferred_family(vec![a, b, c].into_iter());
+        assert_eq!(filtered, vec![a, b, c]);
+    }
+
+    #[test]
+    fn filter_preferred_family_then_first_of_multiple_prefers_ipv4() {
+        // The old single-result `pick_preferred_addr` helper's exact
+        // behavior, now expressed as `filter_preferred_family(...).next()`
+        // since production code needs the full list (round-robin caching)
+        // and no caller needs a single-result wrapper anymore.
+        let ipv4 = v4(4000);
+        let ipv6 = v6(4000);
+        assert_eq!(
+            filter_preferred_family(vec![ipv6, ipv4].into_iter())
+                .into_iter()
+                .next(),
+            Some(ipv4)
+        );
     }
 
     // ── remaining_budget (Gitar finding on PR #227: shared connect budget) ──────
