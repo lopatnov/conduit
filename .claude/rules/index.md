@@ -68,6 +68,102 @@
 - This isn't specific to GitHub access — it's the general shape: a missing tool is a signal
   to hand back, not a puzzle to solve by finding a different door.
 
+## Different branches of this repo can have genuinely different `.claude/` tooling
+
+> Added 2026-08-29, corrected same-day: a session drafting `.claude/commands/handoff.md`
+> and editing this file fetched "current" content from `origin/claude/cargo-workspace-
+> features-23qxfr` (the long-running Conduit 2.0 migration branch) instead of from `main`
+> — reasoning that the migration branch was more likely to reflect recent process changes
+> for a long-lived session. It genuinely does have a further-evolved `.claude/` (a
+> `session-rotate` command, a `dependabot-hygiene` command, append-only logs split into
+> `.claude/logs/*.md`) — **but none of that has been merged to `main` yet.** The session
+> then wrote `handoff.md` asserting "conduit already has `.claude/commands/session-rotate.md`
+> ... conduit does" and copied `index.md` sections referencing `.claude/logs/dependabot-
+> hygiene.md`, `.claude/skills/coderabbit-reply/SKILL.md`, etc. into a PR targeting `main`,
+> where none of those files exist — a real Gitar review comment on PR #295 caught it before
+> merge. The irony: this was already an attempted fix for "don't trust a stale in-context
+> snapshot, check the live branch" — the live-branch check just targeted the wrong branch.
+
+**Different branches of this repo can legitimately have different `.claude/` tooling** —
+the migration branch is not simply "a newer `main`," it's a separate line of in-progress
+work with its own not-yet-merged process changes. Before asserting that some command/skill/
+log "already exists in this repo," or copying `.claude/` content from one branch into
+another, check it against the **specific branch the current work is actually based on or
+targeting** (`git show origin/<that-branch>:<path>`, or `mcp__github__get_file_contents`
+with that branch's `ref`) — not whichever branch happens to be open in another local clone,
+and not assumed-more-current just because it's a long-running feature branch. If a command
+you want to reference genuinely doesn't exist on the branch you're working on, either write
+it there for real, or write the fallback procedure inline instead of pointing at a file that
+isn't there yet.
+
+## Known-blocked external endpoints — ask the user, don't keep retrying
+
+> Added 2026-08-28 after a session burned ~6 tool calls across `WebFetch` and
+> `get_check_run` rediscovering, one path at a time, that it has no way to see GitHub's
+> Security tab or SonarCloud's dashboard — a wall already hit and documented (in prose, not
+> as a checkable list) by multiple prior sessions.
+
+These are confirmed **unreachable from every session so far**, not worth retrying or
+probing a new URL variant of:
+- `sonarcloud.io` (any path) — `WebFetch` returns `EGRESS_BLOCKED` outright, confirmed
+  directly (not inferred from a 403).
+- `github.com/<owner>/<repo>/security` and `/security/code-scanning` (with or without a
+  `?query=` filter) via `WebFetch` — returns 404 (unauthenticated pages don't render the
+  real alert list).
+- `api.github.com/repos/<owner>/<repo>/code-scanning/alerts` via `WebFetch` — 403, even for
+  a public repo (this endpoint needs an authenticated token, which `WebFetch` doesn't carry).
+- `mcp__github__get_check_run`'s `output.text` — empty for CodeQL/SonarCloud check runs;
+  only `output.summary` (a short pass/fail blurb) is populated, no per-alert detail.
+- **No MCP tool exists to dismiss a code-scanning (CodeQL) alert** either (confirmed
+  2026-08-29 — no `update_code_scanning_alert`-shaped tool in the GitHub MCP server's
+  toolset). Once a finding is confirmed a false positive, a fix/suppression can still be
+  pushed normally, but the dismissal itself needs the user, via Security → Code scanning
+  → dismiss with a reason, referencing the PR comment that explains why.
+
+What *does* work for CodeQL specifically: its inline `pull_request_review_comment.created`
+webhook events (delivered automatically to a subscribed PR) carry the real rule name,
+file, and line per alert — that's a live per-PR-diff feed, not a way to browse the full
+Security tab's historical/cumulative alert list, though. For the full list (all tools,
+full history, like the 23-open-alerts view a user showed via screenshot on 2026-08-28) —
+there is no working path from inside a session at all. Ask the user to paste/screenshot it
+immediately rather than spending calls confirming the wall exists yet again.
+
+## Local `git push` can be broken for an entire environment, not just flaky
+
+> Added 2026-08-29 after `git push` failed identically — `fatal: could not read Username
+> for 'https://github.com': No such device or address` — across three different local
+> clones, multiple branches, and 3+ retries with backoff over a long session, including
+> from the environment's own pre-provisioned checkout (not just ones this session cloned
+> itself). Not a transient network blip (the standard retry-with-backoff guidance for those
+> doesn't apply here) — the environment's git-credential proxy itself was unavailable for
+> the rest of the session.
+
+If `git push` fails with `could not read Username`/similar credential errors more than
+once after the normal retry-with-backoff, stop retrying and switch to
+**`mcp__github__push_files`** — it goes through the GitHub MCP server's own authenticated
+API path, entirely separate from local git credentials, and kept working the whole time
+`git push` didn't. Tradeoffs to know going in:
+- It takes **full file content** per changed file, not a diff — fine for a handful of
+  normal-sized files, expensive (and error-prone to hand-transcribe) for something like a
+  generated `Cargo.lock`. For a large generated file, check first whether the repo's CI
+  actually enforces strict lockfile matching (`cargo ... --locked`/`--frozen` anywhere in
+  `.github/workflows/`) — if it doesn't, it's safe to leave that one file unsynced (Cargo
+  regenerates it transparently on the next build) rather than paying to transcribe
+  thousands of lines through the model just to keep it byte-identical.
+- It creates a **new commit on top of the remote's current tip**, not a fast-forward of
+  whatever local commit you already made — after using it, the local branch and `origin/
+  <branch>` diverge even though the file *content* ends up identical. `git fetch` +
+  `git reset --hard origin/<branch>` before making further local commits on that branch
+  (verify first with `git diff <local-sha> origin/<branch>` that nothing local-only would
+  be lost — it won't be, if the only local commit was the one just superseded by the API
+  push). Skipping this step is exactly what trips the `stop-hook-git-check.sh` hook's
+  "unpushed commit" warning even though the content is already on the remote.
+- Do **not** respond to a `git push` credential failure by enumerating environment
+  variables or dotfiles hunting for a token to fix it yourself — that's the same
+  self-authorized-scope-expansion pattern the "On a subagent tool gap" section above
+  forbids for subagents, and it applies to the conductor too (the auto-mode permission
+  classifier blocked exactly this once already, correctly).
+
 ## Build discipline
 
 - Run **`/build`** (delegates to `build-validator`) after any non-trivial change, and before
@@ -200,6 +296,12 @@ it — call them whenever the same shape of task comes up outside that cycle too
   verify-artifacts runbook (version lockstep, Docker manifest checks, transient-failure
   triage). `release-engineer` drives a release from this; the conductor can also follow it
   directly for a quick one.
+
+> **Note (2026-08-29):** the `claude/cargo-workspace-features-23qxfr` migration branch has
+> further `.claude/` tooling not yet merged here — a `session-rotate` command, a
+> `dependabot-hygiene` command, and append-only logs split into `.claude/logs/*.md`. Don't
+> assume any of that exists on `main` (or any other branch) until it's actually merged; see
+> "Different branches of this repo can have genuinely different `.claude/` tooling" above.
 
 > `.claude/` and `CLAUDE.md` are tracked in git for this repo (not gitignored — they ship
 > with the source tree so cloud/remote sessions get the same tooling as local ones) but are
