@@ -185,6 +185,9 @@ new state (`scrum-master`).
   for real on 2026-08-28: a `security-engineer` delegation failed outright with
   `rate_limit`/HTTP 429 mid-session. There's no workaround in the moment — report the
   block to the user (with the stated reset time, if the error gives one) rather than
-  retrying immediately, and see `.claude/commands/session-rotate.md` for the longer-term
-  fix (a session accumulating a month of unrotated context is *why* it had no headroom
-  left when the limit hit).
+  retrying immediately. **Not necessarily a context-size problem**: a `/retro` on
+  2026-08-29 concluded periodic full session rotation (the previous "longer-term fix" this
+  bullet pointed at) doesn't actually address this — this repo's harness compacts context
+  automatically as it nears the ceiling, so a session-wide 429 is more likely an
+  account-level usage-window limit than accumulated context; see
+  `.claude/commands/feature-workspace-cycle.md` Step 0a for the current reasoning.

@@ -38,19 +38,47 @@ Model assignment (already encoded in each agent's frontmatter — don't override
   latest summary comments on #114's sub-issues (step 9 below) — a previous
   iteration's summary may directly tell you what to do next.
 
-## Step 0a — session rotation check (long-session hygiene)
+## Step 0a — long-session hygiene (no periodic full rotation)
 
-This session is bound to the routine in **self-bind mode** — context never resets on its
-own between firings (see `.claude/commands/session-rotate.md` for why this matters and
-the full rotation mechanism; kept as a separate command rather than inlined here so the
-procedure only loads into context on the firings that actually need it).
+> Revised 2026-08-29 by explicit user decision after a `/retro`: periodic full session
+> rotation (`session-rotate.md`, deleted) didn't actually save anything for this routine's
+> real cadence. The prompt cache's TTL is 1 hour (documented in this environment's own
+> scheduling-tool guidance); this routine fires once a **day** — far outside that window —
+> so every firing re-processes its accumulated context fresh regardless of whether it's
+> "the same session" or a freshly-rotated one. Rotation added a real bug on top (a session
+> an AI creates via `create_session` has zero GitHub/MCP tool access — see
+> `.claude/logs/session-rotation.md`'s history) and burned real usage-window budget
+> executing the handoff dance itself, for no measurable saving.
 
-Check `.claude/logs/session-rotation.md`'s most recent row's date (empty table = no
-rotation yet — that alone isn't a reason to rotate, only actual accumulated firings are).
-Count dated firing-log entries ("Реализовано в сессии ..." headings in `CLAUDE.md` +
-`.claude/logs/dependabot-hygiene.md` rows) since that date. If it's **≥ ~15** (rough
-midpoint of a 10-20 target, not a precise count), invoke `/session-rotate` now, before
-Step 1 — it ends the firing itself once done. Below ~15, skip straight to Step 1.
+- **Don't rotate on a firing-count schedule.** This harness's own automatic compaction
+  ("the system will automatically compress prior messages... as it approaches context
+  limits") is what keeps this session's context bounded — and unlike `create_session`-based
+  rotation it preserves every tool/connector binding, because it's still the same session
+  (not theoretical: this session went through a compaction earlier today and kept full
+  GitHub/WSL/Docker access throughout — see this conversation's own history).
+- **There is no tool to manually trigger compaction from inside a session.** `/compact` is
+  a client-side command the *user* types interactively; an unattended cron-fired session has
+  no equivalent call (confirmed via `ToolSearch`, 2026-08-29 — don't spend a turn hunting for
+  one, there isn't one). The only thing a firing can do to help future compactions go
+  smoothly is keep durable state in `CLAUDE.md`/GitHub (already standard practice here)
+  rather than relying on the conversation itself to remember anything load-bearing.
+- **Optional, unverified: chain another firing soon if there's real leftover work and the
+  cache is likely still warm.** If a firing ends with genuine unfinished follow-up (not "run
+  again for the cache discount" — a firing that finds nothing new is not free just because
+  it's cheap), it may call `RemoteTrigger action:"run"` on this trigger's own ID to fire
+  again in a few minutes instead of waiting for tomorrow's cron, riding the still-warm cache
+  instead of paying full price twice. **Not `CronCreate`** — that scheduler is session-local,
+  in-memory, and auto-expires within 7 days; wrong layer entirely for a persistent Routine.
+  This chaining idea is **unverified**: whether firing `run` on a `persistent_session_id`
+  trigger actually resumes the same session (and so keeps the cache warm) hasn't been
+  observed yet. The first time it's tried, log the outcome (same session or fresh? cache
+  warm or cold on the next turn?) in `.claude/logs/session-rotation.md` so this note can be
+  corrected with real data. Respect `conventions.md`'s ≤1 push/hour rule regardless of firing
+  cadence — a chained firing with nothing new to push shouldn't push anyway.
+- **A session that's genuinely stuck** (repeated errors, visibly confused, hit an
+  account-wide rate limit unrelated to context size) — not just old — is a `/handoff`
+  situation: the user creates the replacement session themselves (so it keeps tool access)
+  and this session stops taking new firings. Rare, not scheduled.
 
 ## Step 1 — PR triage (Dependabot + the user's own PRs)
 

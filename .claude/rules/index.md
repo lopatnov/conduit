@@ -135,6 +135,30 @@ you want to reference genuinely doesn't exist on the branch you're working on, e
 it there for real, or write the fallback procedure inline instead of pointing at a file that
 isn't there yet.
 
+## Session rotation retired — rely on automatic compaction instead
+
+> Added 2026-08-29 by explicit user decision after a `/retro`. `session-rotate.md` (a
+> command that periodically spun up a whole fresh session to hand a self-bind Routine off
+> to, on a ~10-20-firing schedule) is **deleted**. Don't recreate it, and don't reintroduce
+> periodic full rotation as a pattern, even if an older note elsewhere in this file or in
+> `.claude/logs/session-rotation.md`'s history still describes it as current — it isn't.
+
+The reasoning: this environment's prompt cache has a 1-hour TTL (documented in
+`ScheduleWakeup`'s own tool description). `/feature-workspace-cycle` fires once a **day** —
+far outside that window — so every firing re-processes its accumulated context from scratch
+regardless of whether it's technically "the same session" or a freshly-rotated one. Rotation
+bought no cache savings for this cadence, and it introduced a real bug (a session an AI
+spawns via `create_session` gets zero GitHub/MCP tool access — only a session the *user*
+creates directly does) plus real overhead executing the handoff dance itself. The mechanism
+that actually keeps a long-lived session's context bounded is this harness's own **automatic
+compaction** ("the system will automatically compress prior messages... as it approaches
+context limits") — it preserves tool/connector bindings because it never leaves the original
+session. See `.claude/commands/feature-workspace-cycle.md` Step 0a for the full reasoning and
+what replaced it (no scheduled rotation; an optional, unverified same-session re-fire via
+`RemoteTrigger action:"run"` when there's genuine leftover work and the cache is likely still
+warm). `.claude/commands/handoff.md` still covers the genuinely-manual case — the user
+deciding to close this session out and start fresh themselves — that one isn't retired.
+
 ## Known-blocked external endpoints — ask the user, don't keep retrying
 
 > Added 2026-08-28 after a session burned ~6 tool calls across `WebFetch` and
@@ -184,8 +208,9 @@ reference-shaped) and gets invoked by name — in this harness a `commands/` fil
 directly invocable via the `Skill` tool, so there's no real capability gap from choosing
 `commands/` over `skills/`; it's purely an organizational choice (`commands/` for
 "execute this now," `skills/` for "load this playbook to follow"). `rules/*.md` should
-hold, at most, a one-or-two-line pointer to the actual procedure (see how `session-rotate`
-is referenced from the "Skills available here" list below) — never the procedure itself.
+hold, at most, a one-or-two-line pointer to the actual procedure (see how `cleanup` or
+`dependabot-hygiene` are referenced from the "Skills available here" list below) — never
+the procedure itself.
 
 ## Local `git push` can be broken for an entire environment, not just flaky
 
@@ -356,11 +381,6 @@ it — call them whenever the same shape of task comes up outside that cycle too
   verify-artifacts runbook (version lockstep, Docker manifest checks, transient-failure
   triage). `release-engineer` drives a release from this; the conductor can also follow it
   directly for a quick one.
-- **`session-rotate`** (`.claude/commands/session-rotate.md`) — hands a self-bind Routine
-  session off to a fresh one once it's accumulated too much context (checked at
-  `feature-workspace-cycle.md` Step 0a, roughly every 10-20 firings; also fine to invoke
-  ad hoc if a session is visibly struggling before that). Logs each handoff in
-  `.claude/logs/session-rotation.md`.
 - **`dependabot-hygiene`** (`.claude/commands/dependabot-hygiene.md`) — the reflex check
   described above; run it whenever `.claude/logs/dependabot-hygiene.md` is stale.
 - **`coderabbit-reply`** (`.claude/skills/coderabbit-reply/SKILL.md`) — reply-then-resolve
@@ -371,10 +391,13 @@ it — call them whenever the same shape of task comes up outside that cycle too
   it after any task that created throwaway state; see "Clean up ephemeral debris" above.
 
 > **Note (2026-08-29):** the `claude/cargo-workspace-features-23qxfr` migration branch has
-> further `.claude/` tooling not yet merged here — a `session-rotate` command, a
-> `dependabot-hygiene` command, and append-only logs split into `.claude/logs/*.md`. Don't
-> assume any of that exists on `main` (or any other branch) until it's actually merged; see
-> "Different branches of this repo can have genuinely different `.claude/` tooling" above.
+> further `.claude/` tooling not yet merged here — a `dependabot-hygiene` command and
+> append-only logs split into `.claude/logs/*.md`. Don't assume any of that exists on `main`
+> (or any other branch) until it's actually merged; see "Different branches of this repo can
+> have genuinely different `.claude/` tooling" above. (A `session-rotate` command briefly
+> existed here too but was retired the same day it's mentioned below — see "Session rotation
+> retired" further up this file — so don't resurrect it on the strength of an older note
+> that still describes it as current.)
 
 > `.claude/` and `CLAUDE.md` are tracked in git for this repo (not gitignored — they ship
 > with the source tree so cloud/remote sessions get the same tooling as local ones) but are

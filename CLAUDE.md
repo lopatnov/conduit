@@ -1830,10 +1830,11 @@ simply waiting for the eventual `main` merge to resolve on its own.
 
 ## Session rotation log
 
-> Append-only — **full history moved to `.claude/logs/session-rotation.md`** (split out
-> 2026-08-28, same rationale as the logs above). Mechanism: `.claude/commands/session-rotate.md`
-> (checked from `feature-workspace-cycle.md` Step 0a). A new session's first read should
-> pull the full file to find the last rotation date, not just this inline row.
+> **Policy retired 2026-08-29** (`/retro`, user decision) — periodic full rotation didn't
+> save anything for this routine's daily cadence and had a real tool-access bug; see
+> `.claude/rules/index.md` "Session rotation retired" and `feature-workspace-cycle.md`
+> Step 0a for what replaced it. Full history in `.claude/logs/session-rotation.md`
+> (split out 2026-08-28) — kept for the record, no new rows expected under the old policy.
 
 | Date | Old session | New session | ~Firings since last rotation | Reason |
 |---|---|---|---|---|

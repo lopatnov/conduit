@@ -1,5 +1,12 @@
 # Session rotation log
 
+> **Policy retired 2026-08-29** (`/retro`, user decision) — periodic full rotation
+> (`session-rotate.md`, deleted) didn't save anything for this routine's daily cadence
+> (cache TTL is 1h, firings are 24h apart) and introduced a real tool-access bug on top. See
+> `.claude/rules/index.md` "Session rotation retired" and `feature-workspace-cycle.md`
+> Step 0a. This file's history below is kept for the record — no new rows are expected under
+> the old policy, though the *manual* case (`/handoff`) can still reference it for context.
+
 > Append-only. Заведено 2026-08-28 по прямому запросу пользователя после того, как эта же
 > непрерывная self-bind сессия (живая с 2026-07-29) реально упёрлась в session-wide rate limit
 > модели прямо посреди разбора security-алертов — из-за накопленного за месяц контекста без единой
