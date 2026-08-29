@@ -14,8 +14,7 @@
       "tls": {
         "cert": "/etc/tls/server.crt",
         "key":  "/etc/tls/server.key",
-        "httpRedirectPort": 80,
-        "versions": ["TLSv1.2", "TLSv1.3"]
+        "httpRedirectPort": 80
       },
 
       "securityHeaders": {
