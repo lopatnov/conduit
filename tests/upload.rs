@@ -301,6 +301,73 @@ fn upload_file_exceeds_per_file_limit_leaves_no_partial_file_on_disk() {
 }
 
 #[test]
+fn upload_single_large_field_enforces_max_total_size_bytes() {
+    // Gitar finding on PR #300: the total-bytes running count passed into
+    // check_chunk_limits only accounted for *previously completed* fields,
+    // not the bytes already streamed for the *current* field -- so a
+    // single field larger than maxTotalSizeBytes could stream to disk
+    // almost entirely unchecked (only the DefaultBodyLimit backstop would
+    // eventually stop it, far too late). This test deliberately sets no
+    // maxFileSizeBytes at all, so the *only* thing that can catch an
+    // oversized single-field upload is maxTotalSizeBytes being enforced
+    // incrementally within that one field, not just across fields.
+    let port = free_port();
+    let admin_port = free_port();
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let upload_dir = dir.path().join("uploads");
+    std::fs::create_dir_all(&upload_dir).expect("create upload dir");
+    let upload_dir_str = upload_dir.to_string_lossy().into_owned();
+
+    let config = serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "healthCheck": true,
+            "upload": {
+                "path": "/upload",
+                "dir": upload_dir_str,
+                "maxTotalSizeBytes": 100
+            }
+        }]
+    });
+
+    let server = TestServer::start_with_config(port, admin_port, config);
+    std::mem::forget(dir);
+
+    let client = build_client();
+    let big_data = vec![b'x'; 5_000_000]; // 5 MB, far over the 100-byte total limit
+    let form = reqwest::blocking::multipart::Form::new().part(
+        "file",
+        reqwest::blocking::multipart::Part::bytes(big_data)
+            .file_name("big.txt")
+            .mime_str("text/plain")
+            .expect("mime"),
+    );
+
+    // Same either-outcome reasoning as the sibling per-file-limit test above:
+    // a large enough rejected upload can surface as a clean 413 or as a
+    // transport-level send error, depending on exactly when the server
+    // detects the violation relative to the client still sending.
+    match client.post(server.url("/upload")).multipart(form).send() {
+        Ok(resp) => assert_eq!(resp.status(), 413, "field over maxTotalSizeBytes → 413"),
+        Err(e) => assert!(
+            e.is_body() || e.is_request(),
+            "expected a body/transport-level send error from the server closing the \
+             connection mid-upload, got a different kind of error: {e}"
+        ),
+    }
+
+    let leftover: Vec<_> = std::fs::read_dir(&upload_dir_str)
+        .expect("read upload dir")
+        .collect();
+    assert!(
+        leftover.is_empty(),
+        "a rejected upload must not leave a partially-written file behind: {leftover:?}"
+    );
+}
+
+#[test]
 fn upload_exceeds_max_files_returns_400() {
     let port = free_port();
     let admin_port = free_port();

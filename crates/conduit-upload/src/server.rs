@@ -286,10 +286,17 @@ async fn stream_field_to_file(
                 ))
             }
         };
+        // *total_bytes only accounts for *previously completed* fields --
+        // it's updated once, after this loop, not per chunk. Without adding
+        // file_bytes (this field's own running total), the request-wide
+        // check would stay frozen at the pre-field value for the entire
+        // duration of streaming this field, letting a single large field
+        // bypass maxTotalSizeBytes almost entirely (Gitar finding on this
+        // PR).
         check_chunk_limits(
             chunk.len() as u64,
             file_bytes,
-            *total_bytes,
+            *total_bytes + file_bytes,
             cfg.max_file_size_bytes,
             cfg.max_total_size_bytes,
         )?;
