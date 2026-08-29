@@ -69,6 +69,44 @@
 - This isn't specific to GitHub access — it's the general shape: a missing tool is a signal
   to hand back, not a puzzle to solve by finding a different door.
 
+## Commands needing a password/interactive auth — ask the user, don't attempt silently
+
+> Added 2026-08-29 after installing `cmake` inside WSL (needed for `libz-ng-sys`/wasmtime's
+> cmake dependency during a Linux verification run) was attempted via `sudo apt-get install
+> -y cmake` in a backgrounded `wsl -e bash -lc "..."` call. `wsl -e` and the Bash tool both
+> run non-interactively — there is no TTY for `sudo` to prompt on — so the command just hung
+> until the user noticed and asked to do it themselves ("Давай я поставлю? Думаю что оно
+> требует пароль"). The user's own instruction afterward was explicit: if a command plausibly
+> needs credentials only they hold, stop and ask instead of quietly trying and hoping it works.
+
+- Before running anything that plausibly prompts for a password or other interactive auth in
+  a non-TTY context (`sudo` inside `wsl -e bash -lc "..."`, an interactive `apt`/`yum`/`brew`
+  install, any command whose failure mode is "hangs waiting for stdin" rather than a clean
+  error) — **don't attempt it and see what happens.** Ask the user to run it themselves; they
+  hold the credentials and it's usually a 10-second action on their end.
+- This is the same self-authorized-scope-expansion pattern already forbidden for subagents
+  hitting a tool gap (see "On a subagent tool gap" above) and for routing around a broken
+  `git push` — it applies to the conductor too, and it applies *before* the attempt, not just
+  after it fails. A command that silently hangs waiting for input the session can never
+  supply is worse than one that fails fast: nothing in the tool result signals "stuck," just
+  a timeout, so the cost of guessing wrong is a full timeout window, not a quick error.
+- If genuinely unsure whether a command needs interactive auth, say so and ask rather than
+  finding out by trying it — asking costs about the same either way, but a hung background
+  command burns a 2-10 minute timeout before the problem is even visible.
+
+## Clean up ephemeral debris — worktrees, WSL clones, Docker leftovers
+
+> Added 2026-08-29 after a `/retro` found a stray `.claude/worktrees/` directory for a PR
+> merged a week earlier, and a 4.1GB WSL scratch clone (plus root-owned build artifacts a
+> plain `rm -rf` couldn't touch) from a Docker-based Linux verification run — both created for
+> a legitimate one-time check, neither cleaned up once that check was done.
+
+Run **`/cleanup`** (`.claude/commands/cleanup.md`) after finishing a task that created
+throwaway state — an isolated worktree, a WSL scratch clone for CI-matching verification, a
+Docker container/image pulled for one check — rather than leaving it for some future session
+to notice and reclaim. It also covers a second, unrelated kind of debris: code a change
+should have removed or wired in but didn't (see the command file for both).
+
 ## Different branches of this repo can have genuinely different `.claude/` tooling
 
 > Added 2026-08-29, corrected same-day: a session drafting `.claude/commands/handoff.md`
@@ -328,6 +366,9 @@ it — call them whenever the same shape of task comes up outside that cycle too
 - **`coderabbit-reply`** (`.claude/skills/coderabbit-reply/SKILL.md`) — reply-then-resolve
   mechanics for CodeRabbit/reviewer threads on a PR, via the actual `mcp__github__*` tools
   (this environment has no `gh` CLI). Referenced from `conventions.md`'s PR checklist.
+- **`cleanup`** (`.claude/commands/cleanup.md`) — sweeps for leftover worktrees/WSL-Docker
+  verification state, and for code a change should have removed or wired in but didn't. Run
+  it after any task that created throwaway state; see "Clean up ephemeral debris" above.
 
 > **Note (2026-08-29):** the `claude/cargo-workspace-features-23qxfr` migration branch has
 > further `.claude/` tooling not yet merged here — a `session-rotate` command, a
