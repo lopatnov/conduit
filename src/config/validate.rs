@@ -1159,6 +1159,38 @@ fn validate_tls(tls: &TlsConfig, prefix: &str, errors: &mut Vec<ValidationError>
         validate_tls_client_auth(ca, prefix, has_cert, has_acme, errors);
     }
 
+    // tls.versions / tls.ciphers: parsed but never enforced (issue #189).
+    // Pingora 0.8.1's rustls `TlsSettings` gives conduit no hook to influence
+    // protocol-version or cipher-suite selection — `TlsSettings::build()`
+    // hardcodes `ServerConfig::builder_with_protocol_versions(&[TLS12, TLS13])`
+    // with the default rustls cipher suite set, all fields are private, and
+    // the only constructor (`intermediate()`) takes just a cert/key path pair
+    // (confirmed against vendored `pingora-core-0.8.1/src/listeners/tls/
+    // rustls/mod.rs`). Silently accepting these fields would let an operator
+    // believe they've restricted TLS versions/ciphers for compliance reasons
+    // when nothing is actually enforced — a hard validation error forces
+    // them to notice and remove the setting, rather than a warning they
+    // could miss in startup logs. Revisit once Pingora exposes a
+    // `ServerConfig`-customization hook (tracked in CLAUDE.md as blocked).
+    if tls.versions.is_some() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.versions"),
+            "tls.versions is not currently enforced — Pingora 0.8's rustls TLS backend gives \
+             Conduit no API to restrict protocol versions (TLS 1.2 and 1.3 are always both \
+             enabled). Remove this field; see \
+             https://github.com/lopatnov/conduit/issues/189 for status.",
+        ));
+    }
+    if tls.ciphers.is_some() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.ciphers"),
+            "tls.ciphers is not currently enforced — Pingora 0.8's rustls TLS backend gives \
+             Conduit no API to restrict cipher suites (the default rustls suite set is always \
+             used). Remove this field; see \
+             https://github.com/lopatnov/conduit/issues/189 for status.",
+        ));
+    }
+
     // Cert expiry check — only for manual certificates (ACME manages renewal itself).
     if !has_acme {
         if let Some(ref cert_path) = tls.cert {
@@ -1529,6 +1561,39 @@ mod tests {
     #[test]
     fn tls_cert_and_key_valid() {
         assert!(errs(r#"{ "tls": { "cert": "a.pem", "key": "a.key" } }"#).is_empty());
+    }
+
+    // ── tls.versions / tls.ciphers (issue #189: never enforced by Pingora 0.8) ─
+
+    #[test]
+    fn tls_versions_is_rejected() {
+        let e = errs(r#"{ "tls": { "cert": "a.pem", "key": "a.key", "versions": ["TLSv1.2"] } }"#);
+        assert!(!e.is_empty(), "tls.versions must be rejected: {e:?}");
+        assert!(
+            e.iter()
+                .any(|x| x.path.ends_with(".versions")
+                    && x.message.contains("not currently enforced")),
+            "got: {e:?}"
+        );
+        assert!(
+            e.iter().all(|x| x.severity == Severity::Error),
+            "must be a hard error, not a warning — silently accepting this field lets an \
+             operator believe TLS versions are actually restricted: {e:?}"
+        );
+    }
+
+    #[test]
+    fn tls_ciphers_is_rejected() {
+        let e = errs(
+            r#"{ "tls": { "cert": "a.pem", "key": "a.key", "ciphers": ["TLS13_AES_256_GCM_SHA384"] } }"#,
+        );
+        assert!(!e.is_empty(), "tls.ciphers must be rejected: {e:?}");
+        assert!(
+            e.iter()
+                .any(|x| x.path.ends_with(".ciphers")
+                    && x.message.contains("not currently enforced")),
+            "got: {e:?}"
+        );
     }
 
     #[test]

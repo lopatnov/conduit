@@ -286,7 +286,6 @@ tls:
   cert: /etc/tls/server.crt
   key: /etc/tls/server.key
   httpRedirectPort: 80
-  versions: ["TLSv1.2", "TLSv1.3"]
 ```
 
 ```json
@@ -296,8 +295,7 @@ tls:
   "tls": {
     "cert": "/etc/tls/server.crt",
     "key": "/etc/tls/server.key",
-    "httpRedirectPort": 80,
-    "versions": ["TLSv1.2", "TLSv1.3"]
+    "httpRedirectPort": 80
   }
 }
 ```
@@ -338,10 +336,16 @@ tls:
 | `key`              | path     | —       | PEM private key file                                                                                                                          |
 | `ca`               | path     | —       | CA bundle for upstream verification                                                                                                           |
 | `httpRedirectPort` | number   | —       | Port that redirects HTTP to HTTPS                                                                                                             |
-| `versions`         | string[] | all     | Allowed TLS versions — rustls format (`"TLSv1.2"`, `"TLSv1.3"`)                                                                               |
-| `ciphers`          | string[] | all     | Allowed cipher suites — rustls names, **not** OpenSSL                                                                                         |
 | `acme.email`       | string   | —       | Contact email for ACME account                                                                                                                |
 | `acme.storage`     | path     | —       | Directory for certificate persistence                                                                                                         |
+
+> **`versions`/`ciphers` are not currently enforced** ([issue #189](https://github.com/lopatnov/conduit/issues/189)).
+> The fields still parse, but Conduit's TLS backend (Pingora 0.8's rustls
+> integration) gives no API to restrict protocol versions or cipher suites —
+> TLS 1.2 and 1.3 are always both enabled with the default rustls cipher
+> suite set, regardless of config. Setting either field is a hard validation
+> error (fails startup with an explanation) rather than a silent no-op, so a
+> misconfigured expectation of TLS restriction can't go unnoticed.
 | `acme.challenge`   | string   | —       | `"http-01"` or `"dns-01"`                                                                                                                     |
 | `acme.directory`   | string   | —       | Custom ACME directory URL. Use `"https://acme-staging-v02.api.letsencrypt.org/directory"` for Let's Encrypt staging (rate-limit-free testing) |
 | `clientAuth`       | object   | —       | [mTLS client cert verification](#mtls--client-certificate-authentication)                                                                     |
@@ -2629,8 +2633,10 @@ hotReload:
 `logging`, `cors`, `securityHeaders`, `cache`, `outlierDetection`, `limits`,
 `requestTransform`, `responseTransform`, `maskErrors`.
 
-**Requires cold restart:** `port`, `tls.cert/key`, `tls.versions/ciphers`,
-`workers`, `backlog`, `global.admin.bind`.
+**Requires cold restart:** `port`, `tls.cert/key`, `workers`, `backlog`,
+`global.admin.bind`. (`tls.versions`/`tls.ciphers` are not listed here
+because they're rejected at validate-time — see [TLS field reference]
+(#tls-field-reference) — not merely cold-restart-only.)
 
 ---
 

@@ -220,8 +220,10 @@ not via `POST /reload`.
 `maskErrors`.
 
 **What requires a cold restart:**  
-`port`, `tls.cert/key`, `tls.versions/ciphers`, `workers`, `backlog`,
-`global.admin.bind`.
+`port`, `tls.cert/key`, `workers`, `backlog`, `global.admin.bind`.
+(`tls.versions`/`tls.ciphers` are rejected at validate-time — see
+[configuration.md — TLS field reference](configuration.md#tls-field-reference)
+— not merely cold-restart-only; issue #189.)
 
 > **Note:** `POST /reload` resets runtime upstream overrides (added via
 > `/upstreams/add`, `/upstreams/remove`, `/upstreams/weight`) and clears
