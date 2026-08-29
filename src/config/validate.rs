@@ -105,6 +105,35 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
     warnings
 }
 
+/// Escapes control characters (newlines, carriage returns, and other
+/// non-printable bytes) in a config-controlled string before it's
+/// interpolated into a `feature_warnings()` message.
+///
+/// Issue #185 (CWE-117-style log injection): these warnings are written via
+/// `tracing::warn!("{w}")` at startup/hot-reload (`main.rs`) and returned
+/// verbatim in the Admin API `/reload` response's `warnings: [...]` field
+/// (`admin/api.rs`). A config value containing a literal newline — e.g. a
+/// proxy target URL, which is operator-supplied and not otherwise validated
+/// for control characters before this point — could forge additional fake
+/// log lines in the tracing output. Applied once centrally here rather than
+/// patched ad hoc per call site, so any future `check_*_warnings` function
+/// that interpolates a config-controlled string gets the same treatment by
+/// routing through this helper instead of re-deriving the fix.
+///
+/// Escaping (not stripping) preserves the operator's ability to see what the
+/// offending value actually contained, just rendered as a single log line.
+fn sanitize_for_log(s: &str) -> String {
+    s.chars()
+        .flat_map(|c| {
+            if c.is_control() {
+                c.escape_default().collect::<Vec<char>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
+}
+
 /// Check warnings for global-level feature flags (e.g. OTLP).
 fn check_global_feature_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
     // ── global.otlp ───────────────────────────────────────────────────────────
@@ -324,9 +353,10 @@ fn check_proxy_loop_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
             if let Some(port) = loopback_port(target) {
                 if listening_ports.contains(&port) {
                     warnings.push(format!(
-                        "sites[{i}] proxies to '{target}' which appears to point back to \
+                        "sites[{i}] proxies to '{}' which appears to point back to \
                          Conduit itself (loopback + port {port} is a configured listening port) \
-                         — this will create an infinite request loop."
+                         — this will create an infinite request loop.",
+                        sanitize_for_log(target)
                     ));
                 }
             }
@@ -3097,6 +3127,54 @@ mod tests {
         assert!(
             w.iter().all(|m| !m.contains("loop")),
             "external host must not warn: {w:?}"
+        );
+    }
+
+    // ── sanitize_for_log (issue #185: CWE-117-style log injection) ────────────
+
+    #[test]
+    fn sanitize_for_log_leaves_plain_text_unchanged() {
+        assert_eq!(
+            sanitize_for_log("http://127.0.0.1:8080/path?q=1"),
+            "http://127.0.0.1:8080/path?q=1"
+        );
+    }
+
+    #[test]
+    fn sanitize_for_log_escapes_newline() {
+        // The exact forged-log-line shape issue #185 describes: a raw '\n'
+        // would let a config value start what looks like a second,
+        // independent log line.
+        assert_eq!(
+            sanitize_for_log("evil\nfake log line: [ERROR] pwned"),
+            "evil\\nfake log line: [ERROR] pwned"
+        );
+        assert!(
+            !sanitize_for_log("a\nb").contains('\n'),
+            "no raw newline must survive sanitization"
+        );
+    }
+
+    #[test]
+    fn sanitize_for_log_escapes_carriage_return() {
+        assert_eq!(sanitize_for_log("a\rb"), "a\\rb");
+    }
+
+    #[test]
+    fn sanitize_for_log_escapes_other_control_chars() {
+        // NUL and a bell character, as a stand-in for "any non-printable byte".
+        let out = sanitize_for_log("a\0b\x07c");
+        assert!(!out.contains('\0') && !out.contains('\x07'));
+        assert_eq!(out, "a\\u{0}b\\u{7}c");
+    }
+
+    #[test]
+    fn sanitize_for_log_preserves_unicode() {
+        // Non-control, non-ASCII text must pass through untouched -- this is
+        // an escaping filter for control characters, not an ASCII-only one.
+        assert_eq!(
+            sanitize_for_log("héllo — wörld 日本語"),
+            "héllo — wörld 日本語"
         );
     }
 
