@@ -34,15 +34,23 @@ policy that's already written down there), but **zero memory of this conversatio
    (`list_triggers`) tied to *this* session. **This is the critical part**: a Routine bound to
    this session (`persistent_session_id` = this session's own ID, "self-bind" mode) will **not**
    deliver into the new session — it keeps firing into this one, which is about to go away or be
-   archived. For each such Routine, tell the user explicitly:
-   - Its `trig_id`, name, and cron schedule (call `list_triggers` to get these fresh — don't
-     guess from memory).
-   - That it must be deleted (`delete_trigger`) and recreated from the *new* session once that
-     session exists (a new session calling `create_trigger` with the same cron/prompt binds to
-     itself automatically) — this session cannot create a trigger bound to a session that doesn't
-     exist yet, so this step has to happen from the new session, not this one.
-   - The exact prompt text the new trigger should use (usually the same slash command/prompt the
-     old one used, updated for anything that changed this session).
+   archived.
+   - **If this repo already has `.claude/commands/session-rotate.md`** (check before writing
+     anything here — conduit does, and other repos may too): that command is the tested,
+     canonical procedure for exactly this handoff. Don't re-derive the trigger-recreation steps
+     yourself — tell the reader to run `/session-rotate` instead, and stop there. Note its two
+     load-bearing details so they aren't missed: (a) the *old* session creates the new trigger
+     bound to the new session's ID (mode 2, "fire into a specific other session"), not the other
+     way around — the new session never calls `create_trigger` on itself for this; (b) do **not**
+     spawn the replacement session via `mcp__Claude_Code_Remote__create_session` — a confirmed
+     platform bug leaves that session with zero GitHub MCP tool access. The user creates the new
+     session themselves and hands back its ID.
+   - **Otherwise** (no `session-rotate` in this repo): call `list_triggers` fresh (don't guess
+     from memory) and tell the user, for each Routine bound to this session: its `trig_id`, name,
+     cron schedule, and that — because a session can't create a trigger bound to a session that
+     doesn't exist yet — the *old* session should create the replacement trigger (mode 2, pointed
+     at the new session's ID) once the user has created that new session and supplied its ID,
+     then delete the old trigger. Give the exact prompt text the new trigger should use.
 6. **Next concrete step** — the literal first thing the new session should do, not a vague
    "continue the migration." If it's "wait for CI on commit X then post a PR comment," say that.
 
