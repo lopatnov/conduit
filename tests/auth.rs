@@ -7,7 +7,7 @@ use reqwest::blocking::Client;
 #[cfg(feature = "jwt")]
 use serde_json::json;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── helpers ────────────────────────────────────────────────────────────
 
 fn plain_client() -> Client {
     Client::new()
@@ -163,7 +163,7 @@ fn basic_auth_no_challenge_flag() {
     );
 }
 
-// ── API key tests ─────────────────────────────────────────────────────────────
+// ── API key tests ──────────────────────────────────────────────────────────────
 
 fn server_with_api_key() -> common::TestServer {
     let port = common::free_port();
@@ -239,7 +239,7 @@ fn api_key_skip_path_bypasses_auth() {
     assert_eq!(resp.status().as_u16(), 200);
 }
 
-// ── Rate limiting tests ───────────────────────────────────────────────────────
+// ── Rate limiting tests ─────────────────────────────────────────────────────────
 
 fn server_with_rate_limit(limit: u64, window_secs: u64) -> common::TestServer {
     let port = common::free_port();
@@ -331,7 +331,7 @@ fn rate_limit_health_always_passes_at_handler_level() {
     }
 }
 
-// ── Combined: Basic Auth + Rate Limit ────────────────────────────────────────
+// ── Combined: Basic Auth + Rate Limit ──────────────────────────────────
 
 #[test]
 fn basic_auth_and_rate_limit_combined() {
@@ -389,7 +389,7 @@ fn basic_auth_and_rate_limit_combined() {
     assert_eq!(r_limited.status().as_u16(), 429);
 }
 
-// ── Rate limit keyBy: "header:..." ───────────────────────────────────────
+// ── Rate limit keyBy: "header:..." ──────────────────────────────
 
 #[test]
 fn rate_limit_key_by_header_separate_clients_have_independent_buckets() {
@@ -496,7 +496,7 @@ fn rate_limit_key_by_header_missing_header_falls_back_to_shared_bucket() {
     );
 }
 
-// ── JWT helpers (used by JWT and Consumer JWT tests) ─────────────────────────
+// ── JWT helpers (used by JWT and Consumer JWT tests) ───────────────────────
 // These live outside any mod so both jwt and consumers_tests can access them.
 #[cfg(feature = "jwt")]
 fn jwt_secret() -> &'static str {
@@ -516,7 +516,7 @@ fn make_jwt(secret: &str, exp_offset_secs: i64) -> String {
     encode(&Header::new(Algorithm::HS256), &claims, &key).unwrap()
 }
 
-// ── JWT Auth tests (require --features jwt) ───────────────────────────────────
+// ── JWT Auth tests (require --features jwt) ──────────────────────────────
 #[cfg(feature = "jwt")]
 mod jwt {
     use super::*;
@@ -689,7 +689,7 @@ mod jwt {
         );
     }
 
-    // ── Per-route rate limit tests ────────────────────────────────────────────────
+    // ── Per-route rate limit tests ─────────────────────────────────────
 
     fn server_with_per_route_rate_limit() -> common::TestServer {
         use std::io::{Read, Write};
@@ -756,7 +756,7 @@ mod jwt {
         );
     }
 
-    // ── JWKS / RS256 / ES256 end-to-end (issue #164) ──────────────────────────
+    // ── JWKS / RS256 / ES256 end-to-end (issue #164) ────────────────────────
     //
     // RSA-2048 / P-256 test key material is generated fresh at test-run
     // time (not embedded as static PEM literals) — matches the `rcgen`
@@ -775,7 +775,7 @@ mod jwt {
         use rsa::pkcs1::EncodeRsaPrivateKey;
         use rsa::traits::PublicKeyParts;
         let private_key =
-            rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048).expect("RSA-2048 keygen");
+            rsa::RsaPrivateKey::new(&mut rand_core::OsRng, 2048).expect("RSA-2048 keygen");
         let pem = private_key
             .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
             .expect("RSA PKCS#1 PEM encode")
@@ -799,7 +799,7 @@ mod jwt {
     fn gen_jwks_test_ec_key() -> JwksTestEcKey {
         use p256::elliptic_curve::sec1::ToEncodedPoint;
         use p256::pkcs8::EncodePrivateKey;
-        let secret_key = p256::SecretKey::random(&mut rand::thread_rng());
+        let secret_key = p256::SecretKey::random(&mut rand_core::OsRng);
         let pem = secret_key
             .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
             .expect("EC PKCS#8 PEM encode")
@@ -982,7 +982,7 @@ mod jwt {
     }
 } // mod jwt
 
-// ── Consumer model tests (require --features consumers) ───────────────────────
+// ── Consumer model tests (require --features consumers) ──────────────────────────
 #[cfg(feature = "consumers")]
 mod consumers_tests {
     use super::*;
@@ -1352,7 +1352,7 @@ mod consumers_tests {
         );
     }
 
-    // ── Consumer JWT V2 tests (also require --features jwt) ──────────────────────
+    // ── Consumer JWT V2 tests (also require --features jwt) ──────────────────────────
     // These tests use JWT tokens and require both consumers AND jwt features.
 
     #[cfg(feature = "jwt")]
