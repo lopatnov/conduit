@@ -549,46 +549,13 @@ pub struct HealthCheckOptions {
 
 // ── Auth & rate limiting ───────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct RateLimitConfig {
-    pub window_secs: u64,
-    pub limit: u64,
-    /// Optional burst capacity on top of `limit`.
-    ///
-    /// The token bucket starts with `limit + burst` tokens and refills at
-    /// `limit / windowSecs` per second.  This allows short traffic spikes up to
-    /// `limit + burst` requests without being rate-limited, while the sustained
-    /// throughput is still capped at `limit / windowSecs` requests per second.
-    ///
-    /// Example: `limit: 60, windowSecs: 60, burst: 20` → allows up to 80 requests
-    /// in a burst, sustained at 1 req/s.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub burst: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub algorithm: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key_by: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub skip_paths: Option<Vec<String>>,
-    /// Backend store for the rate limiter.
-    ///
-    /// - `"memory"` (default) — in-process `DashMap<String, TokenBucket>`.
-    /// - `"redis://host:port"` — Redis-backed, with automatic failover to the
-    ///   in-memory bucket when Redis is unavailable.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub store: Option<String>,
-    /// Dry-run mode — log violations but allow requests through.
-    ///
-    /// **nginx `limit_req_dry_run` pattern.**  When `true`, requests that would
-    /// normally be rejected with `429 Too Many Requests` are logged as warnings
-    /// instead and forwarded to the upstream.  Useful for testing rate-limit
-    /// configuration in production without impacting real traffic.
-    ///
-    /// Default: `false` (enforcement active).
-    #[serde(rename = "dryRun", skip_serializing_if = "Option::is_none")]
-    pub dry_run: Option<bool>,
-}
+/// Rate-limit config — moved to `crates/conduit-ratelimit` (issue #114/#137,
+/// slice 1), re-exported here so every existing `crate::config::schema::
+/// RateLimitConfig` path keeps resolving. Shared, byte-identical shape with
+/// `conduit_auth_consumers::RateLimitConfig` — as of #137 slice 1 they're the
+/// *same* type, not just field-compatible duplicates (issue #114/#134's
+/// SonarCloud duplication finding is resolved by this re-export).
+pub use conduit_ratelimit::RateLimitConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -633,9 +600,14 @@ pub struct ApiKeyConfig {
 /// **Note:** unlike every sibling facade in this file, `ConsumersGuard`
 /// itself is *not* re-exported here — it stays in this crate's own
 /// `src/filter/chain.rs` (see `conduit_auth_consumers`'s own `src/lib.rs`
-/// doc comment for why: it needs this crate's not-yet-extracted
-/// `RateLimiter`). Only the config types and the pure
-/// `identify::identify_consumer` identification logic moved.
+/// doc comment for why: `ConsumersGuard` is a `Session`-coupled request-chain
+/// guard, same category as `IpGuard`/`CorsPreflight` staying out of their
+/// own Layer-0 crates — chain assembly and guard ordering stay in the root
+/// crate per `CLAUDE.md` decision #20, regardless of where the *types* it
+/// carries live. As of #114/#137 slice 1, `RateLimiter` itself now lives in
+/// `conduit-ratelimit`, re-exported via `crate::filter::rate_limit`). Only
+/// the config types and the pure `identify::identify_consumer`
+/// identification logic moved to `conduit-auth-consumers`.
 pub use conduit_auth_consumers::{
     Consumer, ConsumerBasicAuth, ConsumerJwtConfig, ConsumersConfig, ConsumersSharedJwtConfig,
 };

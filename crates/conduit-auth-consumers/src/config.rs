@@ -122,24 +122,17 @@ pub struct Consumer {
     /// Independent of the site-level `rateLimit`.
     /// Key: `"consumer:{username}"` (global across all IPs for this consumer).
     ///
-    /// **Type note (issue #114/#134):** this is [`RateLimitConfig`], a struct
-    /// defined *in this crate*, not the root crate's own
-    /// `crate::config::schema::RateLimitConfig` (used by site-level and
-    /// route-level `rateLimit`) — even though the two are field-for-field
-    /// identical today. A Layer-1 feature crate can't depend on a type that
-    /// lives in the root crate that depends on *it* (that's exactly the
-    /// circular coupling the workspace split exists to avoid), and
-    /// `RateLimitConfig` itself hasn't been extracted yet — that's
-    /// [#137](https://github.com/lopatnov/conduit/issues/137)'s job
-    /// (`conduit-ratelimit`). This is a deliberate, temporary duplication of
-    /// a small, plain, `serde`-only data struct (not any validation or
-    /// rate-limiting *logic* — see `validate_rate_limit` in the root crate's
-    /// `src/config/validate.rs`, which takes primitive fields rather than a
-    /// concrete `RateLimitConfig` specifically so the two call sites — site/
-    /// route-level using the root's type, this one using this crate's type —
-    /// don't need two copies of the actual validation rules). Once #137
-    /// extracts `conduit-ratelimit`, both this copy and the root's copy
-    /// should be replaced by a shared dependency on that crate.
+    /// **Type note (issue #114/#134, resolved by #114/#137 slice 1):** this
+    /// used to be a separate, deliberately-duplicated `RateLimitConfig`
+    /// defined in this crate — a Layer-1 crate couldn't depend on a type
+    /// living in the root crate that depends on *it*. As of #137 slice 1
+    /// (`crates/conduit-ratelimit`), `RateLimitConfig` lives in its own
+    /// Layer-0 crate that both this crate and the root crate depend on (see
+    /// the re-export a few lines below) — `conduit_auth_consumers::
+    /// RateLimitConfig` and `crate::config::schema::RateLimitConfig` (root
+    /// crate) are now the *same* type, not just field-compatible copies.
+    /// This closed the SonarCloud "Duplicated Lines on New Code" finding the
+    /// old duplicate caused.
     #[serde(rename = "rateLimit", skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<RateLimitConfig>,
     /// Additional request headers to inject into the upstream request for this
@@ -178,32 +171,9 @@ pub struct ConsumerJwtConfig {
     pub issuer: Option<String>,
 }
 
-/// A deliberate, temporary duplicate of the root crate's
-/// `crate::config::schema::RateLimitConfig` — see the doc comment on
-/// [`Consumer::rate_limit`] for the full reasoning (issue #114/#134,
-/// consolidation tracked as #137).
-///
-/// Field-for-field identical (including `serde` renames) to the root's
-/// type, so `consumers.consumers[].rateLimit` accepts exactly the same JSON/
-/// YAML shape as `sites[].rateLimit` / `proxy.*.rateLimit` always has.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct RateLimitConfig {
-    pub window_secs: u64,
-    pub limit: u64,
-    /// Optional burst capacity on top of `limit`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub burst: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub algorithm: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key_by: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub skip_paths: Option<Vec<String>>,
-    /// Backend store for the rate limiter ("memory" / "redis://…" / "rediss://…").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub store: Option<String>,
-    /// Dry-run mode — log violations but allow requests through.
-    #[serde(rename = "dryRun", skip_serializing_if = "Option::is_none")]
-    pub dry_run: Option<bool>,
-}
+/// Rate-limit config — moved to `crates/conduit-ratelimit` (issue #114/#137,
+/// slice 1), re-exported here so `conduit_auth_consumers::RateLimitConfig`
+/// keeps resolving. See [`Consumer::rate_limit`]'s doc comment for the full
+/// history (this used to be a deliberate, temporary duplicate of the root
+/// crate's own type).
+pub use conduit_ratelimit::RateLimitConfig;

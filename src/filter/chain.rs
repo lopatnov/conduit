@@ -446,17 +446,10 @@ impl RequestFilter for ConsumersGuard {
         // Per-consumer rate limit — key: "consumer:{username}" (global per consumer).
         if let Some(rl_cfg) = &consumer.rate_limit {
             let key = format!("consumer:{}", consumer.username);
-            let allowed = self
-                .rate_limiter
-                .entry(key)
-                .or_insert_with(|| {
-                    crate::filter::rate_limit::TokenBucket::new(
-                        rl_cfg.limit,
-                        rl_cfg.burst.unwrap_or(0),
-                        rl_cfg.window_secs,
-                    )
-                })
-                .try_consume();
+            // Routed through the shared MAX_BUCKETS-capped admission point
+            // (issue #305) instead of a hand-rolled, uncapped
+            // entry()/or_insert_with() — this map has no cap check of its own.
+            let allowed = conduit_ratelimit::check_key_for(&self.rate_limiter, &key, rl_cfg);
             if !allowed {
                 response::write_response(
                     ctx.session,

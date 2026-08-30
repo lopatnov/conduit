@@ -726,19 +726,12 @@ impl ConduitProxy {
             "route:{route_key}:{}",
             rate_limit::extract_client_key(&rl_cfg, session)
         );
-        let allowed = {
-            self.state
-                .rate_limiter
-                .entry(key)
-                .or_insert_with(|| {
-                    rate_limit::TokenBucket::new(
-                        rl_cfg.limit,
-                        rl_cfg.burst.unwrap_or(0),
-                        rl_cfg.window_secs,
-                    )
-                })
-                .try_consume()
-        };
+        // Routed through the shared MAX_BUCKETS-capped admission point
+        // (issue #305) instead of a hand-rolled, uncapped
+        // entry()/or_insert_with() — this was a real DoS bypass on the
+        // documented `keyBy: "header:X-Name"` usage pattern, since this map
+        // is shared with the site-level limiter's own cap check.
+        let allowed = conduit_ratelimit::check_key_for(&self.state.rate_limiter, &key, &rl_cfg);
         if allowed {
             return Ok(false);
         }

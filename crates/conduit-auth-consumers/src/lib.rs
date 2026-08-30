@@ -23,29 +23,31 @@
 //! `conduit-auth-jwt` #133, `conduit-auth-forward` #134's sibling crate),
 //! this crate does **not** own the `RequestFilter` guard. `ConsumersGuard`
 //! (`src/filter/chain.rs` in the root crate) does three things: identify the
-//! consumer, apply a per-consumer rate limit, inject headers. The middle
-//! step needs the root crate's `RateLimiter`/`TokenBucket`
-//! (`src/filter/rate_limit.rs`) — itself not yet extracted (that's
-//! [#137](https://github.com/lopatnov/conduit/issues/137),
-//! `conduit-ratelimit`). A Layer-1 feature crate depending on a
-//! not-yet-extracted piece of the root crate would be exactly the
-//! premature/circular coupling the workspace split exists to avoid — so
+//! consumer, apply a per-consumer rate limit, inject headers. It's a
+//! `Session`-coupled request-chain guard — same category as `IpGuard`/
+//! `CorsPreflight`, which also stay in the root crate even though their
+//! *config* types moved out (`conduit-ipfilter`/`conduit-cors`, #136): chain
+//! assembly and guard ordering stay in the root crate per `CLAUDE.md`
+//! decision #20, regardless of where the types a guard carries live. So
 //! only the self-contained, side-effect-free *identification* step
 //! ([`identify::identify_consumer`], which takes `&ConsumersConfig` and
 //! `&Session` and touches no rate limiter) moves here. `ConsumersGuard`
 //! itself keeps living in `src/filter/chain.rs`, now calling
-//! [`identify::identify_consumer`] instead of its own private copy.
+//! [`identify::identify_consumer`] instead of its own private copy, and
+//! (as of #114/#137 slice 1) `conduit_ratelimit::check_key_for`
+//! for admission instead of a hand-rolled, uncapped bucket insertion.
 //!
-//! ## `Consumer::rate_limit`'s type (see `config::RateLimitConfig`'s own doc
-//! comment for the full reasoning)
+//! ## `Consumer::rate_limit`'s type
 //!
-//! `Consumer.rate_limit` uses a small, deliberately duplicated local
-//! [`config::RateLimitConfig`] rather than the root crate's own
-//! `crate::config::schema::RateLimitConfig` — the same "can't depend
-//! backwards into the root crate, and the shared type hasn't been
-//! extracted yet" constraint as the guard split above, applied to a plain
-//! data struct instead of behavior. Tracked for consolidation once #137
-//! lands.
+//! `Consumer.rate_limit` re-exports [`config::RateLimitConfig`] from
+//! `lopatnov-conduit-ratelimit` (issue #114/#137, slice 1) — the same type
+//! the root crate's `crate::config::schema::RateLimitConfig` also
+//! re-exports. Before #137 slice 1 this was a deliberately duplicated local
+//! struct (a Layer-1 crate couldn't depend on a type living in the root
+//! crate that depends on *it*, and the shared type hadn't been extracted
+//! yet) — that duplication, and the SonarCloud "Duplicated Lines on New
+//! Code" finding it caused, is resolved now that the type has its own
+//! Layer-0 crate both sides depend on.
 
 pub mod config;
 #[cfg(feature = "consumers")]
