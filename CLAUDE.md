@@ -76,9 +76,11 @@
     `conduit_rate_limit_rejected_total{site=…}`. `GET /rate-limits` (`admin/api.rs`) парсит
     все три формы и суммирует per-client бакеты в один total на (site, route) — раньше
     (до фикса) не парсил вообще ничего реального, всегда отдавал `{}` (issue #303). Redis-бэкенд
-    (`rate_limit_redis.rs`) — отдельный неймспейс, тот же класс бага (без site-scoping) остался,
-    отслеживается отдельно в issue #317, чинится вместе с извлечением Redis-бэкенда в
-    `conduit-ratelimit` (issue #137, slice 2).
+    (`crates/conduit-ratelimit/src/redis.rs`, за фичей `redis`, извлечён вместе с фиксом #317
+    как #137 slice 2) — отдельный ключевой неймспейс: `"conduit:rl:{site_label}:{window_secs}:
+    {client_key}"` для реального Redis, `"{site_label}:{client_key}:{limit}:{window_secs}"` для
+    его in-process fallback-мапы. `src/filter/rate_limit_redis.rs` в корне — тонкий facade
+    re-export.
     **История находки (2026-08-30, Step 1c аудит `rate_limit.rs`)**: до этого фикса запись здесь
     ошибочно приписывала рейт-лимитеру формат `"{site}\0{route}"` — тот формат на самом деле
     принадлежит `UpstreamRegistry.override_key()` в `src/proxy/health.rs`

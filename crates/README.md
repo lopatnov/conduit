@@ -164,23 +164,28 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   Chain assembly and guard ordering stay in the root crate's
   `src/filter/chain.rs` (`CLAUDE.md` decision #20).
 
-- **`conduit-ratelimit`** — **slice 1** of
-  [#137](https://github.com/lopatnov/conduit/issues/137) (`conduit-ratelimit`
-  full extraction is still open; this is a partial extraction, not the whole
-  issue). Owns `RateLimitConfig` (the shared `rateLimit` shape used at site/
-  route/consumer level) and the pure token-bucket admission logic (`bucket`
-  module: `TokenBucket`, `RateLimiter`, `MAX_BUCKETS`, `cleanup`,
-  `check_key`/`check_key_for` — the single capacity-checked admission point
-  every rate-limit layer now shares). **Not yet moved**: the Redis-backed
-  limiter (`src/filter/rate_limit_redis.rs`, a fixed-window counter — a real
-  algorithm difference from the token bucket, deliberately not pulled
-  forward) and the `Session`-aware `extract_key`/`check` wrappers
+- **`conduit-ratelimit`** — **slices 1-2** of
+  [#137](https://github.com/lopatnov/conduit/issues/137) (`conduit-limits` —
+  a separate, unrelated config type despite the similar name — is still
+  open; this covers rate limiting only, not the whole issue). Owns
+  `RateLimitConfig` (the shared `rateLimit` shape used at site/route/
+  consumer level), the pure token-bucket admission logic (`bucket` module:
+  `TokenBucket`, `RateLimiter`, `MAX_BUCKETS`, `cleanup`, `check_key`/
+  `check_key_for` — the single capacity-checked admission point every
+  rate-limit layer shares), and, behind this crate's own `redis` feature
+  (slice 2), the Redis-backed limiter (`redis` module — a fixed-window
+  counter, a real algorithm difference from the always-on token bucket).
+  **Not yet moved**: the `Session`-aware `extract_key`/`check` wrappers
   (`src/filter/rate_limit.rs`), which stay in the root crate for the same
-  reason `IpGuard`/`CorsPreflight` do. No `[features]` table, same always-on
-  rationale as `conduit-ipfilter`/`conduit-cors`/`conduit-security-headers`
-  above. Created to resolve a SonarCloud "Duplicated Lines on New Code"
-  finding: `conduit-auth-consumers` had carried a deliberate, documented
-  temporary duplicate of `RateLimitConfig` since #134 (a Layer-1 crate
-  couldn't depend on a type living in the root crate that depends on *it*);
-  both the root crate's and `conduit-auth-consumers`'s copies now re-export
-  this crate's single type instead.
+  reason `IpGuard`/`CorsPreflight` do. The always-on part has no `[features]`
+  table entry of its own (same always-on rationale as `conduit-ipfilter`/
+  `conduit-cors`/`conduit-security-headers` above); `redis` mirrors
+  `conduit-cache`'s always-on-base + optional-`redis` shape. Slice 1 was
+  created to resolve a SonarCloud "Duplicated Lines on New Code" finding:
+  `conduit-auth-consumers` had carried a deliberate, documented temporary
+  duplicate of `RateLimitConfig` since #134 (a Layer-1 crate couldn't depend
+  on a type living in the root crate that depends on *it*); both the root
+  crate's and `conduit-auth-consumers`'s copies now re-export this crate's
+  single type instead. Slice 2 site-scoped the Redis backend's key
+  construction (issue #317, the Redis-backend twin of #303/#304's in-memory
+  fix) while moving it.

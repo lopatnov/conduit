@@ -774,12 +774,10 @@ async fn rate_limit_allowed(
         .is_some_and(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
     {
         if let Some(rrl) = redis {
-            // Not yet site-scoped — the real-Redis and its fallback map have
-            // the same cross-site collision #304 fixed for the in-memory
-            // limiter below; tracked separately as issue #317 since it's a
-            // different key construction in a different module.
             let key = rate_limit::extract_client_key(cfg, session);
-            return rrl.check(&key, cfg.limit, cfg.window_secs).await;
+            return rrl
+                .check(site_label, &key, cfg.limit, cfg.window_secs)
+                .await;
         }
     }
     #[cfg(not(feature = "redis"))]

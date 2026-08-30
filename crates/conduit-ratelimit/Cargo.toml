@@ -2,7 +2,7 @@
 name        = "lopatnov-conduit-ratelimit"
 version.workspace    = true
 edition.workspace    = true
-description = "Rate-limit config + token-bucket admission for conduit's feature-driven workspace (issue #114/#137, slice 1)"
+description = "Rate-limit config + token-bucket admission + Redis backend for conduit's feature-driven workspace (issue #114/#137, slices 1-2)"
 license.workspace    = true
 repository.workspace = true
 
@@ -11,16 +11,31 @@ name = "conduit_ratelimit"
 path = "src/lib.rs"
 
 [dependencies]
-# Always-on, no [features] table: rate limiting itself is not gated behind
-# any Cargo feature (mirrors lopatnov-conduit-ipfilter/-cors/-security-headers,
-# CLAUDE.md decision #31's rationale — this is light logic, not a heavy
-# third-party dependency, and a silently-disabled rate limiter would be a
-# real security regression). This crate is slice 1 of #137: it owns
-# RateLimitConfig and the pure token-bucket admission logic (bucket module).
-# The Redis backend (currently src/filter/rate_limit_redis.rs) and the
-# Session-aware extract_key()/check() wrappers stay in the root crate for
-# now — see src/lib.rs for the full scope note and what a later #137 slice
-# moves next.
+# RateLimitConfig and the pure token-bucket admission logic (bucket module)
+# are always-on, no feature gate (mirrors lopatnov-conduit-ipfilter/-cors/
+# -security-headers, CLAUDE.md decision #31's rationale — this is light
+# logic, not a heavy third-party dependency, and a silently-disabled rate
+# limiter would be a real security regression).
 serde   = { workspace = true }
 dashmap = { workspace = true }
 tracing = { workspace = true }
+
+# Only needed by the Redis-backed rate limiter (`redis` module), gated
+# behind this crate's own `redis` feature — mirrors lopatnov-conduit-cache's
+# identical `redis`-gated backend and the pre-extraction
+# `#![cfg(feature = "redis")]` file-level gate on
+# src/filter/rate_limit_redis.rs. `tokio` is here (not in the always-on
+# block above) because only the Redis path's 50ms `tokio::time::timeout`
+# needs it — the always-on bucket/admission logic is fully synchronous.
+redis  = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+tokio  = { workspace = true, optional = true }
+
+[features]
+# Gates the entire `redis` module (mirrors the pre-extraction
+# `#![cfg(feature = "redis")]` on src/filter/rate_limit_redis.rs).
+redis = ["dep:redis", "dep:anyhow", "dep:tokio"]
+
+# The Session-aware extract_key()/check() wrappers (src/filter/rate_limit.rs)
+# stay in the root crate — they need pingora_proxy::Session, same reason
+# IpGuard/CorsPreflight do. See src/lib.rs for the full scope note.
