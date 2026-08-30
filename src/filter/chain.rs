@@ -24,15 +24,14 @@ use pingora_proxy::Session;
 #[cfg(feature = "consumers")]
 use crate::config::schema::ConsumersConfig;
 use crate::config::schema::{
-    ApiKeyConfig, BasicAuthConfig, CorsConfig, IpFilterConfig, LimitsConfig, MiddlewareEntry,
-    RateLimitConfig,
+    ApiKeyConfig, BasicAuthConfig, LimitsConfig, MiddlewareEntry, RateLimitConfig,
 };
 use crate::filter::rate_limit::RateLimiter;
 #[cfg(feature = "redis")]
 use crate::filter::rate_limit_redis::RedisRateLimiter;
 #[cfg(feature = "rhai")]
 use crate::filter::script;
-use crate::filter::{auth, cors, ip_filter, limits, rate_limit};
+use crate::filter::{auth, limits, rate_limit};
 use crate::handler::response;
 use uuid::Uuid;
 
@@ -108,118 +107,22 @@ impl RequestFilter for XRequestIdGuard {
     }
 }
 
-/// Rejects requests whose client IP is not in the allow-list / is in the deny-list.
-pub struct IpGuard {
-    pub cfg: IpFilterConfig,
-    /// Runtime deny-list managed via Admin API (`POST /ip-deny` / `DELETE /ip-deny`).
-    /// Checked in addition to `ipFilter.deny` from the static config.
-    pub dynamic_deny: Arc<std::sync::RwLock<Vec<String>>>,
-}
+/// Extracted into `crates/conduit-ipfilter` (issue #114/#136) — this is a
+/// facade re-export so `crate::filter::chain::IpGuard` keeps resolving to
+/// the same type at the same location for every existing call site/test.
+/// See that crate's `src/guard.rs` for the implementation: rejects requests
+/// whose client IP is not in the allow-list / is in the deny-list (including
+/// the runtime deny-list managed via Admin API `POST /ip-deny`).
+pub use conduit_ipfilter::guard::IpGuard;
 
-#[async_trait]
-impl RequestFilter for IpGuard {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        // Fast path: no static rules and no dynamic denies — nothing to check.
-        // Recover from lock poisoning here too (not just in is_dynamic_denied
-        // below) — otherwise a poisoned lock with no static rules configured
-        // short-circuits to Continue before is_dynamic_denied's own recovery
-        // logic is ever reached, silently disabling the whole dynamic deny
-        // list for exactly the sites relying on it most (dynamic-only setups).
-        let has_static = self.cfg.allow.is_some() || self.cfg.deny.is_some();
-        let has_dynamic = self
-            .dynamic_deny
-            .read()
-            .map(|l| !l.is_empty())
-            .unwrap_or_else(|e| !e.into_inner().is_empty());
-        if !has_static && !has_dynamic {
-            return Ok(FilterOutcome::Continue);
-        }
-
-        let blocked =
-            !ip_filter::is_allowed(&self.cfg, ctx.session) || self.is_dynamic_denied(ctx.session);
-        if blocked {
-            // Dry-run mode (nginx `limit_conn_module dry_run` pattern):
-            // log the violation but allow the request through.
-            if self.cfg.dry_run.unwrap_or(false) {
-                // Use the same trust_proxy-aware resolution as the actual
-                // filtering decision above — otherwise the logged IP can
-                // diverge from the IP that was actually evaluated (e.g. the
-                // direct TCP peer instead of the trusted XFF entry).
-                let trust_proxy = self.cfg.trust_proxy.unwrap_or(false);
-                let client_ip = ip_filter::client_ip_for_check(ctx.session, trust_proxy)
-                    .map(|ip| ip.to_string())
-                    .unwrap_or_else(|| "unknown".to_owned());
-                tracing::warn!(
-                    ip = %client_ip,
-                    "[dry-run] IP filter blocked — request allowed through (dryRun: true)"
-                );
-                return Ok(FilterOutcome::Continue);
-            }
-            response::write_response(
-                ctx.session,
-                403,
-                "text/plain",
-                Bytes::from_static(b"Forbidden"),
-                ctx.extra_headers,
-            )
-            .await?;
-            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-            return Ok(FilterOutcome::Handled);
-        }
-        Ok(FilterOutcome::Continue)
-    }
-}
-
-impl IpGuard {
-    /// Returns `true` when the client IP matches any entry in `dynamic_deny`.
-    ///
-    /// Holds the read lock only for the duration of the check — avoids the
-    /// previous `deny_list.clone()` that allocated a full Vec per request.
-    fn is_dynamic_denied(&self, session: &pingora_proxy::Session) -> bool {
-        // Recover from lock poisoning instead of fail-open — a panic while
-        // another request held the write lock (e.g. inside the Admin API's
-        // POST/DELETE /ip-deny handler) must not silently disable the whole
-        // dynamic deny list for every subsequent request. Matches the
-        // recovery pattern already used on the admin write-side.
-        let deny_list = self.dynamic_deny.read().unwrap_or_else(|e| e.into_inner());
-        if deny_list.is_empty() {
-            return false;
-        }
-        // Use apply_ip_filter directly while holding the read lock so we avoid
-        // cloning the deny list into a new IpFilterConfig on every request.
-        let trust_proxy = self.cfg.trust_proxy.unwrap_or(false);
-        let client_ip = ip_filter::client_ip_for_check(session, trust_proxy);
-        ip_filter::is_in_deny_list(client_ip, &deny_list)
-    }
-}
-
-/// Handles CORS preflight (`OPTIONS`) requests and echoes the appropriate headers.
-///
-/// Returns [`FilterOutcome::Handled`] for preflight so downstream filters and
-/// the upstream proxy are never reached (browsers send OPTIONS without credentials).
-pub struct CorsPreflight {
-    pub cfg: CorsConfig,
-    pub is_preflight: bool,
-    pub origin: Option<String>,
-    /// Security-headers-only set — used for preflight instead of the full
-    /// extra-headers set which may include CORS headers already.
-    pub sec_headers: Vec<(String, String)>,
-}
-
-#[async_trait]
-impl RequestFilter for CorsPreflight {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        if !self.is_preflight {
-            return Ok(FilterOutcome::Continue);
-        }
-        let origin = self.origin.as_deref().unwrap_or("");
-        let allow_pna = cors::requests_private_network_access(ctx.session);
-        cors::handle_preflight(ctx.session, &self.cfg, origin, &self.sec_headers, allow_pna)
-            .await?;
-        ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-        Ok(FilterOutcome::Handled)
-    }
-}
+/// Extracted into `crates/conduit-cors` (issue #114/#136) — this is a facade
+/// re-export so `crate::filter::chain::CorsPreflight` keeps resolving to the
+/// same type at the same location for every existing call site/test. See
+/// that crate's `src/guard.rs` for the implementation: handles CORS
+/// preflight (`OPTIONS`) requests and echoes the appropriate headers,
+/// returning `FilterOutcome::Handled` so downstream filters and the
+/// upstream proxy are never reached.
+pub use conduit_cors::guard::CorsPreflight;
 
 /// Bypasses all remaining guard filters for health, ACME challenge, and
 /// hot-reload endpoints — they must always be reachable.
@@ -238,46 +141,16 @@ impl RequestFilter for HealthBypass {
     }
 }
 
-/// Validates the `Host` request header against a configured allowlist.
-///
-/// Runs immediately after `HealthBypass` so health/ACME/hot-reload endpoints
-/// are always reachable regardless of the allowlist.  All other requests with
-/// a disallowed Host receive `400 Bad Request`.
-///
-/// Pattern from traefik `AllowedHosts` — prevents HTTP Host header injection
-/// where an application generates absolute URLs from an untrusted Host header.
-///
-/// When `securityHeaders.allowedHosts` is not explicitly configured, falls
-/// back to the site's own `host:` value (`site_host`) so this protection
-/// applies by default, not just when opted into.
-pub struct AllowedHostsGuard {
-    pub security_cfg: Option<crate::config::schema::SecurityHeadersConfig>,
-    pub site_host: Option<String>,
-    pub host: String,
-}
-
-#[async_trait]
-impl RequestFilter for AllowedHostsGuard {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        if crate::filter::security_headers::is_host_allowed(
-            self.security_cfg.as_ref(),
-            self.site_host.as_deref(),
-            &self.host,
-        ) {
-            return Ok(FilterOutcome::Continue);
-        }
-        crate::handler::response::write_response(
-            ctx.session,
-            400,
-            "text/plain",
-            bytes::Bytes::from_static(b"Bad Request: host not allowed"),
-            ctx.extra_headers,
-        )
-        .await?;
-        ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-        Ok(FilterOutcome::Handled)
-    }
-}
+/// Extracted into `crates/conduit-security-headers` (issue #114/#136) — this
+/// is a facade re-export so `crate::filter::chain::AllowedHostsGuard` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test. See that crate's `src/guard.rs` for the implementation:
+/// validates the `Host` request header against a configured allowlist
+/// (falling back to the site's own `host:` value when `securityHeaders.
+/// allowedHosts` isn't explicitly set), returning `400 Bad Request` on a
+/// mismatch. Runs immediately after `HealthBypass` so health/ACME/hot-reload
+/// endpoints are always reachable regardless of the allowlist.
+pub use conduit_security_headers::guard::AllowedHostsGuard;
 
 /// Enforces request body and header size limits.
 pub struct LimitsGuard {

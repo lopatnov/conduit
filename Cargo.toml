@@ -37,6 +37,9 @@ lopatnov-conduit-auth-jwt    = { path = "crates/conduit-auth-jwt", version = "2.
 lopatnov-conduit-auth-forward   = { path = "crates/conduit-auth-forward", version = "2.0.0" }
 lopatnov-conduit-auth-consumers = { path = "crates/conduit-auth-consumers", version = "2.0.0" }
 lopatnov-conduit-cache          = { path = "crates/conduit-cache", version = "2.0.0" }
+lopatnov-conduit-ipfilter          = { path = "crates/conduit-ipfilter", version = "2.0.0" }
+lopatnov-conduit-cors              = { path = "crates/conduit-cors", version = "2.0.0" }
+lopatnov-conduit-security-headers  = { path = "crates/conduit-security-headers", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -277,6 +280,23 @@ lopatnov-conduit-auth-consumers.workspace = true
 # `lopatnov-conduit-cache/redis` below (plain, not weak `?/` — see the
 # `redis` feature's own comment for why weak syntax doesn't apply here).
 lopatnov-conduit-cache.workspace          = true
+# Mandatory, and — unlike every crate above — has no `[features]` table to
+# forward into at all: `ipFilter` stays always-on/default-on, never gated
+# behind a Cargo feature (`CLAUDE.md` decision #31, 2026-08-23). Owns
+# `IpFilterConfig` and the real `guard::IpGuard`, both compiled into every
+# build. See that crate's `src/lib.rs` doc comment for why this extraction
+# (#114/#136) doesn't follow the config-always-on/guard-feature-gated split
+# used by `conduit-faults`/`conduit-auth-jwt`/etc.
+lopatnov-conduit-ipfilter.workspace         = true
+# Mandatory, no `[features]` table — same always-on rationale as
+# `lopatnov-conduit-ipfilter` above (`CLAUDE.md` decision #31). Owns
+# `CorsConfig`/`CorsOptions` and the real `guard::CorsPreflight`.
+lopatnov-conduit-cors.workspace             = true
+# Mandatory, no `[features]` table — same always-on rationale as
+# `lopatnov-conduit-ipfilter` above (`CLAUDE.md` decision #31). Owns
+# `SecurityHeadersConfig`/`SecurityHeadersOptions` and the real
+# `guard::AllowedHostsGuard`.
+lopatnov-conduit-security-headers.workspace = true
 
 # --- Config & parsing ---
 serde.workspace      = true
