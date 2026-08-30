@@ -18,6 +18,50 @@ pub struct FaultInjectionGuard {
     pub cfg: FaultInjectionConfig,
 }
 
+/// Pure abort/delay decision, extracted from [`FaultInjectionGuard::apply`]
+/// for testability — takes `roll` directly instead of computing it
+/// internally from wall-clock time, so a test can exercise exact boundary
+/// values deterministically.
+///
+/// Issue #282: the delay check used to compare `roll < delay.percent`
+/// independently of the abort check, so the two percentage ranges
+/// overlapped instead of being additive. With `abort.percent: 5,
+/// delay.percent: 10`, rolls in `[0, 5)` always hit the abort branch first
+/// — only rolls in `[5, 10)` ever reached the delay check, so only 5% of
+/// requests were delayed, not the configured 10%. Offsetting the delay
+/// threshold by `abort.percent` (0.0 when abort isn't configured) makes the
+/// delay range start exactly where the abort range ends —
+/// `[abort_percent, abort_percent + delay.percent)` — disjoint from the
+/// abort range and restoring the configured delay proportion.
+#[derive(Debug, PartialEq)]
+enum FaultDecision {
+    Continue,
+    Delay { ms: u64 },
+    Abort { status: u16, body: String },
+}
+
+fn decide(cfg: &FaultInjectionConfig, roll: f64) -> FaultDecision {
+    if let Some(ref abort) = cfg.abort {
+        if roll < abort.percent {
+            let status = abort.status.unwrap_or(503).clamp(100, 999);
+            let body = abort
+                .body
+                .clone()
+                .unwrap_or_else(|| "Fault injected".to_owned());
+            return FaultDecision::Abort { status, body };
+        }
+    }
+
+    if let Some(ref delay) = cfg.delay {
+        let abort_percent = cfg.abort.as_ref().map_or(0.0, |a| a.percent);
+        if roll < abort_percent + delay.percent {
+            return FaultDecision::Delay { ms: delay.ms };
+        }
+    }
+
+    FaultDecision::Continue
+}
+
 #[async_trait]
 impl RequestFilter for FaultInjectionGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
@@ -33,14 +77,8 @@ impl RequestFilter for FaultInjectionGuard {
             (ns % 10_000.0) / 100.0 // 0.0 – 99.99
         };
 
-        // Abort injection — checked first.
-        if let Some(ref abort) = self.cfg.abort {
-            if roll < abort.percent {
-                let status = abort.status.unwrap_or(503).clamp(100, 999);
-                let body = abort
-                    .body
-                    .clone()
-                    .unwrap_or_else(|| "Fault injected".to_owned());
+        match decide(&self.cfg, roll) {
+            FaultDecision::Abort { status, body } => {
                 response::write_response(
                     ctx.session,
                     status,
@@ -50,18 +88,14 @@ impl RequestFilter for FaultInjectionGuard {
                 )
                 .await?;
                 ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(FilterOutcome::Handled);
+                Ok(FilterOutcome::Handled)
             }
-        }
-
-        // Delay injection.
-        if let Some(ref delay) = self.cfg.delay {
-            if roll < delay.percent {
-                tokio::time::sleep(std::time::Duration::from_millis(delay.ms)).await;
+            FaultDecision::Delay { ms } => {
+                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                Ok(FilterOutcome::Continue)
             }
+            FaultDecision::Continue => Ok(FilterOutcome::Continue),
         }
-
-        Ok(FilterOutcome::Continue)
     }
 }
 
@@ -206,5 +240,84 @@ mod tests {
 
         let outcome = guard.apply(&mut ctx).await.expect("apply");
         assert!(matches!(outcome, FilterOutcome::Continue));
+    }
+
+    // ── decide() — pure abort/delay boundary logic (issue #282) ─────────
+
+    fn cfg_with(abort_percent: f64, delay_percent: f64, delay_ms: u64) -> FaultInjectionConfig {
+        FaultInjectionConfig {
+            abort: Some(FaultAbort {
+                percent: abort_percent,
+                status: None,
+                body: None,
+            }),
+            delay: Some(FaultDelay {
+                percent: delay_percent,
+                ms: delay_ms,
+            }),
+        }
+    }
+
+    #[test]
+    fn decide_abort_and_delay_ranges_are_additive_not_overlapping() {
+        // abort=5%, delay=10% -> combined range is [0, 15): [0,5) aborts,
+        // [5,15) delays. Before #282's fix, the delay check compared
+        // `roll < delay.percent` (10) directly, so only [5,10) delayed --
+        // 5% of requests, not the configured 10%.
+        let cfg = cfg_with(5.0, 10.0, 42);
+
+        // Squarely inside the abort range.
+        assert!(matches!(decide(&cfg, 2.0), FaultDecision::Abort { .. }));
+        // At the abort/delay boundary: exactly abort.percent must NOT abort
+        // (abort's own check is `roll < percent`, strictly less-than) --
+        // falls through to delay.
+        assert_eq!(decide(&cfg, 5.0), FaultDecision::Delay { ms: 42 });
+        // The actual regression case: under the pre-#282 bug this compared
+        // `roll < delay.percent` = `12.0 < 10.0` = false -> Continue. The
+        // fix compares `roll < abort_percent + delay.percent` =
+        // `12.0 < 15.0` = true -> Delay, restoring the full 10%-wide range.
+        assert_eq!(decide(&cfg, 12.0), FaultDecision::Delay { ms: 42 });
+        // Just before the combined range ends (5 + 10 = 15).
+        assert_eq!(decide(&cfg, 14.9), FaultDecision::Delay { ms: 42 });
+        // At and beyond the combined range end -- neither fires.
+        assert_eq!(decide(&cfg, 15.0), FaultDecision::Continue);
+        assert_eq!(decide(&cfg, 50.0), FaultDecision::Continue);
+    }
+
+    #[test]
+    fn decide_delay_only_unaffected_by_missing_abort() {
+        // No abort configured -- abort_percent defaults to 0.0, so the
+        // delay range is exactly [0, delay.percent), matching pre-#282
+        // behavior for the no-abort case (this fix only changes behavior
+        // when abort *is* configured).
+        let cfg = FaultInjectionConfig {
+            abort: None,
+            delay: Some(FaultDelay {
+                percent: 10.0,
+                ms: 7,
+            }),
+        };
+        assert_eq!(decide(&cfg, 0.0), FaultDecision::Delay { ms: 7 });
+        assert_eq!(decide(&cfg, 9.9), FaultDecision::Delay { ms: 7 });
+        assert_eq!(decide(&cfg, 10.0), FaultDecision::Continue);
+    }
+
+    #[test]
+    fn decide_abort_status_and_body_defaults() {
+        let cfg = FaultInjectionConfig {
+            abort: Some(FaultAbort {
+                percent: 100.0,
+                status: None,
+                body: None,
+            }),
+            delay: None,
+        };
+        assert_eq!(
+            decide(&cfg, 0.0),
+            FaultDecision::Abort {
+                status: 503,
+                body: "Fault injected".to_owned()
+            }
+        );
     }
 }
