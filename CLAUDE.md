@@ -915,7 +915,7 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 
 | Date/time (UTC) | New Dependabot PRs found/acted on | Orphan branches flagged | Notes |
 |---|---|---|---|
-| 2026-08-28 ~22:24 (real `/feature-workspace-cycle` firing on the new trigger `trig_01Ehd6ceyaWxB6aytQwuydsp`) | 0 new — fast path, `#272` (`rand` bump) already known/held | not re-checked (fast path, <24h) | Confirmed GitHub MCP tools intact on a real Routine-driven firing into the new session. Found issue #134 was never actually closed despite its own comment saying so — `issue_write` close attempt hit the known GraphQL rate-limit pool twice, deferred to next firing rather than hammered. Dispatched `crate-extractor` (background worktree, branch `feat/extract-conduit-cache-135`) for #135; this firing ends at that checkpoint. Full detail in `.claude/logs/dependabot-hygiene.md`. |
+| 2026-08-30 ~14:20 (real `/feature-workspace-cycle` firing, same local session as the day's ~00:00 firing) | 0 open | 10 stale local branches deleted (all confirmed merged/superseded first) | Picked up #137 (Phase 3.9) slice 2: closed #303+#304 (rate-limit key-format unification + site-scoping) via [PR #319](https://github.com/lopatnov/conduit/pull/319), found+fixed the same bug at the route level in passing, filed #317 (Redis-backend twin, deferred) and #320 (cosmetic edge case). Also shipped [PR #318](https://github.com/lopatnov/conduit/pull/318) fixing a `.gitignore` gap that let `git add -A` almost stage 2.5GB of build cache. Both PRs got mandatory `security-engineer` PASS before merge. Full detail in `.claude/logs/dependabot-hygiene.md`. |
 
 ## Tokio 1.52.3 — возможности (исследовано)
 
