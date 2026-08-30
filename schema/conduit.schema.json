@@ -455,7 +455,7 @@
             "skipPaths":  { "type": "array", "items": { "type": "string" } },
             "store": {
               "type": "string",
-              "description": "Backend for the rate-limiter state. \"memory\" (default) uses an in-process DashMap; a Redis URL (e.g. \"redis://127.0.0.1:6379\") uses a Redis fixed-window counter with automatic fallback to memory on failure.",
+              "description": "Accepted and syntax-validated, but has no effect for per-route rate limiting, which always uses in-memory state — Redis applies only at the site level.",
               "examples": ["memory", "redis://127.0.0.1:6379"]
             }
           },

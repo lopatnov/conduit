@@ -30,6 +30,9 @@ pub struct RateLimitConfig {
     /// - `"memory"` (default) — in-process `DashMap<String, TokenBucket>`.
     /// - `"redis://host:port"` — Redis-backed, with automatic failover to the
     ///   in-memory bucket when Redis is unavailable.
+    /// - `"rediss://host:port"` — same as above, over TLS (for Redis deployments
+    ///   that require in-transit encryption, e.g. AWS ElastiCache TLS, Azure
+    ///   Cache for Redis).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<String>,
     /// Dry-run mode — log violations but allow requests through.

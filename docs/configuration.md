@@ -2311,6 +2311,7 @@ proxy:
 | `windowSecs` | number   | —          | Sliding window duration (seconds) — **required**                                                            |
 | `limit`      | number   | —          | Max requests per key per window — **required**                                                              |
 | `burst`      | number   | `0`        | Extra burst capacity above `limit` (see below)                                                              |
+| `algorithm`  | string   | —          | Optional; only `"token-bucket"` is supported — a typo fails validation                                      |
 | `keyBy`      | string   | `"ip"`     | `"ip"` or `"header:<name>"`                                                                                 |
 | `store`      | string   | `"memory"` | `"memory"` or `"redis://host:port"` (`--features redis` required for Redis)                                 |
 | `skipPaths`  | string[] | —          | Paths that bypass rate limiting — see [skipPaths glob syntax](#skippaths-glob-syntax)                       |

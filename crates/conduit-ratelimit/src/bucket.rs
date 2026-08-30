@@ -114,8 +114,14 @@ pub fn check_key(
     // Slow path: new key — check capacity before inserting.
     if limiter.len() >= MAX_BUCKETS {
         // Map is full: treat as rate-limited rather than allocating another bucket.
+        // Deliberately not logging the raw key: `keyBy: "header:<name>"` can key
+        // by an arbitrary request header (e.g. an API key or session token), so
+        // logging it verbatim would leak secrets into the log stream. Log the
+        // key's length instead — enough to spot an anomalous pattern (e.g. an
+        // attacker cycling through many distinct long values) without exposing
+        // the value itself (CodeRabbit finding on PR #311's review).
         tracing::warn!(
-            key = %key,
+            key_len = key.len(),
             buckets = limiter.len(),
             "rate-limit bucket cap reached — treating new key as rate-limited"
         );
