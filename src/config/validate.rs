@@ -8,8 +8,8 @@ pub use conduit_config_core::validation::{partition_by_severity, Severity, Valid
 use crate::config::schema::{
     ApiKeyConfig, AppConfig, Consumer, ConsumerJwtConfig, ConsumersSharedJwtConfig, FallbackConfig,
     IpFilterConfig, LoadBalanceStrategy, MetricsConfig, MiddlewareEntry, ProxyConfig,
-    ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RedirectRule, RewriteRule, SiteConfig,
-    TcpConfig, TlsClientAuth, TlsConfig, UploadConfig,
+    ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig, RedirectRule, RewriteRule,
+    SiteConfig, TcpConfig, TlsClientAuth, TlsConfig, UploadConfig,
 };
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -643,15 +643,7 @@ fn validate_site_request_handling(
         validate_metrics(metrics, prefix, errors);
     }
     if let Some(rate_limit) = &site.rate_limit {
-        validate_rate_limit(
-            rate_limit.window_secs,
-            rate_limit.limit,
-            rate_limit.algorithm.as_deref(),
-            rate_limit.key_by.as_deref(),
-            rate_limit.store.as_deref(),
-            prefix,
-            errors,
-        );
+        validate_rate_limit(rate_limit, prefix, errors);
     }
     if let Some(redirects) = &site.redirects {
         validate_redirect_rules(redirects, prefix, errors);
@@ -861,15 +853,7 @@ fn validate_consumer_entry(
         }
     }
     if let Some(ref rl) = c.rate_limit {
-        validate_rate_limit(
-            rl.window_secs,
-            rl.limit,
-            rl.algorithm.as_deref(),
-            rl.key_by.as_deref(),
-            rl.store.as_deref(),
-            &entry_prefix,
-            errors,
-        );
+        validate_rate_limit(rl, &entry_prefix, errors);
     }
 }
 
@@ -1046,32 +1030,24 @@ fn validate_middleware(
     }
 }
 
-/// Validate the shared rate-limit rules (`windowSecs`/`limit`/`store`).
+/// Validate the shared rate-limit rules (`windowSecs`/`limit`/`algorithm`/
+/// `keyBy`/`store`).
 ///
-/// Takes primitive fields rather than a concrete `&RateLimitConfig` because
-/// two structurally-identical-but-nominally-distinct types now carry this
-/// data: the root crate's own `crate::config::schema::RateLimitConfig`
-/// (site-level/route-level `rateLimit`) and
-/// `conduit_auth_consumers::RateLimitConfig` (per-consumer `rateLimit` —
-/// see that type's own doc comment for why it's a separate type, issue
-/// #114/#134). Taking fields instead of a struct lets both call sites below
-/// share the one real set of validation rules instead of duplicating them.
-fn validate_rate_limit(
-    window_secs: u64,
-    limit: u64,
-    algorithm: Option<&str>,
-    key_by: Option<&str>,
-    store: Option<&str>,
-    prefix: &str,
-    errors: &mut Vec<ValidationError>,
-) {
-    if window_secs == 0 {
+/// Takes a concrete `&RateLimitConfig` — as of issue #114/#137 slice 1, the
+/// site/route-level type (`crate::config::schema::RateLimitConfig`) and the
+/// per-consumer type (`conduit_auth_consumers::RateLimitConfig`) are the
+/// *same* type (both re-export `conduit_ratelimit::RateLimitConfig`),
+/// so all three call sites below can share one signature. Before #137 this
+/// took primitive fields specifically because the two were nominally
+/// distinct types.
+fn validate_rate_limit(cfg: &RateLimitConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
+    if cfg.window_secs == 0 {
         errors.push(ValidationError::new(
             format!("{prefix}.rateLimit.windowSecs"),
             "windowSecs must be greater than 0",
         ));
     }
-    if limit == 0 {
+    if cfg.limit == 0 {
         errors.push(ValidationError::new(
             format!("{prefix}.rateLimit.limit"),
             "limit must be greater than 0",
@@ -1081,7 +1057,7 @@ fn validate_rate_limit(
     // is caught at config-load time rather than silently ignored (it was previously
     // parsed and schema-declared but never read anywhere, see issue tracking the
     // 2026-08-30 rate_limit.rs integrity audit).
-    if let Some(algorithm) = algorithm {
+    if let Some(algorithm) = cfg.algorithm.as_deref() {
         if algorithm != "token-bucket" {
             errors.push(ValidationError::new(
                 format!("{prefix}.rateLimit.algorithm"),
@@ -1094,7 +1070,7 @@ fn validate_rate_limit(
     // `None` for a malformed name and silently falls back to a shared "unknown" bucket,
     // collapsing every client into one rate limit. Catch the typo at config-load time
     // instead (CodeRabbit finding on PR #302's review).
-    if let Some(key_by) = key_by {
+    if let Some(key_by) = cfg.key_by.as_deref() {
         if let Some(header_name) = key_by.strip_prefix("header:") {
             let valid = !header_name.is_empty()
                 && header_name
@@ -1119,7 +1095,7 @@ fn validate_rate_limit(
     // Validate the store field: must be "memory", a redis:// URL (plaintext),
     // or a rediss:// URL (TLS — requires Redis with in-transit encryption,
     // e.g. AWS ElastiCache TLS, Azure Cache for Redis).
-    if let Some(store) = store {
+    if let Some(store) = cfg.store.as_deref() {
         let valid_store =
             store == "memory" || store.starts_with("redis://") || store.starts_with("rediss://");
         if !valid_store {
@@ -1471,6 +1447,13 @@ fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<
     }
     if let Some(cache) = &cfg.cache {
         validate_cache_config(cache, &format!("{prefix}.cache"), errors);
+    }
+    // Per-route rateLimit was never validated at all before issue #310 (found
+    // independently by security-engineer and CodeRabbit reviewing #309) — a
+    // malformed keyBy/zero windowSecs/unknown algorithm/invalid store all
+    // passed silently. Now shares the same validation as site/consumer level.
+    if let Some(rate_limit) = &cfg.rate_limit {
+        validate_rate_limit(rate_limit, prefix, errors);
     }
 }
 

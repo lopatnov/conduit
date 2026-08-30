@@ -31,7 +31,7 @@ use std::time::Duration;
 use dashmap::DashMap;
 use redis::aio::ConnectionManager;
 
-use super::rate_limit::TokenBucket;
+use conduit_ratelimit::{check_key, TokenBucket};
 
 // ── RedisRateLimiter ──────────────────────────────────────────────────────────
 
@@ -107,10 +107,12 @@ impl RedisRateLimiter {
         // Include limit and window_secs in the key so that post-reload config
         // changes are picked up immediately rather than reusing a stale bucket.
         let key = format!("{client_key}:{limit}:{window_secs}");
-        self.fallback
-            .entry(key)
-            .or_insert_with(|| TokenBucket::new(limit, 0, window_secs))
-            .try_consume()
+        // Routed through the shared MAX_BUCKETS-capped admission point (issue
+        // #305's fallback-path counterpart) instead of an uncapped
+        // entry()/or_insert_with() — this map has no cap check of its own.
+        // burst is always 0 here: Redis's fixed-window counter has no burst
+        // concept, and this fallback path preserves that (issue #306).
+        check_key(&self.fallback, &key, limit, 0, window_secs)
     }
 
     /// Evict stale entries from the in-memory fallback map.

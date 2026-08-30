@@ -12,12 +12,13 @@ path = "src/lib.rs"
 
 [dependencies]
 # ConsumersConfig/Consumer/etc. (config.rs) are always compiled — see
-# src/lib.rs doc comment. `config::RateLimitConfig` is a deliberate,
-# documented duplicate of the root crate's own
-# `crate::config::schema::RateLimitConfig` — see that type's own doc
-# comment for why.
+# src/lib.rs doc comment. `config::RateLimitConfig` is a re-export of
+# `lopatnov-conduit-ratelimit`'s type (issue #114/#137 slice 1) — this used
+# to be a deliberate, documented duplicate of the root crate's own type, see
+# `Consumer::rate_limit`'s doc comment for the history.
 serde    = { workspace = true }
 indexmap = { workspace = true }
+lopatnov-conduit-ratelimit = { workspace = true }
 
 # Everything below is only needed by the real consumer-identification logic
 # (`identify`), gated behind this crate's own `consumers` feature (mirrors

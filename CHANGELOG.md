@@ -7,6 +7,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **Per-route and per-consumer rate limiting no longer bypass the shared
+  memory-exhaustion cap.** `rateLimit` at the site level has always refused
+  to create more than 100,000 distinct token buckets, to stop an attacker
+  sending unbounded unique `keyBy: "header:X-Name"` values from exhausting
+  memory. Per-route and per-consumer rate limits shared the same underlying
+  map but bypassed that cap entirely — confirmed as a real DoS vector on the
+  documented usage pattern. All three layers (plus the Redis fallback path)
+  now share one capacity-checked admission point.
+- **Per-route `rateLimit` is now validated at config-load time.** Previously
+  `windowSecs`/`limit`/`algorithm`/`keyBy`/`store` on a per-route rate limit
+  were parsed but never checked — a malformed `keyBy: "header:bad name"`
+  silently collapsed every client into one shared bucket at runtime instead
+  of failing validation up front. Site-level and per-consumer rate limits
+  already validated these fields; per-route now does too, matching them.
+
+### Changed
+
+- `RateLimitConfig` moved to its own crate (`conduit-ratelimit`, issue
+  #114/#137 slice 1) — no config shape or behavior change, this closes a
+  code-duplication finding between the root crate and
+  `conduit-auth-consumers`.
+
 ---
 
 ## [1.2.0] — 2026-08-23

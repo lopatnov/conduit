@@ -2311,6 +2311,7 @@ proxy:
 | `windowSecs` | number   | —          | Sliding window duration (seconds) — **required**                                                            |
 | `limit`      | number   | —          | Max requests per key per window — **required**                                                              |
 | `burst`      | number   | `0`        | Extra burst capacity above `limit` (see below)                                                              |
+| `algorithm`  | string   | —          | Optional; only `"token-bucket"` is supported — a typo fails validation                                      |
 | `keyBy`      | string   | `"ip"`     | `"ip"` or `"header:<name>"`                                                                                 |
 | `store`      | string   | `"memory"` | `"memory"` or `"redis://host:port"` (`--features redis` required for Redis)                                 |
 | `skipPaths`  | string[] | —          | Paths that bypass rate limiting — see [skipPaths glob syntax](#skippaths-glob-syntax)                       |
@@ -2330,6 +2331,17 @@ rateLimit:
   limit: 60
   burst: 20
 ```
+
+**Validation applies at every level.** `windowSecs`/`limit`/`algorithm`/`keyBy`/`store`
+are checked at config-load and reload time for site-level, per-route, and per-consumer
+`rateLimit` blocks alike — a malformed value (e.g. `keyBy: "header:bad name"`, which
+contains a space and isn't a valid HTTP header name) fails validation instead of
+silently collapsing every client into one shared bucket at runtime.
+
+**`dryRun` and `store` (Redis) currently only take effect at the site level.** Setting
+either on a per-route or per-consumer `rateLimit` is accepted (and now validated for
+syntax) but has no effect yet — both layers always enforce in-memory. `burst` does work
+at all three levels.
 
 ---
 

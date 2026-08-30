@@ -2941,6 +2941,7 @@ dependencies = [
  "lopatnov-conduit-faults",
  "lopatnov-conduit-ipfilter",
  "lopatnov-conduit-otlp",
+ "lopatnov-conduit-ratelimit",
  "lopatnov-conduit-security-headers",
  "lopatnov-conduit-tcp",
  "lopatnov-conduit-upload",
@@ -3014,6 +3015,7 @@ dependencies = [
  "jsonwebtoken",
  "lopatnov-conduit-auth-jwt",
  "lopatnov-conduit-core",
+ "lopatnov-conduit-ratelimit",
  "pingora-core",
  "pingora-proxy",
  "serde",
@@ -3161,6 +3163,15 @@ dependencies = [
  "serde",
  "serial_test",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "lopatnov-conduit-ratelimit"
+version = "2.0.0"
+dependencies = [
+ "dashmap",
+ "serde",
  "tracing",
 ]
 

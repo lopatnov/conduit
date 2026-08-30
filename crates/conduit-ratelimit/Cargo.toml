@@ -1,0 +1,26 @@
+[package]
+name        = "lopatnov-conduit-ratelimit"
+version.workspace    = true
+edition.workspace    = true
+description = "Rate-limit config + token-bucket admission for conduit's feature-driven workspace (issue #114/#137, slice 1)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_ratelimit"
+path = "src/lib.rs"
+
+[dependencies]
+# Always-on, no [features] table: rate limiting itself is not gated behind
+# any Cargo feature (mirrors lopatnov-conduit-ipfilter/-cors/-security-headers,
+# CLAUDE.md decision #31's rationale — this is light logic, not a heavy
+# third-party dependency, and a silently-disabled rate limiter would be a
+# real security regression). This crate is slice 1 of #137: it owns
+# RateLimitConfig and the pure token-bucket admission logic (bucket module).
+# The Redis backend (currently src/filter/rate_limit_redis.rs) and the
+# Session-aware extract_key()/check() wrappers stay in the root crate for
+# now — see src/lib.rs for the full scope note and what a later #137 slice
+# moves next.
+serde   = { workspace = true }
+dashmap = { workspace = true }
+tracing = { workspace = true }

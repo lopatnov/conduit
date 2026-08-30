@@ -40,6 +40,7 @@ lopatnov-conduit-cache          = { path = "crates/conduit-cache", version = "2.
 lopatnov-conduit-ipfilter          = { path = "crates/conduit-ipfilter", version = "2.0.0" }
 lopatnov-conduit-cors              = { path = "crates/conduit-cors", version = "2.0.0" }
 lopatnov-conduit-security-headers  = { path = "crates/conduit-security-headers", version = "2.0.0" }
+lopatnov-conduit-ratelimit         = { path = "crates/conduit-ratelimit", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -297,6 +298,13 @@ lopatnov-conduit-cors.workspace             = true
 # `SecurityHeadersConfig`/`SecurityHeadersOptions` and the real
 # `guard::AllowedHostsGuard`.
 lopatnov-conduit-security-headers.workspace = true
+# Mandatory, no `[features]` table — same always-on rationale as
+# `lopatnov-conduit-ipfilter` above (`CLAUDE.md` decision #31's rationale
+# extended to rate limiting). Slice 1 of #137: owns `RateLimitConfig` and the
+# pure token-bucket admission logic; the Redis backend and `Session`-aware
+# wrappers stay in this crate's own `src/filter/rate_limit{,_redis}.rs` for
+# now — see `crates/conduit-ratelimit/src/lib.rs` for the full scope note.
+lopatnov-conduit-ratelimit.workspace         = true
 
 # --- Config & parsing ---
 serde.workspace      = true

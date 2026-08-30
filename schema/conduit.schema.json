@@ -450,8 +450,14 @@
             "windowSecs": { "type": "integer", "minimum": 1 },
             "limit":      { "type": "integer", "minimum": 1 },
             "burst":      { "type": "integer", "minimum": 0 },
-            "keyBy":      { "type": "string" },
-            "skipPaths":  { "type": "array", "items": { "type": "string" } }
+            "algorithm":  { "type": "string", "enum": ["token-bucket"] },
+            "keyBy":      { "type": "string", "pattern": "^(ip|header:[!#$%&'*+.^_`|~0-9A-Za-z-]+)$", "examples": ["ip", "header:X-User-ID"] },
+            "skipPaths":  { "type": "array", "items": { "type": "string" } },
+            "store": {
+              "type": "string",
+              "description": "Accepted and syntax-validated, but has no effect for per-route rate limiting, which always uses in-memory state — Redis applies only at the site level.",
+              "examples": ["memory", "redis://127.0.0.1:6379"]
+            }
           },
           "description": "Per-route rate limit (in addition to site-level rateLimit). dryRun/store are site-level-only fields and have no effect here."
         },
@@ -710,7 +716,12 @@
       "properties": {
         "windowSecs": { "type": "integer", "minimum": 1 },
         "limit":      { "type": "integer", "minimum": 1 },
-        "burst":      { "type": "integer", "minimum": 0 }
+        "burst":      { "type": "integer", "minimum": 0 },
+        "algorithm":  { "type": "string", "enum": ["token-bucket"] },
+        "keyBy":      { "type": "string", "pattern": "^(ip|header:[!#$%&'*+.^_`|~0-9A-Za-z-]+)$", "description": "Validated for syntax, but has no effect at consumer level — the bucket key is always \"consumer:{username}\", not derived from the request." },
+        "skipPaths":  { "type": "array", "items": { "type": "string" } },
+        "store":      { "type": "string", "description": "Validated for syntax, but has no effect at consumer level yet — always enforces in-memory." },
+        "dryRun":     { "type": "boolean", "description": "Validated for syntax, but has no effect at consumer level yet — always enforces." }
       }
     }
   }
