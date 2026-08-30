@@ -379,8 +379,11 @@ rhai = { workspace = true, optional = true }
 # [dev-dependencies] one below (tests/auth.rs generates test tokens).
 reqwest.workspace = true
 
-# --- Redis-backed rate limiting & caching (feature: redis) ---
-redis = { workspace = true, optional = true }
+# Redis-backed rate limiting AND caching both live entirely in their owning
+# crates as of #114/#137 slice 2 (rate limiting) / #114/#135 (caching) — the
+# root crate has no direct `redis::` usage left, so there is no root
+# [dependencies] entry to gate behind `redis` here (see the `redis` feature
+# below, which forwards only into those two crates' own `redis` features).
 
 # --- Kubernetes provider (optional feature) ---
 kube        = { workspace = true, optional = true }
@@ -461,22 +464,24 @@ tcp = ["lopatnov-conduit-tcp/tcp"]
 upload = ["lopatnov-conduit-upload/upload"]
 
 # ── Storage backends ───────────────────────────────────────────────────────────
-# Redis-backed rate limiting (rateLimit.store: "redis://...", not yet
-# extracted — issue #137) AND caching (cache.store: "redis://...",
-# `crates/conduit-cache`'s own `redis` feature, #114/#135). `dep:redis`
-# covers the former; `lopatnov-conduit-cache/redis` forwards into the
-# latter. Cargo's weak-dependency-feature syntax (`pkg?/feature`) was
-# considered here to keep the two `redis` crate call sites from bleeding into
-# each other via Cargo feature unification, but it only applies to
-# *optional* dependencies — `cargo check` rejects `?` on
-# `lopatnov-conduit-cache` because it's a mandatory dependency (same as every
-# other extracted feature crate, since `CacheConfig` must stay
+# Redis-backed rate limiting (rateLimit.store: "redis://...",
+# `crates/conduit-ratelimit`'s own `redis` feature, #114/#137 slice 2) AND
+# caching (cache.store: "redis://...", `crates/conduit-cache`'s own `redis`
+# feature, #114/#135). No root [dependencies] entry to gate here — root has
+# no direct `redis::` crate usage as of #137 slice 2 (its last direct call
+# site, src/filter/rate_limit_redis.rs, is now a facade over `conduit_
+# ratelimit::redis`). Cargo's weak-dependency-feature syntax (`pkg?/feature`)
+# was considered to keep the two crates' `redis` features from bleeding into
+# each other via Cargo feature unification, but it only applies to *optional*
+# dependencies — `cargo check` rejects `?` on `lopatnov-conduit-cache`/
+# `lopatnov-conduit-ratelimit` because both are mandatory dependencies (same
+# as every other extracted feature crate, since their config types must stay
 # always-compiled; see the [dependencies] comment above), so the plain form
 # is used instead. The underlying concern is still addressed structurally:
-# `conduit-cache`'s `redis` Cargo feature is its own crate-local namespace,
-# entirely separate from this crate's `dep:redis` toggle — enabling one never
-# implicitly enables the other, regardless of `?`.
-redis = ["dep:redis", "lopatnov-conduit-cache/redis"]
+# each crate's `redis` Cargo feature is its own crate-local namespace,
+# entirely separate from the other's — enabling one never implicitly enables
+# the other, regardless of `?`.
+redis = ["lopatnov-conduit-cache/redis", "lopatnov-conduit-ratelimit/redis"]
 # Response caching (proxy.*.cache config). `CacheConfig` moved to
 # `crates/conduit-cache` (#114/#135) and is always a dependency (see the
 # [dependencies] comment above); this forwards into that crate's own `cache`

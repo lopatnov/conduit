@@ -2956,7 +2956,6 @@ dependencies = [
  "prometheus 0.14.0",
  "rand_core 0.6.4",
  "rcgen",
- "redis",
  "regex",
  "reqwest",
  "rhai",
@@ -3170,8 +3169,11 @@ dependencies = [
 name = "lopatnov-conduit-ratelimit"
 version = "2.0.0"
 dependencies = [
+ "anyhow",
  "dashmap",
+ "redis",
  "serde",
+ "tokio",
  "tracing",
 ]
 

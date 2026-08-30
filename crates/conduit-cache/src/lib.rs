@@ -53,13 +53,15 @@
 //! `redis` is forwarded from the root's own `redis` feature
 //! (`lopatnov-conduit-cache/redis`) — a *weak* dependency feature
 //! (`lopatnov-conduit-cache?/redis`) was considered to further insulate this
-//! from the root crate's not-yet-extracted `rate_limit_redis.rs` (issue
-//! #137), which uses the same `redis` crate for a different purpose, but
+//! from `lopatnov-conduit-ratelimit`'s own `redis` feature (issue #137
+//! slice 2), which uses the same `redis` crate for a different purpose, but
 //! Cargo's `?` syntax only applies to *optional* dependencies and
 //! `lopatnov-conduit-cache` is mandatory (like every other extracted feature
 //! crate — `CacheConfig` must stay always-compiled). The separation is still
 //! structural: this crate's `redis` feature is its own Cargo-feature
-//! namespace, independent of the root's `dep:redis` toggle. See
+//! namespace, independent of `conduit-ratelimit`'s. (The root crate itself
+//! has no `dep:redis` of its own any more — its last direct usage moved out
+//! with `rate_limit_redis.rs`.) See
 //! `CONTRIBUTING.md`'s crate-extraction recipe and #114's own "Cargo feature
 //! unification" risk note.
 //!
