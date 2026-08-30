@@ -91,12 +91,6 @@ pub struct RequestCtx {
     /// (default 1 MiB).  Retries are still attempted but without body replay —
     /// only safe for idempotent methods (GET/HEAD) in that case.
     pub body_too_large: bool,
-    /// Running tally of actual body bytes received so far.
-    ///
-    /// Incremented in `request_body_filter` for every chunk regardless of
-    /// whether retry buffering is active.  Used to enforce `limits.maxBodyBytes`
-    /// against clients that omit `Content-Length` or use chunked encoding.
-    pub actual_body_bytes: u64,
     /// Timestamp recorded at the start of `upstream_request_filter` — i.e. the
     /// moment the proxied request was forwarded to the upstream.
     ///
@@ -105,11 +99,14 @@ pub struct RequestCtx {
     /// `None` for local handlers (health, static, metrics, …).
     pub upstream_start: Option<Instant>,
 
-    /// RAII guard that releases the per-IP connection slot when this context
-    /// is dropped at the end of `logging()`.  `None` when
-    /// `limits.maxConnectionsPerIp` is not configured or the request was
-    /// rejected before a slot was acquired.
-    pub ip_conn_slot: Option<crate::filter::chain::IpConnSlotGuard>,
+    /// Per-request limits state — `actual_body_bytes`, `ip_conn_slot`
+    /// (RAII per-IP connection slot, released on drop), and the slow-loris
+    /// upload-rate leaky-bucket state (`upload_excess_bytes`/
+    /// `upload_last_chunk`). Always present — unlike `jwt`/`cache` above,
+    /// `limits` is not an optional Cargo feature (`CLAUDE.md` decision #31),
+    /// so this field is never `Option`-wrapped or `#[cfg]`-gated. See
+    /// [`conduit_limits::LimitsReqState`] / `crates/conduit-limits/src/ctx.rs`.
+    pub limits: conduit_limits::LimitsReqState,
 
     /// Passive health check: HTTP status codes that count as upstream failures.
     ///
@@ -145,14 +142,6 @@ pub struct RequestCtx {
     /// Format: `(cookie_name, hmac_signed_value)`.  The `upstream_response_filter`
     /// injects the corresponding `Set-Cookie` header.
     pub sticky_set_cookie: Option<(String, String)>,
-    /// Slow-loris upload defense: accumulated excess bytes for the leaky-bucket
-    /// rate checker in `request_body_filter`.
-    ///
-    /// Positive excess means the client is sending faster than `minUploadRate`
-    /// would allow; negative means the client has headroom.  Set to 0.0 on init.
-    pub upload_excess_bytes: f64,
-    /// Timestamp of the last body chunk received, used by the upload-rate checker.
-    pub upload_last_chunk: Option<std::time::Instant>,
 }
 
 impl RequestCtx {
@@ -185,19 +174,16 @@ impl RequestCtx {
             response_transform,
             body_buffer: Vec::new(),
             body_too_large: false,
-            actual_body_bytes: 0,
             #[cfg(feature = "jwt")]
             jwt: None,
             upstream_start: None,
-            ip_conn_slot: None,
+            limits: conduit_limits::LimitsReqState::default(),
             passive_unhealthy_status: Vec::new(),
             passive_unhealthy_latency_ms: None,
             websocket_allowed: false,
             #[cfg(feature = "cache")]
             cache: None,
             sticky_set_cookie: None,
-            upload_excess_bytes: 0.0,
-            upload_last_chunk: None,
             #[cfg(feature = "otlp")]
             otel_span: None,
         }

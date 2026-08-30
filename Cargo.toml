@@ -41,6 +41,7 @@ lopatnov-conduit-ipfilter          = { path = "crates/conduit-ipfilter", version
 lopatnov-conduit-cors              = { path = "crates/conduit-cors", version = "2.0.0" }
 lopatnov-conduit-security-headers  = { path = "crates/conduit-security-headers", version = "2.0.0" }
 lopatnov-conduit-ratelimit         = { path = "crates/conduit-ratelimit", version = "2.0.0" }
+lopatnov-conduit-limits             = { path = "crates/conduit-limits", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -305,6 +306,15 @@ lopatnov-conduit-security-headers.workspace = true
 # wrappers stay in this crate's own `src/filter/rate_limit{,_redis}.rs` for
 # now — see `crates/conduit-ratelimit/src/lib.rs` for the full scope note.
 lopatnov-conduit-ratelimit.workspace         = true
+# Mandatory, no `[features]` table — same always-on rationale as
+# `lopatnov-conduit-ipfilter` above (`CLAUDE.md` decision #31). The second
+# (final) half of #137: owns `LimitsConfig` and the real `guard::LimitsGuard`
+# (Host-header validation, maxRequestHeaders/maxInflightRequests/body/header
+# size limits, maxConnectionsPerIp via the RAII `guard::IpConnSlotGuard`).
+# Also closes #51 (`limits.minUploadRateBytesPerSec`) — that feature was
+# already fully implemented pre-extraction and simply moves along with the
+# rest of this crate's scope, no new code needed for it.
+lopatnov-conduit-limits.workspace            = true
 
 # --- Config & parsing ---
 serde.workspace      = true

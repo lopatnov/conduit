@@ -1,0 +1,28 @@
+[package]
+name        = "lopatnov-conduit-limits"
+version.workspace    = true
+edition.workspace    = true
+description = "Request size/inflight/per-IP/upload-rate limits config + guard for conduit's feature-driven workspace (issue #114/#137, #51)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_limits"
+path = "src/lib.rs"
+
+[dependencies]
+# No [features] table — limits is always-on (CLAUDE.md decision #31, the
+# same always-on rationale as lopatnov-conduit-ipfilter/-cors/
+# -security-headers/-ratimit's slice 1), so every dependency here —
+# including lopatnov-conduit-core, needed by guard::LimitsGuard — is
+# mandatory, not `optional = true`. See src/lib.rs doc comment for why this
+# crate is not feature-gated like conduit-faults/conduit-auth-jwt/etc.
+serde                 = { workspace = true }
+async-trait           = { workspace = true }
+bytes                 = { workspace = true }
+tracing               = { workspace = true }
+dashmap               = { workspace = true }
+http                  = { workspace = true }
+pingora-core          = { workspace = true }
+pingora-proxy         = { workspace = true }
+lopatnov-conduit-core = { workspace = true }

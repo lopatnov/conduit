@@ -695,7 +695,7 @@ impl ConduitProxy {
         // Store the RAII guard; it will automatically decrement the slot
         // counter when RequestCtx is dropped at the end of logging() — no
         // manual fetch_sub needed.
-        req_ctx.ip_conn_slot = Some(crate::filter::chain::IpConnSlotGuard {
+        req_ctx.limits.ip_conn_slot = Some(crate::filter::chain::IpConnSlotGuard {
             ip,
             counts: std::sync::Arc::clone(&self.state.ip_conn_counts),
         });
@@ -1291,7 +1291,7 @@ pub(super) async fn request_body_filter(
     };
 
     let chunk_len = body.as_ref().map(|c| c.len()).unwrap_or(0);
-    req_ctx.actual_body_bytes += chunk_len as u64;
+    req_ctx.limits.actual_body_bytes += chunk_len as u64;
 
     // Enforce maxBodyBytes on the ACTUAL received bytes.
     // The LimitsGuard only checks the Content-Length header; chunked clients bypass it.
@@ -1336,18 +1336,19 @@ pub(super) async fn request_body_filter(
             // elapsed_secs = 0 on the first chunk so the chunk bytes are
             // credited to the bucket immediately (no time-based drain).
             let elapsed_secs = req_ctx
+                .limits
                 .upload_last_chunk
                 .map(|last| now.duration_since(last).as_secs_f64())
                 .unwrap_or(0.0);
             if crate::filter::limits::upload_rate_step(
-                &mut req_ctx.upload_excess_bytes,
+                &mut req_ctx.limits.upload_excess_bytes,
                 chunk_len,
                 min_rate,
                 elapsed_secs,
             ) {
                 tracing::debug!(
                     min_rate,
-                    excess = req_ctx.upload_excess_bytes,
+                    excess = req_ctx.limits.upload_excess_bytes,
                     "upload rate below minimum — closing connection (408)"
                 );
                 *body = None;
@@ -1356,7 +1357,7 @@ pub(super) async fn request_body_filter(
                     "upload rate below minUploadRateBytesPerSec",
                 ));
             }
-            req_ctx.upload_last_chunk = Some(now);
+            req_ctx.limits.upload_last_chunk = Some(now);
         }
     }
 
@@ -1719,14 +1720,14 @@ pub(super) fn enforce_max_body_bytes(
     let Some(max) = max_body else {
         return false;
     };
-    if req_ctx.actual_body_bytes > max {
+    if req_ctx.limits.actual_body_bytes > max {
         // Drop this chunk — prevents forwarding to upstream.
         *body = None;
-        let prev = req_ctx.actual_body_bytes - chunk_len as u64;
+        let prev = req_ctx.limits.actual_body_bytes - chunk_len as u64;
         if prev <= max {
             // Log only on first violation.
             tracing::warn!(
-                actual = req_ctx.actual_body_bytes,
+                actual = req_ctx.limits.actual_body_bytes,
                 max,
                 "request body exceeded maxBodyBytes (chunked/no Content-Length) \
                  — body dropped, upstream will receive truncated request"

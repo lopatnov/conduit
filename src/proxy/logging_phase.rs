@@ -32,8 +32,8 @@ pub(super) async fn logging(
     // Decrement inflight for proxy requests (local handlers decrement inline).
     proxy.state.metrics.active_connections.dec();
     // The per-IP connection slot is released automatically here:
-    // RequestCtx.ip_conn_slot (IpConnSlotGuard) is dropped when ctx is
-    // cleared at the end of this function, so no manual fetch_sub needed.
+    // RequestCtx.limits.ip_conn_slot (IpConnSlotGuard) is dropped when ctx
+    // is cleared at the end of this function, so no manual fetch_sub needed.
     release_proxy_upstream(proxy, session, ctx);
 
     write_access_log_entry(proxy, session, ctx);
