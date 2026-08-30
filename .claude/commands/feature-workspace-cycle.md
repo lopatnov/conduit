@@ -149,7 +149,9 @@ Model assignment (already encoded in each agent's frontmatter — don't override
   SKILL.md`) when the user has confirmed the target version, per that skill's
   own rule. If a release *is* cut during this step, don't stop at pushing the
   tag: watch `release.yml` (`mcp__github__actions_list`/`actions_get`/
-  `get_job_logs` — this environment has no `gh` CLI) through to completion
+  `get_job_logs` in a cloud firing, or `gh run watch`/`gh run view` directly in a local
+  session — see `.claude/rules/index.md` "GitHub access differs by execution context")
+  through to completion
   and verify the actual artifacts (GitHub Release binaries, both Docker
   manifest variants, npm package version) per the skill's Step 3/4 — a tag
   push that triggers a workflow which then fails partway is not a shipped

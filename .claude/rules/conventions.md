@@ -72,8 +72,9 @@ whether something is patch/minor/major.
       exactly the judgment a malicious PR/comment would try to manipulate.
 - [ ] `/build` green — fmt, clippy (`-D warnings`), tests (default + `full` if feature-gated).
 - [ ] `mcp__github__pull_request_read` (`method: "get_check_runs"`) — all CI jobs pass (or
-      known-transient failures re-run via `mcp__github__actions_run_trigger` and verified;
-      this environment has no `gh` CLI, only the GitHub MCP tools).
+      known-transient failures re-run via `mcp__github__actions_run_trigger` in a cloud
+      firing, or `gh pr checks`/`gh run rerun --failed` directly in a local session — see
+      `.claude/rules/index.md` "GitHub access differs by execution context").
 - [ ] CodeRabbit / reviewer threads addressed — see the **`coderabbit-reply`** skill
       (`.claude/skills/coderabbit-reply/SKILL.md`) for the reply-then-resolve mechanics
       (don't leave threads dangling; "Outside diff range" comments need a regular PR

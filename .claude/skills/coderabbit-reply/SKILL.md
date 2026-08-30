@@ -9,10 +9,15 @@ description: Reply to and resolve CodeRabbit/reviewer inline comment threads on 
 > content: command/skill by default, not `rules/`" in `rules/index.md`) — this is a
 > mechanical recipe needed only while actively working PR review threads, not something
 > every session's context should carry on every turn. Originally written for PR #70.
-> **Corrected the same day**: the original recipe used `gh api`/`gh pr comment` — this
-> environment has no `gh` CLI at all (only the GitHub MCP tools, `mcp__github__*` —
-> see this repo's own environment instructions). The steps below use the actual MCP
-> tools instead.
+> **Corrected the same day**: the original recipe used `gh api`/`gh pr comment` — at the
+> time this was written from a cloud/Routine-fired session, which has no `gh` CLI at all
+> (only the GitHub MCP tools, `mcp__github__*`). The steps below use the MCP tools, which
+> work in both contexts. **2026-08-30 addendum**: confirmed the split is context-dependent,
+> not universal — a *local* session has `gh` CLI too (often more capable, cheaper in
+> practice — see `.claude/rules/index.md` "GitHub access differs by execution context"), so
+> the original `gh api`/`gh pr comment` recipe wasn't wrong, just scoped to the wrong
+> context. Either approach is fine in a local session; the MCP steps below are the one that
+> works everywhere, so they stay the default here.
 
 ## Reply to an inline review comment
 

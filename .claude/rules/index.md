@@ -248,6 +248,31 @@ API path, entirely separate from local git credentials, and kept working the who
   forbids for subagents, and it applies to the conductor too (the auto-mode permission
   classifier blocked exactly this once already, correctly).
 
+## GitHub access differs by execution context — `gh` CLI locally, GitHub MCP tools in the cloud
+
+> Confirmed 2026-08-30 by the user directly, after a `/feature-workspace-cycle` firing run in
+> a local session found zero `mcp__github__*` tools (confirmed via `ToolSearch select:`, exact
+> name match — not a fuzzy-search miss) but a working, already-authenticated `gh` CLI. Not a
+> bug or a one-off: "локально у нас gh, удаленно github mcp — так экономнее на практике и
+> локально больше возможностей на самом деле" (locally we have `gh`, remotely GitHub MCP —
+> more economical in practice, and locally there are genuinely more capabilities).
+
+- **A local session** (running on the user's own machine, interactive terminal or desktop
+  app) has the `gh` CLI installed and already authenticated — use it directly via `Bash` for
+  PR/issue/Actions work. It's often more capable than the MCP tool set (arbitrary `gh api`
+  calls, free-form `--json` field selection, no per-call MCP overhead) and cheaper in
+  practice.
+- **A cloud/Routine-fired session** (a `/feature-workspace-cycle` daily firing, or anything
+  running through the `Claude_Code_Remote`/CCR environment) has only `mcp__github__*` MCP
+  tools — no `gh` CLI. Every "this environment has no `gh` CLI" note elsewhere in this repo's
+  docs was written for *that* context specifically, not as a universal fact.
+- **Check which tools are actually present** (`ToolSearch select:mcp__github__get_me`, or just
+  try `gh --version`) rather than assuming from a note written for the other context — same
+  lesson as "Different branches of this repo can have genuinely different `.claude/` tooling"
+  above, just for execution contexts instead of branches.
+- **Subagents have neither**, regardless of context — see "On a subagent tool gap" above; the
+  local/cloud split is about the conductor/main session only, not anything spawned via `Agent`.
+
 ## Build discipline
 
 - Run **`/build`** (delegates to `build-validator`) after any non-trivial change, and before
@@ -274,9 +299,9 @@ API path, entirely separate from local git credentials, and kept working the who
   different run. Network/registry blips (`curl failed`, `SSL_read: unexpected eof`,
   `download of <crate> failed`) on crates.io/ghcr.io are common and transient — re-run via
   `mcp__github__actions_run_trigger` (`method: "rerun_failed_jobs"`, run_id from the failing
-  workflow run; this environment has no `gh` CLI, only the GitHub MCP tools) rather than
-  treating them as code problems. Only escalate as a real bug if the same commit fails
-  consistently across reruns.
+  workflow run) in a cloud firing, or `gh run rerun <id> --failed` directly in a local session
+  (see "GitHub access differs by execution context" below) — rather than treating them as code
+  problems. Only escalate as a real bug if the same commit fails consistently across reruns.
 - See `release-engineer` (`.claude/agents/release-engineer.md`) for merge-order planning
   across dependent PRs and for driving the actual `v<x.y.z>` tag → release pipeline.
 - **A `check_run.completed`/comment webhook event can arrive for an already-superseded
@@ -384,8 +409,10 @@ it — call them whenever the same shape of task comes up outside that cycle too
 - **`dependabot-hygiene`** (`.claude/commands/dependabot-hygiene.md`) — the reflex check
   described above; run it whenever `.claude/logs/dependabot-hygiene.md` is stale.
 - **`coderabbit-reply`** (`.claude/skills/coderabbit-reply/SKILL.md`) — reply-then-resolve
-  mechanics for CodeRabbit/reviewer threads on a PR, via the actual `mcp__github__*` tools
-  (this environment has no `gh` CLI). Referenced from `conventions.md`'s PR checklist.
+  mechanics for CodeRabbit/reviewer threads on a PR, written against `mcp__github__*` tools
+  (the cloud-firing case — a local session can do the same thing with `gh api`/`gh pr comment`,
+  see "GitHub access differs by execution context" above). Referenced from `conventions.md`'s
+  PR checklist.
 - **`cleanup`** (`.claude/commands/cleanup.md`) — sweeps for leftover worktrees/WSL-Docker
   verification state, and for code a change should have removed or wired in but didn't. Run
   it after any task that created throwaway state; see "Clean up ephemeral debris" above.
