@@ -90,6 +90,14 @@ pub fn make_upload_router<S: UploadConfigSource>(state: Arc<S>) -> Router {
     Router::new()
         // Accept POST to any path — the actual upload.path matching is done
         // by the Pingora router before the request reaches this server.
+        //
+        // Issue #286: axum 0.8's `{*path}` wildcard capture does not match
+        // the empty segment at the root path "/" (confirmed against axum's
+        // own routing source) — a client posting directly to the upload
+        // service's root got a 404 instead of reaching `upload_handler`.
+        // The explicit `/` route below covers that case; `{*path}` still
+        // covers every non-root path as before.
+        .route("/", post(upload_handler::<S>))
         .route("/{*path}", post(upload_handler::<S>))
         // Hard backstop, independent of per-site `maxFileSizeBytes`/
         // `maxTotalSizeBytes` (issue #277): those are `Option<u64>` and
@@ -490,5 +498,107 @@ mod tests {
         // written, not after accumulating the whole field first.
         let result = check_chunk_limits(1_000_000, 0, 0, Some(1024), None);
         assert!(result.is_err());
+    }
+
+    // ── make_upload_router root-path routing (issue #286) ──────────────────
+
+    struct FixedConfig(UploadConfig);
+
+    impl UploadConfigSource for FixedConfig {
+        fn upload_config(&self, _site_idx: usize) -> Option<UploadConfig> {
+            Some(self.0.clone())
+        }
+    }
+
+    /// Sends a minimal single-file multipart POST to `path` on a freshly
+    /// spawned real upload server and returns the response's status line.
+    ///
+    /// Drives the router end-to-end (`TcpListener` + `axum::serve`, a real
+    /// TCP client) rather than mocking anything away, so it actually
+    /// exercises axum's own route matching -- the exact layer issue #286's
+    /// bug lived in (`{*path}` silently not matching the empty root segment).
+    async fn post_multipart_file(path: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = UploadConfig {
+            path: "/upload".to_owned(),
+            dir: dir.path().to_string_lossy().into_owned(),
+            max_file_size_bytes: None,
+            max_total_size_bytes: None,
+            max_files: None,
+            allowed_mime_types: None,
+            field_name: None,
+        };
+        let state = Arc::new(FixedConfig(cfg));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, make_upload_router(state)).await;
+        });
+
+        let boundary = "conduit-test-boundary";
+        let body = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\n\
+             Content-Type: text/plain\r\n\
+             \r\n\
+             hello world\r\n\
+             --{boundary}--\r\n"
+        );
+        let request = format!(
+            "POST {path} HTTP/1.1\r\n\
+             Host: {addr}\r\n\
+             Content-Type: multipart/form-data; boundary={boundary}\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\
+             \r\n\
+             {body}",
+            body.len()
+        );
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        stream.write_all(request.as_bytes()).await.expect("write");
+        // Deliberately no `stream.shutdown()` here: half-closing the write
+        // side before the server has `accept()`-ed the connection can drop
+        // the still-pending backlog entry outright on some platforms
+        // (confirmed empirically on Windows) -- the `Content-Length` header
+        // above already tells the server exactly how much body to expect,
+        // and the server's own `Connection: close` closes its end after
+        // responding, which is what actually terminates `read_to_end` below.
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
+        let response = String::from_utf8_lossy(&response);
+        response.lines().next().unwrap_or_default().to_owned()
+    }
+
+    #[tokio::test]
+    async fn upload_router_root_path_accepts_post_not_404() {
+        // Issue #286: axum 0.8's `{*path}` wildcard capture does not match
+        // the empty segment at "/" -- before the fix, POSTing directly to
+        // the upload server's root returned 404 instead of reaching
+        // upload_handler.
+        let status_line = post_multipart_file("/").await;
+        assert!(
+            status_line.starts_with("HTTP/1.1 200"),
+            "root path must route to upload_handler, got: {status_line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn upload_router_nonroot_path_still_accepts_post() {
+        // Same server, non-root path -- proves the fix didn't regress the
+        // pre-existing `{*path}` wildcard route.
+        let status_line = post_multipart_file("/some/nested/path").await;
+        assert!(
+            status_line.starts_with("HTTP/1.1 200"),
+            "non-root path must still route to upload_handler, got: {status_line}"
+        );
     }
 }
