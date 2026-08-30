@@ -2940,6 +2940,7 @@ dependencies = [
  "lopatnov-conduit-cors",
  "lopatnov-conduit-faults",
  "lopatnov-conduit-ipfilter",
+ "lopatnov-conduit-limits",
  "lopatnov-conduit-otlp",
  "lopatnov-conduit-ratelimit",
  "lopatnov-conduit-security-headers",
@@ -3149,6 +3150,20 @@ dependencies = [
  "pingora-proxy",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "lopatnov-conduit-limits"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "dashmap",
+ "http",
+ "lopatnov-conduit-core",
+ "pingora-core",
+ "pingora-proxy",
+ "serde",
 ]
 
 [[package]]

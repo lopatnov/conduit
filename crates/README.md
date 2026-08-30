@@ -189,3 +189,30 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   single type instead. Slice 2 site-scoped the Redis backend's key
   construction (issue #317, the Redis-backend twin of #303/#304's in-memory
   fix) while moving it.
+
+- **`conduit-limits`** — the second (final) half of
+  [#137](https://github.com/lopatnov/conduit/issues/137) (`conduit-ratelimit`
+  above covers rate limiting; this covers the separate, similarly-named
+  `LimitsConfig`). Owns `LimitsConfig` (the `sites[].limits` config struct),
+  the pure limit-checking logic (`limits` module — declared-Content-Length /
+  header-size checks and the leaky-bucket minimum-upload-rate algorithm from
+  issue #51), the real `guard::LimitsGuard` chain guard (Host-header
+  validation, `maxRequestHeaders`, `maxInflightRequests`, body/header size
+  limits, and `maxConnectionsPerIp` via the RAII `guard::IpConnSlotGuard`),
+  and `ctx::LimitsReqState` — the per-request state `RequestCtx` threads
+  through the request-body pipeline. **No `[features]` table** — same
+  always-on rationale as `conduit-ipfilter`/`conduit-cors`/
+  `conduit-security-headers`/`conduit-ratelimit`'s slice 1 above
+  (`CLAUDE.md` decision #31); every dependency, including
+  `lopatnov-conduit-core` for `guard::LimitsGuard`, is mandatory. Unlike
+  `conduit_cache::CacheReqState`/`conduit_auth_jwt::guard::JwtReqState` (both
+  `#[cfg(feature = "...")]`-gated on `RequestCtx` because `cache`/`jwt` are
+  optional Cargo features), `RequestCtx.limits: conduit_limits::LimitsReqState`
+  is a plain, always-present field — `limits` isn't optional, so there's no
+  "feature not compiled in" state for it to represent. This extraction also
+  closed [#51](https://github.com/lopatnov/conduit/issues/51)
+  (`limits.minUploadRateBytesPerSec` slow-loris upload defense) as a side
+  effect — that feature (config field, leaky-bucket algorithm, its 7 unit
+  tests, and its `request_body_filter` wiring) was found already fully
+  implemented pre-extraction and simply moved along with the rest of this
+  crate's scope; no new code was needed to close it.
