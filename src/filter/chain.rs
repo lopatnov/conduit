@@ -354,6 +354,7 @@ impl RequestFilter for RateLimitGuard {
             &self.cfg,
             ctx.session,
             &self.rate_limiter,
+            &self.site_label,
             #[cfg(feature = "redis")]
             self.redis_rate_limiter.as_ref(),
             #[cfg(not(feature = "redis"))]
@@ -443,9 +444,10 @@ impl RequestFilter for ConsumersGuard {
             return Ok(FilterOutcome::Handled);
         };
 
-        // Per-consumer rate limit — key: "consumer:{username}" (global per consumer).
+        // Per-consumer rate limit — global per consumer, not site-scoped
+        // (see rate_limit::consumer_key's doc for why).
         if let Some(rl_cfg) = &consumer.rate_limit {
-            let key = format!("consumer:{}", consumer.username);
+            let key = rate_limit::consumer_key(&consumer.username);
             // Routed through the shared MAX_BUCKETS-capped admission point
             // (issue #305) instead of a hand-rolled, uncapped
             // entry()/or_insert_with() — this map has no cap check of its own.
@@ -761,6 +763,7 @@ async fn rate_limit_allowed(
     cfg: &RateLimitConfig,
     session: &mut Session,
     rate_limiter: &RateLimiter,
+    site_label: &str,
     #[cfg(feature = "redis")] redis: Option<&Arc<RedisRateLimiter>>,
     #[cfg(not(feature = "redis"))] _redis: Option<()>,
 ) -> bool {
@@ -771,13 +774,17 @@ async fn rate_limit_allowed(
         .is_some_and(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
     {
         if let Some(rrl) = redis {
+            // Not yet site-scoped — the real-Redis and its fallback map have
+            // the same cross-site collision #304 fixed for the in-memory
+            // limiter below; tracked separately as issue #317 since it's a
+            // different key construction in a different module.
             let key = rate_limit::extract_client_key(cfg, session);
             return rrl.check(&key, cfg.limit, cfg.window_secs).await;
         }
     }
     #[cfg(not(feature = "redis"))]
     let _ = cfg.store.as_deref(); // suppress unused warning when redis disabled
-    rate_limit::check(cfg, session, rate_limiter)
+    rate_limit::check(cfg, session, rate_limiter, site_label)
 }
 
 /// Map a `limits::CheckResult` to the HTTP rejection status + body, or `None`

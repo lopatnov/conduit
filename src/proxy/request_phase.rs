@@ -458,7 +458,7 @@ impl ConduitProxy {
             jwt_auth_cfg: jwt_auth_cfg.clone(), // clone — jwt_cfg needed below for claim extraction
             forward_auth_cfg,
             consumers_cfg,
-            site_label,
+            site_label: site_label.clone(),
         };
         if self.run_guard_filters(session, guards).await? {
             return Ok(true);
@@ -475,8 +475,11 @@ impl ConduitProxy {
 
         // ── Per-route rate limiting (applied after site-level guard chain) ──────
         // Checked here — after routing — so we know which route was matched.
+        // Reuses the same `site_label` guards.site_label was built from —
+        // scopes the route-level bucket key so two sites with the same route
+        // key and client don't collide (#304's route-level twin).
         if self
-            .enforce_route_rate_limit(session, &req_ctx, site)
+            .enforce_route_rate_limit(session, &req_ctx, site, &site_label)
             .await?
         {
             return Ok(true);
@@ -703,6 +706,8 @@ impl ConduitProxy {
     ///
     /// `site` is the route-resolved site from the request's config snapshot
     /// (passed in by `do_request_filter`) so this shares the routing snapshot.
+    /// `site_label` scopes the bucket key so the same route key on two
+    /// different sites doesn't collide (see `rate_limit::route_key`).
     ///
     /// Returns `Ok(true)` when the request was rejected with 429 (response
     /// written, inflight counters decremented), `Ok(false)` to continue.
@@ -711,6 +716,7 @@ impl ConduitProxy {
         session: &mut Session,
         req_ctx: &RequestCtx,
         site: Option<&SiteConfig>,
+        site_label: &str,
     ) -> Result<bool> {
         // Borrow the path directly from the session — `find_route_rate_limit`
         // takes `&str`, so there is no need to allocate an owned String on the
@@ -722,10 +728,8 @@ impl ConduitProxy {
         let Some((rl_cfg, route_key)) = router::find_route_rate_limit(site, path) else {
             return Ok(false);
         };
-        let key = format!(
-            "route:{route_key}:{}",
-            rate_limit::extract_client_key(&rl_cfg, session)
-        );
+        let client_key = rate_limit::extract_client_key(&rl_cfg, session);
+        let key = rate_limit::route_key(site_label, &route_key, &client_key);
         // Routed through the shared MAX_BUCKETS-capped admission point
         // (issue #305) instead of a hand-rolled, uncapped
         // entry()/or_insert_with() — this was a real DoS bypass on the

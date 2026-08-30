@@ -120,7 +120,9 @@ pub struct Consumer {
     pub jwt: Option<ConsumerJwtConfig>,
     /// Per-consumer rate limit, evaluated after identification.
     /// Independent of the site-level `rateLimit`.
-    /// Key: `"consumer:{username}"` (global across all IPs for this consumer).
+    /// Key: `"consumer\0{username}"` (global across all IPs and sites for
+    /// this consumer — see `rate_limit::consumer_key` and `CLAUDE.md`
+    /// decision #14 in the root crate).
     ///
     /// **Type note (issue #114/#134, resolved by #114/#137 slice 1):** this
     /// used to be a separate, deliberately-duplicated `RateLimitConfig`

@@ -739,31 +739,51 @@ fn build_flat_upstream_list(registry: &health::UpstreamRegistry) -> Vec<Value> {
 /// `GET /rate-limits` — per-site/route rate-limiter counters.
 ///
 /// Returns a nested object: `{ site: { route_key: { passed, rejected } } }`.
-/// The key format mirrors the internal rate-limiter key (`"{site}\0{route}"`).
+/// `route_key` is `"*"` for the site-level (non-route) bucket.
+///
+/// Bucket keys are per-*client* (`rate_limit::site_key`/`route_key` include
+/// the client key), so this aggregates (sums) every client-keyed bucket
+/// that shares a `(site, route)` pair, rather than assuming a 1:1 mapping —
+/// there is no other way to report meaningful site/route-level totals, and
+/// summing avoids leaking individual client keys/IPs in the response.
+/// Consumer-level buckets (`consumer\0{username}`) are deliberately excluded
+/// — they're global, not attributable to one site or route.
 async fn rate_limits_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     use serde_json::Map;
-    let mut result: std::collections::BTreeMap<String, serde_json::Value> =
+
+    #[derive(Default)]
+    struct Agg {
+        passed: u64,
+        rejected: u64,
+    }
+
+    let mut agg: std::collections::BTreeMap<(String, String), Agg> =
         std::collections::BTreeMap::new();
 
     for entry in state.rate_limiter.iter() {
-        // Key format: "{site}\0{route}" or "*\0{route}" for wildcard.
-        // Skip keys from other namespaces (e.g. "consumer:{username}" inserted
-        // by ConsumersGuard) that do not follow the site\0route convention.
-        let key = entry.key();
-        let (site, route) = match key.split_once('\0') {
-            Some(pair) => pair,
-            None => continue, // not a site\0route key — skip
+        let parts: Vec<&str> = entry.key().split('\0').collect();
+        let (site, route) = match parts.as_slice() {
+            ["site", site_label, _client] => ((*site_label).to_owned(), "*".to_owned()),
+            ["route", site_label, route_key, _client] => {
+                ((*site_label).to_owned(), (*route_key).to_owned())
+            }
+            _ => continue, // "consumer\0{username}" or an unrecognized shape — not a site/route bucket
         };
         let bucket = entry.value();
+        let a = agg.entry((site, route)).or_default();
+        a.passed += bucket.passed;
+        a.rejected += bucket.rejected;
+    }
+
+    let mut result: std::collections::BTreeMap<String, serde_json::Value> =
+        std::collections::BTreeMap::new();
+    for ((site, route), a) in agg {
         result
-            .entry(site.to_owned())
+            .entry(site)
             .or_insert_with(|| serde_json::Value::Object(Map::new()))
             .as_object_mut()
             .unwrap()
-            .insert(
-                route.to_owned(),
-                json!({ "passed": bucket.passed, "rejected": bucket.rejected }),
-            );
+            .insert(route, json!({ "passed": a.passed, "rejected": a.rejected }));
     }
 
     Json(json!(result))
@@ -1198,6 +1218,92 @@ mod tests {
         assert_eq!(result.0["status"], "ok");
         assert_eq!(result.0["action"], "removed");
         assert!(state.dynamic_deny.read().unwrap().is_empty());
+    }
+
+    // ── rate_limits_handler (#303/#304) ───────────────────────────────────────
+
+    fn bucket_with_counts(passed: u64, rejected: u64) -> crate::filter::rate_limit::TokenBucket {
+        let mut b = crate::filter::rate_limit::TokenBucket::new(100, 0, 60);
+        b.passed = passed;
+        b.rejected = rejected;
+        b
+    }
+
+    #[tokio::test]
+    async fn rate_limits_handler_parses_site_and_route_namespaces() {
+        let state = app_state_for_ip_deny();
+        state.rate_limiter.insert(
+            crate::filter::rate_limit::site_key("app.example.com:8080", "1.2.3.4"),
+            bucket_with_counts(10, 1),
+        );
+        state.rate_limiter.insert(
+            crate::filter::rate_limit::route_key("app.example.com:8080", "/api", "1.2.3.4"),
+            bucket_with_counts(20, 2),
+        );
+
+        let result = rate_limits_handler(State(state)).await;
+        let site = &result.0["app.example.com:8080"];
+        assert_eq!(site["*"]["passed"], 10);
+        assert_eq!(site["*"]["rejected"], 1);
+        assert_eq!(site["/api"]["passed"], 20);
+        assert_eq!(site["/api"]["rejected"], 2);
+    }
+
+    #[tokio::test]
+    async fn rate_limits_handler_excludes_consumer_buckets() {
+        let state = app_state_for_ip_deny();
+        state.rate_limiter.insert(
+            crate::filter::rate_limit::consumer_key("alice"),
+            bucket_with_counts(5, 0),
+        );
+
+        let result = rate_limits_handler(State(state)).await;
+        assert_eq!(
+            result.0,
+            serde_json::json!({}),
+            "consumer buckets are global, not attributable to a site — must not appear here"
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limits_handler_aggregates_multiple_clients_into_one_site_route_total() {
+        // Two different clients hitting the same site's same route — bucket
+        // keys differ (per-client), but the handler must report one summed
+        // total for the (site, route) pair, not two separate entries.
+        let state = app_state_for_ip_deny();
+        state.rate_limiter.insert(
+            crate::filter::rate_limit::route_key("a.example.com:80", "/x", "1.1.1.1"),
+            bucket_with_counts(3, 1),
+        );
+        state.rate_limiter.insert(
+            crate::filter::rate_limit::route_key("a.example.com:80", "/x", "2.2.2.2"),
+            bucket_with_counts(4, 0),
+        );
+
+        let result = rate_limits_handler(State(state)).await;
+        let route = &result.0["a.example.com:80"]["/x"];
+        assert_eq!(route["passed"], 7);
+        assert_eq!(route["rejected"], 1);
+    }
+
+    #[tokio::test]
+    async fn rate_limits_handler_keeps_two_sites_separate_regression_304() {
+        // The bug #304 was filed against: two sites sharing a client key
+        // must not collide into one bucket. Since the fix scopes the key by
+        // site_label, they naturally land as two distinct handler entries.
+        let state = app_state_for_ip_deny();
+        state.rate_limiter.insert(
+            crate::filter::rate_limit::site_key("site-a.example.com:80", "9.9.9.9"),
+            bucket_with_counts(1, 0),
+        );
+        state.rate_limiter.insert(
+            crate::filter::rate_limit::site_key("site-b.example.com:80", "9.9.9.9"),
+            bucket_with_counts(2, 0),
+        );
+
+        let result = rate_limits_handler(State(state)).await;
+        assert_eq!(result.0["site-a.example.com:80"]["*"]["passed"], 1);
+        assert_eq!(result.0["site-b.example.com:80"]["*"]["passed"], 2);
     }
 
     // ── detect_cold_changes ──────────────────────────────────────────────────
