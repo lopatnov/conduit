@@ -492,75 +492,24 @@ pub struct ResponseTimeOptions {
 
 // ── Security headers ───────────────────────────────────────────────────────
 
-/// `false` | `true` | `{ "hstsMaxAgeSecs": 31536000, ... }`
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum SecurityHeadersConfig {
-    Enabled(bool),
-    Options(SecurityHeadersOptions),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct SecurityHeadersOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hsts_max_age_secs: Option<u64>,
-    /// Add `includeSubDomains` to the HSTS header (default: `true` when `hstsMaxAgeSecs` is set).
-    #[serde(
-        rename = "hstsIncludeSubDomains",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub hsts_include_subdomains: Option<bool>,
-    /// Add `preload` directive to the HSTS header for submission to the preload list.
-    #[serde(rename = "hstsPreload", skip_serializing_if = "Option::is_none")]
-    pub hsts_preload: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub csp: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub x_frame_options: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub referrer_policy: Option<String>,
-    /// `Permissions-Policy` header value controlling browser feature access.
-    ///
-    /// Replaces the deprecated `Feature-Policy` header.  Example:
-    /// `"geolocation=(), microphone=(), camera=()"` — deny all device access.
-    #[serde(rename = "permissionsPolicy", skip_serializing_if = "Option::is_none")]
-    pub permissions_policy: Option<String>,
-    /// List of allowed `Host` header values.
-    ///
-    /// When set, requests with a `Host` not in this list are rejected with
-    /// `400 Bad Request`.  Protects against HTTP Host header injection attacks
-    /// where an application generates absolute URLs from an untrusted `Host`.
-    ///
-    /// Pattern from traefik `AllowedHosts`.  Use `*` to allow any host.
-    #[serde(rename = "allowedHosts", skip_serializing_if = "Option::is_none")]
-    pub allowed_hosts: Option<Vec<String>>,
-}
+/// Extracted into `crates/conduit-security-headers` (issue #114/#136) — this
+/// is a facade re-export so `crate::config::schema::SecurityHeadersConfig`
+/// keeps resolving to the same type at the same location for every existing
+/// call site/test.
+pub use conduit_security_headers::SecurityHeadersConfig;
+/// Extracted into `crates/conduit-security-headers` (issue #114/#136) — see
+/// the [`SecurityHeadersConfig`] re-export above.
+pub use conduit_security_headers::SecurityHeadersOptions;
 
 // ── CORS ───────────────────────────────────────────────────────────────────
 
-/// `false` | `true` | `{ "origins": [...], "methods": [...] }`
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum CorsConfig {
-    Enabled(bool),
-    Options(CorsOptions),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct CorsOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub origins: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub methods: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_headers: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub credentials: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_age_secs: Option<u64>,
-}
+/// Extracted into `crates/conduit-cors` (issue #114/#136) — this is a facade
+/// re-export so `crate::config::schema::CorsConfig` keeps resolving to the
+/// same type at the same location for every existing call site/test.
+pub use conduit_cors::CorsConfig;
+/// Extracted into `crates/conduit-cors` (issue #114/#136) — see the
+/// [`CorsConfig`] re-export above.
+pub use conduit_cors::CorsOptions;
 
 // ── Hot reload ─────────────────────────────────────────────────────────────
 
@@ -736,27 +685,11 @@ pub struct HeaderTransformConfig {
 
 // ── IP filter ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct IpFilterConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allow: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deny: Option<Vec<String>>,
-    /// When `true`, read the client IP from `X-Forwarded-For` instead of the
-    /// TCP connection address.  Only enable when Conduit is behind a trusted
-    /// reverse proxy that sets this header.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trust_proxy: Option<bool>,
-    /// Dry-run mode — log blocked IPs but allow requests through.
-    ///
-    /// **nginx `ngx_http_limit_conn_module` dry_run pattern.**  When `true`,
-    /// requests from denied IPs (or outside the allowlist) are logged as warnings
-    /// but forwarded.  Safe rollout: enable dry-run first, review logs, then
-    /// disable dry-run to enforce.
-    #[serde(rename = "dryRun", skip_serializing_if = "Option::is_none")]
-    pub dry_run: Option<bool>,
-}
+/// Extracted into `crates/conduit-ipfilter` (issue #114/#136) — this is a
+/// facade re-export so `crate::config::schema::IpFilterConfig` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test.
+pub use conduit_ipfilter::IpFilterConfig;
 
 // ── Request limits ─────────────────────────────────────────────────────────
 

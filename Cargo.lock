@@ -2937,8 +2937,11 @@ dependencies = [
  "lopatnov-conduit-cache",
  "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
+ "lopatnov-conduit-cors",
  "lopatnov-conduit-faults",
+ "lopatnov-conduit-ipfilter",
  "lopatnov-conduit-otlp",
+ "lopatnov-conduit-security-headers",
  "lopatnov-conduit-tcp",
  "lopatnov-conduit-upload",
  "mime_guess",
@@ -3109,6 +3112,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lopatnov-conduit-cors"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "lopatnov-conduit-core",
+ "pingora-core",
+ "pingora-http",
+ "pingora-proxy",
+ "serde",
+]
+
+[[package]]
 name = "lopatnov-conduit-faults"
 version = "2.0.0"
 dependencies = [
@@ -3119,6 +3135,19 @@ dependencies = [
  "pingora-proxy",
  "serde",
  "tokio",
+]
+
+[[package]]
+name = "lopatnov-conduit-ipfilter"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "lopatnov-conduit-core",
+ "pingora-core",
+ "pingora-proxy",
+ "serde",
+ "tracing",
 ]
 
 [[package]]
@@ -3133,6 +3162,17 @@ dependencies = [
  "serial_test",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "lopatnov-conduit-security-headers"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "lopatnov-conduit-core",
+ "pingora-core",
+ "serde",
 ]
 
 [[package]]

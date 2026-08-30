@@ -138,3 +138,28 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   behind a `#[cfg(feature = "cache")]`-gated `RequestCtx.cache` field in the
   root crate (`CLAUDE.md` decision #30) — same pattern as
   `conduit-auth-jwt`'s `JwtReqState`/`RequestCtx.jwt`.
+
+- **`conduit-ipfilter`**, **`conduit-cors`**, **`conduit-security-headers`**
+  (Phase 3.8, [#136](https://github.com/lopatnov/conduit/issues/136)) —
+  three small, mutually-independent guard extractions batched into one PR
+  (same "small independent leaves" batching used for #131/#135). Own
+  `IpFilterConfig`; `CorsConfig`/`CorsOptions`; and
+  `SecurityHeadersConfig`/`SecurityHeadersOptions` respectively (the
+  `sites[].ipFilter`/`cors`/`securityHeaders` config structs), plus the pure
+  header/matching logic (`ip_filter`/`cors`/`security_headers` modules) and
+  the real chain guards (`guard::IpGuard`/`guard::CorsPreflight`/
+  `guard::AllowedHostsGuard`). **Unlike every extraction above, none of the
+  three is gated behind a Cargo feature at all** — per `CLAUDE.md`
+  architectural decision #31 (2026-08-23), `ipFilter`/`cors`/
+  `securityHeaders` stay always-on/default-on: gating them would buy almost
+  no binary-size benefit (light logic, no heavy third-party dependency)
+  while adding a real "forgot the flag, silently stopped filtering" risk for
+  security-relevant guards. Each crate has **no `[features]` table**, and
+  every dependency — including `lopatnov-conduit-core` for the real guard —
+  is mandatory, not `optional = true`; this mirrors `conduit-config-core`'s
+  (#127) unconditional dependency style rather than the config-always-on/
+  guard-feature-gated split used by every extraction above. All three guards
+  implement `conduit-core`'s `RequestFilter` chain trait directly (see
+  `CONTRIBUTING.md`'s "conduit-core dependency is opt-in, not automatic").
+  Chain assembly and guard ordering stay in the root crate's
+  `src/filter/chain.rs` (`CLAUDE.md` decision #20).
