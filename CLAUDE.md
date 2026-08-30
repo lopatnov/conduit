@@ -1834,6 +1834,52 @@ lifetime as a draft tracking PR; that's consistent with the PR's own documented 
 merge until #114 is fully complete) and needs either the user's manual SonarCloud dashboard action or
 simply waiting for the eventual `main` merge to resolve on its own.
 
+### Реализовано в сессии 2026-08-30 (rate_limit.rs Step 1c audit + Phase 3.8 — #136)
+
+- **Step 1c integrity audit of `src/filter/rate_limit.rs`** (never audited before) found 9 gaps: 4
+  low-risk/unambiguous, fixed directly via [PR #302](https://github.com/lopatnov/conduit/pull/302)
+  (enforce the previously-dead `algorithm` config field, delete 2 dead default constants, sync
+  `schema/conduit.schema.json`'s rate-limit definitions, add `dryRun` test coverage — had zero
+  anywhere) and a same-day follow-up [PR #309](https://github.com/lopatnov/conduit/pull/309)
+  (CodeRabbit/Gitar review comments on #302 that got **merged past without being addressed first** —
+  a real process miss, caught by the user after merge, not before; fixed retroactively: reject
+  invalid HTTP header names in `keyBy` instead of silently collapsing every client into one shared
+  bucket, strengthen a dry-run test that didn't actually prove the limit was 1). 5 real behavioral
+  gaps needing design judgment filed as issues — [#303](https://github.com/lopatnov/conduit/issues/303)
+  (`GET /rate-limits` admin endpoint always returns `{}`, key-format mismatch),
+  [#304](https://github.com/lopatnov/conduit/issues/304) (site-level buckets not scoped per site —
+  cross-site collision), [#305](https://github.com/lopatnov/conduit/issues/305) (per-route rate
+  limiting bypasses the shared `MAX_BUCKETS` memory-exhaustion cap — a real DoS bypass on the
+  documented `keyBy: "header:X-Name"` pattern, independently confirmed by `security-engineer` during
+  #309's review), [#306](https://github.com/lopatnov/conduit/issues/306) (`burst` silently dropped
+  under `store: redis`, confirmed dropped even in the Redis-failure fallback path),
+  [#307](https://github.com/lopatnov/conduit/issues/307) (`dryRun`/`store`/`skipPaths` silently
+  ignored outside site-level) — plus [#310](https://github.com/lopatnov/conduit/issues/310) (per-route
+  `rateLimit` isn't validated *at all* — found independently by both `security-engineer` and
+  CodeRabbit while reviewing #309). **Owner decisions recorded on all 6 issues 2026-08-30**: unify
+  the rate-limit key format across all 3 layers and site-scope it in the same pass (#303+#304
+  together), one shared `MAX_BUCKETS` cap across all layers (#305), bring per-route/per-consumer to
+  full feature parity with site-level (#306/#307/#310) — scoped as one coordinated effort given the
+  overlapping code paths, not 4 uncoordinated PRs. CLAUDE.md decision #14 (rate limiter section) was
+  also corrected — it had mislabeled the rate limiter's key format as `"{site}\0{route}"`, which
+  actually belongs to `UpstreamRegistry.override_key()` in `health.rs`.
+- **Phase 3.8** (#136 — extract `conduit-ipfilter`, `conduit-cors`, `conduit-security-headers`) done,
+  merged via [PR #308](https://github.com/lopatnov/conduit/pull/308). Pure code-organization
+  extraction per the owner decision recorded in #114's body (item 2) — all three stay
+  default-on/always-compiled, not new optional features. `feature-matrix-runner` (20 individual +
+  136-combination powerset) and `footprint-auditor` (zero binary-size delta) both GREEN;
+  `security-engineer` PASS confirmed the guard logic (CIDR matching, CORS origin/preflight, security
+  headers/HSTS/CSP/allowed-hosts) is byte-for-byte unchanged by the move. Deferring #137 (extract
+  `conduit-ratelimit`, next in phase order) until the rate-limit redesign above lands — doing the
+  key-format/scoping rework before the crate boundary rather than across it.
+- **Process note**: this firing ran in a **local session** (not cloud/Routine-fired) with zero
+  `mcp__github__*` MCP tools in its grant — confirmed via `ToolSearch select:`, exact name match, not
+  a fuzzy-search miss. Used the local `gh` CLI (installed, authenticated) throughout instead; see
+  `.claude/rules/index.md` "GitHub access differs by execution context" (new section this session).
+  Also this session: retired the periodic full session-rotation policy (`session-rotate.md` deleted)
+  after concluding it bought no cache savings for this routine's daily cadence — see
+  `.claude/rules/index.md` "Session rotation retired" and `feature-workspace-cycle.md` Step 0a.
+
 ---
 
 ## Session rotation log
