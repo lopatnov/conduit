@@ -42,7 +42,12 @@ checked=0
 shopt -s nullglob
 for manifest in crates/*/Cargo.toml; do
   crate_dir="$(dirname "$manifest")"
-  crate_name="$(grep -m1 -E '^name\s*=' "$manifest" | sed -E 's/^name\s*=\s*"([^"]+)".*/\1/')"
+  crate_name="$(grep -m1 -E '^name\s*=' "$manifest" | sed -E 's/^name\s*=\s*"([^"]+)".*/\1/' || true)"
+
+  # A manifest with no matching `name =` line (nested workspace-only
+  # manifest, atypical quoting) must not abort the whole script under
+  # `set -e pipefail` -- skip it and keep scanning the rest (issue #288).
+  [[ -n "$crate_name" ]] || continue
 
   is_allowed "$crate_name" && continue
   [[ -d "$crate_dir/src" ]] || continue
