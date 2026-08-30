@@ -338,10 +338,24 @@ fn validate_with_jwks(
     let keys = get_jwks_keys(jwks_url, refresh).ok_or("failed to fetch JWKS keys")?;
 
     // Determine which key to use from the JWT `kid` header.
+    //
+    // Issue #281: a kid-less key is cached under a synthesized identifier
+    // (`"{key_type}-default"`, e.g. "RSA-default" — see get_jwks_keys), but
+    // a kid-less *token* was looked up under the literal string "default",
+    // which never matches. A single-key IdP omitting `kid` on both the JWKS
+    // entry and the token is a legitimate, common setup (many single-key
+    // IdPs don't bother with `kid` at all) — so when the token has no `kid`,
+    // use the sole cached key if there's exactly one; reject as ambiguous
+    // if there's more than one (no way to know which one the token means).
     let header = decode_header(token).map_err(|_| "invalid JWT header")?;
-    let kid = header.kid.as_deref().unwrap_or("default");
-
-    let key_material = keys.get(kid).ok_or("no matching JWKS key found for kid")?;
+    let key_material = match header.kid.as_deref() {
+        Some(kid) => keys.get(kid).ok_or("no matching JWKS key found for kid")?,
+        None => match keys.len() {
+            1 => keys.values().next().expect("checked len == 1"),
+            0 => return Err("no matching JWKS key found for kid"),
+            _ => return Err("JWT has no kid but JWKS contains multiple keys — ambiguous"),
+        },
+    };
 
     let decoding_key = match key_material {
         CachedKey::Rsa { n, e } => {

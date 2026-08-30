@@ -2993,6 +2993,7 @@ dependencies = [
  "bytes",
  "dashmap",
  "instant-acme",
+ "libc",
  "lopatnov-conduit-core",
  "pingora-core",
  "pingora-proxy",
