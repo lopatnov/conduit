@@ -917,7 +917,7 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 
 | Date/time (UTC) | New Dependabot PRs found/acted on | Orphan branches flagged | Notes |
 |---|---|---|---|
-| 2026-08-30 ~14:20 (real `/feature-workspace-cycle` firing, same local session as the day's ~00:00 firing) | 0 open | 10 stale local branches deleted (all confirmed merged/superseded first) | Picked up #137 (Phase 3.9) slice 2: closed #303+#304 (rate-limit key-format unification + site-scoping) via [PR #319](https://github.com/lopatnov/conduit/pull/319), found+fixed the same bug at the route level in passing, filed #317 (Redis-backend twin, deferred) and #320 (cosmetic edge case). Also shipped [PR #318](https://github.com/lopatnov/conduit/pull/318) fixing a `.gitignore` gap that let `git add -A` almost stage 2.5GB of build cache. Both PRs got mandatory `security-engineer` PASS before merge. Full detail in `.claude/logs/dependabot-hygiene.md`. |
+| 2026-08-30 ~19:06 (same local session, continuing through the day) | 0 open | 11 more stale local branches deleted | **#137 fully closed** — both halves landed: rate-limit fixes (#306/#307, [PR #323](https://github.com/lopatnov/conduit/pull/323)) and the `conduit-limits` crate extraction ([PR #324](https://github.com/lopatnov/conduit/pull/324), which also closed #51 — found already fully implemented). #310 turned out already closed from earlier. Filed #322 (Redis-backed rate limiting at route/consumer level — real remaining design work, deliberately not folded into #323). Full detail in `.claude/logs/dependabot-hygiene.md`. |
 
 ## Tokio 1.52.3 — возможности (исследовано)
 
