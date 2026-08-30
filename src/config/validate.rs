@@ -646,6 +646,8 @@ fn validate_site_request_handling(
         validate_rate_limit(
             rate_limit.window_secs,
             rate_limit.limit,
+            rate_limit.algorithm.as_deref(),
+            rate_limit.key_by.as_deref(),
             rate_limit.store.as_deref(),
             prefix,
             errors,
@@ -862,6 +864,8 @@ fn validate_consumer_entry(
         validate_rate_limit(
             rl.window_secs,
             rl.limit,
+            rl.algorithm.as_deref(),
+            rl.key_by.as_deref(),
             rl.store.as_deref(),
             &entry_prefix,
             errors,
@@ -1055,6 +1059,8 @@ fn validate_middleware(
 fn validate_rate_limit(
     window_secs: u64,
     limit: u64,
+    algorithm: Option<&str>,
+    key_by: Option<&str>,
     store: Option<&str>,
     prefix: &str,
     errors: &mut Vec<ValidationError>,
@@ -1075,7 +1081,7 @@ fn validate_rate_limit(
     // is caught at config-load time rather than silently ignored (it was previously
     // parsed and schema-declared but never read anywhere, see issue tracking the
     // 2026-08-30 rate_limit.rs integrity audit).
-    if let Some(algorithm) = &rate_limit.algorithm {
+    if let Some(algorithm) = algorithm {
         if algorithm != "token-bucket" {
             errors.push(ValidationError::new(
                 format!("{prefix}.rateLimit.algorithm"),
@@ -1088,7 +1094,7 @@ fn validate_rate_limit(
     // `None` for a malformed name and silently falls back to a shared "unknown" bucket,
     // collapsing every client into one rate limit. Catch the typo at config-load time
     // instead (CodeRabbit finding on PR #302's review).
-    if let Some(key_by) = &rate_limit.key_by {
+    if let Some(key_by) = key_by {
         if let Some(header_name) = key_by.strip_prefix("header:") {
             let valid = !header_name.is_empty()
                 && header_name
