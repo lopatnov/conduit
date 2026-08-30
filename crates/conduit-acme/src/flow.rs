@@ -51,11 +51,22 @@ fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         // manually via `set_len(0)` *after* chmod closes that window:
         // permissions are tightened before any content-modifying
         // operation ever touches the file.
+        //
+        // `O_NOFOLLOW` (issue #301): without it, a symlink pre-placed at
+        // `path` by a local attacker able to write to the ACME storage
+        // directory would be followed by `open()`, writing secret material
+        // (TLS private key / ACME account credentials) to the symlink's
+        // target instead of the intended location. Same pattern already
+        // established twice in this codebase — see
+        // `conduit_core::util::log_writer`'s and `static_files`'s own
+        // `open_no_follow()`. `ELOOP` (symlink detected) surfaces as a
+        // plain `io::Error` from `open()`, same as any other open failure.
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(false)
             .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         file.set_len(0)?;
@@ -205,53 +216,70 @@ async fn obtain_certificate(
     );
 
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-    {
+    let server_task = {
         let ch_map = challenges.clone();
-        tokio::spawn(run_challenge_server(ch_listener, ch_map, stop_rx));
-    }
+        tokio::spawn(run_challenge_server(ch_listener, ch_map, stop_rx))
+    };
 
     // Populate challenge tokens and notify the CA to begin validation.
     // Track every token we insert so we can remove only our own entries later,
     // leaving tokens belonging to other concurrent ACME operations intact.
+    //
+    // Issue #279: every fallible step below used to propagate its error via
+    // `?` directly, which skipped the cleanup further down (shutdown signal,
+    // awaiting the server task, removing our tokens) on any early return —
+    // leaking the bound port (the spawned task keeps holding it even though
+    // `_port_guard` gets dropped) and leaving stale challenge tokens in the
+    // shared map. Captured into `flow_result` instead so cleanup always runs,
+    // then propagated via `?` only after cleanup completes.
     let mut our_tokens: Vec<String> = Vec::new();
-    let mut authorizations = order.authorizations();
-    while let Some(authz_result) = authorizations.next().await {
-        let mut authz = authz_result.context("ACME authorizations fetch failed")?;
+    let retry = RetryPolicy::default();
+    let flow_result: anyhow::Result<()> = async {
+        let mut authorizations = order.authorizations();
+        while let Some(authz_result) = authorizations.next().await {
+            let mut authz = authz_result.context("ACME authorizations fetch failed")?;
 
-        if authz.status == AuthorizationStatus::Valid {
-            continue; // already validated from a previous attempt
+            if authz.status == AuthorizationStatus::Valid {
+                continue; // already validated from a previous attempt
+            }
+
+            let mut challenge_handle = authz.challenge(ChallengeType::Http01).ok_or_else(|| {
+                anyhow::anyhow!("no HTTP-01 challenge available for domain {domain}")
+            })?;
+
+            let key_auth = challenge_handle.key_authorization();
+            let token = challenge_handle.token.clone();
+            our_tokens.push(token.clone());
+            challenges.insert(token, key_auth.as_str().to_owned());
+
+            challenge_handle
+                .set_ready()
+                .await
+                .context("set_challenge_ready failed")?;
         }
 
-        let mut challenge_handle = authz
-            .challenge(ChallengeType::Http01)
-            .ok_or_else(|| anyhow::anyhow!("no HTTP-01 challenge available for domain {domain}"))?;
-
-        let key_auth = challenge_handle.key_authorization();
-        let token = challenge_handle.token.clone();
-        our_tokens.push(token.clone());
-        challenges.insert(token, key_auth.as_str().to_owned());
-
-        challenge_handle
-            .set_ready()
+        // Poll the order until all challenges are validated and the order is ready.
+        order
+            .poll_ready(&retry)
             .await
-            .context("set_challenge_ready failed")?;
+            .context("ACME order timed out waiting for challenge validation")?;
+        Ok(())
     }
+    .await;
 
-    // Poll the order until all challenges are validated and the order is ready.
-    let retry = RetryPolicy::default();
-    order
-        .poll_ready(&retry)
-        .await
-        .context("ACME order timed out waiting for challenge validation")?;
-
-    // Shut down the temporary challenge server (best effort — errors are non-fatal).
+    // Always shut down the temporary challenge server and clean up our
+    // tokens, regardless of whether the flow above succeeded (#279).
     let _ = stop_tx.send(());
-
+    if let Err(e) = server_task.await {
+        tracing::warn!("ACME HTTP-01 challenge server task did not exit cleanly: {e}");
+    }
     // Remove only the tokens we inserted, preserving any tokens that belong
     // to concurrent ACME operations for other domains.
     for token in &our_tokens {
         challenges.remove(token);
     }
+
+    flow_result?;
 
     // Finalize the order: instant-acme generates a fresh ECDSA key-pair and CSR
     // internally (via the `rcgen` feature), then sends the CSR to the CA.
@@ -543,6 +571,28 @@ mod tests {
             std::fs::read(&path).unwrap(),
             b"short",
             "no stale bytes from the longer previous content must survive"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_secret_file_rejects_symlink_at_target_path() {
+        // Issue #301: a symlink pre-placed at `path` must not be followed —
+        // O_NOFOLLOW should make the open() fail (ELOOP) rather than write
+        // secret material through to the symlink's target.
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::TempDir::new().unwrap();
+        let real_target = dir.path().join("real-secret.pem");
+        let link = dir.path().join("secret.pem");
+        std::fs::write(&real_target, b"pre-existing, must not be overwritten").unwrap();
+        symlink(&real_target, &link).unwrap();
+
+        let result = write_secret_file(&link, b"attacker-adjacent content");
+        assert!(result.is_err(), "writing through a symlink must fail");
+        assert_eq!(
+            std::fs::read(&real_target).unwrap(),
+            b"pre-existing, must not be overwritten",
+            "the symlink target must be untouched"
         );
     }
 }

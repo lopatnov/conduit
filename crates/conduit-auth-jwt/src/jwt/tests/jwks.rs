@@ -140,6 +140,30 @@ fn make_hs256_token_with_kid(kid: &str, secret_bytes: &[u8], claims: serde_json:
     encode(&header, &claims, &key).unwrap()
 }
 
+/// A JWKS body with a single RSA key that has no `kid` field at all —
+/// `get_jwks_keys` caches it under the synthesized `"RSA-default"` (#281).
+fn rsa_jwks_body_no_kid(n: &str, e: &str) -> String {
+    format!(r#"{{"keys":[{{"kty":"RSA","n":"{n}","e":"{e}"}}]}}"#)
+}
+
+/// A JWKS body with one kid-less RSA key (cached as `"RSA-default"`) and
+/// one explicitly-kidded RSA key — two distinct map entries, so a kid-less
+/// *token* has no way to know which one it means (#281's ambiguous case).
+/// (Two kid-less keys of the *same* type would instead collide under the
+/// identical synthesized identifier and never actually reach this branch —
+/// mixing in a real kid is what actually produces two distinct entries.)
+fn rsa_jwks_body_no_kid_plus_kidded(n1: &str, e1: &str, kid2: &str, n2: &str, e2: &str) -> String {
+    format!(
+        r#"{{"keys":[{{"kty":"RSA","n":"{n1}","e":"{e1}"}},{{"kty":"RSA","kid":"{kid2}","n":"{n2}","e":"{e2}"}}]}}"#
+    )
+}
+
+fn make_rs256_token_no_kid(private_pem: &str, claims: serde_json::Value) -> String {
+    let key = EncodingKey::from_rsa_pem(private_pem.as_bytes()).unwrap();
+    let header = Header::new(Algorithm::RS256); // header.kid stays None
+    encode(&header, &claims, &key).unwrap()
+}
+
 // ── fetch_jwks ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -324,4 +348,61 @@ fn validate_with_jwks_unreachable_endpoint_denied() {
         json!({ "sub": "u", "exp": exp_future() }),
     );
     assert!(validate_with_jwks(&cfg, &token, &jwks_url).is_err());
+}
+
+// ── kid-less tokens / kid-less JWKS keys (issue #281) ───────────────────────
+
+#[test]
+fn validate_with_jwks_kidless_token_and_sole_kidless_key_succeeds() {
+    let rsa = primary_rsa_key();
+    let body = rsa_jwks_body_no_kid(&rsa.n, &rsa.e);
+    let jwks_url = format!("{}/jwks", spawn_mock_http_server("HTTP/1.1 200 OK", &body));
+    let cfg = JwtAuthConfig {
+        jwks_url: Some(jwks_url.clone()),
+        ..Default::default()
+    };
+    let token = make_rs256_token_no_kid(&rsa.pem, json!({ "sub": "u", "exp": exp_future() }));
+    assert!(
+        validate_with_jwks(&cfg, &token, &jwks_url).is_ok(),
+        "a kid-less token against a JWKS with exactly one kid-less key must succeed"
+    );
+}
+
+#[test]
+fn validate_with_jwks_kidless_token_and_multiple_keys_rejected_as_ambiguous() {
+    let rsa = primary_rsa_key();
+    let other = other_rsa_key();
+    let body = rsa_jwks_body_no_kid_plus_kidded(&rsa.n, &rsa.e, "rsa-2", &other.n, &other.e);
+    let jwks_url = format!("{}/jwks", spawn_mock_http_server("HTTP/1.1 200 OK", &body));
+    let cfg = JwtAuthConfig {
+        jwks_url: Some(jwks_url.clone()),
+        ..Default::default()
+    };
+    let token = make_rs256_token_no_kid(&rsa.pem, json!({ "sub": "u", "exp": exp_future() }));
+    assert!(
+        validate_with_jwks(&cfg, &token, &jwks_url).is_err(),
+        "a kid-less token against a JWKS with more than one key must be rejected as ambiguous, \
+         not silently matched to an arbitrary key"
+    );
+}
+
+#[test]
+fn validate_with_jwks_kidless_token_and_sole_kidless_ec_key_succeeds() {
+    let ec = ec_key();
+    let body = format!(
+        r#"{{"keys":[{{"kty":"EC","crv":"P-256","x":"{}","y":"{}"}}]}}"#,
+        ec.x, ec.y
+    );
+    let jwks_url = format!("{}/jwks", spawn_mock_http_server("HTTP/1.1 200 OK", &body));
+    let cfg = JwtAuthConfig {
+        jwks_url: Some(jwks_url.clone()),
+        ..Default::default()
+    };
+    let key = EncodingKey::from_ec_pem(ec.pem.as_bytes()).unwrap();
+    let header = Header::new(Algorithm::ES256); // header.kid stays None
+    let token = encode(&header, &json!({ "sub": "u", "exp": exp_future() }), &key).unwrap();
+    assert!(
+        validate_with_jwks(&cfg, &token, &jwks_url).is_ok(),
+        "a kid-less EC token against a JWKS with exactly one kid-less EC key must succeed"
+    );
 }

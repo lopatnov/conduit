@@ -33,6 +33,7 @@ lopatnov-conduit-core = { workspace = true, optional = true }
 instant-acme          = { workspace = true, optional = true }
 rcgen                 = { workspace = true, optional = true }
 x509-parser           = { workspace = true, optional = true }
+libc                  = { workspace = true, optional = true }
 
 [dev-dependencies]
 time     = { workspace = true }
@@ -54,4 +55,5 @@ acme = [
     "dep:instant-acme",
     "dep:rcgen",
     "dep:x509-parser",
+    "dep:libc",
 ]
