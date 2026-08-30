@@ -101,7 +101,21 @@ mod otlp_impl {
         };
 
         global::set_tracer_provider(provider.clone());
-        let _ = TRACER_PROVIDER.set(provider);
+        // Issue #285: `OnceLock::set` only succeeds once. A second
+        // `init_tracer` call (e.g. a hot-reload path that re-initializes
+        // OTLP) still updates the *global* provider above, but silently
+        // discarding this `Result` left `TRACER_PROVIDER` pinned to the
+        // *first* provider forever -- `shutdown_tracer` would then flush the
+        // stale first provider while spans buffered by the actually-active
+        // second provider are dropped unflushed. Surface this as a warning
+        // instead of silently losing telemetry.
+        if TRACER_PROVIDER.set(provider).is_err() {
+            tracing::warn!(
+                "OpenTelemetry tracer re-initialized (init_tracer called more than \
+                 once) -- shutdown_tracer() only flushes the first provider; spans \
+                 from the newly-active global provider may be lost on shutdown"
+            );
+        }
 
         tracing::info!(
             endpoint = %cfg.endpoint,
@@ -176,6 +190,22 @@ mod otlp_impl {
         #[serial]
         async fn shutdown_tracer_after_init_does_not_panic() {
             init_tracer(&cfg(Some(1.0))).expect("init_tracer");
+            shutdown_tracer();
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn init_tracer_called_twice_does_not_error() {
+            // Issue #285: a second init_tracer call must still succeed (the
+            // global provider is updated either way) -- only the internal
+            // TRACER_PROVIDER.set() fails silently-turned-warned on the
+            // second call, it must not surface as an Err from init_tracer
+            // itself or panic.
+            init_tracer(&cfg(Some(1.0))).expect("first init_tracer");
+            assert!(
+                init_tracer(&cfg(Some(1.0))).is_ok(),
+                "a second init_tracer call must still return Ok, just warn"
+            );
             shutdown_tracer();
         }
 
