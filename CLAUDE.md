@@ -1921,6 +1921,80 @@ simply waiting for the eventual `main` merge to resolve on its own.
   after concluding it bought no cache savings for this routine's daily cadence — see
   `.claude/rules/index.md` "Session rotation retired" and `feature-workspace-cycle.md` Step 0a.
 
+### Реализовано в сессии 2026-08-30 (часть 2 — CodeRabbit PR #152 sweep "Block 1": #279/#301/#281/#282/#283/#284/#285/#286/#288, 4 PRs)
+
+- User asked for a survey of open issues groupable into workable batches; picked the batch of 9
+  issues from CodeRabbit's full review of PR #152 on 2026-08-24 (#279, #281–#288) plus #301 (found
+  by `security-engineer` reviewing PR #300) — grouped into 4 small PRs by crate/theme rather than one
+  giant PR (this repo's "one branch = one coherent change" convention).
+  - **[PR #325](https://github.com/lopatnov/conduit/pull/325)** (`conduit-acme`/`conduit-auth-jwt`,
+    squash-merged) — #279 (ACME challenge-server cleanup wasn't guaranteed on error: the
+    populate-challenges-and-poll logic now runs inside an inner `async {}` whose `Result` is captured,
+    so cleanup — stop signal, `server_task.await`, token removal — always runs before the error
+    propagates), #301 (`write_secret_file` symlink attack: added `O_NOFOLLOW`, third instance of this
+    codebase's established pattern alongside `log_writer`/`static_files`), #281 (JWKS `kid` lookup for
+    kid-less tokens/keys made RFC-honest: a kid-less token now matches only when the JWKS has exactly
+    one key, and is rejected as ambiguous — not silently matched to the wrong key — when the JWKS has
+    several). Real Linux verification via WSL2+Docker for the `#[cfg(unix)]` symlink test (doesn't
+    compile on the Windows dev machine at all).
+  - **[PR #326](https://github.com/lopatnov/conduit/pull/326)** (`conduit-faults`/`conduit-config-core`/
+    `conduit-core`, squash-merged) — #282 (fault-injection abort/delay percentage ranges were
+    overlapping instead of additive — extracted a pure `decide()` function with a regression test
+    proving the old code would wrongly `Continue` inside what should be the delay window), #283
+    (`Path::parent()` returns `Some("")`, not `None`, for a bare relative filename — broke the
+    config-file hot-reload watcher's directory resolution; extracted `watch_dir()` with 4 unit tests),
+    #284 (`Accept-Encoding` qvalue parsing used naive string-matching that missed `q=0.00`/`q=0.000` —
+    replaced with real float parsing per RFC 9110's up-to-3-fractional-digit grammar).
+  - **[PR #327](https://github.com/lopatnov/conduit/pull/327)** (`conduit-otlp`/`conduit-upload`) —
+    #285 (`init_tracer`'s `OnceLock::set()` failure on a second call was silently discarded, pinning
+    `shutdown_tracer` to flush the stale first provider forever while the actually-active second
+    provider's spans went unflushed on shutdown — now `tracing::warn!`s instead), #286 (axum 0.8's
+    `{*path}` wildcard doesn't match the empty root segment — POSTing directly to the upload service's
+    `/` returned 404; added an explicit `/` route alongside the wildcard). New regression tests spin up
+    a real `TcpListener` + `axum::serve` + raw TCP client (no `tower`/`oneshot` — not a dev-dependency
+    here) to exercise both routes end-to-end.
+  - **[PR #328](https://github.com/lopatnov/conduit/pull/328)** (`scripts/check-layer-boundaries.sh`) —
+    #288 (a crate manifest with no `^name\s*=` line made `grep -m1` exit 1 under `set -euo pipefail`,
+    silently aborting the *entire* scan before printing any diagnostic and before scanning any crate
+    that came after the offending one; added `|| true` + an explicit `[[ -n "$crate_name" ]] || continue`
+    guard). Verified against the actual pre-fix script in an isolated scratch copy: reproduced the exact
+    bug (exit 1, zero output, real violation planted afterward never reported), then confirmed the fix
+    resolves it.
+  - **#287 closed without a code change** — both drift points it described (SiteConfig
+    `additionalProperties: false` vs. the `extra`-flatten field; `global.workers` schema minimum vs.
+    validate.rs's hard rejection of `0`) turned out to already be resolved on this branch, verified by
+    walking the entire parsed JSON schema tree (no `additionalProperties: false` anywhere;
+    `global.workers` already has `"minimum": 1`) — likely a side effect of other schema-touching PRs
+    that landed since #287 was filed (#302/#309/#311/#323). Closing stale findings with the
+    verification recorded, rather than silently ignoring or duplicating work, matches how this session
+    already handles CodeRabbit re-postings of already-resolved findings.
+  - All 4 PRs got the mandatory unconditional `security-engineer` PASS (posted as a PR comment on
+    each) before merge, per `.claude/rules/workflow.md`.
+- **Process incident: a non-worktree-isolated `security-engineer` background agent raced with and
+  reverted an uncommitted conductor edit.** While PR #326 was under background `security-engineer`
+  review (spawned *without* `isolation: "worktree"`), that agent's own methodology — creating a local
+  git ref/branch (`pr-326-review`) and running `git diff origin/... pr-326-review` directly in the
+  shared working directory — collided with an in-progress, not-yet-committed edit the conductor was
+  making concurrently on a different branch (`fix/otlp-double-init-upload-root-285-286`,
+  `crates/conduit-otlp/src/tracer.rs`): the working tree ended up with PR #326's already-committed
+  file changes staged as stray duplicates, and the conductor's own first `tracer.rs` edit was silently
+  reverted (a second, later edit on the same file survived). No committed/pushed work was lost — the
+  PR's actual GitHub state was independently confirmed via `gh pr diff --name-only`/`gh pr view --json
+  additions,deletions` unaffected — but recovery required `git restore --staged`/`git checkout --` to
+  strip the stray content, then re-reading and re-applying the reverted edit from memory of what had
+  just been written. This is a distinct variant of the [[worktree-merge-gotcha]]/2026-08-24
+  "verification-agent isolation incident" already logged above (that one was agents *with*
+  `isolation: "worktree"` still reaching outside it via an absolute `--manifest-path`; this one is an
+  agent with no isolation at all, whose own git bookkeeping — not a build/test command — was the thing
+  that raced) — recorded because the mitigation is the same generalizable rule stated plainly for the
+  first time here: **treat any background agent that might run `git` commands (not just build/test
+  tooling) as a race risk against uncommitted edits in the shared checkout, regardless of what its own
+  task nominally is** — `security-engineer`'s mandate doesn't obviously suggest it touches git state,
+  but its actual diff-review methodology does. After recovery, the conductor explicitly avoided
+  spawning further background agents until finishing and committing the in-progress branch, and used
+  `isolation: "worktree"` for both subsequent `security-engineer` reviews (PR #327, PR #328) in this
+  same batch — both completed cleanly with no further incident.
+
 ---
 
 ## Session rotation log
