@@ -3164,7 +3164,6 @@ dependencies = [
  "pingora-core",
  "pingora-proxy",
  "serde",
- "tracing",
 ]
 
 [[package]]
