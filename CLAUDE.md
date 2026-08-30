@@ -66,15 +66,26 @@
 11. **IP filter** — CIDR, применяется ДО auth и rate limit.
 12. **Hot/cold reload:** port, tls.cert/key/versions/ciphers, workers, backlog, admin — cold. Всё остальное — hot через ArcSwap.
 13. **`LogWriter`** — `Arc<LogWriter>` в `AppState.log_writer`; Mutex внутри.
-14. **Rate limiter** — `DashMap` v6. Ключи реально используемые: site-level — bare client
-    key (IP или значение заголовка, `keyBy`); per-route — `"route:{key}:{ip}"`; per-consumer —
-    `"consumer:{username}"`. **Исправление 2026-08-30** (Step 1c аудит `rate_limit.rs`): эта
-    строка раньше ошибочно приписывала рейт-лимитеру формат `"{site}\0{route}"` /
-    `"*\0{route}"` — тот формат принадлежит `UpstreamRegistry.override_key()` в
-    `src/proxy/health.rs` (`conduit upstreams add/remove/weight --site`), не рейт-лимитеру.
-    Отдельно найдено и заведено issue: site-level бакеты НЕ скоуплены по сайту (общий
-    `AppState.rate_limiter` на процесс, ключ — голый client key без метки сайта) — два сайта
-    с разными `rateLimit` конфигами и общим клиентским IP делят один бакет.
+14. **Rate limiter** — `DashMap` v6 (`AppState.rate_limiter`, shared by site/route/consumer
+    layers). **Канонический формат ключа с 2026-08-30** (`src/filter/rate_limit.rs`:
+    `site_key`/`route_key`/`consumer_key`, fix для #303/#304): `\0`-разделённые, с тегом
+    namespace — site-level: `"site\0{site_label}\0{client_key}"`; per-route:
+    `"route\0{site_label}\0{route_key}\0{client_key}"`; per-consumer: `"consumer\0{username}"`
+    (**намеренно** не скоуплен по сайту — квота consumer'а глобальна по всем сайтам, где он
+    разрешён). `site_label` = тот же `"{host}:{port}"`/`"*"`, что уже используется в
+    `conduit_rate_limit_rejected_total{site=…}`. `GET /rate-limits` (`admin/api.rs`) парсит
+    все три формы и суммирует per-client бакеты в один total на (site, route) — раньше
+    (до фикса) не парсил вообще ничего реального, всегда отдавал `{}` (issue #303). Redis-бэкенд
+    (`rate_limit_redis.rs`) — отдельный неймспейс, тот же класс бага (без site-scoping) остался,
+    отслеживается отдельно в issue #317, чинится вместе с извлечением Redis-бэкенда в
+    `conduit-ratelimit` (issue #137, slice 2).
+    **История находки (2026-08-30, Step 1c аудит `rate_limit.rs`)**: до этого фикса запись здесь
+    ошибочно приписывала рейт-лимитеру формат `"{site}\0{route}"` — тот формат на самом деле
+    принадлежит `UpstreamRegistry.override_key()` в `src/proxy/health.rs`
+    (`conduit upstreams add/remove/weight --site`); отдельно было найдено, что site-level
+    бакеты не были скоуплены по сайту вообще (issue #304) и что per-route бакеты имели тот же
+    класс бага (найдено при реализации фикса, не было отдельным issue — два сайта с одинаковым
+    `route_key` и общим клиентом делили бакет). Оба закрыты этим фиксом.
 15. **Graceful shutdown** — `Arc<AtomicUsize>` inflight. SIGTERM → перестать принимать → ждать нуля → exit.
 16. **`FallbackConfig`:** нет поля `redirect`.
 17. **LoadBalanceStrategy** — 8 вариантов (включая P2c). Веса статические. Для IpHash/CH — `hash_key: "ip" | "header:X-Key" | "url"`. P2C: splitmix64 RNG, O(1).
@@ -149,7 +160,7 @@ request_filter()
   │              → RateLimitGuard → ConsumersGuard (6) → BasicAuthGuard → ApiKeyGuard → JwtGuard (6c)
   │              → ForwardAuthGuard (6d) → RedirectGuard → FaultInjectionGuard
   │              → MiddlewareGuard (Rhai + WASM in order)
-  ├─ Per-route rate limit check (post-routing, key "route:{key}:{ip}")
+  ├─ Per-route rate limit check (post-routing, key via rate_limit::route_key — see decision #14)
   ├─ Priority load shedding: if inflight/maxInflight ≥ threshold AND route.priority < 50 → 503
   ├─ Circuit breaker: if all upstreams at maxConns → LocalHandler::Overloaded → 503
   └─ JWT claims extraction (for {{ jwt.sub }} templates) → RequestCtx.jwt_claims
@@ -960,7 +971,7 @@ Tokio "full" features уже включены. Ключевые находки �
 - ForwardAuth: process-wide `OnceLock<reqwest::Client>` в `forward_auth_client()` — не per-request
 - Header insert из Vec<String>: сначала collect в Vec<(String,String)> — избегаем lifetime issues
 - Axum middleware state: `from_fn_with_state(Arc<T>)` конфликтует с `Router.with_state(Arc<U>)`. Использовать closure: `from_fn(move |req, next| { let t = t.clone(); async move { ... } })`
-- Consumer rate limit key: `"consumer:{username}"` (global для этого consumer, не per-IP). Bucket создаётся через `ctx.rate_limiter.entry(key).or_insert_with(|| TokenBucket::new(limit, window))`.
+- Consumer rate limit key: `rate_limit::consumer_key(username)` → `"consumer\0{username}"` (global для этого consumer, не per-IP — см. decision #14). Admission — через `conduit_ratelimit::check_key_for` (единая MAX_BUCKETS-капнутая точка на все слои, issue #305), не через ручной `entry().or_insert_with()`.
 - Circuit Breaker: `conn_count` инкрементируется для ALL стратегий при `maxConnectionsPerUpstream`. Non-LC: `circuit_tracking = true` → `conn_inc()` + `proxy_upstream_url = Some(url)`. Декремент в `logging()` как обычно.
 - JWT claims: `RequestCtx.jwt_claims` заполняется ПОСЛЕ guards в `do_request_filter`. `expand_jwt_templates()` вызывается в `upstream_request_filter`. Неизвестные claims → пустая строка.
 - `LocalHandler::Overloaded` → `HandlerKind::Overloaded` → `OverloadedHandler` → 503. Не bypasses guard chain (auth проверяется сначала).
