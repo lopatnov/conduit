@@ -1872,6 +1872,34 @@ simply waiting for the eventual `main` merge to resolve on its own.
   headers/HSTS/CSP/allowed-hosts) is byte-for-byte unchanged by the move. Deferring #137 (extract
   `conduit-ratelimit`, next in phase order) until the rate-limit redesign above lands — doing the
   key-format/scoping rework before the crate boundary rather than across it.
+- **`crates/conduit-ratelimit` extracted (slice 1 of #137)**, merged via
+  [PR #311](https://github.com/lopatnov/conduit/pull/311). Called `architect` first on a SonarCloud
+  "Duplicated Lines on New Code" finding pointing at `conduit-auth-consumers`'s deliberate, documented
+  temporary duplicate of `RateLimitConfig` (issue #114/#134); `architect` recommended seeding the real
+  `conduit-ratelimit` crate now with only the always-on slice (`RateLimitConfig` + the pure
+  token-bucket admission logic — `TokenBucket`/`RateLimiter`/`MAX_BUCKETS`/`cleanup`/`check_key`)
+  rather than either the full #137 (Redis backend, `Session`-aware wrappers — deliberately left in the
+  root crate) or a throwaway config-only crate (would have violated `conduit-config-core`'s documented
+  zero-schema-knowledge invariant). **#137 stays open** — this is one slice, not the whole issue.
+  Unifying the type onto one crate made two sibling fixes possible in the same PR, per the owner
+  decisions above: **#305** (all 4 admission call sites — site/route/consumer/Redis-fallback — now
+  share one capacity-checked `check_key`/`check_key_for`, closing the real DoS bypass) and **#310**
+  (per-route `rateLimit` is now validated; `validate_rate_limit` collapsed back to `&RateLimitConfig`
+  since it's one type at every layer now, not two nominally-distinct ones). Both issues closed.
+  #303/#304 (key-format unification/site-scoping) deliberately stayed out — this PR guarantees every
+  key stays byte-identical, #303/#304 changes what the key *is* — #311 is the enabler, not a
+  competitor. `feature-matrix-runner` (20+136 combinations, redis specifically checked) and
+  `footprint-auditor` (zero binary delta) both GREEN. **Review-comment discipline this time**: caught
+  and fixed a real security-engineer finding (raw rate-limit key — which can carry a header value like
+  an API key under `keyBy: "header:X-API-Key"` — was being logged verbatim on `MAX_BUCKETS` cap-hit;
+  now logs only the key's length) plus 3 doc/schema-drift fixes from CodeRabbit, pushed back with
+  evidence on a Gitar false-positive (the exact validation it claimed was missing already existed) and
+  a CodeRabbit TOCTOU finding (real, but the identical pre-existing race as the original site-level
+  code, matching this codebase's own documented soft-cap convention — filed as
+  [#313](https://github.com/lopatnov/conduit/issues/313) for anyone who wants to tighten it later, not
+  blocking). All 6 review threads replied-then-resolved and re-verified against the final head SHA
+  *before* merging — directly in response to the user flagging that #302 got merged past its own
+  unaddressed review comments earlier this session (see the #302/#309 entry above).
 - **Process note**: this firing ran in a **local session** (not cloud/Routine-fired) with zero
   `mcp__github__*` MCP tools in its grant — confirmed via `ToolSearch select:`, exact name match, not
   a fuzzy-search miss. Used the local `gh` CLI (installed, authenticated) throughout instead; see
