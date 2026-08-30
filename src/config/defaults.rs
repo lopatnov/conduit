@@ -13,12 +13,6 @@ pub const DEFAULT_HOT_RELOAD_PATH: &str = "/__hot-reload__";
 /// Graceful shutdown timeout when not configured.
 pub const DEFAULT_SHUTDOWN_TIMEOUT_SECS: u64 = 30;
 
-/// Token-bucket is the only supported algorithm for now.
-pub const DEFAULT_RATE_LIMIT_ALGORITHM: &str = "token-bucket";
-
-/// Rate limit key is client IP by default.
-pub const DEFAULT_RATE_LIMIT_KEY_BY: &str = "ip";
-
 /// Header name used for API key authentication.
 pub const DEFAULT_API_KEY_HEADER: &str = "X-Api-Key";
 
@@ -89,9 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn rate_limit_defaults_are_non_empty() {
-        assert!(!DEFAULT_RATE_LIMIT_ALGORITHM.is_empty());
-        assert!(!DEFAULT_RATE_LIMIT_KEY_BY.is_empty());
+    fn api_key_header_default_is_non_empty() {
         assert!(!DEFAULT_API_KEY_HEADER.is_empty());
     }
 }

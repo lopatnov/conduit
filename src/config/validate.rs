@@ -1071,6 +1071,45 @@ fn validate_rate_limit(
             "limit must be greater than 0",
         ));
     }
+    // "token-bucket" is the only algorithm implemented — the field exists so a typo
+    // is caught at config-load time rather than silently ignored (it was previously
+    // parsed and schema-declared but never read anywhere, see issue tracking the
+    // 2026-08-30 rate_limit.rs integrity audit).
+    if let Some(algorithm) = &rate_limit.algorithm {
+        if algorithm != "token-bucket" {
+            errors.push(ValidationError::new(
+                format!("{prefix}.rateLimit.algorithm"),
+                format!("invalid algorithm \"{algorithm}\" — only \"token-bucket\" is supported"),
+            ));
+        }
+    }
+    // `keyBy: "header:<name>"` must name a syntactically valid HTTP header field —
+    // `extract_key()` (src/filter/rate_limit.rs) uses `HeaderMap::get()`, which returns
+    // `None` for a malformed name and silently falls back to a shared "unknown" bucket,
+    // collapsing every client into one rate limit. Catch the typo at config-load time
+    // instead (CodeRabbit finding on PR #302's review).
+    if let Some(key_by) = &rate_limit.key_by {
+        if let Some(header_name) = key_by.strip_prefix("header:") {
+            let valid = !header_name.is_empty()
+                && header_name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
+            if !valid {
+                errors.push(ValidationError::new(
+                    format!("{prefix}.rateLimit.keyBy"),
+                    format!(
+                        "invalid header name \"{header_name}\" in \"header:{header_name}\" — \
+                         must be a valid HTTP header field name (letters, digits, and !#$%&'*+-.^_`|~)"
+                    ),
+                ));
+            }
+        } else if key_by != "ip" {
+            errors.push(ValidationError::new(
+                format!("{prefix}.rateLimit.keyBy"),
+                format!("invalid keyBy \"{key_by}\" — must be \"ip\" or \"header:<name>\""),
+            ));
+        }
+    }
     // Validate the store field: must be "memory", a redis:// URL (plaintext),
     // or a rediss:// URL (TLS — requires Redis with in-transit encryption,
     // e.g. AWS ElastiCache TLS, Azure Cache for Redis).
@@ -1962,6 +2001,71 @@ mod tests {
     fn rate_limit_redis_store_valid() {
         assert!(errs(r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://127.0.0.1:6379" } }"#)
             .is_empty());
+    }
+
+    #[test]
+    fn rate_limit_token_bucket_algorithm_valid() {
+        assert!(errs(
+            r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "algorithm": "token-bucket" } }"#
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn rate_limit_unknown_algorithm_rejected() {
+        let e = errs(
+            r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "algorithm": "leaky-bucket" } }"#,
+        );
+        assert!(!e.is_empty(), "unknown algorithm must be rejected");
+        assert!(e[0].path.contains("algorithm"), "got: {}", e[0].path);
+    }
+
+    #[test]
+    fn rate_limit_key_by_ip_valid() {
+        assert!(
+            errs(r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "keyBy": "ip" } }"#)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn rate_limit_key_by_valid_header_name_valid() {
+        assert!(errs(
+            r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "keyBy": "header:X-User-ID" } }"#
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn rate_limit_key_by_header_with_space_rejected() {
+        let e = errs(
+            r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "keyBy": "header:bad name" } }"#,
+        );
+        assert!(!e.is_empty(), "a header name with a space must be rejected");
+        assert!(e[0].path.contains("keyBy"), "got: {}", e[0].path);
+    }
+
+    #[test]
+    fn rate_limit_key_by_bare_header_rejected() {
+        // "header" with no ":<name>" suffix was previously schema-valid but
+        // silently fell through to IP-based limiting at runtime — now rejected
+        // outright (Gitar finding on PR #302's review).
+        let e = errs(r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "keyBy": "header" } }"#);
+        assert!(
+            !e.is_empty(),
+            "bare \"header\" without a name must be rejected"
+        );
+        assert!(e[0].path.contains("keyBy"), "got: {}", e[0].path);
+    }
+
+    #[test]
+    fn rate_limit_key_by_unknown_value_rejected() {
+        let e = errs(r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "keyBy": "cookie" } }"#);
+        assert!(
+            !e.is_empty(),
+            "an unrecognized keyBy value must be rejected"
+        );
+        assert!(e[0].path.contains("keyBy"), "got: {}", e[0].path);
     }
 
     #[test]

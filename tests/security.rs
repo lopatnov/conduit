@@ -1186,6 +1186,147 @@ fn rate_limit_burst_allows_burst_requests() {
     assert!(rejected >= 1, "must rate-limit after burst: {statuses:?}");
 }
 
+// ── Rate-limit dry-run ──────────────────────────────────────────────────────
+
+/// A site-level `rateLimit` with `dryRun: true` must log violations but let
+/// requests through — mirrors `ip_filter_dry_run_logs_but_allows` in
+/// tests/ip_filter.rs. Found uncovered by the 2026-08-30 Step 1c integrity
+/// audit of rate_limit.rs.
+#[test]
+#[serial]
+fn rate_limit_dry_run_logs_but_allows() {
+    let (echo_port, _echo) = common::start_echo_upstream();
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "rateLimit": { "windowSecs": 60, "limit": 1, "dryRun": true, "keyBy": "ip" },
+                "proxy": {
+                    "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] }
+                }
+            }]
+        }),
+    );
+
+    let client = Client::new();
+    let mut statuses: Vec<u16> = Vec::new();
+    for _ in 0..5 {
+        let s = client.get(srv.url("/")).send().unwrap().status().as_u16();
+        statuses.push(s);
+    }
+
+    assert!(
+        statuses.iter().all(|&s| s == 200),
+        "dryRun: true must allow every request through even past the limit: {statuses:?}"
+    );
+}
+
+/// Sanity check for the test above: with the same limit and `dryRun` absent
+/// (enforcement active), requests past the limit must actually 429.
+#[test]
+#[serial]
+fn rate_limit_dry_run_false_still_enforces() {
+    let (echo_port, _echo) = common::start_echo_upstream();
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "rateLimit": { "windowSecs": 60, "limit": 1, "keyBy": "ip" },
+                "proxy": {
+                    "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] }
+                }
+            }]
+        }),
+    );
+
+    let client = Client::new();
+    let mut statuses: Vec<u16> = Vec::new();
+    for _ in 0..5 {
+        let s = client.get(srv.url("/")).send().unwrap().status().as_u16();
+        statuses.push(s);
+    }
+
+    assert_eq!(
+        statuses[0], 200,
+        "with limit=1, the first request must be allowed (proves the limit is 1, not 0): {statuses:?}"
+    );
+    assert!(
+        statuses.contains(&429),
+        "without dryRun, exceeding the limit must be rejected: {statuses:?}"
+    );
+}
+
+// ── Rate-limit keyBy validation ───────────────────────────────────────────────
+
+/// `keyBy: "header:<name>"` must reject a syntactically invalid HTTP header
+/// name at config-load time — an accepted-but-invalid name would silently
+/// fall back to a shared "unknown" bucket at runtime (`HeaderMap::get`
+/// returns `None` for it), collapsing every client into one rate limit.
+/// CodeRabbit finding on PR #302's review.
+#[test]
+#[serial]
+fn rate_limit_invalid_header_key_by_is_rejected() {
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let config = serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "rateLimit": { "windowSecs": 60, "limit": 100, "keyBy": "header:bad name" }
+        }]
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("conduit.json");
+    std::fs::write(&config_path, config.to_string()).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_conduit"))
+        .args(["--config", config_path.to_str().unwrap(), "validate"])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "an invalid header name in keyBy must fail validation"
+    );
+}
+
+/// Sanity check: a valid `header:X-Name` keyBy still passes validation.
+#[test]
+#[serial]
+fn rate_limit_valid_header_key_by_is_accepted() {
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let config = serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "rateLimit": { "windowSecs": 60, "limit": 100, "keyBy": "header:X-User-ID" }
+        }]
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("conduit.json");
+    std::fs::write(&config_path, config.to_string()).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_conduit"))
+        .args(["--config", config_path.to_str().unwrap(), "validate"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "a valid header:X-User-ID keyBy must pass validation: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 // ── Feature warnings in reload response ──────────────────────────────────────
 
 #[test]
