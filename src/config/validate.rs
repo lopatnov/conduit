@@ -1048,6 +1048,18 @@ fn validate_rate_limit(
             "limit must be greater than 0",
         ));
     }
+    // "token-bucket" is the only algorithm implemented — the field exists so a typo
+    // is caught at config-load time rather than silently ignored (it was previously
+    // parsed and schema-declared but never read anywhere, see issue tracking the
+    // 2026-08-30 rate_limit.rs integrity audit).
+    if let Some(algorithm) = &rate_limit.algorithm {
+        if algorithm != "token-bucket" {
+            errors.push(ValidationError::new(
+                format!("{prefix}.rateLimit.algorithm"),
+                format!("invalid algorithm \"{algorithm}\" — only \"token-bucket\" is supported"),
+            ));
+        }
+    }
     // Validate the store field: must be "memory", a redis:// URL (plaintext),
     // or a rediss:// URL (TLS — requires Redis with in-transit encryption,
     // e.g. AWS ElastiCache TLS, Azure Cache for Redis).
@@ -1939,6 +1951,23 @@ mod tests {
     fn rate_limit_redis_store_valid() {
         assert!(errs(r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://127.0.0.1:6379" } }"#)
             .is_empty());
+    }
+
+    #[test]
+    fn rate_limit_token_bucket_algorithm_valid() {
+        assert!(errs(
+            r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "algorithm": "token-bucket" } }"#
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn rate_limit_unknown_algorithm_rejected() {
+        let e = errs(
+            r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "algorithm": "leaky-bucket" } }"#,
+        );
+        assert!(!e.is_empty(), "unknown algorithm must be rejected");
+        assert!(e[0].path.contains("algorithm"), "got: {}", e[0].path);
     }
 
     #[test]

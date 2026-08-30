@@ -66,7 +66,15 @@
 11. **IP filter** — CIDR, применяется ДО auth и rate limit.
 12. **Hot/cold reload:** port, tls.cert/key/versions/ciphers, workers, backlog, admin — cold. Всё остальное — hot через ArcSwap.
 13. **`LogWriter`** — `Arc<LogWriter>` в `AppState.log_writer`; Mutex внутри.
-14. **Rate limiter** — `DashMap` v6. Ключ: `"{site}\0{route}"` для per-site override, `"*\0{route}"` — wildcard.
+14. **Rate limiter** — `DashMap` v6. Ключи реально используемые: site-level — bare client
+    key (IP или значение заголовка, `keyBy`); per-route — `"route:{key}:{ip}"`; per-consumer —
+    `"consumer:{username}"`. **Исправление 2026-08-30** (Step 1c аудит `rate_limit.rs`): эта
+    строка раньше ошибочно приписывала рейт-лимитеру формат `"{site}\0{route}"` /
+    `"*\0{route}"` — тот формат принадлежит `UpstreamRegistry.override_key()` в
+    `src/proxy/health.rs` (`conduit upstreams add/remove/weight --site`), не рейт-лимитеру.
+    Отдельно найдено и заведено issue: site-level бакеты НЕ скоуплены по сайту (общий
+    `AppState.rate_limiter` на процесс, ключ — голый client key без метки сайта) — два сайта
+    с разными `rateLimit` конфигами и общим клиентским IP делят один бакет.
 15. **Graceful shutdown** — `Arc<AtomicUsize>` inflight. SIGTERM → перестать принимать → ждать нуля → exit.
 16. **`FallbackConfig`:** нет поля `redirect`.
 17. **LoadBalanceStrategy** — 8 вариантов (включая P2c). Веса статические. Для IpHash/CH — `hash_key: "ip" | "header:X-Key" | "url"`. P2C: splitmix64 RNG, O(1).
