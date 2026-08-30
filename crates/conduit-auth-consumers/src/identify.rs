@@ -1,11 +1,14 @@
 //! Consumer identification logic — pure, self-contained credential checks.
 //!
 //! **Does not include [`crate::config`]'s owner, `ConsumersGuard` itself** —
-//! see this crate's `src/lib.rs` doc comment for why: `ConsumersGuard`
-//! additionally needs the root crate's not-yet-extracted `RateLimiter` for
-//! its per-consumer rate limit step, so the guard's `RequestFilter` impl
-//! stays in the root crate's `src/filter/chain.rs`. Only the identification
-//! step — everything in this module — is self-contained enough to move.
+//! see this crate's `src/lib.rs` doc comment for why: `ConsumersGuard` is a
+//! `Session`-coupled request-chain guard (same category as `IpGuard`/
+//! `CorsPreflight`), so its `RequestFilter` impl stays in the root crate's
+//! `src/filter/chain.rs` regardless of where the types it uses live —
+//! `RateLimiter` itself now lives in `conduit-ratelimit` (issue #114/#137
+//! slice 1), re-exported via `crate::filter::rate_limit` in the root crate.
+//! Only the identification step — everything in this module — is
+//! self-contained enough to move.
 
 use base64::Engine as _;
 use conduit_core::util::crypto::ct_eq_str;
