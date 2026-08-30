@@ -162,8 +162,7 @@ where
         {
             use notify::Watcher as _;
             // Watch the parent directory to survive atomic saves (editor temp-file + rename).
-            let dir = self.path.parent().unwrap_or(&self.path);
-            watcher.watch(dir, notify::RecursiveMode::NonRecursive)?;
+            watcher.watch(watch_dir(&self.path), notify::RecursiveMode::NonRecursive)?;
         }
 
         while let Some(()) = change_rx.recv().await {
@@ -173,6 +172,24 @@ where
         }
 
         Ok(())
+    }
+}
+
+/// The directory to watch for hot-reload purposes: `path`'s parent, or the
+/// current directory when `path` has no parent (an absolute root) *or* an
+/// empty one (issue #283).
+///
+/// `Path::parent()` on a bare relative filename like `"conduit.json"`
+/// doesn't return `None` — it returns `Some("")` (an empty path). A naive
+/// `path.parent().unwrap_or(&path)` fallback only triggers on `None`, so it
+/// never actually fired for this common case; `watcher.watch("")` then
+/// failed with a not-found error and `run()` returned `Err`, aborting
+/// auto-reload entirely even though the initial config load had already
+/// succeeded.
+fn watch_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
     }
 }
 
@@ -286,6 +303,37 @@ mod tests {
     fn with_auto_reload_sets_flag() {
         let p = FileProvider::<Toy>::new("/tmp/x.json").with_auto_reload();
         assert!(p.auto_reload);
+    }
+
+    // ── watch_dir (issue #283) ───────────────────────────────────────────────
+
+    #[test]
+    fn watch_dir_bare_relative_filename_falls_back_to_current_dir() {
+        // The regression case: Path::parent() on "conduit.json" returns
+        // Some("") (not None), so a naive unwrap_or fallback never fired.
+        assert_eq!(watch_dir(Path::new("conduit.json")), Path::new("."));
+    }
+
+    #[test]
+    fn watch_dir_relative_path_with_directory_uses_that_directory() {
+        assert_eq!(
+            watch_dir(Path::new("config/conduit.json")),
+            Path::new("config")
+        );
+    }
+
+    #[test]
+    fn watch_dir_absolute_path_uses_its_parent() {
+        assert_eq!(
+            watch_dir(Path::new("/etc/conduit/conduit.json")),
+            Path::new("/etc/conduit")
+        );
+    }
+
+    #[test]
+    fn watch_dir_root_path_falls_back_to_current_dir() {
+        // Path::parent() on "/" returns None (no parent above root).
+        assert_eq!(watch_dir(Path::new("/")), Path::new("."));
     }
 
     // ── One-shot mode ─────────────────────────────────────────────────────────

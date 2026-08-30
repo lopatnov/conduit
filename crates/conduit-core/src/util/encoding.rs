@@ -14,10 +14,19 @@ impl AcceptEncoding {
         for part in value.split(',') {
             let mut segments = part.trim().split(';');
             let token = segments.next().unwrap_or("").trim().to_ascii_lowercase();
-            // Skip encodings explicitly disabled with q=0 or q=0.0.
+            // Skip encodings explicitly disabled with q=0. Parsed numerically
+            // rather than matched against specific textual forms (issue
+            // #284) -- RFC 9110's qvalue grammar allows up to three
+            // fractional digits (`q=0`, `q=0.0`, `q=0.00`, `q=0.000` are all
+            // equally valid), and matching only two of those forms let
+            // `q=0.00`/`q=0.000` silently re-enable an encoding the client
+            // explicitly disabled.
             let is_zero_q = segments.any(|seg| {
-                let seg = seg.trim();
-                seg.eq_ignore_ascii_case("q=0") || seg.eq_ignore_ascii_case("q=0.0")
+                seg.trim()
+                    .to_ascii_lowercase()
+                    .strip_prefix("q=")
+                    .and_then(|v| v.trim().parse::<f64>().ok())
+                    .is_some_and(|q| q == 0.0)
             });
             if is_zero_q {
                 continue;
@@ -87,6 +96,27 @@ mod tests {
     fn parse_q_zero_zero_disables_encoding() {
         let enc = AcceptEncoding::parse("gzip;q=0.0");
         assert!(!enc.gzip);
+    }
+
+    #[test]
+    fn parse_q_zero_two_decimals_disables_encoding() {
+        // Issue #284: q=0.00 is an equally valid all-zero qvalue per RFC
+        // 9110 but wasn't recognized by the old string-matching check.
+        let enc = AcceptEncoding::parse("gzip;q=0.00");
+        assert!(!enc.gzip, "q=0.00 must disable the encoding");
+    }
+
+    #[test]
+    fn parse_q_zero_three_decimals_disables_encoding() {
+        let enc = AcceptEncoding::parse("gzip;q=0.000");
+        assert!(!enc.gzip, "q=0.000 must disable the encoding");
+    }
+
+    #[test]
+    fn parse_q_nonzero_does_not_disable_encoding() {
+        // A low but nonzero qvalue must NOT be treated as disabled.
+        let enc = AcceptEncoding::parse("gzip;q=0.001");
+        assert!(enc.gzip, "a nonzero qvalue must not disable the encoding");
     }
 
     #[test]
