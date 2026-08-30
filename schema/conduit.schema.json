@@ -72,7 +72,7 @@
             "limit":      { "type": "integer", "minimum": 1 },
             "burst":      { "type": "integer", "minimum": 0, "description": "Extra token-bucket capacity on top of limit, for short traffic spikes. In-memory store only — has no effect under a Redis store (fixed-window counter, no burst concept)." },
             "algorithm":  { "type": "string", "enum": ["token-bucket"] },
-            "keyBy":      { "type": "string", "pattern": "^(ip|header:.+)$", "examples": ["ip", "header:X-User-ID"] },
+            "keyBy":      { "type": "string", "pattern": "^(ip|header:[!#$%&'*+.^_`|~0-9A-Za-z-]+)$", "examples": ["ip", "header:X-User-ID"] },
             "skipPaths":  { "type": "array", "items": { "type": "string" } },
             "store": {
               "type": "string",
