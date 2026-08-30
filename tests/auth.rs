@@ -756,6 +756,65 @@ mod jwt {
         );
     }
 
+    #[test]
+    fn per_route_rate_limit_skip_path_not_counted() {
+        // #307: rateLimit.skipPaths was silently ignored at the route level.
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in upstream.incoming() {
+                let Ok(mut s) = stream else { break };
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+            }
+        });
+
+        let port = common::free_port();
+        let admin_port = common::free_port();
+        let srv = common::TestServer::start_with_config(
+            port,
+            admin_port,
+            serde_json::json!({
+                "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+                "sites": [{
+                    "port": port,
+                    "proxy": {
+                        "/api": {
+                            "targets": [ format!("http://{upstream_addr}") ],
+                            "rateLimit": {
+                                "windowSecs": 3600, "limit": 1, "keyBy": "ip",
+                                "skipPaths": ["/api/exempt"]
+                            }
+                        }
+                    }
+                }]
+            }),
+        );
+
+        // Exhaust the limit=1 budget on a non-exempt path.
+        plain_client().get(srv.url("/api/data")).send().ok();
+        let resp = plain_client()
+            .get(srv.url("/api/data"))
+            .send()
+            .expect("GET /api/data");
+        assert_eq!(resp.status().as_u16(), 429, "budget must be exhausted");
+
+        // The exempt path must still pass, even with the budget exhausted.
+        let resp = plain_client()
+            .get(srv.url("/api/exempt"))
+            .send()
+            .expect("GET /api/exempt");
+        assert_ne!(
+            resp.status().as_u16(),
+            429,
+            "skipPaths-matched route path must not be rate-limited"
+        );
+    }
+
     // ── JWKS / RS256 / ES256 end-to-end (issue #164) ────────────────────────
     //
     // RSA-2048 / P-256 test key material is generated fresh at test-run
@@ -1349,6 +1408,100 @@ mod consumers_tests {
             resp.status().as_u16(),
             429,
             "3rd request must hit per-consumer rate limit"
+        );
+    }
+
+    #[test]
+    fn consumers_per_consumer_rate_limit_skip_path_not_counted() {
+        // #307: rateLimit.skipPaths was silently ignored at the consumer level.
+        let port = common::free_port();
+        let admin_port = common::free_port();
+        let srv = common::TestServer::start_with_config(
+            port,
+            admin_port,
+            serde_json::json!({
+                "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+                "sites": [{
+                    "port": port,
+                    "consumers": {
+                        "consumers": [{
+                            "username": "limited",
+                            "apiKey": "limited-key",
+                            "rateLimit": {
+                                "windowSecs": 3600, "limit": 1,
+                                "skipPaths": ["/exempt"]
+                            }
+                        }]
+                    }
+                }]
+            }),
+        );
+
+        // Exhaust the limit=1 budget on a non-exempt path.
+        plain_client()
+            .get(srv.url("/"))
+            .header("x-api-key", "limited-key")
+            .send()
+            .ok();
+        let resp = plain_client()
+            .get(srv.url("/"))
+            .header("x-api-key", "limited-key")
+            .send()
+            .expect("GET /");
+        assert_eq!(resp.status().as_u16(), 429, "budget must be exhausted");
+
+        // The exempt path must still pass, even with the budget exhausted.
+        let resp = plain_client()
+            .get(srv.url("/exempt"))
+            .header("x-api-key", "limited-key")
+            .send()
+            .expect("GET /exempt");
+        assert_ne!(
+            resp.status().as_u16(),
+            429,
+            "skipPaths-matched consumer rate limit must not reject"
+        );
+    }
+
+    #[test]
+    fn consumers_per_consumer_rate_limit_dry_run_logs_but_allows() {
+        // #307: rateLimit.dryRun was silently ignored at the consumer level.
+        let port = common::free_port();
+        let admin_port = common::free_port();
+        let srv = common::TestServer::start_with_config(
+            port,
+            admin_port,
+            serde_json::json!({
+                "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+                "sites": [{
+                    "port": port,
+                    "consumers": {
+                        "consumers": [{
+                            "username": "limited",
+                            "apiKey": "limited-key",
+                            "rateLimit": { "windowSecs": 3600, "limit": 1, "dryRun": true }
+                        }]
+                    }
+                }]
+            }),
+        );
+
+        // Exhaust the limit=1 budget.
+        plain_client()
+            .get(srv.url("/"))
+            .header("x-api-key", "limited-key")
+            .send()
+            .ok();
+        // With dryRun, the 2nd request must still pass through (not 429).
+        let resp = plain_client()
+            .get(srv.url("/"))
+            .header("x-api-key", "limited-key")
+            .send()
+            .expect("GET /");
+        assert_ne!(
+            resp.status().as_u16(),
+            429,
+            "dryRun must allow the request through instead of rejecting"
         );
     }
 

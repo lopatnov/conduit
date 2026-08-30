@@ -35,6 +35,7 @@ use crate::config::schema::{
     ApiKeyConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig, HealthCheckConfig,
     IpFilterConfig, LimitsConfig, MiddlewareEntry, ProxyTimeout, RateLimitConfig, SiteConfig,
 };
+use crate::filter::auth;
 #[cfg(feature = "consumers")]
 use crate::filter::chain::ConsumersGuard;
 #[cfg(feature = "fault-injection")]
@@ -728,6 +729,17 @@ impl ConduitProxy {
         let Some((rl_cfg, route_key)) = router::find_route_rate_limit(site, path) else {
             return Ok(false);
         };
+        // #307: skipPaths is a documented, undisclaimed route-level field
+        // (unlike dryRun/store, which the schema explicitly states are
+        // site-level-only) — wire it up. Useful for a broad route pattern
+        // that wants specific sub-paths exempted from its own rate limit.
+        if rl_cfg
+            .skip_paths
+            .as_deref()
+            .is_some_and(|sp| auth::is_path_skipped(Some(sp), path))
+        {
+            return Ok(false);
+        }
         let client_key = rate_limit::extract_client_key(&rl_cfg, session);
         let key = rate_limit::route_key(site_label, &route_key, &client_key);
         // Routed through the shared MAX_BUCKETS-capped admission point

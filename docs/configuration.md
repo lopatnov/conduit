@@ -2338,10 +2338,16 @@ are checked at config-load and reload time for site-level, per-route, and per-co
 contains a space and isn't a valid HTTP header name) fails validation instead of
 silently collapsing every client into one shared bucket at runtime.
 
-**`dryRun` and `store` (Redis) currently only take effect at the site level.** Setting
-either on a per-route or per-consumer `rateLimit` is accepted (and now validated for
-syntax) but has no effect yet — both layers always enforce in-memory. `burst` does work
-at all three levels.
+**`store` (Redis) currently only takes effect at the site level.** Setting it on a
+per-route or per-consumer `rateLimit` is accepted (and validated for syntax) but has no
+effect — both layers always enforce in-memory. `keyBy` is also inert at the consumer
+level specifically (the bucket key is always `consumer:{username}`, not derived from the
+request). `burst`, `skipPaths`, and `dryRun` all work at every level that accepts them —
+`dryRun` isn't accepted at the route level at all (the schema rejects it there; it's a
+site/consumer-only field). `burst` also works under a Redis `store`, not just in-memory —
+implemented as the fixed-window counter's admission ceiling rising from `limit` to
+`limit + burst` within the current window, rather than a continuously-refilling
+allowance like the in-memory token bucket's burst.
 
 ---
 

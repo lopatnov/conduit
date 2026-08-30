@@ -445,24 +445,43 @@ impl RequestFilter for ConsumersGuard {
         };
 
         // Per-consumer rate limit — global per consumer, not site-scoped
-        // (see rate_limit::consumer_key's doc for why).
+        // (see rate_limit::consumer_key's doc for why). `keyBy`/`store` stay
+        // no-ops here by design (schema docs: consumer key is always
+        // "consumer:{username}", Redis backend not wired to this layer yet
+        // — issue #307's remaining scope, tracked separately). `skipPaths`
+        // and `dryRun` are wired below (#307) — nothing in their docs
+        // suggested they were meant to be consumer-level no-ops the way
+        // `keyBy`/`store` are.
         if let Some(rl_cfg) = &consumer.rate_limit {
-            let key = rate_limit::consumer_key(&consumer.username);
-            // Routed through the shared MAX_BUCKETS-capped admission point
-            // (issue #305) instead of a hand-rolled, uncapped
-            // entry()/or_insert_with() — this map has no cap check of its own.
-            let allowed = conduit_ratelimit::check_key_for(&self.rate_limiter, &key, rl_cfg);
-            if !allowed {
-                response::write_response(
-                    ctx.session,
-                    429,
-                    "text/plain",
-                    bytes::Bytes::from_static(b"Too Many Requests"),
-                    ctx.extra_headers,
-                )
-                .await?;
-                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(FilterOutcome::Handled);
+            let skip = rl_cfg
+                .skip_paths
+                .as_deref()
+                .is_some_and(|sp| auth::is_path_skipped(Some(sp), &self.path));
+            if !skip {
+                let key = rate_limit::consumer_key(&consumer.username);
+                // Routed through the shared MAX_BUCKETS-capped admission point
+                // (issue #305) instead of a hand-rolled, uncapped
+                // entry()/or_insert_with() — this map has no cap check of its own.
+                let allowed = conduit_ratelimit::check_key_for(&self.rate_limiter, &key, rl_cfg);
+                if !allowed {
+                    if rl_cfg.dry_run.unwrap_or(false) {
+                        tracing::warn!(
+                            consumer = %consumer.username,
+                            "[dry-run] per-consumer rate limit exceeded — request allowed through (dryRun: true)"
+                        );
+                    } else {
+                        response::write_response(
+                            ctx.session,
+                            429,
+                            "text/plain",
+                            bytes::Bytes::from_static(b"Too Many Requests"),
+                            ctx.extra_headers,
+                        )
+                        .await?;
+                        ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+                        return Ok(FilterOutcome::Handled);
+                    }
+                }
             }
         }
 
@@ -767,6 +786,16 @@ async fn rate_limit_allowed(
     #[cfg(feature = "redis")] redis: Option<&Arc<RedisRateLimiter>>,
     #[cfg(not(feature = "redis"))] _redis: Option<()>,
 ) -> bool {
+    // Checked once, up front, so it applies uniformly to both the Redis and
+    // in-memory paths below. Previously only `rate_limit::check` (the
+    // in-memory path) checked this — a site-level `store: redis` config
+    // silently ignored `skipPaths` entirely (found while fixing #306/#307;
+    // not a previously-filed issue, just the same code this touches).
+    let path = session.req_header().uri.path();
+    if auth::is_path_skipped(cfg.skip_paths.as_deref(), path) {
+        return true;
+    }
+
     #[cfg(feature = "redis")]
     if cfg
         .store
@@ -776,7 +805,13 @@ async fn rate_limit_allowed(
         if let Some(rrl) = redis {
             let key = rate_limit::extract_client_key(cfg, session);
             return rrl
-                .check(site_label, &key, cfg.limit, cfg.window_secs)
+                .check(
+                    site_label,
+                    &key,
+                    cfg.limit,
+                    cfg.burst.unwrap_or(0),
+                    cfg.window_secs,
+                )
                 .await;
         }
     }

@@ -74,6 +74,13 @@ impl RedisRateLimiter {
     /// 2. `EXPIRE key window_secs` — set TTL only on the first request of the
     ///    window (count == 1).
     ///
+    /// `burst` raises the window's admission ceiling from `limit` to
+    /// `limit + burst` (issue #306) — the natural fixed-window equivalent of
+    /// the in-memory token bucket's burst capacity: extra requests are
+    /// allowed within the *same* window, rather than a continuously
+    /// replenishing allowance like a real token bucket. `burst = 0` (the
+    /// default) reproduces the exact pre-#306 behavior.
+    ///
     /// On Redis error or timeout the check falls back to the in-process
     /// `TokenBucket` and a `WARN` trace is emitted (fail-open).
     pub async fn check(
@@ -81,6 +88,7 @@ impl RedisRateLimiter {
         site_label: &str,
         client_key: &str,
         limit: u64,
+        burst: u64,
         window_secs: u64,
     ) -> bool {
         let redis_key = format!("conduit:rl:{site_label}:{window_secs}:{client_key}");
@@ -89,7 +97,7 @@ impl RedisRateLimiter {
         // Wrap the two-command sequence in a 50 ms deadline.
         let result = tokio::time::timeout(
             Duration::from_millis(50),
-            redis_fixed_window_check(&mut conn, &redis_key, limit, window_secs),
+            redis_fixed_window_check(&mut conn, &redis_key, limit, burst, window_secs),
         )
         .await;
 
@@ -101,7 +109,7 @@ impl RedisRateLimiter {
                     key_len = client_key.len(),
                     "Redis rate-limit error (memory fallback): {e}"
                 );
-                self.fallback_check(site_label, client_key, limit, window_secs)
+                self.fallback_check(site_label, client_key, limit, burst, window_secs)
             }
             Err(_timeout) => {
                 tracing::warn!(
@@ -109,7 +117,7 @@ impl RedisRateLimiter {
                     key_len = client_key.len(),
                     "Redis rate-limit timed out after 50 ms (memory fallback)"
                 );
-                self.fallback_check(site_label, client_key, limit, window_secs)
+                self.fallback_check(site_label, client_key, limit, burst, window_secs)
             }
         }
     }
@@ -119,9 +127,17 @@ impl RedisRateLimiter {
         site_label: &str,
         client_key: &str,
         limit: u64,
+        burst: u64,
         window_secs: u64,
     ) -> bool {
-        fallback_check_impl(&self.fallback, site_label, client_key, limit, window_secs)
+        fallback_check_impl(
+            &self.fallback,
+            site_label,
+            client_key,
+            limit,
+            burst,
+            window_secs,
+        )
     }
 
     /// Evict stale entries from the in-memory fallback map.
@@ -142,19 +158,22 @@ fn fallback_check_impl(
     site_label: &str,
     client_key: &str,
     limit: u64,
+    burst: u64,
     window_secs: u64,
 ) -> bool {
-    // Include limit and window_secs in the key so that post-reload config
-    // changes are picked up immediately rather than reusing a stale bucket.
-    // Include site_label so two sites sharing a client key don't share a
-    // bucket here either (issue #317).
-    let key = format!("{site_label}:{client_key}:{limit}:{window_secs}");
+    // Include limit, burst, and window_secs in the key so that post-reload
+    // config changes are picked up immediately rather than reusing a stale
+    // bucket. Include site_label so two sites sharing a client key don't
+    // share a bucket here either (issue #317).
+    let key = format!("{site_label}:{client_key}:{limit}:{burst}:{window_secs}");
     // Routed through the shared MAX_BUCKETS-capped admission point (issue
     // #305's fallback-path counterpart) instead of an uncapped
-    // entry()/or_insert_with() — this map has no cap check of its own. burst
-    // is always 0 here: Redis's fixed-window counter has no burst concept,
-    // and this fallback path preserves that (issue #306).
-    check_key(fallback, &key, limit, 0, window_secs)
+    // entry()/or_insert_with() — this map has no cap check of its own.
+    // `burst` now flows through for real (issue #306) — this fallback is a
+    // genuine in-memory TokenBucket, so it supports burst the same way the
+    // primary in-memory limiter always has; only the real-Redis fixed-window
+    // path needed the `limit + burst` ceiling trick above.
+    check_key(fallback, &key, limit, burst, window_secs)
 }
 
 // ── Redis helper ──────────────────────────────────────────────────────────────
@@ -165,7 +184,8 @@ fn fallback_check_impl(
 /// 1. `INCR key` — atomically create-or-increment; returns the new count.
 /// 2. `EXPIRE key window_secs` — set TTL only when count == 1 (first request in window).
 ///
-/// If `count > limit`, the request is rate-limited.
+/// If `count > limit + burst`, the request is rate-limited (issue #306 —
+/// `burst = 0` reproduces the original `count > limit` behavior exactly).
 ///
 /// Using INCR-first prevents the TTL-leak race present in the former
 /// SET-NX + INCR approach: if the key expired between the SET-NX and the
@@ -177,6 +197,7 @@ async fn redis_fixed_window_check(
     conn: &mut ConnectionManager,
     redis_key: &str,
     limit: u64,
+    burst: u64,
     window_secs: u64,
 ) -> Result<bool, redis::RedisError> {
     // INCR key — atomically creates (at 0) then increments; returns new value.
@@ -196,7 +217,7 @@ async fn redis_fixed_window_check(
             .await?;
     }
 
-    Ok(count <= limit)
+    Ok(count <= limit.saturating_add(burst))
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -229,8 +250,12 @@ mod tests {
     #[test]
     fn fallback_check_scopes_by_site_label() {
         let fallback: DashMap<String, TokenBucket> = DashMap::new();
-        assert!(fallback_check_impl(&fallback, "site-a", "1.2.3.4", 100, 60));
-        assert!(fallback_check_impl(&fallback, "site-b", "1.2.3.4", 100, 60));
+        assert!(fallback_check_impl(
+            &fallback, "site-a", "1.2.3.4", 100, 0, 60
+        ));
+        assert!(fallback_check_impl(
+            &fallback, "site-b", "1.2.3.4", 100, 0, 60
+        ));
         assert_eq!(
             fallback.len(),
             2,
@@ -242,15 +267,50 @@ mod tests {
     fn fallback_check_exhausts_the_right_sites_bucket_only() {
         let fallback: DashMap<String, TokenBucket> = DashMap::new();
         // Exhaust site-a's limit of 1.
-        assert!(fallback_check_impl(&fallback, "site-a", "9.9.9.9", 1, 60));
+        assert!(fallback_check_impl(
+            &fallback, "site-a", "9.9.9.9", 1, 0, 60
+        ));
         assert!(
-            !fallback_check_impl(&fallback, "site-a", "9.9.9.9", 1, 60),
+            !fallback_check_impl(&fallback, "site-a", "9.9.9.9", 1, 0, 60),
             "site-a's own bucket must be exhausted after its 1-request limit"
         );
         // Same client key, different site — must have its own untouched budget.
         assert!(
-            fallback_check_impl(&fallback, "site-b", "9.9.9.9", 1, 60),
+            fallback_check_impl(&fallback, "site-b", "9.9.9.9", 1, 0, 60),
             "site-b must not be affected by site-a's exhausted bucket (#317)"
+        );
+    }
+
+    // ── burst threading (issue #306 regression coverage) ────────────────
+
+    #[test]
+    fn fallback_check_burst_allows_extra_requests_above_limit() {
+        let fallback: DashMap<String, TokenBucket> = DashMap::new();
+        // limit=1, burst=2 → capacity 3. All 3 should be admitted; the 4th must not.
+        assert!(fallback_check_impl(
+            &fallback, "site-a", "1.1.1.1", 1, 2, 60
+        ));
+        assert!(fallback_check_impl(
+            &fallback, "site-a", "1.1.1.1", 1, 2, 60
+        ));
+        assert!(fallback_check_impl(
+            &fallback, "site-a", "1.1.1.1", 1, 2, 60
+        ));
+        assert!(
+            !fallback_check_impl(&fallback, "site-a", "1.1.1.1", 1, 2, 60),
+            "the 4th request must exceed limit(1) + burst(2) = 3"
+        );
+    }
+
+    #[test]
+    fn fallback_check_zero_burst_matches_pre_306_behavior() {
+        let fallback: DashMap<String, TokenBucket> = DashMap::new();
+        assert!(fallback_check_impl(
+            &fallback, "site-a", "2.2.2.2", 1, 0, 60
+        ));
+        assert!(
+            !fallback_check_impl(&fallback, "site-a", "2.2.2.2", 1, 0, 60),
+            "burst=0 must reject the 2nd request against limit=1, exactly like before #306"
         );
     }
 }
