@@ -121,17 +121,7 @@ impl RedisRateLimiter {
         limit: u64,
         window_secs: u64,
     ) -> bool {
-        // Include limit and window_secs in the key so that post-reload config
-        // changes are picked up immediately rather than reusing a stale
-        // bucket. Include site_label so two sites sharing a client key don't
-        // share a bucket here either (issue #317).
-        let key = format!("{site_label}:{client_key}:{limit}:{window_secs}");
-        // Routed through the shared MAX_BUCKETS-capped admission point (issue
-        // #305's fallback-path counterpart) instead of an uncapped
-        // entry()/or_insert_with() — this map has no cap check of its own.
-        // burst is always 0 here: Redis's fixed-window counter has no burst
-        // concept, and this fallback path preserves that (issue #306).
-        check_key(&self.fallback, &key, limit, 0, window_secs)
+        fallback_check_impl(&self.fallback, site_label, client_key, limit, window_secs)
     }
 
     /// Evict stale entries from the in-memory fallback map.
@@ -141,6 +131,30 @@ impl RedisRateLimiter {
         self.fallback
             .retain(|_, bucket| !bucket.is_stale(bucket.window_secs().saturating_mul(2)));
     }
+}
+
+/// The actual fallback-map admission logic, factored out of
+/// [`RedisRateLimiter::fallback_check`] as a free function so it's testable
+/// without a live Redis connection (`RedisRateLimiter::connect` requires
+/// one; a plain `DashMap` doesn't).
+fn fallback_check_impl(
+    fallback: &DashMap<String, TokenBucket>,
+    site_label: &str,
+    client_key: &str,
+    limit: u64,
+    window_secs: u64,
+) -> bool {
+    // Include limit and window_secs in the key so that post-reload config
+    // changes are picked up immediately rather than reusing a stale bucket.
+    // Include site_label so two sites sharing a client key don't share a
+    // bucket here either (issue #317).
+    let key = format!("{site_label}:{client_key}:{limit}:{window_secs}");
+    // Routed through the shared MAX_BUCKETS-capped admission point (issue
+    // #305's fallback-path counterpart) instead of an uncapped
+    // entry()/or_insert_with() — this map has no cap check of its own. burst
+    // is always 0 here: Redis's fixed-window counter has no burst concept,
+    // and this fallback path preserves that (issue #306).
+    check_key(fallback, &key, limit, 0, window_secs)
 }
 
 // ── Redis helper ──────────────────────────────────────────────────────────────
@@ -208,5 +222,35 @@ mod tests {
         let result = RedisRateLimiter::connect("redis://127.0.0.1:1").await;
         // Port 1 is reserved / will be refused.
         assert!(result.is_err(), "connection to port 1 must fail");
+    }
+
+    // ── fallback_check_impl (issue #317 regression coverage) ────────────
+
+    #[test]
+    fn fallback_check_scopes_by_site_label() {
+        let fallback: DashMap<String, TokenBucket> = DashMap::new();
+        assert!(fallback_check_impl(&fallback, "site-a", "1.2.3.4", 100, 60));
+        assert!(fallback_check_impl(&fallback, "site-b", "1.2.3.4", 100, 60));
+        assert_eq!(
+            fallback.len(),
+            2,
+            "two sites sharing a client key must land in two distinct fallback buckets, not one shared bucket (#317)"
+        );
+    }
+
+    #[test]
+    fn fallback_check_exhausts_the_right_sites_bucket_only() {
+        let fallback: DashMap<String, TokenBucket> = DashMap::new();
+        // Exhaust site-a's limit of 1.
+        assert!(fallback_check_impl(&fallback, "site-a", "9.9.9.9", 1, 60));
+        assert!(
+            !fallback_check_impl(&fallback, "site-a", "9.9.9.9", 1, 60),
+            "site-a's own bucket must be exhausted after its 1-request limit"
+        );
+        // Same client key, different site — must have its own untouched budget.
+        assert!(
+            fallback_check_impl(&fallback, "site-b", "9.9.9.9", 1, 60),
+            "site-b must not be affected by site-a's exhausted bucket (#317)"
+        );
     }
 }
