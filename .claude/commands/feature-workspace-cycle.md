@@ -255,16 +255,56 @@ for genuinely idle firings, not a guaranteed periodic pass.)
 - Look at #114's open sub-issues (`mcp__github__issue_read` /
   `list_issues` filtered to sub-issues of #114). Pick the next one in
   phase order (Phase 0 → 6) unless a dependency isn't merged yet.
-- **Batch small independent leaves, per the user's explicit go-ahead
-  (2026-08-22)**: if the next 2-3 sub-issues in phase order are each small,
-  independent (no shared code, no ordering dependency between them — like
-  #131's `conduit-tcp` + `conduit-upload`, already batched by the issue's own
-  scope), fold them into one branch/PR instead of insisting on strictly one
-  sub-issue per PR. This isn't a license to bundle just anything — a
-  seam-refactor sub-issue, or one that touches shared state (`RequestCtx`,
-  `AppState`), still gets its own PR. The bar is the same "small independent
-  leaf" test #131 already met, applied proactively rather than only when an
-  issue happens to already say "batched."
+- **Batch size scales with complexity — pick a tier before picking items**
+  (generalized 2026-09-01 per the user's explicit request; supersedes and
+  absorbs the narrower 2026-08-22 "batch small independent leaves" rule,
+  which only covered #114 sub-issues — this applies to the interleaved
+  bug/gap-issue queue too). A "batch" is still **one coherent PR** per
+  `conventions.md`'s "one branch = one coherent change" — batching changes
+  how many items you pick up together in Step 2, not how many PRs you open;
+  a batch grouped by crate/theme may still split into a few small PRs rather
+  than one giant one (see the ~5-10 tier's precedent below).
+
+  - **~5-10 items — mechanical/trivial sweep.** All must hold: each item is
+    a one-liner or near-one-liner (stale doc comment, a schema field missing
+    for an already-existing struct field, a dead constant, a claim already
+    fixed elsewhere that just needs its own note updated); correctness is
+    verifiable by reading the diff alone, no new test infrastructure needed;
+    items are independent (different files/functions, no shared state, no
+    ordering dependency); **none touch a security-sensitive surface**
+    (auth/secrets/TLS/rate-limit/CORS/guard-chain/IP-filter) — those get
+    individual treatment regardless of how trivial they look, no exception;
+    the whole batch's total diff stays small enough that self-review and the
+    security-engineer pass stay a real check, not a rubber stamp (rough
+    guide: a few hundred lines total, not per item). Precedent: the
+    2026-08-30/31 CodeRabbit "Block 1" sweep — 9 findings (#279, #281-288,
+    #301) grouped by crate/theme into 4 small PRs (#325-328), not 9
+    individual PRs or 1 giant one.
+  - **~3-5 items — small independent leaves, same theme.** Each needs a
+    real but small code change plus a test; no design ambiguity; no
+    `architect`/`business-analyst` scoping needed; no two items in the batch
+    touch overlapping code paths. Group by crate/theme so the PR still reads
+    as one coherent change. This is the original #131 rule
+    (`conduit-tcp` + `conduit-upload`, already batched by the issue's own
+    scope) generalized beyond #114 sub-issues.
+  - **Exactly 2 — related pair.** The two items share a root cause or the
+    same code path/function, so fixing one in isolation would leave that
+    PR's diff not making sense on its own, or mean touching the same
+    function twice across two separate PRs. Precedent: #306+#307 fixed
+    together in PR #323 because both touch `rate_limit_allowed()` /
+    `ConsumersGuard` / `enforce_route_rate_limit`.
+  - **1 — solo, always.** Any one of these triggers solo treatment: the
+    issue itself poses an open design question (options not yet decided —
+    e.g. #338's "wire it in, or remove it?"); it touches a
+    security-sensitive surface; it needs `architect` (crosses the
+    400/1000-line thresholds, or is a real structural decision) or
+    `business-analyst` (scope is unclear) involvement; it's a crate
+    extraction or other architectural change (every #114 sub-issue past
+    Phase 0 is inherently solo — one crate, one PR); or you're simply not
+    confident the fix is correct without a dedicated, undistracted look.
+    **When in doubt, default to solo** — a batched item that turns out to
+    need real judgment is more expensive to unwind from a shared PR than
+    reviewing one extra PR would have cost up front.
 - If the task genuinely needs "how do others solve this" input before you can
   implement it, call **`prior-art-researcher`** first and fold its
   recommendation into the approach. This isn't only for brand-new work: if
