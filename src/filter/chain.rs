@@ -865,6 +865,14 @@ fn forward_auth_add_headers(
 }
 
 /// Copy configured response headers from a forward-auth response into the session.
+///
+/// Strips every configured header name from the client request BEFORE
+/// inserting the auth-service-returned values. Without this, a header the
+/// auth service doesn't happen to return (e.g. `X-User-ID` for an anonymous
+/// session, or simply a misconfigured `responseHeaders` entry) leaves the
+/// upstream trusting whatever value the *client itself* sent under that
+/// name — the exact identity-spoofing bug `ConsumersGuard::apply` already
+/// guards against for `X-Consumer-ID` above.
 #[cfg(feature = "forward-auth")]
 fn forward_auth_inject_response_headers(
     auth_resp: &reqwest::Response,
@@ -881,6 +889,9 @@ fn forward_auth_inject_response_headers(
                 .map(|v| (name.clone(), v.to_owned()))
         })
         .collect();
+    for name in copy_hdrs {
+        let _ = session.req_header_mut().remove_header(name.as_str());
+    }
     for (name, value) in to_inject {
         let _ = session.req_header_mut().insert_header(name, value);
     }
