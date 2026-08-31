@@ -66,6 +66,10 @@ impl LocalHandlerImpl for StaticFileHandler {
                 session,
                 self.fallback.as_ref(),
                 &self.extra_headers,
+                #[cfg(feature = "compression")]
+                self.compress_opts.as_ref().map(|o| (o, &self.accept_enc)),
+                #[cfg(not(feature = "compression"))]
+                None,
             )
             .await?;
         }

@@ -24,6 +24,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of failing validation up front. Site-level and per-consumer rate limits
   already validated these fields; per-route now does too, matching them.
 
+### Fixed
+
+- **Response compression now applies to the metrics endpoint and fallback
+  responses, not just static files.** `compression`'s negotiation logic
+  (`Content-Encoding` selection, `minBytes`/`types` thresholds) was fully
+  implemented and tested but never actually wired into the `/__metrics__`
+  handler or fallback (404/SPA-shell/custom-body) responses — both were
+  always served uncompressed regardless of config. Each response type is
+  still negotiated independently against the site's `compression` config, so
+  a small response may stay uncompressed exactly as before.
+
 ### Changed
 
 - `RateLimitConfig` moved to its own crate (`conduit-ratelimit`, issue

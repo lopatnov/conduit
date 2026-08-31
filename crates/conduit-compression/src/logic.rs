@@ -181,6 +181,36 @@ pub async fn compress_bytes(data: Bytes, encoding: &str, level: u8) -> Bytes {
     }
 }
 
+/// Compress a small, complete in-memory response body (metrics, fallback
+/// bodies) if the site's config and the client's `Accept-Encoding` both
+/// support it — the counterpart [`compress_bytes`]'s own doc comment already
+/// names as its use case.
+///
+/// Returns the (possibly compressed) body and, when compression was
+/// actually applied, the `Content-Encoding` header value to add. `compress`
+/// is `None` when the site has compression disabled, or the caller has no
+/// options to offer.
+pub async fn compress_small_body(
+    body: Bytes,
+    content_type: &str,
+    compress: Option<(&CompressOptions, &AcceptEncoding)>,
+) -> (Bytes, Option<(String, String)>) {
+    let Some((opts, accept)) = compress else {
+        return (body, None);
+    };
+    if !is_compressible_type(content_type, opts) {
+        return (body, None);
+    }
+    let Some(enc) = best_encoding(opts, accept, body.len() as u64) else {
+        return (body, None);
+    };
+    let compressed = compress_bytes(body, enc, opts.level).await;
+    (
+        compressed,
+        Some(("content-encoding".to_owned(), enc.to_owned())),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,6 +523,76 @@ mod tests {
         opts.types = vec!["text/plain".to_owned()];
         assert!(is_compressible_type("text/plain", &opts));
         assert!(!is_compressible_type("text/html", &opts));
+    }
+
+    // ── compress_small_body ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn compress_small_body_none_passes_through_unchanged() {
+        let body = Bytes::from("hello world ".repeat(200));
+        let (out, header) = compress_small_body(body.clone(), "text/plain", None).await;
+        assert_eq!(out, body);
+        assert!(header.is_none());
+    }
+
+    #[tokio::test]
+    async fn compress_small_body_below_min_bytes_unchanged() {
+        let opts = CompressOptions {
+            algorithms: vec!["gzip".to_owned()],
+            level: 6,
+            min_bytes: 1024,
+            types: Vec::new(),
+        };
+        let accept = AcceptEncoding {
+            gzip: true,
+            ..Default::default()
+        };
+        let body = Bytes::from("tiny");
+        let (out, header) =
+            compress_small_body(body.clone(), "text/plain", Some((&opts, &accept))).await;
+        assert_eq!(out, body);
+        assert!(header.is_none());
+    }
+
+    #[tokio::test]
+    async fn compress_small_body_non_compressible_type_unchanged() {
+        let opts = CompressOptions {
+            algorithms: vec!["gzip".to_owned()],
+            level: 6,
+            min_bytes: 0,
+            types: Vec::new(),
+        };
+        let accept = AcceptEncoding {
+            gzip: true,
+            ..Default::default()
+        };
+        let body = Bytes::from("binary data ".repeat(200));
+        let (out, header) =
+            compress_small_body(body.clone(), "image/jpeg", Some((&opts, &accept))).await;
+        assert_eq!(out, body);
+        assert!(header.is_none());
+    }
+
+    #[tokio::test]
+    async fn compress_small_body_compresses_and_reports_encoding() {
+        let opts = CompressOptions {
+            algorithms: vec!["gzip".to_owned()],
+            level: 6,
+            min_bytes: 0,
+            types: Vec::new(),
+        };
+        let accept = AcceptEncoding {
+            gzip: true,
+            ..Default::default()
+        };
+        let body = Bytes::from("hello world ".repeat(200));
+        let (out, header) =
+            compress_small_body(body.clone(), "text/plain", Some((&opts, &accept))).await;
+        assert!(out.len() < body.len());
+        assert_eq!(
+            header,
+            Some(("content-encoding".to_owned(), "gzip".to_owned()))
+        );
     }
 
     #[test]

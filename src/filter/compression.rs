@@ -21,5 +21,6 @@
 
 #[cfg(feature = "compression")]
 pub use conduit_compression::logic::{
-    best_encoding, compress_bytes, effective, is_compressible_type, CompressOptions,
+    best_encoding, compress_bytes, compress_small_body, effective, is_compressible_type,
+    CompressOptions,
 };

@@ -5,20 +5,40 @@ use pingora_proxy::Session;
 use tokio::fs;
 
 use crate::config::schema::{FallbackConfig, FallbackRule};
+#[cfg(feature = "compression")]
+use crate::filter::compression::CompressOptions;
 use crate::handler::response::write_response;
 use crate::handler::LocalHandlerImpl;
+#[cfg(feature = "compression")]
+use crate::proxy::ctx::AcceptEncoding;
 
 /// Handler struct for fallback responses (404, SPA shell, custom body).
 pub struct FallbackHandler {
     /// The `fallback` rule to serve; `None` → plain 404.
     pub fallback: Option<FallbackConfig>,
     pub extra_headers: Vec<(String, String)>,
+    /// Resolved on-the-fly compression options for this site, if the
+    /// `compression` feature is compiled in and enabled — see
+    /// `crate::filter::compression`'s doc comment.
+    #[cfg(feature = "compression")]
+    pub compress_opts: Option<CompressOptions>,
+    #[cfg(feature = "compression")]
+    pub accept_enc: AcceptEncoding,
 }
 
 #[async_trait]
 impl LocalHandlerImpl for FallbackHandler {
     async fn handle(&mut self, session: &mut Session) -> Result<()> {
-        handle_fallback(session, self.fallback.as_ref(), &self.extra_headers).await
+        handle_fallback(
+            session,
+            self.fallback.as_ref(),
+            &self.extra_headers,
+            #[cfg(feature = "compression")]
+            self.compress_opts.as_ref().map(|o| (o, &self.accept_enc)),
+            #[cfg(not(feature = "compression"))]
+            None,
+        )
+        .await
     }
 }
 
@@ -26,9 +46,20 @@ pub async fn handle_fallback(
     session: &mut Session,
     fallback: Option<&FallbackConfig>,
     extra: &[(String, String)],
+    #[cfg(feature = "compression")] compress: Option<(&CompressOptions, &AcceptEncoding)>,
+    #[cfg(not(feature = "compression"))] _compress: Option<()>,
 ) -> Result<()> {
     if let Some(fb) = fallback {
-        return handle_configured(session, fb, extra).await;
+        return handle_configured(
+            session,
+            fb,
+            extra,
+            #[cfg(feature = "compression")]
+            compress,
+            #[cfg(not(feature = "compression"))]
+            _compress,
+        )
+        .await;
     }
     write_response(
         session,
@@ -44,6 +75,8 @@ async fn handle_configured(
     session: &mut Session,
     fb: &FallbackConfig,
     extra: &[(String, String)],
+    #[cfg(feature = "compression")] compress: Option<(&CompressOptions, &AcceptEncoding)>,
+    #[cfg(not(feature = "compression"))] _compress: Option<()>,
 ) -> Result<()> {
     // ── Content-negotiation via byAccept ─────────────────────────────────────
     if let Some(ref by_accept) = fb.by_accept {
@@ -56,7 +89,16 @@ async fn handle_configured(
 
         let rule = pick_by_accept(by_accept, accept);
         if let Some(rule) = rule {
-            return handle_rule(session, rule, extra).await;
+            return handle_rule(
+                session,
+                rule,
+                extra,
+                #[cfg(feature = "compression")]
+                compress,
+                #[cfg(not(feature = "compression"))]
+                _compress,
+            )
+            .await;
         }
     }
 
@@ -67,7 +109,16 @@ async fn handle_configured(
         file: fb.file.clone(),
         headers: fb.headers.clone(),
     };
-    handle_rule(session, &rule, extra).await
+    handle_rule(
+        session,
+        &rule,
+        extra,
+        #[cfg(feature = "compression")]
+        compress,
+        #[cfg(not(feature = "compression"))]
+        _compress,
+    )
+    .await
 }
 
 /// Pick the best `FallbackRule` from a `byAccept` map given the request's
@@ -112,11 +163,42 @@ fn accept_matches(accept: &str, key: &str) -> bool {
     patterns.iter().any(|p| accept_lc.contains(p))
 }
 
+/// Apply on-the-fly compression (when enabled) and write the response —
+/// `write_response` plus the negotiation step `compress_bytes`'s own doc
+/// comment promises for fallback bodies.
+async fn write_maybe_compressed(
+    session: &mut Session,
+    status: u16,
+    content_type: &str,
+    body: Bytes,
+    extra: &[(String, String)],
+    #[cfg(feature = "compression")] compress: Option<(&CompressOptions, &AcceptEncoding)>,
+    #[cfg(not(feature = "compression"))] _compress: Option<()>,
+) -> Result<()> {
+    #[cfg(feature = "compression")]
+    let (body, enc_header) =
+        crate::filter::compression::compress_small_body(body, content_type, compress).await;
+    #[cfg(not(feature = "compression"))]
+    let enc_header: Option<(String, String)> = None;
+
+    if let Some(pair) = enc_header {
+        let mut all_extra = extra.to_vec();
+        all_extra.push(pair);
+        // Response representation depends on Accept-Encoding — same
+        // convention as the static-file compression path.
+        all_extra.push(("vary".to_owned(), "accept-encoding".to_owned()));
+        return write_response(session, status, content_type, body, &all_extra).await;
+    }
+    write_response(session, status, content_type, body, extra).await
+}
+
 /// Serve a response according to a single `FallbackRule`.
 async fn handle_rule(
     session: &mut Session,
     rule: &FallbackRule,
     extra: &[(String, String)],
+    #[cfg(feature = "compression")] compress: Option<(&CompressOptions, &AcceptEncoding)>,
+    #[cfg(not(feature = "compression"))] _compress: Option<()>,
 ) -> Result<()> {
     let status = rule.status.unwrap_or(404);
 
@@ -137,7 +219,18 @@ async fn handle_rule(
                 let ct = mime_guess::from_path(path)
                     .first_raw()
                     .unwrap_or("application/octet-stream");
-                write_response(session, status, ct, Bytes::from(bytes), extra).await
+                write_maybe_compressed(
+                    session,
+                    status,
+                    ct,
+                    Bytes::from(bytes),
+                    extra,
+                    #[cfg(feature = "compression")]
+                    compress,
+                    #[cfg(not(feature = "compression"))]
+                    _compress,
+                )
+                .await
             }
             Err(e) => {
                 tracing::warn!(path, "fallback file not found: {e}");
@@ -153,12 +246,16 @@ async fn handle_rule(
         }
     } else if let Some(ref body) = rule.body {
         let json = body.to_string();
-        write_response(
+        write_maybe_compressed(
             session,
             status,
             "application/json",
             Bytes::from(json),
             extra,
+            #[cfg(feature = "compression")]
+            compress,
+            #[cfg(not(feature = "compression"))]
+            _compress,
         )
         .await
     } else {

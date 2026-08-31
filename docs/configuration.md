@@ -406,7 +406,11 @@ http2:
 
 ## Compression
 
-Add `Content-Encoding: br` / `zstd` / `gzip` / `deflate` to responses.
+Add `Content-Encoding: br` / `zstd` / `gzip` / `deflate` to responses. Applies
+to static files, the metrics endpoint, and fallback responses (JSON/text body
+or file) — each negotiated independently against the same `minBytes`/`types`
+thresholds, so a small metrics scrape or error body may stay uncompressed
+even with compression enabled.
 
 ```yaml
 # YAML — shorthand (enable with defaults)
