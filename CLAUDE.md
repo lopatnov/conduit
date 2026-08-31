@@ -917,7 +917,7 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 
 | Date/time (UTC) | New Dependabot PRs found/acted on | Orphan branches flagged | Notes |
 |---|---|---|---|
-| 2026-08-30 ~19:06 (same local session, continuing through the day) | 0 open | 11 more stale local branches deleted | **#137 fully closed** — both halves landed: rate-limit fixes (#306/#307, [PR #323](https://github.com/lopatnov/conduit/pull/323)) and the `conduit-limits` crate extraction ([PR #324](https://github.com/lopatnov/conduit/pull/324), which also closed #51 — found already fully implemented). #310 turned out already closed from earlier. Filed #322 (Redis-backed rate limiting at route/consumer level — real remaining design work, deliberately not folded into #323). Full detail in `.claude/logs/dependabot-hygiene.md`. |
+| 2026-08-31 ~10:20 (daily `/feature-workspace-cycle` firing, Step 1) | 5 found and merged (#332-336: wasmtime/uuid/redis/rhai/wat, all lockstep patch/minor bumps) | 4 local-only leftovers cleaned up (2 finished `security-engineer` worktree branches, `base-branch`, the 2026-08-30 git-race incident's `pr-326-review` ref) | All 5 additive/bugfix-only per real changelog reads (`dependency-steward`), `security-engineer` PASS on each, migration branch synced with `main` after. Full detail in `.claude/logs/dependabot-hygiene.md`. |
 
 ## Tokio 1.52.3 — возможности (исследовано)
 
