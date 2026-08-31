@@ -203,3 +203,165 @@ fn compression_options_form_works() {
         "custom options form should compress with gzip"
     );
 }
+
+// ── metrics endpoint (issue #338: compress_bytes() was never wired in) ─────
+
+fn metrics_compression_server(compression_val: serde_json::Value) -> common::TestServer {
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "metrics": { "path": "/__metrics__" },
+                "compression": compression_val
+            }]
+        }),
+    )
+}
+
+#[test]
+#[serial]
+fn metrics_response_compressed_when_accepted() {
+    // minBytes: 0 so this doesn't depend on how large the default Prometheus
+    // exposition happens to be for a freshly started server.
+    let srv =
+        metrics_compression_server(serde_json::json!({ "algorithms": ["gzip"], "minBytes": 0 }));
+
+    let resp = reqwest::blocking::Client::new()
+        .get(srv.url("/__metrics__"))
+        .header("Accept-Encoding", "gzip")
+        .send()
+        .expect("send");
+
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()
+            .get("content-encoding")
+            .and_then(|v| v.to_str().ok()),
+        Some("gzip"),
+        "metrics response should be gzip-compressed when accepted"
+    );
+    assert!(
+        resp.headers()
+            .get("vary")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("accept-encoding"),
+        "Vary must include Accept-Encoding when compression is applied"
+    );
+    let body = resp.bytes().expect("bytes");
+    assert!(
+        body.len() >= 2 && body[0] == 0x1f && body[1] == 0x8b,
+        "body should start with gzip magic bytes"
+    );
+}
+
+#[test]
+#[serial]
+fn metrics_response_respects_default_min_bytes_threshold() {
+    // Documents the resolved behavior for issue #338's open question: the
+    // default 1024-byte minBytes threshold applies to metrics exactly like
+    // everywhere else — no metrics-specific carve-out. Measure the real
+    // uncompressed size first (a plain request, no Accept-Encoding) so this
+    // doesn't guess at how large a freshly-started server's exposition is.
+    let srv = metrics_compression_server(serde_json::json!(true));
+    let client = reqwest::blocking::Client::new();
+
+    let plain = client.get(srv.url("/__metrics__")).send().expect("send");
+    let uncompressed_len = plain.bytes().expect("bytes").len();
+
+    let resp = client
+        .get(srv.url("/__metrics__"))
+        .header("Accept-Encoding", "gzip")
+        .send()
+        .expect("send");
+    assert_eq!(resp.status(), 200);
+    let compressed = resp.headers().get("content-encoding").is_some();
+
+    assert_eq!(
+        compressed,
+        uncompressed_len >= 1024,
+        "compression should trigger iff the real exposition ({uncompressed_len} bytes) \
+         is at/above the default 1024-byte minBytes threshold"
+    );
+}
+
+// ── fallback body (issue #338) ──────────────────────────────────────────────
+
+fn fallback_compression_server(
+    fallback: serde_json::Value,
+    compression_val: serde_json::Value,
+) -> common::TestServer {
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "fallback": fallback,
+                "compression": compression_val
+            }]
+        }),
+    )
+}
+
+#[test]
+#[serial]
+fn fallback_body_compressed_when_accepted() {
+    let large_body = "x".repeat(2000);
+    let srv = fallback_compression_server(
+        serde_json::json!({ "status": 404, "body": { "message": large_body } }),
+        serde_json::json!({ "algorithms": ["gzip"], "minBytes": 0 }),
+    );
+
+    let resp = reqwest::blocking::Client::new()
+        .get(srv.url("/missing"))
+        .header("Accept-Encoding", "gzip")
+        .send()
+        .expect("send");
+
+    assert_eq!(resp.status(), 404);
+    assert_eq!(
+        resp.headers()
+            .get("content-encoding")
+            .and_then(|v| v.to_str().ok()),
+        Some("gzip"),
+        "fallback JSON body should be gzip-compressed when accepted"
+    );
+    let body = resp.bytes().expect("bytes");
+    assert!(
+        body.len() >= 2 && body[0] == 0x1f && body[1] == 0x8b,
+        "body should start with gzip magic bytes"
+    );
+}
+
+#[test]
+#[serial]
+fn fallback_body_not_compressed_without_accept_encoding() {
+    let large_body = "x".repeat(2000);
+    let srv = fallback_compression_server(
+        serde_json::json!({ "status": 404, "body": { "message": large_body } }),
+        serde_json::json!({ "algorithms": ["gzip"], "minBytes": 0 }),
+    );
+
+    let resp = reqwest::blocking::Client::new()
+        .get(srv.url("/missing"))
+        .send()
+        .expect("send");
+
+    assert_eq!(resp.status(), 404);
+    assert!(
+        resp.headers().get("content-encoding").is_none(),
+        "no Content-Encoding without a client Accept-Encoding header"
+    );
+    let body: serde_json::Value = resp.json().expect("JSON body");
+    assert_eq!(body["message"], large_body);
+}

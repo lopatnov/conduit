@@ -952,9 +952,28 @@ impl ConduitProxy {
                 } else {
                     unreachable!()
                 };
+                #[cfg(feature = "compression")]
+                let config = self.state.config.load();
+                #[cfg(feature = "compression")]
+                let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                #[cfg(feature = "compression")]
+                let compress_opts = config
+                    .sites
+                    .get(site_idx)
+                    .and_then(|s| s.compression.as_ref())
+                    .and_then(compression::effective);
+                #[cfg(feature = "compression")]
+                let accept_enc = ctx
+                    .as_ref()
+                    .map(|c| c.accept_enc.clone())
+                    .unwrap_or_default();
                 Some(Box::new(metrics_handler::MetricsHandler {
                     token,
                     extra_headers: extra,
+                    #[cfg(feature = "compression")]
+                    compress_opts,
+                    #[cfg(feature = "compression")]
+                    accept_enc,
                 }))
             }
 
@@ -1002,9 +1021,24 @@ impl ConduitProxy {
                 let config = self.state.config.load();
                 let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
                 let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
+                #[cfg(feature = "compression")]
+                let compress_opts = config
+                    .sites
+                    .get(site_idx)
+                    .and_then(|s| s.compression.as_ref())
+                    .and_then(compression::effective);
+                #[cfg(feature = "compression")]
+                let accept_enc = ctx
+                    .as_ref()
+                    .map(|c| c.accept_enc.clone())
+                    .unwrap_or_default();
                 Some(Box::new(fallback::FallbackHandler {
                     fallback,
                     extra_headers: extra,
+                    #[cfg(feature = "compression")]
+                    compress_opts,
+                    #[cfg(feature = "compression")]
+                    accept_enc,
                 }))
             }
 
