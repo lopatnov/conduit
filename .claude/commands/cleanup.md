@@ -46,8 +46,21 @@ alongside the Dependabot hygiene check. Two independent passes — run whichever
    is a legitimate reusable cache across sessions (removing it just means re-pulling ~600MB
    next time) — leave it unless the user says otherwise; "takes multiple GB" alone isn't a
    reason to remove a cache that's meant to be reused.
-4. **Don't touch**: the main checkout's own `target/` directory. It's gitignored, expected,
-   and expensive to rebuild — large is normal there, not debris.
+4. **`target/` and `target-feature/` in the main checkout**: **do** remove these
+   (`rm -rf target target-feature` from the repo root — plain `rm -rf` is fine here, this is
+   the main checkout on the native filesystem, not a Docker bind mount, so the root-owned-files
+   caveat above doesn't apply). Reversed 2026-08-31 (user's explicit instruction) from this
+   command's original guidance, which said to leave `target/` alone as "expected, not debris."
+   Both are gitignored, 100% regenerable build output — `target-feature/` specifically is
+   `feature-matrix-runner`'s custom `cargo hack` target dir (see issue history around PR #318,
+   which added a `target-*` `.gitignore` pattern after a near-miss where it was almost
+   committed) and can independently grow to multiple GB across many feature-matrix runs, on
+   top of whatever the main `target/` has accumulated. The tradeoff being accepted: the next
+   `cargo build`/`test`/`clippy` after deletion pays a full rebuild instead of an incremental
+   one — worth it for the reclaimed space per the user's stated preference. Don't run `du -sh`
+   first to "check the size before deciding" — on this checkout's `target/` (tens of thousands
+   of small files) `du` itself can take minutes and stall on Rust's own incremental-build churn
+   (files disappearing mid-scan as a background compile touches them); just delete directly.
 
 ## Pass 2 — code debris left over from a change
 
