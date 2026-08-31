@@ -1995,6 +1995,85 @@ simply waiting for the eventual `main` merge to resolve on its own.
   `isolation: "worktree"` for both subsequent `security-engineer` reviews (PR #327, PR #328) in this
   same batch — both completed cleanly with no further incident.
 
+### Реализовано в сессии 2026-08-31 (Block 2 — rate-limit follow-ups #312/#320/#313, and a real bug found via live WSL Redis: #330)
+
+- User asked to survey open issues for another workable batch after Block 1 closed; picked "rate-limit
+  follow-ups" (#312, #313, #320) — three small issues from the `rate_limit.rs` Step 1c audit era
+  (2026-08-30) and the #311 extraction's own review.
+  - **[PR #329](https://github.com/lopatnov/conduit/pull/329)** — #312 (`cargo build --features redis`
+    without `cache` failed under `-D warnings`: `use crate::proxy::cache_redis::cache_redis;` was gated
+    on `redis` alone, but its only call site sits inside a `#[cfg(feature = "cache")]` block; regated on
+    `all(feature = "redis", feature = "cache")`, matching the real minimal condition), #320 (a
+    `keyBy: "header:X-Name"` rate-limit key could carry a raw NUL byte — valid UTF-8, so `to_str()`
+    didn't reject it — which shifted the `\0`-separated bucket-key's segment count and made
+    `GET /rate-limits` silently drop that bucket via its `_ => continue` fallback; not a security bypass,
+    just an admin-reporting undercount, since `site_label` always occupies the first segment; fixed with
+    a new `strip_nul` helper in `extract_key`). **#313 closed without a code change** — already flagged
+    in its own issue text as an accepted trade-off matching this codebase's established soft-cap policy
+    (same as `retry.budgetPercent`), and both CodeRabbit and `security-engineer` had independently
+    already reached that conclusion before the issue was even filed; closing recorded the reasoning
+    rather than duplicating work.
+- **User then flagged that WSL has both a real Redis instance and kubectl/minikube available** — used
+  it for genuine functional verification beyond what this codebase's own unit tests ever exercise (they
+  deliberately avoid needing live Redis, per the existing `unreachable_redis_returns_none_not_panic`-
+  style pattern). Built a real release binary (`--features redis,cache,jwt`) in a `rust:latest` Docker
+  container on `--network host` inside WSL, pointed at the host's live `redis-server`, and drove it with
+  real HTTP requests.
+  - **Confirmed the real Redis-backed rate-limiter round-trip is correct**: real `INCR`/`EXPIRE` writes
+    visible via `redis-cli`, request rejected with 429 exactly when the real counter crossed the
+    configured limit.
+  - **Found #320's real-world exploitability is narrower than the issue speculated**: a raw NUL byte in
+    an HTTP header value gets rejected outright by Pingora's own HTTP/1 parser (`400 Bad Request`)
+    before ever reaching `extract_key` — confirmed via a raw-socket request. The fix is still correct
+    defense-in-depth; just noting the practical blast radius was smaller than believed.
+  - **Found a real, severe, previously-undiscovered bug** in a completely different subsystem
+    (`conduit-cache`, not `conduit-ratelimit`): `RedisCacheStorage::new_blocking`
+    (`crates/conduit-cache/src/redis.rs`) spun up a *nested* Tokio runtime and `block_on`'d it from
+    inside `request_cache_filter` — which runs on a Pingora worker thread already driving its own
+    runtime. Tokio panics on that unconditionally ("Cannot start a runtime from within a runtime"), on
+    *every* request to a redis-cached route, forever (the panicking call never populated the connection
+    registry, so it never self-heals). Because it's a panic, not a returned `Err`, it also completely
+    bypassed the module's own documented fail-open contract. Reproduced deterministically twice, on
+    clean restarts, against the real live server — exactly the class of bug the existing
+    "unreachable-Redis-only" test suite could never catch. Filed as
+    [#330](https://github.com/lopatnov/conduit/issues/330) with full repro details.
+- **[PR #331](https://github.com/lopatnov/conduit/pull/331)** — fixed #330 per a concrete `architect`
+  plan (which corrected the initial premise: the difference between the cache's broken pattern and the
+  rate limiter's working one isn't `async fn` vs. a blocking wrapper — the rate limiter has the *same*
+  `block_on` shape, it just runs before any Pingora runtime exists yet). Moved Redis-cache connection
+  establishment from lazy (on first request, inside Pingora's runtime) to eager (once per distinct URL,
+  awaited during server startup in `AdminApiService::start()`, and again on every hot reload — both the
+  admin API's `/reload` handler and `builder.rs`'s Kubernetes/live-provider config watcher — before the
+  config swap in each case, so there's no window where a reload-introduced URL is live but
+  unregistered). `get_or_create` split into `get` (pure registry lookup, never connects — the request
+  path only ever calls this) and `connect_and_register` (the only thing that actually opens a
+  connection, `async fn`, idempotent, fail-open). **Verified the fix genuinely resolves the panic**:
+  rebuilt in the same live-WSL-Redis harness, confirmed the pre-fix binary panics deterministically
+  (again, for a clean second confirmation) and the post-fix binary logs `Redis proxy cache connected`
+  at startup, produces a real `conduit:pcache:*` Redis key on a genuine write, serves the second request
+  from cache (proven by protocol-version mismatch: `HTTP/1.1` from Pingora itself vs. the first
+  request's `HTTP/1.0` from the Python test upstream), and zero panics.
+  - **Four `security-engineer` review rounds**, each catching something real and each re-verified
+    against the exact new head SHA before the next: round 1 PASS with two non-blocking notes (Redis URL
+    credentials could now reach a previously-dead log line; a pre-existing TOCTOU on the connection
+    registry, unchanged/not widened by this fix); round 2 fixed the credential-logging note directly
+    (`redact_url` helper) but the reviewer itself then found a **second**, sharper bug in that same
+    fix — `find('@')` matched the *first* `@`, so a password containing its own literal `@` (this
+    codebase's `$VAR` secret interpolation has no URL-encoding step, so realistic) leaked a fragment of
+    itself; round 3 fixed that (`rfind('@')` bounded to the authority substring) and PASSed clean; round
+    4 (after a Gitar finding — `connect_all` awaited each URL sequentially, so N unreachable stores would
+    serially stack `ConnectionManager`'s retry/backoff budget on the startup/reload critical path — fixed
+    by switching to `tokio::spawn`-per-URL, joined afterward, no new dependency edge) did a full fresh
+    holistic pass, not just a diff since last review, and PASSed with no remaining findings.
+- **Process note**: caught two of the "committing directly on the migration branch" near-misses this
+  session already has one prior instance of (2026-08-30, logged in `.claude/logs/dependabot-hygiene.md`)
+  — both caught before any push (`git branch --show-current` mid-flow), both moved cleanly to a proper
+  feature branch via `git checkout -b` since nothing had been committed yet. Also hit repeated,
+  unrelated WSL host-level instability during the live-Redis verification (the VM itself force-rebooted
+  mid-test multiple times, confirmed via `dmesg` — not caused by the testing itself) — recovered by
+  restarting the container/redis-server each time and continuing rather than treating a transient
+  environment crash as a code problem.
+
 ---
 
 ## Session rotation log
