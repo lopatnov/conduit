@@ -92,7 +92,10 @@ pub fn is_compressible_type(content_type: &str, opts: &CompressOptions) -> bool 
     } else if opts.types.iter().any(|t| t == "*") {
         return true;
     } else {
-        return opts.types.iter().any(|t| ct.contains(t.as_str()));
+        return opts
+            .types
+            .iter()
+            .any(|t| ct.contains(t.to_ascii_lowercase().as_str()));
     };
 
     patterns.iter().any(|p| ct.starts_with(p))
@@ -100,9 +103,11 @@ pub fn is_compressible_type(content_type: &str, opts: &CompressOptions) -> bool 
 
 /// Choose the best `Content-Encoding` given what the client advertises.
 ///
+/// Does **not** check content type — callers must call
+/// [`is_compressible_type`] separately before this, if that check applies.
+///
 /// Returns `None` when:
 /// - the body is smaller than `opts.min_bytes`, or
-/// - the content type is not compressible (nginx `gzip_types` pattern), or
 /// - no algorithm in `opts.algorithms` is accepted by the client.
 pub fn best_encoding(
     opts: &CompressOptions,
@@ -488,5 +493,16 @@ mod tests {
         opts.types = vec!["text/plain".to_owned()];
         assert!(is_compressible_type("text/plain", &opts));
         assert!(!is_compressible_type("text/html", &opts));
+    }
+
+    #[test]
+    fn custom_types_list_matches_case_insensitively() {
+        // Regression: matching lowercased the request's content type but not
+        // the configured pattern, so a mixed-case pattern like "Text/Plain"
+        // never matched despite the documented case-insensitive behavior.
+        let mut opts = opts_no_types();
+        opts.types = vec!["Text/Plain".to_owned()];
+        assert!(is_compressible_type("text/plain", &opts));
+        assert!(is_compressible_type("TEXT/PLAIN", &opts));
     }
 }
