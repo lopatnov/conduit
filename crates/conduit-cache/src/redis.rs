@@ -119,22 +119,23 @@ fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
         return std::borrow::Cow::Borrowed(url);
     };
     let authority_start = scheme_end + 3;
-    let after_scheme = &url[authority_start..];
-    let Some(at) = after_scheme.find('@') else {
+    let rest = &url[authority_start..];
+    // Bound the search to the authority component only — everything up to
+    // the first '/' (or the whole remainder, if there's no path).
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    // The LAST '@' within the authority is the userinfo/host separator, not
+    // the first — this codebase's `$VAR` secret-interpolation model has no
+    // URL-encoding step, so a raw '@' inside a password is realistic (a
+    // second review-round finding on PR #331: `find` here previously leaked
+    // a fragment of a password containing its own '@').
+    let Some(at) = authority.rfind('@') else {
         return std::borrow::Cow::Borrowed(url);
     };
-    // Only treat this as credentials if the '@' is in the authority section
-    // (before the next '/', if any) — an '@' appearing later (e.g. in a
-    // path segment) isn't userinfo.
-    if let Some(slash) = after_scheme.find('/') {
-        if slash < at {
-            return std::borrow::Cow::Borrowed(url);
-        }
-    }
     std::borrow::Cow::Owned(format!(
         "{}***@{}",
         &url[..authority_start],
-        &after_scheme[at + 1..]
+        &rest[at + 1..]
     ))
 }
 
@@ -444,5 +445,20 @@ mod tests {
     fn redact_url_malformed_url_returned_unchanged() {
         let url = "not-a-url";
         assert_eq!(redact_url(url), url);
+    }
+
+    #[test]
+    fn redact_url_password_containing_at_sign_does_not_leak_a_fragment() {
+        // Regression for a second review-round finding on PR #331: this
+        // codebase's `$VAR` secret-interpolation model has no URL-encoding
+        // step, so a raw '@' inside a password is realistic. The first '@'
+        // is part of the password, not the userinfo/host separator -- using
+        // the LAST '@' in the authority is the only correct split.
+        let redacted = redact_url("redis://user:pa@ss@host:6379");
+        assert_eq!(redacted, "redis://***@host:6379");
+        assert!(
+            !redacted.contains("pa") && !redacted.contains("ss"),
+            "no fragment of the password must survive redaction: {redacted}"
+        );
     }
 }
