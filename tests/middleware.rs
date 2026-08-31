@@ -695,6 +695,32 @@ fn consumers_without_feature_generates_warning() {
     );
 }
 
+/// When static feature is off, configuring `static` generates a warning.
+#[test]
+#[cfg(not(feature = "static"))]
+fn static_without_feature_generates_warning() {
+    let config =
+        conduit::config::from_str(r#"{ "port": 8080, "static": "./dist" }"#).expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("static")),
+        "missing static without feature warning: {warnings:?}"
+    );
+}
+
+/// When static feature is off, configuring `fallback` generates a warning.
+#[test]
+#[cfg(not(feature = "static"))]
+fn fallback_without_feature_generates_warning() {
+    let config = conduit::config::from_str(r#"{ "port": 8080, "fallback": { "status": 404 } }"#)
+        .expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("fallback")),
+        "missing fallback without feature warning: {warnings:?}"
+    );
+}
+
 /// When consumers is on but jwt is off, a consumer using `sharedJwt` or a
 /// per-consumer `jwt` credential is silently unreachable — must warn.
 #[test]

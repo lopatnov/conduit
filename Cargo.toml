@@ -43,6 +43,7 @@ lopatnov-conduit-security-headers  = { path = "crates/conduit-security-headers",
 lopatnov-conduit-ratelimit         = { path = "crates/conduit-ratelimit", version = "2.0.0" }
 lopatnov-conduit-limits             = { path = "crates/conduit-limits", version = "2.0.0" }
 lopatnov-conduit-compression        = { path = "crates/conduit-compression", version = "2.0.0" }
+lopatnov-conduit-static              = { path = "crates/conduit-static", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -50,6 +51,10 @@ serde_json          = "1"
 serde_yaml          = "0.9"
 serde_path_to_error = "0.1"
 indexmap            = { version = "2", features = ["serde"] }
+# humantime: only used by crates/conduit-static's `max_age` duration parsing
+# (gated behind that crate's own `static` feature) as of #114/#139 — no
+# longer a direct root-crate dependency, but kept as a shared workspace
+# entry since that crate still needs it via `.workspace = true`.
 humantime           = "2"
 
 # --- CLI ---
@@ -80,6 +85,9 @@ arc-swap = "1"
 dashmap  = "6"  # v7 is RC as of 2026-05 — upgrade after stable release
 
 # --- Functionality ---
+# mime_guess: content-type detection. Not a direct root-crate dependency —
+# only crates/conduit-static (own `static` feature) and crates/conduit-upload
+# (own `upload` feature) use it, both gated. Kept as a shared workspace entry.
 mime_guess = "2"
 notify     = "8"
 regex      = "1"
@@ -104,7 +112,7 @@ anyhow    = "1"
 thiserror = "2"
 bytes     = "1"
 subtle    = "2"   # constant-time comparisons (admin token auth)
-libc      = "0.2" # O_NOFOLLOW for atomic symlink-safe file open (Unix)
+libc      = "0.2" # O_NOFOLLOW for atomic symlink-safe file open (Unix) — crates/conduit-core, crates/conduit-acme, crates/conduit-static
 url       = "2"   # URL parsing for proxy-loop and SSRF detection
 httpdate  = "1"
 http      = "1"
@@ -328,13 +336,28 @@ lopatnov-conduit-limits.workspace            = true
 # `cargo build` keeps compressing responses exactly like before this
 # extraction; only `--no-default-features` drops it.
 lopatnov-conduit-compression.workspace       = true
+# Mandatory (like every other crate above), not `optional = true`:
+# `StaticConfig`/`StaticOptions`/`FallbackConfig`/`FallbackRule` and the
+# `sites[].static`/`sites[].staticOptions`/`sites[].fallback` fields must
+# stay parseable in every build so `feature_warnings()` can keep warning on
+# a config-without-feature mismatch. Only the real `StaticFileHandler`/
+# `FallbackHandler`/`resolve_static_roots` are gated, via
+# `lopatnov-conduit-static/static` in the `static` feature below — like
+# `compression` (and unlike every other extracted optional feature so far),
+# `static` stays **default-on** (issue #114/#139): a plain `cargo build`
+# keeps serving static files/fallback responses exactly like before this
+# extraction; only `--no-default-features` drops it. This extraction also
+# absorbed `humantime`/`libc`/`mime_guess`/`async-compression` out of this
+# crate's own direct dependency list below — their only root-crate callers
+# (`handler/static_files.rs`, `handler/fallback.rs`, `util/mime.rs`) moved
+# into `crates/conduit-static` along with the rest of this scope.
+lopatnov-conduit-static.workspace            = true
 
 # --- Config & parsing ---
 serde.workspace      = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 indexmap.workspace   = true
-humantime.workspace  = true
 
 # --- CLI ---
 clap.workspace          = true
@@ -356,15 +379,14 @@ axum.workspace  = true
 # --- Compression ---
 # `CompressOptions`/`effective`/`is_compressible_type`/`best_encoding`/
 # `compress_bytes` moved to `crates/conduit-compression` (#114/#138), gated
-# behind that crate's own `compression` feature — but this crate still has a
-# *direct* `async-compression` edge of its own: `handler/static_files.rs`'s
-# on-the-fly streaming compression (`stream_file_compressed`) stayed in the
-# root crate (out of #138's scope) and uses the encoders directly, gated
-# behind `#[cfg(feature = "compression")]` there too. `optional = true` (not
-# `.workspace = true`) so disabling `compression` actually drops
-# `async-compression` from the dependency tree, not just from this crate's
-# own code paths.
-async-compression = { workspace = true, optional = true }
+# behind that crate's own `compression` feature. `handler/static_files.rs`'s
+# on-the-fly streaming compression (`stream_file_compressed`, which used to
+# have a *direct* `async-compression` edge here) moved out entirely along
+# with the rest of `static_files.rs` into `crates/conduit-static` (#114/#139)
+# — this crate has no remaining direct `async_compression::` usage, so there
+# is no root [dependencies] entry to gate behind `compression` here anymore
+# (see the `compression` feature below, which now forwards only into the two
+# crates that do still use it directly).
 
 # --- Observability ---
 tracing.workspace            = true
@@ -376,7 +398,10 @@ arc-swap.workspace = true
 dashmap.workspace  = true
 
 # --- Functionality ---
-mime_guess.workspace = true
+# mime_guess: no longer a direct root-crate dependency — its only caller
+# (`handler/fallback.rs`) moved into `crates/conduit-static` (#114/#139),
+# which carries its own gated `mime_guess` edge. See the [dependencies]
+# comment on `lopatnov-conduit-static` above.
 notify.workspace     = true
 regex.workspace      = true
 uuid.workspace       = true
@@ -392,8 +417,16 @@ anyhow.workspace    = true
 thiserror.workspace = true
 bytes.workspace     = true
 subtle.workspace    = true
-libc.workspace      = true
+# libc: no longer a direct root-crate dependency — its only caller
+# (`handler/static_files.rs`'s O_NOFOLLOW open) moved into
+# `crates/conduit-static` (#114/#139), which carries its own gated `libc`
+# edge. See the [dependencies] comment on `lopatnov-conduit-static` above.
 url.workspace       = true
+# httpdate stays unconditional here — logging.rs (access-log CLF dates) and
+# response_phase.rs (stale-while-revalidate date handling) both use it
+# directly and are unrelated to #114/#139's scope. crates/conduit-static
+# carries its own separate, gated `httpdate` edge for ETag/Last-Modified
+# formatting in the moved static-file handler.
 httpdate.workspace  = true
 http.workspace      = true
 base64.workspace    = true
@@ -444,14 +477,14 @@ opentelemetry = { workspace = true, optional = true }
 # Prometheus metrics + hot reload + Admin API + redirects.
 #
 # No heavyweight optional features compiled in by default — except
-# `compression` (issue #114/#138), the one deliberate exception: response
-# compression is a baseline expectation for a reverse proxy/static-file
-# server, so a plain `cargo build` must keep compressing exactly like it did
-# before that extraction. Enable other individual features or use `full` for
-# a batteries-included build; pass `--no-default-features` for a build with
-# no compression either (the "just static files, no compression" build
-# #138 describes).
-default = ["compression"]
+# `compression` (issue #114/#138) and `static` (issue #114/#139), the two
+# deliberate exceptions: response compression and static-file/fallback
+# serving are baseline expectations for a reverse proxy/static-file server,
+# so a plain `cargo build` must keep behaving exactly like it did before
+# those extractions. Enable other individual features or use `full` for a
+# batteries-included build; pass `--no-default-features` for a build with
+# neither compression nor static-file/fallback serving.
+default = ["compression", "static"]
 
 # ── Compression ──────────────────────────────────────────────────────────────
 # Response/static-file compression negotiation (br/gzip/deflate/zstd).
@@ -459,14 +492,33 @@ default = ["compression"]
 # `crates/conduit-compression` (#114/#138) and are always a dependency (see
 # the [dependencies] comment above); this forwards into that crate's own
 # `compression` feature (gates the real `CompressOptions`/`effective`/
-# `is_compressible_type`/`best_encoding`/`compress_bytes`) AND enables this
-# crate's own direct `dep:async-compression` edge, which
-# `handler/static_files.rs`'s on-the-fly streaming compression
-# (`stream_file_compressed`) still uses directly — that code stayed in the
-# root crate, out of #138's scope (only `src/filter/compression.rs` moved).
-# Unlike every other extracted optional feature, this one is **default-on**
-# — see `default` above.
-compression = ["dep:async-compression", "lopatnov-conduit-compression/compression"]
+# `is_compressible_type`/`best_encoding`/`compress_bytes`). It also forwards
+# into `crates/conduit-static`'s own `compression` feature (#114/#139),
+# which gates that crate's on-the-fly streaming compression
+# (`stream_file_compressed` — the direct `async-compression` edge that used
+# to live here moved there along with the rest of `static_files.rs`).
+# Unlike every other extracted optional feature besides `static`, this one
+# is **default-on** — see `default` above.
+compression = ["lopatnov-conduit-compression/compression", "lopatnov-conduit-static/compression"]
+
+# ── Static files & fallback ──────────────────────────────────────────────────
+# Static-file serving (`sites[].static`/`staticOptions`) and fallback
+# responses (`sites[].fallback` — 404/SPA-shell/custom body, also the
+# terminal "no route matched" handler for every site). `StaticConfig`/
+# `StaticOptions`/`FallbackConfig`/`FallbackRule` moved to
+# `crates/conduit-static` (#114/#139) and are always a dependency (see the
+# [dependencies] comment above); this forwards into that crate's own
+# `static` feature, which gates the real `StaticFileHandler`/
+# `FallbackHandler`/`resolve_static_roots`. Like `compression` (and unlike
+# every other extracted optional feature so far), this one is **default-on**
+# — see `default` above. Without it, `sites[].static`/`fallback` still parse
+# (and `feature_warnings()` warns) but every request that would have hit a
+# static file or the fallback responder instead falls through to Pingora's
+# own upstream-selection path with no `UpstreamTarget::Proxy` to select,
+# which surfaces as a request-level error — the same degradation shape as
+# every other `#[cfg]`-gated `LocalHandler` variant (e.g.
+# `HandlerKind::AcmeChallenge` without `acme`).
+static = ["lopatnov-conduit-static/static"]
 
 # ── Authentication ─────────────────────────────────────────────────────────────
 # JWT bearer-token validation (HS256 + RS256/ES256 via JWKS URL).
@@ -593,10 +645,12 @@ standard = [
     "forward-auth",  # Delegate auth to an external service
     "cache",         # HTTP response caching
     "acme",          # Auto-TLS via Let's Encrypt (Caddy-style)
-    # `compression` is already default-on (see `default` above) — listed
-    # here too so `--no-default-features --features standard` still gets it,
-    # matching "standard" being a superset of the default feature set.
+    # `compression` and `static` are already default-on (see `default`
+    # above) — listed here too so `--no-default-features --features
+    # standard` still gets them, matching "standard" being a superset of
+    # the default feature set.
     "compression",
+    "static",
 ]
 
 # Full build: every optional feature enabled.
@@ -658,6 +712,18 @@ required-features = ["fault-injection"]
 [[test]]
 name = "forward_auth"
 required-features = ["forward-auth"]
+
+[[test]]
+name = "static_files"
+required-features = ["static"]
+
+[[test]]
+name = "fallback"
+required-features = ["static"]
+
+[[test]]
+name = "pre_compressed"
+required-features = ["static"]
 
 [[test]]
 name = "upload"

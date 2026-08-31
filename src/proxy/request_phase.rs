@@ -54,9 +54,10 @@ use crate::filter::{cors, redirects, response_time, security_headers};
 #[cfg(feature = "acme")]
 use crate::handler::acme_challenge as acme_handler;
 use crate::handler::response;
+#[cfg(feature = "static")]
+use crate::handler::{fallback, static_files};
 use crate::handler::{
-    fallback, health, hot_reload as hot_reload_handler, metrics as metrics_handler, static_files,
-    LocalHandlerImpl,
+    health, hot_reload as hot_reload_handler, metrics as metrics_handler, LocalHandlerImpl,
 };
 use crate::proxy::cache as proxy_cache;
 #[cfg(feature = "cache")]
@@ -978,68 +979,78 @@ impl ConduitProxy {
             }
 
             HandlerKind::StaticFile => {
-                let config = self.state.config.load();
-                let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
-                #[cfg(feature = "compression")]
-                let compress_opts = config
-                    .sites
-                    .get(site_idx)
-                    .and_then(|s| s.compression.as_ref())
-                    .and_then(compression::effective);
-                let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
-                let accept_enc = ctx
-                    .as_ref()
-                    .map(|c| c.accept_enc.clone())
-                    .unwrap_or_default();
-                let (roots, options, strip_prefix) = if let Some(RequestCtx {
-                    upstream:
-                        UpstreamTarget::Local(LocalHandler::StaticFile {
-                            roots,
-                            options,
-                            strip_prefix,
-                        }),
-                    ..
-                }) = ctx.as_ref()
+                #[cfg(feature = "static")]
                 {
-                    (roots.clone(), options.clone(), strip_prefix.clone())
-                } else {
-                    unreachable!()
-                };
-                Some(Box::new(static_files::StaticFileHandler {
-                    roots,
-                    options,
-                    strip_prefix,
-                    extra_headers: extra,
+                    let config = self.state.config.load();
+                    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
                     #[cfg(feature = "compression")]
-                    compress_opts,
-                    accept_enc,
-                    fallback,
-                }))
+                    let compress_opts = config
+                        .sites
+                        .get(site_idx)
+                        .and_then(|s| s.compression.as_ref())
+                        .and_then(compression::effective);
+                    let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
+                    let accept_enc = ctx
+                        .as_ref()
+                        .map(|c| c.accept_enc.clone())
+                        .unwrap_or_default();
+                    let (roots, options, strip_prefix) = if let Some(RequestCtx {
+                        upstream:
+                            UpstreamTarget::Local(LocalHandler::StaticFile {
+                                roots,
+                                options,
+                                strip_prefix,
+                            }),
+                        ..
+                    }) = ctx.as_ref()
+                    {
+                        (roots.clone(), options.clone(), strip_prefix.clone())
+                    } else {
+                        unreachable!()
+                    };
+                    Some(Box::new(static_files::StaticFileHandler {
+                        roots,
+                        options,
+                        strip_prefix,
+                        extra_headers: extra,
+                        #[cfg(feature = "compression")]
+                        compress_opts,
+                        accept_enc,
+                        fallback,
+                    }))
+                }
+                #[cfg(not(feature = "static"))]
+                None
             }
 
             HandlerKind::Fallback => {
-                let config = self.state.config.load();
-                let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
-                let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
-                #[cfg(feature = "compression")]
-                let compress_opts = config
-                    .sites
-                    .get(site_idx)
-                    .and_then(|s| s.compression.as_ref())
-                    .and_then(compression::effective);
-                #[cfg(feature = "compression")]
-                let accept_enc = ctx
-                    .as_ref()
-                    .map(|c| c.accept_enc.clone())
-                    .unwrap_or_default();
-                Some(Box::new(fallback::FallbackHandler {
-                    fallback,
-                    extra_headers: extra,
+                #[cfg(feature = "static")]
+                {
+                    let config = self.state.config.load();
+                    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                    let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
                     #[cfg(feature = "compression")]
-                    compress_opts,
+                    let compress_opts = config
+                        .sites
+                        .get(site_idx)
+                        .and_then(|s| s.compression.as_ref())
+                        .and_then(compression::effective);
                     #[cfg(feature = "compression")]
-                    accept_enc,
-                }))
+                    let accept_enc = ctx
+                        .as_ref()
+                        .map(|c| c.accept_enc.clone())
+                        .unwrap_or_default();
+                    Some(Box::new(fallback::FallbackHandler {
+                        fallback,
+                        extra_headers: extra,
+                        #[cfg(feature = "compression")]
+                        compress_opts,
+                        #[cfg(feature = "compression")]
+                        accept_enc,
+                    }))
+                }
+                #[cfg(not(feature = "static"))]
+                None
             }
 
             HandlerKind::HotReloadJs => Some(Box::new(hot_reload_handler::HotReloadJsHandler {
@@ -3478,6 +3489,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "static")]
     fn build_handler_static_file_returns_some() {
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::StaticFile {
@@ -3490,11 +3502,40 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "static"))]
+    fn build_handler_static_file_returns_none_without_feature() {
+        let proxy = make_proxy();
+        let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::StaticFile {
+            roots: vec![std::path::PathBuf::from("./dist")],
+            options: std::sync::Arc::new(Default::default()),
+            strip_prefix: None,
+        })));
+        let result = proxy.build_handler(HandlerKind::StaticFile, &ctx);
+        assert!(
+            result.is_none(),
+            "StaticFile handler must return None without the `static` feature"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "static")]
     fn build_handler_fallback_returns_some() {
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::Fallback)));
         let result = proxy.build_handler(HandlerKind::Fallback, &ctx);
         assert!(result.is_some(), "Fallback handler must return Some");
+    }
+
+    #[test]
+    #[cfg(not(feature = "static"))]
+    fn build_handler_fallback_returns_none_without_feature() {
+        let proxy = make_proxy();
+        let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::Fallback)));
+        let result = proxy.build_handler(HandlerKind::Fallback, &ctx);
+        assert!(
+            result.is_none(),
+            "Fallback handler must return None without the `static` feature"
+        );
     }
 
     #[test]
