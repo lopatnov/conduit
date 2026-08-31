@@ -2131,6 +2131,42 @@ simply waiting for the eventual `main` merge to resolve on its own.
   Phase 4 still has 4 open sub-issues (#139 static_files — now unblocked, #140 hotreload+metrics+
   redirects, #141 middleware+rhai+wasm, #249 conduit-k8s) — not phase-completing yet.
 
+### Реализовано в сессии 2026-08-31 (часть 3 — #338 wire compress_bytes() into metrics/fallback + batch-sizing policy)
+
+- **[PR #339](https://github.com/lopatnov/conduit/pull/339)
+  `fix(compression): wire compress_bytes() into metrics and fallback handlers (#338)`**
+  (squash-merge `c5a327a`, issue #338 CLOSED) — `crates/conduit-compression`'s `compress_bytes()`
+  (extracted in #138 minutes earlier the same day, fully implemented and tested) had never actually
+  been called from the metrics endpoint or fallback responses, despite its own doc comment naming both
+  as intended callers — found by `/cleanup`'s Pass 2 (code-debris audit) right after the #138 extraction
+  landed. Decided to wire it in rather than delete it (the issue left both options open): new
+  `conduit_compression::logic::compress_small_body()` composes the existing `is_compressible_type`/
+  `best_encoding`/`compress_bytes` primitives for a complete in-memory body (4 new unit tests);
+  `MetricsHandler`/`FallbackHandler` resolve `compress_opts`/`accept_enc` in `build_handler()` the same
+  way `StaticFileHandler` already does, and add `Vary: accept-encoding` when compression is applied,
+  matching the static-file convention. Both response types still negotiate independently against the
+  site's `minBytes`/`types` — a small metrics scrape or error body can stay uncompressed exactly as
+  before, just correctly *evaluated* now instead of never evaluated. 4 new integration tests in
+  `tests/compression.rs`, including one that measures the real uncompressed metrics size via a plain
+  request first rather than guessing at the default Prometheus exposition size (avoids a flaky
+  assumption about how large a fresh server's metrics output happens to be).
+  `security-engineer` PASS confirmed no BREACH-style compression-oracle concern (neither body mixes
+  attacker-reflected input with a secret — metrics is server-state gather output, fallback bodies are
+  static config, `Accept` only *selects* a pre-configured rule) and that the auth check in
+  `handle_metrics` still runs before any compression code. 16/16 CI checks green.
+- **Batch-sizing policy generalized** in `.claude/commands/feature-workspace-cycle.md` Step 2 (direct
+  commit to the migration branch, `1a681e9`, no PR — pure process doc) — the user asked for explicit
+  criteria on how many issues to pick up together per firing, scaled by complexity, rather than always
+  taking exactly one. Replaces the narrower 2026-08-22 "batch 2-3 small independent #114 sub-issues"
+  rule with four tiers, now applying to the interleaved bug/gap-issue queue too: **~5-10** for a
+  mechanical/trivial sweep (one-liner fixes, verifiable by reading the diff, none security-sensitive,
+  small total diff — precedent: the 2026-08-30/31 "Block 1" CodeRabbit sweep, 9 findings into 4 PRs);
+  **~3-5** for small independent same-theme leaves needing a real code change + test but no design
+  ambiguity (the original #131 rule, generalized); **exactly 2** for a related pair sharing root cause
+  or code path (precedent: #306+#307 in PR #323); **1, always**, for anything posing an open design
+  question, touching a security-sensitive surface, needing `architect`/`business-analyst`, or being a
+  crate extraction — default to solo when in doubt.
+
 ---
 
 ## Session rotation log
