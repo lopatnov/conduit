@@ -1183,8 +1183,23 @@ fn is_hot_reload_js_path(site: Option<&SiteConfig>, path: &str) -> bool {
 
 /// If `path` starts with the ACME HTTP-01 challenge prefix, return the token
 /// portion.  E.g. `/.well-known/acme-challenge/abc123` → `Some("abc123")`.
+///
+/// Only matches when compiled with `--features acme` — without it, no ACME
+/// challenge handler exists to serve this path, so it must not win routing
+/// precedence over the site's own `fallback`/`static`/`proxy` config
+/// (issue #341: previously matched unconditionally regardless of the
+/// feature, and `HandlerKind::AcmeChallenge`'s handler being `None` without
+/// `acme` meant every request to this path fell through to Pingora's proxy
+/// path with no real upstream to select, surfacing as a 502 instead of
+/// whatever the site would otherwise have served).
+#[cfg(feature = "acme")]
 fn acme_challenge_token(path: &str) -> Option<&str> {
     path.strip_prefix("/.well-known/acme-challenge/")
+}
+
+#[cfg(not(feature = "acme"))]
+fn acme_challenge_token(_path: &str) -> Option<&str> {
+    None
 }
 
 fn find_site_idx(config: &AppConfig, host: &str, server_port: u16) -> Option<usize> {
@@ -2177,6 +2192,7 @@ mod tests {
     // ── acme_challenge_token ──────────────────────────────────────────────────
 
     #[test]
+    #[cfg(feature = "acme")]
     fn acme_challenge_token_extracts_token() {
         assert_eq!(
             acme_challenge_token("/.well-known/acme-challenge/abc123"),
@@ -2192,10 +2208,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "acme")]
     fn acme_challenge_token_empty_token() {
         // Edge case: empty token after the challenge prefix.
         let result = acme_challenge_token("/.well-known/acme-challenge/");
         assert_eq!(result, Some(""));
+    }
+
+    #[test]
+    #[cfg(not(feature = "acme"))]
+    fn acme_challenge_token_always_none_without_feature() {
+        // Issue #341: without `acme`, this path must never win routing
+        // precedence — no matter how well-formed the challenge path is.
+        assert!(acme_challenge_token("/.well-known/acme-challenge/abc123").is_none());
+        assert!(acme_challenge_token("/.well-known/acme-challenge/").is_none());
     }
 
     // ── is_hot_reload_sse_path and is_hot_reload_js_path ─────────────────────
