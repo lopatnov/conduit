@@ -2167,6 +2167,71 @@ simply waiting for the eventual `main` merge to resolve on its own.
   question, touching a security-sensitive surface, needing `architect`/`business-analyst`, or being a
   crate extraction — default to solo when in doubt.
 
+### Реализовано в сессии 2026-08-31/09-01 (Phase 4.2 — #139 `conduit-static`, real terminal-fallback bug found+fixed)
+
+- **[PR #340](https://github.com/lopatnov/conduit/pull/340)
+  `feat(workspace): extract conduit-static crate (#139)`** (squash-merge `d84d5c8`, issue #139
+  CLOSED) — static-file serving (`src/handler/static_files.rs`) and fallback responses
+  (`src/handler/fallback.rs`, folded into the same crate per the issue's own instruction — the two
+  are coupled via `StaticFileHandler` calling into fallback on a miss) moved to
+  `crates/conduit-static`, plus `StaticConfig`/`StaticOptions`/`FallbackConfig`/`FallbackRule`
+  (from `schema.rs`), `resolve_static_roots` (from `router.rs`), and `util::mime`'s content-type
+  detection. New `static` Cargo feature, **default-on** like `compression` (#138) — a plain
+  `cargo build` behaves identically to before this extraction. `mime_guess`/`humantime`/`libc`/
+  `async-compression` all became gated dependencies of the new crate; `httpdate` deliberately
+  stayed unconditional at root (used by `logging.rs`/`response_phase.rs`, unrelated to this scope).
+  Footprint confirmed by CI's own report: `--no-default-features` 16.1MiB/946 deps vs default
+  17.0MiB/984 deps.
+  **Deviation from plan, documented in the new crate's own `lib.rs`**: `conduit-core`'s
+  `util::mime` module (added during the earlier #126 Layer-0 extraction) turned out to be an
+  additional unconditional `mime_guess` edge whose only caller was the code this PR moved —
+  removed entirely from `conduit-core` and folded into `conduit-static::mime` rather than left as
+  dead weight (a narrow, deliberate `conduit-core` API break, per decision #32 — these crates are
+  internal plumbing).
+  **A real bug found and fixed during self-review, not part of the original plan**:
+  `HandlerKind::Fallback` is the universal "nothing else matched" terminal case —
+  `router.rs`/`routes.rs` construct `LocalHandler::Fallback` for *any* unmatched request on *any*
+  site (confirmed via grep — a dozen construction sites), not exclusive to a static-file miss. The
+  initial extraction gated `FallbackHandler`'s construction entirely behind `static`, so
+  `build_handler()` returned `None` for it too when the feature was off — `dispatch_local` treats
+  `None` identically to `HandlerKind::Proxy` ("let Pingora continue"), sending the request to
+  `upstream_peer()` with no real upstream to select (`resolve_peer_addr` correctly rejects
+  `UpstreamTarget::Local(_)`, but only after Pingora has already committed to the proxy path).
+  Every unmatched request on any build excluding `static` would have surfaced as a 502/500 instead
+  of the plain 404 every other disabled feature degrades to. Fixed with a minimal always-on
+  `PlainNotFoundHandler`, matching the `feature_warnings()` wording already shipped ("fallback
+  responses including the site's default 404 will be disabled") instead of contradicting it.
+  `StaticFile`'s own `None`-without-feature arm is unaffected — the router never constructs
+  `LocalHandler::StaticFile` without the feature, so it's genuinely unreachable there.
+  `security-engineer` independently traced the exact failure chain (not just trusting the PR
+  description) and confirmed the fix before PASSing, then re-confirmed after a comment-only
+  follow-up commit (correcting an inaccurate doc comment the review itself prompted).
+  **A second, unrelated pre-existing bug of the same class found in passing** by
+  `security-engineer`: `router.rs::acme_challenge_token()` matches `/.well-known/acme-challenge/*`
+  unconditionally regardless of `--features acme`, so `HandlerKind::AcmeChallenge`'s own
+  `None`-without-`acme` arm has the identical "falls through to a 502 instead of degrading
+  cleanly" problem — filed as [#341](https://github.com/lopatnov/conduit/issues/341), not fixed
+  here (pre-existing, out of scope).
+  **Two CodeRabbit findings, both false positives on verification** — replied with evidence in
+  both threads instead of complying: (1) claimed `mime.rs`'s "only caller" doc comment was stale
+  because `fallback.rs` also references `content_type` — turned out to be a same-named unrelated
+  local parameter, not a call to the `mime::content_type()` function; the doc comment was accurate.
+  (2) claimed the PR violated `CLAUDE.md` decision #22's "router.rs не трогать" — that guideline is
+  scoped specifically to *adding a new load-balancing strategy*, not to any change touching the
+  file; this extraction's `router.rs` edit (a facade-preserving relocation of
+  `resolve_static_roots` plus the minimal `#[cfg]` split its own routing decision needs) is the
+  same shape every other extraction in this migration uses.
+- **Process note**: this firing recovered mid-task from `crate-extractor` hitting its own session
+  rate-limit (429) partway through the extraction (while writing `mime.rs`) — resumed the *same*
+  agent via `SendMessage` once the limit reset (not a fresh spawn) rather than restarting from
+  scratch, since it retained full context of the scaffold already written. Confirms the
+  `workflow.md` "Session budget discipline" note that a same-tier subagent draws from the same
+  usage pool as the conductor and can hit this independently.
+- Migration branch synced (fast-forward, no conflicts) and verified green
+  (`cargo build --workspace`). Phase 4 has 2 open sub-issues left (#140
+  conduit-hotreload/conduit-metrics/conduit-redirects, #141 conduit-middleware/conduit-script-rhai/
+  conduit-plugin-wasm) plus #249 (Phase 4.5, conduit-k8s) — not phase-completing yet.
+
 ---
 
 ## Session rotation log
