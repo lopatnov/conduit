@@ -41,6 +41,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   #114/#137 slice 1) — no config shape or behavior change, this closes a
   code-duplication finding between the root crate and
   `conduit-auth-consumers`.
+- Static-file serving and fallback (404/SPA-shell/custom-body) responses
+  moved to their own crate (`conduit-static`, issue #114/#139) behind a new
+  `static` Cargo feature. **Default-on**, like `compression` — a plain
+  `cargo build` keeps serving static files and fallback responses exactly
+  like before; only `--no-default-features` (without re-adding `static`)
+  now produces a build with neither capability compiled in.
 
 ---
 

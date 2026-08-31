@@ -5,7 +5,9 @@
 //! Routes are evaluated in declaration order; the first match wins.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+#[cfg(feature = "static")]
+use std::sync::Arc;
+use std::sync::OnceLock;
 
 use dashmap::DashMap;
 use regex::Regex;
@@ -164,12 +166,18 @@ fn cookie_value<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
 ///
 /// Priority: `proxy` beats `static`.  If neither is set the route is a
 /// no-op (unlikely in practice) and returns the fallback.
+///
+/// Without the `static` feature compiled in, `route.static` is never
+/// resolved into a `StaticFile` handler — see `router::match_static_or_fallback`'s
+/// doc comment for the shared degradation rationale.
 fn route_to_result(
     route: &RouteConfig,
     path: &str,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
-    static_options: Option<&StaticOptions>,
+    #[cfg_attr(not(feature = "static"), allow(unused_variables))] static_options: Option<
+        &StaticOptions,
+    >,
 ) -> RouteResult {
     // ── Proxy action ─────────────────────────────────────────────────────────
     if let Some(proxy_target) = &route.proxy {
@@ -177,6 +185,7 @@ fn route_to_result(
     }
 
     // ── Static action ─────────────────────────────────────────────────────────
+    #[cfg(feature = "static")]
     if let Some(static_cfg) = &route.static_files {
         let options = Arc::new(static_options.cloned().unwrap_or_default());
         let (roots, strip_prefix) = router::resolve_static_roots(static_cfg, path);
@@ -1206,6 +1215,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "static")]
     fn route_to_result_static_files() {
         use crate::config::schema::{RouteConfig, StaticConfig};
         use crate::proxy::ctx::{LocalHandler, UpstreamTarget};

@@ -2896,7 +2896,6 @@ version = "2.0.0"
 dependencies = [
  "anyhow",
  "arc-swap",
- "async-compression",
  "async-trait",
  "axum",
  "base64 0.23.1",
@@ -2911,13 +2910,11 @@ dependencies = [
  "hmac 0.13.0",
  "http",
  "httpdate",
- "humantime",
  "indexmap 2.14.0",
  "indicatif",
  "jsonwebtoken",
  "k8s-openapi",
  "kube",
- "libc",
  "lopatnov-conduit-acme",
  "lopatnov-conduit-auth-consumers",
  "lopatnov-conduit-auth-forward",
@@ -2933,9 +2930,9 @@ dependencies = [
  "lopatnov-conduit-otlp",
  "lopatnov-conduit-ratelimit",
  "lopatnov-conduit-security-headers",
+ "lopatnov-conduit-static",
  "lopatnov-conduit-tcp",
  "lopatnov-conduit-upload",
- "mime_guess",
  "notify",
  "opentelemetry",
  "p256",
@@ -3105,7 +3102,6 @@ dependencies = [
  "async-trait",
  "bytes",
  "libc",
- "mime_guess",
  "pingora-core",
  "pingora-http",
  "pingora-proxy",
@@ -3202,6 +3198,31 @@ dependencies = [
  "lopatnov-conduit-core",
  "pingora-core",
  "serde",
+]
+
+[[package]]
+name = "lopatnov-conduit-static"
+version = "2.0.0"
+dependencies = [
+ "async-compression",
+ "async-trait",
+ "bytes",
+ "http",
+ "httpdate",
+ "humantime",
+ "indexmap 2.14.0",
+ "libc",
+ "lopatnov-conduit-compression",
+ "lopatnov-conduit-core",
+ "mime_guess",
+ "pingora-core",
+ "pingora-http",
+ "pingora-proxy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

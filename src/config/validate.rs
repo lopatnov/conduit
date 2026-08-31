@@ -75,6 +75,8 @@ const DISABLED_KEY_OWNING_FEATURE: &[(&str, &str)] = &[
     ("upload", "upload"),
     ("faultInjection", "fault-injection"),
     ("compression", "compression"),
+    ("static", "static"),
+    ("fallback", "static"),
 ];
 
 /// Warn about unrecognized top-level site config keys (`SiteConfig.extra`):
@@ -309,6 +311,34 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
         ));
     }
 
+    // ── Static files (feature: static) ────────────────────────────────────────
+    // Unlike every other feature checked here besides `compression`, `static`
+    // is default-on at the root crate (issue #114/#139) — this warning only
+    // fires for a deliberate `--no-default-features` build (or one that
+    // otherwise excludes `static`), same mechanism as the rest of this
+    // function.
+    #[cfg(not(feature = "static"))]
+    if site.static_files.is_some() {
+        warnings.push(format!(
+            "sites[{i}].static is configured but Conduit was compiled without the `static` \
+             feature — static file serving will be disabled. \
+             Recompile with `--features static` to enable."
+        ));
+    }
+
+    // ── Fallback responses (feature: static) ──────────────────────────────────
+    // Same default-on caveat as `static` above — `fallback` is served by the
+    // same crate/feature (crates/conduit-static, issue #114/#139).
+    #[cfg(not(feature = "static"))]
+    if site.fallback.is_some() {
+        warnings.push(format!(
+            "sites[{i}].fallback is configured but Conduit was compiled without the `static` \
+             feature — fallback responses (including the site's default 404) will be \
+             disabled. \
+             Recompile with `--features static` to enable."
+        ));
+    }
+
     // ── Consumer JWT / sharedJwt without the `jwt` feature ────────────────────
     // `consumers` alone doesn't imply `jwt` — a consumer whose only credential
     // is `jwt` (V2) or a `consumers.sharedJwt` block (V3) is silently
@@ -340,7 +370,8 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
         feature = "upload",
         feature = "fault-injection",
         feature = "consumers",
-        feature = "compression"
+        feature = "compression",
+        feature = "static"
     ))]
     let _ = (i, site, warnings);
 }

@@ -1,3 +1,10 @@
+//! Extension-based Content-Type detection.
+//!
+//! Moved from `crates/conduit-core/src/util/mime.rs` (issue #114/#139) —
+//! this crate's `src/handler.rs` was its only caller (via
+//! `src/util/mime.rs`'s root-crate facade). See this crate's `src/lib.rs`
+//! doc comment, "What moved out of `conduit-core`".
+
 use std::path::Path;
 
 pub fn content_type(path: &Path) -> &'static str {

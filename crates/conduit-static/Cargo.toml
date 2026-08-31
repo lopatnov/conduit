@@ -1,0 +1,84 @@
+[package]
+name        = "lopatnov-conduit-static"
+version.workspace    = true
+edition.workspace    = true
+description = "Static-file serving + fallback-response config and handlers for conduit's feature-driven workspace (issue #114/#139)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_static"
+path = "src/lib.rs"
+
+[dependencies]
+# StaticConfig/StaticOptions/FallbackConfig/FallbackRule themselves are
+# always compiled — see src/lib.rs doc comment. FallbackConfig/FallbackRule
+# carry a `body: Option<serde_json::Value>` field, so serde_json is
+# mandatory here too (same rationale as crates/conduit-auth-jwt's `template`
+# module), not gated behind `static` like the dependencies below.
+serde      = { workspace = true }
+serde_json = { workspace = true }
+indexmap   = { workspace = true }
+
+# Everything below is only needed by the real static-file/fallback serving
+# logic (`handler`, `fallback`, `roots`, `mime`), gated behind this crate's
+# own `static` Cargo feature — mirrors the pre-extraction unconditional
+# compilation of src/handler/static_files.rs + src/handler/fallback.rs +
+# src/util/mime.rs + the resolve_static_roots() helper in
+# src/proxy/router.rs. The root crate's `static` feature forwards into this
+# one via `lopatnov-conduit-static/static` and — unlike every other
+# extracted optional feature so far (except `compression`) — is
+# **default-on** at the root crate (issue #114/#139): a plain `cargo build`
+# keeps serving static files/fallback responses exactly like before this
+# extraction; only `--no-default-features` drops it.
+async-trait           = { workspace = true, optional = true }
+bytes                 = { workspace = true, optional = true }
+tokio                 = { workspace = true, optional = true }
+pingora-core           = { workspace = true, optional = true }
+pingora-http           = { workspace = true, optional = true }
+pingora-proxy           = { workspace = true, optional = true }
+http                    = { workspace = true, optional = true }
+mime_guess              = { workspace = true, optional = true }
+httpdate                = { workspace = true, optional = true }
+humantime               = { workspace = true, optional = true }
+# O_NOFOLLOW for atomic symlink-safe static-file open (Unix) — mirrors
+# crates/conduit-core's own log-writer use (issue #280) and
+# crates/conduit-acme's secret-file write (issue #301), now a third,
+# independent instance of the same pattern.
+libc                    = { workspace = true, optional = true }
+lopatnov-conduit-core   = { workspace = true, optional = true }
+tracing                 = { workspace = true, optional = true }
+
+# On-the-fly streaming compression (`stream_file_compressed` in `handler`) —
+# gated behind this crate's own `compression` feature, independent of
+# `static` (mirrors the pre-extraction split: static-file serving works
+# with or without on-the-fly compression — pre-compressed `.br`/`.gz`
+# sibling serving has no dependency on this at all). Forwarded from the root
+# crate's own `compression` feature via `lopatnov-conduit-static/compression`.
+async-compression            = { workspace = true, optional = true }
+lopatnov-conduit-compression = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+static = [
+    "dep:async-trait",
+    "dep:bytes",
+    "dep:tokio",
+    "dep:pingora-core",
+    "dep:pingora-http",
+    "dep:pingora-proxy",
+    "dep:http",
+    "dep:mime_guess",
+    "dep:httpdate",
+    "dep:humantime",
+    "dep:libc",
+    "dep:lopatnov-conduit-core",
+    "dep:tracing",
+]
+compression = [
+    "dep:async-compression",
+    "dep:lopatnov-conduit-compression",
+    "lopatnov-conduit-compression/compression",
+]

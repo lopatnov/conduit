@@ -54,9 +54,10 @@ use crate::filter::{cors, redirects, response_time, security_headers};
 #[cfg(feature = "acme")]
 use crate::handler::acme_challenge as acme_handler;
 use crate::handler::response;
+#[cfg(feature = "static")]
+use crate::handler::{fallback, static_files};
 use crate::handler::{
-    fallback, health, hot_reload as hot_reload_handler, metrics as metrics_handler, static_files,
-    LocalHandlerImpl,
+    health, hot_reload as hot_reload_handler, metrics as metrics_handler, LocalHandlerImpl,
 };
 use crate::proxy::cache as proxy_cache;
 #[cfg(feature = "cache")]
@@ -978,67 +979,95 @@ impl ConduitProxy {
             }
 
             HandlerKind::StaticFile => {
-                let config = self.state.config.load();
-                let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
-                #[cfg(feature = "compression")]
-                let compress_opts = config
-                    .sites
-                    .get(site_idx)
-                    .and_then(|s| s.compression.as_ref())
-                    .and_then(compression::effective);
-                let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
-                let accept_enc = ctx
-                    .as_ref()
-                    .map(|c| c.accept_enc.clone())
-                    .unwrap_or_default();
-                let (roots, options, strip_prefix) = if let Some(RequestCtx {
-                    upstream:
-                        UpstreamTarget::Local(LocalHandler::StaticFile {
-                            roots,
-                            options,
-                            strip_prefix,
-                        }),
-                    ..
-                }) = ctx.as_ref()
+                #[cfg(feature = "static")]
                 {
-                    (roots.clone(), options.clone(), strip_prefix.clone())
-                } else {
-                    unreachable!()
-                };
-                Some(Box::new(static_files::StaticFileHandler {
-                    roots,
-                    options,
-                    strip_prefix,
-                    extra_headers: extra,
+                    let config = self.state.config.load();
+                    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
                     #[cfg(feature = "compression")]
-                    compress_opts,
-                    accept_enc,
-                    fallback,
-                }))
+                    let compress_opts = config
+                        .sites
+                        .get(site_idx)
+                        .and_then(|s| s.compression.as_ref())
+                        .and_then(compression::effective);
+                    let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
+                    let accept_enc = ctx
+                        .as_ref()
+                        .map(|c| c.accept_enc.clone())
+                        .unwrap_or_default();
+                    let (roots, options, strip_prefix) = if let Some(RequestCtx {
+                        upstream:
+                            UpstreamTarget::Local(LocalHandler::StaticFile {
+                                roots,
+                                options,
+                                strip_prefix,
+                            }),
+                        ..
+                    }) = ctx.as_ref()
+                    {
+                        (roots.clone(), options.clone(), strip_prefix.clone())
+                    } else {
+                        unreachable!()
+                    };
+                    Some(Box::new(static_files::StaticFileHandler {
+                        roots,
+                        options,
+                        strip_prefix,
+                        extra_headers: extra,
+                        #[cfg(feature = "compression")]
+                        compress_opts,
+                        accept_enc,
+                        fallback,
+                    }))
+                }
+                #[cfg(not(feature = "static"))]
+                None
             }
 
             HandlerKind::Fallback => {
-                let config = self.state.config.load();
-                let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
-                let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
-                #[cfg(feature = "compression")]
-                let compress_opts = config
-                    .sites
-                    .get(site_idx)
-                    .and_then(|s| s.compression.as_ref())
-                    .and_then(compression::effective);
-                #[cfg(feature = "compression")]
-                let accept_enc = ctx
-                    .as_ref()
-                    .map(|c| c.accept_enc.clone())
-                    .unwrap_or_default();
-                Some(Box::new(fallback::FallbackHandler {
-                    fallback,
+                #[cfg(feature = "static")]
+                {
+                    let config = self.state.config.load();
+                    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                    let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
+                    #[cfg(feature = "compression")]
+                    let compress_opts = config
+                        .sites
+                        .get(site_idx)
+                        .and_then(|s| s.compression.as_ref())
+                        .and_then(compression::effective);
+                    #[cfg(feature = "compression")]
+                    let accept_enc = ctx
+                        .as_ref()
+                        .map(|c| c.accept_enc.clone())
+                        .unwrap_or_default();
+                    Some(Box::new(fallback::FallbackHandler {
+                        fallback,
+                        extra_headers: extra,
+                        #[cfg(feature = "compression")]
+                        compress_opts,
+                        #[cfg(feature = "compression")]
+                        accept_enc,
+                    }))
+                }
+                // `HandlerKind::Fallback` is the universal "nothing else
+                // matched" terminal case (router.rs/routes.rs construct
+                // `LocalHandler::Fallback` for any unmatched request on any
+                // site, not just a static-file miss) — it must always
+                // return `Some`, never fall through to `dispatch_local`'s
+                // `HandlerKind::Proxy` path, or an unmatched request would
+                // reach `upstream_peer()` with no real upstream and surface
+                // as a 502/500 instead of the plain 404 every disabled
+                // feature otherwise degrades to. Without `static`,
+                // `sites[i].fallback`'s configured behavior (custom body,
+                // byAccept, file serving) is unavailable — matching
+                // `feature_warnings()`'s own "fallback responses (including
+                // the site's default 404) will be disabled" wording — so
+                // this always serves the same bare 404 `FallbackHandler`
+                // already serves today when no `fallback:` is configured at
+                // all.
+                #[cfg(not(feature = "static"))]
+                Some(Box::new(PlainNotFoundHandler {
                     extra_headers: extra,
-                    #[cfg(feature = "compression")]
-                    compress_opts,
-                    #[cfg(feature = "compression")]
-                    accept_enc,
                 }))
             }
 
@@ -2192,6 +2221,32 @@ impl LocalHandlerImpl for OverloadedHandler {
             bytes::Bytes::from_static(
                 b"{\"error\":\"Service Unavailable\",\"status\":503,\"reason\":\"upstream_overloaded\"}",
             ),
+            &self.extra_headers,
+        )
+        .await
+    }
+}
+
+// ── Fallback-of-last-resort handler (no `static` feature) ─────────────────────
+
+/// Plain `404 Not Found` used for `HandlerKind::Fallback` when the `static`
+/// feature isn't compiled in — see the `#[cfg(not(feature = "static"))]`
+/// arm of `build_handler` for why this must exist unconditionally rather
+/// than returning `None`.
+#[cfg(not(feature = "static"))]
+struct PlainNotFoundHandler {
+    extra_headers: Vec<(String, String)>,
+}
+
+#[cfg(not(feature = "static"))]
+#[async_trait]
+impl LocalHandlerImpl for PlainNotFoundHandler {
+    async fn handle(&mut self, session: &mut Session) -> pingora_core::Result<()> {
+        response::write_response(
+            session,
+            404,
+            "text/plain",
+            bytes::Bytes::from_static(b"Not Found"),
             &self.extra_headers,
         )
         .await
@@ -3478,6 +3533,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "static")]
     fn build_handler_static_file_returns_some() {
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::StaticFile {
@@ -3490,7 +3546,29 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "static"))]
+    fn build_handler_static_file_returns_none_without_feature() {
+        let proxy = make_proxy();
+        let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::StaticFile {
+            roots: vec![std::path::PathBuf::from("./dist")],
+            options: std::sync::Arc::new(Default::default()),
+            strip_prefix: None,
+        })));
+        let result = proxy.build_handler(HandlerKind::StaticFile, &ctx);
+        assert!(
+            result.is_none(),
+            "StaticFile handler must return None without the `static` feature"
+        );
+    }
+
+    #[test]
     fn build_handler_fallback_returns_some() {
+        // `HandlerKind::Fallback` must return `Some` in BOTH feature states —
+        // it's the universal "nothing else matched" terminal case (see the
+        // `#[cfg(not(feature = "static"))]` arm's own doc comment), not
+        // exclusive to the `static` feature. Returning `None` here would
+        // make `dispatch_local` treat an unmatched request as `Proxy` and
+        // hand it to `upstream_peer()`, which has no real upstream to use.
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::Fallback)));
         let result = proxy.build_handler(HandlerKind::Fallback, &ctx);
