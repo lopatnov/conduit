@@ -1049,8 +1049,26 @@ impl ConduitProxy {
                         accept_enc,
                     }))
                 }
+                // `HandlerKind::Fallback` is the universal "nothing else
+                // matched" terminal case (router.rs/routes.rs construct
+                // `LocalHandler::Fallback` for any unmatched request on any
+                // site, not just a static-file miss) — it must always
+                // return `Some`, never fall through to `dispatch_local`'s
+                // `HandlerKind::Proxy` path, or an unmatched request would
+                // reach `upstream_peer()` with no real upstream and surface
+                // as a 502/500 instead of the plain 404 every disabled
+                // feature otherwise degrades to. Without `static`,
+                // `sites[i].fallback`'s configured behavior (custom body,
+                // byAccept, file serving) is unavailable — matching
+                // `feature_warnings()`'s own "fallback responses (including
+                // the site's default 404) will be disabled" wording — so
+                // this always serves the same bare 404 `FallbackHandler`
+                // already serves today when no `fallback:` is configured at
+                // all.
                 #[cfg(not(feature = "static"))]
-                None
+                Some(Box::new(PlainNotFoundHandler {
+                    extra_headers: extra,
+                }))
             }
 
             HandlerKind::HotReloadJs => Some(Box::new(hot_reload_handler::HotReloadJsHandler {
@@ -2203,6 +2221,32 @@ impl LocalHandlerImpl for OverloadedHandler {
             bytes::Bytes::from_static(
                 b"{\"error\":\"Service Unavailable\",\"status\":503,\"reason\":\"upstream_overloaded\"}",
             ),
+            &self.extra_headers,
+        )
+        .await
+    }
+}
+
+// ── Fallback-of-last-resort handler (no `static` feature) ─────────────────────
+
+/// Plain `404 Not Found` used for `HandlerKind::Fallback` when the `static`
+/// feature isn't compiled in — see the `#[cfg(not(feature = "static"))]`
+/// arm of `build_handler` for why this must exist unconditionally rather
+/// than returning `None`.
+#[cfg(not(feature = "static"))]
+struct PlainNotFoundHandler {
+    extra_headers: Vec<(String, String)>,
+}
+
+#[cfg(not(feature = "static"))]
+#[async_trait]
+impl LocalHandlerImpl for PlainNotFoundHandler {
+    async fn handle(&mut self, session: &mut Session) -> pingora_core::Result<()> {
+        response::write_response(
+            session,
+            404,
+            "text/plain",
+            bytes::Bytes::from_static(b"Not Found"),
             &self.extra_headers,
         )
         .await
@@ -3518,24 +3562,17 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "static")]
     fn build_handler_fallback_returns_some() {
+        // `HandlerKind::Fallback` must return `Some` in BOTH feature states —
+        // it's the universal "nothing else matched" terminal case (see the
+        // `#[cfg(not(feature = "static"))]` arm's own doc comment), not
+        // exclusive to the `static` feature. Returning `None` here would
+        // make `dispatch_local` treat an unmatched request as `Proxy` and
+        // hand it to `upstream_peer()`, which has no real upstream to use.
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::Fallback)));
         let result = proxy.build_handler(HandlerKind::Fallback, &ctx);
         assert!(result.is_some(), "Fallback handler must return Some");
-    }
-
-    #[test]
-    #[cfg(not(feature = "static"))]
-    fn build_handler_fallback_returns_none_without_feature() {
-        let proxy = make_proxy();
-        let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::Fallback)));
-        let result = proxy.build_handler(HandlerKind::Fallback, &ctx);
-        assert!(
-            result.is_none(),
-            "Fallback handler must return None without the `static` feature"
-        );
     }
 
     #[test]

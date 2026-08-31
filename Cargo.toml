@@ -512,12 +512,17 @@ compression = ["lopatnov-conduit-compression/compression", "lopatnov-conduit-sta
 # `FallbackHandler`/`resolve_static_roots`. Like `compression` (and unlike
 # every other extracted optional feature so far), this one is **default-on**
 # — see `default` above. Without it, `sites[].static`/`fallback` still parse
-# (and `feature_warnings()` warns) but every request that would have hit a
-# static file or the fallback responder instead falls through to Pingora's
-# own upstream-selection path with no `UpstreamTarget::Proxy` to select,
-# which surfaces as a request-level error — the same degradation shape as
-# every other `#[cfg]`-gated `LocalHandler` variant (e.g.
-# `HandlerKind::AcmeChallenge` without `acme`).
+# (and `feature_warnings()` warns): static-file serving becomes unavailable
+# (the router never routes to it — see `router.rs::match_static_or_fallback`),
+# but the terminal "no route matched" case does NOT become a request-level
+# error — `request_phase.rs::build_handler`'s `HandlerKind::Fallback` arm
+# always returns a handler, falling back to a bare `PlainNotFoundHandler`
+# (plain `404 Not Found`) instead of `FallbackConfig`'s configured behavior.
+# This is deliberately different from every other `#[cfg]`-gated
+# `LocalHandler` variant (e.g. `HandlerKind::AcmeChallenge` without `acme`,
+# which correctly returns `None`) because `Fallback` — unlike a specific
+# feature's own request type — is the universal fallback-of-last-resort for
+# every unmatched request on every site, not exclusive to `static`.
 static = ["lopatnov-conduit-static/static"]
 
 # ── Authentication ─────────────────────────────────────────────────────────────
