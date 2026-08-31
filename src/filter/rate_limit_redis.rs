@@ -12,18 +12,27 @@
 //!
 //! # Redis data model
 //!
-//! Each client key maps to a Redis string that counts requests in the current
-//! window.  Two commands implement the counter atomically from the client's
-//! perspective:
+//! Each client key maps to a Redis string that counts requests in the
+//! current window. A single atomic Lua script (`EVAL`) implements the
+//! counter server-side:
 //!
 //! ```text
-//! SET  conduit:rl:{window_secs}:{client_key}  0  EX {window_secs}  NX
-//! INCR conduit:rl:{window_secs}:{client_key}
+//! local c = redis.call('INCR', KEYS[1])
+//! if c == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+//! return c
 //! ```
 //!
-//! The SET creates the key with the window TTL only if it does not already
-//! exist; the INCR atomically returns the new count.  This is a
-//! **fixed-window counter** — simple, O(1) per check, and low memory usage.
+//! `INCR` atomically creates (at 0) or increments the key and returns the
+//! new count; `EXPIRE` runs only when that count is exactly 1 — the first
+//! request of a window — so the TTL is set exactly once, not refreshed on
+//! every request. Both commands execute as one atomic operation on the
+//! Redis server — a client-side timeout or connection error can never
+//! observe `INCR`'s effect without `EXPIRE` also having run (see
+//! `redis_fixed_window_check`'s own doc comment for the two-round-trip race
+//! this replaced).
+//!
+//! This is a fixed-window counter — simple, O(1) per check, and low memory
+//! usage.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -126,40 +135,43 @@ impl RedisRateLimiter {
 
 /// Fixed-window counter check using two Redis commands.
 ///
-/// Steps:
+/// Steps, both inside a single atomic Lua script (`EVAL`):
 /// 1. `INCR key` — atomically create-or-increment; returns the new count.
 /// 2. `EXPIRE key window_secs` — set TTL only when count == 1 (first request in window).
 ///
 /// If `count > limit`, the request is rate-limited.
 ///
-/// Using INCR-first prevents the TTL-leak race present in the former
-/// SET-NX + INCR approach: if the key expired between the SET-NX and the
-/// INCR, the INCR would recreate the key *without* a TTL, causing the
-/// counter to persist forever.  With INCR-first the TTL is set exactly
-/// once — when the key is first created — and subsequent increments leave
-/// the existing TTL unchanged.
+/// INCR and the conditional EXPIRE run as one atomic server-side operation.
+/// An earlier version issued them as two separate round-trips: a client-side
+/// timeout (this module wraps the whole check in a 50ms deadline) or a
+/// connection error landing between the two commands could leave the key at
+/// `count == 1` with **no TTL** — count == 1 is the only case that would
+/// ever attempt EXPIRE, so a lost EXPIRE on that specific request means it
+/// never gets retried on any later one. That key then persists forever;
+/// once later requests push its count past `limit`, that client is
+/// rejected *permanently*, not just for the current window — a transient
+/// blip degrading into a permanent fail-closed for that one key, silently
+/// contradicting this module's whole fail-open design. A Lua script is
+/// atomic on the Redis server regardless of what the client observes: a
+/// client-side timeout means the script either hasn't started yet or has
+/// already run to completion server-side — the client can never observe a
+/// state where INCR applied but EXPIRE didn't.
 async fn redis_fixed_window_check(
     conn: &mut ConnectionManager,
     redis_key: &str,
     limit: u64,
     window_secs: u64,
 ) -> Result<bool, redis::RedisError> {
-    // INCR key — atomically creates (at 0) then increments; returns new value.
-    let count: u64 = redis::cmd("INCR").arg(redis_key).query_async(conn).await?;
-
-    // Set the TTL only on the first request of the window (count == 1).
-    // Doing this after INCR guarantees the key always gets an expiry, even
-    // if a previous window's key expired between two concurrent INCRs.
-    if count == 1 {
-        // Propagate EXPIRE errors: a missing TTL means the key persists beyond
-        // the window, allowing unlimited requests.  The caller's timeout/error
-        // handler will fall back to the in-memory limiter if this fails.
-        let _: () = redis::cmd("EXPIRE")
-            .arg(redis_key)
-            .arg(window_secs)
-            .query_async(conn)
-            .await?;
-    }
+    const SCRIPT: &str = r#"
+        local c = redis.call('INCR', KEYS[1])
+        if c == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+        return c
+    "#;
+    let count: u64 = redis::Script::new(SCRIPT)
+        .key(redis_key)
+        .arg(window_secs)
+        .invoke_async(conn)
+        .await?;
 
     Ok(count <= limit)
 }
