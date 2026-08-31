@@ -2766,6 +2766,12 @@ cors:
 
 `cors: true` allows any origin (`*`). Always use the object form in production.
 
+`credentials: true` requires an explicit, non-wildcard `origins` list —
+config validation rejects `credentials: true` with `origins` unset or
+containing `"*"` at startup/reload. Without this, every origin's
+credentialed (cookie-bearing) cross-origin requests would be allowed, which
+defeats the purpose of the credentials gate.
+
 ---
 
 ## IP Filter
