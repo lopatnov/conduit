@@ -30,7 +30,7 @@ cargo build --release
 ```
 
 `cargo build --release` with no flags produces the **minimal build**
-(`default = ["compression"]`) — core reverse proxy, TLS, static files, rate
+(`default = ["compression", "static"]`) — core reverse proxy, TLS, static files, rate
 limiting, basic/API-key auth, compression, hot-reload, Prometheus metrics,
 health checks, and the Admin API. See [Optional features](#optional-features)
 below for the `standard` bundle that matches the published binaries and
@@ -40,7 +40,7 @@ Docker images.
 
 ## Optional features
 
-The default build (`default = ["compression"]`) is the minimal embed-friendly
+The default build (`default = ["compression", "static"]`) is the minimal embed-friendly
 proxy. Add features with `--features`:
 
 | Feature         | What it enables                                                            |
@@ -170,7 +170,7 @@ cargo bench
 Build locally using the production Dockerfile (multi-stage musl + `FROM scratch`):
 
 ```bash
-# Minimal image (default = ["compression"])
+# Minimal image (default = ["compression", "static"])
 docker build -f contrib/Dockerfile -t conduit:local .
 
 # Standard image (matches the published default tag)

@@ -13,10 +13,15 @@ the root `Cargo.toml` via `<field>.workspace = true`.
 - **`conduit-core`** (Phase 2.1, [#126](https://github.com/lopatnov/conduit/issues/126))
   — Layer-0 vocabulary: traits, outcome enums, and narrow context types with
   zero config knowledge (`RequestFilter`/`ResponseFilter`, `LocalHandlerImpl`,
-  `is_path_skipped`, `AcceptEncoding`, `content_type`, `LogWriter`). Compiled
-  into every build regardless of feature selection — the root crate's `src/`
+  `is_path_skipped`, `AcceptEncoding`, `LogWriter`). Compiled into every
+  build regardless of feature selection — the root crate's `src/`
   re-exports these through thin facades; concrete guards/filters and
-  config-aware chain assembly stay in the root crate.
+  config-aware chain assembly stay in the root crate. **`util::mime`**
+  (`content_type`, mime_guess-based) originally lived here too but was
+  removed entirely and absorbed into `conduit-static` (#114/#139) — its
+  only caller was the static-file handler that moved there, and leaving it
+  behind would have kept `mime_guess` in the dependency tree unconditionally
+  regardless of that crate's own `static` feature gate.
 
 - **`conduit-config-core`** (Phase 2.2, [#127](https://github.com/lopatnov/conduit/issues/127))
   — Layer-0 config-loading mechanism, generic over the config payload type:
@@ -238,4 +243,32 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   `#[cfg(feature = "compression")]` directly there too, via the root crate's
   own direct (now `optional = true`) `async-compression` dependency, so
   disabling the feature drops the codec crates from the tree regardless of
-  which crate's code references them.
+  which crate's code references them. **Superseded by `conduit-static`
+  (#114/#139, below)**: `handler/static_files.rs` itself (including
+  `stream_file_compressed`) moved out of the root crate entirely, so the
+  root crate's own direct `async-compression` dependency described above no
+  longer exists — `conduit-static` carries that edge now, behind its own
+  `compression` feature, forwarded from the root crate's `compression`
+  feature alongside `conduit-compression`'s own forward.
+
+- **`conduit-static`** (Phase 4.2, [#139](https://github.com/lopatnov/conduit/issues/139))
+  — owns `StaticConfig`/`StaticOptions`/`FallbackConfig`/`FallbackRule` (the
+  `sites[].static`/`staticOptions`/`fallback` config, always compiled — same
+  config-always-on rationale as `conduit-faults`/`conduit-compression`) and,
+  behind this crate's own `static` feature, the real serving logic:
+  `handler` (`StaticFileHandler`/`handle_static`, moved from
+  `src/handler/static_files.rs` in full — including its on-the-fly streaming
+  compression, unlike `conduit-compression` which left that part behind),
+  `fallback` (`FallbackHandler`/`handle_fallback`, moved from
+  `src/handler/fallback.rs`), `roots` (`resolve_static_roots`, moved from
+  `src/proxy/router.rs`), and `mime` (`content_type`, absorbed from
+  `conduit-core`'s own `util::mime` — see that crate's entry above). **The
+  second default-on extraction after `conduit-compression`** — issue #139 is
+  explicit that static-file/fallback serving are baseline expectations for a
+  reverse proxy/static-file server, so `default = ["compression", "static"]`;
+  only `--no-default-features` produces a build with neither compiled in.
+  This extraction also dropped `humantime`/`libc`/`mime_guess` as *direct*
+  root-crate dependencies entirely (their only root-crate callers all moved
+  into this crate) — each still reachable transitively via this crate's own
+  gated edges, so `cargo tree -p lopatnov-conduit --no-default-features -i
+  mime_guess` genuinely shows it absent, not just moved one hop sideways.
