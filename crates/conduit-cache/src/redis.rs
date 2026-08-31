@@ -95,17 +95,47 @@ pub async fn connect_and_register(url: &str) -> bool {
         Ok(storage) => {
             let leaked: &'static RedisCacheStorage = Box::leak(Box::new(storage));
             redis_stores().insert(url.to_owned(), leaked);
-            tracing::info!(url, "Redis proxy cache connected");
+            tracing::info!(url = %redact_url(url), "Redis proxy cache connected");
             true
         }
         Err(e) => {
             tracing::error!(
-                url,
+                url = %redact_url(url),
                 "Redis proxy cache connect failed: {e} — caching disabled for this store"
             );
             false
         }
     }
+}
+
+/// Redact any embedded credentials (`user:pass@`) from a Redis URL before
+/// logging it — `redis://user:pass@host:port` must never appear in logs
+/// verbatim. Security review finding on issue #330's fix: this log line
+/// used to be unreachable in practice, since the pre-fix connect path
+/// panicked before ever getting here — now that it's genuinely live on
+/// every startup/reload, the credential-in-URL case matters for real.
+fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
+    let Some(scheme_end) = url.find("://") else {
+        return std::borrow::Cow::Borrowed(url);
+    };
+    let authority_start = scheme_end + 3;
+    let after_scheme = &url[authority_start..];
+    let Some(at) = after_scheme.find('@') else {
+        return std::borrow::Cow::Borrowed(url);
+    };
+    // Only treat this as credentials if the '@' is in the authority section
+    // (before the next '/', if any) — an '@' appearing later (e.g. in a
+    // path segment) isn't userinfo.
+    if let Some(slash) = after_scheme.find('/') {
+        if slash < at {
+            return std::borrow::Cow::Borrowed(url);
+        }
+    }
+    std::borrow::Cow::Owned(format!(
+        "{}***@{}",
+        &url[..authority_start],
+        &after_scheme[at + 1..]
+    ))
 }
 
 // ── RedisCacheStorage ─────────────────────────────────────────────────────────
@@ -377,5 +407,42 @@ mod tests {
     #[tokio::test]
     async fn lookup_from_within_a_runtime_does_not_panic() {
         assert!(get("redis://127.0.0.1:1").is_none());
+    }
+
+    // ── redact_url ────────────────────────────────────────────────────────
+
+    #[test]
+    fn redact_url_strips_username_and_password() {
+        assert_eq!(
+            redact_url("redis://alice:s3cret@example.com:6379"),
+            "redis://***@example.com:6379"
+        );
+    }
+
+    #[test]
+    fn redact_url_no_credentials_returned_unchanged() {
+        let url = "redis://example.com:6379";
+        assert_eq!(redact_url(url), url);
+    }
+
+    #[test]
+    fn redact_url_handles_rediss_scheme() {
+        assert_eq!(
+            redact_url("rediss://user:pw@secure.example:6380"),
+            "rediss://***@secure.example:6380"
+        );
+    }
+
+    #[test]
+    fn redact_url_does_not_treat_an_at_sign_in_a_path_as_credentials() {
+        // No '@' before the first '/' after the scheme -- not userinfo.
+        let url = "redis://example.com:6379/db@1";
+        assert_eq!(redact_url(url), url);
+    }
+
+    #[test]
+    fn redact_url_malformed_url_returned_unchanged() {
+        let url = "not-a-url";
+        assert_eq!(redact_url(url), url);
     }
 }
