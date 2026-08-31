@@ -518,11 +518,14 @@ compression = ["lopatnov-conduit-compression/compression", "lopatnov-conduit-sta
 # error — `request_phase.rs::build_handler`'s `HandlerKind::Fallback` arm
 # always returns a handler, falling back to a bare `PlainNotFoundHandler`
 # (plain `404 Not Found`) instead of `FallbackConfig`'s configured behavior.
-# This is deliberately different from every other `#[cfg]`-gated
-# `LocalHandler` variant (e.g. `HandlerKind::AcmeChallenge` without `acme`,
-# which correctly returns `None`) because `Fallback` — unlike a specific
-# feature's own request type — is the universal fallback-of-last-resort for
-# every unmatched request on every site, not exclusive to `static`.
+# This is deliberately different from a feature-specific `LocalHandler`
+# variant's own `None` arm (e.g. `HandlerKind::AcmeChallenge` without
+# `acme`) because `Fallback` — unlike a specific feature's own request type
+# — is the universal fallback-of-last-resort for every unmatched request on
+# every site, not exclusive to `static`. (Whether `AcmeChallenge`'s own
+# `None` arm is actually safe is a separate, pre-existing question — see
+# issue #341, found during this PR's security review but not introduced by
+# it and out of this PR's scope to fix.)
 static = ["lopatnov-conduit-static/static"]
 
 # ── Authentication ─────────────────────────────────────────────────────────────
