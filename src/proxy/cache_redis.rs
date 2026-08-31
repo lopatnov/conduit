@@ -64,10 +64,30 @@ pub(crate) fn collect_redis_cache_urls(config: &AppConfig) -> Vec<String> {
 /// unreachable cache must never block startup or a reload. Idempotent
 /// (already-registered URLs are a cheap no-op), so this is safe to call on
 /// every reload, not just once at startup.
+///
+/// Connects concurrently, not sequentially (Gitar review finding on PR
+/// #331): `ConnectionManager::new` retries with backoff before giving up on
+/// an unreachable URL, so awaiting each URL in turn would let N unreachable
+/// stores serially stack their retry budgets on the startup/reload critical
+/// path — one bad URL config shouldn't slow down every other store's
+/// connect. `tokio::spawn` per URL (not `futures::join_all`, to avoid
+/// pulling that crate into the `redis`+`cache` feature combo just for this)
+/// gives real concurrency with no new dependency edge.
 #[cfg(feature = "cache")]
 pub(crate) async fn connect_all(config: &AppConfig) {
-    for url in collect_redis_cache_urls(config) {
-        conduit_cache::redis::connect_and_register(&url).await;
+    let handles: Vec<_> = collect_redis_cache_urls(config)
+        .into_iter()
+        .map(|url| {
+            tokio::spawn(async move {
+                conduit_cache::redis::connect_and_register(&url).await;
+            })
+        })
+        .collect();
+    for handle in handles {
+        // A panicking connect task shouldn't be possible (connect_and_register
+        // is fail-open by design), but even if one somehow did, the other
+        // connects must not be aborted by it -- just move on.
+        let _ = handle.await;
     }
 }
 
@@ -158,5 +178,21 @@ mod tests {
                 {"port":8081,"proxy":{"/":{"targets":["http://up:2"]}}}
             ]}"#);
         assert!(collect_redis_cache_urls(&config).is_empty());
+    }
+
+    /// Regression for a Gitar review finding on PR #331: `connect_all` used
+    /// to await each URL's connect sequentially, so N unreachable stores
+    /// would serially stack their retry/backoff budgets on the startup/
+    /// reload critical path. This doesn't assert timing (too flaky) --  it
+    /// proves the concurrent-spawn version completes cleanly (no panic, no
+    /// hang) for multiple distinct unreachable URLs, which the sequential
+    /// version would too, just slower.
+    #[tokio::test]
+    async fn connect_all_completes_for_multiple_unreachable_urls() {
+        let config = cfg(r#"{"sites":[{"port":8080,"proxy":{
+                "/a":{"targets":["http://up:1"],"cache":{"store":"redis://127.0.0.1:1","ttlSecs":60}},
+                "/b":{"targets":["http://up:2"],"cache":{"store":"redis://127.0.0.1:2","ttlSecs":60}}
+            }}]}"#);
+        connect_all(&config).await;
     }
 }
