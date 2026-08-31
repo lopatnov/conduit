@@ -2074,6 +2074,63 @@ simply waiting for the eventual `main` merge to resolve on its own.
   restarting the container/redis-server each time and continuing rather than treating a transient
   environment crash as a code problem.
 
+### Реализовано в сессии 2026-08-31 (часть 2 — daily `/feature-workspace-cycle` firing: 5 Dependabot PRs + Phase 4.1 `conduit-compression`)
+
+- **Step 1 (Dependabot triage)**: the firing coincided with 5 fresh Dependabot PRs (#332-336: wasmtime
+  48.0.0→48.0.1, uuid 1.23.4→1.26.0, redis 1.5.0→1.6.0, rhai 1.25.1→1.26.0, wat 1.257.1→1.258.0) that had
+  appeared moments earlier during the manual session's own work. `dependency-steward` pulled real
+  upstream changelogs for each (not version-number guessing) — all additive/bugfix-only, zero breaking
+  changes; #334's redis bump specifically checked against the nested-Tokio-runtime fix just merged in
+  [PR #331](https://github.com/lopatnov/conduit/pull/331) (issue #330) — confirmed `ConnectionManager::
+  new()`'s construction path is untouched by the 1.6.0 changelog, no interaction. `security-engineer`
+  PASS posted on all 5 individually (including an injection-scan of Dependabot's own embedded release-
+  notes text — a known-plausible attack vector for a compromised upstream, not just boilerplate paranoia).
+  All 5 merged; migration branch synced with `main` afterward (clean, `Cargo.lock`-only merge conflict).
+  Also cleaned up 4 local-only leftovers found during the sync sweep: `base-branch` and both
+  `worktree-agent-*` branches (finished `security-engineer` review worktrees, one needed an unlock after
+  confirming its PID was dead via `Get-Process`), and `pr-326-review` (the 2026-08-30 git-race incident's
+  leftover ref, logged earlier the same day). Full detail in `.claude/logs/dependabot-hygiene.md`.
+- **Step 2 (next #114 sub-issue)**: picked Phase 4.1 (#138, `conduit-compression`) — next in phase order
+  after #137's close, and the only phase-4 candidate without an unmet dependency (#139/static_files
+  explicitly depends on #138; #140/hotreload+metrics+redirects is independent but out of phase order).
+  Delegated to `crate-extractor` following the established template
+  ([PR #337](https://github.com/lopatnov/conduit/pull/337)): `CompressionConfig`/`CompressionOptions`
+  moved always-compiled (same pattern as `FaultInjectionConfig`), `CompressOptions`/`effective()`/
+  `is_compressible_type()`/`best_encoding()`/`compress_bytes()` gated behind a new `compression` feature,
+  facade re-exports at the original call sites. **First default-on optional feature in this whole
+  migration**: `default = []` → `default = ["compression"]`, per issue #138's explicit requirement that
+  compression (already unconditionally compiled before this PR) stay default-on after extraction —
+  `security-engineer` independently confirmed this is a true no-op for the default build (pre-PR
+  `async-compression` had no feature gate at all). `feature-matrix-runner`: 21/21 each-feature + 152/152
+  depth-2 powerset, GREEN. Footprint confirmed independently (not just trusting the agent's self-report):
+  `cargo tree -i async-compression` present under default, completely absent under
+  `--no-default-features`; ~634.5 KiB smaller stripped release binary without it.
+- **Docs/schema sync done directly by the conductor** (the `docs-scribe` delegation hit a mid-task rate
+  limit with zero changes made — caught via `git status` before assuming anything happened, then handled
+  the same narrow scope manually): fixed 3 docs files' stale `default = []` minimal-build description
+  (`docs/building.md`, `docs/cli.md`, `docs/deployment.md`) plus one unrelated `default = []` mention in
+  `docs/configuration.md`'s rate-limiting section. **Found and fixed real, pre-existing schema drift**
+  while verifying `CompressionConfig`'s JSON Schema against the actual Rust struct (predates this
+  extraction — the struct already had these fields, the schema just never caught up): the `types` field
+  (Content-Type filtering) was missing entirely, and `algorithms`'s enum was missing `zstd` even though
+  both the Rust code and the docs' own compression example already supported/documented it.
+- **CodeRabbit actually reviewed this PR** (unusual — normally shows "review skipped on non-default base
+  branch" for PRs against the migration branch) and found 2 real, pre-existing bugs in the code #138
+  moved verbatim: `is_compressible_type`'s custom content-type matching lowercased the request's content
+  type but not the user-configured pattern (so `"Text/Plain"` never matched despite documented case-
+  insensitive behavior), and `best_encoding`'s doc comment incorrectly claimed it checks content-type
+  compressibility when the function doesn't even take that parameter. Both fixed with a regression test
+  for the first. `security-engineer` re-reviewed the fix commit specifically for whether the lowercase
+  change could affect `DEFAULT_COMPRESS_TYPES` matching (it can't — separate code path, confirmed by
+  reading the full function) before the second PASS. Both CodeRabbit threads replied-then-resolved via
+  `gh api` (this session's `coderabbit-reply` skill is written for GitHub MCP tools; a local session with
+  only `gh` CLI used the equivalent raw API calls). One transient CI flake on `macos-latest`
+  ("server did not become ready within 30 seconds" in an unrelated `api_key_second_key_accepted` test)
+  — confirmed unrelated to the diff, passed clean on `gh run rerun --failed`.
+- Migration branch synced and verified green after merge (`cargo build --workspace --features full`).
+  Phase 4 still has 4 open sub-issues (#139 static_files — now unblocked, #140 hotreload+metrics+
+  redirects, #141 middleware+rhai+wasm, #249 conduit-k8s) — not phase-completing yet.
+
 ---
 
 ## Session rotation log
