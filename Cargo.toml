@@ -42,6 +42,7 @@ lopatnov-conduit-cors              = { path = "crates/conduit-cors", version = "
 lopatnov-conduit-security-headers  = { path = "crates/conduit-security-headers", version = "2.0.0" }
 lopatnov-conduit-ratelimit         = { path = "crates/conduit-ratelimit", version = "2.0.0" }
 lopatnov-conduit-limits             = { path = "crates/conduit-limits", version = "2.0.0" }
+lopatnov-conduit-compression        = { path = "crates/conduit-compression", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -315,6 +316,18 @@ lopatnov-conduit-ratelimit.workspace         = true
 # already fully implemented pre-extraction and simply moves along with the
 # rest of this crate's scope, no new code needed for it.
 lopatnov-conduit-limits.workspace            = true
+# Mandatory (like every other crate above), not `optional = true`:
+# `CompressionConfig`/`CompressionOptions` and the `sites[].compression`
+# field must stay parseable in every build so `feature_warnings()` can keep
+# warning on a config-without-feature mismatch. Only the real negotiation
+# logic (`CompressOptions`/`effective`/`is_compressible_type`/
+# `best_encoding`/`compress_bytes`) is gated, via
+# `lopatnov-conduit-compression/compression` in the `compression` feature
+# below — unlike every other extracted optional feature so far, `compression`
+# stays **default-on** (issue #114/#138): `default` includes it, so a plain
+# `cargo build` keeps compressing responses exactly like before this
+# extraction; only `--no-default-features` drops it.
+lopatnov-conduit-compression.workspace       = true
 
 # --- Config & parsing ---
 serde.workspace      = true
@@ -341,7 +354,17 @@ tokio.workspace = true
 axum.workspace  = true
 
 # --- Compression ---
-async-compression.workspace = true
+# `CompressOptions`/`effective`/`is_compressible_type`/`best_encoding`/
+# `compress_bytes` moved to `crates/conduit-compression` (#114/#138), gated
+# behind that crate's own `compression` feature — but this crate still has a
+# *direct* `async-compression` edge of its own: `handler/static_files.rs`'s
+# on-the-fly streaming compression (`stream_file_compressed`) stayed in the
+# root crate (out of #138's scope) and uses the encoders directly, gated
+# behind `#[cfg(feature = "compression")]` there too. `optional = true` (not
+# `.workspace = true`) so disabling `compression` actually drops
+# `async-compression` from the dependency tree, not just from this crate's
+# own code paths.
+async-compression = { workspace = true, optional = true }
 
 # --- Observability ---
 tracing.workspace            = true
@@ -420,9 +443,30 @@ opentelemetry = { workspace = true, optional = true }
 # rate limiting + CORS + security headers + compression + TLS + health checks +
 # Prometheus metrics + hot reload + Admin API + redirects.
 #
-# Explicitly empty — no heavyweight optional features compiled in by default.
-# Enable individual features or use `full` for a batteries-included build.
-default = []
+# No heavyweight optional features compiled in by default — except
+# `compression` (issue #114/#138), the one deliberate exception: response
+# compression is a baseline expectation for a reverse proxy/static-file
+# server, so a plain `cargo build` must keep compressing exactly like it did
+# before that extraction. Enable other individual features or use `full` for
+# a batteries-included build; pass `--no-default-features` for a build with
+# no compression either (the "just static files, no compression" build
+# #138 describes).
+default = ["compression"]
+
+# ── Compression ──────────────────────────────────────────────────────────────
+# Response/static-file compression negotiation (br/gzip/deflate/zstd).
+# `CompressionConfig`/`CompressionOptions` moved to
+# `crates/conduit-compression` (#114/#138) and are always a dependency (see
+# the [dependencies] comment above); this forwards into that crate's own
+# `compression` feature (gates the real `CompressOptions`/`effective`/
+# `is_compressible_type`/`best_encoding`/`compress_bytes`) AND enables this
+# crate's own direct `dep:async-compression` edge, which
+# `handler/static_files.rs`'s on-the-fly streaming compression
+# (`stream_file_compressed`) still uses directly — that code stayed in the
+# root crate, out of #138's scope (only `src/filter/compression.rs` moved).
+# Unlike every other extracted optional feature, this one is **default-on**
+# — see `default` above.
+compression = ["dep:async-compression", "lopatnov-conduit-compression/compression"]
 
 # ── Authentication ─────────────────────────────────────────────────────────────
 # JWT bearer-token validation (HS256 + RS256/ES256 via JWKS URL).
@@ -549,6 +593,10 @@ standard = [
     "forward-auth",  # Delegate auth to an external service
     "cache",         # HTTP response caching
     "acme",          # Auto-TLS via Let's Encrypt (Caddy-style)
+    # `compression` is already default-on (see `default` above) — listed
+    # here too so `--no-default-features --features standard` still gets it,
+    # matching "standard" being a superset of the default feature set.
+    "compression",
 ]
 
 # Full build: every optional feature enabled.
@@ -598,6 +646,10 @@ required-features = ["acme"]
 [[test]]
 name = "cache"
 required-features = ["cache"]
+
+[[test]]
+name = "compression"
+required-features = ["compression"]
 
 [[test]]
 name = "fault_injection"

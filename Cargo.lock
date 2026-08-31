@@ -2923,6 +2923,7 @@ dependencies = [
  "lopatnov-conduit-auth-forward",
  "lopatnov-conduit-auth-jwt",
  "lopatnov-conduit-cache",
+ "lopatnov-conduit-compression",
  "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
  "lopatnov-conduit-cors",
@@ -3067,6 +3068,17 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "lopatnov-conduit-compression"
+version = "2.0.0"
+dependencies = [
+ "async-compression",
+ "bytes",
+ "lopatnov-conduit-core",
+ "serde",
+ "tokio",
 ]
 
 [[package]]

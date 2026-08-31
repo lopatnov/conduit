@@ -4,16 +4,21 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
+#[cfg(feature = "compression")]
 use async_compression::tokio::bufread::{BrotliEncoder, DeflateEncoder, GzipEncoder};
+#[cfg(feature = "compression")]
 use async_compression::Level;
 use async_trait::async_trait;
 use bytes::Bytes;
 use pingora_core::Result;
 use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
+#[cfg(feature = "compression")]
+use tokio::io::AsyncRead;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::config::schema::{FallbackConfig, StaticOptions};
+#[cfg(feature = "compression")]
 use crate::filter::compression::CompressOptions;
 use crate::handler::LocalHandlerImpl;
 use crate::proxy::ctx::AcceptEncoding;
@@ -28,6 +33,11 @@ pub struct StaticFileHandler {
     pub options: Arc<StaticOptions>,
     pub strip_prefix: Option<String>,
     pub extra_headers: Vec<(String, String)>,
+    /// Resolved on-the-fly compression options for this route, if the
+    /// `compression` feature is compiled in and the site has compression
+    /// enabled. `#[cfg(feature = "compression")]`-gated like `CompressOptions`
+    /// itself — see `crate::filter::compression`'s doc comment.
+    #[cfg(feature = "compression")]
     pub compress_opts: Option<CompressOptions>,
     pub accept_enc: AcceptEncoding,
     /// Fallback rule to serve when the file is not found.
@@ -43,7 +53,10 @@ impl LocalHandlerImpl for StaticFileHandler {
             &self.options,
             self.strip_prefix.as_deref(),
             &self.extra_headers,
+            #[cfg(feature = "compression")]
             self.compress_opts.as_ref(),
+            #[cfg(not(feature = "compression"))]
+            None,
             &self.accept_enc,
         )
         .await?;
@@ -72,7 +85,8 @@ pub async fn handle_static(
     options: &Arc<StaticOptions>,
     strip_prefix: Option<&str>,
     extra: &[(String, String)],
-    compress_opts: Option<&CompressOptions>,
+    #[cfg(feature = "compression")] compress_opts: Option<&CompressOptions>,
+    #[cfg(not(feature = "compression"))] _compress_opts: Option<()>,
     accept_enc: &AcceptEncoding,
 ) -> Result<bool> {
     let method = session.req_header().method.clone();
@@ -169,6 +183,7 @@ pub async fn handle_static(
 
     // Pick an on-the-fly encoding if the config and client both support it.
     // Also check content-type: don't compress binary formats (nginx gzip_types pattern).
+    #[cfg(feature = "compression")]
     let compress = compress_opts.and_then(|opts| {
         if !crate::filter::compression::is_compressible_type(&content_type, opts) {
             return None;
@@ -176,6 +191,11 @@ pub async fn handle_static(
         crate::filter::compression::best_encoding(opts, accept_enc, file_size)
             .map(|enc| (enc, opts.level))
     });
+    // `compression` not compiled in: never claim an encoding we can't
+    // actually produce (see `stream_file_compressed`'s matching fallback
+    // below).
+    #[cfg(not(feature = "compression"))]
+    let compress: Option<(&'static str, u8)> = None;
 
     serve_full(
         session,
@@ -420,6 +440,14 @@ async fn serve_pre_compressed(
 /// Uses Tokio async encoders so no blocking thread is required.  No
 /// Content-Length is sent — the HTTP/1.1 layer uses chunked transfer encoding
 /// automatically.
+///
+/// `compress` (in `handle_static`) is only ever `Some` when the `compression`
+/// feature is compiled in (see its `#[cfg(not(feature = "compression"))]`
+/// fallback, which forces it to `None`) — so the `#[cfg(not(feature =
+/// "compression"))]` variant below is unreachable in practice; it exists only
+/// so this function type-checks (and drops `async-compression` from the
+/// dependency tree) in a `compression`-less build.
+#[cfg(feature = "compression")]
 async fn stream_file_compressed(
     session: &mut Session,
     path: &Path,
@@ -460,6 +488,21 @@ async fn stream_file_compressed(
     }
 }
 
+/// See the `#[cfg(feature = "compression")]` overload above — unreachable
+/// stub for a `compression`-less build (`compress` is always `None` in that
+/// build, so `serve_full` never calls this).
+#[cfg(not(feature = "compression"))]
+async fn stream_file_compressed(
+    session: &mut Session,
+    path: &Path,
+    offset: u64,
+    length: u64,
+    _encoding: &str,
+    _level: u8,
+) -> Result<()> {
+    stream_file(session, path, offset, length).await
+}
+
 /// Drain an `AsyncRead` encoder in 64 KiB chunks, signalling `done=true` on
 /// the last write.
 ///
@@ -467,6 +510,7 @@ async fn stream_file_compressed(
 /// and send it on the *next* iteration, so we know whether there is more data
 /// before we call `write_response_body`.  This lets us set `done=true` on the
 /// final chunk without reading an extra zero-length chunk first.
+#[cfg(feature = "compression")]
 async fn stream_encoded<R: AsyncRead + Unpin>(session: &mut Session, mut reader: R) -> Result<()> {
     const CHUNK: usize = 64 * 1024;
     let mut buf = vec![0u8; CHUNK];

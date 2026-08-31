@@ -216,3 +216,26 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   tests, and its `request_body_filter` wiring) was found already fully
   implemented pre-extraction and simply moved along with the rest of this
   crate's scope; no new code was needed to close it.
+
+- **`conduit-compression`** (Phase 4.1, [#138](https://github.com/lopatnov/conduit/issues/138))
+  — owns `CompressionConfig`/`CompressionOptions` (the `sites[].compression`
+  bool-or-object-shorthand config, always compiled — same config-always-on
+  rationale as `conduit-faults`/`conduit-auth-jwt`) and, behind this crate's
+  own `compression` feature, the real negotiation logic in its `logic` module
+  (`CompressOptions`, `effective`, `is_compressible_type`, `best_encoding`,
+  `compress_bytes`). **The first extraction where the forwarding root-crate
+  feature is default-on**, not default-off like every prior optional
+  feature — issue #138 is explicit that response compression is a baseline
+  expectation for a reverse proxy, so `default = ["compression"]`; only
+  `--no-default-features` (or otherwise excluding `compression`) produces
+  the "just static files, no compression" build the issue describes, and
+  actually drops `async-compression` from the dependency tree. **Partial
+  extraction, like `conduit-auth-consumers`'s guard**:
+  `handler/static_files.rs`'s on-the-fly streaming compression
+  (`stream_file_compressed`, the chunk-by-chunk brotli/gzip/deflate encoder
+  pipeline) stayed in the root crate — out of #138's scope, which names only
+  `src/filter/compression.rs` — but is gated behind
+  `#[cfg(feature = "compression")]` directly there too, via the root crate's
+  own direct (now `optional = true`) `async-compression` dependency, so
+  disabling the feature drops the codec crates from the tree regardless of
+  which crate's code references them.
