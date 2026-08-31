@@ -18,6 +18,23 @@
 //! Any Redis error during `lookup` or `get_miss_handler` returns `None` /
 //! falls through to a normal upstream fetch.  Errors are logged at `WARN`
 //! level so they are visible without being fatal.
+//!
+//! # Connection lifecycle (issue #330)
+//!
+//! Connections are established **eagerly**, once per distinct URL, by
+//! [`connect_and_register`] — called by the root crate during server startup
+//! and again on every hot reload (see `src/proxy/cache_redis.rs`). The
+//! request path ([`get`]) only ever performs a lookup against the resulting
+//! registry and never connects. This used to be lazy (connect-on-first-
+//! request, from inside `RequestFilter`), which required spinning up a
+//! nested Tokio runtime and blocking on it from a thread that Pingora
+//! already runs inside its own runtime — Tokio detects and panics on that
+//! unconditionally ("Cannot start a runtime from within a runtime"), on
+//! *every* request to a redis-cached route, forever, since the panicking
+//! call never populated the registry. A `URL` absent from the registry
+//! (startup connect failed, or a reload just introduced it and the connect
+//! is still in flight) falls open to an uncached upstream fetch, same as
+//! any other Redis error.
 
 use std::any::Any;
 use std::sync::OnceLock;
@@ -46,21 +63,48 @@ fn redis_stores() -> &'static DashMap<String, &'static RedisCacheStorage> {
     REDIS_STORES.get_or_init(DashMap::new)
 }
 
-/// Return (or create) the `'static` Redis storage for the given URL.
+/// Return the `'static` Redis storage previously registered for `url` by
+/// [`connect_and_register`], or `None` when no connection has been
+/// established (yet, or at all).
 ///
-/// Returns `None` when the connection fails so the caller can disable caching
-/// gracefully rather than crashing.  The failure is logged at ERROR level.
-pub fn get_or_create(url: &str) -> Option<&'static RedisCacheStorage> {
-    if let Some(s) = redis_stores().get(url) {
-        return Some(*s);
+/// **Never connects.** This is called from Pingora's request pipeline,
+/// which already runs inside a Tokio runtime — connecting here (the former
+/// `get_or_create`) required a nested runtime + `block_on`, which panics
+/// unconditionally on every request to a redis-cached route (issue #330).
+pub fn get(url: &str) -> Option<&'static RedisCacheStorage> {
+    redis_stores().get(url).map(|s| *s)
+}
+
+/// Connect to `url` and register the resulting storage in the process-wide
+/// registry, so [`get`] can hand it out without ever connecting from a
+/// request thread.
+///
+/// Idempotent: a URL already in the registry returns `true` immediately
+/// without reconnecting, so this is cheap to call again on every hot
+/// reload.
+///
+/// Fail-open (issue #330): an invalid URL or unreachable server logs at
+/// ERROR and returns `false` — the caller must not treat that as fatal.
+/// The server keeps running with caching disabled for that store; `get()`
+/// simply returns `None` for it.
+pub async fn connect_and_register(url: &str) -> bool {
+    if redis_stores().contains_key(url) {
+        return true;
     }
-    match RedisCacheStorage::new_blocking(url) {
+    match RedisCacheStorage::connect(url).await {
         Ok(storage) => {
-            let leaked = Box::leak(Box::new(storage));
+            let leaked: &'static RedisCacheStorage = Box::leak(Box::new(storage));
             redis_stores().insert(url.to_owned(), leaked);
-            Some(leaked)
+            tracing::info!(url, "Redis proxy cache connected");
+            true
         }
-        Err(_) => None,
+        Err(e) => {
+            tracing::error!(
+                url,
+                "Redis proxy cache connect failed: {e} — caching disabled for this store"
+            );
+            false
+        }
     }
 }
 
@@ -72,32 +116,13 @@ pub struct RedisCacheStorage {
 }
 
 impl RedisCacheStorage {
-    /// Connect to Redis synchronously (using a temporary single-thread runtime).
-    ///
-    /// Returns a zero-overhead storage instance backed by a `ConnectionManager`
-    /// that reconnects automatically on failure.
-    /// Connect to Redis synchronously.
+    /// Connect to Redis. Returns a zero-overhead storage instance backed by
+    /// a `ConnectionManager` that reconnects automatically on failure.
     ///
     /// Returns `Err` when the URL is invalid or Redis is unreachable so the
-    /// caller can disable caching gracefully rather than crashing.
-    pub fn new_blocking(url: &str) -> anyhow::Result<Self> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| anyhow::anyhow!("tokio rt for redis cache: {e}"))?;
-        match rt.block_on(Self::new(url)) {
-            Ok(s) => {
-                tracing::info!(url, "Redis proxy cache connected");
-                Ok(s)
-            }
-            Err(e) => {
-                tracing::error!(url, "Redis proxy cache connect failed: {e}");
-                Err(e)
-            }
-        }
-    }
-
-    async fn new(url: &str) -> anyhow::Result<Self> {
+    /// caller ([`connect_and_register`]) can disable caching gracefully
+    /// rather than crashing.
+    async fn connect(url: &str) -> anyhow::Result<Self> {
         let client =
             redis::Client::open(url).map_err(|e| anyhow::anyhow!("invalid Redis URL: {e}"))?;
         let conn = ConnectionManager::new(client)
@@ -318,13 +343,39 @@ mod tests {
     }
 
     #[test]
-    fn unreachable_redis_returns_none_not_panic() {
-        // Port 1 is reserved and never listening — connection is refused immediately,
-        // no Redis instance needed. Verifies fail-open: must return None, not panic.
-        let result = get_or_create("redis://127.0.0.1:1");
+    fn get_returns_none_for_an_unregistered_url() {
+        assert!(get("redis://127.0.0.1:1").is_none());
+    }
+
+    #[tokio::test]
+    async fn connect_and_register_unreachable_redis_returns_false_and_registers_nothing() {
+        // Port 1 is reserved and never listening — connection is refused
+        // immediately, no live Redis instance needed. Verifies fail-open:
+        // must return false and leave the registry empty, not panic.
+        let url = "redis://127.0.0.1:1";
         assert!(
-            result.is_none(),
-            "unreachable Redis must return None, not panic"
+            !connect_and_register(url).await,
+            "unreachable Redis must return false, not panic"
         );
+        assert!(
+            get(url).is_none(),
+            "a failed connect must not register anything"
+        );
+    }
+
+    /// Regression for #330. The pre-fix `get_or_create` built a nested
+    /// Tokio runtime and `block_on`'d it; Tokio panics ("Cannot start a
+    /// runtime from within a runtime") when that happens on a thread
+    /// already inside a runtime — which is every Pingora worker thread,
+    /// i.e. every request to a redis-cached route, forever, since the
+    /// panicking call never populated the registry.
+    ///
+    /// Must be `#[tokio::test]`, not `#[test]` — a plain `#[test]` has no
+    /// ambient runtime and would not reproduce the panic (this is exactly
+    /// why `unreachable_redis_returns_none_not_panic`, the old `#[test]`
+    /// version of this test, never caught the bug).
+    #[tokio::test]
+    async fn lookup_from_within_a_runtime_does_not_panic() {
+        assert!(get("redis://127.0.0.1:1").is_none());
     }
 }

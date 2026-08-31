@@ -344,6 +344,11 @@ fn spawn_config_update_watcher(
                         sites = new_cfg.sites.len(),
                         "live config update received — hot-swapping"
                     );
+                    // Connect any Redis-backed proxy cache URL this update
+                    // introduced (issue #330) before the swap below -- same
+                    // reasoning as the admin API's /reload handler.
+                    #[cfg(all(feature = "cache", feature = "redis"))]
+                    crate::proxy::cache_redis::connect_all(&new_cfg).await;
                     state.config.store(Arc::new(new_cfg));
                 }
                 tracing::warn!("config update channel closed; live updates stopped");

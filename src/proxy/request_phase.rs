@@ -1481,7 +1481,7 @@ pub(super) fn request_cache_filter(
         } else if cfg.store.starts_with("redis://") || cfg.store.starts_with("rediss://") {
             #[cfg(feature = "redis")]
             {
-                match cache_redis::get_or_create(&cfg.store) {
+                match cache_redis::get(&cfg.store) {
                     Some(s) => s,
                     None => {
                         tracing::warn!(

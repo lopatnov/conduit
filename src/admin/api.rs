@@ -166,6 +166,15 @@ impl BackgroundService for AdminApiService {
             health::spawn_connection_warmup(&config);
         }
 
+        // Connect every configured Redis-backed proxy cache up front (issue
+        // #330) -- the request path only ever looks up an already-connected
+        // store, it never connects from inside Pingora's own runtime.
+        #[cfg(all(feature = "cache", feature = "redis"))]
+        {
+            let config = self.state.config.load_full();
+            crate::proxy::cache_redis::connect_all(&config).await;
+        }
+
         // Spawn the browser hot-reload file watcher if any site has hotReload enabled.
         {
             let config = self.state.config.load();
@@ -375,6 +384,13 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
 
     // Spawn health-check tasks for any newly-configured routes.
     health::spawn_health_checks(state.upstream_health.clone(), &new_config);
+
+    // Connect any Redis-backed proxy cache URL introduced by this reload
+    // (issue #330) -- before the config swap below, so there's no window
+    // where the new config is live but its cache store isn't registered
+    // yet. Idempotent: URLs already connected are a cheap no-op.
+    #[cfg(all(feature = "cache", feature = "redis"))]
+    crate::proxy::cache_redis::connect_all(&new_config).await;
 
     // Apply: hot-swap config, clear runtime upstream overrides, reset rate limiter.
     state.config.store(Arc::new(new_config));
