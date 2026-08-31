@@ -4,10 +4,10 @@ use std::time::{Duration, SystemTime};
 use url::Url as ParsedUrl;
 
 use crate::config::schema::{
-    ApiKeyConfig, AppConfig, Consumer, ConsumerJwtConfig, ConsumersSharedJwtConfig, FallbackConfig,
-    IpFilterConfig, LoadBalanceStrategy, MetricsConfig, MiddlewareEntry, ProxyConfig,
-    ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig, RedirectRule, RewriteRule,
-    SiteConfig, TcpConfig, TlsClientAuth, TlsConfig, UploadConfig,
+    ApiKeyConfig, AppConfig, Consumer, ConsumerJwtConfig, ConsumersSharedJwtConfig, CorsConfig,
+    FallbackConfig, IpFilterConfig, LoadBalanceStrategy, MetricsConfig, MiddlewareEntry,
+    ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig, RedirectRule,
+    RewriteRule, SiteConfig, TcpConfig, TlsClientAuth, TlsConfig, UploadConfig,
 };
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -655,6 +655,9 @@ fn validate_site_request_handling(
     if let Some(middleware) = &site.middleware {
         validate_middleware(middleware, prefix, errors);
     }
+    if let Some(cors) = &site.cors {
+        validate_cors(cors, prefix, errors);
+    }
 }
 
 /// `apiKey` / `jwtAuth` / `forwardAuth` / `consumers`.
@@ -1119,6 +1122,45 @@ fn validate_redirect_rules(
                 ));
             }
         }
+    }
+}
+
+/// Reject `cors.credentials: true` unless `cors.origins` is an explicit,
+/// non-wildcard allowlist.
+///
+/// `crate::filter::cors::build_response_headers` echoes the request's
+/// `Origin` header back verbatim and sets
+/// `Access-Control-Allow-Credentials: true` whenever `credentials` is set —
+/// regardless of whether `origins` actually restricts anything. With
+/// `origins` unset (defaults to "any origin") or containing `"*"`, this lets
+/// *any* website make credentialed (cookie-bearing) cross-origin requests
+/// and read the response — a real CSRF/data-exfiltration vector, not just a
+/// spec nicety (browsers themselves only refuse the literal combination of
+/// wildcard `Access-Control-Allow-Origin: *` with
+/// `Access-Control-Allow-Credentials: true`; echoing the origin back
+/// bypasses that browser-side guard entirely). Fail at config-load time
+/// rather than silently downgrading to a safe response at runtime, matching
+/// this codebase's convention for configs that can't be honestly satisfied
+/// (see issue #189's `tls.versions`/`tls.ciphers` rejection).
+fn validate_cors(cors: &CorsConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
+    let CorsConfig::Options(opts) = cors else {
+        return;
+    };
+    if opts.credentials != Some(true) {
+        return;
+    }
+    let has_explicit_allowlist = opts
+        .origins
+        .as_ref()
+        .is_some_and(|list| !list.is_empty() && !list.iter().any(|o| o == "*"));
+    if !has_explicit_allowlist {
+        errors.push(ValidationError::new(
+            format!("{prefix}.cors.credentials"),
+            "cors.credentials: true requires cors.origins to be an explicit, \
+             non-wildcard list of allowed origins — without it, every origin's \
+             credentialed cross-origin requests would be allowed"
+                .to_owned(),
+        ));
     }
 }
 
@@ -1759,6 +1801,60 @@ mod tests {
     #[test]
     fn fallback_no_status_valid() {
         assert!(errs(r#"{ "fallback": {} }"#).is_empty());
+    }
+
+    // ── cors ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cors_credentials_without_origins_invalid() {
+        let e = errs(r#"{ "cors": { "credentials": true } }"#);
+        assert!(
+            !e.is_empty(),
+            "credentials: true with no origins allowlist must be rejected"
+        );
+        assert!(
+            e[0].message.contains("credentials"),
+            "got: {}",
+            e[0].message
+        );
+    }
+
+    #[test]
+    fn cors_credentials_with_wildcard_origin_invalid() {
+        let e = errs(r#"{ "cors": { "credentials": true, "origins": ["*"] } }"#);
+        assert!(
+            !e.is_empty(),
+            "credentials: true with a wildcard origin must be rejected"
+        );
+    }
+
+    #[test]
+    fn cors_credentials_with_empty_origins_invalid() {
+        let e = errs(r#"{ "cors": { "credentials": true, "origins": [] } }"#);
+        assert!(
+            !e.is_empty(),
+            "credentials: true with an empty allowlist admits no real origin — still invalid"
+        );
+    }
+
+    #[test]
+    fn cors_credentials_with_explicit_origins_valid() {
+        assert!(errs(
+            r#"{ "cors": { "credentials": true, "origins": ["https://app.example.com"] } }"#
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn cors_without_credentials_valid_regardless_of_origins() {
+        assert!(errs(r#"{ "cors": true }"#).is_empty());
+        assert!(errs(r#"{ "cors": { "origins": ["*"] } }"#).is_empty());
+        assert!(errs(r#"{ "cors": {} }"#).is_empty());
+    }
+
+    #[test]
+    fn cors_disabled_valid() {
+        assert!(errs(r#"{ "cors": false }"#).is_empty());
     }
 
     #[test]
