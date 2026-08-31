@@ -59,7 +59,11 @@ use crate::handler::{
 use crate::proxy::cache as proxy_cache;
 #[cfg(feature = "cache")]
 use crate::proxy::cache_disk;
-#[cfg(feature = "redis")]
+// Only used inside request_cache_filter's `#[cfg(feature = "cache")]` body
+// below -- `redis` alone (e.g. for the Redis-backed rate limiter, which
+// doesn't touch this import at all) must not pull in an unused import under
+// `-D warnings` (issue #312).
+#[cfg(all(feature = "redis", feature = "cache"))]
 use crate::proxy::cache_redis;
 use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::router;

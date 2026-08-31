@@ -7,6 +7,8 @@
 //! path keeps resolving. This file keeps only the code that needs
 //! `pingora_proxy::Session`.
 
+use std::borrow::Cow;
+
 use pingora_proxy::Session;
 
 use crate::config::schema::RateLimitConfig;
@@ -60,13 +62,13 @@ fn extract_key(cfg: &RateLimitConfig, session: &Session) -> String {
     let key_by = cfg.key_by.as_deref().unwrap_or("ip");
 
     if let Some(header_name) = key_by.strip_prefix("header:") {
-        return session
+        let raw = session
             .req_header()
             .headers
             .get(header_name)
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown")
-            .to_owned();
+            .unwrap_or("unknown");
+        return strip_nul(raw).into_owned();
     }
 
     // Default: key by client IP address.
@@ -75,6 +77,26 @@ fn extract_key(cfg: &RateLimitConfig, session: &Session) -> String {
         .and_then(|a| a.as_inet())
         .map(|a| a.ip().to_string())
         .unwrap_or_else(|| "unknown".to_owned())
+}
+
+/// Strip any NUL byte from a client-derived key component.
+///
+/// A raw `\0` is valid UTF-8 (so `to_str()` on the header value doesn't
+/// reject it), but it would corrupt the `\0`-separated bucket-key format
+/// (`site_key`/`route_key`/`consumer_key` above) that `GET /rate-limits`
+/// (`admin/api.rs`) parses back apart -- a header value containing one
+/// silently shifts the key's segment count, and the admin endpoint's
+/// `_ => continue` fallback then drops that bucket from its aggregated
+/// counts (issue #320). Only header-derived keys (`keyBy: "header:X-Name"`)
+/// can carry one; the IP-derived default path never does. Admission itself
+/// (`conduit_ratelimit::check_key_for`) is unaffected either way -- the
+/// trusted `site_label` always occupies the key's first segment.
+fn strip_nul(raw: &str) -> Cow<'_, str> {
+    if raw.contains('\0') {
+        Cow::Owned(raw.replace('\0', ""))
+    } else {
+        Cow::Borrowed(raw)
+    }
 }
 
 /// Check the token-bucket rate limit for this request.
@@ -151,5 +173,43 @@ mod tests {
         assert_ne!(s, r);
         assert_ne!(s, c);
         assert_ne!(r, c);
+    }
+
+    // ── strip_nul (issue #320) ───────────────────────────────────────────
+
+    #[test]
+    fn strip_nul_no_nul_returns_unchanged() {
+        assert_eq!(strip_nul("tenant-42"), "tenant-42");
+    }
+
+    #[test]
+    fn strip_nul_removes_embedded_nul_byte() {
+        assert_eq!(strip_nul("abc\0def"), "abcdef");
+    }
+
+    #[test]
+    fn strip_nul_removes_multiple_nul_bytes() {
+        assert_eq!(strip_nul("\0a\0b\0"), "ab");
+    }
+
+    #[test]
+    fn strip_nul_all_nul_bytes_yields_empty_string() {
+        assert_eq!(strip_nul("\0\0\0"), "");
+    }
+
+    #[test]
+    fn strip_nul_result_never_splits_a_site_key_into_extra_segments() {
+        // The actual bug: a raw NUL in a header-derived client key shifts
+        // site_key's segment count, so GET /rate-limits (admin/api.rs)
+        // silently drops the bucket via its `_ => continue` fallback.
+        // Proves the sanitized key round-trips through site_key with
+        // exactly the segment count the admin parser expects.
+        let sanitized = strip_nul("tenant\0-42");
+        let key = site_key("example.com:80", &sanitized);
+        assert_eq!(
+            key.matches('\0').count(),
+            2,
+            "site_key must always have exactly 2 NUL separators (3 segments), got: {key:?}"
+        );
     }
 }
