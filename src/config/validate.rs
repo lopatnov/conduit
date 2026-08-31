@@ -74,6 +74,7 @@ const DISABLED_KEY_OWNING_FEATURE: &[(&str, &str)] = &[
     ("tcp", "tcp"),
     ("upload", "upload"),
     ("faultInjection", "fault-injection"),
+    ("compression", "compression"),
 ];
 
 /// Warn about unrecognized top-level site config keys (`SiteConfig.extra`):
@@ -294,6 +295,20 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
         ));
     }
 
+    // ── Compression (feature: compression) ───────────────────────────────────
+    // Unlike every other feature checked here, `compression` is default-on
+    // at the root crate (issue #114/#138) — this warning only fires for a
+    // deliberate `--no-default-features` build (or one that otherwise
+    // excludes `compression`), same mechanism as the rest of this function.
+    #[cfg(not(feature = "compression"))]
+    if site.compression.is_some() {
+        warnings.push(format!(
+            "sites[{i}].compression is configured but Conduit was compiled without the \
+             `compression` feature — response compression will be disabled. \
+             Recompile with `--features compression` to enable."
+        ));
+    }
+
     // ── Consumer JWT / sharedJwt without the `jwt` feature ────────────────────
     // `consumers` alone doesn't imply `jwt` — a consumer whose only credential
     // is `jwt` (V2) or a `consumers.sharedJwt` block (V3) is silently
@@ -324,7 +339,8 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
         feature = "cache",
         feature = "upload",
         feature = "fault-injection",
-        feature = "consumers"
+        feature = "consumers",
+        feature = "compression"
     ))]
     let _ = (i, site, warnings);
 }
@@ -2802,6 +2818,23 @@ mod tests {
         assert!(
             w.iter().any(|m| m.contains("fault-injection")),
             "missing fault-injection feature must warn: {w:?}"
+        );
+    }
+
+    // `compression` is default-on (issue #114/#138) — this test only
+    // compiles/runs for a deliberate `--no-default-features` (or otherwise
+    // `compression`-excluding) build, same as the other `#[cfg(not(feature
+    // = "..."))]`-gated warning tests above/below. It never runs under this
+    // repo's normal `cargo test` / `cargo test --features full` CI jobs,
+    // both of which keep `compression` on via `default` — see the
+    // `compression` feature's own `Cargo.toml` comment.
+    #[test]
+    #[cfg(not(feature = "compression"))]
+    fn warning_for_compression_without_feature() {
+        let w = warns(r#"{ "port": 8080, "compression": true }"#);
+        assert!(
+            w.iter().any(|m| m.contains("compression")),
+            "missing compression feature must warn: {w:?}"
         );
     }
 

@@ -47,8 +47,10 @@ use crate::filter::chain::{
     HealthBypass, IpGuard, LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard,
     XRequestIdGuard,
 };
+#[cfg(feature = "compression")]
+use crate::filter::compression;
 use crate::filter::rate_limit;
-use crate::filter::{compression, cors, redirects, response_time, security_headers};
+use crate::filter::{cors, redirects, response_time, security_headers};
 #[cfg(feature = "acme")]
 use crate::handler::acme_challenge as acme_handler;
 use crate::handler::response;
@@ -959,6 +961,7 @@ impl ConduitProxy {
             HandlerKind::StaticFile => {
                 let config = self.state.config.load();
                 let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                #[cfg(feature = "compression")]
                 let compress_opts = config
                     .sites
                     .get(site_idx)
@@ -988,6 +991,7 @@ impl ConduitProxy {
                     options,
                     strip_prefix,
                     extra_headers: extra,
+                    #[cfg(feature = "compression")]
                     compress_opts,
                     accept_enc,
                     fallback,
