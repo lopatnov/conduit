@@ -37,6 +37,17 @@ Model assignment (already encoded in each agent's frontmatter — don't override
 - Skim the most recent "Реализовано в сессии" entries in `CLAUDE.md` and the
   latest summary comments on #114's sub-issues (step 9 below) — a previous
   iteration's summary may directly tell you what to do next.
+- **If this firing landed while the user was actively mid-conversation** (not
+  a cold unattended firing — e.g. the user's last message is recent, or the
+  conductor had just asked them something), say so plainly before proceeding:
+  something like "the daily cycle just fired — picking up Step 1" rather than
+  silently continuing in a way that could read as the user having answered a
+  pending question. Confirmed confusing for real on 2026-08-31: this firing's
+  Step 1 (Dependabot triage) happened to be the same topic the conductor had
+  just asked the user about, and proceeding without flagging the firing made
+  the user think they'd missed asking a question themselves ("я не помню
+  вопроса про dependabot PR"). The work itself was still correct to do — the
+  gap was purely not narrating *why* it was happening right then.
 
 ## Step 0a — long-session hygiene (no periodic full rotation)
 

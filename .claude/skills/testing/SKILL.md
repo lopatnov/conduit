@@ -37,6 +37,17 @@ description: Playbook for writing/extending tests in conduit — when to reach f
    overkill and slower to set up — match the existing pattern in `tests/`.
 5. **`tokio::test`** — async test fn, default multi-thread runtime unless the test needs
    single-thread determinism (then `#[tokio::test(flavor = "current_thread")]`).
+6. **Raw-TCP-client tests (test acting as the *client* against a real server) — don't
+   `stream.shutdown()` after writing the request.** Confirmed on this dev machine's Windows
+   toolchain (2026-08-31, issue #286's regression test): a client half-closing its write side
+   before the server's `accept()` has run can drop the connection's still-pending backlog entry
+   outright — `read_to_end` then returns a clean `Ok(0)` (not an error), which looks exactly
+   like "the server responded with nothing" and is easy to misdiagnose as a server-side bug.
+   Send a correct `Content-Length` and let the *server's* own `Connection: close` (or an
+   explicit read-until-expected-bytes) end the exchange — don't rely on the client signaling
+   EOF via a write-side shutdown. If a client-role test in this repo ever gets a mysterious
+   empty response with no error, this is the first thing to check before suspecting the code
+   under test.
 
 ## Procedure — adding/extending tests for a change
 

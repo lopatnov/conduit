@@ -32,6 +32,29 @@
   main repo root), so editing `<projects-root>\conduit\CLAUDE.md` already persists.
   **User memory is fine** too (`<user-home>\.claude\projects\...\memory\`).
 
+## `git checkout -b` is the *first* action of implementation work, not a later cleanup step
+
+> This exact near-miss — editing production code directly on `claude/cargo-workspace-
+> features-23qxfr` before creating a task branch — has recurred at least 3 times across two
+> sessions (2026-08-30 twice, logged in `.claude/logs/dependabot-hygiene.md`'s ~14:20 and
+> ~15:25 rows; again 2026-08-31, mid-session). Every time it was caught before any push (`git
+> branch --show-current` / `git status` mid-flow) and cost nothing but a `git checkout -b` plus
+> a moment's confusion — but "caught every time so far" is surviving on vigilance, not on
+> anything that actually prevents it. Logging the near-miss reactively three times hasn't
+> stopped a fourth.
+
+The migration branch is a completely legitimate place to be checked out for *other* reasons —
+syncing with `main`, committing a pure `CLAUDE.md`/`.claude/` docs update, reading code to plan
+the next task. The failure mode is specifically: being on it for one of those legitimate
+reasons, then sliding into `Edit`/`Write` calls on *production* source for a new task without
+an explicit branch-creation step in between. **Concretely**: the moment a task moves from
+"reading/planning" to "about to call `Edit` or `Write` on a source file for the first time,"
+check `git branch --show-current` first if there's any doubt which branch that is — and if it's
+`claude/cargo-workspace-features-23qxfr` (or `main`) and the change isn't a pure docs/log commit,
+run `git checkout -b <task-branch>` *before* the edit, not after. Treat "which branch
+am I on" as a question to answer before the first edit of a task, not a thing `git status`
+happens to reveal later.
+
 ## On a subagent tool gap — fail loudly, don't route around it
 
 > Added 2026-08-04 after a real incident: `scrum-master` was asked to file GitHub issues,
@@ -318,6 +341,22 @@ API path, entirely separate from local git credentials, and kept working the who
   Once a finding has a real disposition (fixed, filed as an issue, or explicitly accepted
   with reasoning posted once), later identical re-postings of the *same* finding text are
   safe to skip silently — don't re-investigate or re-reply each time it resurfaces.
+- **`SonarCloud analysis` fails on essentially every Dependabot-authored PR against `main`** —
+  confirmed 2026-08-31 by reading the actual job log (not just the pass/fail badge): `ERROR
+  Not authorized or project not found. Please check the 'SONAR_TOKEN' environment variable...`.
+  This is GitHub's own security policy, not a code or config problem — a workflow triggered by
+  a `pull_request` event from Dependabot doesn't receive repository secrets by default (the same
+  protection that stops a malicious dependency bump from exfiltrating `SONAR_TOKEN`). It's a
+  **pre-existing, established pattern**, not a new break: the same failure shows on PR #269
+  (merged 2026-08-28, well before this note was written) and every Dependabot PR checked since.
+  Don't spend a job-log read re-diagnosing this from scratch each time — every *other* check
+  (build matrix, tests, Socket, Semgrep, clippy) still runs and still matters; only this one
+  check is expected-red for this specific PR-author category, and it doesn't block merging (no
+  branch protection requires it — confirmed via `gh api repos/.../branches/main/protection` → 404
+  "Branch not protected"). This is a distinct fact from the already-documented "SonarCloud is
+  unreachable from any session" entry above — that one is about *reading* SonarCloud's own
+  dashboard; this one is about a specific CI job's expected failure mode on a specific PR
+  category, and it applies even in a local session with full `gh` CLI access.
 - **GraphQL-backed GitHub calls** (`get_review_comments`, `resolve_review_thread`,
   `issue_write`'s issue-ID lookup) hit a separate rate-limit pool from the REST-backed ones
   (`get`, `get_check_runs`, `list_pull_requests`, `merge_pull_request` all kept working fine
