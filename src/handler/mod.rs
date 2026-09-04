@@ -3,6 +3,7 @@ pub mod acme_challenge;
 #[cfg(feature = "static")]
 pub mod fallback;
 pub mod health;
+#[cfg(feature = "hotreload")]
 pub mod hot_reload;
 pub mod metrics;
 pub mod response;

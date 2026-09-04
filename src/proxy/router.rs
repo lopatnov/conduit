@@ -1153,6 +1153,16 @@ fn is_health_path(site: Option<&SiteConfig>, path: &str) -> bool {
 
 /// Returns `true` when the path targets the SSE hot-reload endpoint
 /// (`/__hot-reload__`) and the site has `hotReload` enabled.
+///
+/// Only matches when compiled with `--features hotreload` — without it, no
+/// hot-reload handler exists to serve this path, so it must not win routing
+/// precedence over the site's own `fallback`/`static`/`proxy` config (same
+/// bug class as issue #341's ACME-challenge fix: previously matched
+/// unconditionally whenever `hotReload` was configured, regardless of the
+/// compiled feature — `HandlerKind::HotReloadSse`'s handler being `None`
+/// without `hotreload` meant every request to this path would have fallen
+/// through to Pingora's proxy path with no real upstream to select).
+#[cfg(feature = "hotreload")]
 fn is_hot_reload_sse_path(site: Option<&SiteConfig>, path: &str) -> bool {
     use crate::config::schema::HotReloadConfig;
     let Some(site) = site else { return false };
@@ -1166,8 +1176,17 @@ fn is_hot_reload_sse_path(site: Option<&SiteConfig>, path: &str) -> bool {
     bare == "/__hot-reload__"
 }
 
+#[cfg(not(feature = "hotreload"))]
+fn is_hot_reload_sse_path(_site: Option<&SiteConfig>, _path: &str) -> bool {
+    false
+}
+
 /// Returns `true` when the path targets the hot-reload client JS file
 /// (`/__hot-reload__/client.js`) and the site has `hotReload` enabled.
+///
+/// Only matches when compiled with `--features hotreload` — see
+/// `is_hot_reload_sse_path`'s doc comment.
+#[cfg(feature = "hotreload")]
 fn is_hot_reload_js_path(site: Option<&SiteConfig>, path: &str) -> bool {
     use crate::config::schema::HotReloadConfig;
     let Some(site) = site else { return false };
@@ -1179,6 +1198,11 @@ fn is_hot_reload_js_path(site: Option<&SiteConfig>, path: &str) -> bool {
     }
     let bare = path.split('?').next().unwrap_or(path);
     bare == "/__hot-reload__/client.js"
+}
+
+#[cfg(not(feature = "hotreload"))]
+fn is_hot_reload_js_path(_site: Option<&SiteConfig>, _path: &str) -> bool {
+    false
 }
 
 /// If `path` starts with the ACME HTTP-01 challenge prefix, return the token
@@ -2227,6 +2251,7 @@ mod tests {
     // ── is_hot_reload_sse_path and is_hot_reload_js_path ─────────────────────
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn hot_reload_sse_path_when_enabled() {
         let site = SiteConfig {
             hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
@@ -2241,6 +2266,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn hot_reload_sse_path_when_disabled() {
         let site = SiteConfig {
             hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(false)),
@@ -2250,11 +2276,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn hot_reload_sse_path_no_site_returns_false() {
         assert!(!is_hot_reload_sse_path(None, "/__hot-reload__"));
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn hot_reload_js_path_when_enabled() {
         let site = SiteConfig {
             hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
@@ -2268,6 +2296,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn hot_reload_js_path_when_disabled() {
         let site = SiteConfig {
             hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(false)),
@@ -2280,6 +2309,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn hot_reload_js_path_with_query_string() {
         let site = SiteConfig {
             hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
@@ -2289,6 +2319,23 @@ mod tests {
         assert!(is_hot_reload_js_path(
             Some(&site),
             "/__hot-reload__/client.js?v=123"
+        ));
+    }
+
+    #[test]
+    #[cfg(not(feature = "hotreload"))]
+    fn hot_reload_paths_always_false_without_feature() {
+        // Issue #341's fix class, applied here: without `hotreload`, these
+        // paths must never win routing precedence — no matter how the site
+        // configures `hotReload`.
+        let site = SiteConfig {
+            hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
+            ..Default::default()
+        };
+        assert!(!is_hot_reload_sse_path(Some(&site), "/__hot-reload__"));
+        assert!(!is_hot_reload_js_path(
+            Some(&site),
+            "/__hot-reload__/client.js"
         ));
     }
 

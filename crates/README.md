@@ -272,3 +272,64 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   into this crate) — each still reachable transitively via this crate's own
   gated edges, so `cargo tree -p lopatnov-conduit --no-default-features -i
   mime_guess` genuinely shows it absent, not just moved one hop sideways.
+
+- **`conduit-hotreload`**, **`conduit-metrics`**, **`conduit-redirects`**
+  (Phase 4.3, [#140](https://github.com/lopatnov/conduit/issues/140)) —
+  three independent handler-shaped crates batched into one PR (same
+  "small independent leaves" batching used for #131/#135/#136), each with a
+  **different** feature-gating shape — the one genuine design decision this
+  extraction had to make.
+  - **`conduit-hotreload`** owns `HotReloadConfig`/`HotReloadOptions` (always
+    compiled, same config-always-on rationale as `conduit-compression`/
+    `conduit-static`) and, behind this crate's own `hotreload` feature, the
+    real `handler` (`HotReloadJsHandler`/`HotReloadSseHandler`, serving
+    `/__hot-reload__`/`/__hot-reload__/client.js`) and `watcher`
+    (`build_watch_config`/`run_file_watcher`, the `notify`-backed file
+    watcher). **Third default-on extraction** after `compression`/`static`
+    — `default = ["compression", "static", "hotreload"]` — and, per
+    `CLAUDE.md` decision #31, one of only two extracted features
+    (`static` is the other) genuinely worth gating for real, since it pulls
+    in `notify` and its platform-specific filesystem-watcher backend.
+    `watcher::build_watch_config` needed a real signature change during the
+    move, not just a relocation: the pre-extraction version iterated
+    `AppConfig.sites` directly, but `AppConfig`/`SiteConfig` aren't
+    extracted out of the root crate yet, so this crate can't name them —
+    it now takes an iterator of `(Option<&HotReloadConfig>,
+    Option<&conduit_static::StaticConfig>)` pairs instead, with the root
+    crate's own caller (`admin/api.rs`) mapping `config.sites` into that
+    shape. `router.rs::is_hot_reload_sse_path`/`is_hot_reload_js_path` and
+    `request_phase.rs::build_handler`'s `HotReloadJs`/`HotReloadSse` arms
+    were both gated behind `#[cfg(feature = "hotreload")]` as part of this
+    move (issue #341's ACME-challenge bug class, applied proactively here
+    rather than discovered as a gap afterward) — without the fix, disabling
+    `hotreload` while a site configured `hotReload` would have made
+    `/__hot-reload__`/`/__hot-reload__/client.js` requests fall through to
+    Pingora's proxy path with no real upstream (a 502) instead of degrading
+    to the site's own `fallback`/`static`/`proxy` config. **Caveat**:
+    despite the feature gate, `notify` itself does not actually leave the
+    overall dependency tree under `--no-default-features` — `conduit-config-
+    core`'s unrelated, always-on config-file-reload watcher (`FileProvider`'s
+    auto-reload mode, pre-existing since #127) has its own unconditional
+    `notify` dependency. Gating this crate's own copy is still correct for
+    feature-correctness; it just isn't a source of `notify` footprint
+    savings by itself.
+  - **`conduit-metrics`** owns `MetricsConfig` and the real
+    `handler::MetricsHandler`/`handler::handle_metrics` (the Prometheus
+    `/metrics` text-exposition endpoint) — **no top-level Cargo feature at
+    all**, same always-on rationale as `conduit-cors`/`conduit-ipfilter`/
+    `conduit-security-headers`/`conduit-redirects` (`CLAUDE.md` decision
+    #31). `ConduitMetrics` (the metric-*registration* struct) deliberately
+    stays in the root crate, destined for the future `conduit-runtime`; this
+    crate's handler only *reads* the process-wide default registry via
+    `prometheus::gather()`. Does have one independent `compression`
+    sub-feature (mirrors `conduit-static`'s own), gating on-the-fly
+    whole-body compression of the metrics response via
+    `conduit_compression::logic::compress_small_body` (issue #338) —
+    forwarded from the root crate's own default-on `compression` feature.
+  - **`conduit-redirects`** owns `RedirectRule` and the real
+    `guard::RedirectGuard` (configured URL redirects, 301/302/307/308) —
+    also **no `[features]` table at all**, same always-on rationale.
+    `guard::RedirectGuard` implements `conduit-core`'s `RequestFilter` chain
+    trait directly (see `CONTRIBUTING.md`'s "conduit-core dependency is
+    opt-in, not automatic"). Chain assembly stays in the root crate's
+    `src/filter/chain.rs` (`CLAUDE.md` decision #20).

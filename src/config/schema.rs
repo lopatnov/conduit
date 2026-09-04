@@ -484,20 +484,14 @@ pub use conduit_cors::CorsOptions;
 
 // ── Hot reload ─────────────────────────────────────────────────────────────
 
-/// `false` | `true` | `{ "extensions": [".html", ".css"] }`
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum HotReloadConfig {
-    Enabled(bool),
-    Options(HotReloadOptions),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct HotReloadOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub extensions: Option<Vec<String>>,
-}
+/// Extracted into `crates/conduit-hotreload` (issue #114/#140) — this is a
+/// facade re-export so `crate::config::schema::{HotReloadConfig,
+/// HotReloadOptions}` keep resolving to the same types at the same location
+/// for every existing call site/test.
+pub use conduit_hotreload::HotReloadConfig;
+/// Extracted into `crates/conduit-hotreload` (issue #114/#140) — see the
+/// [`HotReloadConfig`] re-export above.
+pub use conduit_hotreload::HotReloadOptions;
 
 // ── Health check (site-level endpoint) ────────────────────────────────────
 
@@ -644,14 +638,11 @@ pub use conduit_limits::LimitsConfig;
 
 // ── Redirects ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct RedirectRule {
-    pub from: String,
-    pub to: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<u16>,
-}
+/// Extracted into `crates/conduit-redirects` (issue #114/#140) — this is a
+/// facade re-export so `crate::config::schema::RedirectRule` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test.
+pub use conduit_redirects::RedirectRule;
 
 // ── Middleware chain ───────────────────────────────────────────────────────
 
@@ -1112,14 +1103,11 @@ pub use conduit_upload::UploadConfig;
 
 // ── Metrics ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct MetricsConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
-}
+/// Extracted into `crates/conduit-metrics` (issue #114/#140) — this is a
+/// facade re-export so `crate::config::schema::MetricsConfig` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test.
+pub use conduit_metrics::MetricsConfig;
 
 // ── Fallback ───────────────────────────────────────────────────────────────
 

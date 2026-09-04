@@ -77,6 +77,7 @@ const DISABLED_KEY_OWNING_FEATURE: &[(&str, &str)] = &[
     ("compression", "compression"),
     ("static", "static"),
     ("fallback", "static"),
+    ("hotReload", "hotreload"),
 ];
 
 /// Warn about unrecognized top-level site config keys (`SiteConfig.extra`):
@@ -339,6 +340,24 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
         ));
     }
 
+    // ── Hot reload (feature: hotreload) ───────────────────────────────────────
+    // Unlike every other feature checked here besides `compression`/`static`,
+    // `hotreload` is default-on at the root crate (issue #114/#140) — this
+    // warning only fires for a deliberate `--no-default-features` build (or
+    // one that otherwise excludes `hotreload`), same mechanism as the rest of
+    // this function. Previously had no `feature_warnings()` case at all
+    // (found during #140's extraction) — `hotReload` was never gated behind
+    // any feature pre-extraction, so there was nothing to warn about yet.
+    #[cfg(not(feature = "hotreload"))]
+    if site.hot_reload.is_some() {
+        warnings.push(format!(
+            "sites[{i}].hotReload is configured but Conduit was compiled without the \
+             `hotreload` feature — browser hot-reload (the SSE stream and file watcher) will \
+             be disabled. \
+             Recompile with `--features hotreload` to enable."
+        ));
+    }
+
     // ── Consumer JWT / sharedJwt without the `jwt` feature ────────────────────
     // `consumers` alone doesn't imply `jwt` — a consumer whose only credential
     // is `jwt` (V2) or a `consumers.sharedJwt` block (V3) is silently
@@ -371,7 +390,8 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
         feature = "fault-injection",
         feature = "consumers",
         feature = "compression",
-        feature = "static"
+        feature = "static",
+        feature = "hotreload"
     ))]
     let _ = (i, site, warnings);
 }

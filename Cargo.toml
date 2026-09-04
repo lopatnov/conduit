@@ -44,6 +44,9 @@ lopatnov-conduit-ratelimit         = { path = "crates/conduit-ratelimit", versio
 lopatnov-conduit-limits             = { path = "crates/conduit-limits", version = "2.0.0" }
 lopatnov-conduit-compression        = { path = "crates/conduit-compression", version = "2.0.0" }
 lopatnov-conduit-static              = { path = "crates/conduit-static", version = "2.0.0" }
+lopatnov-conduit-hotreload           = { path = "crates/conduit-hotreload", version = "2.0.0" }
+lopatnov-conduit-metrics             = { path = "crates/conduit-metrics", version = "2.0.0" }
+lopatnov-conduit-redirects           = { path = "crates/conduit-redirects", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -354,6 +357,38 @@ lopatnov-conduit-compression.workspace       = true
 # (`handler/static_files.rs`, `handler/fallback.rs`, `util/mime.rs`) moved
 # into `crates/conduit-static` along with the rest of this scope.
 lopatnov-conduit-static.workspace            = true
+# Mandatory (like every other crate above), not `optional = true`:
+# `HotReloadConfig`/`HotReloadOptions` and the `sites[].hotReload` field must
+# stay parseable in every build so `feature_warnings()` can keep warning on
+# a config-without-feature mismatch. Only the real `HotReloadJsHandler`/
+# `HotReloadSseHandler`/`build_watch_config`/`run_file_watcher` are gated,
+# via `lopatnov-conduit-hotreload/hotreload` in the `hotreload` feature
+# below — like `compression`/`static` (and unlike every other extracted
+# optional feature so far except those two), `hotreload` stays
+# **default-on** (issue #114/#140): a plain `cargo build` keeps serving
+# `/__hot-reload__`/`/__hot-reload__/client.js` and watching configured
+# directories exactly like before this extraction; `--no-default-features`
+# drops this crate's own real logic. Note `notify` itself does NOT actually
+# leave the dependency tree even then — `lopatnov-conduit-config-core`'s
+# unrelated, always-on config-file-reload watcher (`FileProvider`'s
+# auto-reload mode, pre-existing since #127) has its own unconditional
+# `notify` dependency; see `lopatnov-conduit-hotreload`'s own Cargo.toml for
+# the detail.
+lopatnov-conduit-hotreload.workspace         = true
+# Mandatory, no `[features]` table for the core gate — same always-on
+# rationale as `lopatnov-conduit-ipfilter`/`lopatnov-conduit-cors` above
+# (`CLAUDE.md` decision #31). Owns `MetricsConfig` and the real
+# `handler::MetricsHandler`/`handler::handle_metrics` (`ConduitMetrics`, the
+# metric-*registration* struct, stays in this crate). Its own `compression`
+# sub-feature (independent of the root crate's `hotreload`/`static`
+# features) is forwarded from the root crate's own `compression` feature
+# below, mirroring `lopatnov-conduit-static`'s own independent `compression`
+# sub-feature.
+lopatnov-conduit-metrics.workspace           = true
+# Mandatory, no `[features]` table at all — same always-on rationale as
+# `lopatnov-conduit-ipfilter`/`lopatnov-conduit-cors` above (`CLAUDE.md`
+# decision #31). Owns `RedirectRule` and the real `guard::RedirectGuard`.
+lopatnov-conduit-redirects.workspace         = true
 
 # --- Config & parsing ---
 serde.workspace      = true
@@ -404,7 +439,14 @@ dashmap.workspace  = true
 # (`handler/fallback.rs`) moved into `crates/conduit-static` (#114/#139),
 # which carries its own gated `mime_guess` edge. See the [dependencies]
 # comment on `lopatnov-conduit-static` above.
-notify.workspace     = true
+# notify: no longer a direct root-crate dependency either — its only caller
+# (`handler/hot_reload.rs`'s file watcher) moved into
+# `crates/conduit-hotreload` (#114/#140), which carries its own gated
+# `notify` edge. See the [dependencies] comment on `lopatnov-conduit-hotreload`
+# above. (`crates/conduit-config-core`'s own always-on `notify` dependency —
+# the unrelated config-file hot-reload watcher, pre-existing and out of
+# #140's scope — still pulls it in regardless of this crate's `hotreload`
+# feature.)
 regex.workspace      = true
 uuid.workspace       = true
 
@@ -482,14 +524,15 @@ opentelemetry = { workspace = true, optional = true }
 # Prometheus metrics + hot reload + Admin API + redirects.
 #
 # No heavyweight optional features compiled in by default — except
-# `compression` (issue #114/#138) and `static` (issue #114/#139), the two
-# deliberate exceptions: response compression and static-file/fallback
-# serving are baseline expectations for a reverse proxy/static-file server,
-# so a plain `cargo build` must keep behaving exactly like it did before
-# those extractions. Enable other individual features or use `full` for a
+# `compression` (issue #114/#138), `static` (issue #114/#139), and
+# `hotreload` (issue #114/#140), the three deliberate exceptions: response
+# compression, static-file/fallback serving, and browser hot-reload are
+# baseline expectations for a reverse proxy/static-file server, so a plain
+# `cargo build` must keep behaving exactly like it did before those
+# extractions. Enable other individual features or use `full` for a
 # batteries-included build; pass `--no-default-features` for a build with
-# neither compression nor static-file/fallback serving.
-default = ["compression", "static"]
+# none of compression, static-file/fallback serving, or hot-reload.
+default = ["compression", "static", "hotreload"]
 
 # ── Compression ──────────────────────────────────────────────────────────────
 # Response/static-file compression negotiation (br/gzip/deflate/zstd).
@@ -501,10 +544,19 @@ default = ["compression", "static"]
 # into `crates/conduit-static`'s own `compression` feature (#114/#139),
 # which gates that crate's on-the-fly streaming compression
 # (`stream_file_compressed` — the direct `async-compression` edge that used
-# to live here moved there along with the rest of `static_files.rs`).
-# Unlike every other extracted optional feature besides `static`, this one
-# is **default-on** — see `default` above.
-compression = ["lopatnov-conduit-compression/compression", "lopatnov-conduit-static/compression"]
+# to live here moved there along with the rest of `static_files.rs`), and
+# into `crates/conduit-metrics`'s own `compression` feature (#114/#140),
+# which gates on-the-fly whole-body compression of the Prometheus
+# text-exposition response (issue #338's `compress_small_body` call —
+# `conduit-metrics` never needs `async-compression` directly, unlike
+# `conduit-static`, since there's no streaming encoder pipeline involved).
+# Unlike every other extracted optional feature besides `static`/`hotreload`,
+# this one is **default-on** — see `default` above.
+compression = [
+    "lopatnov-conduit-compression/compression",
+    "lopatnov-conduit-static/compression",
+    "lopatnov-conduit-metrics/compression",
+]
 
 # ── Static files & fallback ──────────────────────────────────────────────────
 # Static-file serving (`sites[].static`/`staticOptions`) and fallback
@@ -532,6 +584,33 @@ compression = ["lopatnov-conduit-compression/compression", "lopatnov-conduit-sta
 # issue #341, found during this PR's security review but not introduced by
 # it and out of this PR's scope to fix.)
 static = ["lopatnov-conduit-static/static"]
+
+# ── Browser hot-reload ────────────────────────────────────────────────────────
+# `/__hot-reload__` (Server-Sent Events) + `/__hot-reload__/client.js`, and
+# the `notify`-backed file watcher that broadcasts a reload signal to every
+# connected stream. `HotReloadConfig`/`HotReloadOptions` moved to
+# `crates/conduit-hotreload` (#114/#140) and are always a dependency (see
+# the [dependencies] comment above); this forwards into that crate's own
+# `hotreload` feature, which gates the real `HotReloadJsHandler`/
+# `HotReloadSseHandler`/`build_watch_config`/`run_file_watcher` — and, with
+# them, this crate's own `notify` dependency (a platform-specific
+# filesystem-watcher backend). Note `notify` itself does NOT actually leave
+# the overall dependency tree even without this feature —
+# `lopatnov-conduit-config-core`'s unrelated, always-on config-file-reload
+# watcher (`FileProvider`'s auto-reload mode, pre-existing since #127) has
+# its own unconditional `notify` dependency; gating it here is still correct
+# for feature-correctness, just not a source of `notify` footprint savings
+# by itself. Like `compression`/`static`, this one is **default-on** — see
+# `default` above. Without it, `sites[].hotReload`
+# still parses (and `feature_warnings()` warns): the router never routes
+# `/__hot-reload__`/`/__hot-reload__/client.js` to a hot-reload handler at
+# all (`router.rs::is_hot_reload_sse_path`/`is_hot_reload_js_path` are
+# themselves gated the same way — issue #341's ACME-challenge fix applied
+# proactively here rather than discovered as a gap after the fact), so an
+# unmatched request to either path falls through to the site's own
+# `fallback`/`static`/`proxy` config exactly like any other unrecognized
+# path, not a 502.
+hotreload = ["lopatnov-conduit-hotreload/hotreload"]
 
 # ── Authentication ─────────────────────────────────────────────────────────────
 # JWT bearer-token validation (HS256 + RS256/ES256 via JWKS URL).
@@ -658,12 +737,13 @@ standard = [
     "forward-auth",  # Delegate auth to an external service
     "cache",         # HTTP response caching
     "acme",          # Auto-TLS via Let's Encrypt (Caddy-style)
-    # `compression` and `static` are already default-on (see `default`
-    # above) — listed here too so `--no-default-features --features
-    # standard` still gets them, matching "standard" being a superset of
-    # the default feature set.
+    # `compression`, `static`, and `hotreload` are already default-on (see
+    # `default` above) — listed here too so `--no-default-features
+    # --features standard` still gets them, matching "standard" being a
+    # superset of the default feature set.
     "compression",
     "static",
+    "hotreload",
 ]
 
 # Full build: every optional feature enabled.
@@ -733,6 +813,10 @@ required-features = ["static"]
 [[test]]
 name = "fallback"
 required-features = ["static"]
+
+[[test]]
+name = "browser_hot_reload"
+required-features = ["hotreload"]
 
 [[test]]
 name = "pre_compressed"
