@@ -13,18 +13,25 @@
 //! # Redis data model
 //!
 //! Each `(site, client)` pair maps to a Redis string that counts requests in
-//! the current window.  Two commands implement the counter atomically from
-//! the caller's perspective:
+//! the current window. A single atomic Lua script (`EVAL`) implements the
+//! counter server-side:
 //!
 //! ```text
-//! INCR   conduit:rl:{site_label}:{window_secs}:{client_key}
-//! EXPIRE conduit:rl:{site_label}:{window_secs}:{client_key}  {window_secs}
+//! local c = redis.call('INCR', KEYS[1])
+//! if c == 1 or redis.call('TTL', KEYS[1]) == -1 then
+//!     redis.call('EXPIRE', KEYS[1], ARGV[1])
+//! end
+//! return c
 //! ```
 //!
+//! against key `conduit:rl:{site_label}:{window_secs}:{client_key}`.
 //! `site_label` scopes the key so two sites sharing a client key don't share
 //! a counter — the Redis-backend twin of the fix `rate_limit::site_key`/
 //! `route_key` applied to the in-memory limiter (issue #317, mirroring
-//! #303/#304).
+//! #303/#304). `EXPIRE` normally runs only on the first request of a window
+//! (count == 1), and also whenever the key has no TTL at all (self-healing
+//! a key leaked by an older two-round-trip version of this code) — see
+//! `redis_fixed_window_check`'s own doc comment for the full story.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -178,21 +185,41 @@ fn fallback_check_impl(
 
 // ── Redis helper ──────────────────────────────────────────────────────────────
 
-/// Fixed-window counter check using two Redis commands.
+/// Fixed-window counter check using a single atomic Lua script.
 ///
-/// Steps:
+/// Steps, both inside one `EVAL`:
 /// 1. `INCR key` — atomically create-or-increment; returns the new count.
-/// 2. `EXPIRE key window_secs` — set TTL only when count == 1 (first request in window).
+/// 2. `EXPIRE key window_secs` — set TTL when count == 1 (first request in
+///    window), **or** when the key has no TTL at all (`TTL` returns `-1`).
 ///
 /// If `count > limit + burst`, the request is rate-limited (issue #306 —
 /// `burst = 0` reproduces the original `count > limit` behavior exactly).
 ///
-/// Using INCR-first prevents the TTL-leak race present in the former
-/// SET-NX + INCR approach: if the key expired between the SET-NX and the
-/// INCR, the INCR would recreate the key *without* a TTL, causing the
-/// counter to persist forever.  With INCR-first the TTL is set exactly
-/// once — when the key is first created — and subsequent increments leave
-/// the existing TTL unchanged.
+/// INCR and the conditional EXPIRE run as one atomic server-side operation
+/// (ported from `main`'s #345 fix during the migration branch's sync with
+/// `main`). An earlier version issued them as two separate round-trips: a
+/// client-side timeout (this module wraps the whole check in a 50ms
+/// deadline) or a connection error landing between the two commands could
+/// leave the key at `count == 1` with **no TTL** — count == 1 was the only
+/// case that would ever attempt EXPIRE, so a lost EXPIRE on that specific
+/// request meant it never got retried on any later one. That key then
+/// persisted forever; once later requests pushed its count past
+/// `limit + burst`, that client was rejected *permanently*, not just for
+/// the current window — a transient blip degrading into a permanent
+/// fail-closed for that one key, silently contradicting this module's whole
+/// fail-open design. A Lua script is atomic on the Redis server regardless
+/// of what the client observes: a client-side timeout means the script
+/// either hasn't started yet or has already run to completion server-side
+/// — the client can never observe a state where INCR applied but EXPIRE
+/// didn't, so this can no longer happen going forward.
+///
+/// The `TTL == -1` check additionally *repairs* keys already leaked by the
+/// old two-round-trip code before this fix was deployed — those keys sit in
+/// production Redis with no expiry and `count` already above 1, so the
+/// `count == 1` condition alone would never touch them again. The very next
+/// request against such a key notices the missing TTL and sets it,
+/// self-healing the leak instead of requiring a manual `redis-cli DEL` per
+/// affected key.
 async fn redis_fixed_window_check(
     conn: &mut ConnectionManager,
     redis_key: &str,
@@ -200,22 +227,18 @@ async fn redis_fixed_window_check(
     burst: u64,
     window_secs: u64,
 ) -> Result<bool, redis::RedisError> {
-    // INCR key — atomically creates (at 0) then increments; returns new value.
-    let count: u64 = redis::cmd("INCR").arg(redis_key).query_async(conn).await?;
-
-    // Set the TTL only on the first request of the window (count == 1).
-    // Doing this after INCR guarantees the key always gets an expiry, even
-    // if a previous window's key expired between two concurrent INCRs.
-    if count == 1 {
-        // Propagate EXPIRE errors: a missing TTL means the key persists beyond
-        // the window, allowing unlimited requests.  The caller's timeout/error
-        // handler will fall back to the in-memory limiter if this fails.
-        let _: () = redis::cmd("EXPIRE")
-            .arg(redis_key)
-            .arg(window_secs)
-            .query_async(conn)
-            .await?;
-    }
+    const SCRIPT: &str = r#"
+        local c = redis.call('INCR', KEYS[1])
+        if c == 1 or redis.call('TTL', KEYS[1]) == -1 then
+            redis.call('EXPIRE', KEYS[1], ARGV[1])
+        end
+        return c
+    "#;
+    let count: u64 = redis::Script::new(SCRIPT)
+        .key(redis_key)
+        .arg(window_secs)
+        .invoke_async(conn)
+        .await?;
 
     Ok(count <= limit.saturating_add(burst))
 }
@@ -312,5 +335,69 @@ mod tests {
             !fallback_check_impl(&fallback, "site-a", "2.2.2.2", 1, 0, 60),
             "burst=0 must reject the 2nd request against limit=1, exactly like before #306"
         );
+    }
+
+    /// Ported from `main`'s #345 fix: a key already leaked by the pre-atomic-
+    /// script code (count > 1, no TTL) must be repaired the next time it's
+    /// checked, not left to persist forever.
+    ///
+    /// Requires a real Redis at `REDIS_URL` — skips (not fails) when unset,
+    /// per this module's own documented convention.
+    #[tokio::test]
+    async fn repairs_legacy_ttl_less_key_on_next_check() {
+        let Ok(url) = std::env::var("REDIS_URL") else {
+            eprintln!("skipping repairs_legacy_ttl_less_key_on_next_check: REDIS_URL not set");
+            return;
+        };
+        let client = redis::Client::open(url.as_str()).expect("valid REDIS_URL");
+        let mut conn = ConnectionManager::new(client)
+            .await
+            .expect("connect to REDIS_URL");
+
+        let key = format!(
+            "conduit:rl:test-legacy-ttl-leak:{}",
+            std::process::id() // cheap uniqueness across parallel test runs
+        );
+        // Clean slate, then simulate exactly what the old buggy code could
+        // leave behind: a key already past count == 1, with no TTL at all.
+        let _: () = redis::cmd("DEL")
+            .arg(&key)
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        let _: () = redis::cmd("SET")
+            .arg(&key)
+            .arg(3) // count == 3, well past the count==1 case
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        let ttl_before: i64 = redis::cmd("TTL")
+            .arg(&key)
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(ttl_before, -1, "test setup: key must start with no TTL");
+
+        let window_secs = 60;
+        let allowed = redis_fixed_window_check(&mut conn, &key, 100, 0, window_secs)
+            .await
+            .expect("check succeeds");
+        assert!(allowed, "count 4 is well within limit 100");
+
+        let ttl_after: i64 = redis::cmd("TTL")
+            .arg(&key)
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        assert!(
+            ttl_after > 0 && ttl_after <= window_secs as i64,
+            "leaked key must be repaired with a TTL in (0, {window_secs}], got {ttl_after}"
+        );
+
+        let _: () = redis::cmd("DEL")
+            .arg(&key)
+            .query_async(&mut conn)
+            .await
+            .unwrap();
     }
 }

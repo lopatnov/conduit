@@ -161,8 +161,10 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 # --- Redis-backed rate limiting & caching (feature: redis) ---
-# tls-rustls enables rediss:// (TLS-encrypted) connections.
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "tokio-rustls-comp"] }
+# tls-rustls enables rediss:// (TLS-encrypted) connections. "script" enables
+# redis::Script (EVAL) — used by crates/conduit-ratelimit's atomic
+# INCR+EXPIRE fixed-window check (issue #114/#137, ported from main's #345).
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "tokio-rustls-comp", "script"] }
 
 # --- Kubernetes provider (optional feature) ---
 # Enable with: cargo build --features kubernetes
@@ -450,6 +452,9 @@ reqwest.workspace = true
 # root crate has no direct `redis::` usage left, so there is no root
 # [dependencies] entry to gate behind `redis` here (see the `redis` feature
 # below, which forwards only into those two crates' own `redis` features).
+# `crates/conduit-ratelimit`'s own `redis` dependency needs the `script`
+# feature too (main's `redis` entry above this merge had it, for the
+# INCR+EXPIRE atomic-Lua-script TTL-leak fix ported into that crate below).
 
 # --- Kubernetes provider (optional feature) ---
 kube        = { workspace = true, optional = true }

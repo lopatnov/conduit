@@ -23,6 +23,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   silently collapsed every client into one shared bucket at runtime instead
   of failing validation up front. Site-level and per-consumer rate limits
   already validated these fields; per-route now does too, matching them.
+- **CORS `credentials: true` now requires an explicit, non-wildcard `origins`
+  allowlist.** Previously, `credentials: true` with `origins` unset (or
+  containing `"*"`) echoed the request's `Origin` header back verbatim with
+  `Access-Control-Allow-Credentials: true` for *any* origin — a real
+  CSRF/data-exfiltration vector (CWE-942), not just a spec nicety. Config
+  validation now rejects this combination at startup/reload.
+- **Forward-auth no longer lets a client-forged identity header survive
+  when the auth service doesn't return it.** `forwardAuth.responseHeaders`
+  only ever *inserted* headers the auth service's response actually
+  contained — a header configured but not returned by the auth service
+  (e.g. an anonymous/guest session) left the upstream trusting whatever
+  value the client itself sent under that name. Configured header names are
+  now stripped from the client request before the auth-service-returned
+  values are inserted.
+- **Redis-backed rate limiting no longer leaks a TTL-less key on a
+  timeout/error between `INCR` and `EXPIRE`.** The two commands used to run
+  as separate round-trips; a client-side timeout or connection error
+  landing between them could leave a key at count 1 with no expiry — that
+  key then persists forever, and once later requests push its count past
+  the configured limit, that one client is rejected *permanently* instead
+  of just for the current window (a transient blip degrading into a
+  permanent fail-closed, contradicting the module's own fail-open design).
+  Both commands now run as a single atomic Lua script (`EVAL`), which also
+  self-heals any key already leaked by the old two-round-trip code the next
+  time it's checked.
 
 ### Fixed
 
@@ -34,6 +59,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   always served uncompressed regardless of config. Each response type is
   still negotiated independently against the site's `compression` config, so
   a small response may stay uncompressed exactly as before.
+- **A request to `/.well-known/acme-challenge/*` on a build without
+  `--features acme` no longer surfaces as a 502.** The path matched
+  unconditionally regardless of the compiled feature; without `acme` there
+  was no handler to serve it, and the request fell through to Pingora's
+  proxy path with no real upstream to select. The path now only matches
+  when `acme` is actually compiled in.
 
 ### Changed
 

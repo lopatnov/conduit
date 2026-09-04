@@ -45,6 +45,27 @@ fn spawn_mock_auth_server(auth_response_status: u16) -> std::net::SocketAddr {
     addr
 }
 
+/// Spawn a mock auth server that replies 200 with no custom headers at all —
+/// simulates an auth service that doesn't return the configured
+/// `responseHeaders` name for this session (e.g. an anonymous/guest auth
+/// result).
+fn spawn_mock_auth_server_no_headers() -> std::net::SocketAddr {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        }
+    });
+    addr
+}
+
 // ── Forward Auth tests ────────────────────────────────────────────────────────
 
 #[test]
@@ -159,6 +180,86 @@ fn forward_auth_unreachable_denies() {
         resp.status().as_u16(),
         401,
         "unreachable auth service must fail closed (401)"
+    );
+}
+
+/// A client-forged identity header must never reach the upstream unchanged
+/// when the auth service doesn't return that header itself. Regression test
+/// for the header-spoofing bug: `forward_auth_inject_response_headers` used
+/// to only *insert* headers the auth service returned, leaving any
+/// client-supplied value for a configured (but not returned) header name
+/// completely untouched — an attacker could set `X-User-ID: admin` and have
+/// it forwarded to the upstream as if the auth service had vouched for it.
+#[test]
+fn forward_auth_strips_forged_header_when_auth_omits_it() {
+    let auth_addr = spawn_mock_auth_server_no_headers();
+    let (echo_port, _echo) = common::start_echo_upstream();
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "forwardAuth": {
+                    "url": format!("http://{auth_addr}/auth"),
+                    "responseHeaders": ["X-User-ID"],
+                    "timeoutMs": 3000
+                },
+                "proxy": format!("http://127.0.0.1:{echo_port}")
+            }]
+        }),
+    );
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("X-User-ID", "forged-admin")
+        .send()
+        .expect("GET /");
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: serde_json::Value = resp.json().expect("echo body");
+    assert!(
+        body["headers"]["x-user-id"].is_null(),
+        "the client-forged X-User-ID must be stripped, not forwarded — got: {body}"
+    );
+}
+
+/// The legitimate case still works: when the auth service *does* return the
+/// configured header, its value reaches the upstream (overwriting whatever
+/// the client sent, if anything).
+#[test]
+fn forward_auth_injects_header_the_auth_service_returns() {
+    let auth_addr = spawn_mock_auth_server(200); // echoes X-User-ID: mock-user
+    let (echo_port, _echo) = common::start_echo_upstream();
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "forwardAuth": {
+                    "url": format!("http://{auth_addr}/auth"),
+                    "responseHeaders": ["X-User-ID"],
+                    "timeoutMs": 3000
+                },
+                "proxy": format!("http://127.0.0.1:{echo_port}")
+            }]
+        }),
+    );
+    let resp = plain_client()
+        .get(srv.url("/"))
+        .header("X-User-ID", "forged-admin")
+        .send()
+        .expect("GET /");
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: serde_json::Value = resp.json().expect("echo body");
+    assert_eq!(
+        body["headers"]["x-user-id"], "mock-user",
+        "the auth-service-returned value must reach upstream, overwriting the client's, got: {body}"
     );
 }
 

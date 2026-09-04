@@ -279,41 +279,17 @@ fn credentials_true_sets_acac_on_regular_response() {
     );
 }
 
-/// credentials:true *without* an explicit origins list means "allow any origin,
-/// but still echo the actual origin back" — the server must NOT return wildcard
-/// because browsers reject credentials with ACAO: *.
-#[test]
-#[serial]
-fn credentials_true_without_origins_list_echoes_origin() {
-    // cors: { credentials: true } — no origins field
-    let srv = cors_server(serde_json::json!({ "credentials": true }));
-    let client = reqwest::blocking::Client::new();
-    let resp = client
-        .request(reqwest::Method::OPTIONS, srv.url("/"))
-        .header("Origin", "https://any-origin.com")
-        .header("Access-Control-Request-Method", "GET")
-        .send()
-        .expect("preflight");
-    let acao = resp
-        .headers()
-        .get("access-control-allow-origin")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    assert_ne!(
-        acao, "*",
-        "credentials:true must never return ACAO: * (browsers reject this)"
-    );
-    assert_eq!(
-        acao, "https://any-origin.com",
-        "credentials:true without origins list must echo the request origin, got: '{acao}'"
-    );
-    let acac = resp
-        .headers()
-        .get("access-control-allow-credentials")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    assert_eq!(acac, "true", "ACAC header must be 'true', got: '{acac}'");
-}
+// `credentials: true` without an explicit `origins` allowlist used to be
+// accepted here and echo any request origin back with
+// `Access-Control-Allow-Credentials: true` — a real CSRF/data-exfiltration
+// vector (CWE-942): any website could make credentialed cross-origin
+// requests and read the response. Config-time rejection was added in
+// `src/config/validate.rs::validate_cors` (found during a review of the
+// Conduit 2.0 migration's accumulated CodeRabbit findings); a config like
+// this now fails to parse/start, so this scenario can no longer be
+// exercised as a *running server's* HTTP behavior — see `validate.rs`'s own
+// `cors_credentials_without_origins_invalid` unit test for the rejection
+// coverage instead.
 
 /// When credentials:true but the request origin is NOT in the allow-list,
 /// neither ACAO nor ACAC must be present — browsers will block the request.
