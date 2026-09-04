@@ -2232,6 +2232,117 @@ simply waiting for the eventual `main` merge to resolve on its own.
   conduit-hotreload/conduit-metrics/conduit-redirects, #141 conduit-middleware/conduit-script-rhai/
   conduit-plugin-wasm) plus #249 (Phase 4.5, conduit-k8s) — not phase-completing yet.
 
+### Реализовано в сессии 2026-09-01/09-04 (PR #152 backlog sweep — 4 real security/correctness bugs found and fixed on `main`)
+
+- **User flagged that PR #152 (the long-lived Conduit 2.0 tracking PR) had 28 unresolved
+  CodeRabbit/Gitar review threads accumulated since 2026-08-24, plus a SonarCloud "E Security
+  Rating" gate failure.** Confirmed the Sonar failure is the already-documented structural
+  issue (PR-mode "new code" diffs against `main`, where the migration's crates don't exist —
+  see the "Integrity audit log" entries and prior Dependabot-hygiene rows) — not new. Triaged
+  all 28 threads by reading each one fully against *current* code (many were 1-8 days stale)
+  rather than trusting the finding text: found 4 real, independently-verified bugs (3 of them
+  genuine security vulnerabilities), several already-resolved-elsewhere findings (not
+  re-investigated in detail — deferred), and a long tail of legitimate but lower-priority
+  correctness/reliability/mechanical items not yet triaged (deferred to a future firing).
+  Each of the 4 real bugs was found to affect `main` too (not migration-branch-only, since the
+  underlying code predates the crate extraction), so each got its own PR against `main` per
+  Step 1c's routing rule, then the fix was ported by hand into the migration branch's already-
+  extracted crate equivalent when `main` was synced back in (see below).
+  - **[PR #342](https://github.com/lopatnov/conduit/pull/342)
+    `fix(router): stop acme-challenge routing from winning without --features acme`** — 
+    `acme_challenge_token()` matched `/.well-known/acme-challenge/*` unconditionally regardless
+    of the compiled feature; without `acme`, `HandlerKind::AcmeChallenge`'s `None` arm meant
+    `dispatch_local` treated the request as `HandlerKind::Proxy` and sent it to `upstream_peer()`
+    with no real upstream — a 502 instead of the site's own routing. Gated the function itself
+    behind `#[cfg(feature = "acme")]` rather than the call site (Rust `#[cfg]` doesn't attach
+    cleanly to one arm of an `if`/`else if` chain). Found by `security-engineer` while reviewing
+    a *different* PR (#340, conduit-static extraction) — same bug class as that PR's own
+    `PlainNotFoundHandler` fix for `HandlerKind::Fallback`.
+  - **[PR #343](https://github.com/lopatnov/conduit/pull/343)
+    `fix(cors): reject credentials:true without an explicit origins allowlist`** — **real
+    CWE-942 vulnerability**: `credentials: true` with `origins` unset or `["*"]` echoed the
+    request `Origin` back with `Access-Control-Allow-Credentials: true` for *any* origin —
+    credentialed cross-origin requests from arbitrary websites. Fixed with a new
+    `validate_cors()` config-load-time rejection (fail-closed, matching #189's
+    `tls.versions`/`tls.ciphers` precedent) rather than a runtime downgrade. An existing
+    integration test had asserted the vulnerable behavior as *intentional* ("credentials:true
+    without origins list means allow any origin") — a real design gap, not a false positive:
+    the comment correctly described the mechanical CORS-spec workaround (echo instead of
+    wildcard, since browsers reject the literal wildcard+credentials combo) but missed that
+    doing so defeats the entire purpose of the credentials gate. Replaced with a comment
+    pointing at the new rejection-test coverage.
+  - **[PR #344](https://github.com/lopatnov/conduit/pull/344)
+    `fix(forward-auth): strip client-supplied identity headers before injecting auth-service
+    values`** — **real auth-bypass vulnerability**: `forward_auth_inject_response_headers()`
+    only ever *inserted* headers the auth service's response actually returned — a header
+    configured in `forwardAuth.responseHeaders` but omitted by the auth service (anonymous
+    session, misconfiguration) left the upstream trusting whatever value the *client itself*
+    sent under that name (e.g. a forged `X-User-ID: admin`). Fixed by stripping every
+    configured header name from the client request before the insert loop — mirrors
+    `ConsumersGuard::apply`'s existing `X-Consumer-ID` stripping a few hundred lines up in the
+    same file. No existing test exercised `forwardAuth.responseHeaders` end-to-end at all
+    (only config parsing was tested) — likely how this went unnoticed; added 2 new integration
+    tests using a real echo upstream, verified the regression test actually catches the bug via
+    negative control (reverted the fix, watched it fail, restored it, watched it pass).
+  - **[PR #345](https://github.com/lopatnov/conduit/pull/345)
+    `fix(ratelimit): make Redis fixed-window INCR+EXPIRE atomic to close a TTL-leak race`**
+    (2 commits) — **real availability bug** (Gitar finding): `redis_fixed_window_check()`
+    issued `INCR` then a separate `EXPIRE` as two round-trips under a 50ms client-side timeout;
+    a timeout/error landing between them left a key at `count == 1` with no TTL — permanent,
+    since `count == 1` was the only case that ever attempted `EXPIRE`. That key then persisted
+    forever; once later requests pushed its count past the limit, that client was rejected
+    *permanently*, not just for the window — a transient Redis blip silently converting the
+    module's own fail-open design into a permanent fail-closed for that one key. Fixed by
+    replacing the two commands with a single atomic Lua `EVAL` script (requires the `redis`
+    crate's own `script` Cargo feature). A follow-up CodeRabbit finding on the same PR correctly
+    pointed out the atomic script alone doesn't help keys *already* leaked by the old code
+    sitting in production — extended the script so `EXPIRE` also fires whenever `TTL == -1`
+    regardless of count, self-healing a legacy leaked key the next time it's checked. Verified
+    the Lua script directly against a live WSL Redis via `redis-cli` (three cases: leaked key
+    repaired, fresh key unaffected, already-TTL'd key not needlessly refreshed) — the equivalent
+    Rust integration test is correct and present but could not be locally exercised through the
+    Rust `redis` client itself: this environment's WSL2→Windows `127.0.0.1` port-forwarding
+    accepts a raw TCP connect but the `redis` crate's own connection handshake times out over
+    that specific path (confirmed via direct `/dev/tcp` probe succeeding while `ConnectionManager::new`
+    hangs) — an environment quirk, not a code defect; not investigated further given the
+    redis-cli-level proof already available. New note for `wsl_docker_linux_verification.md`.
+  - **Two CodeRabbit findings during this sweep were false positives, not acted on** — a
+    "stale doc comment" claim in `conduit-static`'s `mime.rs` (confused a same-named unrelated
+    local parameter for a function call; the doc comment was accurate) and a "you violated
+    `router.rs` не трогать" claim on PR #340 (that guideline is scoped to *adding a new
+    load-balancing strategy*, not any change to the file). Replied with evidence in both threads
+    instead of complying blindly.
+  - **Migration-branch sync required manual porting, not just a merge.** By the time these 4
+    fixes landed on `main`, the migration branch had already extracted the corresponding
+    modules into `crates/conduit-auth-forward` and `crates/conduit-ratelimit` (Conduit 2.0,
+    #114) — `main`'s `src/filter/chain.rs`/`src/filter/rate_limit_redis.rs` are now just thin
+    facade re-exports on the migration branch, so `git merge origin/main` correctly flagged
+    conflicts rather than silently discarding the fixes. Resolved by keeping the migration
+    branch's facade structure and hand-porting each fix's logic into the real crate file
+    (`crates/conduit-auth-forward/src/guard.rs`, `crates/conduit-ratelimit/src/redis.rs`,
+    including a `burst`-parameter adaptation for the rate-limiter and its own copy of the new
+    regression test) — the CORS fix's `validate_cors()` merged cleanly with no manual porting
+    needed, since `src/config/validate.rs` hadn't been touched by the crate extraction. Got a
+    dedicated confirmatory `security-engineer` PASS on the hand-ported code specifically (not
+    just relying on the original PASSes, since porting is new, never-reviewed code even when
+    faithful) before pushing the merge commit.
+  - **Session spanned a real-world gap**: a `security-engineer` subagent call hit this
+    session's *weekly* usage rate limit (distinct from a daily/context-window limit) mid-review
+    on PR #345 around 2026-09-01; resumed successfully after the reset (~2026-09-04, confirmed
+    via the resumed agent's own tool-call timestamps) via `SendMessage` to the same agent rather
+    than a fresh spawn — same "resume, don't restart" pattern already used for `crate-extractor`
+    hitting a session limit earlier this cycle.
+  - **Remaining backlog from the 28-thread sweep, not yet triaged**: several `conduit-cache`
+    findings (disk.rs blocking-fs-on-async-thread, non-atomic `update_meta` write, unenforced
+    `cache.maxSizeMb` for disk cache, redis.rs stale-TTL-fallback and non-atomic HSET+EXPIRE),
+    a case-sensitive `allowedHosts` comparison bug in `conduit-security-headers`, an integer-
+    overflow risk in `conduit-ratelimit::bucket`'s `limit + burst`, a missing `flush()` before
+    reporting upload success in `conduit-upload`, a SonarCloud cognitive-complexity refactor for
+    `validate_rate_limit`, a flaky-test fix for `tests/upload.rs`, and ~5 `.claude/`-tooling
+    mechanical items (markdown lint, a stale `feature-workspace-cycle.md` self-critique from
+    CodeRabbit). None stealth-fixed; left as open threads on #152 for a future firing to pick up
+    via the interleaved bug-issue queue (Step 2).
+
 ---
 
 ## Session rotation log
