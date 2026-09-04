@@ -176,10 +176,14 @@ impl BackgroundService for AdminApiService {
         }
 
         // Spawn the browser hot-reload file watcher if any site has hotReload enabled.
+        #[cfg(feature = "hotreload")]
         {
             let config = self.state.config.load();
-            if let Some((dirs, extensions)) =
-                crate::handler::hot_reload::build_watch_config(&config)
+            let sites = config
+                .sites
+                .iter()
+                .map(|s| (s.hot_reload.as_ref(), s.static_files.as_ref()));
+            if let Some((dirs, extensions)) = crate::handler::hot_reload::build_watch_config(sites)
             {
                 let reload_tx = self.state.hot_reload_tx.clone();
                 tokio::spawn(crate::handler::hot_reload::run_file_watcher(

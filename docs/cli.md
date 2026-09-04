@@ -548,7 +548,7 @@ for the CRD schema and `kubectl apply` instructions.
 
 Conduit uses compile-time feature flags to keep the binary lean and the
 attack surface small. `cargo build --release` with no flags produces the
-**minimal build** (`default = ["compression", "static"]`): core reverse proxy, TLS,
+**minimal build** (`default = ["compression", "static", "hotreload"]`): core reverse proxy, TLS,
 static files, rate limiting, basic/API-key auth, compression, hot-reload,
 Prometheus metrics, health checks, and the Admin API. It's the right choice
 for embedding Conduit in a larger system or for the smallest footprint.
@@ -561,7 +561,7 @@ auto-TLS stack most self-hosted reverse-proxy / API-gateway deployments need.
 Reproduce it from source with `--features standard`.
 
 ```bash
-# Minimal build (default = ["compression", "static"]) — embed-friendly, smallest footprint
+# Minimal build (default = ["compression", "static", "hotreload"]) — embed-friendly, smallest footprint
 cargo build --release
 
 # Standard build — matches the published "conduit-<target>" binaries

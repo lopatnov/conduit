@@ -2249,7 +2249,7 @@ See [`examples/consumers.yaml`](../examples/consumers.yaml)
 ## Rate Limiting
 
 In-memory rate limiting requires no feature flag — available in every build,
-including the minimal `default = ["compression", "static"]`. `store: "redis://..."` requires `--features redis`.
+including the minimal `default = ["compression", "static", "hotreload"]`. `store: "redis://..."` requires `--features redis`.
 
 ### Site-level
 

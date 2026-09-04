@@ -2925,15 +2925,17 @@ dependencies = [
  "lopatnov-conduit-core",
  "lopatnov-conduit-cors",
  "lopatnov-conduit-faults",
+ "lopatnov-conduit-hotreload",
  "lopatnov-conduit-ipfilter",
  "lopatnov-conduit-limits",
+ "lopatnov-conduit-metrics",
  "lopatnov-conduit-otlp",
  "lopatnov-conduit-ratelimit",
+ "lopatnov-conduit-redirects",
  "lopatnov-conduit-security-headers",
  "lopatnov-conduit-static",
  "lopatnov-conduit-tcp",
  "lopatnov-conduit-upload",
- "notify",
  "opentelemetry",
  "p256",
  "pingora-cache",
@@ -3137,6 +3139,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "lopatnov-conduit-hotreload"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "lopatnov-conduit-core",
+ "lopatnov-conduit-static",
+ "notify",
+ "pingora-core",
+ "pingora-http",
+ "pingora-proxy",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lopatnov-conduit-ipfilter"
 version = "2.0.0"
 dependencies = [
@@ -3164,6 +3183,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "lopatnov-conduit-metrics"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "lopatnov-conduit-compression",
+ "lopatnov-conduit-core",
+ "pingora-core",
+ "pingora-http",
+ "pingora-proxy",
+ "prometheus 0.14.0",
+ "serde",
+ "subtle",
+]
+
+[[package]]
 name = "lopatnov-conduit-otlp"
 version = "2.0.0"
 dependencies = [
@@ -3187,6 +3222,16 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "lopatnov-conduit-redirects"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "lopatnov-conduit-core",
+ "pingora-core",
+ "serde",
 ]
 
 [[package]]

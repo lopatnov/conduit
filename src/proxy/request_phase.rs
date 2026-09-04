@@ -53,12 +53,12 @@ use crate::filter::rate_limit;
 use crate::filter::{cors, redirects, response_time, security_headers};
 #[cfg(feature = "acme")]
 use crate::handler::acme_challenge as acme_handler;
+#[cfg(feature = "hotreload")]
+use crate::handler::hot_reload as hot_reload_handler;
 use crate::handler::response;
 #[cfg(feature = "static")]
 use crate::handler::{fallback, static_files};
-use crate::handler::{
-    health, hot_reload as hot_reload_handler, metrics as metrics_handler, LocalHandlerImpl,
-};
+use crate::handler::{health, metrics as metrics_handler, LocalHandlerImpl};
 use crate::proxy::cache as proxy_cache;
 #[cfg(feature = "cache")]
 use crate::proxy::cache_disk;
@@ -1071,10 +1071,22 @@ impl ConduitProxy {
                 }))
             }
 
+            // `HotReloadJs`/`HotReloadSse` can only be produced by
+            // `router.rs`'s routing when the `hotreload` feature is
+            // compiled in (`is_hot_reload_js_path`/`is_hot_reload_sse_path`
+            // are themselves gated the same way, matching issue #341's
+            // ACME-challenge fix) — so the `None` arm below is genuinely
+            // unreachable, not a request-visible degradation, same
+            // reasoning as `HandlerKind::StaticFile`'s own `None` arm
+            // without `static`.
+            #[cfg(feature = "hotreload")]
             HandlerKind::HotReloadJs => Some(Box::new(hot_reload_handler::HotReloadJsHandler {
                 extra_headers: extra,
             })),
+            #[cfg(not(feature = "hotreload"))]
+            HandlerKind::HotReloadJs => None,
 
+            #[cfg(feature = "hotreload")]
             HandlerKind::HotReloadSse => {
                 let rx = self.state.hot_reload_tx.subscribe();
                 Some(Box::new(hot_reload_handler::HotReloadSseHandler {
@@ -1082,6 +1094,8 @@ impl ConduitProxy {
                     rx: Some(rx),
                 }))
             }
+            #[cfg(not(feature = "hotreload"))]
+            HandlerKind::HotReloadSse => None,
 
             HandlerKind::Overloaded => Some(Box::new(OverloadedHandler {
                 extra_headers: extra,
@@ -3517,6 +3531,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn build_handler_hot_reload_js_returns_some() {
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::HotReloadJs)));
@@ -3525,6 +3540,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn build_handler_hot_reload_sse_returns_some() {
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::HotReloadSse)));

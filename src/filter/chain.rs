@@ -409,23 +409,13 @@ pub use conduit_auth_forward::guard::ForwardAuthGuard;
 #[cfg(feature = "fault-injection")]
 pub use conduit_faults::guard::FaultInjectionGuard;
 
-/// Handles configured URL redirects (301/302/307/308).
-pub struct RedirectGuard {
-    /// Pre-computed redirect target from the redirect rules, if any matched.
-    pub result: Option<(String, u16)>,
-}
-
-#[async_trait]
-impl RequestFilter for RedirectGuard {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        if let Some((ref location, status)) = self.result {
-            response::write_redirect(ctx.session, status, location, ctx.extra_headers).await?;
-            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-            return Ok(FilterOutcome::Handled);
-        }
-        Ok(FilterOutcome::Continue)
-    }
-}
+/// Extracted into `crates/conduit-redirects` (issue #114/#140) — this is a
+/// facade re-export so `crate::filter::chain::RedirectGuard` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test. See that crate's `src/guard.rs` for the implementation:
+/// handles configured URL redirects (301/302/307/308), answering the
+/// request directly when a rule matched.
+pub use conduit_redirects::guard::RedirectGuard;
 
 /// Executes all middleware entries in the order they appear in `site.middleware`.
 ///
