@@ -2343,6 +2343,73 @@ simply waiting for the eventual `main` merge to resolve on its own.
     CodeRabbit). None stealth-fixed; left as open threads on #152 for a future firing to pick up
     via the interleaved bug-issue queue (Step 2).
 
+### Реализовано в сессии 2026-09-04 (Phase 4.3 — #140 conduit-hotreload/conduit-metrics/conduit-redirects)
+
+- **[PR #347](https://github.com/lopatnov/conduit/pull/347)
+  `feat(workspace): extract conduit-hotreload, conduit-metrics, conduit-redirects (#140)`**
+  (squash-merge `d89d841`, issue #140 CLOSED) — three independent handler-shaped crates, batched
+  into one PR per the issue's own scope, each with a different feature-gating shape resolved
+  against CLAUDE.md decision #31:
+  - **`conduit-hotreload`** — `HotReloadConfig`/`HotReloadOptions` always-compiled; the real
+    SSE/client-JS handler and `notify`-backed file watcher behind a **new, genuinely optional,
+    default-on** `hotreload` Cargo feature (`default = ["compression", "static", "hotreload"]`)
+    — third default-on extraction after `compression`(#138)/`static`(#139), and one of only two
+    (`static` the other) worth gating for real since `notify` was previously an unconditional
+    root dependency. `watcher::build_watch_config`'s signature had to change (iterator of
+    `(Option<&HotReloadConfig>, Option<&StaticConfig>)` pairs instead of `&AppConfig`, since
+    `AppConfig`/`SiteConfig` aren't extracted yet) — the one real design departure from a pure
+    relocation. Proactively applied issue #341's ACME-challenge bug-class fix: `router.rs`'s
+    hot-reload path matchers and `request_phase.rs`'s handler-construction arms are now
+    `#[cfg(feature = "hotreload")]`-gated, so disabling the feature degrades cleanly instead of
+    falling through to a 502. Added a `feature_warnings()` case for `hotReload` — there was none
+    at all pre-extraction.
+  - **`conduit-metrics`** — `MetricsConfig` + the real `/metrics` handler, **no top-level
+    feature** (always-on, matches `conduit-cors`/`conduit-ipfilter`/`conduit-security-headers`/
+    `conduit-redirects`). `ConduitMetrics` itself (the metric-*registration* struct) deliberately
+    stays in the root crate for the future `conduit-runtime`, per the issue's own scope note.
+    Gets its own independent `compression` sub-feature (mirrors `conduit-static`'s) for issue
+    #338's whole-body compression of the Prometheus response.
+  - **`conduit-redirects`** — `RedirectRule` + `RedirectGuard`, also always-on, no new feature.
+  - **Two real pre-existing bugs found and fixed** by CodeRabbit reviewing the relocated files
+    as new code (follow-up commit `fa0c5ff`), neither introduced by the extraction itself: (1)
+    the `notify` watcher callback silently discarded backend errors instead of logging them —
+    now logs via `tracing::error!` before returning; (2) `apply_redirects` appended the source
+    query string *after* a target's `#fragment` instead of before it (`/new#top` + `?x=1`
+    produced `/new#top?x=1`, putting `x=1` in the fragment instead of the query string) — fixed
+    by splitting at `#` first, with the security-engineer's re-review additionally confirming the
+    fix incidentally corrected a latent second bug (the old `location.contains('?')` separator
+    check could false-positive on a `?` appearing only inside a fragment). 2 new regression
+    tests. `security-engineer` PASSed twice (once on the extraction itself, once — resumed via a
+    fresh scoped review, not the same `SendMessage`-continued agent — on the follow-up fix
+    commit, per the "PASS is only valid for the exact head SHA reviewed" rule).
+  - Verification: `build-validator` GREEN across default/`--features full`/
+    `--no-default-features`/`--features hotreload` explicitly; `feature-matrix-runner` 65/65
+    each-feature + 230/230 depth-2 powerset GREEN; `footprint-auditor`'s own default-profile
+    delta (+250KB/+2.9% dep-tree lines) cross-checked directly against the `Cargo.lock` diff
+    rather than trusted at face value — confirmed as pure crate-boundary overhead (zero new
+    third-party dependencies, only 3 new internal workspace-member entries), consistent with
+    this migration's established pattern of not blindly trusting a single subagent's footprint
+    number. Docs synced directly (not delegated — a narrow, mechanical multi-file string fix):
+    `docs/building.md`/`docs/cli.md`/`docs/deployment.md`/`docs/configuration.md`'s stale
+    `default = ["compression", "static"]` literal picked up the new `hotreload` entry in 6
+    places across 4 files. 16/16 CI checks green.
+  - **Process note**: two `feature-matrix-runner`/`footprint-auditor` background agents spawned
+    with `isolation: "worktree"` left their worktrees locked by a still-alive harness PID even
+    after reporting task completion (`git worktree remove` refused with "cannot remove a locked
+    working tree"; `Get-Process` on the lock-holding PID showed it genuinely alive, accumulating
+    CPU time, not a stale zombie) — this blocked checking out `claude/cargo-workspace-features-
+    23qxfr` by name in the main checkout to sync post-merge. Worked around by checking out the
+    merge commit directly in detached HEAD (`git checkout d89d841`, which doesn't contend for
+    the branch ref the way a named checkout does) rather than force-unlocking a possibly-still-
+    live agent's worktree, then pushing this very log update via `git push origin
+    HEAD:claude/cargo-workspace-features-23qxfr` from the detached state. Distinct from the
+    already-logged 2026-08-24 "verification-agent isolation incident" (agents reaching *outside*
+    their worktree via an absolute path) — this is agents whose worktree stayed correctly
+    isolated the whole time, just not released afterward. Worth revisiting whether `/cleanup` or
+    a future firing should treat "worktree still locked well after its owning agent's task
+    notification fired" as a check-worthy condition, rather than assuming a live PID always means
+    genuinely in-progress work.
+
 ---
 
 ## Session rotation log
