@@ -14,13 +14,23 @@ pub fn apply_redirects(rules: &[RedirectRule], path: &str) -> Option<(String, u1
     let (path_only, query) = path.split_once('?').unwrap_or((path, ""));
 
     for rule in rules {
-        if let Some(mut location) = match_rule(&rule.from, &rule.to, path_only) {
-            if !query.is_empty() {
-                // If the target already contains '?' (e.g. a hard-coded query
-                // string in rule.to), append with '&' to avoid "?a=1?b=2".
-                location.push(if location.contains('?') { '&' } else { '?' });
-                location.push_str(query);
-            }
+        if let Some(location) = match_rule(&rule.from, &rule.to, path_only) {
+            let location = if query.is_empty() {
+                location
+            } else {
+                // The source query must land before any target fragment
+                // (`/new#top` + `?x=1` -> `/new?x=1#top`, not
+                // `/new#top?x=1`, which would put `x=1` in the fragment
+                // instead of the query string). If the target already
+                // contains '?' (e.g. a hard-coded query string in
+                // rule.to), append with '&' to avoid "?a=1?b=2".
+                let (base, fragment) = match location.find('#') {
+                    Some(idx) => (&location[..idx], &location[idx..]),
+                    None => (location.as_str(), ""),
+                };
+                let sep = if base.contains('?') { '&' } else { '?' };
+                format!("{base}{sep}{query}{fragment}")
+            };
             let status = rule.status.unwrap_or(302);
             return Some((location, status));
         }
@@ -196,6 +206,27 @@ mod tests {
         assert_eq!(
             apply_redirects(&rules, "/old?page=2"),
             Some(("/new?page=2".into(), 302))
+        );
+    }
+
+    #[test]
+    fn query_inserted_before_target_fragment() {
+        // The source query must land before any '#fragment' in the target —
+        // not after it, which would put the query text inside the fragment
+        // instead of the URL's query string.
+        let rules = vec![rule("/old", "/new#top", 302)];
+        assert_eq!(
+            apply_redirects(&rules, "/old?x=1"),
+            Some(("/new?x=1#top".into(), 302))
+        );
+    }
+
+    #[test]
+    fn query_appended_with_ampersand_before_target_fragment() {
+        let rules = vec![rule("/old", "/new?utm=source#top", 302)];
+        assert_eq!(
+            apply_redirects(&rules, "/old?page=2"),
+            Some(("/new?utm=source&page=2#top".into(), 302))
         );
     }
 }

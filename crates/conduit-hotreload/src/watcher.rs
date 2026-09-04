@@ -108,7 +108,13 @@ pub async fn run_file_watcher(
     let exts_clone = extensions.clone();
     let mut watcher =
         match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            let Ok(event) = res else { return };
+            let event = match res {
+                Ok(event) => event,
+                Err(e) => {
+                    tracing::error!("hot-reload: file watcher error: {e}");
+                    return;
+                }
+            };
             if event_passes_filter(&event, exts_clone.as_deref()) {
                 let _ = event_tx.blocking_send(());
             }
