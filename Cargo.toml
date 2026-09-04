@@ -109,7 +109,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 
 # --- Redis-backed rate limiting & caching (feature: redis) ---
 # tls-rustls enables rediss:// (TLS-encrypted) connections.
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "tokio-rustls-comp"], optional = true }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "tokio-rustls-comp", "script"], optional = true }
 
 # --- Kubernetes provider (optional feature) ---
 # Enable with: cargo build --features kubernetes

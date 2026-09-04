@@ -58,7 +58,7 @@ use crate::handler::{
 use crate::proxy::cache as proxy_cache;
 #[cfg(feature = "cache")]
 use crate::proxy::cache_disk;
-#[cfg(feature = "redis")]
+#[cfg(all(feature = "redis", feature = "cache"))]
 use crate::proxy::cache_redis;
 use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::router;
