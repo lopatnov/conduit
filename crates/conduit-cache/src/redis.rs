@@ -154,11 +154,16 @@ impl RedisCacheStorage {
     /// caller ([`connect_and_register`]) can disable caching gracefully
     /// rather than crashing.
     async fn connect(url: &str) -> anyhow::Result<Self> {
-        let client =
-            redis::Client::open(url).map_err(|e| anyhow::anyhow!("invalid Redis URL: {e}"))?;
+        // Embed only the redacted form in the error text itself — the
+        // caller's log call redacts its own `url` field, but this message's
+        // `{e}` interpolation would otherwise carry the raw credentials
+        // right back in, one level deeper (issue found reviewing #347/#330).
+        let redacted = redact_url(url);
+        let client = redis::Client::open(url)
+            .map_err(|e| anyhow::anyhow!("invalid Redis URL ({redacted}): {e}"))?;
         let conn = ConnectionManager::new(client)
             .await
-            .map_err(|e| anyhow::anyhow!("cannot connect to Redis ({url}): {e}"))?;
+            .map_err(|e| anyhow::anyhow!("cannot connect to Redis ({redacted}): {e}"))?;
         Ok(Self { conn })
     }
 
@@ -376,6 +381,32 @@ mod tests {
     #[test]
     fn get_returns_none_for_an_unregistered_url() {
         assert!(get("redis://127.0.0.1:1").is_none());
+    }
+
+    // ── connect() error redaction ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn connect_error_does_not_leak_credentials() {
+        // Port 1 is a reserved/unlikely-to-be-listening port — the connect
+        // attempt fails fast without a live Redis instance. The bug this
+        // guards: connect()'s own anyhow! error text used to embed the raw
+        // `url` (with credentials) directly, so even though the caller's log
+        // call separately redacted its own `url` field, the error's Display
+        // output — interpolated via `{e}` — carried the password right back
+        // in one level deeper.
+        let result = RedisCacheStorage::connect("redis://alice:s3cret@127.0.0.1:1").await;
+        let Err(err) = result else {
+            panic!("port 1 must not accept a connection");
+        };
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("s3cret"),
+            "connect() error must not leak the raw password: {msg}"
+        );
+        assert!(
+            !msg.contains("alice:s3cret@"),
+            "connect() error must not leak raw userinfo: {msg}"
+        );
     }
 
     #[tokio::test]

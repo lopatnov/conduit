@@ -1274,6 +1274,24 @@ fn validate_metrics(cfg: &MetricsConfig, prefix: &str, errors: &mut Vec<Validati
             ));
         }
     }
+    // An empty token string is not the same as "no token configured"
+    // (`None`, which already warns via `check_metrics_auth_warnings`) — but
+    // the constant-time comparison in `handle_metrics` treats a missing
+    // `Authorization` header as an empty `provided` string, so `token: ""`
+    // silently matches it and authenticates every request with no
+    // credentials at all. Reject outright rather than normalizing to `None`,
+    // which would silently pick the unauthenticated path instead of
+    // surfacing the operator's likely mistake (e.g. an unresolved `$VAR`
+    // that expanded to an empty string).
+    if cfg.token.as_deref() == Some("") {
+        errors.push(ValidationError::new(
+            format!("{prefix}.metrics.token"),
+            "metrics.token must not be an empty string — an empty token matches a request \
+             with no Authorization header at all, authenticating every request. Omit the \
+             field entirely to leave the endpoint unauthenticated, or set a real token."
+                .to_owned(),
+        ));
+    }
 }
 
 fn validate_ip_filter(cfg: &IpFilterConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
@@ -2762,6 +2780,21 @@ mod tests {
         assert!(
             w.iter().all(|m| !m.contains("publicly")),
             "metrics with token must not warn about access: {w:?}"
+        );
+    }
+
+    #[test]
+    fn metrics_empty_string_token_is_error() {
+        // `token: ""` is not the same as omitting it — the handler's
+        // constant-time comparison treats an empty configured token as
+        // matching a request with no Authorization header at all,
+        // authenticating everyone. Must be a hard validation error, not
+        // silently normalized to None (which would pick the unauthenticated
+        // path the operator likely didn't intend).
+        let e = errs(r#"{ "port": 8080, "metrics": { "token": "" } }"#);
+        assert!(
+            e.iter().any(|err| err.path.contains("metrics.token")),
+            "empty metrics.token must be a validation error: {e:?}"
         );
     }
 

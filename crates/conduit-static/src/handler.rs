@@ -170,9 +170,19 @@ pub async fn handle_static(
     // and the client accepts the encoding.  This avoids CPU-intensive on-the-fly
     // compression for assets that were pre-compressed at build time.
     if options.pre_compressed.unwrap_or(false) {
-        if let Some((pre_path, encoding)) = find_pre_compressed(&file_path, accept_enc).await {
-            let pre_meta = stat_no_symlink(&pre_path).await;
-            let pre_size = pre_meta.map(|m| m.len()).unwrap_or(0);
+        // Re-stat guards the same TOCTOU window as the main file check
+        // (the sibling could be removed/replaced between `find_pre_compressed`
+        // confirming it exists and this read) — on failure, fall through to
+        // serving the uncompressed original instead of defaulting to a
+        // `pre_size` of 0, which would send a 200 with `content-length: 0`
+        // for an asset that actually exists uncompressed.
+        let pre_compressed = match find_pre_compressed(&file_path, accept_enc).await {
+            Some((pre_path, encoding)) => stat_no_symlink(&pre_path)
+                .await
+                .map(|m| (pre_path, encoding, m.len())),
+            None => None,
+        };
+        if let Some((pre_path, encoding, pre_size)) = pre_compressed {
             serve_pre_compressed(
                 session,
                 &pre_path,
@@ -653,6 +663,12 @@ fn make_cache_control(options: &StaticOptions) -> String {
 }
 
 fn parse_range(header: &str, total: u64) -> Option<(u64, u64)> {
+    if total == 0 {
+        // No satisfiable range exists for an empty file — bail out before
+        // any `total - 1` subtraction, which would underflow (panics with
+        // overflow checks enabled, wraps and returns None otherwise).
+        return None;
+    }
     let s = header.strip_prefix("bytes=")?;
     if let Some(suffix) = s.strip_prefix('-') {
         let n: u64 = suffix.trim().parse().ok()?;
@@ -719,6 +735,18 @@ fn sanitize_path(path: &str) -> String {
             ".." => {
                 parts.pop();
             }
+            // A colon-bearing segment is never a legitimate static-file path
+            // component and enables two distinct Windows-specific escapes if
+            // let through: a drive prefix like `C:` makes `PathBuf::join`
+            // treat the rest as an absolute path (replacing `root` entirely,
+            // since a prefix+root is "absolute" per `Path::join`'s own
+            // documented behavior — verified: `find_file`'s `root.join(rel)`
+            // would resolve straight to `C:/Windows/win.ini`, not under
+            // `root`), and `name.txt:stream` targets an NTFS alternate data
+            // stream instead of the plain file. Drop the segment rather than
+            // rejecting the whole request — matches how "."/".."/empty
+            // segments are already silently filtered out just above.
+            s if s.contains(':') => {}
             s => parts.push(s),
         }
     }
@@ -847,6 +875,23 @@ mod tests {
         assert_eq!(sanitize_path("images/logo.png"), "images/logo.png");
     }
 
+    #[test]
+    fn sanitize_path_drops_windows_drive_prefix() {
+        // `root.join("C:/Windows/win.ini")` on Windows treats the drive
+        // prefix as an absolute path and replaces `root` entirely — the
+        // colon-bearing segment must never survive sanitization.
+        assert_eq!(sanitize_path("C:/Windows/win.ini"), "Windows/win.ini");
+        assert_eq!(sanitize_path("/C:/Windows/win.ini"), "Windows/win.ini");
+    }
+
+    #[test]
+    fn sanitize_path_drops_ntfs_alternate_data_stream_suffix() {
+        // `name.txt:hidden` targets an NTFS alternate data stream on Windows
+        // rather than the plain file — reject the whole segment, not just
+        // the drive-prefix shape.
+        assert_eq!(sanitize_path("secret.txt:hidden"), "");
+    }
+
     // ── has_dotfile ───────────────────────────────────────────────────────────
 
     #[test]
@@ -918,6 +963,16 @@ mod tests {
     fn parse_range_suffix_zero_invalid() {
         // bytes=-0 → zero suffix length is invalid
         assert!(parse_range("bytes=-0", 1000).is_none());
+    }
+
+    #[test]
+    fn parse_range_empty_file_no_panic() {
+        // total=0 must not reach the `total - 1` subtraction (underflow
+        // panics with overflow checks enabled) — no range is satisfiable
+        // for an empty file regardless of header shape.
+        assert!(parse_range("bytes=0-", 0).is_none());
+        assert!(parse_range("bytes=0-0", 0).is_none());
+        assert!(parse_range("bytes=-1", 0).is_none());
     }
 
     // ── make_cache_control ────────────────────────────────────────────────────
