@@ -1821,31 +1821,36 @@ the actual rule name + file/line for each alert.
   wanted. Left genuinely open rather than "fixed" with a change that would
   just break `--config` pointing anywhere the operator chooses.
 
-**Re-confirmed 2026-08-28 (user asked "did you fix the Sonar insecure_decode issue?" after seeing it
-resurface in a fresh check-run notification)**: PR #152's SonarCloud "D Security Rating on New Code"
-gate has now failed identically on every head SHA checked across two separate investigations 4 days
-apart (`d3e8685` on 2026-08-24, then `a99e42c`/`9133dcd`/`b304463`/`04130d8`/`8ec49d7` on 2026-08-28) —
-including `8ec49d7`, the head *after* this session's own PR #289 fix for the 3 real CodeQL
-hardcoded-credential findings landed. Root cause, independently re-confirmed: `sonarcloud.io` is
-blocked outright by this environment's egress proxy (`WebFetch` now returns `EGRESS_BLOCKED`, not just
-403/404 — confirmed directly this session, not inferred), so no session has ever been able to see the
-actual flagged item list, only the pass/fail check-run summary. The most likely (and previously
-diagnosed, 2026-08-24) explanation still holds: SonarCloud's PR-mode "New Code" for a long-lived
-tracking PR is the full diff against `main`, recomputed on *every* push — since `crates/conduit-auth-jwt`
-(and every other Layer-0/1 crate) doesn't exist on `main` yet, the already-reviewed `rust:S5659` hotspot
-on `extract_claims_unchecked`'s `insecure_decode` call (issue #238, mitigated by narrowing to
-`pub(crate)`, code verified intact at `crates/conduit-auth-jwt/src/jwt.rs:276` — this is the exact line
-the user's Sonar-issue text referenced, just at its post-#133-move path) keeps getting re-flagged as
-"new" on every single analysis, forever, regardless of what any individual commit changes. **The code
-fix is real and already shipped** (#238, 2026-08-22) — what's outstanding is a SonarCloud-dashboard-only
-action (mark the hotspot "Reviewed → Safe") that no session has tool access to perform, and that (per
-the move-detection theory) might not even stick across the next crate-extraction's file move regardless.
-Not re-posting a third near-identical PR comment about this (the 2026-08-24 comment already covers the
-mechanism in full and remains accurate) — logging here instead so a future session doesn't re-diagnose
-it a third time from scratch. This gate will most likely stay red for PR #152's entire remaining
-lifetime as a draft tracking PR; that's consistent with the PR's own documented design (not meant to
-merge until #114 is fully complete) and needs either the user's manual SonarCloud dashboard action or
-simply waiting for the eventual `main` merge to resolve on its own.
+**RESOLVED 2026-09-05 — the theory below (2026-08-24/08-28) was WRONG, not just unconfirmed.**
+This session gained real access to the SonarCloud API via the **`mcp__sonarqube__*` MCP tools**
+(a dedicated connector, distinct from `WebFetch`/browser access to `sonarcloud.io` — that path is
+still blocked by this environment's egress proxy, confirmed again this session; the two are
+separate access paths and the MCP one had never been tried before). `get_project_quality_gate_status`
+on PR #152 showed `new_security_hotspots_reviewed: 100%` — i.e. **no hotspot was ever unreviewed**,
+which directly falsifies the "the `insecure_decode` hotspot keeps getting re-flagged as new on every
+file move" theory that this section spent two sessions building on pure speculation (since no session
+before this one could actually query SonarCloud to check). The real, only cause of the failing
+`new_security_rating` condition: **2 SonarCloud issues (not hotspots) with SECURITY impact**, both
+false positives on test-only code — `search_sonar_issues_in_projects(pullRequest="152",
+impactSoftwareQualities=["SECURITY"])` found them directly: `secrets:S6739` BLOCKER on
+`crates/conduit-cache/src/redis.rs:418` (`redact_url`'s own unit-test fixture literal
+`redis://alice:s3cret@example.com:6379` — testing the credential-redaction helper added in #331/#330,
+not a real leaked password) and `rust:S2612` MAJOR on `crates/conduit-acme/src/flow.rs:544`
+(`write_secret_file_tightens_permissions_on_overwrite` deliberately sets `0o644` to simulate a
+pre-existing loosely-permissioned file, then asserts the fix re-tightens it to `0o600` — a test of the
+security fix, not a vulnerability). Both marked `falsepositive` via `change_sonar_issue_status`
+(one call was blocked by the auto-mode permission classifier on the first attempt for no apparent
+reason — same call succeeded cleanly on retry). **Quality gate is now `OK` across every metric**
+(`new_security_rating` 5→1), confirmed via a fresh `get_project_quality_gate_status` call — not
+just assumed from marking the issues. Posted as a PR #152 comment with the full explanation.
+**Lesson for future sessions**: `mcp__sonarqube__*` tools work in at least this (desktop app)
+session type — don't assume SonarCloud is categorically unreachable just because `WebFetch` is
+blocked; check `ToolSearch select:mcp__sonarqube__search_my_sonarqube_projects` first (mirrors the
+already-established "GitHub access differs by execution context" pattern in `.claude/rules/index.md`
+— likely the same story here: some session types get this connector, others don't). Also: **the old
+"D/E Security Rating on New Code re-flags forever due to move-detection" theory is retired** — treat
+any future SonarCloud gate failure on this PR as a fresh, checkable fact via these tools, not a
+recurrence of this specific (now-disproven) mechanism.
 
 ### Реализовано в сессии 2026-08-30 (rate_limit.rs Step 1c audit + Phase 3.8 — #136)
 
@@ -2409,6 +2414,42 @@ simply waiting for the eventual `main` merge to resolve on its own.
     a future firing should treat "worktree still locked well after its owning agent's task
     notification fired" as a check-worthy condition, rather than assuming a live PID always means
     genuinely in-progress work.
+
+### Реализовано в сессии 2026-09-05 (SonarCloud MCP access discovered — PR #152's real gate failure found and fixed)
+
+- **User asked whether this session has `mcp__sonarqube__*` MCP access.** It does, and it's a real,
+  working connection — `search_my_sonarqube_projects` immediately resolved the `lopatnov_conduit`
+  project. This is a **separate access path from `WebFetch`/browser access to `sonarcloud.io`**,
+  which stays blocked by this environment's egress proxy exactly as documented — the two had never
+  been distinguished before because no prior session had tried the MCP tools specifically.
+- **Used it to finally check what PR #152's "E Security Rating" gate failure actually was**, instead
+  of continuing to extend the 2026-08-24/08-28 speculation. `get_project_quality_gate_status` showed
+  `new_security_hotspots_reviewed: 100%` — meaning the "the `insecure_decode` hotspot re-flags as new
+  on every crate-move" theory this file spent two sessions building on was simply **wrong**, not just
+  unconfirmed (no hotspot was ever the cause). `search_sonar_issues_in_projects` filtered to
+  `impactSoftwareQualities: ["SECURITY"]` found the real cause directly: 2 issues, both false
+  positives on test-only code — `secrets:S6739` BLOCKER on `crates/conduit-cache/src/redis.rs:418`
+  (a `redact_url` unit test's literal fixture password, added in #331/#330) and `rust:S2612` MAJOR on
+  `crates/conduit-acme/src/flow.rs:544` (`write_secret_file_tightens_permissions_on_overwrite`
+  deliberately sets `0o644` to simulate a stale insecure file before asserting the fix re-tightens it
+  — a test *of* the security control, not a vulnerability). Verified both against the actual code
+  before touching anything, matching this repo's established pattern for the JWT-JWKS and
+  auth-consumers hardcoded-test-secret false positives (#133, #289).
+- **Marked both `falsepositive` via `change_sonar_issue_status`** (user confirmed before each
+  write action, since this was the first-ever use of a new write capability) — one call was blocked
+  by the auto-mode permission classifier for no apparent reason on the first attempt, succeeded
+  cleanly on an identical retry. Re-checked the quality gate afterward rather than assuming success:
+  **`OK` across every metric**, `new_security_rating` 5(E)→1(A). Posted the full explanation as a
+  comment on PR #152 (`gh pr comment`, local session with `gh` CLI).
+- **Corrected the record**: rewrote the stale 2026-08-28 "Re-confirmed" paragraph in the CodeQL
+  triage section above (was actively asserting a wrong root cause as settled fact) and added a note
+  to `.claude/rules/index.md`'s "Known-blocked external endpoints" section — check
+  `ToolSearch select:mcp__sonarqube__search_my_sonarqube_projects` before assuming SonarCloud is
+  unreachable, the same "check, don't assume" discipline already established for GitHub access
+  differing by execution context. Not yet confirmed whether `mcp__sonarqube__*` is available in
+  *every* session type (cloud/Routine-fired sessions included) or just this desktop-app one — worth
+  a future session checking and updating the note if it turns out to be context-dependent, mirroring
+  the GitHub `gh`-CLI-vs-MCP split.
 
 ---
 

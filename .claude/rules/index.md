@@ -189,8 +189,22 @@ deciding to close this session out and start fresh themselves — that one isn't
 > Security tab or SonarCloud's dashboard — a wall already hit and documented (in prose, not
 > as a checkable list) by multiple prior sessions.
 
-These are confirmed **unreachable from every session so far**, not worth retrying or
-probing a new URL variant of:
+**Update 2026-09-05 — SonarCloud is NOT categorically unreachable, only via `WebFetch`.**
+A session (desktop app) found that the dedicated **`mcp__sonarqube__*` MCP connector** — a
+separate access path from `WebFetch`/browser access to `sonarcloud.io` — works: real project
+lookup, quality-gate status, issue/hotspot search, and even write actions
+(`change_sonar_issue_status`, `change_security_hotspot_status`) all succeeded, and were used to
+find and correctly resolve PR #152's long-standing "E Security Rating" gate failure (see the
+"Реализовано в сессии 2026-09-05" entry for the story — it also retired a theory this file's
+prose used to treat as settled fact). **Before assuming SonarCloud is unreachable, check
+`ToolSearch select:mcp__sonarqube__search_my_sonarqube_projects` first** — if it returns a real
+tool schema and a project search actually resolves, the connector is live in this session, same
+"check don't assume" pattern as "GitHub access differs by execution context" below. The `WebFetch`
+block documented right below is still accurate for that specific access path.
+
+These are confirmed **unreachable from every session so far via `WebFetch`**, not worth retrying
+or probing a new URL variant of (but see the `mcp__sonarqube__*` note just above — a *different*
+access path to the same service can work even when this one doesn't):
 - `sonarcloud.io` (any path) — `WebFetch` returns `EGRESS_BLOCKED` outright, confirmed
   directly (not inferred from a 403).
 - `github.com/<owner>/<repo>/security` and `/security/code-scanning` (with or without a
