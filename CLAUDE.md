@@ -549,6 +549,17 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
   `<projects-root>\pingora\pingora\examples\graceful_upgrade.rs`.
 
 - [x] **Upstream connection pool warmup** — `healthCheck.prewarmConnections: u8` (макс 8). `spawn_connection_warmup()` в `health.rs` запускает N HEAD-запросов к upstream при старте через reqwest. Вызывается из `AdminApiService::start()`. Значения выше 8 обрезаются.
+  **🚫 BLOCKED, подтверждено 2026-09-06 (issue #158)** — фича не даёт заявленного эффекта и
+  не может его дать на Pingora 0.8: каждый warmup-запрос идёт через одноразовый
+  `reqwest::Client`, который не имеет отношения к реальному пулу Pingora
+  (`HttpProxy::client_upstream`, используемому `upstream_peer()` для настоящего трафика).
+  Проверено напрямую по vendored-исходникам `pingora-proxy-0.8.1/src/lib.rs`:
+  `client_upstream` — приватное поле без единого публичного геттера во всех `impl`-блоках
+  структуры, и `ProxyHttp` trait (который реализует Conduit) никогда не получает на него
+  ссылку ни в одном хуке. Публичного API достучаться до этого пула снаружи крейта в
+  Pingora 0.8 нет — тот же класс блокировки, что у OCSP stapling / request queue. Оставлено
+  как есть (безвредные HEAD-запросы при старте), доки поправлены на честное "🚫 BLOCKED"
+  вместо более мягкого "doesn't yet". Ждём Pingora 0.9+.
 
 - [x] **Retry с экспоненциальным jitter** — `retry.backoffMs` + jitter ±50%.
   Сейчас backoffMs фиксированный. Thundering herd при массовом retry.

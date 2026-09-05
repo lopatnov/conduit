@@ -659,14 +659,26 @@ pub fn spawn_health_checks(registry: Arc<UpstreamRegistry>, config: &AppConfig) 
 /// For each such route, sends `n` sequential HEAD requests to the configured
 /// health-check path immediately after startup.
 ///
-/// **Known limitation** (2026-08-03 integrity audit, see tracking issue): each
-/// request currently goes through its own freshly-built, short-lived
-/// `reqwest::Client` (see `warmup_url`), which is dropped at the end of the
-/// loop body — it does not populate Pingora's own upstream connector pool
-/// used by `upstream_peer()` for real proxied traffic, so real user requests
-/// still pay the full TCP-handshake cost. Left in place because it's
-/// otherwise harmless (a handful of HEAD requests at startup); does not yet
-/// deliver the latency benefit its name implies.
+/// **`[🚫 BLOCKED]`** (2026-08-03 integrity audit; confirmed genuinely
+/// blocked, not just unimplemented, 2026-09-06 — issue #158): each request
+/// currently goes through its own freshly-built, short-lived `reqwest::Client`
+/// (see `warmup_url`), which is dropped at the end of the loop body — it does
+/// not populate Pingora's own upstream connector pool used by
+/// `upstream_peer()` for real proxied traffic, so real user requests still
+/// pay the full TCP-handshake cost.
+///
+/// Confirmed via `pingora-proxy` 0.8.1's vendored source
+/// (`pingora-proxy-0.8.1/src/lib.rs`): `HttpProxy<SV, C>::client_upstream`
+/// (the actual `Connector` whose keepalive pool `upstream_peer()`'s request
+/// path reads from) is a **private field with no public accessor** anywhere
+/// in the struct's `impl` blocks, and the `ProxyHttp` trait Conduit
+/// implements never receives a reference to it in any hook. There is no
+/// public API in Pingora 0.8 to reach, share, or pre-populate that specific
+/// pool from outside the crate — the same class of gap as this repo's other
+/// `[🚫 BLOCKED]` items (OCSP stapling, request queue + backpressure), waiting
+/// on Pingora 0.9+. Left in place because it's otherwise harmless (a handful
+/// of HEAD requests at startup); does not deliver the latency benefit its
+/// name implies, and cannot until Pingora exposes the real pool.
 pub fn spawn_connection_warmup(config: &AppConfig) {
     for site in &config.sites {
         let Some(crate::config::schema::ProxyConfig::Routes(routes)) = &site.proxy else {
