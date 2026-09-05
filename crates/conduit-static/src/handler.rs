@@ -406,22 +406,40 @@ async fn find_pre_compressed(
     None
 }
 
+/// Re-stat an already-`find_pre_compressed`-confirmed candidate, returning
+/// its current size.
+///
+/// Split out from [`resolve_pre_compressed`] specifically so this half —
+/// the actual TOCTOU guard — is independently testable: calling
+/// `resolve_pre_compressed` again after removing the file would re-run
+/// `find_pre_compressed` too and short-circuit before ever reaching this
+/// re-stat, so a test built that way would prove nothing about this
+/// function's own failure handling.
+///
+/// On a failed re-stat (the sibling was removed or replaced since
+/// `find_pre_compressed` confirmed it), returns `None` so the caller falls
+/// through to serving the uncompressed original instead of defaulting to a
+/// `pre_size` of `0`, which would send a 200 with `content-length: 0` for
+/// an asset that actually exists uncompressed.
+async fn confirm_pre_compressed(
+    pre_path: PathBuf,
+    encoding: &'static str,
+) -> Option<(PathBuf, &'static str, u64)> {
+    let pre_size = stat_no_symlink(&pre_path).await?.len();
+    Some((pre_path, encoding, pre_size))
+}
+
 /// Resolve a pre-compressed sibling to serve, including its current size.
 ///
-/// Re-stats after [`find_pre_compressed`] confirms the sibling exists —
-/// guarding the same TOCTOU window as the main file check, since the
-/// sibling could be removed or replaced between that check and this read.
-/// On a failed re-stat, returns `None` so the caller falls through to
-/// serving the uncompressed original instead of defaulting to a `pre_size`
-/// of `0`, which would send a 200 with `content-length: 0` for an asset
-/// that actually exists uncompressed.
+/// Guards the same TOCTOU window as the main file check — see
+/// [`confirm_pre_compressed`]'s doc comment for why the re-stat is a
+/// separate function rather than inlined here.
 async fn resolve_pre_compressed(
     path: &Path,
     accept_enc: &AcceptEncoding,
 ) -> Option<(PathBuf, &'static str, u64)> {
     let (pre_path, encoding) = find_pre_compressed(path, accept_enc).await?;
-    let pre_size = stat_no_symlink(&pre_path).await?.len();
-    Some((pre_path, encoding, pre_size))
+    confirm_pre_compressed(pre_path, encoding).await
 }
 
 /// Serve a pre-compressed file directly — no on-the-fly encoding needed.
@@ -844,31 +862,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_pre_compressed_falls_through_when_sibling_removed_after_find() {
-        // Reproduces the TOCTOU window directly rather than racing real
-        // concurrent tasks: confirm the sibling is found, then remove it
-        // before the second stat — same sequence a concurrent delete would
-        // produce. Before the fix, the caller defaulted `pre_size` to 0 and
-        // still served a 200 with an empty body; the fix must return `None`
-        // here so the caller falls through to the uncompressed original.
+    async fn confirm_pre_compressed_returns_size_when_file_present() {
         let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().join("app.js");
-        std::fs::write(&base, "irrelevant").unwrap();
         let gz_path = dir.path().join("app.js.gz");
         std::fs::write(&gz_path, b"compressed-bytes").unwrap();
 
-        let accept_enc = AcceptEncoding {
-            gzip: true,
-            ..Default::default()
-        };
+        let (returned_path, encoding, pre_size) = confirm_pre_compressed(gz_path.clone(), "gzip")
+            .await
+            .expect("file exists, re-stat must succeed");
+        assert_eq!(returned_path, gz_path);
+        assert_eq!(encoding, "gzip");
+        assert_eq!(pre_size, "compressed-bytes".len() as u64);
+    }
+
+    #[tokio::test]
+    async fn confirm_pre_compressed_falls_through_when_file_removed() {
+        // Directly exercises the TOCTOU guard itself (not resolve_pre_compressed,
+        // which would re-run find_pre_compressed internally and short-circuit
+        // before ever reaching this re-stat if the file were already gone —
+        // confirm_pre_compressed exists precisely so this failure path is
+        // reachable in a deterministic test). Before the fix, the caller
+        // defaulted `pre_size` to 0 and still served a 200 with an empty body
+        // for a file confirmed present moments earlier; the fix must return
+        // `None` here so the caller falls through to the uncompressed original.
+        let dir = tempfile::tempdir().unwrap();
+        let gz_path = dir.path().join("app.js.gz");
+        std::fs::write(&gz_path, b"compressed-bytes").unwrap();
+
+        // Confirm the happy path works before removing the file.
         assert!(
-            find_pre_compressed(&base, &accept_enc).await.is_some(),
-            "sanity: sibling must be found before it's removed"
+            confirm_pre_compressed(gz_path.clone(), "gzip")
+                .await
+                .is_some(),
+            "sanity: re-stat must succeed while the file still exists"
         );
+
         std::fs::remove_file(&gz_path).unwrap();
 
         assert!(
-            resolve_pre_compressed(&base, &accept_enc).await.is_none(),
+            confirm_pre_compressed(gz_path, "gzip").await.is_none(),
             "must fall through, not default pre_size to 0, when the re-stat fails"
         );
     }
