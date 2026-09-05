@@ -2511,6 +2511,84 @@ recurrence of this specific (now-disproven) mechanism.
   consumer-level `RateLimitConfigInline.store`) both updated to reflect the new reality.
   16/16 CI checks green (Footprint report is informational-only, not a merge gate).
 
+### Реализовано в сессии 2026-09-05 (часть 3 — fast-follow reflex check + issue #357)
+
+- **`fast-follow` GitHub label + `/fast-follow-check` command** — added at the user's
+  explicit request, after noticing #357 had nothing making sure it would get picked up
+  soon instead of aging in the general backlog. New `.claude/commands/fast-follow-check.md`
+  (pointer added to `.claude/rules/index.md`) checks `gh issue list --label fast-follow
+  --state open` before picking the next batch of work — surfaces such issues, deliberately
+  does **not** force-bundle them into whatever PR spawned them (that's exactly the
+  premature scope creep the label exists to avoid for design-judgment follow-ups). No
+  separate log file, unlike `/dependabot-hygiene` — GitHub's own issue/label state already
+  is the log. Labeled #357 as the first instance; later also labeled #358 and #360 (both
+  spawned from #357's own review) the same way.
+- **[PR #359](https://github.com/lopatnov/conduit/pull/359)
+  `fix(validate): warn when Redis rate-limit stores mismatch across levels (#357)`**
+  (3 commits, squash-merged `2a39702`, issue #357 CLOSED) — user picked "warn + hot-reload,
+  both" when asked to scope #357; this PR is the warn-only half. New
+  `check_redis_store_consistency` in `validate()`: collects every distinct
+  `redis://`/`rediss://` URL configured anywhere in the config (site → route → consumer,
+  across all sites) via `collect_redis_stores`, and if more than one is found, emits a
+  `Severity::Warning` naming which URL actually wins (mirrors
+  `find_redis_rate_limit_store`'s exact scan order from #322/#356) and which are silently
+  ignored — advisory, logged via the same `partition_by_severity` pipeline already
+  established for the near-expiry-cert warning (#191/#253).
+  **Three review rounds, two real findings fixed, one corrected mid-review**:
+  - Round 1 (`9b8c6ab`) **HOLD**: the warning message interpolated raw configured Redis
+    URLs verbatim — a `redis://user:pass@host` URL (realistic, since this codebase's `$VAR`
+    secret interpolation has no URL-encoding step) would leak credentials into
+    `tracing::warn!`'s persistent log output. Fixed (`62f076e`) with a local `redact_url`
+    deliberately duplicated from `crates/conduit-cache/src/redis.rs`'s existing helper
+    (#330/#331) rather than shared/promoted — that one is private to the cache crate, and
+    this is config-validation's only Redis-URL log sink, matching the established
+    small-helper-per-module pattern (`is_redis_store` is already duplicated the same way
+    across 3 files). PASSed.
+  - CodeRabbit then reviewed (unusually — normally skips PRs against this non-default base
+    branch, but completed a full review this time) and found two more things: a **real**
+    Major finding (`validate_rate_limit` only checks the `redis://`/`rediss://` prefix on
+    `store`, not for embedded control characters — a raw newline could forge a fake log
+    line in the new warning's output) and a claimed miss (`collect_redis_stores` doesn't
+    scan a `site.routes[*].proxy.rateLimit.store` — replied that `SiteConfig` has no
+    `routes` field, believed at the time to be a false positive).
+  - Fixed the real finding (`f2c1a16`) by piping each redacted URL through this file's
+    existing `sanitize_for_log()` (already used for the identical concern elsewhere in the
+    same file, e.g. proxy-loop target names) before interpolating — negative-control
+    verified both times (once by the conductor, once independently re-derived by
+    `security-engineer`, each confirming the pre-fix code visibly leaks/forges the exact
+    text the fix is meant to stop).
+  - **The "false positive" reply was itself wrong** — caught by `security-engineer`'s
+    round-3 re-review, not before posting. `SiteConfig` **does** have
+    `routes: Option<Vec<RouteConfig>>` (Phase 3.6 advanced routing) — a mechanism entirely
+    separate from `proxy: Option<ProxyConfig>`, resolved through
+    `src/proxy/routes.rs::match_routes`, and each `RouteConfig.proxy` can carry its own
+    `rate_limit`. Corrected the reply on the PR thread with the accurate reasoning after
+    independently re-verifying: not just `collect_redis_stores` misses it —
+    `src/proxy/router.rs::find_route_rate_limit` (the function that actually *enforces* a
+    route's rate limit at runtime) has the identical blind spot, and `routes.rs` has zero
+    rate-limit handling of its own at all (grepped, no matches). So a `rateLimit`
+    configured under `site.routes[*].proxy.rateLimit` — Redis-backed or not — is validated
+    but never enforced for any request resolved via `site.routes[]`, independent of
+    anything in #357/#359. Filed as [#360](https://github.com/lopatnov/conduit/issues/360)
+    (tagged `fast-follow`) rather than patched piecemeal, since fixing only the warning's
+    scan (as the original finding suggested) while leaving the real enforcement gap in
+    place would be worse — a false "fully covered by validation" signal.
+  - Split the hot-reload half of #357 out as
+    [#358](https://github.com/lopatnov/conduit/issues/358) (tagged `fast-follow`) per the
+    user's "do both, as two PRs" scoping decision — `connect_redis_rate_limiter_if_configured`
+    runs exactly once at `AppState` construction (confirmed via full-tree grep, one call
+    site), never re-invoked on `/reload` or a live-provider update; needs its own design
+    call on re-scan semantics, not a mechanical fix.
+  - `docs/configuration.md` updated with the new check; 5 unit tests (later 7, after the
+    two review-driven additions) all negative-control verified. 16/16 CI checks green.
+- **Process note**: hit the now-familiar worktree-left-locked-after-agent-completion
+  pattern twice in a row finishing this PR (`git worktree remove` needed on two
+  already-finished `security-engineer` review worktrees before `gh pr merge
+  --delete-branch` could switch the local checkout back to the migration branch) — same
+  class as the 2026-09-04 Phase 4.3 entry above, not a new issue, just recurring often
+  enough to be worth normalizing as a routine post-merge step rather than a surprise each
+  time.
+
 ---
 
 ## Session rotation log
