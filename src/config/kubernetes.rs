@@ -172,7 +172,7 @@ impl KubernetesProvider {
 }
 
 #[async_trait]
-impl Provider for KubernetesProvider {
+impl Provider<AppConfig> for KubernetesProvider {
     fn name(&self) -> &'static str {
         "kubernetes"
     }

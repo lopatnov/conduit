@@ -1,85 +1,61 @@
-use std::time::Instant;
+//! `Session`-aware rate-limit key extraction and admission check.
+//!
+//! The pure, `Session`-independent parts — [`RateLimitConfig`](crate::config::
+//! schema::RateLimitConfig), `TokenBucket`, `RateLimiter`, `MAX_BUCKETS`,
+//! `cleanup` — moved to `crates/conduit-ratelimit` (issue #114/#137, slice 1)
+//! and are re-exported below so every existing `crate::filter::rate_limit::*`
+//! path keeps resolving. This file keeps only the code that needs
+//! `pingora_proxy::Session`.
 
-use dashmap::DashMap;
+use std::borrow::Cow;
+
 use pingora_proxy::Session;
 
 use crate::config::schema::RateLimitConfig;
 use crate::filter::auth::is_path_skipped;
 
-/// Token-bucket state for a single client key.
-pub struct TokenBucket {
-    /// Currently available tokens (may be fractional for smooth refilling).
-    tokens: f64,
-    /// Maximum tokens the bucket can hold (equals the configured `limit`).
-    capacity: f64,
-    /// Tokens added per second (`limit / window_secs`).
-    refill_rate: f64,
-    /// Configured window length in seconds; used by cleanup to set the idle TTL.
-    window_secs: u64,
-    /// Last time the bucket was refilled or a token was consumed.
-    last_touched: Instant,
-    /// Number of requests that passed (token was available).
-    pub passed: u64,
-    /// Number of requests that were rejected (token unavailable).
-    pub rejected: u64,
+pub use conduit_ratelimit::{cleanup, RateLimiter, TokenBucket, MAX_BUCKETS};
+
+// Canonical, `\0`-separated bucket-key namespaces shared by every rate-limit
+// layer (site, route, consumer) and by `GET /rate-limits` (`admin/api.rs`),
+// which parses these same three shapes back apart. Unifies what was
+// previously three divergent, mutually-unparseable formats (bare client key
+// for site-level, `"route:{key}:{ip}"`, `"consumer:{username}"`) — see
+// issues #303/#304.
+//
+// Site- and route-level keys are scoped by `site_label` (the same
+// `"{host}:{port}"`/`"*"` value already used for
+// `conduit_rate_limit_rejected_total{site=…}`) so two sites sharing a
+// client key no longer collide into one shared bucket (#304). Consumer-level
+// keys are deliberately left unscoped — a consumer's quota is global across
+// every site it's allowed to call, by design (see `CLAUDE.md` decision #14).
+
+/// Build the site-level bucket key: `site\0{site_label}\0{client_key}`.
+pub fn site_key(site_label: &str, client_key: &str) -> String {
+    format!("site\0{site_label}\0{client_key}")
 }
 
-impl TokenBucket {
-    /// Create a new token bucket.
-    ///
-    /// * `limit`       — sustained request limit per `window_secs`
-    /// * `burst`       — extra capacity above `limit` for short spikes (0 = no burst)
-    /// * `window_secs` — refill window in seconds
-    ///
-    /// The bucket starts full at `limit + burst` tokens and refills at
-    /// `limit / window_secs` tokens per second.  This allows a burst of up to
-    /// `limit + burst` requests, while sustained throughput remains at `limit`.
-    pub fn new(limit: u64, burst: u64, window_secs: u64) -> Self {
-        let capacity = (limit + burst) as f64;
-        let refill_rate = limit as f64 / window_secs.max(1) as f64;
-        Self {
-            tokens: capacity,
-            capacity,
-            refill_rate,
-            window_secs: window_secs.max(1),
-            last_touched: Instant::now(),
-            passed: 0,
-            rejected: 0,
-        }
-    }
-
-    /// Refill tokens based on elapsed time, then try to consume one token.
-    ///
-    /// Returns `true` when a token was available (request should be allowed).
-    pub fn try_consume(&mut self) -> bool {
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last_touched).as_secs_f64();
-        self.tokens = (self.tokens + elapsed * self.refill_rate).min(self.capacity);
-        self.last_touched = now;
-
-        if self.tokens >= 1.0 {
-            self.tokens -= 1.0;
-            self.passed += 1;
-            true
-        } else {
-            self.rejected += 1;
-            false
-        }
-    }
-
-    /// Return the configured window length in seconds.
-    pub fn window_secs(&self) -> u64 {
-        self.window_secs
-    }
-
-    /// Returns `true` if this bucket has not been touched for `max_idle_secs`.
-    pub fn is_stale(&self, max_idle_secs: u64) -> bool {
-        self.last_touched.elapsed().as_secs() >= max_idle_secs
-    }
+/// Build the route-level bucket key:
+/// `route\0{site_label}\0{route_key}\0{client_key}`.
+pub fn route_key(site_label: &str, route_key: &str, client_key: &str) -> String {
+    format!("route\0{site_label}\0{route_key}\0{client_key}")
 }
 
-/// The shared rate-limiter map: client-key → token bucket.
-pub type RateLimiter = DashMap<String, TokenBucket>;
+/// Build the Redis-backend scope label for a per-route check:
+/// `route\0{site_label}\0{route_key}`.
+///
+/// Unlike [`route_key`] (the in-memory bucket key), this excludes
+/// `client_key` — `RedisRateLimiter::check` takes the client key as its own
+/// parameter and folds it into the Redis key separately (issue #322).
+pub fn redis_route_scope(site_label: &str, route_key: &str) -> String {
+    format!("route\0{site_label}\0{route_key}")
+}
+
+/// Build the consumer-level bucket key: `consumer\0{username}` — global
+/// per consumer, not site-scoped (see the module-level doc above).
+pub fn consumer_key(username: &str) -> String {
+    format!("consumer\0{username}")
+}
 
 /// Extract the rate-limit key from the request.
 ///
@@ -96,13 +72,13 @@ fn extract_key(cfg: &RateLimitConfig, session: &Session) -> String {
     let key_by = cfg.key_by.as_deref().unwrap_or("ip");
 
     if let Some(header_name) = key_by.strip_prefix("header:") {
-        return session
+        let raw = session
             .req_header()
             .headers
             .get(header_name)
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown")
-            .to_owned();
+            .unwrap_or("unknown");
+        return strip_nul(raw).into_owned();
     }
 
     // Default: key by client IP address.
@@ -113,165 +89,148 @@ fn extract_key(cfg: &RateLimitConfig, session: &Session) -> String {
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
+/// Strip any NUL byte from a client-derived key component.
+///
+/// A raw `\0` is valid UTF-8 (so `to_str()` on the header value doesn't
+/// reject it), but it would corrupt the `\0`-separated bucket-key format
+/// (`site_key`/`route_key`/`consumer_key` above) that `GET /rate-limits`
+/// (`admin/api.rs`) parses back apart -- a header value containing one
+/// silently shifts the key's segment count, and the admin endpoint's
+/// `_ => continue` fallback then drops that bucket from its aggregated
+/// counts (issue #320). Only header-derived keys (`keyBy: "header:X-Name"`)
+/// can carry one; the IP-derived default path never does. Admission itself
+/// (`conduit_ratelimit::check_key_for`) is unaffected either way -- the
+/// trusted `site_label` always occupies the key's first segment.
+fn strip_nul(raw: &str) -> Cow<'_, str> {
+    if raw.contains('\0') {
+        Cow::Owned(raw.replace('\0', ""))
+    } else {
+        Cow::Borrowed(raw)
+    }
+}
+
 /// Check the token-bucket rate limit for this request.
 ///
+/// `site_label` scopes the bucket key so two sites sharing a client key
+/// don't collide into one shared bucket (#304) — see [`site_key`].
+///
 /// Returns `true` if the request is within the limit (allowed to proceed).
-/// Maximum number of distinct rate-limit buckets per limiter.
-///
-/// When the DashMap exceeds this threshold a new key receives its own bucket
-/// only if it already exists.  If it doesn't exist we return `false`
-/// (treat as rate-limited) to prevent unbounded memory growth.
-///
-/// An attacker sending millions of unique `X-Custom-Header` values could
-/// otherwise exhaust memory by creating millions of token buckets.
-const MAX_BUCKETS: usize = 100_000;
-
-pub fn check(cfg: &RateLimitConfig, session: &Session, limiter: &RateLimiter) -> bool {
+/// Admission (including the `MAX_BUCKETS` cap) is delegated to
+/// `conduit_ratelimit::check_key_for` — the single admission point shared by
+/// every rate-limit layer (site, route, consumer, Redis fallback; see issue
+/// #305).
+pub fn check(
+    cfg: &RateLimitConfig,
+    session: &Session,
+    limiter: &RateLimiter,
+    site_label: &str,
+) -> bool {
     let path = session.req_header().uri.path();
     if is_path_skipped(cfg.skip_paths.as_deref(), path) {
         return true;
     }
 
-    let key = extract_key(cfg, session);
-
-    // Fast path: bucket already exists.
-    if let Some(mut bucket) = limiter.get_mut(&key) {
-        return bucket.try_consume();
-    }
-
-    // Slow path: new key — check capacity before inserting.
-    if limiter.len() >= MAX_BUCKETS {
-        // Map is full: treat as rate-limited rather than allocating another bucket.
-        tracing::warn!(
-            key = %key,
-            buckets = limiter.len(),
-            "rate-limit bucket cap reached — treating new key as rate-limited"
-        );
-        return false;
-    }
-
-    limiter
-        .entry(key)
-        .or_insert_with(|| TokenBucket::new(cfg.limit, cfg.burst.unwrap_or(0), cfg.window_secs))
-        .try_consume()
+    let client_key = extract_key(cfg, session);
+    let key = site_key(site_label, &client_key);
+    conduit_ratelimit::check_key_for(limiter, &key, cfg)
 }
 
-/// Remove stale entries from the rate-limiter map.
-///
-/// An entry is considered stale when it has not been touched for twice its
-/// configured window.  This ensures that even long windows (e.g. `windowSecs:
-/// 3600`) retain bucket state long enough for the next request to be correctly
-/// rate-limited.  Called every 60 seconds by the background cleanup task.
-pub fn cleanup(limiter: &RateLimiter) {
-    limiter.retain(|_, bucket| !bucket.is_stale(bucket.window_secs.saturating_mul(2)));
-}
+// extract_key/check need a real Session, exercised end-to-end via
+// tests/security.rs (rate_limit_* integration tests). The pure
+// TokenBucket/RateLimiter/check_key logic is unit-tested in
+// crates/conduit-ratelimit/src/bucket.rs now.
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // ── site_key / route_key / consumer_key ─────────────────────────────
+
     #[test]
-    fn bucket_starts_full_and_allows_limit_requests() {
-        let mut b = TokenBucket::new(3, 0, 60);
-        assert!(b.try_consume(), "1st token");
-        assert!(b.try_consume(), "2nd token");
-        assert!(b.try_consume(), "3rd token");
-        assert!(!b.try_consume(), "4th token must be denied");
+    fn site_key_scopes_by_site_label() {
+        let a = site_key("a.example.com:80", "1.2.3.4");
+        let b = site_key("b.example.com:80", "1.2.3.4");
+        assert_ne!(
+            a, b,
+            "two sites sharing a client key must not produce the same bucket key (#304)"
+        );
+        assert_eq!(a, "site\0a.example.com:80\x001.2.3.4");
     }
 
     #[test]
-    fn bucket_with_zero_window_secs_uses_minimum_one() {
-        // window_secs 0 is normalised to 1 internally.
-        let mut b = TokenBucket::new(1, 0, 0);
-        assert!(b.try_consume());
-        assert!(!b.try_consume());
+    fn route_key_scopes_by_site_label_and_route() {
+        let a = route_key("a.example.com:80", "/api", "1.2.3.4");
+        let b = route_key("b.example.com:80", "/api", "1.2.3.4");
+        assert_ne!(
+            a, b,
+            "two sites with the same route key and client key must not collide"
+        );
+        assert_eq!(a, "route\0a.example.com:80\0/api\x001.2.3.4");
     }
 
     #[test]
-    fn is_stale_with_zero_threshold_is_always_true() {
-        let b = TokenBucket::new(10, 0, 60);
-        assert!(b.is_stale(0), "elapsed >= 0 is always true");
+    fn redis_route_scope_scopes_by_site_label_and_route() {
+        let a = redis_route_scope("a.example.com:80", "/api");
+        let b = redis_route_scope("b.example.com:80", "/api");
+        assert_ne!(
+            a, b,
+            "two sites with the same route key must not collide under Redis (#322)"
+        );
+        assert_eq!(a, "route\0a.example.com:80\0/api");
     }
 
     #[test]
-    fn is_stale_with_huge_threshold_is_false() {
-        let b = TokenBucket::new(10, 0, 60);
-        assert!(!b.is_stale(u64::MAX));
+    fn consumer_key_is_not_site_scoped() {
+        // Deliberately global — a consumer's quota follows them across every
+        // site they're allowed to call, not scoped per site (CLAUDE.md #14).
+        assert_eq!(consumer_key("alice"), "consumer\0alice");
     }
 
     #[test]
-    fn cleanup_preserves_fresh_bucket() {
-        let limiter = RateLimiter::new();
-        limiter.insert("key".to_string(), TokenBucket::new(10, 0, 60));
-        cleanup(&limiter);
-        assert_eq!(limiter.len(), 1, "fresh bucket should survive cleanup");
+    fn the_three_namespaces_never_collide_with_each_other() {
+        let s = site_key("x", "y");
+        let r = route_key("x", "y", "z");
+        let c = consumer_key("x");
+        assert_ne!(s, r);
+        assert_ne!(s, c);
+        assert_ne!(r, c);
+    }
+
+    // ── strip_nul (issue #320) ───────────────────────────────────────────
+
+    #[test]
+    fn strip_nul_no_nul_returns_unchanged() {
+        assert_eq!(strip_nul("tenant-42"), "tenant-42");
     }
 
     #[test]
-    fn cleanup_on_empty_limiter_is_noop() {
-        let limiter = RateLimiter::new();
-        cleanup(&limiter);
-        assert_eq!(limiter.len(), 0);
+    fn strip_nul_removes_embedded_nul_byte() {
+        assert_eq!(strip_nul("abc\0def"), "abcdef");
     }
 
     #[test]
-    fn bucket_window_secs_returns_configured_value() {
-        let b = TokenBucket::new(100, 0, 120);
-        assert_eq!(b.window_secs(), 120);
+    fn strip_nul_removes_multiple_nul_bytes() {
+        assert_eq!(strip_nul("\0a\0b\0"), "ab");
     }
 
     #[test]
-    fn bucket_window_secs_minimum_one_when_zero_configured() {
-        // window_secs 0 is normalised to 1 internally.
-        let b = TokenBucket::new(10, 0, 0);
-        assert_eq!(b.window_secs(), 1);
+    fn strip_nul_all_nul_bytes_yields_empty_string() {
+        assert_eq!(strip_nul("\0\0\0"), "");
     }
 
     #[test]
-    fn multiple_buckets_independent() {
-        let limiter = RateLimiter::new();
-        limiter.insert("a".to_string(), TokenBucket::new(1, 0, 60));
-        limiter.insert("b".to_string(), TokenBucket::new(2, 0, 60));
-        {
-            let mut a = limiter.get_mut("a").unwrap();
-            assert!(a.try_consume());
-            assert!(!a.try_consume());
-        }
-        {
-            let mut b = limiter.get_mut("b").unwrap();
-            assert!(b.try_consume());
-            assert!(b.try_consume());
-            assert!(!b.try_consume());
-        }
-    }
-
-    // ── burst capacity ────────────────────────────────────────────────────────
-
-    #[test]
-    fn burst_allows_extra_requests_above_limit() {
-        // limit=2, burst=3 → bucket starts with 5 tokens
-        let mut b = TokenBucket::new(2, 3, 60);
-        for i in 0..5 {
-            assert!(b.try_consume(), "token {i} should be available");
-        }
-        assert!(!b.try_consume(), "6th token must be denied (limit+burst=5)");
-    }
-
-    #[test]
-    fn zero_burst_behaves_like_classic_token_bucket() {
-        let mut b = TokenBucket::new(3, 0, 60);
-        assert!(b.try_consume());
-        assert!(b.try_consume());
-        assert!(b.try_consume());
-        assert!(!b.try_consume());
-    }
-
-    #[test]
-    fn burst_capacity_is_limit_plus_burst() {
-        // A bucket with limit=2, burst=3 should allow exactly 5 requests
-        // without waiting (capacity = limit + burst = 5).
-        let mut b = TokenBucket::new(2, 3, 60);
-        let allowed = (0..10).filter(|_| b.try_consume()).count();
-        assert_eq!(allowed, 5, "capacity must equal limit + burst");
+    fn strip_nul_result_never_splits_a_site_key_into_extra_segments() {
+        // The actual bug: a raw NUL in a header-derived client key shifts
+        // site_key's segment count, so GET /rate-limits (admin/api.rs)
+        // silently drops the bucket via its `_ => continue` fallback.
+        // Proves the sanitized key round-trips through site_key with
+        // exactly the segment count the admin parser expects.
+        let sanitized = strip_nul("tenant\0-42");
+        let key = site_key("example.com:80", &sanitized);
+        assert_eq!(
+            key.matches('\0').count(),
+            2,
+            "site_key must always have exactly 2 NUL separators (3 segments), got: {key:?}"
+        );
     }
 }

@@ -71,31 +71,22 @@ whether something is patch/minor/major.
       clean — the point of making it unconditional is that "this one looks safe" is
       exactly the judgment a malicious PR/comment would try to manipulate.
 - [ ] `/build` green — fmt, clippy (`-D warnings`), tests (default + `full` if feature-gated).
-- [ ] `gh pr checks <N>` — all CI jobs pass (or known-transient failures re-run and verified).
-- [ ] CodeRabbit / reviewer threads addressed: reply with what changed (or why not), then
-      resolve via `gh api graphql resolveReviewThread` — see PR #70 for the pattern (don't
-      leave threads dangling; "Outside diff range" comments need a regular PR comment instead
-      of an inline reply, since GitHub can't post inline on those).
+- [ ] `mcp__github__pull_request_read` (`method: "get_check_runs"`) — all CI jobs pass (or
+      known-transient failures re-run via `mcp__github__actions_run_trigger` in a cloud
+      firing, or `gh pr checks`/`gh run rerun --failed` directly in a local session — see
+      `.claude/rules/index.md` "GitHub access differs by execution context").
+- [ ] CodeRabbit / reviewer threads addressed — see the **`coderabbit-reply`** skill
+      (`.claude/skills/coderabbit-reply/SKILL.md`) for the reply-then-resolve mechanics
+      (don't leave threads dangling; "Outside diff range" comments need a regular PR
+      comment instead of an inline reply, since GitHub can't post inline on those).
 - [ ] Version-string consistency checked if this is a release-shaped change (see "Versioning").
 - [ ] Docs updated if behavior/config/features changed (`docs/configuration.md`, `building.md`,
       `cli.md`, `deployment.md` as relevant — and `schema/conduit.schema.json` if schema changed).
 - [ ] `CLAUDE.md` backlog checkbox + session log updated if this closes a tracked item
       (see `scrum-master`).
 
-## CodeRabbit reply pattern (recurring task — see PR #70)
-
-```bash
-# Reply to an inline comment
-gh api repos/lopatnov/conduit/pulls/<PR>/comments/<comment_id>/replies -f body="..."
-
-# Find the review-thread node id for that comment, then resolve it
-gh api graphql -f query='query { repository(owner:"lopatnov", name:"conduit") {
-  pullRequest(number: <PR>) { reviewThreads(first: 50) { nodes { id isResolved
-  comments(first:1){nodes{databaseId}} } } } } }'
-gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:"<node_id>"})
-  { thread { isResolved } } }'
-```
-For "Outside diff range" comments (can't be replied to inline — platform limitation),
-post a regular `gh pr comment` addressing the points instead.
+> The CodeRabbit reply/resolve recipe (PR #70) moved to the **`coderabbit-reply`** skill
+> (`.claude/skills/coderabbit-reply/SKILL.md`) 2026-08-28 — load it when actually working
+> PR review threads rather than carrying the mechanics in every session's context.
 
 > One `git push` ≤ once/hour without explicit user request (see `.claude/rules/index.md` — economy & CI races).

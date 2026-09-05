@@ -13,7 +13,7 @@
 //!
 //! No changes to `service.rs` are required.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -23,72 +23,19 @@ use pingora_proxy::Session;
 
 #[cfg(feature = "consumers")]
 use crate::config::schema::ConsumersConfig;
-#[cfg(feature = "fault-injection")]
-use crate::config::schema::FaultInjectionConfig;
-#[cfg(feature = "forward-auth")]
-use crate::config::schema::ForwardAuthConfig;
-#[cfg(feature = "jwt")]
-use crate::config::schema::JwtAuthConfig;
-use crate::config::schema::{
-    ApiKeyConfig, BasicAuthConfig, CorsConfig, IpFilterConfig, LimitsConfig, MiddlewareEntry,
-    RateLimitConfig,
-};
-#[cfg(feature = "jwt")]
-use crate::filter::jwt;
+use crate::config::schema::{ApiKeyConfig, BasicAuthConfig, MiddlewareEntry, RateLimitConfig};
 use crate::filter::rate_limit::RateLimiter;
 #[cfg(feature = "redis")]
 use crate::filter::rate_limit_redis::RedisRateLimiter;
 #[cfg(feature = "rhai")]
 use crate::filter::script;
-use crate::filter::{auth, cors, ip_filter, limits, rate_limit};
+use crate::filter::{auth, rate_limit};
 use crate::handler::response;
 use uuid::Uuid;
 
-// ── Outcome ───────────────────────────────────────────────────────────────────
+// ── Outcome + Context + Trait (Layer-0 vocabulary, #114/#126) ──────────────────
 
-/// What a filter returns after inspecting a request.
-pub enum FilterOutcome {
-    /// Pass the request to the next filter in the chain.
-    Continue,
-    /// The filter wrote a rejection response and decremented the inflight
-    /// counter; the chain should stop and return `Ok(true)` to Pingora.
-    Handled,
-    /// Skip all remaining guard filters and let the normal dispatch proceed.
-    /// Used by the health / ACME / hot-reload bypass guard.
-    Bypass,
-}
-
-// ── Context ───────────────────────────────────────────────────────────────────
-
-/// Data shared by every filter in a single request's guard chain.
-pub struct FilterContext<'a> {
-    /// The live HTTP session — filters may read headers and write responses.
-    pub session: &'a mut Session,
-    /// Headers to attach to any rejection response (CORS, security, custom).
-    pub extra_headers: &'a [(String, String)],
-    /// Inflight counter; each filter that writes a rejection response
-    /// decrements it.
-    pub inflight: &'a AtomicUsize,
-    /// In-memory rate-limit token buckets.
-    pub rate_limiter: &'a RateLimiter,
-    /// Optional Redis-backed rate limiter (may be `None` at startup).
-    /// Only available when compiled with `--features redis`.
-    #[cfg(feature = "redis")]
-    pub redis_rate_limiter: Option<&'a Arc<RedisRateLimiter>>,
-    /// Per-client-IP concurrent connection counts (nginx limit_conn pattern).
-    pub ip_conn_counts: &'a dashmap::DashMap<String, AtomicUsize>,
-    /// Extracted client IP used for per-IP connection limiting.
-    pub client_ip: String,
-}
-
-// ── Trait ─────────────────────────────────────────────────────────────────────
-
-/// A single guard filter in the request pipeline.
-#[async_trait]
-pub trait RequestFilter: Send + Sync {
-    /// Inspect the request and decide whether to continue, reject, or bypass.
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome>;
-}
+pub use conduit_core::filter::chain::{FilterContext, FilterOutcome, RequestFilter};
 
 // ── Chain ─────────────────────────────────────────────────────────────────────
 
@@ -158,118 +105,22 @@ impl RequestFilter for XRequestIdGuard {
     }
 }
 
-/// Rejects requests whose client IP is not in the allow-list / is in the deny-list.
-pub struct IpGuard {
-    pub cfg: IpFilterConfig,
-    /// Runtime deny-list managed via Admin API (`POST /ip-deny` / `DELETE /ip-deny`).
-    /// Checked in addition to `ipFilter.deny` from the static config.
-    pub dynamic_deny: Arc<std::sync::RwLock<Vec<String>>>,
-}
+/// Extracted into `crates/conduit-ipfilter` (issue #114/#136) — this is a
+/// facade re-export so `crate::filter::chain::IpGuard` keeps resolving to
+/// the same type at the same location for every existing call site/test.
+/// See that crate's `src/guard.rs` for the implementation: rejects requests
+/// whose client IP is not in the allow-list / is in the deny-list (including
+/// the runtime deny-list managed via Admin API `POST /ip-deny`).
+pub use conduit_ipfilter::guard::IpGuard;
 
-#[async_trait]
-impl RequestFilter for IpGuard {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        // Fast path: no static rules and no dynamic denies — nothing to check.
-        // Recover from lock poisoning here too (not just in is_dynamic_denied
-        // below) — otherwise a poisoned lock with no static rules configured
-        // short-circuits to Continue before is_dynamic_denied's own recovery
-        // logic is ever reached, silently disabling the whole dynamic deny
-        // list for exactly the sites relying on it most (dynamic-only setups).
-        let has_static = self.cfg.allow.is_some() || self.cfg.deny.is_some();
-        let has_dynamic = self
-            .dynamic_deny
-            .read()
-            .map(|l| !l.is_empty())
-            .unwrap_or_else(|e| !e.into_inner().is_empty());
-        if !has_static && !has_dynamic {
-            return Ok(FilterOutcome::Continue);
-        }
-
-        let blocked =
-            !ip_filter::is_allowed(&self.cfg, ctx.session) || self.is_dynamic_denied(ctx.session);
-        if blocked {
-            // Dry-run mode (nginx `limit_conn_module dry_run` pattern):
-            // log the violation but allow the request through.
-            if self.cfg.dry_run.unwrap_or(false) {
-                // Use the same trust_proxy-aware resolution as the actual
-                // filtering decision above — otherwise the logged IP can
-                // diverge from the IP that was actually evaluated (e.g. the
-                // direct TCP peer instead of the trusted XFF entry).
-                let trust_proxy = self.cfg.trust_proxy.unwrap_or(false);
-                let client_ip = ip_filter::client_ip_for_check(ctx.session, trust_proxy)
-                    .map(|ip| ip.to_string())
-                    .unwrap_or_else(|| "unknown".to_owned());
-                tracing::warn!(
-                    ip = %client_ip,
-                    "[dry-run] IP filter blocked — request allowed through (dryRun: true)"
-                );
-                return Ok(FilterOutcome::Continue);
-            }
-            response::write_response(
-                ctx.session,
-                403,
-                "text/plain",
-                Bytes::from_static(b"Forbidden"),
-                ctx.extra_headers,
-            )
-            .await?;
-            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-            return Ok(FilterOutcome::Handled);
-        }
-        Ok(FilterOutcome::Continue)
-    }
-}
-
-impl IpGuard {
-    /// Returns `true` when the client IP matches any entry in `dynamic_deny`.
-    ///
-    /// Holds the read lock only for the duration of the check — avoids the
-    /// previous `deny_list.clone()` that allocated a full Vec per request.
-    fn is_dynamic_denied(&self, session: &pingora_proxy::Session) -> bool {
-        // Recover from lock poisoning instead of fail-open — a panic while
-        // another request held the write lock (e.g. inside the Admin API's
-        // POST/DELETE /ip-deny handler) must not silently disable the whole
-        // dynamic deny list for every subsequent request. Matches the
-        // recovery pattern already used on the admin write-side.
-        let deny_list = self.dynamic_deny.read().unwrap_or_else(|e| e.into_inner());
-        if deny_list.is_empty() {
-            return false;
-        }
-        // Use apply_ip_filter directly while holding the read lock so we avoid
-        // cloning the deny list into a new IpFilterConfig on every request.
-        let trust_proxy = self.cfg.trust_proxy.unwrap_or(false);
-        let client_ip = ip_filter::client_ip_for_check(session, trust_proxy);
-        ip_filter::is_in_deny_list(client_ip, &deny_list)
-    }
-}
-
-/// Handles CORS preflight (`OPTIONS`) requests and echoes the appropriate headers.
-///
-/// Returns [`FilterOutcome::Handled`] for preflight so downstream filters and
-/// the upstream proxy are never reached (browsers send OPTIONS without credentials).
-pub struct CorsPreflight {
-    pub cfg: CorsConfig,
-    pub is_preflight: bool,
-    pub origin: Option<String>,
-    /// Security-headers-only set — used for preflight instead of the full
-    /// extra-headers set which may include CORS headers already.
-    pub sec_headers: Vec<(String, String)>,
-}
-
-#[async_trait]
-impl RequestFilter for CorsPreflight {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        if !self.is_preflight {
-            return Ok(FilterOutcome::Continue);
-        }
-        let origin = self.origin.as_deref().unwrap_or("");
-        let allow_pna = cors::requests_private_network_access(ctx.session);
-        cors::handle_preflight(ctx.session, &self.cfg, origin, &self.sec_headers, allow_pna)
-            .await?;
-        ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-        Ok(FilterOutcome::Handled)
-    }
-}
+/// Extracted into `crates/conduit-cors` (issue #114/#136) — this is a facade
+/// re-export so `crate::filter::chain::CorsPreflight` keeps resolving to the
+/// same type at the same location for every existing call site/test. See
+/// that crate's `src/guard.rs` for the implementation: handles CORS
+/// preflight (`OPTIONS`) requests and echoes the appropriate headers,
+/// returning `FilterOutcome::Handled` so downstream filters and the
+/// upstream proxy are never reached.
+pub use conduit_cors::guard::CorsPreflight;
 
 /// Bypasses all remaining guard filters for health, ACME challenge, and
 /// hot-reload endpoints — they must always be reachable.
@@ -288,223 +139,26 @@ impl RequestFilter for HealthBypass {
     }
 }
 
-/// Validates the `Host` request header against a configured allowlist.
-///
-/// Runs immediately after `HealthBypass` so health/ACME/hot-reload endpoints
-/// are always reachable regardless of the allowlist.  All other requests with
-/// a disallowed Host receive `400 Bad Request`.
-///
-/// Pattern from traefik `AllowedHosts` — prevents HTTP Host header injection
-/// where an application generates absolute URLs from an untrusted Host header.
-///
-/// When `securityHeaders.allowedHosts` is not explicitly configured, falls
-/// back to the site's own `host:` value (`site_host`) so this protection
-/// applies by default, not just when opted into.
-pub struct AllowedHostsGuard {
-    pub security_cfg: Option<crate::config::schema::SecurityHeadersConfig>,
-    pub site_host: Option<String>,
-    pub host: String,
-}
+/// Extracted into `crates/conduit-security-headers` (issue #114/#136) — this
+/// is a facade re-export so `crate::filter::chain::AllowedHostsGuard` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test. See that crate's `src/guard.rs` for the implementation:
+/// validates the `Host` request header against a configured allowlist
+/// (falling back to the site's own `host:` value when `securityHeaders.
+/// allowedHosts` isn't explicitly set), returning `400 Bad Request` on a
+/// mismatch. Runs immediately after `HealthBypass` so health/ACME/hot-reload
+/// endpoints are always reachable regardless of the allowlist.
+pub use conduit_security_headers::guard::AllowedHostsGuard;
 
-#[async_trait]
-impl RequestFilter for AllowedHostsGuard {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        if crate::filter::security_headers::is_host_allowed(
-            self.security_cfg.as_ref(),
-            self.site_host.as_deref(),
-            &self.host,
-        ) {
-            return Ok(FilterOutcome::Continue);
-        }
-        crate::handler::response::write_response(
-            ctx.session,
-            400,
-            "text/plain",
-            bytes::Bytes::from_static(b"Bad Request: host not allowed"),
-            ctx.extra_headers,
-        )
-        .await?;
-        ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-        Ok(FilterOutcome::Handled)
-    }
-}
-
-/// Enforces request body and header size limits.
-pub struct LimitsGuard {
-    pub cfg: LimitsConfig,
-}
-
-#[async_trait]
-impl RequestFilter for LimitsGuard {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        // Host header security check — always enforced, no config needed.
-        //
-        // Reject requests whose Host header is:
-        //   1. Non-UTF-8 bytes (obvious malform / injection attempt).
-        //   2. Contains CR, LF, or NUL (header-injection / smuggling).
-        //   3. Not a valid HTTP authority (e.g. contains spaces, path
-        //      separators, or other RFC 3986 §3.2-invalid characters).
-        let host_hdr = ctx.session.req_header().headers.get("host");
-        if is_host_header_invalid(host_hdr) {
-            response::write_response(
-                ctx.session,
-                400,
-                "text/plain",
-                Bytes::from_static(b"Bad Request (invalid Host header)"),
-                ctx.extra_headers,
-            )
-            .await?;
-            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-            return Ok(FilterOutcome::Handled);
-        }
-
-        // Request header count limit. `>`, not `>=` — exactly max_hdrs headers is allowed.
-        if let Some(max_hdrs) = self.cfg.max_request_headers {
-            let count = ctx.session.req_header().headers.len() as u32;
-            if count > max_hdrs {
-                response::write_response(
-                    ctx.session,
-                    431,
-                    "text/plain",
-                    Bytes::from_static(b"Request Header Fields Too Large"),
-                    ctx.extra_headers,
-                )
-                .await?;
-                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(FilterOutcome::Handled);
-            }
-        }
-
-        // Inflight request cap — checked before body/header limits so the
-        // rejection cost is minimal when the server is under heavy load.
-        if let Some(max) = self.cfg.max_inflight_requests {
-            // The inflight counter was already incremented at the start of
-            // request_filter, so the current value includes this request.
-            let current = ctx.inflight.load(Ordering::Relaxed) as u64;
-            if current > max {
-                response::write_response(
-                    ctx.session,
-                    503,
-                    "text/plain",
-                    Bytes::from_static(b"Service Unavailable (too many concurrent requests)"),
-                    ctx.extra_headers,
-                )
-                .await?;
-                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(FilterOutcome::Handled);
-            }
-        }
-
-        if let Some((status, body)) = limits_rejection(limits::check(&self.cfg, ctx.session)) {
-            response::write_response(ctx.session, status, "text/plain", body, ctx.extra_headers)
-                .await?;
-            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-            return Ok(FilterOutcome::Handled);
-        }
-
-        // Per-IP concurrent connection limit (nginx limit_conn pattern).
-        // Checked after the inflight cap so the DashMap lookup only runs when
-        // the server is accepting new connections.
-        if let Some(max_per_ip) = self.cfg.max_connections_per_ip {
-            let ip = &ctx.client_ip;
-            if !ip.is_empty() && !try_acquire_ip_slot(ip, max_per_ip, ctx.ip_conn_counts) {
-                response::write_response(
-                    ctx.session,
-                    429,
-                    "text/plain",
-                    Bytes::from_static(b"Too Many Connections"),
-                    ctx.extra_headers,
-                )
-                .await?;
-                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(FilterOutcome::Handled);
-            }
-        }
-
-        Ok(FilterOutcome::Continue)
-    }
-}
-
-/// Returns `true` when the `Host` header value is malformed or contains
-/// characters that could be exploited for header-injection attacks.
-///
-/// Rejects:
-/// - Non-UTF-8 bytes.
-/// - Values containing CR, LF, or NUL control characters.
-/// - Values that are not a valid RFC 3986 authority (spaces, backslash,
-///   path separators, etc.).
-///
-/// Source: freenginx `ngx_http_request.c` — `ngx_http_validate_host()`
-/// commit `d5ea86c7`.
-fn is_host_header_invalid(hdr: Option<&http::header::HeaderValue>) -> bool {
-    let v = match hdr {
-        Some(v) => v,
-        None => return false, // absent Host is handled separately
-    };
-    let s = match v.to_str() {
-        Err(_) => return true, // non-UTF-8 → reject
-        Ok(s) => s,
-    };
-    // Belt-and-suspenders control-byte check.
-    if s.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0) {
-        return true;
-    }
-    // Full RFC 3986 authority grammar validation.
-    http::uri::Authority::try_from(s).is_err()
-}
-
-/// Attempt to acquire one connection slot for `ip` against `max`.
-///
-/// Atomically increments the counter for this IP.  If the result exceeds
-/// `max` the increment is immediately rolled back and `false` is returned so
-/// the caller can reject the request with a 429.  Returns `true` when the
-/// slot was successfully acquired.
-fn try_acquire_ip_slot(ip: &str, max: u64, counts: &dashmap::DashMap<String, AtomicUsize>) -> bool {
-    let current = counts
-        .entry(ip.to_owned())
-        .or_insert_with(|| AtomicUsize::new(0))
-        .fetch_add(1, Ordering::Relaxed)
-        + 1;
-    if current as u64 > max {
-        // Undo the increment — this request is rejected.
-        if let Some(counter) = counts.get(ip) {
-            counter.fetch_sub(1, Ordering::Relaxed);
-        }
-        return false;
-    }
-    true
-}
-
-// ── RAII connection-slot guard ────────────────────────────────────────────────
-
-/// RAII guard that holds one per-IP connection slot for the duration of a
-/// request.
-///
-/// When this guard is dropped (at the end of the request lifecycle, whether
-/// the request completes normally, is rejected, or panics) the slot is
-/// automatically released by decrementing the shared counter.  This replaces
-/// the manual `fetch_sub` that was previously scattered across `logging()`.
-///
-/// The guard is created in `service.rs` after the filter chain succeeds and
-/// stored in [`RequestCtx`]; it is dropped when `RequestCtx` is dropped at
-/// the end of `logging()`.
-#[derive(Debug)]
-pub struct IpConnSlotGuard {
-    pub ip: String,
-    pub counts: Arc<dashmap::DashMap<String, AtomicUsize>>,
-}
-
-impl Drop for IpConnSlotGuard {
-    fn drop(&mut self) {
-        if let Some(counter) = self.counts.get(&self.ip) {
-            let prev = counter.fetch_sub(1, Ordering::Relaxed);
-            if prev == 0 {
-                // Prevent wrap-around on a hypothetical race.
-                counter.store(0, Ordering::Relaxed);
-            }
-        }
-    }
-}
+/// Extracted into `crates/conduit-limits` (issue #114/#137) — this is a
+/// facade re-export so `crate::filter::chain::{LimitsGuard, IpConnSlotGuard}`
+/// keep resolving to the same types at the same location for every existing
+/// call site/test. See that crate's `src/guard.rs` for the implementation:
+/// Host-header validation, `maxRequestHeaders`, `maxInflightRequests`,
+/// declared body/header size limits, and `maxConnectionsPerIp` via the RAII
+/// `IpConnSlotGuard` (released when `RequestCtx`'s `limits.ip_conn_slot`
+/// is dropped at the end of `logging()`).
+pub use conduit_limits::guard::{IpConnSlotGuard, LimitsGuard};
 
 /// Token-bucket rate limiter; falls back to in-memory when Redis is unavailable.
 pub struct RateLimitGuard {
@@ -512,6 +166,12 @@ pub struct RateLimitGuard {
     /// Label used for `conduit_rate_limit_rejected_total{site=…}`.
     /// Typically `"host:port"` or `"*"` for catch-all sites.
     pub site_label: String,
+    /// In-memory rate-limit token buckets.
+    pub rate_limiter: Arc<RateLimiter>,
+    /// Optional Redis-backed rate limiter (may be `None` at startup).
+    /// Only available when compiled with `--features redis`.
+    #[cfg(feature = "redis")]
+    pub redis_rate_limiter: Option<Arc<RedisRateLimiter>>,
 }
 
 #[async_trait]
@@ -520,9 +180,10 @@ impl RequestFilter for RateLimitGuard {
         let allowed = rate_limit_allowed(
             &self.cfg,
             ctx.session,
-            ctx.rate_limiter,
+            &self.rate_limiter,
+            &self.site_label,
             #[cfg(feature = "redis")]
-            ctx.redis_rate_limiter,
+            self.redis_rate_limiter.as_ref(),
             #[cfg(not(feature = "redis"))]
             None,
         )
@@ -573,6 +234,13 @@ impl RequestFilter for RateLimitGuard {
 pub struct ConsumersGuard {
     pub cfg: ConsumersConfig,
     pub path: String,
+    /// Shared token-bucket rate limiter, used for the per-consumer rate limit.
+    pub rate_limiter: Arc<RateLimiter>,
+    /// Optional Redis-backed rate limiter (may be `None` at startup) — used
+    /// when a consumer's `rateLimit.store` is `"redis://..."` (issue #322).
+    /// Only available when compiled with `--features redis`.
+    #[cfg(feature = "redis")]
+    pub redis_rate_limiter: Option<Arc<RedisRateLimiter>>,
 }
 
 #[cfg(feature = "consumers")]
@@ -595,38 +263,85 @@ impl RequestFilter for ConsumersGuard {
         let _ = ctx.session.req_header_mut().remove_header(id_header_name);
 
         // Identify consumer from credentials in the request.
-        let consumer = auth::identify_consumer(&self.cfg, ctx.session);
+        //
+        // Extracted into `crates/conduit-auth-consumers` (issue #114/#134):
+        // `identify_consumer` moved there, but `ConsumersGuard` itself
+        // stays here — see that crate's `src/lib.rs` doc comment for why
+        // (this guard also needs `self.rate_limiter` below, which hasn't
+        // been extracted yet).
+        let consumer = conduit_auth_consumers::identify_consumer(&self.cfg, ctx.session);
         let Some(consumer) = consumer else {
             response::write_denied(ctx.session, None, ctx.extra_headers).await?;
             ctx.inflight.fetch_sub(1, Ordering::Relaxed);
             return Ok(FilterOutcome::Handled);
         };
 
-        // Per-consumer rate limit — key: "consumer:{username}" (global per consumer).
+        // Per-consumer rate limit — global per consumer, not site-scoped
+        // (see rate_limit::consumer_key's doc for why). `keyBy` stays a
+        // no-op here by design regardless of backend (schema docs: the
+        // consumer bucket key is always the username, never derived from
+        // the request). `store: "redis://..."` is now honored too (issue
+        // #322) — the Redis scope label is the fixed literal `"consumer"`
+        // (not the username), with the username carried in `client_key`
+        // instead, since `RedisRateLimiter::check`'s Redis key already
+        // folds `client_key` in as its own segment.
         if let Some(rl_cfg) = &consumer.rate_limit {
-            let key = format!("consumer:{}", consumer.username);
-            let allowed = ctx
-                .rate_limiter
-                .entry(key)
-                .or_insert_with(|| {
-                    crate::filter::rate_limit::TokenBucket::new(
-                        rl_cfg.limit,
-                        rl_cfg.burst.unwrap_or(0),
-                        rl_cfg.window_secs,
-                    )
-                })
-                .try_consume();
-            if !allowed {
-                response::write_response(
-                    ctx.session,
-                    429,
-                    "text/plain",
-                    bytes::Bytes::from_static(b"Too Many Requests"),
-                    ctx.extra_headers,
-                )
-                .await?;
-                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(FilterOutcome::Handled);
+            let skip = rl_cfg
+                .skip_paths
+                .as_deref()
+                .is_some_and(|sp| auth::is_path_skipped(Some(sp), &self.path));
+            if !skip {
+                #[cfg(feature = "redis")]
+                let allowed = if rl_cfg
+                    .store
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
+                {
+                    if let Some(rrl) = &self.redis_rate_limiter {
+                        rrl.check(
+                            "consumer",
+                            &consumer.username,
+                            rl_cfg.limit,
+                            rl_cfg.burst.unwrap_or(0),
+                            rl_cfg.window_secs,
+                        )
+                        .await
+                    } else {
+                        let key = rate_limit::consumer_key(&consumer.username);
+                        conduit_ratelimit::check_key_for(&self.rate_limiter, &key, rl_cfg)
+                    }
+                } else {
+                    let key = rate_limit::consumer_key(&consumer.username);
+                    // Routed through the shared MAX_BUCKETS-capped admission
+                    // point (issue #305) instead of a hand-rolled, uncapped
+                    // entry()/or_insert_with() — this map has no cap check
+                    // of its own.
+                    conduit_ratelimit::check_key_for(&self.rate_limiter, &key, rl_cfg)
+                };
+                #[cfg(not(feature = "redis"))]
+                let allowed = {
+                    let key = rate_limit::consumer_key(&consumer.username);
+                    conduit_ratelimit::check_key_for(&self.rate_limiter, &key, rl_cfg)
+                };
+                if !allowed {
+                    if rl_cfg.dry_run.unwrap_or(false) {
+                        tracing::warn!(
+                            consumer = %consumer.username,
+                            "[dry-run] per-consumer rate limit exceeded — request allowed through (dryRun: true)"
+                        );
+                    } else {
+                        response::write_response(
+                            ctx.session,
+                            429,
+                            "text/plain",
+                            bytes::Bytes::from_static(b"Too Many Requests"),
+                            ctx.extra_headers,
+                        )
+                        .await?;
+                        ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+                        return Ok(FilterOutcome::Handled);
+                    }
+                }
             }
         }
 
@@ -694,285 +409,46 @@ impl RequestFilter for ApiKeyGuard {
     }
 }
 
-/// JWT bearer-token authentication guard.
-///
-/// Validates the `Authorization: Bearer <token>` header using either an HMAC
-/// secret (`jwtAuth.secret`) or a remote JWKS endpoint (`jwtAuth.jwksUrl`).
+/// Extracted into `crates/conduit-auth-jwt` (issue #114/#133) — this is a
+/// facade re-export so `crate::filter::chain::JwtGuard` keeps resolving to
+/// the same type at the same location for every existing call site/test.
+/// See that crate's `src/guard.rs` for the implementation: validates the
+/// `Authorization: Bearer <token>` header using either an HMAC secret
+/// (`jwtAuth.secret`) or a remote JWKS endpoint (`jwtAuth.jwksUrl`).
 /// Returns `401 Unauthorized` when the token is absent or invalid.
 #[cfg(feature = "jwt")]
-pub struct JwtGuard {
-    pub cfg: JwtAuthConfig,
-    pub path: String,
-}
+pub use conduit_auth_jwt::guard::JwtGuard;
 
-#[cfg(feature = "jwt")]
-#[async_trait]
-impl RequestFilter for JwtGuard {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        let auth_header = ctx
-            .session
-            .req_header()
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok());
-
-        match jwt::check_jwt(&self.cfg, &self.path, auth_header) {
-            jwt::JwtCheckResult::Allowed => Ok(FilterOutcome::Continue),
-            jwt::JwtCheckResult::Denied { reason } => {
-                tracing::debug!(reason, "JWT validation denied");
-                response::write_denied(ctx.session, Some("Bearer"), ctx.extra_headers).await?;
-                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                Ok(FilterOutcome::Handled)
-            }
-        }
-    }
-}
-
-/// Forward Auth guard — delegates authentication/authorization to an external service.
-///
-/// Sends the incoming request (filtered headers) to the configured auth URL.
+/// Extracted into `crates/conduit-auth-forward` (issue #114/#134) — this is
+/// a facade re-export so `crate::filter::chain::ForwardAuthGuard` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test. See that crate's `src/guard.rs` for the implementation:
+/// delegates authentication/authorization to an external service, sending
+/// the incoming request (filtered headers) to the configured auth URL.
 /// - **2xx** → auth passed; headers listed in `responseHeaders` are injected
 ///   into the upstream request so the upstream receives user identity/role info.
 /// - **4xx / 5xx** → auth denied; the auth service status is returned to the
 ///   client immediately.
-///
-/// Uses a process-wide `reqwest::Client` with a connection pool so that
-/// hot-path requests don't pay TCP setup overhead.
 #[cfg(feature = "forward-auth")]
-pub struct ForwardAuthGuard {
-    pub cfg: ForwardAuthConfig,
-    pub path: String,
-}
+pub use conduit_auth_forward::guard::ForwardAuthGuard;
 
-/// Process-wide reqwest client for forward-auth and JWKS fetching.
-///
-/// Uses separate `connect_timeout` (TCP SYN + TLS handshake) and overall
-/// `timeout` (from connect to last body byte) so that both hung TCP
-/// connections AND slow auth servers are bounded.
-#[cfg(feature = "forward-auth")]
-fn forward_auth_client() -> &'static reqwest::Client {
-    use std::sync::OnceLock;
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(3)) // TCP+TLS max
-            .timeout(std::time::Duration::from_secs(10)) // total request max
-            .build()
-            .unwrap_or_default()
-    })
-}
-
-#[cfg(feature = "forward-auth")]
-#[async_trait]
-impl RequestFilter for ForwardAuthGuard {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        use crate::filter::auth::is_path_skipped;
-
-        // Bypass for configured skip paths.
-        if let Some(skip) = &self.cfg.skip_paths {
-            if is_path_skipped(Some(skip.as_slice()), &self.path) {
-                return Ok(FilterOutcome::Continue);
-            }
-        }
-
-        let auth_url = &self.cfg.url;
-        let timeout_ms = self.cfg.timeout_ms.unwrap_or(5000);
-        let client = forward_auth_client();
-
-        // Build the subrequest.
-        let method = ctx.session.req_header().method.as_str();
-        let uri = ctx
-            .session
-            .req_header()
-            .uri
-            .path_and_query()
-            .map(|pq| pq.as_str())
-            .unwrap_or("/");
-        let client_ip = ctx
-            .session
-            .client_addr()
-            .and_then(|a| a.as_inet())
-            .map(|a| a.ip().to_string())
-            .unwrap_or_default();
-
-        let mut req = client
-            .get(auth_url)
-            .timeout(std::time::Duration::from_millis(timeout_ms))
-            .header("X-Forwarded-Method", method)
-            .header("X-Forwarded-Uri", uri)
-            .header("X-Forwarded-For", &client_ip);
-
-        // Forward specific request headers if configured.
-        if let Some(fwd_hdrs) = &self.cfg.request_headers {
-            req = forward_auth_add_headers(req, fwd_hdrs, ctx.session);
-        }
-
-        // Make the subrequest.
-        let auth_resp = match req.send().await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(url = %auth_url, error = %e, "forward-auth service unreachable");
-                // Fail closed: treat unreachable auth service as 401.
-                response::write_denied(ctx.session, None, ctx.extra_headers).await?;
-                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(FilterOutcome::Handled);
-            }
-        };
-
-        let status = auth_resp.status();
-        if status.is_success() {
-            // Inject auth service response headers into the upstream request.
-            if let Some(copy_hdrs) = &self.cfg.response_headers {
-                forward_auth_inject_response_headers(&auth_resp, copy_hdrs, ctx.session);
-            }
-            Ok(FilterOutcome::Continue)
-        } else {
-            let status_code = status.as_u16();
-            let body = bytes::Bytes::from_static(if status_code == 403 {
-                b"Forbidden"
-            } else {
-                b"Unauthorized"
-            });
-            response::write_response(
-                ctx.session,
-                status_code,
-                "text/plain",
-                body,
-                ctx.extra_headers,
-            )
-            .await?;
-            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-            Ok(FilterOutcome::Handled)
-        }
-    }
-}
-
-/// Add configured request headers to a forward-auth subrequest.
-#[cfg(feature = "forward-auth")]
-fn forward_auth_add_headers(
-    mut req: reqwest::RequestBuilder,
-    fwd_hdrs: &[String],
-    session: &Session,
-) -> reqwest::RequestBuilder {
-    for name in fwd_hdrs {
-        if let Some(val) = session.req_header().headers.get(name.as_str()) {
-            if let Ok(v) = val.to_str() {
-                req = req.header(name.as_str(), v);
-            }
-        }
-    }
-    req
-}
-
-/// Copy configured response headers from a forward-auth response into the session.
-///
-/// Strips every configured header name from the client request BEFORE
-/// inserting the auth-service-returned values. Without this, a header the
-/// auth service doesn't happen to return (e.g. `X-User-ID` for an anonymous
-/// session, or simply a misconfigured `responseHeaders` entry) leaves the
-/// upstream trusting whatever value the *client itself* sent under that
-/// name — the exact identity-spoofing bug `ConsumersGuard::apply` already
-/// guards against for `X-Consumer-ID` above.
-#[cfg(feature = "forward-auth")]
-fn forward_auth_inject_response_headers(
-    auth_resp: &reqwest::Response,
-    copy_hdrs: &[String],
-    session: &mut Session,
-) {
-    let to_inject: Vec<(String, String)> = copy_hdrs
-        .iter()
-        .filter_map(|name| {
-            auth_resp
-                .headers()
-                .get(name.as_str())
-                .and_then(|val| val.to_str().ok())
-                .map(|v| (name.clone(), v.to_owned()))
-        })
-        .collect();
-    for name in copy_hdrs {
-        let _ = session.req_header_mut().remove_header(name.as_str());
-    }
-    for (name, value) in to_inject {
-        let _ = session.req_header_mut().insert_header(name, value);
-    }
-}
-
-/// Injects artificial faults (aborts or delays) for chaos-engineering and
-/// testing retry/circuit-breaker behaviour.
-///
-/// **Should not be used in production.**  Use it in staging or test
-/// environments to validate that your clients handle upstream failures
-/// gracefully.
+/// Extracted into `crates/conduit-faults` (issue #114/#132) — this is a
+/// facade re-export so `crate::filter::chain::FaultInjectionGuard` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test. See that crate's `src/guard.rs` for the implementation:
+/// injects artificial faults (aborts or delays) for chaos-engineering and
+/// testing retry/circuit-breaker behaviour. **Should not be used in
+/// production.**
 #[cfg(feature = "fault-injection")]
-pub struct FaultInjectionGuard {
-    pub cfg: FaultInjectionConfig,
-}
+pub use conduit_faults::guard::FaultInjectionGuard;
 
-#[cfg(feature = "fault-injection")]
-#[async_trait]
-impl RequestFilter for FaultInjectionGuard {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        // Use a simple pseudo-random roll based on the current time nanoseconds.
-        // Good enough for percentage-based fault injection; not cryptographically
-        // random, but that's not required here.
-        let roll: f64 = {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let ns = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .subsec_nanos() as f64;
-            (ns % 10_000.0) / 100.0 // 0.0 – 99.99
-        };
-
-        // Abort injection — checked first.
-        if let Some(ref abort) = self.cfg.abort {
-            if roll < abort.percent {
-                let status = abort.status.unwrap_or(503).clamp(100, 999);
-                let body = abort
-                    .body
-                    .clone()
-                    .unwrap_or_else(|| "Fault injected".to_owned());
-                response::write_response(
-                    ctx.session,
-                    status,
-                    "text/plain",
-                    Bytes::from(body),
-                    ctx.extra_headers,
-                )
-                .await?;
-                ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-                return Ok(FilterOutcome::Handled);
-            }
-        }
-
-        // Delay injection.
-        if let Some(ref delay) = self.cfg.delay {
-            if roll < delay.percent {
-                tokio::time::sleep(std::time::Duration::from_millis(delay.ms)).await;
-            }
-        }
-
-        Ok(FilterOutcome::Continue)
-    }
-}
-
-/// Handles configured URL redirects (301/302/307/308).
-pub struct RedirectGuard {
-    /// Pre-computed redirect target from the redirect rules, if any matched.
-    pub result: Option<(String, u16)>,
-}
-
-#[async_trait]
-impl RequestFilter for RedirectGuard {
-    async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
-        if let Some((ref location, status)) = self.result {
-            response::write_redirect(ctx.session, status, location, ctx.extra_headers).await?;
-            ctx.inflight.fetch_sub(1, Ordering::Relaxed);
-            return Ok(FilterOutcome::Handled);
-        }
-        Ok(FilterOutcome::Continue)
-    }
-}
+/// Extracted into `crates/conduit-redirects` (issue #114/#140) — this is a
+/// facade re-export so `crate::filter::chain::RedirectGuard` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test. See that crate's `src/guard.rs` for the implementation:
+/// handles configured URL redirects (301/302/307/308), answering the
+/// request directly when a rule matched.
+pub use conduit_redirects::guard::RedirectGuard;
 
 /// Executes all middleware entries in the order they appear in `site.middleware`.
 ///
@@ -1156,9 +632,20 @@ async fn rate_limit_allowed(
     cfg: &RateLimitConfig,
     session: &mut Session,
     rate_limiter: &RateLimiter,
+    site_label: &str,
     #[cfg(feature = "redis")] redis: Option<&Arc<RedisRateLimiter>>,
     #[cfg(not(feature = "redis"))] _redis: Option<()>,
 ) -> bool {
+    // Checked once, up front, so it applies uniformly to both the Redis and
+    // in-memory paths below. Previously only `rate_limit::check` (the
+    // in-memory path) checked this — a site-level `store: redis` config
+    // silently ignored `skipPaths` entirely (found while fixing #306/#307;
+    // not a previously-filed issue, just the same code this touches).
+    let path = session.req_header().uri.path();
+    if auth::is_path_skipped(cfg.skip_paths.as_deref(), path) {
+        return true;
+    }
+
     #[cfg(feature = "redis")]
     if cfg
         .store
@@ -1167,56 +654,29 @@ async fn rate_limit_allowed(
     {
         if let Some(rrl) = redis {
             let key = rate_limit::extract_client_key(cfg, session);
-            return rrl.check(&key, cfg.limit, cfg.window_secs).await;
+            return rrl
+                .check(
+                    site_label,
+                    &key,
+                    cfg.limit,
+                    cfg.burst.unwrap_or(0),
+                    cfg.window_secs,
+                )
+                .await;
         }
     }
     #[cfg(not(feature = "redis"))]
     let _ = cfg.store.as_deref(); // suppress unused warning when redis disabled
-    rate_limit::check(cfg, session, rate_limiter)
-}
-
-/// Map a `limits::CheckResult` to the HTTP rejection status + body, or `None`
-/// when the request is within the configured limits.
-fn limits_rejection(result: limits::CheckResult) -> Option<(u16, Bytes)> {
-    match result {
-        limits::CheckResult::BodyTooLarge => {
-            Some((413, Bytes::from_static(b"Request Entity Too Large")))
-        }
-        limits::CheckResult::HeaderTooLarge => {
-            Some((431, Bytes::from_static(b"Request Header Fields Too Large")))
-        }
-        limits::CheckResult::Ok => None,
-    }
+    rate_limit::check(cfg, session, rate_limiter, site_label)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── limits_rejection ─────────────────────────────────────────────────────
-
-    #[test]
-    fn limits_rejection_body_too_large_returns_413() {
-        let result = limits_rejection(limits::CheckResult::BodyTooLarge);
-        assert!(result.is_some());
-        let (status, body) = result.unwrap();
-        assert_eq!(status, 413);
-        assert!(!body.is_empty());
-    }
-
-    #[test]
-    fn limits_rejection_header_too_large_returns_431() {
-        let result = limits_rejection(limits::CheckResult::HeaderTooLarge);
-        assert!(result.is_some());
-        let (status, _) = result.unwrap();
-        assert_eq!(status, 431);
-    }
-
-    #[test]
-    fn limits_rejection_ok_returns_none() {
-        let result = limits_rejection(limits::CheckResult::Ok);
-        assert!(result.is_none());
-    }
+    // ── LimitsGuard / IpConnSlotGuard / is_host_header_invalid /
+    //    try_acquire_ip_slot / limits_rejection tests — moved to
+    //    crates/conduit-limits/src/guard.rs (issue #114/#137).
 
     // ── IpGuard dynamic deny list ────────────────────────────────────────────
     //
@@ -1246,219 +706,5 @@ mod tests {
 
     // ── FilterOutcome variants ────────────────────────────────────────────────
 
-    // ── forward_auth_client ───────────────────────────────────────────────────
-
-    #[test]
-    #[cfg(feature = "forward-auth")]
-    fn forward_auth_client_returns_same_singleton() {
-        let c1 = forward_auth_client();
-        let c2 = forward_auth_client();
-        // Both calls must return the same static reference.
-        assert!(
-            std::ptr::eq(c1 as *const _, c2 as *const _),
-            "forward_auth_client must be a singleton"
-        );
-    }
-
-    // ── Host header validation (LimitsGuard) ─────────────────────────────────
-
-    #[test]
-    fn host_validation_rejects_crlf_in_host() {
-        // Validate that the host-header check correctly flags CR/LF bytes.
-        // The check is: host_val.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
-        let bad_hosts = [
-            "evil.com\r\nX-Injected: yes",
-            "evil.com\n",
-            "evil.com\r",
-            "evil\0.com",
-        ];
-        for h in &bad_hosts {
-            let has_bad = h.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0);
-            assert!(has_bad, "expected bad host to be detected: {h:?}");
-        }
-    }
-
-    #[test]
-    fn host_validation_accepts_normal_host() {
-        let good_hosts = [
-            "example.com",
-            "example.com:8080",
-            "192.168.1.1:443",
-            "[::1]:8080",
-        ];
-        for h in &good_hosts {
-            let has_bad = h.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0);
-            assert!(!has_bad, "expected normal host to pass: {h:?}");
-        }
-    }
-
-    // ── limits_rejection body/header messages ─────────────────────────────────
-
-    #[test]
-    fn limits_rejection_body_message_correct() {
-        let result = limits_rejection(limits::CheckResult::BodyTooLarge);
-        let (status, body) = result.unwrap();
-        let body_str = std::str::from_utf8(&body).unwrap_or("?");
-        assert!(
-            body_str.contains("Large"),
-            "body must explain the limit: {body_str}"
-        );
-        assert_eq!(status, 413);
-    }
-
-    #[test]
-    fn limits_rejection_header_message_correct() {
-        let result = limits_rejection(limits::CheckResult::HeaderTooLarge);
-        let (status, body) = result.unwrap();
-        assert_eq!(status, 431);
-        let body_str = std::str::from_utf8(&body).unwrap_or("?");
-        assert!(!body_str.is_empty());
-    }
-
-    // ── Host header validation (LimitsGuard) ─────────────────────────────────
-    //
-    // These tests exercise the host_invalid logic inline, without needing a
-    // full session, by reproducing the exact validation expression.
-
-    fn check_host(raw: &[u8]) -> bool {
-        // Returns true when the host value is INVALID (should be rejected).
-        // Delegates to is_host_header_invalid so the tests exercise the real function.
-        //
-        // Bytes that can't be constructed into a HeaderValue would be rejected by
-        // Pingora's HTTP parser before reaching this guard — we treat them as
-        // invalid for completeness.
-        match http::header::HeaderValue::from_bytes(raw) {
-            Err(_) => true,
-            Ok(hv) => is_host_header_invalid(Some(&hv)),
-        }
-    }
-
-    // ── IpConnSlotGuard ──────────────────────────────────────────────────────
-
-    #[test]
-    fn ip_conn_slot_guard_decrements_on_drop() {
-        let counts: Arc<dashmap::DashMap<String, AtomicUsize>> = Arc::new(dashmap::DashMap::new());
-        // Manually set the counter to 1 (simulating a slot that was acquired).
-        counts
-            .entry("10.1.2.3".to_owned())
-            .or_insert_with(|| AtomicUsize::new(0))
-            .store(1, Ordering::Relaxed);
-
-        let guard = IpConnSlotGuard {
-            ip: "10.1.2.3".to_owned(),
-            counts: Arc::clone(&counts),
-        };
-        // Before drop: counter is still 1.
-        assert_eq!(counts.get("10.1.2.3").unwrap().load(Ordering::Relaxed), 1);
-        drop(guard);
-        // After drop: counter should be 0.
-        assert_eq!(counts.get("10.1.2.3").unwrap().load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn ip_conn_slot_guard_prevents_wrap_on_zero() {
-        let counts: Arc<dashmap::DashMap<String, AtomicUsize>> = Arc::new(dashmap::DashMap::new());
-        counts
-            .entry("10.1.2.4".to_owned())
-            .or_insert_with(|| AtomicUsize::new(0))
-            .store(0, Ordering::Relaxed);
-
-        let guard = IpConnSlotGuard {
-            ip: "10.1.2.4".to_owned(),
-            counts: Arc::clone(&counts),
-        };
-        drop(guard);
-        // Counter must not wrap around to usize::MAX.
-        assert_eq!(counts.get("10.1.2.4").unwrap().load(Ordering::Relaxed), 0);
-    }
-
-    // ── is_host_header_invalid ────────────────────────────────────────────────
-
-    #[test]
-    fn is_host_header_invalid_absent_host_returns_false() {
-        // A missing Host header is not invalid — it is handled elsewhere.
-        assert!(!is_host_header_invalid(None));
-    }
-
-    // ── try_acquire_ip_slot ───────────────────────────────────────────────────
-
-    #[test]
-    fn try_acquire_ip_slot_allows_first_request() {
-        let counts = dashmap::DashMap::new();
-        assert!(try_acquire_ip_slot("10.0.0.1", 3, &counts));
-        assert_eq!(counts.get("10.0.0.1").unwrap().load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn try_acquire_ip_slot_rejects_when_limit_reached() {
-        let counts = dashmap::DashMap::new();
-        assert!(try_acquire_ip_slot("10.0.0.2", 1, &counts)); // slot 1 → allowed
-        assert!(!try_acquire_ip_slot("10.0.0.2", 1, &counts)); // slot 2 → rejected
-                                                               // Counter must be rolled back after rejection.
-        assert_eq!(counts.get("10.0.0.2").unwrap().load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn try_acquire_ip_slot_fills_up_to_limit() {
-        let counts = dashmap::DashMap::new();
-        for _ in 0..5 {
-            assert!(try_acquire_ip_slot("10.0.0.3", 5, &counts));
-        }
-        assert!(!try_acquire_ip_slot("10.0.0.3", 5, &counts)); // 6th → rejected
-        assert_eq!(counts.get("10.0.0.3").unwrap().load(Ordering::Relaxed), 5);
-    }
-
-    #[test]
-    fn try_acquire_ip_slot_different_ips_are_independent() {
-        let counts = dashmap::DashMap::new();
-        assert!(try_acquire_ip_slot("1.1.1.1", 1, &counts));
-        assert!(try_acquire_ip_slot("2.2.2.2", 1, &counts)); // different IP → allowed
-        assert!(!try_acquire_ip_slot("1.1.1.1", 1, &counts)); // same IP → rejected
-    }
-
-    #[test]
-    fn host_valid_simple_domain_accepted() {
-        assert!(!check_host(b"example.com"));
-    }
-
-    #[test]
-    fn host_valid_domain_with_port_accepted() {
-        assert!(!check_host(b"example.com:8080"));
-    }
-
-    #[test]
-    fn host_valid_ipv4_accepted() {
-        assert!(!check_host(b"192.168.1.1"));
-    }
-
-    #[test]
-    fn host_valid_ipv6_accepted() {
-        assert!(!check_host(b"[::1]:443"));
-    }
-
-    #[test]
-    fn host_cr_lf_rejected() {
-        assert!(check_host(b"evil.com\r\nX-Injected: yes"));
-    }
-
-    #[test]
-    fn host_nul_byte_rejected() {
-        assert!(check_host(b"evil.com\x00"));
-    }
-
-    #[test]
-    fn host_space_rejected() {
-        assert!(check_host(b"evil .com"));
-    }
-
-    #[test]
-    fn host_path_separator_rejected() {
-        assert!(check_host(b"evil.com/../../etc/passwd"));
-    }
-
-    #[test]
-    fn host_non_utf8_rejected() {
-        // 0xFF is not valid UTF-8; to_str() will return Err → treated as invalid.
-        assert!(check_host(b"evil\xff.com"));
-    }
+    // ── forward_auth_client — moved to crates/conduit-auth-forward (#114/#134) ─
 }

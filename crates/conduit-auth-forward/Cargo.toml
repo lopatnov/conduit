@@ -1,0 +1,49 @@
+[package]
+name        = "lopatnov-conduit-auth-forward"
+version.workspace    = true
+edition.workspace    = true
+description = "Forward-auth (delegate authentication to an external HTTP service) config + guard for conduit's feature-driven workspace (issue #114/#134)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_auth_forward"
+path = "src/lib.rs"
+
+[dependencies]
+# ForwardAuthConfig itself is always compiled — see src/lib.rs doc comment.
+serde = { workspace = true }
+
+# Everything below is only needed by the real ForwardAuthGuard (`guard`),
+# gated behind this crate's own `forward-auth` feature (mirrors the
+# pre-extraction `#[cfg(feature = "forward-auth")]` gates in
+# src/filter/chain.rs). The root crate's `forward-auth` feature forwards
+# into this one via `lopatnov-conduit-auth-forward/forward-auth`.
+async-trait           = { workspace = true, optional = true }
+bytes                 = { workspace = true, optional = true }
+tracing               = { workspace = true, optional = true }
+reqwest               = { workspace = true, optional = true }
+pingora-core          = { workspace = true, optional = true }
+pingora-proxy         = { workspace = true, optional = true }
+lopatnov-conduit-core = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Test-only: guard.rs's own unit tests build a real pingora_proxy::Session
+# over an in-memory tokio::io::duplex pipe (see .claude/skills/testing/SKILL.md's
+# narrow exception for this, added 2026-08-23 alongside #248). Production
+# ForwardAuthGuard code itself never touches tokio directly — it only awaits
+# a reqwest future, handled by async-trait — so tokio stays a dev-only edge
+# here (unlike crates/conduit-faults, whose production code calls
+# `tokio::time::sleep` directly and so lists it under [dependencies]).
+tokio = { workspace = true }
+
+[features]
+forward-auth = [
+    "dep:async-trait",
+    "dep:bytes",
+    "dep:tracing",
+    "dep:reqwest",
+    "dep:pingora-core",
+    "dep:pingora-proxy",
+    "dep:lopatnov-conduit-core",
+]

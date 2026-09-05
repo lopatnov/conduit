@@ -1,79 +1,29 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use serde::Deserialize;
+use anyhow::Result;
+use conduit_config_core::parse::{from_json_str, from_yaml_str, load_file};
 
-use crate::config::schema::{AppConfig, ConfigFile, CONFIG_VERSION};
-
-/// Reads only the version field before doing a full parse.
-#[derive(Deserialize, Default)]
-struct VersionProbe {
-    version: Option<u32>,
-}
+use crate::config::schema::{AppConfig, ConfigFile};
 
 /// Load and parse a config file from disk, performing env interpolation first.
 ///
 /// Both JSON (`.json`) and YAML (`.yaml` / `.yml`) are supported.
 /// The format is determined by the file extension; JSON is the default.
 pub fn load_config(path: &Path) -> Result<AppConfig> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("Cannot read config file: {}", path.display()))?;
-    let ext = path
-        .extension()
-        .and_then(std::ffi::OsStr::to_str)
-        .map(str::to_lowercase)
-        .unwrap_or_else(|| "json".to_owned());
-    match ext.as_str() {
-        "yaml" | "yml" => {
-            from_yaml(&raw).with_context(|| format!("Cannot parse config file: {}", path.display()))
-        }
-        _ => {
-            from_str(&raw).with_context(|| format!("Cannot parse config file: {}", path.display()))
-        }
-    }
+    let file: ConfigFile = load_file(path)?;
+    Ok(normalize(file))
 }
 
 /// Parse a config JSON string, performing env interpolation first.
 pub fn from_str(text: &str) -> Result<AppConfig> {
-    let text = crate::config::env::interpolate(text);
-
-    let probe: VersionProbe = serde_json::from_str(&text).unwrap_or_default();
-    check_version(probe)?;
-
-    let jd = &mut serde_json::Deserializer::from_str(&text);
-    let file: ConfigFile = serde_path_to_error::deserialize(jd)
-        .map_err(|e| anyhow::anyhow!("Config parse error at '{}': {}", e.path(), e.inner()))?;
-
+    let file: ConfigFile = from_json_str(text)?;
     Ok(normalize(file))
 }
 
 /// Parse a config YAML string, performing env interpolation first.
 pub fn from_yaml(text: &str) -> Result<AppConfig> {
-    let text = crate::config::env::interpolate(text);
-
-    let probe: VersionProbe = serde_yaml::from_str(&text).unwrap_or_default();
-    check_version(probe)?;
-
-    let de = serde_yaml::Deserializer::from_str(&text);
-    let file: ConfigFile = serde_path_to_error::deserialize(de)
-        .map_err(|e| anyhow::anyhow!("Config parse error at '{}': {}", e.path(), e.inner()))?;
-
+    let file: ConfigFile = from_yaml_str(text)?;
     Ok(normalize(file))
-}
-
-/// Reject configs whose `version` field is newer than what this binary supports.
-fn check_version(probe: VersionProbe) -> Result<()> {
-    if let Some(v) = probe.version {
-        if v > CONFIG_VERSION {
-            anyhow::bail!(
-                "Config version {} is not supported (this binary supports up to version {}). \
-                 Please upgrade conduit.",
-                v,
-                CONFIG_VERSION
-            );
-        }
-    }
-    Ok(())
 }
 
 /// Normalize all ConfigFile variants into a canonical AppConfig.

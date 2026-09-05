@@ -1,14 +1,14 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(feature = "static")]
 use std::sync::Arc;
 
 use dashmap::DashMap;
 
 use crate::config::schema::{
     AppConfig, CacheConfig, ConnectionPoolConfig, LoadBalanceStrategy, ProxyConfig,
-    ProxyRouteTarget, ProxyTimeout, RetryConfig, RewriteRule, SiteConfig, StaticConfig,
-    StickyConfig, UpstreamGroup, UpstreamTlsConfig,
+    ProxyRouteTarget, ProxyTimeout, RetryConfig, RewriteRule, SiteConfig, StickyConfig,
+    UpstreamGroup, UpstreamTlsConfig,
 };
 use crate::proxy::capacity;
 use crate::proxy::ctx::{LocalHandler, RequestCtx, RetryState, UpstreamTarget};
@@ -238,7 +238,18 @@ fn match_routes_array(
 }
 
 /// Serve static files when configured, or fall through to the global fallback handler.
-fn match_static_or_fallback(site: &SiteConfig, path: &str) -> RouteResult {
+///
+/// Without the `static` feature compiled in, `sites[].static` still parses
+/// (`feature_warnings()` surfaces it) but never routes to a static-file
+/// handler — every such request falls straight through to the plain
+/// `Fallback` marker, matching the degradation shape of every other
+/// `#[cfg]`-gated `LocalHandler` variant (see `HandlerKind::AcmeChallenge`'s
+/// `#[cfg(not(feature = "acme"))]` arm in `request_phase.rs::build_handler`).
+fn match_static_or_fallback(
+    #[cfg_attr(not(feature = "static"), allow(unused_variables))] site: &SiteConfig,
+    #[cfg_attr(not(feature = "static"), allow(unused_variables))] path: &str,
+) -> RouteResult {
+    #[cfg(feature = "static")]
     if let Some(static_cfg) = &site.static_files {
         let options = Arc::new(site.static_options.clone().unwrap_or_default());
         let (roots, strip_prefix) = resolve_static_roots(static_cfg, path);
@@ -1098,35 +1109,14 @@ pub fn parse_rfc9218_priority(header: &str) -> Option<u8> {
     None
 }
 
-pub fn resolve_static_roots(cfg: &StaticConfig, path: &str) -> (Vec<PathBuf>, Option<String>) {
-    match cfg {
-        StaticConfig::Single(s) => (vec![PathBuf::from(s)], None),
-        StaticConfig::Multi(v) => (v.iter().map(PathBuf::from).collect(), None),
-        StaticConfig::Mapped(m) => match find_best_mapped_prefix(m, path) {
-            Some((pfx, root)) => (vec![PathBuf::from(root)], Some(pfx.to_string())),
-            None => (vec![], None),
-        },
-    }
-}
-
-/// Find the longest prefix in a mapped static config that matches `path`.
-fn find_best_mapped_prefix<'a>(
-    m: &'a indexmap::IndexMap<String, String>,
-    path: &str,
-) -> Option<(&'a str, &'a str)> {
-    let mut best: Option<(&str, &str)> = None;
-    for (prefix, root) in m {
-        let norm = prefix.trim_end_matches('/');
-        let matches = norm.is_empty() || path == norm || path.starts_with(&format!("{norm}/"));
-        if matches {
-            let len = norm.len();
-            if best.is_none_or(|(b, _)| len > b.trim_end_matches('/').len()) {
-                best = Some((prefix.as_str(), root.as_str()));
-            }
-        }
-    }
-    best
-}
+/// Extracted into `crates/conduit-static` (issue #114/#139) — this is a
+/// facade re-export so `crate::proxy::router::resolve_static_roots` keeps
+/// resolving to the same function at the same location for every existing
+/// call site (`match_static_or_fallback` above, `routes.rs`'s
+/// `route_to_result`). Its unit tests moved with it — see
+/// `crates/conduit-static/src/roots.rs`.
+#[cfg(feature = "static")]
+pub use conduit_static::roots::resolve_static_roots;
 
 /// Returns `Some(token)` when `path` matches the configured metrics endpoint.
 /// `token` is `None` when the endpoint has no auth token.
@@ -1163,6 +1153,16 @@ fn is_health_path(site: Option<&SiteConfig>, path: &str) -> bool {
 
 /// Returns `true` when the path targets the SSE hot-reload endpoint
 /// (`/__hot-reload__`) and the site has `hotReload` enabled.
+///
+/// Only matches when compiled with `--features hotreload` — without it, no
+/// hot-reload handler exists to serve this path, so it must not win routing
+/// precedence over the site's own `fallback`/`static`/`proxy` config (same
+/// bug class as issue #341's ACME-challenge fix: previously matched
+/// unconditionally whenever `hotReload` was configured, regardless of the
+/// compiled feature — `HandlerKind::HotReloadSse`'s handler being `None`
+/// without `hotreload` meant every request to this path would have fallen
+/// through to Pingora's proxy path with no real upstream to select).
+#[cfg(feature = "hotreload")]
 fn is_hot_reload_sse_path(site: Option<&SiteConfig>, path: &str) -> bool {
     use crate::config::schema::HotReloadConfig;
     let Some(site) = site else { return false };
@@ -1176,8 +1176,17 @@ fn is_hot_reload_sse_path(site: Option<&SiteConfig>, path: &str) -> bool {
     bare == "/__hot-reload__"
 }
 
+#[cfg(not(feature = "hotreload"))]
+fn is_hot_reload_sse_path(_site: Option<&SiteConfig>, _path: &str) -> bool {
+    false
+}
+
 /// Returns `true` when the path targets the hot-reload client JS file
 /// (`/__hot-reload__/client.js`) and the site has `hotReload` enabled.
+///
+/// Only matches when compiled with `--features hotreload` — see
+/// `is_hot_reload_sse_path`'s doc comment.
+#[cfg(feature = "hotreload")]
 fn is_hot_reload_js_path(site: Option<&SiteConfig>, path: &str) -> bool {
     use crate::config::schema::HotReloadConfig;
     let Some(site) = site else { return false };
@@ -1189,6 +1198,11 @@ fn is_hot_reload_js_path(site: Option<&SiteConfig>, path: &str) -> bool {
     }
     let bare = path.split('?').next().unwrap_or(path);
     bare == "/__hot-reload__/client.js"
+}
+
+#[cfg(not(feature = "hotreload"))]
+fn is_hot_reload_js_path(_site: Option<&SiteConfig>, _path: &str) -> bool {
+    false
 }
 
 /// If `path` starts with the ACME HTTP-01 challenge prefix, return the token
@@ -1319,26 +1333,10 @@ mod tests {
         assert!(find_route(&routes, "/other").is_none());
     }
 
-    // ── find_best_mapped_prefix ───────────────────────────────────────────────
-
-    #[test]
-    fn mapped_prefix_longest_wins() {
-        use indexmap::IndexMap;
-        let mut m = IndexMap::new();
-        m.insert("/".to_string(), "./root".to_string());
-        m.insert("/docs".to_string(), "./docs".to_string());
-        let (pfx, root) = find_best_mapped_prefix(&m, "/docs/guide").unwrap();
-        assert_eq!(pfx, "/docs");
-        assert_eq!(root, "./docs");
-    }
-
-    #[test]
-    fn mapped_prefix_no_match_returns_none() {
-        use indexmap::IndexMap;
-        let mut m = IndexMap::new();
-        m.insert("/docs".to_string(), "./docs".to_string());
-        assert!(find_best_mapped_prefix(&m, "/other").is_none());
-    }
+    // find_best_mapped_prefix() (private helper of resolve_static_roots) and
+    // its own unit tests moved to crates/conduit-static/src/roots.rs
+    // (issue #114/#139) — equivalent coverage now lives in that module's
+    // `static_roots_mapped_matches_prefix`/`static_roots_mapped_no_match_returns_empty`.
 
     // ── is_health_path ────────────────────────────────────────────────────────
 
@@ -1748,51 +1746,9 @@ mod tests {
         }
     }
 
-    // ── resolve_static_roots ──────────────────────────────────────────────────
-
-    #[test]
-    fn static_roots_single() {
-        use crate::config::schema::StaticConfig;
-        use std::path::PathBuf;
-        let (roots, strip) = resolve_static_roots(&StaticConfig::Single("./dist".to_string()), "/");
-        assert_eq!(roots, vec![PathBuf::from("./dist")]);
-        assert!(strip.is_none());
-    }
-
-    #[test]
-    fn static_roots_multi() {
-        use crate::config::schema::StaticConfig;
-        use std::path::PathBuf;
-        let (roots, strip) = resolve_static_roots(
-            &StaticConfig::Multi(vec!["./a".to_string(), "./b".to_string()]),
-            "/",
-        );
-        assert_eq!(roots, vec![PathBuf::from("./a"), PathBuf::from("./b")]);
-        assert!(strip.is_none());
-    }
-
-    #[test]
-    fn static_roots_mapped_matches_prefix() {
-        use crate::config::schema::StaticConfig;
-        use indexmap::IndexMap;
-        let mut m = IndexMap::new();
-        m.insert("/docs".to_string(), "./docs-root".to_string());
-        m.insert("/".to_string(), "./web".to_string());
-        let (roots, strip) = resolve_static_roots(&StaticConfig::Mapped(m), "/docs/guide");
-        assert_eq!(roots.len(), 1);
-        assert!(roots[0].to_str().unwrap().contains("docs-root"));
-        assert_eq!(strip.as_deref(), Some("/docs"));
-    }
-
-    #[test]
-    fn static_roots_mapped_no_match_returns_empty() {
-        use crate::config::schema::StaticConfig;
-        use indexmap::IndexMap;
-        let mut m = IndexMap::new();
-        m.insert("/docs".to_string(), "./docs-root".to_string());
-        let (roots, _) = resolve_static_roots(&StaticConfig::Mapped(m), "/other");
-        assert!(roots.is_empty());
-    }
+    // resolve_static_roots()'s own unit tests moved to
+    // crates/conduit-static/src/roots.rs alongside the function itself
+    // (issue #114/#139).
 
     // ── route_request (integration of all routing logic) ─────────────────────
 
@@ -1827,6 +1783,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "static")]
     fn route_request_static_file() {
         use crate::config::schema::StaticConfig;
         let config = AppConfig {
@@ -2294,6 +2251,7 @@ mod tests {
     // ── is_hot_reload_sse_path and is_hot_reload_js_path ─────────────────────
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn hot_reload_sse_path_when_enabled() {
         let site = SiteConfig {
             hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
@@ -2308,6 +2266,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn hot_reload_sse_path_when_disabled() {
         let site = SiteConfig {
             hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(false)),
@@ -2317,11 +2276,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn hot_reload_sse_path_no_site_returns_false() {
         assert!(!is_hot_reload_sse_path(None, "/__hot-reload__"));
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn hot_reload_js_path_when_enabled() {
         let site = SiteConfig {
             hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
@@ -2335,6 +2296,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn hot_reload_js_path_when_disabled() {
         let site = SiteConfig {
             hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(false)),
@@ -2347,6 +2309,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn hot_reload_js_path_with_query_string() {
         let site = SiteConfig {
             hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
@@ -2356,6 +2319,23 @@ mod tests {
         assert!(is_hot_reload_js_path(
             Some(&site),
             "/__hot-reload__/client.js?v=123"
+        ));
+    }
+
+    #[test]
+    #[cfg(not(feature = "hotreload"))]
+    fn hot_reload_paths_always_false_without_feature() {
+        // Issue #341's fix class, applied here: without `hotreload`, these
+        // paths must never win routing precedence — no matter how the site
+        // configures `hotReload`.
+        let site = SiteConfig {
+            hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
+            ..Default::default()
+        };
+        assert!(!is_hot_reload_sse_path(Some(&site), "/__hot-reload__"));
+        assert!(!is_hot_reload_js_path(
+            Some(&site),
+            "/__hot-reload__/client.js"
         ));
     }
 
@@ -2405,6 +2385,7 @@ mod tests {
     // ── match_static_or_fallback ──────────────────────────────────────────────
 
     #[test]
+    #[cfg(feature = "static")]
     fn static_site_returns_static_file_handler() {
         use crate::config::schema::StaticConfig;
         let site = SiteConfig {

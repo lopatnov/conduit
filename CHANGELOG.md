@@ -9,6 +9,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **Per-route and per-consumer rate limiting no longer bypass the shared
+  memory-exhaustion cap.** `rateLimit` at the site level has always refused
+  to create more than 100,000 distinct token buckets, to stop an attacker
+  sending unbounded unique `keyBy: "header:X-Name"` values from exhausting
+  memory. Per-route and per-consumer rate limits shared the same underlying
+  map but bypassed that cap entirely — confirmed as a real DoS vector on the
+  documented usage pattern. All three layers (plus the Redis fallback path)
+  now share one capacity-checked admission point.
+- **Per-route `rateLimit` is now validated at config-load time.** Previously
+  `windowSecs`/`limit`/`algorithm`/`keyBy`/`store` on a per-route rate limit
+  were parsed but never checked — a malformed `keyBy: "header:bad name"`
+  silently collapsed every client into one shared bucket at runtime instead
+  of failing validation up front. Site-level and per-consumer rate limits
+  already validated these fields; per-route now does too, matching them.
 - **CORS `credentials: true` now requires an explicit, non-wildcard `origins`
   allowlist.** Previously, `credentials: true` with `origins` unset (or
   containing `"*"`) echoed the request's `Origin` header back verbatim with
@@ -31,16 +45,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the configured limit, that one client is rejected *permanently* instead
   of just for the current window (a transient blip degrading into a
   permanent fail-closed, contradicting the module's own fail-open design).
-  Both commands now run as a single atomic Lua script (`EVAL`).
+  Both commands now run as a single atomic Lua script (`EVAL`), which also
+  self-heals any key already leaked by the old two-round-trip code the next
+  time it's checked.
 
 ### Fixed
 
+- **Response compression now applies to the metrics endpoint and fallback
+  responses, not just static files.** `compression`'s negotiation logic
+  (`Content-Encoding` selection, `minBytes`/`types` thresholds) was fully
+  implemented and tested but never actually wired into the `/__metrics__`
+  handler or fallback (404/SPA-shell/custom-body) responses — both were
+  always served uncompressed regardless of config. Each response type is
+  still negotiated independently against the site's `compression` config, so
+  a small response may stay uncompressed exactly as before.
 - **A request to `/.well-known/acme-challenge/*` on a build without
   `--features acme` no longer surfaces as a 502.** The path matched
   unconditionally regardless of the compiled feature; without `acme` there
   was no handler to serve it, and the request fell through to Pingora's
   proxy path with no real upstream to select. The path now only matches
   when `acme` is actually compiled in.
+
+### Changed
+
+- `RateLimitConfig` moved to its own crate (`conduit-ratelimit`, issue
+  #114/#137 slice 1) — no config shape or behavior change, this closes a
+  code-duplication finding between the root crate and
+  `conduit-auth-consumers`.
+- Static-file serving and fallback (404/SPA-shell/custom-body) responses
+  moved to their own crate (`conduit-static`, issue #114/#139) behind a new
+  `static` Cargo feature. **Default-on**, like `compression` — a plain
+  `cargo build` keeps serving static files and fallback responses exactly
+  like before; only `--no-default-features` (without re-adding `static`)
+  now produces a build with neither capability compiled in.
 
 ---
 
@@ -110,6 +147,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Consumer `rateLimit.limit`/`windowSecs` of `0` is now rejected at
   config-validation time**, instead of silently locking the consumer out of
   every request at runtime.
+
+---
+
+## [2.0.0] — in progress on `claude/cargo-workspace-features-23qxfr`
+
+Marks the start of the feature-driven Cargo workspace migration (see GitHub
+issue #114): splitting the single `lopatnov-conduit` crate into one crate per
+feature so a build only compiles the code and dependencies a chosen feature
+set actually needs. This is a long-lived migration branch, not a cut release —
+`main` and its `1.x` line are unaffected until the migration lands. Every PR
+merged into this branch bumps the workspace minor version (`2.1.0`, `2.2.0`,
+...) so migration progress is traceable; the branch is retired into a real
+`2.0.0` release once #114's sub-issues are all closed.
 
 ---
 

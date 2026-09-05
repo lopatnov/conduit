@@ -1,50 +1,16 @@
 use base64::Engine as _;
 use pingora_proxy::Session;
-use subtle::ConstantTimeEq as _;
 
-#[cfg(feature = "jwt")]
-use crate::config::schema::JwtAuthConfig;
 use crate::config::schema::{ApiKeyConfig, BasicAuthConfig};
-#[cfg(feature = "consumers")]
-use crate::config::schema::{Consumer, ConsumersConfig};
-#[cfg(feature = "jwt")]
-use crate::filter::jwt;
 
 /// Constant-time byte-string equality for credential comparisons.
 ///
-/// Using `==` for password/API-key matching leaks timing information: the
-/// comparison short-circuits on the first differing byte, letting an attacker
-/// determine how many leading bytes of a guessed credential are correct.
-///
-/// This helper always inspects every byte regardless of where a difference
-/// occurs.  Length is checked first (NOT constant-time) — a length mismatch
-/// still reveals the correct length, but the set of lengths that need to be
-/// tried is already known (API keys are fixed-length by convention).
-#[inline]
-fn ct_eq_str(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.as_bytes().ct_eq(b.as_bytes()).into()
-}
-
-/// Build a [`JwtAuthConfig`] from raw credential parts.
-///
-/// Used by both the V2 per-consumer JWT check and the V3 sharedJwt check to
-/// avoid duplicating the struct literal in two places.
-#[cfg(feature = "jwt")]
-fn build_jwt_auth_cfg(
-    secret: Option<String>,
-    jwks_url: Option<String>,
-    audience: Option<Vec<String>>,
-    issuer: Option<String>,
-) -> JwtAuthConfig {
-    JwtAuthConfig {
-        secret,
-        jwks_url,
-        jwks_refresh_secs: None, // use JWKS default TTL (3600 s)
-        audience,
-        issuer,
-        skip_paths: None, // skip_paths handled at ConsumersConfig level
-    }
-}
+/// Promoted to `conduit_core::util::crypto::ct_eq_str` (issue #114/#134) so
+/// both this file's always-on Basic Auth / API-key guards and
+/// `crates/conduit-auth-consumers`' consumer-credential checks share one
+/// real implementation. Re-imported under its original short name here so
+/// existing call sites in this file don't need to change.
+use conduit_core::util::crypto::ct_eq_str;
 
 /// Result of a Basic Auth credential check.
 pub enum BasicAuthResult {
@@ -52,25 +18,9 @@ pub enum BasicAuthResult {
     Denied { challenge: bool, realm: String },
 }
 
-/// Returns `true` if `path` matches any entry in `skip_paths`.
-///
-/// Pattern rules:
-/// - `/prefix/**` — matches `/prefix`, `/prefix/`, and any sub-path
-/// - anything else — exact match only
-pub fn is_path_skipped(skip_paths: Option<&[String]>, path: &str) -> bool {
-    let Some(paths) = skip_paths else {
-        return false;
-    };
-    paths.iter().any(|p| path_matches(p, path))
-}
-
-pub(crate) fn path_matches(pattern: &str, path: &str) -> bool {
-    if let Some(prefix) = pattern.strip_suffix("/**") {
-        path == prefix || path.starts_with(&format!("{prefix}/"))
-    } else {
-        pattern == path
-    }
-}
+// Layer-0 vocabulary (#114/#126) -- shared by every skipPaths config field
+// (JWT, ForwardAuth, Consumers).
+pub use conduit_core::filter::path::is_path_skipped;
 
 /// Validate a raw `Authorization` header value against a user map.
 ///
@@ -159,168 +109,14 @@ pub fn check_api_key(cfg: &ApiKeyConfig, session: &Session) -> bool {
         .fold(false, |found, k| found | ct_eq_str(k, provided))
 }
 
-// ── Consumer model ─────────────────────────────────────────────────────────
-
-/// Attempt to identify the request's consumer from the configured list.
-///
-/// Evaluation order: consumers are checked in declaration order; the **first
-/// matching** consumer wins.  A consumer can use one of four credential types:
-///
-/// - **API key** — value in the `apiKeyHeader` request header (default:
-///   `x-api-key`).  Compared with [`ct_eq_str`] (constant-time).
-/// - **Basic Auth** — `Authorization: Basic <base64(username:password)>` where
-///   the username must equal `consumer.username`.
-/// - **Per-consumer JWT** (V2, feature `jwt`) — a bearer token validated
-///   against that consumer's own `secret`/`jwksUrl`.
-/// - **Shared JWT** (V3, feature `jwt`) — one JWKS/secret shared across all
-///   consumers, identified by a claim (default `sub`) matching
-///   `consumer.username`; checked once up front before per-consumer checks.
-///
-/// Returns `None` when no consumer matches (caller should return 401).
-#[cfg(feature = "consumers")]
-pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Option<&'a Consumer> {
-    let api_key_header = cfg.api_key_header.as_deref().unwrap_or("x-api-key");
-
-    // ── V3: Shared JWT — validate once, identify by claim value ───────────────
-    #[cfg(feature = "jwt")]
-    if let Some(ref shared) = cfg.shared_jwt {
-        if let Some(consumer) = check_shared_jwt_consumer(shared, &cfg.consumers, session) {
-            return Some(consumer);
-        }
-    }
-
-    cfg.consumers
-        .iter()
-        .find(|consumer| check_consumer_credentials(consumer, api_key_header, session))
-}
-
-/// Try to identify a consumer via the shared JWT (V3 / Auth0 / Cognito pattern).
-///
-/// Returns `Some(&Consumer)` when the JWT is valid and a matching consumer is
-/// found by the configured `username_claim` (default: `"sub"`).
-#[cfg(all(feature = "consumers", feature = "jwt"))]
-fn check_shared_jwt_consumer<'a>(
-    shared: &crate::config::schema::ConsumersSharedJwtConfig,
-    consumers: &'a [Consumer],
-    session: &Session,
-) -> Option<&'a Consumer> {
-    let jwt_cfg = build_jwt_auth_cfg(
-        shared.secret.clone(),
-        shared.jwks_url.clone(),
-        shared.audience.clone(),
-        shared.issuer.clone(),
-    );
-    let auth_hdr = session
-        .req_header()
-        .headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok());
-
-    let (jwt_result, maybe_claims) = jwt::check_jwt_extracting(&jwt_cfg, "", auth_hdr);
-    if let jwt::JwtCheckResult::Allowed = jwt_result {
-        if let Some(claims) = maybe_claims {
-            let claim_key = shared.username_claim.as_deref().unwrap_or("sub");
-            if let Some(serde_json::Value::String(sub)) = claims.get(claim_key) {
-                let sub = sub.clone();
-                return consumers.iter().find(|c| c.username == sub);
-            }
-        }
-    }
-    None
-}
-
-/// Check whether a request matches a single consumer's credentials.
-///
-/// Returns `true` when any credential matches (API key, Basic Auth, or JWT V2).
-#[cfg(feature = "consumers")]
-fn check_consumer_credentials(
-    consumer: &Consumer,
-    api_key_header: &str,
-    session: &Session,
-) -> bool {
-    // ── API key check ─────────────────────────────────────────────────────────
-    if let Some(ref expected_key) = consumer.api_key {
-        if let Some(provided) = session
-            .req_header()
-            .headers
-            .get(api_key_header)
-            .and_then(|v| v.to_str().ok())
-        {
-            if ct_eq_str(provided, expected_key.as_str()) {
-                return true;
-            }
-        }
-    }
-
-    // ── Basic Auth check ──────────────────────────────────────────────────────
-    if let Some(ref basic) = consumer.basic_auth {
-        if check_consumer_basic(&consumer.username, &basic.password, session) {
-            return true;
-        }
-    }
-
-    // ── JWT check (V2) — requires `jwt` feature ───────────────────────────────
-    #[cfg(feature = "jwt")]
-    if let Some(ref consumer_jwt) = consumer.jwt {
-        let jwt_cfg = build_jwt_auth_cfg(
-            consumer_jwt.secret.clone(),
-            consumer_jwt.jwks_url.clone(),
-            consumer_jwt.audience.clone(),
-            consumer_jwt.issuer.clone(),
-        );
-        let auth_hdr = session
-            .req_header()
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok());
-        if let jwt::JwtCheckResult::Allowed = jwt::check_jwt(&jwt_cfg, "", auth_hdr) {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Validate `Authorization: Basic <b64>` against a consumer's username and password.
-#[cfg(feature = "consumers")]
-fn check_consumer_basic(username: &str, password: &str, session: &Session) -> bool {
-    let auth_header = session
-        .req_header()
-        .headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    let (scheme, encoded) = auth_header.split_once(' ').unwrap_or(("", ""));
-    if !scheme.eq_ignore_ascii_case("Basic") {
-        return false;
-    }
-    let encoded = encoded.trim();
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .ok();
-    let decoded = match decoded {
-        Some(d) => d,
-        None => return false,
-    };
-    let decoded_str = match std::str::from_utf8(&decoded) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-
-    // Format: "username:password" — split only on the first colon.
-    let (provided_user, provided_pass) = match decoded_str.split_once(':') {
-        Some(pair) => pair,
-        None => return false,
-    };
-
-    // Evaluate both comparisons unconditionally (bitwise AND, not &&) to prevent
-    // username-validity leakage via timing: `&&` would skip the password check
-    // when the username fails, creating a measurable timing difference.
-    let user_ok = ct_eq_str(provided_user, username);
-    let pass_ok = ct_eq_str(provided_pass, password);
-    user_ok & pass_ok
-}
+// ── Consumer model — moved to crates/conduit-auth-consumers (#114/#134) ────
+//
+// `identify_consumer`/`check_shared_jwt_consumer`/`check_consumer_credentials`/
+// `check_consumer_basic`/`build_jwt_auth_cfg` all moved to
+// `crates/conduit-auth-consumers/src/identify.rs`. `ConsumersGuard` itself
+// (in `src/filter/chain.rs`) now calls `conduit_auth_consumers::identify_consumer`
+// directly — see that crate's `src/lib.rs` doc comment for why the guard
+// itself didn't move too.
 
 #[cfg(test)]
 mod tests {
@@ -424,74 +220,10 @@ mod tests {
         )));
     }
 
-    // ── path_matches / is_path_skipped ────────────────────────────────────────
+    // ── path_matches / is_path_skipped moved to conduit_core::filter::path ─────
 
-    #[test]
-    fn exact_match_only() {
-        assert!(path_matches("/foo", "/foo"));
-        assert!(!path_matches("/foo", "/foobar"));
-        assert!(!path_matches("/foo", "/foo/bar"));
-    }
-
-    #[test]
-    fn glob_prefix_match() {
-        assert!(path_matches("/foo/**", "/foo"));
-        assert!(path_matches("/foo/**", "/foo/"));
-        assert!(path_matches("/foo/**", "/foo/bar"));
-        assert!(path_matches("/foo/**", "/foo/bar/baz"));
-        assert!(!path_matches("/foo/**", "/foobar"));
-        assert!(!path_matches("/foo/**", "/other"));
-    }
-
-    #[test]
-    fn skip_paths_none_never_skips() {
-        assert!(!is_path_skipped(None, "/any/path"));
-    }
-
-    #[test]
-    fn skip_paths_exact_and_glob() {
-        let paths = vec!["/__health__".to_string(), "/public/**".to_string()];
-        assert!(is_path_skipped(Some(&paths), "/__health__"));
-        assert!(is_path_skipped(Some(&paths), "/public/img.png"));
-        assert!(!is_path_skipped(Some(&paths), "/private"));
-        assert!(!is_path_skipped(Some(&paths), "/__health__/sub"));
-    }
-
-    // ── ct_eq_str (timing-safe comparison) ────────────────────────────────────
-
-    #[test]
-    fn ct_eq_identical_strings() {
-        assert!(ct_eq_str("secret", "secret"));
-    }
-
-    #[test]
-    fn ct_eq_different_strings() {
-        assert!(!ct_eq_str("secret", "wrong"));
-    }
-
-    #[test]
-    fn ct_eq_different_lengths() {
-        assert!(!ct_eq_str("short", "longer-value"));
-        assert!(!ct_eq_str("longer-value", "short"));
-    }
-
-    #[test]
-    fn ct_eq_empty_strings() {
-        assert!(ct_eq_str("", ""));
-    }
-
-    #[test]
-    fn ct_eq_empty_vs_nonempty() {
-        assert!(!ct_eq_str("", "x"));
-        assert!(!ct_eq_str("x", ""));
-    }
-
-    #[test]
-    fn ct_eq_unicode_strings() {
-        // Unicode strings — length in bytes matters, not chars.
-        assert!(ct_eq_str("café", "café"));
-        assert!(!ct_eq_str("café", "cafe"));
-    }
+    // ── ct_eq_str (timing-safe comparison) — moved to conduit_core::util::crypto,
+    // its own unit tests moved with it (issue #114/#134) ────────────────────────
 
     // ── check_credentials extended cases ─────────────────────────────────────
 
@@ -529,62 +261,5 @@ mod tests {
         }
     }
 
-    // ── path_matches edge cases ───────────────────────────────────────────────
-
-    #[test]
-    fn glob_matches_exactly_the_prefix() {
-        // `/foo/**` should match `/foo` itself (without trailing slash).
-        assert!(path_matches("/api/**", "/api"));
-    }
-
-    #[test]
-    fn glob_matches_prefix_with_slash() {
-        assert!(path_matches("/api/**", "/api/"));
-    }
-
-    #[test]
-    fn exact_does_not_match_subpath() {
-        assert!(!path_matches("/exact", "/exact/sub"));
-    }
-
-    #[test]
-    fn empty_pattern_matches_only_empty_path() {
-        assert!(path_matches("", ""));
-        assert!(!path_matches("", "/anything"));
-    }
-
-    // ── build_jwt_auth_cfg ────────────────────────────────────────────────────
-
-    #[test]
-    #[cfg(feature = "jwt")]
-    fn build_jwt_auth_cfg_with_secret() {
-        let cfg = build_jwt_auth_cfg(Some("my-secret".to_owned()), None, None, None);
-        assert_eq!(cfg.secret.as_deref(), Some("my-secret"));
-        assert!(cfg.jwks_url.is_none());
-        assert!(cfg.audience.is_none());
-        assert!(cfg.issuer.is_none());
-        assert!(cfg.skip_paths.is_none());
-        assert!(cfg.jwks_refresh_secs.is_none());
-    }
-
-    #[test]
-    #[cfg(feature = "jwt")]
-    fn build_jwt_auth_cfg_with_jwks_url() {
-        let cfg = build_jwt_auth_cfg(
-            None,
-            Some("https://auth.example.com/.well-known/jwks.json".to_owned()),
-            Some(vec!["my-app".to_owned()]),
-            Some("https://auth.example.com/".to_owned()),
-        );
-        assert!(cfg.secret.is_none());
-        assert_eq!(
-            cfg.jwks_url.as_deref(),
-            Some("https://auth.example.com/.well-known/jwks.json")
-        );
-        assert_eq!(
-            cfg.audience.as_deref(),
-            Some(["my-app".to_owned()].as_slice())
-        );
-        assert_eq!(cfg.issuer.as_deref(), Some("https://auth.example.com/"));
-    }
+    // ── build_jwt_auth_cfg — moved to crates/conduit-auth-consumers (#114/#134) ─
 }

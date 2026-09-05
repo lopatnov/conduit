@@ -43,10 +43,17 @@ jobs:
         run: cargo fmt --check
 
       - name: clippy
-        run: cargo clippy --tests -- -D warnings
+        # --workspace covers member crates too (e.g. conduit-core, #114/#126) --
+        # they have no [features] of their own, so this job (matrix'd across
+        # all 3 OSes) is where they get exercised; ci-features/ci-standard
+        # stay root-package-only since those exist to test feature combos the
+        # member crates don't have. --tests lints #[cfg(test)] code too (#219) --
+        # without it, cfg(test) never activates and inline test blocks are
+        # silently never linted at all.
+        run: cargo clippy --workspace --tests -- -D warnings
 
       - name: test
-        run: cargo test
+        run: cargo test --workspace
 
   # ── Build + test with all optional features enabled ─────────────────────────
   ci-features:
@@ -101,6 +108,182 @@ jobs:
 
       - name: test (standard features)
         run: cargo test --features standard
+
+  # ── Footprint report: stripped binary size + dep count per feature profile ──
+  # Makes the migration's value measurable and catches silent footprint
+  # regressions as crates get added. Metric definitions match footprint-auditor
+  # (.claude/agents/footprint-auditor.md): `ls -l` on the release binary
+  # (strip = true already set in [profile.release]) and
+  # `cargo tree ... -e normal | wc -l` as the dependency-count proxy. See #114/#119.
+  #
+  # Deliberately posts via a plain `curl` + the automatically-provided
+  # GITHUB_TOKEN rather than adding a new third-party Action — keeps this
+  # workflow's supply-chain surface to only the pins already vetted elsewhere
+  # in this file. GITHUB_TOKEN is read-only-forced by GitHub itself on
+  # pull_request runs from forks, so `pull-requests: write` here can't be
+  # abused cross-repo.
+  #
+  # Sub-issue PRs in this migration target `claude/cargo-workspace-features-
+  # 23qxfr`, not `main`, and the `pull_request` trigger above is scoped to
+  # `branches: [main]` — so those PRs' CI actually runs via the `push` trigger,
+  # where `github.event.pull_request` doesn't exist. The "find associated PR"
+  # step below covers both cases: use the event context on an actual
+  # `pull_request` run, otherwise look up the open PR for this branch via the
+  # API. No open PR (e.g. a bare push) means no comment target — the
+  # measurement step still runs so a break here is still caught in CI logs.
+  footprint:
+    name: Footprint report
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: footprint
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: Measure footprint per profile
+        run: |
+          set -euo pipefail
+          {
+            echo "Profile | Binary size (release, stripped) | Deps (cargo tree, normal)"
+            echo "---|---|---"
+          } > /tmp/footprint-table.md
+
+          measure() {
+            local flags="$1" label="$2"
+            cargo build --release $flags -q
+            local size_bytes
+            size_bytes=$(stat -c%s target/release/conduit)
+            local size_human
+            size_human=$(numfmt --to=iec-i --suffix=B --format="%.1f" "$size_bytes")
+            local dep_count
+            dep_count=$(cargo tree $flags -e normal | wc -l)
+            echo "$label | ${size_human} (${size_bytes} bytes) | ${dep_count}" >> /tmp/footprint-table.md
+          }
+
+          measure "--no-default-features" "\`--no-default-features\`"
+          measure "" "default"
+          measure "--features standard" "\`standard\`"
+          measure "--features full" "\`full\`"
+
+      - name: Find associated PR number
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "number=$EVENT_PR_NUMBER" >> "$GITHUB_OUTPUT"
+          else
+            number=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/pulls?head=$REPO_OWNER:$REF_NAME&state=open" \
+              | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['number'] if d else '')")
+            echo "number=$number" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post/update PR comment
+        if: steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          MARKER: "<!-- footprint-report -->"
+        run: |
+          set -euo pipefail
+          { echo "$MARKER"; echo; echo "## 📦 Footprint report"; echo; cat /tmp/footprint-table.md; } > /tmp/comment-body.md
+
+          existing_id=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
+            | python3 -c "
+          import json, os, sys
+          data = json.load(sys.stdin)
+          marker = os.environ['MARKER']
+          for c in data:
+              if marker in c['body']:
+                  print(c['id'])
+                  break
+          ")
+
+          payload=$(python3 -c "
+          import json
+          with open('/tmp/comment-body.md') as f:
+              print(json.dumps({'body': f.read()}))
+          ")
+
+          if [ -n "$existing_id" ]; then
+            curl -sS -X PATCH -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/issues/comments/$existing_id" -d "$payload" > /dev/null
+          else
+            curl -sS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" -d "$payload" > /dev/null
+          fi
+
+  # ── Feature-gating isolation check (cargo-hack) ──────────────────────────────
+  # Proves each optional feature actually compiles *in isolation* — the
+  # default/all-features/standard-bundle jobs above only ever build feature
+  # unions, so a feature that silently depends on another (or on something
+  # only dev-deps happen to pull in) would slip through undetected otherwise.
+  # --no-dev-deps is what makes this meaningful: without it, jsonwebtoken and
+  # rcgen (declared as dev-deps for tests) mask real gating gaps by being
+  # present regardless of which --features flag is passed. See #114/#118.
+  # ── Workspace layer-boundary guard (issue #114/#125) ─────────────────────
+  # No-ops today (crates/ has no member crates yet) — establishes the
+  # guardrail ahead of Phase 2+ extractions, so a Layer-1 feature crate
+  # reaching into SiteConfig/AppConfig directly fails fast in CI instead of
+  # being discovered mid-Phase-5.
+  layer-boundaries:
+    name: Layer boundaries (SiteConfig/AppConfig)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check Layer-1 crates don't reference SiteConfig/AppConfig
+        run: ./scripts/check-layer-boundaries.sh
+
+  ci-hack:
+    name: Feature isolation (cargo-hack)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: hack-each-feature
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e  # v2.85.4
+        with:
+          tool: cargo-hack
+
+      - name: cargo hack check --each-feature --no-dev-deps
+        run: cargo hack check --each-feature --no-dev-deps
 
   # ── Cross-compile smoke tests for non-native architectures ──────────────────
   # Mirrors the `use_cross: true` targets in release.yml's build matrix, but

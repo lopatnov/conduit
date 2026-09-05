@@ -70,7 +70,7 @@
           "properties": {
             "windowSecs": { "type": "integer", "minimum": 1 },
             "limit":      { "type": "integer", "minimum": 1 },
-            "burst":      { "type": "integer", "minimum": 0, "description": "Extra token-bucket capacity on top of limit, for short traffic spikes. In-memory store only — has no effect under a Redis store (fixed-window counter, no burst concept)." },
+            "burst":      { "type": "integer", "minimum": 0, "description": "Extra capacity on top of limit, for short traffic spikes. Works under both the in-memory store (token-bucket: limit+burst tokens, refilled continuously) and a Redis store (fixed-window: admission ceiling raised from limit to limit+burst within the current window, not continuously refilled)." },
             "algorithm":  { "type": "string", "enum": ["token-bucket"] },
             "keyBy":      { "type": "string", "pattern": "^(ip|header:[!#$%&'*+.^_`|~0-9A-Za-z-]+)$", "examples": ["ip", "header:X-User-ID"] },
             "skipPaths":  { "type": "array", "items": { "type": "string" } },
@@ -79,7 +79,7 @@
               "description": "Backend for the rate-limiter state. \"memory\" (default) uses an in-process DashMap; a Redis URL (e.g. \"redis://127.0.0.1:6379\") uses a Redis fixed-window counter with automatic fallback to memory on failure.",
               "examples": ["memory", "redis://127.0.0.1:6379"]
             },
-            "dryRun": { "type": "boolean", "description": "Log violations but allow requests through instead of returning 429. Site-level only — has no effect on per-route/per-consumer rateLimit." }
+            "dryRun": { "type": "boolean", "description": "Log violations but allow requests through instead of returning 429. Site-level and per-consumer only — not a valid field on a per-route rateLimit." }
           }
         },
         "basicAuth": {
@@ -267,9 +267,10 @@
         {
           "type": "object",
           "properties": {
-            "algorithms": { "type": "array", "items": { "type": "string", "enum": ["br", "gzip", "deflate"] } },
+            "algorithms": { "type": "array", "items": { "type": "string", "enum": ["br", "zstd", "gzip", "deflate"] } },
             "level":      { "type": "integer", "minimum": 0, "maximum": 9 },
-            "minBytes":   { "type": "integer", "minimum": 0 }
+            "minBytes":   { "type": "integer", "minimum": 0 },
+            "types":      { "type": "array", "items": { "type": "string" }, "description": "Content-Type prefixes to compress (nginx gzip_types pattern). Default: text/, application/json, application/xml, application/javascript, application/xhtml, image/svg. Use [\"*\"] or [\"\"] to compress all types." }
           }
         }
       ]
@@ -450,10 +451,16 @@
             "windowSecs": { "type": "integer", "minimum": 1 },
             "limit":      { "type": "integer", "minimum": 1 },
             "burst":      { "type": "integer", "minimum": 0 },
-            "keyBy":      { "type": "string" },
-            "skipPaths":  { "type": "array", "items": { "type": "string" } }
+            "algorithm":  { "type": "string", "enum": ["token-bucket"] },
+            "keyBy":      { "type": "string", "pattern": "^(ip|header:[!#$%&'*+.^_`|~0-9A-Za-z-]+)$", "examples": ["ip", "header:X-User-ID"] },
+            "skipPaths":  { "type": "array", "items": { "type": "string" } },
+            "store": {
+              "type": "string",
+              "description": "Backend for this route's rate-limiter state (issue #322). \"memory\" (default) uses an in-process DashMap; a Redis URL (e.g. \"redis://127.0.0.1:6379\") uses a Redis fixed-window counter, scoped per route so it never shares a counter with the site-level check or another route.",
+              "examples": ["memory", "redis://127.0.0.1:6379"]
+            }
           },
-          "description": "Per-route rate limit (in addition to site-level rateLimit). dryRun/store are site-level-only fields and have no effect here."
+          "description": "Per-route rate limit (in addition to site-level rateLimit). dryRun is a site/consumer-only field and has no effect here (the schema rejects it at this level)."
         },
         "priority": {
           "type": "integer",
@@ -710,7 +717,12 @@
       "properties": {
         "windowSecs": { "type": "integer", "minimum": 1 },
         "limit":      { "type": "integer", "minimum": 1 },
-        "burst":      { "type": "integer", "minimum": 0 }
+        "burst":      { "type": "integer", "minimum": 0 },
+        "algorithm":  { "type": "string", "enum": ["token-bucket"] },
+        "keyBy":      { "type": "string", "pattern": "^(ip|header:[!#$%&'*+.^_`|~0-9A-Za-z-]+)$", "description": "Validated for syntax, but has no effect at consumer level — the bucket key is always \"consumer:{username}\", not derived from the request." },
+        "skipPaths":  { "type": "array", "items": { "type": "string" } },
+        "store":      { "type": "string", "description": "Backend for this consumer's rate-limiter state (issue #322). \"memory\" (default) uses an in-process DashMap; a Redis URL uses a Redis fixed-window counter under the fixed scope \"consumer\", with the username as the client key (the consumer's quota stays global across sites, per its keyBy note above)." },
+        "dryRun":     { "type": "boolean", "description": "Log violations but allow the request through instead of returning 429." }
       }
     }
   }

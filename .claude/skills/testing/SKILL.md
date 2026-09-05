@@ -37,12 +37,65 @@ description: Playbook for writing/extending tests in conduit — when to reach f
    overkill and slower to set up — match the existing pattern in `tests/`.
 5. **`tokio::test`** — async test fn, default multi-thread runtime unless the test needs
    single-thread determinism (then `#[tokio::test(flavor = "current_thread")]`).
+6. **Raw-TCP-client tests (test acting as the *client* against a real server) — don't
+   `stream.shutdown()` after writing the request.** Confirmed on this dev machine's Windows
+   toolchain (2026-08-31, issue #286's regression test): a client half-closing its write side
+   before the server's `accept()` has run can drop the connection's still-pending backlog entry
+   outright — `read_to_end` then returns a clean `Ok(0)` (not an error), which looks exactly
+   like "the server responded with nothing" and is easy to misdiagnose as a server-side bug.
+   Send a correct `Content-Length` and let the *server's* own `Connection: close` (or an
+   explicit read-until-expected-bytes) end the exchange — don't rely on the client signaling
+   EOF via a write-side shutdown. If a client-role test in this repo ever gets a mysterious
+   empty response with no error, this is the first thing to check before suspecting the code
+   under test.
 
 ## Procedure — adding/extending tests for a change
 
 1. **Locate the right layer first.** Pure function/struct logic with no I/O → unit test next
    to the code (or in the module's existing `tests` submodule). Anything that needs a guard
-   chain, real headers, real sockets, or Admin API → integration test in `tests/`.
+   chain, real headers, real sockets, or Admin API → integration test in `tests/` — **except**
+   see the coverage-driven carve-out below, added 2026-08-23.
+
+### Narrow exception: `Session`-touching code that specifically needs `--lib` coverage credit
+
+`cargo llvm-cov --lib` (the command `.github/workflows/sonar.yml` uses to feed SonarCloud's
+"Coverage on New Code" gate) only instruments unit tests — `tests/*.rs` integration-test
+binaries are never measured (see issue #248: they're deliberately excluded because
+instrumenting a real spawned server can hang CI for hours). That means a single-guard/handler
+function that only ever gets exercised through an integration test shows as 0% covered on
+SonarCloud even when it's genuinely tested end-to-end.
+
+For that specific situation — not as a general replacement for integration tests — write an
+inline `#[cfg(test)] mod tests` unit test that builds a real `pingora_proxy::Session` directly,
+instead of routing everything through `tests/`:
+
+```rust
+async fn session_with_request() -> (pingora_proxy::Session, tokio::io::DuplexStream) {
+    let (server_side, mut client_side) = tokio::io::duplex(4096);
+    client_side.write_all(b"GET /test HTTP/1.1\r\nHost: test\r\n\r\n").await.unwrap();
+
+    let stream: pingora_core::protocols::Stream = Box::new(server_side);
+    let mut session = pingora_proxy::Session::new_h1(stream);
+    session.as_downstream_mut().read_request().await.expect("read_request");
+
+    (session, client_side)
+}
+```
+
+Why this is legitimate, not a hack: `pingora_proxy::Session::new_h1` is a **public** constructor
+whose own doc comment says it's "mostly used for testing and mocking", and `pingora-core`
+implements its internal `IO` trait for `tokio::io::DuplexStream` specifically for this purpose
+(`pingora_core::protocols::mod::ext_io_impl`, comment: "mostly for testing"). No real socket,
+no private API reached into — just the in-memory pipe primitive Pingora built for exactly this.
+Write the client-side request bytes into `client_side` *before* `read_request()`, and read the
+guard's response back from `client_side` afterward to assert on real status/headers/body, not
+just the `FilterOutcome` enum. Needs `pingora-proxy` as a `[dev-dependencies]` entry in that
+crate's `Cargo.toml` (it's normally only a root-crate dependency) — see `crates/conduit-faults/
+Cargo.toml` for the first example (guard.rs's `FaultInjectionGuard` tests).
+
+This does **not** replace integration-test coverage for realistic multi-guard chain / routing /
+config-driven behavior — it's specifically for closing a coverage gap on one function's
+isolated logic when the file's whole purpose is otherwise well-tested end-to-end already.
 2. **Find a sibling test to pattern-match.** conduit has 13 feature flags and many guard/filter
    tests already — there's almost always an existing test exercising a similar shape (another
    guard, another handler, another config field). Copy its setup, don't write from scratch.

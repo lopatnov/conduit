@@ -3,6 +3,8 @@ use std::time::{Duration, SystemTime};
 
 use url::Url as ParsedUrl;
 
+pub use conduit_config_core::validation::{partition_by_severity, Severity, ValidationError};
+
 use crate::config::schema::{
     ApiKeyConfig, AppConfig, Consumer, ConsumerJwtConfig, ConsumersSharedJwtConfig, CorsConfig,
     FallbackConfig, IpFilterConfig, LoadBalanceStrategy, MetricsConfig, MiddlewareEntry,
@@ -12,74 +14,154 @@ use crate::config::schema::{
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-/// Distinguishes a hard config error (must not start/reload) from an
-/// advisory one (worth surfacing, but shouldn't block startup/reload) —
-/// see issue #191. `conduit validate`'s pre-flight check treats both the
-/// same way (exit non-zero on either), by design: its whole purpose is to
-/// surface anything worth an operator's attention before a real deploy.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Severity {
-    Error,
-    Warning,
-}
-
-#[derive(Debug, PartialEq, Clone, serde::Serialize)]
-pub struct ValidationError {
-    pub path: String,
-    pub message: String,
-    pub severity: Severity,
-}
-
-impl ValidationError {
-    fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            path: path.into(),
-            message: message.into(),
-            severity: Severity::Error,
-        }
-    }
-
-    /// An advisory finding: worth surfacing, but must not by itself block
-    /// server startup or `/reload` (issue #191) — e.g. a still-valid cert
-    /// that's merely close to expiring. `conduit validate` still treats this
-    /// the same as [`Self::new`] (see `Severity`'s doc comment).
-    fn warning(path: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            path: path.into(),
-            message: message.into(),
-            severity: Severity::Warning,
-        }
-    }
-}
-
-/// Split validation errors into `(warnings, hard_errors)` by severity (#191).
-///
-/// Callers that gate startup/reload on validation (`run_server()`,
-/// `/reload`) should log `warnings` and continue, only refusing to proceed
-/// when `hard_errors` is non-empty. `conduit validate`'s CLI pre-flight
-/// check deliberately does *not* use this split — it exits non-zero on
-/// either kind, by design (see `Severity`'s doc comment).
-pub fn partition_by_severity(
-    errors: Vec<ValidationError>,
-) -> (Vec<ValidationError>, Vec<ValidationError>) {
-    errors
-        .into_iter()
-        .partition(|e| e.severity == Severity::Warning)
-}
-
 pub fn validate(config: &AppConfig) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
     validate_no_duplicate_host_port(config, &mut errors);
     validate_http_redirect_ports(config, &mut errors);
     validate_global(config, &mut errors);
+    #[cfg(feature = "redis")]
+    check_redis_store_consistency(config, &mut errors);
 
     for (i, site) in config.sites.iter().enumerate() {
         validate_site(site, &format!("sites[{i}]"), &mut errors);
     }
 
     errors
+}
+
+/// Warn (advisory, not fatal) when more than one distinct `redis://`/`rediss://`
+/// URL is configured across every site/route/consumer `rateLimit.store` in the
+/// whole config (issue #357).
+///
+/// Only one Redis connection is ever established per process
+/// (`connect_redis_rate_limiter_if_configured` in `src/server/builder.rs`
+/// connects to the first URL found scanning site → route → consumer, across
+/// sites in order) — every level that names a *different* URL silently shares
+/// that one connection instead of getting its own. This can't be a hard error
+/// (a config with mismatched-but-harmless URLs, e.g. a typo'd port an operator
+/// hasn't noticed yet, must still start), so it's `Severity::Warning` like the
+/// near-expiry-cert check (#191/#253) — logged, not fatal.
+#[cfg(feature = "redis")]
+fn check_redis_store_consistency(config: &AppConfig, errors: &mut Vec<ValidationError>) {
+    let mut seen: Vec<String> = Vec::new();
+    for site in &config.sites {
+        collect_redis_stores(site, &mut seen);
+    }
+
+    let mut distinct: Vec<&str> = Vec::new();
+    for url in &seen {
+        if !distinct.contains(&url.as_str()) {
+            distinct.push(url);
+        }
+    }
+
+    if distinct.len() > 1 {
+        // `validate_rate_limit` only checks the `redis://`/`rediss://` prefix
+        // on `store` — it doesn't reject embedded control characters, so an
+        // operator-supplied URL could carry a raw newline this far.
+        // `sanitize_for_log` (already used above for other config-derived
+        // values reaching a warning/error message) escapes those before they
+        // can forge a fake log line in this warning's output.
+        let redacted: Vec<String> = distinct
+            .iter()
+            .map(|url| sanitize_for_log(&redact_url(url)))
+            .collect();
+        errors.push(ValidationError::warning(
+            "rateLimit.store",
+            format!(
+                "multiple distinct Redis URLs configured across site/route/consumer \
+                 rateLimit.store fields ({}). Only one Redis connection is ever \
+                 established per process — Conduit will connect to '{}' and every \
+                 other level configuring a different URL will silently share that \
+                 same connection instead of getting its own. Point every level at \
+                 the same Redis instance to avoid surprises.",
+                redacted.join(", "),
+                redacted[0]
+            ),
+        ));
+    }
+}
+
+/// Strip userinfo (`user:pass@`) from a Redis URL before it can reach a log
+/// line — this codebase's `$VAR` secret-interpolation model has no
+/// URL-encoding step, so a raw credential in a `redis://user:pass@host`
+/// `rateLimit.store` value is realistic. Mirrors
+/// `crates/conduit-cache/src/redis.rs`'s `redact_url` (added for #330/#331);
+/// duplicated locally rather than shared because that one is private to the
+/// cache crate and this is the config-validation crate's only Redis-URL sink
+/// — same small-helper-per-module pattern already used for `is_redis_store`
+/// in this file, `src/server/builder.rs`, and `src/filter/rate_limit.rs`.
+#[cfg(feature = "redis")]
+fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
+    let Some(scheme_end) = url.find("://") else {
+        return std::borrow::Cow::Borrowed(url);
+    };
+    let authority_start = scheme_end + 3;
+    let rest = &url[authority_start..];
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    // The LAST '@' within the authority is the userinfo/host separator, not
+    // the first — see the cache crate's `redact_url` doc comment for why
+    // (PR #331 review: a password containing its own '@' would otherwise
+    // leak a fragment of itself).
+    let Some(at) = authority.rfind('@') else {
+        return std::borrow::Cow::Borrowed(url);
+    };
+    std::borrow::Cow::Owned(format!(
+        "{}***@{}",
+        &url[..authority_start],
+        &rest[at + 1..]
+    ))
+}
+
+/// Collect every `redis://`/`rediss://` `rate_limit.store` value configured on
+/// `site` — site-level, then per-route, then per-consumer — in the same scan
+/// order as `src/server/builder.rs::find_redis_rate_limit_store`, appending to
+/// `out` (not deduped; the caller dedupes across all sites).
+#[cfg(feature = "redis")]
+fn collect_redis_stores(site: &SiteConfig, out: &mut Vec<String>) {
+    fn is_redis_store(store: &str) -> bool {
+        store.starts_with("redis://") || store.starts_with("rediss://")
+    }
+
+    if let Some(store) = site
+        .rate_limit
+        .as_ref()
+        .and_then(|rl| rl.store.as_deref())
+        .filter(|s| is_redis_store(s))
+    {
+        out.push(store.to_owned());
+    }
+
+    if let Some(ProxyConfig::Routes(routes)) = &site.proxy {
+        for target in routes.values() {
+            if let ProxyRouteTarget::Full(cfg) = target {
+                if let Some(store) = cfg
+                    .rate_limit
+                    .as_ref()
+                    .and_then(|rl| rl.store.as_deref())
+                    .filter(|s| is_redis_store(s))
+                {
+                    out.push(store.to_owned());
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "consumers")]
+    if let Some(consumers) = &site.consumers {
+        for consumer in &consumers.consumers {
+            if let Some(store) = consumer
+                .rate_limit
+                .as_ref()
+                .and_then(|rl| rl.store.as_deref())
+                .filter(|s| is_redis_store(s))
+            {
+                out.push(store.to_owned());
+            }
+        }
+    }
 }
 
 /// Return human-readable warnings for config options that require a compile-time
@@ -101,8 +183,64 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
     check_proxy_loop_warnings(config, &mut warnings);
     check_jwt_secret_warnings(config, &mut warnings);
     check_metrics_auth_warnings(config, &mut warnings);
+    check_extra_key_warnings(config, &mut warnings);
 
     warnings
+}
+
+/// Maps a top-level `SiteConfig` JSON/YAML key to the Cargo feature that
+/// owns it. Used by `check_extra_key_warnings` below to turn a key that
+/// lands in `SiteConfig.extra` (unrecognized by any named field) into an
+/// actionable warning instead of a silent no-op.
+///
+/// This table is ahead of need (#124, part of the Conduit 2.0 workspace
+/// migration, #114): today every field on `SiteConfig` is always present
+/// regardless of compiled features, so a well-known key like `jwtAuth`
+/// always lands in its named field, never in `extra` — this table only
+/// fires for genuine typos right now. Once the migration starts
+/// `#[cfg]`-gating these fields per feature crate, the same keys will start
+/// landing in `extra` whenever their feature is compiled out, and this
+/// table (already wired into `feature_warnings()`) picks them up with no
+/// further changes needed — preserving today's warning UX instead of
+/// regressing to a hard deserialize error or a silent drop.
+const DISABLED_KEY_OWNING_FEATURE: &[(&str, &str)] = &[
+    ("jwtAuth", "jwt"),
+    ("forwardAuth", "forward-auth"),
+    ("consumers", "consumers"),
+    ("tcp", "tcp"),
+    ("upload", "upload"),
+    ("faultInjection", "fault-injection"),
+    ("compression", "compression"),
+    ("static", "static"),
+    ("fallback", "static"),
+    ("hotReload", "hotreload"),
+];
+
+/// Warn about unrecognized top-level site config keys (`SiteConfig.extra`):
+/// a specific "recompile with --features X" message when the key is known
+/// to belong to an optional feature, or a generic typo warning otherwise.
+///
+/// The key name itself is config-controlled (an arbitrary JSON/YAML object
+/// key) and is interpolated into the warning message below — routed through
+/// `sanitize_for_log()` for the same reason `check_proxy_loop_warnings`'s
+/// `target` is (issue #185, CWE-117-style log injection).
+fn check_extra_key_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
+    for (i, site) in config.sites.iter().enumerate() {
+        for key in site.extra.keys() {
+            let key = sanitize_for_log(key);
+            match DISABLED_KEY_OWNING_FEATURE.iter().find(|(k, _)| **k == key) {
+                Some((_, feature)) => warnings.push(format!(
+                    "sites[{i}].{key} is configured but Conduit was compiled without the \
+                     `{feature}` feature — this configuration will be ignored. \
+                     Recompile with `--features {feature}` to enable."
+                )),
+                None => warnings.push(format!(
+                    "sites[{i}].{key} is not a recognized configuration key and will be \
+                     ignored — check for a typo."
+                )),
+            }
+        }
+    }
 }
 
 /// Escapes control characters (newlines, carriage returns, and other
@@ -235,19 +373,18 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
     }
 
     // ── Redis (feature: redis) ────────────────────────────────────────────────
+    //
+    // Checks site, route, and consumer levels alike (issue #322 gave the
+    // latter two real effect when `redis` *is* compiled — before that, a
+    // route/consumer `store: "redis://..."` was always a no-op regardless of
+    // this feature, so warning about it there would have been misleading).
     #[cfg(not(feature = "redis"))]
     {
-        let uses_redis = site
-            .rate_limit
-            .as_ref()
-            .and_then(|rl| rl.store.as_deref())
-            .map(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
-            .unwrap_or(false);
-        if uses_redis {
+        if site_uses_redis_store(site) {
             warnings.push(format!(
-                "sites[{i}].rateLimit.store uses Redis but Conduit was compiled without the \
-                 `redis` feature — falling back to in-memory rate limiting. \
-                 Recompile with `--features redis` to enable."
+                "sites[{i}].rateLimit.store (site, route, or consumer level) uses Redis but \
+                 Conduit was compiled without the `redis` feature — falling back to in-memory \
+                 rate limiting everywhere. Recompile with `--features redis` to enable."
             ));
         }
     }
@@ -296,11 +433,72 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
         ));
     }
 
+    // ── Compression (feature: compression) ───────────────────────────────────
+    // Unlike every other feature checked here, `compression` is default-on
+    // at the root crate (issue #114/#138) — this warning only fires for a
+    // deliberate `--no-default-features` build (or one that otherwise
+    // excludes `compression`), same mechanism as the rest of this function.
+    #[cfg(not(feature = "compression"))]
+    if site.compression.is_some() {
+        warnings.push(format!(
+            "sites[{i}].compression is configured but Conduit was compiled without the \
+             `compression` feature — response compression will be disabled. \
+             Recompile with `--features compression` to enable."
+        ));
+    }
+
+    // ── Static files (feature: static) ────────────────────────────────────────
+    // Unlike every other feature checked here besides `compression`, `static`
+    // is default-on at the root crate (issue #114/#139) — this warning only
+    // fires for a deliberate `--no-default-features` build (or one that
+    // otherwise excludes `static`), same mechanism as the rest of this
+    // function.
+    #[cfg(not(feature = "static"))]
+    if site.static_files.is_some() {
+        warnings.push(format!(
+            "sites[{i}].static is configured but Conduit was compiled without the `static` \
+             feature — static file serving will be disabled. \
+             Recompile with `--features static` to enable."
+        ));
+    }
+
+    // ── Fallback responses (feature: static) ──────────────────────────────────
+    // Same default-on caveat as `static` above — `fallback` is served by the
+    // same crate/feature (crates/conduit-static, issue #114/#139).
+    #[cfg(not(feature = "static"))]
+    if site.fallback.is_some() {
+        warnings.push(format!(
+            "sites[{i}].fallback is configured but Conduit was compiled without the `static` \
+             feature — fallback responses (including the site's default 404) will be \
+             disabled. \
+             Recompile with `--features static` to enable."
+        ));
+    }
+
+    // ── Hot reload (feature: hotreload) ───────────────────────────────────────
+    // Unlike every other feature checked here besides `compression`/`static`,
+    // `hotreload` is default-on at the root crate (issue #114/#140) — this
+    // warning only fires for a deliberate `--no-default-features` build (or
+    // one that otherwise excludes `hotreload`), same mechanism as the rest of
+    // this function. Previously had no `feature_warnings()` case at all
+    // (found during #140's extraction) — `hotReload` was never gated behind
+    // any feature pre-extraction, so there was nothing to warn about yet.
+    #[cfg(not(feature = "hotreload"))]
+    if site.hot_reload.is_some() {
+        warnings.push(format!(
+            "sites[{i}].hotReload is configured but Conduit was compiled without the \
+             `hotreload` feature — browser hot-reload (the SSE stream and file watcher) will \
+             be disabled. \
+             Recompile with `--features hotreload` to enable."
+        ));
+    }
+
     // ── Consumer JWT / sharedJwt without the `jwt` feature ────────────────────
     // `consumers` alone doesn't imply `jwt` — a consumer whose only credential
     // is `jwt` (V2) or a `consumers.sharedJwt` block (V3) is silently
     // unreachable without it (see `check_consumer_credentials`/
-    // `identify_consumer` in `src/filter/auth.rs`, both `jwt`-gated).
+    // `identify_consumer` in `crates/conduit-auth-consumers/src/identify.rs`,
+    // both `jwt`-gated).
     #[cfg(all(feature = "consumers", not(feature = "jwt")))]
     if let Some(ref consumers_cfg) = site.consumers {
         let has_shared_jwt = consumers_cfg.shared_jwt.is_some();
@@ -325,7 +523,10 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
         feature = "cache",
         feature = "upload",
         feature = "fault-injection",
-        feature = "consumers"
+        feature = "consumers",
+        feature = "compression",
+        feature = "static",
+        feature = "hotreload"
     ))]
     let _ = (i, site, warnings);
 }
@@ -341,6 +542,54 @@ fn site_has_cache_config(site: &SiteConfig) -> bool {
             )
         }),
         _ => false,
+    }
+}
+
+/// Return `true` when `site`'s site-, route-, or consumer-level `rateLimit`
+/// configures a `redis://`/`rediss://` store — mirrors
+/// `src/server/builder.rs::find_redis_rate_limit_store`'s scan (issue #322),
+/// but only needs a yes/no answer here rather than the actual URL.
+#[cfg(not(feature = "redis"))]
+fn site_uses_redis_store(site: &SiteConfig) -> bool {
+    fn is_redis_store(store: &str) -> bool {
+        store.starts_with("redis://") || store.starts_with("rediss://")
+    }
+
+    let site_level = site
+        .rate_limit
+        .as_ref()
+        .and_then(|rl| rl.store.as_deref())
+        .is_some_and(is_redis_store);
+    if site_level {
+        return true;
+    }
+
+    let route_level = matches!(&site.proxy, Some(ProxyConfig::Routes(routes)) if routes.values().any(|t| {
+        matches!(t, ProxyRouteTarget::Full(cfg) if cfg
+            .rate_limit
+            .as_ref()
+            .and_then(|rl| rl.store.as_deref())
+            .is_some_and(is_redis_store))
+    }));
+    if route_level {
+        return true;
+    }
+
+    #[cfg(feature = "consumers")]
+    {
+        site.consumers.as_ref().is_some_and(|c| {
+            c.consumers.iter().any(|consumer| {
+                consumer
+                    .rate_limit
+                    .as_ref()
+                    .and_then(|rl| rl.store.as_deref())
+                    .is_some_and(is_redis_store)
+            })
+        })
+    }
+    #[cfg(not(feature = "consumers"))]
+    {
+        false
     }
 }
 
@@ -1034,18 +1283,24 @@ fn validate_middleware(
     }
 }
 
-fn validate_rate_limit(
-    rate_limit: &RateLimitConfig,
-    prefix: &str,
-    errors: &mut Vec<ValidationError>,
-) {
-    if rate_limit.window_secs == 0 {
+/// Validate the shared rate-limit rules (`windowSecs`/`limit`/`algorithm`/
+/// `keyBy`/`store`).
+///
+/// Takes a concrete `&RateLimitConfig` — as of issue #114/#137 slice 1, the
+/// site/route-level type (`crate::config::schema::RateLimitConfig`) and the
+/// per-consumer type (`conduit_auth_consumers::RateLimitConfig`) are the
+/// *same* type (both re-export `conduit_ratelimit::RateLimitConfig`),
+/// so all three call sites below can share one signature. Before #137 this
+/// took primitive fields specifically because the two were nominally
+/// distinct types.
+fn validate_rate_limit(cfg: &RateLimitConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
+    if cfg.window_secs == 0 {
         errors.push(ValidationError::new(
             format!("{prefix}.rateLimit.windowSecs"),
             "windowSecs must be greater than 0",
         ));
     }
-    if rate_limit.limit == 0 {
+    if cfg.limit == 0 {
         errors.push(ValidationError::new(
             format!("{prefix}.rateLimit.limit"),
             "limit must be greater than 0",
@@ -1055,7 +1310,7 @@ fn validate_rate_limit(
     // is caught at config-load time rather than silently ignored (it was previously
     // parsed and schema-declared but never read anywhere, see issue tracking the
     // 2026-08-30 rate_limit.rs integrity audit).
-    if let Some(algorithm) = &rate_limit.algorithm {
+    if let Some(algorithm) = cfg.algorithm.as_deref() {
         if algorithm != "token-bucket" {
             errors.push(ValidationError::new(
                 format!("{prefix}.rateLimit.algorithm"),
@@ -1068,7 +1323,7 @@ fn validate_rate_limit(
     // `None` for a malformed name and silently falls back to a shared "unknown" bucket,
     // collapsing every client into one rate limit. Catch the typo at config-load time
     // instead (CodeRabbit finding on PR #302's review).
-    if let Some(key_by) = &rate_limit.key_by {
+    if let Some(key_by) = cfg.key_by.as_deref() {
         if let Some(header_name) = key_by.strip_prefix("header:") {
             let valid = !header_name.is_empty()
                 && header_name
@@ -1093,7 +1348,7 @@ fn validate_rate_limit(
     // Validate the store field: must be "memory", a redis:// URL (plaintext),
     // or a rediss:// URL (TLS — requires Redis with in-transit encryption,
     // e.g. AWS ElastiCache TLS, Azure Cache for Redis).
-    if let Some(store) = &rate_limit.store {
+    if let Some(store) = cfg.store.as_deref() {
         let valid_store =
             store == "memory" || store.starts_with("redis://") || store.starts_with("rediss://");
         if !valid_store {
@@ -1201,6 +1456,24 @@ fn validate_metrics(cfg: &MetricsConfig, prefix: &str, errors: &mut Vec<Validati
                 format!("Metrics path '{path}' must start with '/'"),
             ));
         }
+    }
+    // An empty token string is not the same as "no token configured"
+    // (`None`, which already warns via `check_metrics_auth_warnings`) — but
+    // the constant-time comparison in `handle_metrics` treats a missing
+    // `Authorization` header as an empty `provided` string, so `token: ""`
+    // silently matches it and authenticates every request with no
+    // credentials at all. Reject outright rather than normalizing to `None`,
+    // which would silently pick the unauthenticated path instead of
+    // surfacing the operator's likely mistake (e.g. an unresolved `$VAR`
+    // that expanded to an empty string).
+    if cfg.token.as_deref() == Some("") {
+        errors.push(ValidationError::new(
+            format!("{prefix}.metrics.token"),
+            "metrics.token must not be an empty string — an empty token matches a request \
+             with no Authorization header at all, authenticating every request. Omit the \
+             field entirely to leave the endpoint unauthenticated, or set a real token."
+                .to_owned(),
+        ));
     }
 }
 
@@ -1484,6 +1757,13 @@ fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<
     }
     if let Some(cache) = &cfg.cache {
         validate_cache_config(cache, &format!("{prefix}.cache"), errors);
+    }
+    // Per-route rateLimit was never validated at all before issue #310 (found
+    // independently by security-engineer and CodeRabbit reviewing #309) — a
+    // malformed keyBy/zero windowSecs/unknown algorithm/invalid store all
+    // passed silently. Now shares the same validation as site/consumer level.
+    if let Some(rate_limit) = &cfg.rate_limit {
+        validate_rate_limit(rate_limit, prefix, errors);
     }
 }
 
@@ -2076,6 +2356,142 @@ mod tests {
             .is_empty());
     }
 
+    // ── check_redis_store_consistency (issue #357) ──────────────────────────
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_single_url_no_warning() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://a:6379" } } },
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://a:6379" } }"#,
+        );
+        assert!(
+            !e.iter().any(|err| err.path == "rateLimit.store"),
+            "identical URLs at every level must not warn: {e:?}"
+        );
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_mismatched_site_and_route_urls_warns() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://route-host:6379" } } },
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://site-host:6379" } }"#,
+        );
+        let warning = e
+            .iter()
+            .find(|err| err.path == "rateLimit.store")
+            .unwrap_or_else(|| panic!("missing mismatch warning: {e:?}"));
+        assert_eq!(warning.severity, Severity::Warning);
+        assert!(warning.message.contains("redis://site-host:6379"));
+        assert!(warning.message.contains("redis://route-host:6379"));
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_mismatched_urls_across_sites_warns() {
+        let e = errs(
+            r#"[{ "port": 8080, "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://a:6379" } },
+                 { "port": 8081, "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://b:6379" } }]"#,
+        );
+        assert!(
+            e.iter().any(|err| err.path == "rateLimit.store"),
+            "two sites with different Redis URLs must warn: {e:?}"
+        );
+    }
+
+    #[cfg(all(feature = "redis", feature = "consumers"))]
+    #[test]
+    fn redis_store_mismatched_consumer_url_warns() {
+        let e = errs(
+            r#"{ "port": 8080, "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://site-host:6379" },
+                 "consumers": { "consumers": [{ "username": "alice",
+                   "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://consumer-host:6379" } }] } }"#,
+        );
+        assert!(
+            e.iter().any(|err| err.path == "rateLimit.store"),
+            "consumer-level URL differing from site-level must warn: {e:?}"
+        );
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_memory_alongside_redis_does_not_count_as_a_second_url() {
+        // "memory" is a valid `store` value but not a Redis URL — it must not
+        // be treated as a second distinct URL competing with the real one.
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "memory" } } },
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://a:6379" } }"#,
+        );
+        assert!(
+            !e.iter().any(|err| err.path == "rateLimit.store"),
+            "a lone Redis URL alongside a memory store must not warn: {e:?}"
+        );
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_mismatch_warning_redacts_credentials() {
+        // Regression for the security-engineer HOLD on PR #359: the mismatch
+        // warning interpolates the raw configured URLs into a message that
+        // reaches tracing::warn! verbatim (via load_and_validate/file_provider/
+        // the /reload handler) -- a credential-bearing URL must never survive
+        // into that log line unredacted.
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://route-host:6379" } } },
+                 "rateLimit": { "windowSecs": 60, "limit": 100,
+                   "store": "redis://alice:s3cret@site-host:6379" } }"#,
+        );
+        let warning = e
+            .iter()
+            .find(|err| err.path == "rateLimit.store")
+            .unwrap_or_else(|| panic!("missing mismatch warning: {e:?}"));
+        assert!(
+            !warning.message.contains("s3cret") && !warning.message.contains("alice"),
+            "credentials must not leak into the warning message: {}",
+            warning.message
+        );
+        assert!(
+            warning.message.contains("redis://***@site-host:6379"),
+            "redacted URL must still be identifiable: {}",
+            warning.message
+        );
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_mismatch_warning_escapes_embedded_control_chars() {
+        // CodeRabbit finding on PR #359: validate_rate_limit only checks the
+        // redis://\rediss:// prefix on `store`, not for embedded control
+        // characters -- a raw newline could otherwise forge a fake log line
+        // in this warning's tracing::warn! output. sanitize_for_log must
+        // escape it before it reaches the message.
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://route-host:6379" } } },
+                 "rateLimit": { "windowSecs": 60, "limit": 100,
+                   "store": "redis://a\nfake log line: [ERROR] pwned:6379" } }"#,
+        );
+        let warning = e
+            .iter()
+            .find(|err| err.path == "rateLimit.store")
+            .unwrap_or_else(|| panic!("missing mismatch warning: {e:?}"));
+        assert!(
+            !warning.message.contains('\n'),
+            "an embedded newline must not survive into the warning message: {}",
+            warning.message
+        );
+        assert!(
+            warning.message.contains("\\nfake log line"),
+            "the newline must be visibly escaped, not silently dropped: {}",
+            warning.message
+        );
+    }
+
     #[test]
     fn rate_limit_token_bucket_algorithm_valid() {
         assert!(errs(
@@ -2493,6 +2909,66 @@ mod tests {
         );
     }
 
+    // ── extra key warnings (#124) ────────────────────────────────────────────
+
+    #[test]
+    fn unrecognized_key_is_captured_in_extra_not_an_error() {
+        // Today, since every field is always present, an unrecognized key
+        // must parse successfully (captured in `extra`) rather than erroring.
+        let cfg = parse(r#"{ "port": 8080, "totallyMadeUpKey": true }"#);
+        assert_eq!(
+            cfg.sites[0].extra.get("totallyMadeUpKey"),
+            Some(&serde_json::json!(true))
+        );
+    }
+
+    #[test]
+    fn unrecognized_key_produces_typo_warning() {
+        let w = warns(r#"{ "port": 8080, "jwtAuht": { "secret": "x" } }"#);
+        assert_eq!(w.len(), 1, "expected exactly one warning: {w:?}");
+        assert!(
+            w[0].contains("jwtAuht") && w[0].contains("typo"),
+            "warning must name the key and mention a typo: {}",
+            w[0]
+        );
+    }
+
+    #[test]
+    fn known_field_key_never_lands_in_extra() {
+        // Well-known keys always deserialize into their named field today —
+        // this is the "ahead of need" property the whole mechanism relies on.
+        let cfg = parse(r#"{ "port": 8080, "jwtAuth": { "secret": "x" } }"#);
+        assert!(
+            cfg.sites[0].extra.is_empty(),
+            "known key must not land in extra: {:?}",
+            cfg.sites[0].extra
+        );
+    }
+
+    #[test]
+    fn disabled_key_owning_feature_table_produces_recompile_warning() {
+        // Simulates the future state (once #114 gates fields per-crate) by
+        // manually placing a known disabled-feature key into `extra` —
+        // proving the table lookup + warning wording work correctly now,
+        // ahead of any field actually being removed from the struct.
+        let mut config = parse(r#"{ "port": 8080 }"#);
+        config.sites[0]
+            .extra
+            .insert("jwtAuth".to_string(), serde_json::json!({}));
+        let w = feature_warnings(&config);
+        assert_eq!(w.len(), 1, "expected exactly one warning: {w:?}");
+        assert!(
+            w[0].contains("jwtAuth") && w[0].contains("--features jwt"),
+            "warning must name the key and the owning feature: {}",
+            w[0]
+        );
+        assert!(
+            !w[0].contains("typo"),
+            "a known disabled-feature key must not be reported as a typo: {}",
+            w[0]
+        );
+    }
+
     #[test]
     #[cfg(not(feature = "wasm"))]
     fn warning_per_wasm_entry() {
@@ -2623,6 +3099,21 @@ mod tests {
         assert!(
             w.iter().all(|m| !m.contains("publicly")),
             "metrics with token must not warn about access: {w:?}"
+        );
+    }
+
+    #[test]
+    fn metrics_empty_string_token_is_error() {
+        // `token: ""` is not the same as omitting it — the handler's
+        // constant-time comparison treats an empty configured token as
+        // matching a request with no Authorization header at all,
+        // authenticating everyone. Must be a hard validation error, not
+        // silently normalized to None (which would pick the unauthenticated
+        // path the operator likely didn't intend).
+        let e = errs(r#"{ "port": 8080, "metrics": { "token": "" } }"#);
+        assert!(
+            e.iter().any(|err| err.path.contains("metrics.token")),
+            "empty metrics.token must be a validation error: {e:?}"
         );
     }
 
@@ -2826,6 +3317,23 @@ mod tests {
         assert!(
             w.iter().any(|m| m.contains("fault-injection")),
             "missing fault-injection feature must warn: {w:?}"
+        );
+    }
+
+    // `compression` is default-on (issue #114/#138) — this test only
+    // compiles/runs for a deliberate `--no-default-features` (or otherwise
+    // `compression`-excluding) build, same as the other `#[cfg(not(feature
+    // = "..."))]`-gated warning tests above/below. It never runs under this
+    // repo's normal `cargo test` / `cargo test --features full` CI jobs,
+    // both of which keep `compression` on via `default` — see the
+    // `compression` feature's own `Cargo.toml` comment.
+    #[test]
+    #[cfg(not(feature = "compression"))]
+    fn warning_for_compression_without_feature() {
+        let w = warns(r#"{ "port": 8080, "compression": true }"#);
+        assert!(
+            w.iter().any(|m| m.contains("compression")),
+            "missing compression feature must warn: {w:?}"
         );
     }
 

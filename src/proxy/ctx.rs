@@ -62,11 +62,18 @@ pub struct RequestCtx {
     /// Static header transform applied to every upstream response.
     /// Populated from `SiteConfig.response_transform`.
     pub response_transform: Option<HeaderTransformConfig>,
-    /// JWT claims extracted by `JwtGuard` — available for template substitution
-    /// in `requestTransform.setHeaders` values using `{{ jwt.<claim> }}` syntax.
+    /// JWT claims extracted after the guard chain runs — available for
+    /// template substitution in `requestTransform.setHeaders` values using
+    /// `{{ jwt.<claim> }}` syntax.
     ///
-    /// Only populated when `jwtAuth` is configured and a valid token is present.
-    pub jwt_claims: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// Only populated when `jwtAuth` is configured and a valid token is
+    /// present. `#[cfg(feature = "jwt")]`-gated like `otel_span`/
+    /// `early_refresh_upstream_url` below (`CLAUDE.md` decision #30) — use
+    /// [`RequestCtx::jwt_claims`] to read this from always-compiled call
+    /// sites (e.g. header-template expansion) without `#[cfg]`-branching at
+    /// the call site itself.
+    #[cfg(feature = "jwt")]
+    pub jwt: Option<conduit_auth_jwt::guard::JwtReqState>,
     /// Active OpenTelemetry span for this request.
     ///
     /// Created at the start of `do_request_filter` and ended in `logging()`.
@@ -84,12 +91,6 @@ pub struct RequestCtx {
     /// (default 1 MiB).  Retries are still attempted but without body replay —
     /// only safe for idempotent methods (GET/HEAD) in that case.
     pub body_too_large: bool,
-    /// Running tally of actual body bytes received so far.
-    ///
-    /// Incremented in `request_body_filter` for every chunk regardless of
-    /// whether retry buffering is active.  Used to enforce `limits.maxBodyBytes`
-    /// against clients that omit `Content-Length` or use chunked encoding.
-    pub actual_body_bytes: u64,
     /// Timestamp recorded at the start of `upstream_request_filter` — i.e. the
     /// moment the proxied request was forwarded to the upstream.
     ///
@@ -98,11 +99,14 @@ pub struct RequestCtx {
     /// `None` for local handlers (health, static, metrics, …).
     pub upstream_start: Option<Instant>,
 
-    /// RAII guard that releases the per-IP connection slot when this context
-    /// is dropped at the end of `logging()`.  `None` when
-    /// `limits.maxConnectionsPerIp` is not configured or the request was
-    /// rejected before a slot was acquired.
-    pub ip_conn_slot: Option<crate::filter::chain::IpConnSlotGuard>,
+    /// Per-request limits state — `actual_body_bytes`, `ip_conn_slot`
+    /// (RAII per-IP connection slot, released on drop), and the slow-loris
+    /// upload-rate leaky-bucket state (`upload_excess_bytes`/
+    /// `upload_last_chunk`). Always present — unlike `jwt`/`cache` above,
+    /// `limits` is not an optional Cargo feature (`CLAUDE.md` decision #31),
+    /// so this field is never `Option`-wrapped or `#[cfg]`-gated. See
+    /// [`conduit_limits::LimitsReqState`] / `crates/conduit-limits/src/ctx.rs`.
+    pub limits: conduit_limits::LimitsReqState,
 
     /// Passive health check: HTTP status codes that count as upstream failures.
     ///
@@ -122,34 +126,22 @@ pub struct RequestCtx {
     /// (the default), any `101 Switching Protocols` response from upstream is
     /// rejected with `502 Bad Gateway` to prevent unexpected protocol tunnelling.
     pub websocket_allowed: bool,
-    /// Age in seconds to inject as the `Age` response header for cache hits.
+    /// Per-request cache state (`Age` header value, early-refresh upstream
+    /// URL) — see [`CacheReqState`](conduit_cache::CacheReqState).
     ///
-    /// Computed in `upstream_response_filter` from the cached response's `Date`
-    /// header (RFC 7234 §5.1): `age = now − date`.  `None` for non-cached
-    /// responses or when the cache feature is disabled.
-    pub cache_age_secs: Option<u64>,
+    /// `#[cfg(feature = "cache")]`-gated like `jwt`/`otel_span` above
+    /// (`CLAUDE.md` decision #30) — use [`RequestCtx::cache_age_secs`] to
+    /// read the `Age`-header value from always-compiled call sites (the
+    /// `ResponseCtx` trait impl in `filter/response_chain.rs`) without
+    /// `#[cfg]`-branching at the call site itself.
+    #[cfg(feature = "cache")]
+    pub cache: Option<conduit_cache::CacheReqState>,
     /// Sticky-session cookie to set on the response when HMAC signing is enabled.
     ///
     /// Populated during routing when `sticky.secret` is configured.
     /// Format: `(cookie_name, hmac_signed_value)`.  The `upstream_response_filter`
     /// injects the corresponding `Set-Cookie` header.
     pub sticky_set_cookie: Option<(String, String)>,
-    /// Slow-loris upload defense: accumulated excess bytes for the leaky-bucket
-    /// rate checker in `request_body_filter`.
-    ///
-    /// Positive excess means the client is sending faster than `minUploadRate`
-    /// would allow; negative means the client has headroom.  Set to 0.0 on init.
-    pub upload_excess_bytes: f64,
-    /// Timestamp of the last body chunk received, used by the upload-rate checker.
-    pub upload_last_chunk: Option<std::time::Instant>,
-    /// Upstream URL to refresh in the background after this cache-hit response
-    /// is served (early refresh, #31).
-    ///
-    /// Set by `response_filter` when the cache entry's remaining TTL is within
-    /// `earlyRefreshSecs`.  `logging()` spawns a fire-and-forget GET task.
-    /// `None` when early refresh is not configured or the TTL is not yet close.
-    #[cfg(feature = "cache")]
-    pub early_refresh_upstream_url: Option<String>,
 }
 
 impl RequestCtx {
@@ -182,22 +174,69 @@ impl RequestCtx {
             response_transform,
             body_buffer: Vec::new(),
             body_too_large: false,
-            actual_body_bytes: 0,
-            jwt_claims: None,
+            #[cfg(feature = "jwt")]
+            jwt: None,
             upstream_start: None,
-            ip_conn_slot: None,
+            limits: conduit_limits::LimitsReqState::default(),
             passive_unhealthy_status: Vec::new(),
             passive_unhealthy_latency_ms: None,
             websocket_allowed: false,
-            cache_age_secs: None,
-            sticky_set_cookie: None,
-            upload_excess_bytes: 0.0,
-            upload_last_chunk: None,
             #[cfg(feature = "cache")]
-            early_refresh_upstream_url: None,
+            cache: None,
+            sticky_set_cookie: None,
             #[cfg(feature = "otlp")]
             otel_span: None,
         }
+    }
+
+    /// Borrow the JWT claims extracted for this request, if any.
+    ///
+    /// Used by the root crate's always-compiled `{{ jwt.<claim> }}`
+    /// header-template expansion (`apply_header_transform_request_with_claims`
+    /// in `request_phase.rs`, backed by `conduit_auth_jwt::template::
+    /// expand_jwt_templates`) — that call site is unconditional (a config
+    /// can reference the template syntax regardless of whether `--features
+    /// jwt` is compiled in), so this accessor exists specifically to keep
+    /// the `#[cfg]` branching contained here instead of at every call site.
+    /// Returns a static empty reference when the `jwt` feature is off or no
+    /// claims were extracted for this request.
+    #[cfg(feature = "jwt")]
+    pub fn jwt_claims(&self) -> &Option<std::collections::HashMap<String, serde_json::Value>> {
+        const NO_CLAIMS: Option<std::collections::HashMap<String, serde_json::Value>> = None;
+        self.jwt
+            .as_ref()
+            .map(|state| &state.claims)
+            .unwrap_or(&NO_CLAIMS)
+    }
+
+    /// See the `#[cfg(feature = "jwt")]` overload above — stub for builds
+    /// without the `jwt` feature, always returning `None` so
+    /// `{{ jwt.<claim> }}` templates resolve to `""` (matching the
+    /// documented always-compiled behavior of `expand_jwt_templates`).
+    #[cfg(not(feature = "jwt"))]
+    pub fn jwt_claims(&self) -> &Option<std::collections::HashMap<String, serde_json::Value>> {
+        const NO_CLAIMS: Option<std::collections::HashMap<String, serde_json::Value>> = None;
+        &NO_CLAIMS
+    }
+
+    /// Age in seconds for the `Age` response header on cache hits (RFC 7234
+    /// §5.1).
+    ///
+    /// Backed by [`cache`](Self::cache)'s `CacheReqState` when the `cache`
+    /// feature is compiled in; always `None` otherwise. Exists so the
+    /// always-compiled `ResponseCtx` trait impl (`filter/response_chain.rs`)
+    /// doesn't need `#[cfg]`-branching at its call site — matches the
+    /// `jwt_claims()` pattern above (`CLAUDE.md` decision #30).
+    #[cfg(feature = "cache")]
+    pub fn cache_age_secs(&self) -> Option<u64> {
+        self.cache.as_ref().and_then(|c| c.cache_age_secs)
+    }
+
+    /// See the `#[cfg(feature = "cache")]` overload above — stub for builds
+    /// without the `cache` feature, always returning `None`.
+    #[cfg(not(feature = "cache"))]
+    pub fn cache_age_secs(&self) -> Option<u64> {
+        None
     }
 }
 
@@ -300,111 +339,14 @@ pub enum LocalHandler {
     Overloaded,
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct AcceptEncoding {
-    pub brotli: bool,
-    pub gzip: bool,
-    pub deflate: bool,
-    pub zstd: bool,
-}
-
-impl AcceptEncoding {
-    pub fn parse(value: &str) -> Self {
-        let mut enc = Self::default();
-        for part in value.split(',') {
-            let mut segments = part.trim().split(';');
-            let token = segments.next().unwrap_or("").trim().to_ascii_lowercase();
-            // Skip encodings explicitly disabled with q=0 or q=0.0.
-            let is_zero_q = segments.any(|seg| {
-                let seg = seg.trim();
-                seg.eq_ignore_ascii_case("q=0") || seg.eq_ignore_ascii_case("q=0.0")
-            });
-            if is_zero_q {
-                continue;
-            }
-            match token.as_str() {
-                "br" => enc.brotli = true,
-                "gzip" => enc.gzip = true,
-                "deflate" => enc.deflate = true,
-                "zstd" => enc.zstd = true,
-                _ => {}
-            }
-        }
-        enc
-    }
-}
+// Layer-0 vocabulary (#114/#126).
+pub use conduit_core::util::encoding::AcceptEncoding;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── AcceptEncoding::parse ─────────────────────────────────────────────────
-
-    #[test]
-    fn parse_empty_enables_nothing() {
-        let enc = AcceptEncoding::parse("");
-        assert!(!enc.brotli && !enc.gzip && !enc.deflate);
-    }
-
-    #[test]
-    fn parse_gzip_only() {
-        let enc = AcceptEncoding::parse("gzip");
-        assert!(enc.gzip);
-        assert!(!enc.brotli);
-        assert!(!enc.deflate);
-    }
-
-    #[test]
-    fn parse_br_only() {
-        let enc = AcceptEncoding::parse("br");
-        assert!(enc.brotli);
-        assert!(!enc.gzip);
-    }
-
-    #[test]
-    fn parse_multiple_encodings() {
-        let enc = AcceptEncoding::parse("br, gzip, deflate, zstd");
-        assert!(enc.brotli);
-        assert!(enc.gzip);
-        assert!(enc.deflate);
-        assert!(enc.zstd);
-    }
-
-    #[test]
-    fn parse_zstd_only() {
-        let enc = AcceptEncoding::parse("zstd");
-        assert!(enc.zstd);
-        assert!(!enc.brotli);
-        assert!(!enc.gzip);
-    }
-
-    #[test]
-    fn parse_q_zero_disables_encoding() {
-        let enc = AcceptEncoding::parse("gzip;q=0, br");
-        assert!(!enc.gzip, "gzip with q=0 must be skipped");
-        assert!(enc.brotli);
-    }
-
-    #[test]
-    fn parse_q_zero_zero_disables_encoding() {
-        let enc = AcceptEncoding::parse("gzip;q=0.0");
-        assert!(!enc.gzip);
-    }
-
-    #[test]
-    fn parse_case_insensitive() {
-        let enc = AcceptEncoding::parse("GZip, BR, Deflate");
-        assert!(enc.gzip);
-        assert!(enc.brotli);
-        assert!(enc.deflate);
-    }
-
-    #[test]
-    fn parse_unknown_token_ignored() {
-        let enc = AcceptEncoding::parse("identity, zstd, gzip");
-        assert!(enc.gzip);
-        assert!(!enc.brotli);
-    }
+    // ── AcceptEncoding::parse moved to conduit_core::util::encoding ────────────
 
     // ── RetryState ────────────────────────────────────────────────────────────
 

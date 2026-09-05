@@ -602,6 +602,40 @@ fn redis_without_feature_generates_warning() {
     );
 }
 
+/// Same as `redis_without_feature_generates_warning`, but the Redis store is
+/// configured only on a per-route `rateLimit`, not the site level (issue
+/// #322 gave route-level Redis real effect, so the feature-warning scan must
+/// cover it too — see `src/config/validate.rs::site_uses_redis_store`).
+#[test]
+#[cfg(not(feature = "redis"))]
+fn redis_without_feature_generates_warning_for_route_level_store() {
+    let config = conduit::config::from_str(
+        r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+             "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://localhost:6379" } } } }"#
+    ).expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("redis")),
+        "missing redis without feature warning for route-level store: {warnings:?}"
+    );
+}
+
+/// Same as above, but the Redis store is configured only on a per-consumer
+/// `rateLimit` (issue #322).
+#[test]
+#[cfg(all(not(feature = "redis"), feature = "consumers"))]
+fn redis_without_feature_generates_warning_for_consumer_level_store() {
+    let config = conduit::config::from_str(
+        r#"{ "port": 8080, "consumers": { "consumers": [{ "username": "alice",
+             "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://localhost:6379" } }] } }"#
+    ).expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("redis")),
+        "missing redis without feature warning for consumer-level store: {warnings:?}"
+    );
+}
+
 /// When jwt feature is off, configuring jwtAuth generates a warning.
 ///
 /// Every sibling feature-warning check in this file has a dedicated test but
@@ -692,6 +726,32 @@ fn consumers_without_feature_generates_warning() {
     assert!(
         warnings.iter().any(|w| w.contains("consumers")),
         "missing consumers without feature warning: {warnings:?}"
+    );
+}
+
+/// When static feature is off, configuring `static` generates a warning.
+#[test]
+#[cfg(not(feature = "static"))]
+fn static_without_feature_generates_warning() {
+    let config =
+        conduit::config::from_str(r#"{ "port": 8080, "static": "./dist" }"#).expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("static")),
+        "missing static without feature warning: {warnings:?}"
+    );
+}
+
+/// When static feature is off, configuring `fallback` generates a warning.
+#[test]
+#[cfg(not(feature = "static"))]
+fn fallback_without_feature_generates_warning() {
+    let config = conduit::config::from_str(r#"{ "port": 8080, "fallback": { "status": 404 } }"#)
+        .expect("parse ok");
+    let warnings = conduit::config::validate::feature_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("fallback")),
+        "missing fallback without feature warning: {warnings:?}"
     );
 }
 

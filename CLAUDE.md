@@ -66,15 +66,38 @@
 11. **IP filter** — CIDR, применяется ДО auth и rate limit.
 12. **Hot/cold reload:** port, tls.cert/key/versions/ciphers, workers, backlog, admin — cold. Всё остальное — hot через ArcSwap.
 13. **`LogWriter`** — `Arc<LogWriter>` в `AppState.log_writer`; Mutex внутри.
-14. **Rate limiter** — `DashMap` v6. Ключи реально используемые: site-level — bare client
-    key (IP или значение заголовка, `keyBy`); per-route — `"route:{key}:{ip}"`; per-consumer —
-    `"consumer:{username}"`. **Исправление 2026-08-30** (Step 1c аудит `rate_limit.rs`): эта
-    строка раньше ошибочно приписывала рейт-лимитеру формат `"{site}\0{route}"` /
-    `"*\0{route}"` — тот формат принадлежит `UpstreamRegistry.override_key()` в
-    `src/proxy/health.rs` (`conduit upstreams add/remove/weight --site`), не рейт-лимитеру.
-    Отдельно найдено и заведено issue: site-level бакеты НЕ скоуплены по сайту (общий
-    `AppState.rate_limiter` на процесс, ключ — голый client key без метки сайта) — два сайта
-    с разными `rateLimit` конфигами и общим клиентским IP делят один бакет.
+14. **Rate limiter** — `DashMap` v6 (`AppState.rate_limiter`, shared by site/route/consumer
+    layers). **Канонический формат ключа с 2026-08-30** (`src/filter/rate_limit.rs`:
+    `site_key`/`route_key`/`consumer_key`, fix для #303/#304): `\0`-разделённые, с тегом
+    namespace — site-level: `"site\0{site_label}\0{client_key}"`; per-route:
+    `"route\0{site_label}\0{route_key}\0{client_key}"`; per-consumer: `"consumer\0{username}"`
+    (**намеренно** не скоуплен по сайту — квота consumer'а глобальна по всем сайтам, где он
+    разрешён). `site_label` = тот же `"{host}:{port}"`/`"*"`, что уже используется в
+    `conduit_rate_limit_rejected_total{site=…}`. `GET /rate-limits` (`admin/api.rs`) парсит
+    все три формы и суммирует per-client бакеты в один total на (site, route) — раньше
+    (до фикса) не парсил вообще ничего реального, всегда отдавал `{}` (issue #303). Redis-бэкенд
+    (`crates/conduit-ratelimit/src/redis.rs`, за фичей `redis`, извлечён вместе с фиксом #317
+    как #137 slice 2) — отдельный ключевой неймспейс: `"conduit:rl:{scope_label}:{window_secs}:
+    {client_key}"` для реального Redis, `"{scope_label}:{client_key}:{limit}:{window_secs}"` для
+    его in-process fallback-мапы. `src/filter/rate_limit_redis.rs` в корне — тонкий facade
+    re-export. **С 2026-09-05 (issue #322)** `scope_label` (переименован из `site_label`,
+    чисто ради ясности — сигнатура не менялась) — это либо site_label как раньше, либо
+    `"route\0{site_label}\0{route_key}"` для per-route (`rate_limit::redis_route_scope`), либо
+    фиксированный литерал `"consumer"` для per-consumer (username передаётся отдельным
+    параметром `client_key`, не встраивается в scope). Redis работает на всех трёх уровнях, но
+    **на процесс устанавливается только одно реальное соединение** — `connect_redis_rate_limiter_if_configured`
+    сканирует site → route → consumer и подключается к первому найденному URL; если на разных
+    уровнях настроены разные Redis URL, все уровни всё равно используют одно (первое найденное)
+    соединение без предупреждения — задокументировано явно в `docs/configuration.md`, доведение
+    до предупреждения/переподключения при hot-reload — issue #357, отдельное архитектурное
+    решение, не сделано.
+    **История находки (2026-08-30, Step 1c аудит `rate_limit.rs`)**: до этого фикса запись здесь
+    ошибочно приписывала рейт-лимитеру формат `"{site}\0{route}"` — тот формат на самом деле
+    принадлежит `UpstreamRegistry.override_key()` в `src/proxy/health.rs`
+    (`conduit upstreams add/remove/weight --site`); отдельно было найдено, что site-level
+    бакеты не были скоуплены по сайту вообще (issue #304) и что per-route бакеты имели тот же
+    класс бага (найдено при реализации фикса, не было отдельным issue — два сайта с одинаковым
+    `route_key` и общим клиентом делили бакет). Оба закрыты этим фиксом.
 15. **Graceful shutdown** — `Arc<AtomicUsize>` inflight. SIGTERM → перестать принимать → ждать нуля → exit.
 16. **`FallbackConfig`:** нет поля `redirect`.
 17. **LoadBalanceStrategy** — 8 вариантов (включая P2c). Веса статические. Для IpHash/CH — `hash_key: "ip" | "header:X-Key" | "url"`. P2C: splitmix64 RNG, O(1).
@@ -91,6 +114,52 @@
 27. **MiddlewareGuard** — объединяет Rhai ("script") и WASM ("wasm") в `src/filter/chain.rs`. Порядок entries соблюдается. `ScriptGuard` = type alias для совместимости.
 28. **CGI** — не входит в Conduit, отдельный проект.
 29. **Тесты** — port 0, rcgen, serial_test для Admin API, mock = `TcpListener` без Axum.
+30. **`RequestCtx` per-request state (Conduit 2.0 migration, #114)** — поля остаются в корневом крейте
+    (status quo), НЕ выносятся в type-erased extension slot и НЕ через отдельный trait в `conduit-core`.
+    Каждое feature-specific поле — через `#[cfg(feature = "x")]` по образцу уже существующих
+    `otel_span`/`early_refresh_upstream_url`. Решение пользователя 2026-08-21 по итогам `architect`-аудита
+    Phase 2 facade-checkpoint (issue #128) — снимает блокировку с #129 (`conduit-otlp`) и последующих
+    #131/#133/#135/#141/#142. Не пересматривать без явного обсуждения (см. заголовок раздела).
+    **Пере-рассмотрено и подтверждено 2026-08-23** (пользователь явно попросил перепроверить, issue
+    #114 "owner decisions" пункт 1, всё ещё числился в теле issue как открытый — устарел, реальное
+    решение уже было в этом пункте с 2026-08-21). Проверено против реального кода:
+    `crates/conduit-otlp/src/lib.rs` уже документирует именно этот паттерн ("Per-request span
+    creation/finishing... deliberately stays in the root crate... see CLAUDE.md's architectural
+    decision #30") — вариант C уже единственный факт на земле, не гипотеза. Вердикт по итогам
+    повторного рассмотрения: подтвердить, не менять. Zero-cost на hot path перевешивает
+    архитектурную "чистоту" отдельных крейтов для проекта, чья заявленная ценность — производительность;
+    вариант A (TypeMap) добавляет hash-lookup+аллокацию на каждый запрос на каждую активную фичу; вариант B
+    (typed slot в conduit-core) потенциально не хуже C по цене, но сам механизм не спроектирован — это
+    неготовое решение, а не альтернатива на сегодня. Условие пересмотра (не абстрактное, конкретное):
+    если экстракция #133 (`conduit-auth-jwt`, jwt_claims пишется в request_filter, читается в
+    upstream_request_filter) или #135/#134 (consumers/forward-auth, похожий cross-phase паттерн) окажется
+    реально болезненной на практике — не гипотетически, а по факту застревания/переделок в процессе PR —
+    это и есть триггер вернуться к вопросу, не раньше.
+
+31. **Feature-гейты для ipFilter/cors/securityHeaders/compression/static/fallback/hotReload/metrics/
+    redirects (Conduit 2.0 migration, #114, фазы 3.8/4.1-4.3 — сабишью #136-#140)** — гибрид, не
+    поголовное превращение всех девяти в `--features`. Извлечь в отдельные крейты для организации
+    кода (один крейт = одна забота), но по-настоящему опциональными (с расширением `default`, чтобы
+    сегодняшний zero-flag билд не потерял поведение) делать только то, что реально тяжёлое —
+    `static`/`hotReload` (тянут `notify`, mime-детект) и, возможно, `compression`. `ipFilter`/`cors`/
+    `securityHeaders`/`redirects`/`metrics` остаются always-on/не-опциональными — гейтинг ради гейтинга
+    почти не даёт footprint-выгоды (это лёгкая логика без тяжёлых third-party крейтов), а стоимость
+    "забыл флаг — тихо не работает" реальна. Конкретно проверено для `metrics`: `cargo tree -i
+    prometheus@0.13.4` показывает, что `prometheus` уже безусловно тянется `pingora-core` независимо
+    от наших фич — гейтинг нашего `/metrics`-хендлера не убирает эту зависимость из бинарника, экономия
+    была бы только на нашем собственном коде хендлера. Решение пользователя 2026-08-23.
+
+32. **Публикация member-крейтов на crates.io (Conduit 2.0 migration, #114)** — публиковать (технически
+    почти вынужденно: `cargo publish` для самого бинарника `lopatnov-conduit` требует `version =`, не
+    просто `path =`, у каждой зависимости — раз бинарник продолжает публиковаться на crates.io, все
+    ~28 member-крейтов обязаны публиковаться в лок-степ), но **как internal-plumbing, не как полноценный
+    публичный API** — без семвер-гарантий, `pub`-поверхность чистится по мере обнаружения утечек (как
+    `conduit_core::filter::path::path_matches`, PR #230), не превентивно с библиотечной строгостью.
+    Имя уже выбрано: `lopatnov-conduit-<name>` (см. `crates/README.md`). Переход на полноценный
+    публичный API (вариант A — реальная документация, семвер-дисциплина на каждый крейт) осознанно
+    отложен, не отклонён — пользователю идея нравится, но сейчас она существенно замедлит миграцию;
+    трекается отдельным issue (см. беклог) для пересмотра после того, как механические фазы экстракции
+    #114 приземлятся. Решение пользователя 2026-08-23.
 
 ---
 
@@ -103,7 +172,7 @@ request_filter()
   │              → RateLimitGuard → ConsumersGuard (6) → BasicAuthGuard → ApiKeyGuard → JwtGuard (6c)
   │              → ForwardAuthGuard (6d) → RedirectGuard → FaultInjectionGuard
   │              → MiddlewareGuard (Rhai + WASM in order)
-  ├─ Per-route rate limit check (post-routing, key "route:{key}:{ip}")
+  ├─ Per-route rate limit check (post-routing, key via rate_limit::route_key — see decision #14)
   ├─ Priority load shedding: if inflight/maxInflight ≥ threshold AND route.priority < 50 → 503
   ├─ Circuit breaker: if all upstreams at maxConns → LocalHandler::Overloaded → 503
   └─ JWT claims extraction (for {{ jwt.sub }} templates) → RequestCtx.jwt_claims
@@ -835,44 +904,30 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 
 ## Integrity audit log (Conduit 2.0 cycle, Step 1c)
 
-> Append-only. `/feature-workspace-cycle` Step 1c writes one row here each time it audits
-> a feature/module via `integrity-auditor`, so a later firing can see what's already been
-> checked recently instead of re-auditing the same area. Newest entries on top.
+> Append-only — **full history moved to `.claude/logs/integrity-audit.md`** (split out
+> 2026-08-28, see `.claude/rules/index.md`'s note on append-only logs bloating every
+> session's context). `/feature-workspace-cycle` Step 1c writes one row there each time it
+> audits a feature/module via `integrity-auditor`. Only the newest row stays inline below;
+> read the full file for anything older or to count firings since the last entry (the
+> cadence gate needs that count).
 
 | Date | Area audited | Result | Notes |
 |------|---------------|--------|-------|
-| 2026-08-21 | `src/filter/auth.rs` (consumer identification: API key / Basic Auth / per-consumer JWT V2 / shared JWT V3) | 2 real behavioral gaps + 7 low-risk doc/test issues | Third Step 1c firing (cadence gate satisfied: Step 0/1 both idle, ~4 daily firings since the 2026-08-10 `jwt.rs` audit — this table's own previous top row, not 2026-08-17 as an earlier in-session note assumed; corrected here). Prompted by a live Gitar finding on tracking PR #152 flagging `identify_consumer`'s doc comment as stale ("two credential types" vs. the actual four) — confirmed that specific drift was already fixed on `main` via `e17ec67` (2026-08-18), but 2 sibling doc-comment instances of the same drift (`ConsumersGuard` in `chain.rs`, `SiteConfig.consumers` in `schema.rs`) and CLAUDE.md's own pipeline diagram (omitted `ConsumersGuard` entirely) had not been. Root finding needing design judgment: `feature_warnings()` has no case for `consumers` at all — building without `--features consumers` while a config sets `sites[].consumers` silently drops all consumer-based auth with zero startup/hot-reload warning (every sibling feature — jwt/forward-auth/tcp/redis/acme/etc. — warns; `consumers` doesn't), filed as [#233](https://github.com/lopatnov/conduit/issues/233) (security-relevant, pre-existing, not introduced by this audit's fix). Second gap: `identify_consumer`'s consumer-list scan short-circuits at first match, unlike `check_api_key`'s deliberate non-short-circuiting constant-time design a few lines above — a minor timing-characteristic judgment call, filed as [#234](https://github.com/lopatnov/conduit/issues/234) for `security-engineer` to weigh in on. The 7 low-risk items (the 2 sibling doc-drift instances + the diagram fix + a real validation gap — `Consumer.rate_limit` was never run through the existing `validate_rate_limit` helper, so `limit=0`/`windowSecs=0` passed validation but then silently, permanently locked the consumer out at runtime — + 3 test-coverage additions: X-Consumer-ID injection for Basic Auth/shared-JWT V3, per-consumer rate limit via a non-API-key path, `consumer.headers` custom-header injection, none previously asserted + a missing sibling test for `jwtAuth`'s own feature-warning) shipped directly via [PR #235](https://github.com/lopatnov/conduit/pull/235) (off `main`, not the migration branch) — `security-engineer` PASS recorded, CodeRabbit reviewed with no actionable comments (Merge Risk: Minimal). |
-| 2026-08-10 | `src/filter/jwt.rs` (JWT bearer-token auth, unchanged functionally since v1.1.0/2026-06-06 — only a clippy fix touched it since) | 2 real behavioral gaps + 6 low-risk doc/test issues | Second Step 1c firing (cadence gate satisfied: ~5 firings since the 08-03 audit, Step 0/1 both idle). Root finding: JWKS refresh is a synchronous blocking fetch inside the async `JwtGuard`, with no single-flight lock and no fallback to stale-but-still-valid keys on refetch failure — despite the module doc and `JwtAuthConfig.jwksUrl` doc both claiming a background-refresh design that doesn't exist. Filed as [#163](https://github.com/lopatnov/conduit/issues/163) (needs design judgment — recommended adapting the existing `CACHE_LOCK`/stale-while-revalidate pattern rather than inventing a new one). Companion gap: the RS256/ES256/JWKS code path — literally half of what the feature advertises — has zero test coverage (all 20 unit + 6 integration tests are HS256-only); filed as [#164](https://github.com/lopatnov/conduit/issues/164). Low-risk fixes shipped directly on `fix/jwt-audit-gaps-integrity` (off `main`, not the migration branch): case-sensitive `strip_prefix("Bearer ")` in claim-template extraction reusing the already-tested case-insensitive `extract_bearer` instead of a second ad hoc parse; `jwksRefreshSecs` minimum (60s, matches `schema/conduit.schema.json`) now enforced in `validate.rs` (previously schema-only, unenforced at runtime); docs updated for JWKS-unreachable-after-TTL fail-closed behavior and non-string-claim JSON-text serialization in `{{ jwt.<claim> }}` templates (both previously undocumented); a mislabeled test (`non_object_claims_returns_none_from_extract`) that silently tested the wrong thing rewritten to actually build a non-object-payload JWT; stale `jsonwebtoken v9`/test-count claims in this file corrected. |
-| 2026-08-03 | `src/proxy/health.rs` (unchanged since v1.1.0/PR #67 — oldest actively-used file in the codebase) | 4 real behavioral gaps + 4 low-risk doc/comment issues | First-ever Step 1c firing (cadence gate finally satisfied: Step 0 idle, Step 1 found nothing to triage). Root finding: passive health tracking (Outlier Detection, Peak EWMA, per-peer response stats) and true circuit-breaker enforcement (skipping a single at-limit upstream) only actually work for `LoadBalanceStrategy::LeastConn` or when `maxConnectionsPerUpstream` happens to also be set — for the `RoundRobin` default and 4 other strategies without a connection cap, several `[x]`-marked "done" backlog items silently no-op. Also found `slowStartSecs` fully unwired (zero effect) and `prewarmConnections` warming a throwaway client instead of Pingora's real pool. Doc/comment-only fixes (scrambled doc-comment un-scramble, honest known-limitation notes, 2 stale CLAUDE.md backlog claims corrected) shipped directly via [PR #154](https://github.com/lopatnov/conduit/pull/154) per the low-risk/unambiguous routing rule. The 4 behavioral gaps needing design judgment filed as [#155](https://github.com/lopatnov/conduit/issues/155) (passive tracking gate), [#156](https://github.com/lopatnov/conduit/issues/156) (circuit-breaker enforcement gate, cross-references #155), [#157](https://github.com/lopatnov/conduit/issues/157) (`slowStartSecs` dead code), [#158](https://github.com/lopatnov/conduit/issues/158) (`prewarmConnections` doesn't warm the real pool) — ordinary repo backlog, not #114 sub-issues. Note: the agent originally delegated to file these issues (`scrum-master`) turned out not to have GitHub MCP tools in its grant, fell back to raw-credential API probing (blocked by egress policy, no data exposed) — flagged as a security-relevant subagent-behavior incident and routed to `security-engineer` for review rather than self-cleared; issues were filed directly by the conductor's own properly-scoped tools instead. |
----
+| 2026-08-23 | `src/filter/ip_filter.rs` (static allow/deny + dynamic deny list + dry-run + trustProxy, unchanged since it shipped) | 8 low-risk gaps, 0 needing design judgment | Fifth Step 1c firing. Unlike the four prior firings (auth.rs/tls.rs/jwt.rs/health.rs), every finding here was low-risk and unambiguous — nothing filed as a GitHub issue this round. Findings: `matches_rule`'s exact-IP branch didn't normalize IPv4-mapped IPv6 (`::ffff:a.b.c.d`) the way the CIDR branch's `in_subnet` already did, so a plain (non-CIDR) rule silently failed to match a client behind an IPv4-mapped XFF entry; `IpGuard`'s dry-run log message used the raw TCP peer address instead of the same `trust_proxy`-aware `client_ip_for_check` the actual blocking decision uses; `is_dynamic_denied` failed open on a poisoned `RwLock` instead of recovering, unlike the admin write-side's existing pattern; `POST /ip-deny` returned 200 with a JSON error body on an invalid CIDR instead of a typed 400 (`AdminError::BadRequest`), inconsistent with every other Admin API handler; `schema/conduit.schema.json` was missing `ipFilter.dryRun` (present in `schema.rs` since dry-run shipped); 2 pre-existing `IpGuard` unit tests only asserted `RwLock`/`Vec` state directly without ever exercising `is_dynamic_denied` (tautological); the dynamic deny list, dry-run mode, and `trustProxy`-without-XFF had zero integration-test coverage; CLAUDE.md itself had 2 stale claims (dynamic deny list's real type, and a "Health/ACME/HotReload bypass all guards" note contradicting the pipeline order documented two paragraphs above it — both already corrected in a prior pass, re-confirmed here). Shipped via [PR #257](https://github.com/lopatnov/conduit/pull/257) (off `main`, not the migration branch, squash-merged `9c5b080`) in two commits: `5b1eaa4` (the 8 findings above, 5 new integration tests + 1 new unit test) and a follow-up `bf61e8f` fixing one thing `security-engineer`'s own review of the first commit caught — the fast-path pre-check `has_dynamic` in `IpGuard::apply` still failed open on lock poisoning even after `is_dynamic_denied`'s recovery fix, since the fast path short-circuits *before* `is_dynamic_denied` is ever reached when no static rules are configured (i.e. exactly the dynamic-only sites that rely on the list most) — plus 4 new direct-call unit tests for `ip_deny_add_handler`/`ip_deny_remove_handler` needed to clear a SonarCloud new-code-coverage gate (47.1% → 96.7%; integration tests alone aren't measured by this repo's `cargo llvm-cov --lib` coverage run). `security-engineer` reviewed both commits (PASS on each, re-run mandatory after the second push per the "PASS is only valid for the exact SHA reviewed" rule) with verdicts posted as PR comments before merge. Migration branch synced clean afterward (`git merge origin/main`, no conflicts, workspace `cargo test --workspace --features full --lib` 1159+7+43+42 passed / 0 failed) and pushed as `c5b646b`. Process note: this session hit a real `ENOSPC` mid-verification (root filesystem down to ~450MB free from accumulated `target/debug` build artifacts across a long session) that broke even trivial `Bash` calls (their own output-capture write failed) — recovered by deleting `target/debug/{incremental,build,deps}` via a background-mode Bash call (whose side effect still completed even though its own output capture also failed), which freed ~28GB and let verification resume; worth a future session proactively watching disk headroom on long sessions doing many full-workspace builds. |
+
 
 ## Dependabot & branch hygiene log
 
-> Append-only. See `.claude/rules/index.md` "Dependabot & branch hygiene reflex check" —
-> any session that touches this repo's GitHub state runs this cheap sweep if the newest
-> row here is older than ~24h, then logs a row (even "nothing new"). Newest on top.
+> Append-only — **full history moved to `.claude/logs/dependabot-hygiene.md`** (split out
+> 2026-08-28, same rationale as above). See `.claude/commands/dependabot-hygiene.md` (was
+> `.claude/rules/index.md` "Dependabot & branch hygiene reflex check") — any session that
+> touches this repo's GitHub state runs this cheap sweep if the newest row in the full log
+> file is older than ~24h, then logs a row there (even "nothing new"). Only the newest
+> row(s) stay inline below.
 
 | Date/time (UTC) | New Dependabot PRs found/acted on | Orphan branches flagged | Notes |
 |---|---|---|---|
-| 2026-08-23 ~00:15 (mid-session sweep, triggered by handling PR #252) | 0 open (confirmed directly via `search_issues author:app/dependabot`) | 2 flagged, not new — `claude/cycle-integrity-audit-step` (PR #149, closed/not merged) and `claude/stoic-stonebraker-d51bed` (PR #90, closed/not merged despite CLAUDE.md recording #90's changes as merged via manual `a84b467` — same "closed without using the GitHub merge button" pattern noted for #90 elsewhere in this file) — both pre-existing leftover clutter, not chased per the no-delete-from-session rule. Branch count 24 (up from the 2026-08-12 baseline of 22): +1 is this session's own active `fix/tls-cert-rotation-190-191` (PR #252, not yet merged); the other +1 wasn't reconciled against the exact historical list (diminishing returns for a routine sweep) but no *new* PR-less orphan was found among the branches checked. Only 2 open PRs total: #252 (mine, awaiting security-engineer) and #152 (tracking PR, draft, not actionable here per Step 7). Migration branch (`d01fe6f`) still exactly at `main`'s tip (`1586e20`) — no sync needed yet. |
-| 2026-08-12 ~01:15 (daily cycle firing) | 0 open (confirmed directly via `search_pull_requests author:app/dependabot`) | 0 (branch count unchanged at 22 — the 3 branches opened during yesterday's incident chain, `fix/echo-upstream-port-race`/`feat/narrow-config-slices-122`/`fix/sonar-coverage-exclusions-sync`, were all auto-deleted on merge) | Clean sweep. Found and corrected a real state drift on the way in: tracking PR #152 had somehow become non-draft (no comment/event trail explains when — predates this firing, not caused by yesterday's work) despite its own body and Step 9 explicitly requiring it stay draft until #114 is fully complete (26 of 34 sub-issues still open) — converted back to draft. |
-| 2026-08-11 ~03:16 (same-day addendum — log is append-only, original 01:48 row below left unchanged) | (continuation of the same firing below, no separate Dependabot check) | 0 | Later in the same session as the row below: closed issue #122 via PR #179 (narrowed `SiteConfig` usage in `logging`/`fallback`/`static_files`); root-caused and fixed a `sonar-project.properties`/`.tarpaulin.toml` drift via PR #180 — first attempt wrongly excluded 4 files with real unit-test coverage from the SonarCloud gate, caught by `security-engineer`'s mandatory HOLD, corrected and re-verified PASS; `.tarpaulin.toml` deleted outright (dead config for a tool this repo's CI has never run); issue #181 filed for 7 further pre-existing exclusion-list files with real coverage, deferred pending SonarCloud dashboard access this session doesn't have. |
-| 2026-08-11 ~01:48 | 10 found, all triaged and merged (#168-177) | 0 (branch count 23 — up from 22 only because `fix/echo-upstream-port-race`, #178, is active work; all 10 `dependabot/cargo/*` branches auto-deleted on merge) | Batch `security-engineer` PASS on all 10 (real advisory found: `RUSTSEC-2026-0190` anyhow unsoundness, current pin `1.0.102` vulnerable — #177 merged first as priority). `lawyer` cleared the one new transitive dep (`rustls-platform-verifier` via #174's kube bump) as MIT OR Apache-2.0. 4 PRs (#168/#169/#172/#173) shared an identical new `syn 3.0.3` Cargo.lock entry — merged sequentially, GitHub/Dependabot resolved each rebase automatically, no manual `@dependabot rebase` nudge needed. Migration branch synced with `main` afterward (10 commits, clean `Cargo.lock` auto-merge, `cargo check --features full` green) and pushed. Also fixed a real CI flake found via #177's checks: `AddrInUse` race in `tests/common/mod.rs::start_echo_upstream` (cross-binary port collision) — fixed on `fix/echo-upstream-port-race` (#178, off `main`, not the migration branch), CodeRabbit's one finding (inaccurate "drop to shut down" doc comment) addressed by correcting the doc rather than adding real shutdown machinery. |
-| 2026-08-09 ~02:45 (daily cycle firing) | 0 open (confirmed directly) | 0 (branch count unchanged at 22, migration branch 27 ahead / 0 behind `main`, no sync needed) | Clean sweep, nothing to act on. Only open PR is #152 (tracking PR, not actionable here per Step 7). |
-| 2026-08-08 ~04:00 (daily cycle firing) | 0 open (confirmed directly) | 0 (branch count unchanged at 22, `main` unchanged since last sync) | Clean sweep, nothing to act on. |
-| 2026-08-06 ~00:15 (daily cycle firing) | 0 open (confirmed directly via `search_pull_requests author:app/dependabot`) | 0 (branch count unchanged at 22, `main` unchanged since yesterday's sync) | Clean sweep, nothing to act on. Fetched directly this time instead of delegating to `dependency-steward` with an assumption about its tool grant. |
-| 2026-08-05 ~00:20 (daily cycle firing) | 0 open (confirmed directly via `search_pull_requests author:app/dependabot`) | 0 (branch count unchanged at 22) | Sent `dependency-steward` to triage with an incorrect prompt claiming it has GitHub MCP tools (it doesn't — `Bash, Read, Glob, Grep, WebFetch` only, per yesterday's fix). It correctly followed the new "on a tool gap, stop and report" rule instead of routing around it — first real validation of that fix. No actual triage was lost since the conductor had already independently confirmed 0 open Dependabot PRs via its own tools before the agent's report landed. |
-| 2026-08-04 ~02:15 (daily cycle firing, Step 1c follow-through) | 0 open (clean) | 0 | First-ever Step 1c firing (see "Integrity audit log" below) produced PR #154 (health.rs doc fixes) and PR #159 (subagent tool-gap hardening, from a security-engineer-reviewed incident) — both merged into `main` with the unconditional security gate. Migration branch was 2 commits behind afterward; synced clean (`git merge origin/main`, no conflicts — the two branches had independently edited overlapping `.claude/` files but in non-overlapping regions), `cargo fmt --check` + `cargo clippy --lib -- -D warnings` green, pushed as `f12fb00`. The `security/dependabot/3` alert noted below is still unresolved and still unreachable with this session's tools. |
-| 2026-08-03 ~02:00 (daily cycle firing) | 0 open (clean, only open PR is #152 the tracking PR) | 0 (branch count unchanged at 22 — `feat/workspace-hoist-deps-116` was created and auto-deleted on squash-merge within this same firing, netting to the same count) | `git push` on the migration branch has repeatedly surfaced a GitHub-native notice: "1 vulnerability (1 high)" on `main` at `github.com/lopatnov/conduit/security/dependabot/3`. Could not inspect it — no MCP tool in this session lists/reads Dependabot security alerts (only Dependabot *PRs*, of which there are none open, meaning no auto-PR exists for this alert), and the alert page itself needs authenticated access WebFetch can't provide. **Flagged to the user, unresolved** — needs a look from the GitHub UI or a session with alert-reading access. |
-| 2026-08-02 ~04:00 (daily cycle firing) | 0 open (clean) | 0 (branch count dropped 25→22 since last check — user cleanup via the provided script + GitHub's own Dependabot branch auto-cleanup; `fix/pr112-review` orphan also gone) | Migration branch was 2 commits behind `main` (#101 kube fix, #151 all-actions bump) — the new "keep migration branch in sync" bullet caught this on its first real firing. Merged clean (`git merge origin/main`, no conflicts, `cargo check --features full` green), pushed as `844a174`. |
-| 2026-08-01 ~10:00 | #151 (all-actions group, 11 updates) — merged; #101 (kube 3→4.0.0) — root-caused a real k8s-openapi 0.28 version conflict, fixed, merged | 0 (all ~25 branches checked accounted for by a PR — either open, merged, or closed) | Prompted by the user noticing `feat/workspace-scaffolding-115` and `dependabot/cargo/kube-4.0.0` in the branch list. Root cause of the untriaged PR + leftover branches: repo has no "Automatically delete head branches" setting and the cycle went from hourly to daily, leaving a gap between firings that no other session filled. This log + rule exist to close that gap. |
-
-> Note: this log previously existed only on the `claude/cargo-workspace-features-23qxfr`
-> migration branch's copy of `CLAUDE.md` — `main` never had it. PR #178 brings it to `main`
-> for the first time; entries above dated before 2026-08-11 were backfilled from the
-> migration branch's history rather than reflecting actions taken directly on `main`.
-
----
+| 2026-09-04 ~16:50 (daily `/feature-workspace-cycle` firing, Step 1) | 1 found and merged ([#346](https://github.com/lopatnov/conduit/pull/346): grouped `all-actions` GitHub Actions version-pin bump, 8 actions) | 0 new (same 21 pre-#114 remote leftovers as the 2026-08-31 survey) | Workflow-file-only, zero Rust/production-code diff. `security-engineer` independently verified all 8 new SHAs/tags against upstream, PASS. Migration branch synced after. Full detail in `.claude/logs/dependabot-hygiene.md`. |
 
 ## Tokio 1.52.3 — возможности (исследовано)
 
@@ -928,7 +983,7 @@ Tokio "full" features уже включены. Ключевые находки �
 - ForwardAuth: process-wide `OnceLock<reqwest::Client>` в `forward_auth_client()` — не per-request
 - Header insert из Vec<String>: сначала collect в Vec<(String,String)> — избегаем lifetime issues
 - Axum middleware state: `from_fn_with_state(Arc<T>)` конфликтует с `Router.with_state(Arc<U>)`. Использовать closure: `from_fn(move |req, next| { let t = t.clone(); async move { ... } })`
-- Consumer rate limit key: `"consumer:{username}"` (global для этого consumer, не per-IP). Bucket создаётся через `ctx.rate_limiter.entry(key).or_insert_with(|| TokenBucket::new(limit, window))`.
+- Consumer rate limit key: `rate_limit::consumer_key(username)` → `"consumer\0{username}"` (global для этого consumer, не per-IP — см. decision #14). Admission — через `conduit_ratelimit::check_key_for` (единая MAX_BUCKETS-капнутая точка на все слои, issue #305), не через ручной `entry().or_insert_with()`.
 - Circuit Breaker: `conn_count` инкрементируется для ALL стратегий при `maxConnectionsPerUpstream`. Non-LC: `circuit_tracking = true` → `conn_inc()` + `proxy_upstream_url = Some(url)`. Декремент в `logging()` как обычно.
 - JWT claims: `RequestCtx.jwt_claims` заполняется ПОСЛЕ guards в `do_request_filter`. `expand_jwt_templates()` вызывается в `upstream_request_filter`. Неизвестные claims → пустая строка.
 - `LocalHandler::Overloaded` → `HandlerKind::Overloaded` → `OverloadedHandler` → 503. Не bypasses guard chain (auth проверяется сначала).
@@ -1217,6 +1272,81 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   (3157 строк) и `router.rs` (2642, CC 79) уже втрое превышают новый жёсткий лимит —
   естественные кандидаты на разбиение через `architect` как часть V2-дизайна.
 
+### Реализовано в сессии 2026-08-01 (Conduit 2.0 migration — Phase 0.1: workspace scaffolding)
+
+- **[PR #150](https://github.com/lopatnov/conduit/pull/150)
+  `feat(workspace): add [workspace] scaffolding to root Cargo.toml`**
+  (ветка `feat/workspace-scaffolding-115` → `claude/cargo-workspace-features-23qxfr`,
+  squash-merge `c746cd9`, [issue #115](https://github.com/lopatnov/conduit/issues/115)
+  CLOSED) — первая реальная имплементационная задача эпика #114 (первые 5 сессий
+  после создания эпика ушли на PR #112/#149 tooling и Dependabot-триаж). Root
+  `Cargo.toml` получил `[workspace]` (`members = ["crates/*"]`, `resolver = "2"`) и
+  `[workspace.package]` (version/edition/license/repository); `[package]` теперь
+  наследует эти поля через `.workspace = true` вместо дублирования — проверено
+  через `cargo metadata` (`workspace_members` резолвится корректно), а не просто
+  задекларировано. `crates/README.md` — плейсхолдер, сама директория пустая до
+  Phase 2 (#126, `conduit-core`). Код не двигался, `cargo build`/`check` output
+  не изменился. Версия workspace поднята до `2.1.0` (per-PR minor bump на этой
+  ветке, `main`/1.x не затронуты).
+  Перед началом сама ветка `claude/cargo-workspace-features-23qxfr` смерджена с
+  `main` (была позади на #111 security fix + `.claude/` tooling + 10
+  Dependabot-бампов) — во избежание накопления конфликтов.
+  `feature-matrix-runner`: `cargo hack check --each-feature --no-dev-deps` —
+  20/20 комбинаций зелёные, `resolver = "2"` не ломает feature isolation.
+  Два finding'а Qodo (version lockstep vs 1.x release artifacts; workspace glob
+  matches README) — оба ложные срабатывания, отклонены с обоснованием
+  (проверено эмпирически через `cargo metadata` + зелёный CI), Qodo подтвердил
+  (strikethrough). CodeRabbit не ревьюит PR в non-default branch — авто-ревью
+  отключено оргой для веток кроме `main`.
+  Следующий шаг эпика: #116 (hoist third-party deps в `[workspace.dependencies]`).
+
+### Реализовано в сессии 2026-08-03 (Conduit 2.0 migration — Phase 0.2: hoist deps + security-gate hardening)
+
+- **[PR #153](https://github.com/lopatnov/conduit/pull/153)
+  `refactor(workspace): hoist every third-party dep into [workspace.dependencies] (#116)`**
+  (ветка `feat/workspace-hoist-deps-116` → `claude/cargo-workspace-features-23qxfr`,
+  squash-merge `1124d1d`, [issue #116](https://github.com/lopatnov/conduit/issues/116)
+  CLOSED) — каждая third-party зависимость перенесена в новую `[workspace.dependencies]`
+  таблицу; `[dependencies]`/`[dev-dependencies]` корневого пакета теперь ссылаются через
+  `name.workspace = true` (`optional = true` остаётся на уровне пакета — внутри
+  `[workspace.dependencies]` он не валиден). Чистый рефактор объявлений, `src/` не тронут,
+  дрейфа резолюции зависимостей нет за пределами версии пакета `2.1.0 → 2.2.0`.
+  `feature-matrix-runner`: 20/20 `cargo hack --each-feature --no-dev-deps` зелёные.
+  **Инцидент по пути**: первый `Write` черновик `Cargo.toml` случайно потерял всю
+  таблицу `[dev-dependencies]` (молча, причина не установлена) — сломал CI на
+  ubuntu/macos/windows/ACME/All-features/Standard-bundle (`cannot find blocking in
+  reqwest`/`cannot find crate tempfile`). Пойман только через реальный `cargo test`
+  в CI (не через локальный `cargo check`/`clippy`, которые не компилируют test-таргеты).
+  Первый фикс был **молча откачен** гонкой с параллельно запущенным
+  `feature-matrix-runner` (агент с Bash-доступом, свои `git checkout` в той же
+  директории) — переприменён и закоммичен немедленно; задокументировано как новое
+  правило Step 5 (`isolation: "worktree"` для фоновых верификационных агентов, если
+  conductor планирует продолжать редактировать файлы параллельно), коммит `58da726`.
+- **`security-engineer` unconditional-gate — первый реальный HOLD**: первый проход
+  вернул HOLD не по содержимому рефактора (оно было чистым на всех проверках), а
+  из-за устаревшей относительно `claude/cargo-workspace-features-23qxfr` ветки PR —
+  агент через double-dot diff (`target..head`) увидел, что PR "трогает"
+  `.claude/commands/feature-workspace-cycle.md`, и предупредил, что squash-merge может
+  откатить 2 недавних коммита в этом файле. Conductor независимо проверил через
+  реальный `git merge --squash` в изолированном clone — тот тронул только
+  `Cargo.toml`/`Cargo.lock` (squash использует merge-base semantics, не raw double-dot
+  diff) — но вместо спора о диффах просто смёржил актуальный tip target-ветки в PR
+  (коммит `5830f37`), закрыв вопрос однозначно. Второй foreground-проход
+  `security-engineer` против нового head дал **PASS**; verdict запощен как обязательный
+  sign-off комментарий на PR перед мерджем (per `.claude/rules/workflow.md`).
+- **Хардening процесса по итогам** (коммит `333385c`, вызван реальными findings
+  CodeRabbit на трекинг-PR #152, а не самоинициативой): `.claude/rules/workflow.md` и
+  `.claude/commands/feature-workspace-cycle.md` теперь явно требуют, что PASS
+  `security-engineer` валиден только для той SHA, что он реально ревьюил — любой
+  новый коммит после PASS (фикс, ребейз, merge-forward) инвалидирует его и требует
+  повторного прохода перед мерджем; и что результат worktree-изолированного
+  background-валидатора покрывает только то, что было закоммичено в этот worktree
+  на момент spawn — не более поздние правки conductor'а в общем чекауте. Третий
+  finding CodeRabbit (историческая версия `2.1.0` в записи Phase 0.1 выше по этому
+  же файлу) — ложное срабатывание, отклонён с обоснованием (дневниковая запись, не
+  текущая документация); CodeRabbit сам отозвал finding и записал learning.
+  Все 3 треда на #152 отвечены и resolved.
+
 ### Реализовано в сессии 2026-08-17 (закрытие "3 старых S3776" + прочее на `main`)
 
 - **PR #193** (мигрейшн-ветка) — `crates/conduit-core` добавлен как первый Layer-0
@@ -1308,3 +1438,1168 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   аргументацией и явно указал, где какой план был прав/неправ. Урок: не полагаться на
   собственный пересказ прошлого agent-вызова как на источник истины, когда есть
   расхождение с новым прогоном — давать обоим полный текст и просить явную реконсиляцию.
+
+### Реализовано в сессии 2026-08-21 (Phase 2 facade re-audit + RequestCtx decision #30)
+
+- **[PR #230](https://github.com/lopatnov/conduit/pull/230)
+  `chore(workspace): Phase 2 facade audit follow-up + crate-extraction recipe`**
+  (ветка `chore/phase2-cleanup-recipe-114` → `claude/cargo-workspace-features-23qxfr`,
+  squash-merge `0f6b921`) — по итогам независимого `architect`-аудита Phase 2
+  (Layer-0 crate extraction) facade-checkpoint (issue #128, закрыт ранее): фасад
+  реально держит форму, но найдены 2 небольших пробела + 1 недодокументированный
+  паттерн. Исправлено: `conduit_core::filter::path::path_matches` был случайно
+  расширен с `pub(crate)` (до миграции) до `pub` при извлечении `conduit-core`
+  (#126) без единого re-export — вернули `pub(crate)` (единственный вызывающий —
+  `is_path_skipped`, тот же модуль); задокументирована коллизия имён с
+  `src/proxy/cache.rs`'s собственным `path_matches` (иная семантика — префиксное
+  совпадение без `/**`); `Provider<C>` задокументирован в `crates/README.md` как
+  намеренный слом API 2.0; новый раздел "Cargo Workspace Crate Extraction Recipe"
+  в `CONTRIBUTING.md` (4 правила извлечения крейтов — раньше не существовал нигде,
+  хотя агент `crate-extractor` в своём же описании ссылался на него).
+- **`CLAUDE.md` decision #30** — `RequestCtx` per-request state: поля остаются в
+  корневом крейте (status quo), НЕ через type-erased extension slot и НЕ через
+  отдельный trait в `conduit-core`. Каждое feature-specific поле — через
+  `#[cfg(feature = "x")]`, по образцу уже существующих `otel_span`/
+  `early_refresh_upstream_url`. Решение пользователя, снимает блокировку с #129
+  (`conduit-otlp`) и последующих #131/#133/#135/#141/#142.
+- **[PR #231](https://github.com/lopatnov/conduit/pull/231)
+  `fix(tests): unblock CI after Rust 1.98.0 toolchain-lint upgrade`** (ветка
+  `fix/clippy-chunks-exact-lint-main` → `main`, squash-merge `9d3d1e6`) — CI-раннеры
+  подхватили Rust 1.98.0 с двумя новыми clippy-линтами под `-D warnings`, ломающими
+  несвязанный код: `clippy::chunks_exact_to_as_chunks` в SHA-1 test helper'е
+  `tests/websocket.rs` (`chunks_exact(N)` → `as_chunks::<N>().0`, поведенчески
+  идентично — проверено на `sha1_rfc6455_test_vector`) и `clippy::result_large_err`
+  в `src/upload/server.rs` (`#[allow]` на `process_upload_field`/
+  `save_upload_file`, по образцу уже существующего на `check_mime_type` в том же
+  файле). Идентичные фиксы применены на обеих ветках (`main` через #231, миграционная
+  ветка — прямо в #230, т.к. содержала тот же непочиненный код).
+  Обе PR прошли обязательный `security-engineer` gate (оба PASS, вердикты записаны
+  комментариями на PR). CodeRabbit на #230 упёрся в собственный review-rate-limit
+  ("next review available in 58 minutes") — пользователь явно разрешил не ждать;
+  Gitar одобрил оба PR ("No issues found").
+- **Отдельно найден и исправлен процессный gap**: "Dependabot & branch hygiene
+  reflex check" простаивал >24ч (последняя запись 2026-08-18) — прогнан вручную
+  (0 открытых Dependabot PR, orphan-веток нет за пределами собственной работы этой
+  сессии), залогирован отдельной строкой в таблице выше.
+- Миграционная ветка синхронизирована с `main` после мерджа #231 (merge, без
+  конфликтов — идентичные фиксы в обоих файлах), `cargo build --workspace` +
+  `cargo test --workspace` зелёные после синка.
+- **Запланировано пользователем**: 17 разовых (`run_once_at`) вызовов
+  `/feature-workspace-cycle` каждые ~5 часов с 2026-08-21 20:00 UTC по
+  2026-08-25 19:00 UTC (self-bind в эту же сессию, как и штатный ежедневный
+  Routine) — 3 слота из исходных 20 пропущены намеренно из-за коллизии по времени
+  с уже существующими Routine (штатный ежедневный `feature-workspace-cycle` в
+  01:00 UTC, `Mise /evolve` в 06:00 UTC, `doc2html` QA в 11:00 UTC 2026-08-22),
+  чтобы не создавать одновременные срабатывания на один и тот же слот сессии.
+
+### Реализовано в сессии 2026-08-23 (#132 conduit-faults + #164 JWKS test coverage)
+
+- **[PR #255](https://github.com/lopatnov/conduit/pull/255)
+  `feat(workspace): extract conduit-faults crate (#132)`** (ветка
+  `feat/extract-conduit-faults-132` → `claude/cargo-workspace-features-23qxfr`,
+  squash `624d24e`) — `FaultInjectionConfig`/`FaultAbort`/`FaultDelay` и
+  `FaultInjectionGuard` в `crates/conduit-faults`, за существующей фичей
+  `fault-injection`. Конфиг-структуры остаются всегда скомпилированными (чтобы
+  `feature_warnings()` продолжал предупреждать при конфиге без фичи), гейтится
+  только сам guard. Facade re-export на прежних местах — вызывающий код не менялся.
+  `crate-extractor` + независимая проверка кондактором напрямую (диск кончился у
+  четырёх параллельных verification worktree — освобождено удалением уже
+  завершённых worktree, затем полный `cargo build/clippy/test --features full`
+  вручную) + `feature-matrix-runner` + `footprint-auditor` (бинарник практически
+  не изменился, -384 байта). `security-engineer` PASS.
+- **[PR #256](https://github.com/lopatnov/conduit/pull/256)
+  `test(jwt): cover the JWKS/RS256/ES256 code path (#164)`** (ветка
+  `fix/jwt-jwks-test-coverage-164` → `main`, squash `f746ce8`, issue #164 CLOSED)
+  — прерог для #133 по coupling-таблице #114 (перенос кода без тестов на половину
+  путей сделал бы "не сломал ли перенос?" непроверяемым). 11 unit-тестов
+  (`fetch_jwks` против raw-TCP мок JWKS-эндпоинта + `validate_with_jwks`
+  full round-trip, включая тест на RS256→HS256 algorithm-confusion атаку — подписание
+  токена HS256 с использованием опубликованного в JWKS RSA `n` как HMAC-секрета,
+  отклоняется) + 3 integration-теста (реальные RS256/ES256 токены через полный
+  guard chain). По ходу — два реальных review-finding'а, оба исправлены до мерджа:
+  - **SonarCloud "E Security Rating"**: первая версия PR встраивала статические
+    RSA/EC private-key PEM-константы как тестовые фикстуры — триггернуло правило
+    hardcoded-credentials, хотя ключи одноразовые и нигде больше не используются.
+    Исправлено — генерация RSA-2048/P-256 ключей в рантайме теста (`rsa`/`p256`
+    как dev-dependencies, версии уже разрешены транзитивно через `jsonwebtoken`'s
+    `rust_crypto` backend, в граф зависимостей ничего нового не добавилось), по
+    аналогии с `rcgen` "no checked-in cert fixtures". SonarCloud Quality Gate
+    после фикса — PASSED (0 new issues, 0 hotspots).
+  - **Gitar: `jwt.rs` превысил жёсткий лимит 1000 строк** — вызвано ростом файла
+    из-за инлайн JWKS-тестов. Разбито через план `architect`: продакшн-код
+    (365 строк) остался в `jwt.rs` без изменений, старые HS256-тесты перенесены
+    в `src/filter/jwt/tests.rs`, новый JWKS-материал — в
+    `src/filter/jwt/tests/jwks.rs`. Видимость не расширялась
+    (`pub(crate) fn extract_claims_unchecked` осталась как есть).
+  - Попутно (по явному запросу пользователя) поправлен сам лимит в
+    `.claude/rules/conventions.md`: правило 400/1000 строк всегда имелось в виду
+    только для продакшн-кода, не для тестов — большой инлайн `mod tests` сам по
+    себе не повод для разбиения.
+  - Gitar отдельно поймал, что integration-тесты в `tests/auth.rs` генерировали
+    RSA-2048 ключ заново в каждом тесте вместо кэша через `OnceLock` (как unit-тесты)
+    — исправлено, время прогона файла упало с ~7.8с до ~3.7с.
+  - `security-engineer` PASS (независимо перепроверил алгоритм confusion-теста
+    против реальной логики `validate_with_jwks`, а не только текста теста) +
+    `lawyer`-проверка двух новых dev-only транзитивных крейтов (`pem` MIT,
+    `simple_asn1` ISC) — без блокирующих находок.
+- Миграционная ветка синхронизирована с `main` дважды за сессию (после #255 — без
+  конфликтов; после #256 — один реальный конфликт в `src/filter/jwt.rs`: миграционная
+  ветка уже независимо перенесла `expand_jwt_templates` в `crate::util::jwt_template`
+  (issue #123), так что её копия тестов `jwt.rs` уже отличалась от версии на `main`
+  до PR #256 — разрешено взятием уже корректного содержимого тестов миграционной
+  ветки + добавлением нового `jwks`-подмодуля). `Cargo.lock`-конфликт разрешён не
+  через full re-lock (`cargo generate-lockfile` неожиданно предлагал bump версий
+  несвязанных пакетов), а через инкрементальный `cargo check` поверх "нашей" копии
+  лока — добавился ровно один новый пакет (`simple_asn1`), без постороннего churn'а.
+  `cargo build/clippy/test --workspace --features full` (1156 lib-тестов + 54
+  integration в `auth.rs`) зелёные после синка, запушено.
+
+### Реализовано в сессии 2026-08-23 (часть 3 — #233, `consumers` feature-warning gap)
+
+- **[PR #261](https://github.com/lopatnov/conduit/pull/261)
+  `fix(validate): warn when consumers auth is silently disabled or unreachable (#233)`**
+  (ветка `fix/consumers-feature-warning-233` → `main`, squash `ebd6791`, issue #233
+  CLOSED) — закрывает находку 2026-08-21 `integrity-auditor`-аудита `auth.rs`:
+  `feature_warnings()` не имел кейса для `consumers` вовсе, в отличие от всех
+  8 соседних фич. Два новых предупреждения в
+  `check_site_simple_feature_warnings`: (1) `sites[i].consumers` задан, но фича
+  `consumers` не скомпилирована → consumer-авторизация полностью отключена,
+  все запросы её обходят; (2) `consumers` скомпилирован, но `jwt` — нет, а
+  конфиг использует `consumers.sharedJwt` (V3) или per-consumer `jwt` (V2) →
+  эти конкретные consumer'ы навсегда недостижимы (`check_consumer_credentials`/
+  `identify_consumer` в `filter/auth.rs` оба `jwt`-гейтированы). 3 новых
+  integration-теста в `tests/middleware.rs`. Новых полей конфига нет — схема/доки
+  не менялись (как и у всех 8 соседних предупреждений).
+- **Диск закончился при первом прогоне полного `cargo test`** (default features,
+  0 available bytes) — тот же паттерн, что уже встречался в сессии ранее;
+  устранено удалением `target/debug/{incremental,build,deps}` (~23 ГБ
+  освобождено), после чего оба профиля (`default` + `--features full`) прошли
+  зелёными без единого failed теста.
+- **`security-engineer` перепроверялся трижды за один PR** — наглядная
+  демонстрация правила "PASS валиден только для точного проверенного SHA"
+  (`.claude/rules/workflow.md`): первый PASS на `5762f21`; `gitar-bot` нашёл
+  реальный naming-issue (`shared_jwt_only` OR'д с `any_consumer_jwt`, название
+  подразумевает эксклюзивность, которой нет) → фикс → новый SHA `dec900a` →
+  agent перепроверен по тому же `agentId` через `SendMessage` (не пересоздан с
+  нуля) → PASS #2; затем CodeRabbit (после перевода PR из draft) нашёл реальный
+  test-quality gap — `consumers_per_consumer_jwt_without_jwt_feature_generates_warning`
+  использовал 11-байтный секрет, который сам по себе триггерит несвязанное
+  предупреждение `check_consumer_jwt_secret_warnings` (не gated фичей), содержащее
+  подстроку "jwt" — из-за чего тест мог пройти и при полностью сломанной новой
+  логике. Исправлено (32-байтный секрет + assert на уникальный для нового
+  предупреждения текст, та же правка применена и к соседнему `sharedJwt`-тесту
+  для консистентности) → SHA `bc2cbea` → PASS #3, на этот раз с живым
+  negative-control (агент временно вырезал новый код предупреждения, убедился
+  что оба теста корректно падают, вернул код обратно, убедился что снова
+  проходят) — прямое подтверждение того, что тесты являются настоящей гарантией,
+  а не тавтологией.
+- Все три раунда ревью (gitar-bot, CodeRabbit, SonarCloud) прошли зелёными;
+  находки обоих ботов — реальные и по существу, оба исправлены с ответом в
+  тред + resolve.
+- Миграционная ветка синхронизирована с `main` (merge, без конфликтов —
+  `src/config/validate.rs` затронут в обеих ветках, но в непересекающихся
+  местах), `cargo check` (default + `--features full`) зелёный, запушено
+  (`14c7500`).
+
+### Реализовано в сессии 2026-08-24 (Phase 3.5 — #133 conduit-auth-jwt + verification-agent isolation incident)
+
+- **[PR #264](https://github.com/lopatnov/conduit/pull/264)
+  `feat(workspace): extract conduit-auth-jwt crate (#133)`**
+  (ветка `feat/extract-conduit-auth-jwt-133` → `claude/cargo-workspace-features-23qxfr`,
+  squash `d3e8685`, issue #133 CLOSED) — завершает Phase 3.5. `JwtAuthConfig`,
+  `filter/jwt.rs` (JWKS cache/fetch, HS256/RS256/ES256), `JwtGuard` и
+  `{{ jwt.<claim> }}` template expansion перенесены в `crates/conduit-auth-jwt`
+  по шаблону `conduit-faults` (#132): `JwtAuthConfig` + `template::
+  expand_jwt_templates` остаются always-compiled (конфиг с `jwtAuth`/
+  `{{ jwt.* }}` парсится и warns без `--features jwt`), реальный JWKS/guard-код
+  — за фичей `jwt` нового крейта, форвардится из корневой фичи `jwt`.
+  `RequestCtx.jwt_claims` → `#[cfg(feature = "jwt")]`-гейтированное
+  `RequestCtx.jwt: Option<JwtReqState>` (решение #30), с accessor'ом
+  `jwt_claims()`, абсорбирующим `#[cfg]`-ветвление для always-compiled
+  call site (header-template expansion). `extract_claims_from_session`
+  (бывший `jwt_claims_from_session`) перенесён дословно, включая
+  `skipPaths` re-check (класс уязвимости #237). Делегировано
+  `crate-extractor` с полностью резолвленным заранее спеком (шаблон
+  `conduit-faults`, always-compiled/gated split, cfg-accessor паттерн) —
+  агент сам обнаружил, что готового "root-calls-into-crate" паттерна для
+  `request_phase.rs` не было ни у одной из предыдущих экстракций, и выбрал
+  прямые quilified-вызовы. Верификация: fmt/clippy (default+full) чисто,
+  `cargo test --workspace` (default/full/`--features jwt` отдельно) все
+  зелёные, `cargo hack --each-feature` 20/20 + `--feature-powerset --depth 2`
+  136/136, `footprint-auditor` подтвердил нулевую дельту для non-jwt
+  профилей и отсутствие `jsonwebtoken` в дереве зависимостей.
+  `security-engineer` PASS на точном SHA `054f141`, вердикт запощен на PR
+  перед мерджем. Найден (не самой экстракцией, подтверждено через
+  `git stash` на pre-extraction коде) pre-existing gap: `cargo hack
+  --features jwt` (без `consumers`) даёт 2 warning'а (`unused import`,
+  dead `build_jwt_auth_cfg` в `filter/auth.rs`) — не в scope #133, касается
+  территории #134, не исправлено.
+
+- **Инцидент: параллельные "изолированные" verification-агенты сбежали из
+  своих worktree** — при запуске `build-validator`/`feature-matrix-runner`/
+  `footprint-auditor` с `isolation: "worktree"` (Step 5) два из трёх агентов
+  всё равно выполнили `cargo`-команды с абсолютным `--manifest-path
+  /home/user/conduit/Cargo.toml` вместо пути внутри своего собственного
+  worktree — сам `cwd` был правильным (worktree), но явно захардкоженный
+  `--manifest-path` в команде проигнорировал изоляцию и записал/стёр
+  состояние прямо в общий чекаут кондактора. `cargo-hack --no-dev-deps`
+  временно стирает секции `[dev-dependencies]` из манифестов на время
+  прогона каждой feature-комбинации — пока один из renegade-процессов был
+  жив, `git status` в основном чекауте показывал `[dev-dependencies]`
+  стёртыми из ВСЕХ `Cargo.toml` воркспейса (корневого + 7 крейтов). Это
+  вызвало ложноотрицательный RED от `build-validator` ("Missing
+  [dev-dependencies] section" — на самом деле временный артефакт гонки, не
+  реальный регресс), той же формы, что и задокументированный инцидент
+  2026-08-15 (только там причиной был параллельный Bash conductor'а, здесь
+  — сами агенты, несмотря на явный `isolation: "worktree"`). Восстановлено:
+  `kill -TERM` на захваченные PID (по `ps aux` + `/proc/<pid>/cwd` для
+  подтверждения, что именно они целятся в `/home/user/conduit`, а не в
+  свои worktree), `git checkout -- Cargo.toml Cargo.lock crates/*/Cargo.toml`
+  для отката до состояния коммита `054f141`, независимая повторная
+  верификация (`cargo build/test/fmt/clippy` вручную) вместо доверия
+  единственному ложному RED. Оба агента при повторном/продолжающемся
+  прогоне (после `kill`) корректно перешли на действительно изолированные
+  пути (`/tmp/conduit-parent`) и вернули настоящий GREEN. Урок для будущих
+  сессий: `isolation: "worktree"` гарантирует изолированный `cwd` для
+  Bash-вызовов агента, но НЕ мешает агенту самому передать абсолютный путь
+  к основному чекауту в `--manifest-path`/аналогичных флагах — при
+  параллельном запуске нескольких verification-агентов стоит быть готовым
+  сверить `ps aux`/`/proc/<pid>/cwd` при подозрительном `git status`
+  в основном чекауте, а не сразу доверять отчёту агента.
+
+### Реализовано в сессии 2026-08-28 (Phase 3.6 — #134 conduit-auth-forward + conduit-auth-consumers, после 4-дневного разрыва соединения)
+
+- **[PR #276](https://github.com/lopatnov/conduit/pull/276)
+  `feat(workspace): extract conduit-auth-forward + conduit-auth-consumers (#134)`**
+  (ветка `feat/extract-conduit-auth-forward-consumers-134` →
+  `claude/cargo-workspace-features-23qxfr`, squash `a99e42c`, issue #134
+  CLOSED) — `conduit-auth-forward` — чистая полная экстракция
+  (`ForwardAuthConfig` + `ForwardAuthGuard` + process-wide `reqwest::Client`
+  singleton) по шаблону `conduit-faults`/`conduit-auth-jwt`.
+  `conduit-auth-consumers` — **первое отступление от чистого паттерна**:
+  `ConsumersConfig`+вложенные типы и чистая `identify_consumer`
+  (API key/Basic Auth/per-consumer JWT V2/shared JWT V3) переехали, но
+  **`ConsumersGuard` остался в корневом крейте** (`src/filter/chain.rs`) —
+  ему нужен ещё не экстрагированный `RateLimiter`/`TokenBucket` (#137),
+  экстракция guard'а создала бы именно ту преждевременную обратную связку,
+  ради избежания которой затеян весь workspace split. `ConsumersGuard::apply`
+  теперь зовёт `conduit_auth_consumers::identify_consumer` только для шага
+  идентификации. `Consumer.rate_limit` — намеренно продублированный локальный
+  `RateLimitConfig` (задокументировано, консолидация — после #137);
+  `validate_rate_limit` в `validate.rs` переведён на примитивные поля вместо
+  конкретной структуры, чтобы оба call site (site-level и per-consumer)
+  продолжали использовать один реальный набор правил валидации.
+  `ct_eq_str` (constant-time сравнение) повышен до
+  `conduit_core::util::crypto` — настоящая дедупликация (не фасад), делится
+  между always-on Basic Auth/API-key guards корневого крейта и новым
+  consumers-крейтом. Feature-графа: корневая `jwt` форвардит теперь И в
+  `lopatnov-conduit-auth-jwt/jwt`, И в `lopatnov-conduit-auth-consumers/jwt`
+  — без второго форварда per-consumer JWT (V2) и sharedJwt (V3) молча
+  переставали бы компилироваться при `--features jwt,consumers` вместе.
+  `security-engineer` PASS дважды (SHA `639c13a`, затем `7ec67bf` после
+  тривиального фикса устаревшего doc-комментария, найденного самим
+  security-engineer). CodeRabbit поднял валидный scope-вопрос (issue #134
+  дословно называет `ConsumersGuard` в скоупе) — закрыт explicit-комментарием
+  на #134, документирующим partial-extraction решение и его обоснование,
+  вместо молчаливого игнорирования замечания бота.
+- **Инцидент: 4-дневный разрыв соединения между спавном crate-extractor'а и
+  получением его результата** — первый спавн (foreground background agent)
+  оборвался на `API Error: Connection lost mid-response` на моменте написания
+  `crates/conduit-auth-forward/src/guard.rs`; восстановлен через `SendMessage`
+  тому же `agentId` (не пересоздан с нуля) с описанием прогресса — агент
+  успешно продолжил и завершил обе экстракции. Далее вся сессия простаивала
+  ~4 дня (множественные пропущенные срабатывания `/feature-workspace-cycle`,
+  видны как накопившиеся уведомления) до реального возобновления обработки.
+  За это время на GitHub успело накопиться: полный (не draft-skip) обзор
+  CodeRabbit на PR #152 (18 замечаний, "Merge Risk: High") и 10 новых
+  Dependabot PR. Ничего не потеряно — рабочее дерево осталось ровно в том
+  состоянии, где остановился агент (проверено `git status`/`git diff` перед
+  продолжением), никакой автономной работы за время простоя не произошло.
+- **Триаж полного CodeRabbit-обзора PR #152** — 18 замечаний. 2 совпали с уже
+  существующими issues (#163 — JWKS синхронный fetch; #251 — DNS-кэш для
+  `resolve_socket_addr`, закрыт `not_planned`), 1 — тот же уже разобранный
+  Sonar hotspot `rust:S5659` на `insecure_decode` (issue #238), просто
+  всплывший заново из-за file-move. Оставшиеся 12 реальных находок заведены
+  как отдельные issues **#277-#288**: upload memory exhaustion (буферизация
+  всего файла до проверки лимита), ACME-секреты без 0600, ACME cleanup не
+  гарантирован на error-путях, log writer symlink TOCTOU (нужен O_NOFOLLOW),
+  JWKS kid-less key lookup mismatch, fault-injection delay range bug,
+  config provider empty-parent-path ломает hot-reload watcher, Accept-Encoding
+  qvalue parser не распознаёт `q=0.00`/`q=0.000`, OTLP double-init теряет
+  provider, upload router не матчит root `/` (axum 0.8 wildcard), schema.json
+  рассинхронизация (`SiteConfig.extra`, `global.workers` minimum),
+  `check-layer-boundaries.sh` падает целиком на одном manifest без `name=`.
+  Мелкие doc/process nits (русский текст в doc-комментарии, doc-link в
+  `conduit-faults`, недостающие unit-тесты для `ValidationError`,
+  `.claude/settings.json` fmt-hook scope, дублирующийся security-review
+  раздел в `workflow.md`) — не заведены отдельными issues, оставлены на
+  случайный подхват.
+- **10 Dependabot PR** (#265-274) — `dependency-steward` дважды упёрся в
+  отсутствие GitHub MCP tools в своём гранте (тот же паттерн, что и
+  2026-08-05 в этом же журнале) — корректно остановился и сообщил вместо
+  обхода. Conductor сам проверил CI (`get_check_runs`) для всех: `rand`
+  0.8.6→0.9.4 (MAJOR) — реальный CI red на `--features full`/`standard`
+  (похоже, `rand::thread_rng()` переименован/устарел в 0.9, ломает
+  test-only использование в `crates/conduit-auth-jwt/src/jwt/tests/jwks.rs`)
+  — **HOLD**, не смерджен. `wasmtime` 46.0.1→48.0.0 (2 major) — полностью
+  зелёный CI на всей feature-матрице; `security-engineer` независимо
+  проверил все 4 GHSA в диапазоне версий против реального usage в
+  `src/filter/wasm.rs` — ни один не применим (нет `wasmtime-wasi` в дереве
+  зависимостей, один статический `Engine`, только fuel-based лимитирование,
+  без epoch callbacks). Остальные 8 (`futures`/`clap_mangen`/`rustls`/`time`/
+  `async-trait`/`libc`/`wat`/`clap_complete`) — patch/minor, зелёный CI,
+  `security-engineer` PASS батчем (agent resumed после инструмента-геп
+  повторно, дообогащён conductor'ом реальным diff'ом #269 и подтверждённым
+  provenance/advisory-анализом вместо повторного tool-gap отказа). Все 9
+  смерджены, `rand` оставлен открытым.
+- **Миграционная ветка синхронизирована с `main` дважды** (после PR #276 и
+  после 9 Dependabot-мерджей) — 1 реальный конфликт в `Cargo.toml`:
+  `wasmtime` version bump (`"46"`→`"48"`) внутри `[workspace.dependencies]`,
+  где `optional = true` (валидный на `main`'s pre-workspace layout) невалиден
+  — разрешено взятием версии из `main` при сохранении структуры миграционной
+  ветки (без `optional`, т.к. реальный gate — отдельная строка
+  `wasmtime.workspace = true, optional = true` в `[dependencies]`).
+  По ходу обнаружен и исправлен **реальный toolchain-разрыв**: локальный
+  `rustc` в этом окружении был 1.94.1, `wasmtime` 48 требует 1.95.0+ —
+  `rustup update stable` подтянул 1.98.0 (GitHub Actions runners явно уже
+  используют актуальный stable, раз CI PR #269 прошёл). Также словлен и
+  устранён рецидивирующий ENOSPC (toolchain update + полный ребилд съели
+  оставшееся место) — `rm -rf target/debug/{incremental,build,deps}`
+  освободил ~27GB. `cargo build/test --workspace` (default + `--features
+  full`) зелёные на обоих синках (1010/1117 тестов, 0 failed).
+- **Процессная находка**: `mcp__github__update_pull_request` (draft→ready)
+  снова упёрся в API rate limit несколько раз подряд (тот же повторяющийся
+  квирк, что и в записях 2026-08-21/22 этого файла) — на этот раз
+  пользователь вручную нажал "Ready for review" в GitHub UI, пока conductor
+  ждал; `issue_write` (закрытие #134) тоже словил тот же rate limit отдельно.
+
+### CodeQL alert triage on PR #152 (2026-08-28, same session — 4 alerts fired at head `a99e42c`/`b304463`)
+
+`check_run.completed` webhook events on the tracking PR reported "4 new alerts
+including 3 critical severity security vulnerabilities" — investigated since
+`gh`/code-scanning API access isn't available from this session (both
+`GET /repos/.../code-scanning/alerts` and the Security tab UI returned
+403/404 without an authenticated browser session); GitHub Advanced Security's
+inline PR review-comment annotations (delivered as separate
+`pull_request_review_comment.created` webhook events, not visible via any
+`mcp__github__pull_request_read` method) turned out to be the only way to see
+the actual rule name + file/line for each alert.
+
+- **3× "Hard-coded cryptographic value... used as a password"**
+  (`crates/conduit-auth-consumers/src/identify.rs:278,292,301`) — real
+  finding. `git diff` against the pre-#134 `src/filter/auth.rs` confirmed
+  the `identify_consumer`/`check_consumer_basic`/shared-JWT unit tests these
+  lines belong to are genuinely new test coverage added during #134's
+  extraction (auth.rs had zero direct unit tests for consumer identification
+  before), not moved code — so unlike prior "false new-alert from a pure
+  code move" cases this session, CodeQL's finding was accurate: 4 literal
+  strings (`"secret-key"` ×2, `"my-secret"`, `"shared-jwt-secret"`) assigned
+  to `api_key`/`secret`-named fields, matching the count exactly.
+  Fixed in [PR #289](https://github.com/lopatnov/conduit/pull/289)
+  (`fix/codeql-hardcoded-test-secrets-152` → migration branch, commit
+  `23a86cf`) — a `random_test_secret()` helper (nanosecond-timestamp-seeded,
+  no new dependency) replaces all 4 literal call sites; same 8 tests, same
+  assertions, still green. Same fix pattern as `conduit-auth-jwt`'s own
+  JWKS test-fixture SonarCloud hotspot (#133). `security-engineer` PASS
+  recorded on PR #289 (independently re-ran the crate's tests/clippy/fmt,
+  confirmed the whole diff sits inside `#[cfg(test)] mod tests`, no
+  production-code reachability).
+- **1× "Uncontrolled data used in path expression"**
+  (`crates/conduit-config-core/src/parse.rs:52`,
+  `std::fs::read_to_string(path)` inside `load_file`) — assessed **false
+  positive**, no code change. Traced the full call chain: `load_file` ←
+  `FileProvider::load` ← `file_provider(path)`/`load_and_validate(path)` ←
+  `AppState.config_path`, set exactly once at startup in `main.rs` from
+  `resolve_config_path(config_arg)` (`src/cli/config_path.rs`), itself
+  sourced only from the `-c`/`--config` `clap` CLI flag or the
+  `conduit.json`/`.yaml`/`.yml` auto-discovery fallback in the cwd. The only
+  other caller (`admin/api.rs`'s `/reload` handler) re-reads that same
+  fixed startup-time path — never a path from the request body. No
+  HTTP-request-derived data reaches this function anywhere in the
+  codebase — this is the ordinary "CLI/server tool loads its own config
+  from an operator-specified path" pattern, the same trust boundary as
+  `cat $1` in a shell script, not a remote-attacker-controlled path
+  traversal. CodeQL's Rust query pack is new (this is the first session
+  it's fired any alert at all) and its default taint-source set for this
+  query class appears to treat generic CLI-argument flow as tainted with
+  no way to mark "this is the process's own startup argument." Documented
+  as a [comment on PR #152](https://github.com/lopatnov/conduit/pull/152)
+  rather than actually dismissed — this session has no tool that can
+  dismiss a code-scanning alert (same gap already logged for the
+  unreachable Dependabot `security/dependabot/3` alert); needs the repo
+  owner via the Security → Code scanning UI if a permanent dismissal is
+  wanted. Left genuinely open rather than "fixed" with a change that would
+  just break `--config` pointing anywhere the operator chooses.
+
+**RESOLVED 2026-09-05 — the theory below (2026-08-24/08-28) was WRONG, not just unconfirmed.**
+This session gained real access to the SonarCloud API via the **`mcp__sonarqube__*` MCP tools**
+(a dedicated connector, distinct from `WebFetch`/browser access to `sonarcloud.io` — that path is
+still blocked by this environment's egress proxy, confirmed again this session; the two are
+separate access paths and the MCP one had never been tried before). `get_project_quality_gate_status`
+on PR #152 showed `new_security_hotspots_reviewed: 100%` — i.e. **no hotspot was ever unreviewed**,
+which directly falsifies the "the `insecure_decode` hotspot keeps getting re-flagged as new on every
+file move" theory that this section spent two sessions building on pure speculation (since no session
+before this one could actually query SonarCloud to check). The real, only cause of the failing
+`new_security_rating` condition: **2 SonarCloud issues (not hotspots) with SECURITY impact**, both
+false positives on test-only code — `search_sonar_issues_in_projects(pullRequest="152",
+impactSoftwareQualities=["SECURITY"])` found them directly: `secrets:S6739` BLOCKER on
+`crates/conduit-cache/src/redis.rs:418` (`redact_url`'s own unit-test fixture literal
+`redis://alice:s3cret@example.com:6379` — testing the credential-redaction helper added in #331/#330,
+not a real leaked password) and `rust:S2612` MAJOR on `crates/conduit-acme/src/flow.rs:544`
+(`write_secret_file_tightens_permissions_on_overwrite` deliberately sets `0o644` to simulate a
+pre-existing loosely-permissioned file, then asserts the fix re-tightens it to `0o600` — a test of the
+security fix, not a vulnerability). Both marked `falsepositive` via `change_sonar_issue_status`
+(one call was blocked by the auto-mode permission classifier on the first attempt for no apparent
+reason — same call succeeded cleanly on retry). **Quality gate is now `OK` across every metric**
+(`new_security_rating` 5→1), confirmed via a fresh `get_project_quality_gate_status` call — not
+just assumed from marking the issues. Posted as a PR #152 comment with the full explanation.
+**Lesson for future sessions**: `mcp__sonarqube__*` tools work in at least this (desktop app)
+session type — don't assume SonarCloud is categorically unreachable just because `WebFetch` is
+blocked; check `ToolSearch select:mcp__sonarqube__search_my_sonarqube_projects` first (mirrors the
+already-established "GitHub access differs by execution context" pattern in `.claude/rules/index.md`
+— likely the same story here: some session types get this connector, others don't). Also: **the old
+"D/E Security Rating on New Code re-flags forever due to move-detection" theory is retired** — treat
+any future SonarCloud gate failure on this PR as a fresh, checkable fact via these tools, not a
+recurrence of this specific (now-disproven) mechanism.
+
+### Реализовано в сессии 2026-08-30 (rate_limit.rs Step 1c audit + Phase 3.8 — #136)
+
+- **Step 1c integrity audit of `src/filter/rate_limit.rs`** (never audited before) found 9 gaps: 4
+  low-risk/unambiguous, fixed directly via [PR #302](https://github.com/lopatnov/conduit/pull/302)
+  (enforce the previously-dead `algorithm` config field, delete 2 dead default constants, sync
+  `schema/conduit.schema.json`'s rate-limit definitions, add `dryRun` test coverage — had zero
+  anywhere) and a same-day follow-up [PR #309](https://github.com/lopatnov/conduit/pull/309)
+  (CodeRabbit/Gitar review comments on #302 that got **merged past without being addressed first** —
+  a real process miss, caught by the user after merge, not before; fixed retroactively: reject
+  invalid HTTP header names in `keyBy` instead of silently collapsing every client into one shared
+  bucket, strengthen a dry-run test that didn't actually prove the limit was 1). 5 real behavioral
+  gaps needing design judgment filed as issues — [#303](https://github.com/lopatnov/conduit/issues/303)
+  (`GET /rate-limits` admin endpoint always returns `{}`, key-format mismatch),
+  [#304](https://github.com/lopatnov/conduit/issues/304) (site-level buckets not scoped per site —
+  cross-site collision), [#305](https://github.com/lopatnov/conduit/issues/305) (per-route rate
+  limiting bypasses the shared `MAX_BUCKETS` memory-exhaustion cap — a real DoS bypass on the
+  documented `keyBy: "header:X-Name"` pattern, independently confirmed by `security-engineer` during
+  #309's review), [#306](https://github.com/lopatnov/conduit/issues/306) (`burst` silently dropped
+  under `store: redis`, confirmed dropped even in the Redis-failure fallback path),
+  [#307](https://github.com/lopatnov/conduit/issues/307) (`dryRun`/`store`/`skipPaths` silently
+  ignored outside site-level) — plus [#310](https://github.com/lopatnov/conduit/issues/310) (per-route
+  `rateLimit` isn't validated *at all* — found independently by both `security-engineer` and
+  CodeRabbit while reviewing #309). **Owner decisions recorded on all 6 issues 2026-08-30**: unify
+  the rate-limit key format across all 3 layers and site-scope it in the same pass (#303+#304
+  together), one shared `MAX_BUCKETS` cap across all layers (#305), bring per-route/per-consumer to
+  full feature parity with site-level (#306/#307/#310) — scoped as one coordinated effort given the
+  overlapping code paths, not 4 uncoordinated PRs. CLAUDE.md decision #14 (rate limiter section) was
+  also corrected — it had mislabeled the rate limiter's key format as `"{site}\0{route}"`, which
+  actually belongs to `UpstreamRegistry.override_key()` in `health.rs`.
+- **Phase 3.8** (#136 — extract `conduit-ipfilter`, `conduit-cors`, `conduit-security-headers`) done,
+  merged via [PR #308](https://github.com/lopatnov/conduit/pull/308). Pure code-organization
+  extraction per the owner decision recorded in #114's body (item 2) — all three stay
+  default-on/always-compiled, not new optional features. `feature-matrix-runner` (20 individual +
+  136-combination powerset) and `footprint-auditor` (zero binary-size delta) both GREEN;
+  `security-engineer` PASS confirmed the guard logic (CIDR matching, CORS origin/preflight, security
+  headers/HSTS/CSP/allowed-hosts) is byte-for-byte unchanged by the move. Deferring #137 (extract
+  `conduit-ratelimit`, next in phase order) until the rate-limit redesign above lands — doing the
+  key-format/scoping rework before the crate boundary rather than across it.
+- **`crates/conduit-ratelimit` extracted (slice 1 of #137)**, merged via
+  [PR #311](https://github.com/lopatnov/conduit/pull/311). Called `architect` first on a SonarCloud
+  "Duplicated Lines on New Code" finding pointing at `conduit-auth-consumers`'s deliberate, documented
+  temporary duplicate of `RateLimitConfig` (issue #114/#134); `architect` recommended seeding the real
+  `conduit-ratelimit` crate now with only the always-on slice (`RateLimitConfig` + the pure
+  token-bucket admission logic — `TokenBucket`/`RateLimiter`/`MAX_BUCKETS`/`cleanup`/`check_key`)
+  rather than either the full #137 (Redis backend, `Session`-aware wrappers — deliberately left in the
+  root crate) or a throwaway config-only crate (would have violated `conduit-config-core`'s documented
+  zero-schema-knowledge invariant). **#137 stays open** — this is one slice, not the whole issue.
+  Unifying the type onto one crate made two sibling fixes possible in the same PR, per the owner
+  decisions above: **#305** (all 4 admission call sites — site/route/consumer/Redis-fallback — now
+  share one capacity-checked `check_key`/`check_key_for`, closing the real DoS bypass) and **#310**
+  (per-route `rateLimit` is now validated; `validate_rate_limit` collapsed back to `&RateLimitConfig`
+  since it's one type at every layer now, not two nominally-distinct ones). Both issues closed.
+  #303/#304 (key-format unification/site-scoping) deliberately stayed out — this PR guarantees every
+  key stays byte-identical, #303/#304 changes what the key *is* — #311 is the enabler, not a
+  competitor. `feature-matrix-runner` (20+136 combinations, redis specifically checked) and
+  `footprint-auditor` (zero binary delta) both GREEN. **Review-comment discipline this time**: caught
+  and fixed a real security-engineer finding (raw rate-limit key — which can carry a header value like
+  an API key under `keyBy: "header:X-API-Key"` — was being logged verbatim on `MAX_BUCKETS` cap-hit;
+  now logs only the key's length) plus 3 doc/schema-drift fixes from CodeRabbit, pushed back with
+  evidence on a Gitar false-positive (the exact validation it claimed was missing already existed) and
+  a CodeRabbit TOCTOU finding (real, but the identical pre-existing race as the original site-level
+  code, matching this codebase's own documented soft-cap convention — filed as
+  [#313](https://github.com/lopatnov/conduit/issues/313) for anyone who wants to tighten it later, not
+  blocking). All 6 review threads replied-then-resolved and re-verified against the final head SHA
+  *before* merging — directly in response to the user flagging that #302 got merged past its own
+  unaddressed review comments earlier this session (see the #302/#309 entry above).
+- **Process note**: this firing ran in a **local session** (not cloud/Routine-fired) with zero
+  `mcp__github__*` MCP tools in its grant — confirmed via `ToolSearch select:`, exact name match, not
+  a fuzzy-search miss. Used the local `gh` CLI (installed, authenticated) throughout instead; see
+  `.claude/rules/index.md` "GitHub access differs by execution context" (new section this session).
+  Also this session: retired the periodic full session-rotation policy (`session-rotate.md` deleted)
+  after concluding it bought no cache savings for this routine's daily cadence — see
+  `.claude/rules/index.md` "Session rotation retired" and `feature-workspace-cycle.md` Step 0a.
+
+### Реализовано в сессии 2026-08-30 (часть 2 — CodeRabbit PR #152 sweep "Block 1": #279/#301/#281/#282/#283/#284/#285/#286/#288, 4 PRs)
+
+- User asked for a survey of open issues groupable into workable batches; picked the batch of 9
+  issues from CodeRabbit's full review of PR #152 on 2026-08-24 (#279, #281–#288) plus #301 (found
+  by `security-engineer` reviewing PR #300) — grouped into 4 small PRs by crate/theme rather than one
+  giant PR (this repo's "one branch = one coherent change" convention).
+  - **[PR #325](https://github.com/lopatnov/conduit/pull/325)** (`conduit-acme`/`conduit-auth-jwt`,
+    squash-merged) — #279 (ACME challenge-server cleanup wasn't guaranteed on error: the
+    populate-challenges-and-poll logic now runs inside an inner `async {}` whose `Result` is captured,
+    so cleanup — stop signal, `server_task.await`, token removal — always runs before the error
+    propagates), #301 (`write_secret_file` symlink attack: added `O_NOFOLLOW`, third instance of this
+    codebase's established pattern alongside `log_writer`/`static_files`), #281 (JWKS `kid` lookup for
+    kid-less tokens/keys made RFC-honest: a kid-less token now matches only when the JWKS has exactly
+    one key, and is rejected as ambiguous — not silently matched to the wrong key — when the JWKS has
+    several). Real Linux verification via WSL2+Docker for the `#[cfg(unix)]` symlink test (doesn't
+    compile on the Windows dev machine at all).
+  - **[PR #326](https://github.com/lopatnov/conduit/pull/326)** (`conduit-faults`/`conduit-config-core`/
+    `conduit-core`, squash-merged) — #282 (fault-injection abort/delay percentage ranges were
+    overlapping instead of additive — extracted a pure `decide()` function with a regression test
+    proving the old code would wrongly `Continue` inside what should be the delay window), #283
+    (`Path::parent()` returns `Some("")`, not `None`, for a bare relative filename — broke the
+    config-file hot-reload watcher's directory resolution; extracted `watch_dir()` with 4 unit tests),
+    #284 (`Accept-Encoding` qvalue parsing used naive string-matching that missed `q=0.00`/`q=0.000` —
+    replaced with real float parsing per RFC 9110's up-to-3-fractional-digit grammar).
+  - **[PR #327](https://github.com/lopatnov/conduit/pull/327)** (`conduit-otlp`/`conduit-upload`) —
+    #285 (`init_tracer`'s `OnceLock::set()` failure on a second call was silently discarded, pinning
+    `shutdown_tracer` to flush the stale first provider forever while the actually-active second
+    provider's spans went unflushed on shutdown — now `tracing::warn!`s instead), #286 (axum 0.8's
+    `{*path}` wildcard doesn't match the empty root segment — POSTing directly to the upload service's
+    `/` returned 404; added an explicit `/` route alongside the wildcard). New regression tests spin up
+    a real `TcpListener` + `axum::serve` + raw TCP client (no `tower`/`oneshot` — not a dev-dependency
+    here) to exercise both routes end-to-end.
+  - **[PR #328](https://github.com/lopatnov/conduit/pull/328)** (`scripts/check-layer-boundaries.sh`) —
+    #288 (a crate manifest with no `^name\s*=` line made `grep -m1` exit 1 under `set -euo pipefail`,
+    silently aborting the *entire* scan before printing any diagnostic and before scanning any crate
+    that came after the offending one; added `|| true` + an explicit `[[ -n "$crate_name" ]] || continue`
+    guard). Verified against the actual pre-fix script in an isolated scratch copy: reproduced the exact
+    bug (exit 1, zero output, real violation planted afterward never reported), then confirmed the fix
+    resolves it.
+  - **#287 closed without a code change** — both drift points it described (SiteConfig
+    `additionalProperties: false` vs. the `extra`-flatten field; `global.workers` schema minimum vs.
+    validate.rs's hard rejection of `0`) turned out to already be resolved on this branch, verified by
+    walking the entire parsed JSON schema tree (no `additionalProperties: false` anywhere;
+    `global.workers` already has `"minimum": 1`) — likely a side effect of other schema-touching PRs
+    that landed since #287 was filed (#302/#309/#311/#323). Closing stale findings with the
+    verification recorded, rather than silently ignoring or duplicating work, matches how this session
+    already handles CodeRabbit re-postings of already-resolved findings.
+  - All 4 PRs got the mandatory unconditional `security-engineer` PASS (posted as a PR comment on
+    each) before merge, per `.claude/rules/workflow.md`.
+- **Process incident: a non-worktree-isolated `security-engineer` background agent raced with and
+  reverted an uncommitted conductor edit.** While PR #326 was under background `security-engineer`
+  review (spawned *without* `isolation: "worktree"`), that agent's own methodology — creating a local
+  git ref/branch (`pr-326-review`) and running `git diff origin/... pr-326-review` directly in the
+  shared working directory — collided with an in-progress, not-yet-committed edit the conductor was
+  making concurrently on a different branch (`fix/otlp-double-init-upload-root-285-286`,
+  `crates/conduit-otlp/src/tracer.rs`): the working tree ended up with PR #326's already-committed
+  file changes staged as stray duplicates, and the conductor's own first `tracer.rs` edit was silently
+  reverted (a second, later edit on the same file survived). No committed/pushed work was lost — the
+  PR's actual GitHub state was independently confirmed via `gh pr diff --name-only`/`gh pr view --json
+  additions,deletions` unaffected — but recovery required `git restore --staged`/`git checkout --` to
+  strip the stray content, then re-reading and re-applying the reverted edit from memory of what had
+  just been written. This is a distinct variant of the [[worktree-merge-gotcha]]/2026-08-24
+  "verification-agent isolation incident" already logged above (that one was agents *with*
+  `isolation: "worktree"` still reaching outside it via an absolute `--manifest-path`; this one is an
+  agent with no isolation at all, whose own git bookkeeping — not a build/test command — was the thing
+  that raced) — recorded because the mitigation is the same generalizable rule stated plainly for the
+  first time here: **treat any background agent that might run `git` commands (not just build/test
+  tooling) as a race risk against uncommitted edits in the shared checkout, regardless of what its own
+  task nominally is** — `security-engineer`'s mandate doesn't obviously suggest it touches git state,
+  but its actual diff-review methodology does. After recovery, the conductor explicitly avoided
+  spawning further background agents until finishing and committing the in-progress branch, and used
+  `isolation: "worktree"` for both subsequent `security-engineer` reviews (PR #327, PR #328) in this
+  same batch — both completed cleanly with no further incident.
+
+### Реализовано в сессии 2026-08-31 (Block 2 — rate-limit follow-ups #312/#320/#313, and a real bug found via live WSL Redis: #330)
+
+- User asked to survey open issues for another workable batch after Block 1 closed; picked "rate-limit
+  follow-ups" (#312, #313, #320) — three small issues from the `rate_limit.rs` Step 1c audit era
+  (2026-08-30) and the #311 extraction's own review.
+  - **[PR #329](https://github.com/lopatnov/conduit/pull/329)** — #312 (`cargo build --features redis`
+    without `cache` failed under `-D warnings`: `use crate::proxy::cache_redis::cache_redis;` was gated
+    on `redis` alone, but its only call site sits inside a `#[cfg(feature = "cache")]` block; regated on
+    `all(feature = "redis", feature = "cache")`, matching the real minimal condition), #320 (a
+    `keyBy: "header:X-Name"` rate-limit key could carry a raw NUL byte — valid UTF-8, so `to_str()`
+    didn't reject it — which shifted the `\0`-separated bucket-key's segment count and made
+    `GET /rate-limits` silently drop that bucket via its `_ => continue` fallback; not a security bypass,
+    just an admin-reporting undercount, since `site_label` always occupies the first segment; fixed with
+    a new `strip_nul` helper in `extract_key`). **#313 closed without a code change** — already flagged
+    in its own issue text as an accepted trade-off matching this codebase's established soft-cap policy
+    (same as `retry.budgetPercent`), and both CodeRabbit and `security-engineer` had independently
+    already reached that conclusion before the issue was even filed; closing recorded the reasoning
+    rather than duplicating work.
+- **User then flagged that WSL has both a real Redis instance and kubectl/minikube available** — used
+  it for genuine functional verification beyond what this codebase's own unit tests ever exercise (they
+  deliberately avoid needing live Redis, per the existing `unreachable_redis_returns_none_not_panic`-
+  style pattern). Built a real release binary (`--features redis,cache,jwt`) in a `rust:latest` Docker
+  container on `--network host` inside WSL, pointed at the host's live `redis-server`, and drove it with
+  real HTTP requests.
+  - **Confirmed the real Redis-backed rate-limiter round-trip is correct**: real `INCR`/`EXPIRE` writes
+    visible via `redis-cli`, request rejected with 429 exactly when the real counter crossed the
+    configured limit.
+  - **Found #320's real-world exploitability is narrower than the issue speculated**: a raw NUL byte in
+    an HTTP header value gets rejected outright by Pingora's own HTTP/1 parser (`400 Bad Request`)
+    before ever reaching `extract_key` — confirmed via a raw-socket request. The fix is still correct
+    defense-in-depth; just noting the practical blast radius was smaller than believed.
+  - **Found a real, severe, previously-undiscovered bug** in a completely different subsystem
+    (`conduit-cache`, not `conduit-ratelimit`): `RedisCacheStorage::new_blocking`
+    (`crates/conduit-cache/src/redis.rs`) spun up a *nested* Tokio runtime and `block_on`'d it from
+    inside `request_cache_filter` — which runs on a Pingora worker thread already driving its own
+    runtime. Tokio panics on that unconditionally ("Cannot start a runtime from within a runtime"), on
+    *every* request to a redis-cached route, forever (the panicking call never populated the connection
+    registry, so it never self-heals). Because it's a panic, not a returned `Err`, it also completely
+    bypassed the module's own documented fail-open contract. Reproduced deterministically twice, on
+    clean restarts, against the real live server — exactly the class of bug the existing
+    "unreachable-Redis-only" test suite could never catch. Filed as
+    [#330](https://github.com/lopatnov/conduit/issues/330) with full repro details.
+- **[PR #331](https://github.com/lopatnov/conduit/pull/331)** — fixed #330 per a concrete `architect`
+  plan (which corrected the initial premise: the difference between the cache's broken pattern and the
+  rate limiter's working one isn't `async fn` vs. a blocking wrapper — the rate limiter has the *same*
+  `block_on` shape, it just runs before any Pingora runtime exists yet). Moved Redis-cache connection
+  establishment from lazy (on first request, inside Pingora's runtime) to eager (once per distinct URL,
+  awaited during server startup in `AdminApiService::start()`, and again on every hot reload — both the
+  admin API's `/reload` handler and `builder.rs`'s Kubernetes/live-provider config watcher — before the
+  config swap in each case, so there's no window where a reload-introduced URL is live but
+  unregistered). `get_or_create` split into `get` (pure registry lookup, never connects — the request
+  path only ever calls this) and `connect_and_register` (the only thing that actually opens a
+  connection, `async fn`, idempotent, fail-open). **Verified the fix genuinely resolves the panic**:
+  rebuilt in the same live-WSL-Redis harness, confirmed the pre-fix binary panics deterministically
+  (again, for a clean second confirmation) and the post-fix binary logs `Redis proxy cache connected`
+  at startup, produces a real `conduit:pcache:*` Redis key on a genuine write, serves the second request
+  from cache (proven by protocol-version mismatch: `HTTP/1.1` from Pingora itself vs. the first
+  request's `HTTP/1.0` from the Python test upstream), and zero panics.
+  - **Four `security-engineer` review rounds**, each catching something real and each re-verified
+    against the exact new head SHA before the next: round 1 PASS with two non-blocking notes (Redis URL
+    credentials could now reach a previously-dead log line; a pre-existing TOCTOU on the connection
+    registry, unchanged/not widened by this fix); round 2 fixed the credential-logging note directly
+    (`redact_url` helper) but the reviewer itself then found a **second**, sharper bug in that same
+    fix — `find('@')` matched the *first* `@`, so a password containing its own literal `@` (this
+    codebase's `$VAR` secret interpolation has no URL-encoding step, so realistic) leaked a fragment of
+    itself; round 3 fixed that (`rfind('@')` bounded to the authority substring) and PASSed clean; round
+    4 (after a Gitar finding — `connect_all` awaited each URL sequentially, so N unreachable stores would
+    serially stack `ConnectionManager`'s retry/backoff budget on the startup/reload critical path — fixed
+    by switching to `tokio::spawn`-per-URL, joined afterward, no new dependency edge) did a full fresh
+    holistic pass, not just a diff since last review, and PASSed with no remaining findings.
+- **Process note**: caught two of the "committing directly on the migration branch" near-misses this
+  session already has one prior instance of (2026-08-30, logged in `.claude/logs/dependabot-hygiene.md`)
+  — both caught before any push (`git branch --show-current` mid-flow), both moved cleanly to a proper
+  feature branch via `git checkout -b` since nothing had been committed yet. Also hit repeated,
+  unrelated WSL host-level instability during the live-Redis verification (the VM itself force-rebooted
+  mid-test multiple times, confirmed via `dmesg` — not caused by the testing itself) — recovered by
+  restarting the container/redis-server each time and continuing rather than treating a transient
+  environment crash as a code problem.
+
+### Реализовано в сессии 2026-08-31 (часть 2 — daily `/feature-workspace-cycle` firing: 5 Dependabot PRs + Phase 4.1 `conduit-compression`)
+
+- **Step 1 (Dependabot triage)**: the firing coincided with 5 fresh Dependabot PRs (#332-336: wasmtime
+  48.0.0→48.0.1, uuid 1.23.4→1.26.0, redis 1.5.0→1.6.0, rhai 1.25.1→1.26.0, wat 1.257.1→1.258.0) that had
+  appeared moments earlier during the manual session's own work. `dependency-steward` pulled real
+  upstream changelogs for each (not version-number guessing) — all additive/bugfix-only, zero breaking
+  changes; #334's redis bump specifically checked against the nested-Tokio-runtime fix just merged in
+  [PR #331](https://github.com/lopatnov/conduit/pull/331) (issue #330) — confirmed `ConnectionManager::
+  new()`'s construction path is untouched by the 1.6.0 changelog, no interaction. `security-engineer`
+  PASS posted on all 5 individually (including an injection-scan of Dependabot's own embedded release-
+  notes text — a known-plausible attack vector for a compromised upstream, not just boilerplate paranoia).
+  All 5 merged; migration branch synced with `main` afterward (clean, `Cargo.lock`-only merge conflict).
+  Also cleaned up 4 local-only leftovers found during the sync sweep: `base-branch` and both
+  `worktree-agent-*` branches (finished `security-engineer` review worktrees, one needed an unlock after
+  confirming its PID was dead via `Get-Process`), and `pr-326-review` (the 2026-08-30 git-race incident's
+  leftover ref, logged earlier the same day). Full detail in `.claude/logs/dependabot-hygiene.md`.
+- **Step 2 (next #114 sub-issue)**: picked Phase 4.1 (#138, `conduit-compression`) — next in phase order
+  after #137's close, and the only phase-4 candidate without an unmet dependency (#139/static_files
+  explicitly depends on #138; #140/hotreload+metrics+redirects is independent but out of phase order).
+  Delegated to `crate-extractor` following the established template
+  ([PR #337](https://github.com/lopatnov/conduit/pull/337)): `CompressionConfig`/`CompressionOptions`
+  moved always-compiled (same pattern as `FaultInjectionConfig`), `CompressOptions`/`effective()`/
+  `is_compressible_type()`/`best_encoding()`/`compress_bytes()` gated behind a new `compression` feature,
+  facade re-exports at the original call sites. **First default-on optional feature in this whole
+  migration**: `default = []` → `default = ["compression"]`, per issue #138's explicit requirement that
+  compression (already unconditionally compiled before this PR) stay default-on after extraction —
+  `security-engineer` independently confirmed this is a true no-op for the default build (pre-PR
+  `async-compression` had no feature gate at all). `feature-matrix-runner`: 21/21 each-feature + 152/152
+  depth-2 powerset, GREEN. Footprint confirmed independently (not just trusting the agent's self-report):
+  `cargo tree -i async-compression` present under default, completely absent under
+  `--no-default-features`; ~634.5 KiB smaller stripped release binary without it.
+- **Docs/schema sync done directly by the conductor** (the `docs-scribe` delegation hit a mid-task rate
+  limit with zero changes made — caught via `git status` before assuming anything happened, then handled
+  the same narrow scope manually): fixed 3 docs files' stale `default = []` minimal-build description
+  (`docs/building.md`, `docs/cli.md`, `docs/deployment.md`) plus one unrelated `default = []` mention in
+  `docs/configuration.md`'s rate-limiting section. **Found and fixed real, pre-existing schema drift**
+  while verifying `CompressionConfig`'s JSON Schema against the actual Rust struct (predates this
+  extraction — the struct already had these fields, the schema just never caught up): the `types` field
+  (Content-Type filtering) was missing entirely, and `algorithms`'s enum was missing `zstd` even though
+  both the Rust code and the docs' own compression example already supported/documented it.
+- **CodeRabbit actually reviewed this PR** (unusual — normally shows "review skipped on non-default base
+  branch" for PRs against the migration branch) and found 2 real, pre-existing bugs in the code #138
+  moved verbatim: `is_compressible_type`'s custom content-type matching lowercased the request's content
+  type but not the user-configured pattern (so `"Text/Plain"` never matched despite documented case-
+  insensitive behavior), and `best_encoding`'s doc comment incorrectly claimed it checks content-type
+  compressibility when the function doesn't even take that parameter. Both fixed with a regression test
+  for the first. `security-engineer` re-reviewed the fix commit specifically for whether the lowercase
+  change could affect `DEFAULT_COMPRESS_TYPES` matching (it can't — separate code path, confirmed by
+  reading the full function) before the second PASS. Both CodeRabbit threads replied-then-resolved via
+  `gh api` (this session's `coderabbit-reply` skill is written for GitHub MCP tools; a local session with
+  only `gh` CLI used the equivalent raw API calls). One transient CI flake on `macos-latest`
+  ("server did not become ready within 30 seconds" in an unrelated `api_key_second_key_accepted` test)
+  — confirmed unrelated to the diff, passed clean on `gh run rerun --failed`.
+- Migration branch synced and verified green after merge (`cargo build --workspace --features full`).
+  Phase 4 still has 4 open sub-issues (#139 static_files — now unblocked, #140 hotreload+metrics+
+  redirects, #141 middleware+rhai+wasm, #249 conduit-k8s) — not phase-completing yet.
+
+### Реализовано в сессии 2026-08-31 (часть 3 — #338 wire compress_bytes() into metrics/fallback + batch-sizing policy)
+
+- **[PR #339](https://github.com/lopatnov/conduit/pull/339)
+  `fix(compression): wire compress_bytes() into metrics and fallback handlers (#338)`**
+  (squash-merge `c5a327a`, issue #338 CLOSED) — `crates/conduit-compression`'s `compress_bytes()`
+  (extracted in #138 minutes earlier the same day, fully implemented and tested) had never actually
+  been called from the metrics endpoint or fallback responses, despite its own doc comment naming both
+  as intended callers — found by `/cleanup`'s Pass 2 (code-debris audit) right after the #138 extraction
+  landed. Decided to wire it in rather than delete it (the issue left both options open): new
+  `conduit_compression::logic::compress_small_body()` composes the existing `is_compressible_type`/
+  `best_encoding`/`compress_bytes` primitives for a complete in-memory body (4 new unit tests);
+  `MetricsHandler`/`FallbackHandler` resolve `compress_opts`/`accept_enc` in `build_handler()` the same
+  way `StaticFileHandler` already does, and add `Vary: accept-encoding` when compression is applied,
+  matching the static-file convention. Both response types still negotiate independently against the
+  site's `minBytes`/`types` — a small metrics scrape or error body can stay uncompressed exactly as
+  before, just correctly *evaluated* now instead of never evaluated. 4 new integration tests in
+  `tests/compression.rs`, including one that measures the real uncompressed metrics size via a plain
+  request first rather than guessing at the default Prometheus exposition size (avoids a flaky
+  assumption about how large a fresh server's metrics output happens to be).
+  `security-engineer` PASS confirmed no BREACH-style compression-oracle concern (neither body mixes
+  attacker-reflected input with a secret — metrics is server-state gather output, fallback bodies are
+  static config, `Accept` only *selects* a pre-configured rule) and that the auth check in
+  `handle_metrics` still runs before any compression code. 16/16 CI checks green.
+- **Batch-sizing policy generalized** in `.claude/commands/feature-workspace-cycle.md` Step 2 (direct
+  commit to the migration branch, `1a681e9`, no PR — pure process doc) — the user asked for explicit
+  criteria on how many issues to pick up together per firing, scaled by complexity, rather than always
+  taking exactly one. Replaces the narrower 2026-08-22 "batch 2-3 small independent #114 sub-issues"
+  rule with four tiers, now applying to the interleaved bug/gap-issue queue too: **~5-10** for a
+  mechanical/trivial sweep (one-liner fixes, verifiable by reading the diff, none security-sensitive,
+  small total diff — precedent: the 2026-08-30/31 "Block 1" CodeRabbit sweep, 9 findings into 4 PRs);
+  **~3-5** for small independent same-theme leaves needing a real code change + test but no design
+  ambiguity (the original #131 rule, generalized); **exactly 2** for a related pair sharing root cause
+  or code path (precedent: #306+#307 in PR #323); **1, always**, for anything posing an open design
+  question, touching a security-sensitive surface, needing `architect`/`business-analyst`, or being a
+  crate extraction — default to solo when in doubt.
+
+### Реализовано в сессии 2026-08-31/09-01 (Phase 4.2 — #139 `conduit-static`, real terminal-fallback bug found+fixed)
+
+- **[PR #340](https://github.com/lopatnov/conduit/pull/340)
+  `feat(workspace): extract conduit-static crate (#139)`** (squash-merge `d84d5c8`, issue #139
+  CLOSED) — static-file serving (`src/handler/static_files.rs`) and fallback responses
+  (`src/handler/fallback.rs`, folded into the same crate per the issue's own instruction — the two
+  are coupled via `StaticFileHandler` calling into fallback on a miss) moved to
+  `crates/conduit-static`, plus `StaticConfig`/`StaticOptions`/`FallbackConfig`/`FallbackRule`
+  (from `schema.rs`), `resolve_static_roots` (from `router.rs`), and `util::mime`'s content-type
+  detection. New `static` Cargo feature, **default-on** like `compression` (#138) — a plain
+  `cargo build` behaves identically to before this extraction. `mime_guess`/`humantime`/`libc`/
+  `async-compression` all became gated dependencies of the new crate; `httpdate` deliberately
+  stayed unconditional at root (used by `logging.rs`/`response_phase.rs`, unrelated to this scope).
+  Footprint confirmed by CI's own report: `--no-default-features` 16.1MiB/946 deps vs default
+  17.0MiB/984 deps.
+  **Deviation from plan, documented in the new crate's own `lib.rs`**: `conduit-core`'s
+  `util::mime` module (added during the earlier #126 Layer-0 extraction) turned out to be an
+  additional unconditional `mime_guess` edge whose only caller was the code this PR moved —
+  removed entirely from `conduit-core` and folded into `conduit-static::mime` rather than left as
+  dead weight (a narrow, deliberate `conduit-core` API break, per decision #32 — these crates are
+  internal plumbing).
+  **A real bug found and fixed during self-review, not part of the original plan**:
+  `HandlerKind::Fallback` is the universal "nothing else matched" terminal case —
+  `router.rs`/`routes.rs` construct `LocalHandler::Fallback` for *any* unmatched request on *any*
+  site (confirmed via grep — a dozen construction sites), not exclusive to a static-file miss. The
+  initial extraction gated `FallbackHandler`'s construction entirely behind `static`, so
+  `build_handler()` returned `None` for it too when the feature was off — `dispatch_local` treats
+  `None` identically to `HandlerKind::Proxy` ("let Pingora continue"), sending the request to
+  `upstream_peer()` with no real upstream to select (`resolve_peer_addr` correctly rejects
+  `UpstreamTarget::Local(_)`, but only after Pingora has already committed to the proxy path).
+  Every unmatched request on any build excluding `static` would have surfaced as a 502/500 instead
+  of the plain 404 every other disabled feature degrades to. Fixed with a minimal always-on
+  `PlainNotFoundHandler`, matching the `feature_warnings()` wording already shipped ("fallback
+  responses including the site's default 404 will be disabled") instead of contradicting it.
+  `StaticFile`'s own `None`-without-feature arm is unaffected — the router never constructs
+  `LocalHandler::StaticFile` without the feature, so it's genuinely unreachable there.
+  `security-engineer` independently traced the exact failure chain (not just trusting the PR
+  description) and confirmed the fix before PASSing, then re-confirmed after a comment-only
+  follow-up commit (correcting an inaccurate doc comment the review itself prompted).
+  **A second, unrelated pre-existing bug of the same class found in passing** by
+  `security-engineer`: `router.rs::acme_challenge_token()` matches `/.well-known/acme-challenge/*`
+  unconditionally regardless of `--features acme`, so `HandlerKind::AcmeChallenge`'s own
+  `None`-without-`acme` arm has the identical "falls through to a 502 instead of degrading
+  cleanly" problem — filed as [#341](https://github.com/lopatnov/conduit/issues/341), not fixed
+  here (pre-existing, out of scope).
+  **Two CodeRabbit findings, both false positives on verification** — replied with evidence in
+  both threads instead of complying: (1) claimed `mime.rs`'s "only caller" doc comment was stale
+  because `fallback.rs` also references `content_type` — turned out to be a same-named unrelated
+  local parameter, not a call to the `mime::content_type()` function; the doc comment was accurate.
+  (2) claimed the PR violated `CLAUDE.md` decision #22's "router.rs не трогать" — that guideline is
+  scoped specifically to *adding a new load-balancing strategy*, not to any change touching the
+  file; this extraction's `router.rs` edit (a facade-preserving relocation of
+  `resolve_static_roots` plus the minimal `#[cfg]` split its own routing decision needs) is the
+  same shape every other extraction in this migration uses.
+- **Process note**: this firing recovered mid-task from `crate-extractor` hitting its own session
+  rate-limit (429) partway through the extraction (while writing `mime.rs`) — resumed the *same*
+  agent via `SendMessage` once the limit reset (not a fresh spawn) rather than restarting from
+  scratch, since it retained full context of the scaffold already written. Confirms the
+  `workflow.md` "Session budget discipline" note that a same-tier subagent draws from the same
+  usage pool as the conductor and can hit this independently.
+- Migration branch synced (fast-forward, no conflicts) and verified green
+  (`cargo build --workspace`). Phase 4 has 2 open sub-issues left (#140
+  conduit-hotreload/conduit-metrics/conduit-redirects, #141 conduit-middleware/conduit-script-rhai/
+  conduit-plugin-wasm) plus #249 (Phase 4.5, conduit-k8s) — not phase-completing yet.
+
+### Реализовано в сессии 2026-09-01/09-04 (PR #152 backlog sweep — 4 real security/correctness bugs found and fixed on `main`)
+
+- **User flagged that PR #152 (the long-lived Conduit 2.0 tracking PR) had 28 unresolved
+  CodeRabbit/Gitar review threads accumulated since 2026-08-24, plus a SonarCloud "E Security
+  Rating" gate failure.** Confirmed the Sonar failure is the already-documented structural
+  issue (PR-mode "new code" diffs against `main`, where the migration's crates don't exist —
+  see the "Integrity audit log" entries and prior Dependabot-hygiene rows) — not new. Triaged
+  all 28 threads by reading each one fully against *current* code (many were 1-8 days stale)
+  rather than trusting the finding text: found 4 real, independently-verified bugs (3 of them
+  genuine security vulnerabilities), several already-resolved-elsewhere findings (not
+  re-investigated in detail — deferred), and a long tail of legitimate but lower-priority
+  correctness/reliability/mechanical items not yet triaged (deferred to a future firing).
+  Each of the 4 real bugs was found to affect `main` too (not migration-branch-only, since the
+  underlying code predates the crate extraction), so each got its own PR against `main` per
+  Step 1c's routing rule, then the fix was ported by hand into the migration branch's already-
+  extracted crate equivalent when `main` was synced back in (see below).
+  - **[PR #342](https://github.com/lopatnov/conduit/pull/342)
+    `fix(router): stop acme-challenge routing from winning without --features acme`** — 
+    `acme_challenge_token()` matched `/.well-known/acme-challenge/*` unconditionally regardless
+    of the compiled feature; without `acme`, `HandlerKind::AcmeChallenge`'s `None` arm meant
+    `dispatch_local` treated the request as `HandlerKind::Proxy` and sent it to `upstream_peer()`
+    with no real upstream — a 502 instead of the site's own routing. Gated the function itself
+    behind `#[cfg(feature = "acme")]` rather than the call site (Rust `#[cfg]` doesn't attach
+    cleanly to one arm of an `if`/`else if` chain). Found by `security-engineer` while reviewing
+    a *different* PR (#340, conduit-static extraction) — same bug class as that PR's own
+    `PlainNotFoundHandler` fix for `HandlerKind::Fallback`.
+  - **[PR #343](https://github.com/lopatnov/conduit/pull/343)
+    `fix(cors): reject credentials:true without an explicit origins allowlist`** — **real
+    CWE-942 vulnerability**: `credentials: true` with `origins` unset or `["*"]` echoed the
+    request `Origin` back with `Access-Control-Allow-Credentials: true` for *any* origin —
+    credentialed cross-origin requests from arbitrary websites. Fixed with a new
+    `validate_cors()` config-load-time rejection (fail-closed, matching #189's
+    `tls.versions`/`tls.ciphers` precedent) rather than a runtime downgrade. An existing
+    integration test had asserted the vulnerable behavior as *intentional* ("credentials:true
+    without origins list means allow any origin") — a real design gap, not a false positive:
+    the comment correctly described the mechanical CORS-spec workaround (echo instead of
+    wildcard, since browsers reject the literal wildcard+credentials combo) but missed that
+    doing so defeats the entire purpose of the credentials gate. Replaced with a comment
+    pointing at the new rejection-test coverage.
+  - **[PR #344](https://github.com/lopatnov/conduit/pull/344)
+    `fix(forward-auth): strip client-supplied identity headers before injecting auth-service
+    values`** — **real auth-bypass vulnerability**: `forward_auth_inject_response_headers()`
+    only ever *inserted* headers the auth service's response actually returned — a header
+    configured in `forwardAuth.responseHeaders` but omitted by the auth service (anonymous
+    session, misconfiguration) left the upstream trusting whatever value the *client itself*
+    sent under that name (e.g. a forged `X-User-ID: admin`). Fixed by stripping every
+    configured header name from the client request before the insert loop — mirrors
+    `ConsumersGuard::apply`'s existing `X-Consumer-ID` stripping a few hundred lines up in the
+    same file. No existing test exercised `forwardAuth.responseHeaders` end-to-end at all
+    (only config parsing was tested) — likely how this went unnoticed; added 2 new integration
+    tests using a real echo upstream, verified the regression test actually catches the bug via
+    negative control (reverted the fix, watched it fail, restored it, watched it pass).
+  - **[PR #345](https://github.com/lopatnov/conduit/pull/345)
+    `fix(ratelimit): make Redis fixed-window INCR+EXPIRE atomic to close a TTL-leak race`**
+    (2 commits) — **real availability bug** (Gitar finding): `redis_fixed_window_check()`
+    issued `INCR` then a separate `EXPIRE` as two round-trips under a 50ms client-side timeout;
+    a timeout/error landing between them left a key at `count == 1` with no TTL — permanent,
+    since `count == 1` was the only case that ever attempted `EXPIRE`. That key then persisted
+    forever; once later requests pushed its count past the limit, that client was rejected
+    *permanently*, not just for the window — a transient Redis blip silently converting the
+    module's own fail-open design into a permanent fail-closed for that one key. Fixed by
+    replacing the two commands with a single atomic Lua `EVAL` script (requires the `redis`
+    crate's own `script` Cargo feature). A follow-up CodeRabbit finding on the same PR correctly
+    pointed out the atomic script alone doesn't help keys *already* leaked by the old code
+    sitting in production — extended the script so `EXPIRE` also fires whenever `TTL == -1`
+    regardless of count, self-healing a legacy leaked key the next time it's checked. Verified
+    the Lua script directly against a live WSL Redis via `redis-cli` (three cases: leaked key
+    repaired, fresh key unaffected, already-TTL'd key not needlessly refreshed) — the equivalent
+    Rust integration test is correct and present but could not be locally exercised through the
+    Rust `redis` client itself: this environment's WSL2→Windows `127.0.0.1` port-forwarding
+    accepts a raw TCP connect but the `redis` crate's own connection handshake times out over
+    that specific path (confirmed via direct `/dev/tcp` probe succeeding while `ConnectionManager::new`
+    hangs) — an environment quirk, not a code defect; not investigated further given the
+    redis-cli-level proof already available. New note for `wsl_docker_linux_verification.md`.
+  - **Two CodeRabbit findings during this sweep were false positives, not acted on** — a
+    "stale doc comment" claim in `conduit-static`'s `mime.rs` (confused a same-named unrelated
+    local parameter for a function call; the doc comment was accurate) and a "you violated
+    `router.rs` не трогать" claim on PR #340 (that guideline is scoped to *adding a new
+    load-balancing strategy*, not any change to the file). Replied with evidence in both threads
+    instead of complying blindly.
+  - **Migration-branch sync required manual porting, not just a merge.** By the time these 4
+    fixes landed on `main`, the migration branch had already extracted the corresponding
+    modules into `crates/conduit-auth-forward` and `crates/conduit-ratelimit` (Conduit 2.0,
+    #114) — `main`'s `src/filter/chain.rs`/`src/filter/rate_limit_redis.rs` are now just thin
+    facade re-exports on the migration branch, so `git merge origin/main` correctly flagged
+    conflicts rather than silently discarding the fixes. Resolved by keeping the migration
+    branch's facade structure and hand-porting each fix's logic into the real crate file
+    (`crates/conduit-auth-forward/src/guard.rs`, `crates/conduit-ratelimit/src/redis.rs`,
+    including a `burst`-parameter adaptation for the rate-limiter and its own copy of the new
+    regression test) — the CORS fix's `validate_cors()` merged cleanly with no manual porting
+    needed, since `src/config/validate.rs` hadn't been touched by the crate extraction. Got a
+    dedicated confirmatory `security-engineer` PASS on the hand-ported code specifically (not
+    just relying on the original PASSes, since porting is new, never-reviewed code even when
+    faithful) before pushing the merge commit.
+  - **Session spanned a real-world gap**: a `security-engineer` subagent call hit this
+    session's *weekly* usage rate limit (distinct from a daily/context-window limit) mid-review
+    on PR #345 around 2026-09-01; resumed successfully after the reset (~2026-09-04, confirmed
+    via the resumed agent's own tool-call timestamps) via `SendMessage` to the same agent rather
+    than a fresh spawn — same "resume, don't restart" pattern already used for `crate-extractor`
+    hitting a session limit earlier this cycle.
+  - **Remaining backlog from the 28-thread sweep, not yet triaged**: several `conduit-cache`
+    findings (disk.rs blocking-fs-on-async-thread, non-atomic `update_meta` write, unenforced
+    `cache.maxSizeMb` for disk cache, redis.rs stale-TTL-fallback and non-atomic HSET+EXPIRE),
+    a case-sensitive `allowedHosts` comparison bug in `conduit-security-headers`, an integer-
+    overflow risk in `conduit-ratelimit::bucket`'s `limit + burst`, a missing `flush()` before
+    reporting upload success in `conduit-upload`, a SonarCloud cognitive-complexity refactor for
+    `validate_rate_limit`, a flaky-test fix for `tests/upload.rs`, and ~5 `.claude/`-tooling
+    mechanical items (markdown lint, a stale `feature-workspace-cycle.md` self-critique from
+    CodeRabbit). None stealth-fixed; left as open threads on #152 for a future firing to pick up
+    via the interleaved bug-issue queue (Step 2).
+
+### Реализовано в сессии 2026-09-04 (Phase 4.3 — #140 conduit-hotreload/conduit-metrics/conduit-redirects)
+
+- **[PR #347](https://github.com/lopatnov/conduit/pull/347)
+  `feat(workspace): extract conduit-hotreload, conduit-metrics, conduit-redirects (#140)`**
+  (squash-merge `d89d841`, issue #140 CLOSED) — three independent handler-shaped crates, batched
+  into one PR per the issue's own scope, each with a different feature-gating shape resolved
+  against CLAUDE.md decision #31:
+  - **`conduit-hotreload`** — `HotReloadConfig`/`HotReloadOptions` always-compiled; the real
+    SSE/client-JS handler and `notify`-backed file watcher behind a **new, genuinely optional,
+    default-on** `hotreload` Cargo feature (`default = ["compression", "static", "hotreload"]`)
+    — third default-on extraction after `compression`(#138)/`static`(#139), and one of only two
+    (`static` the other) worth gating for real since `notify` was previously an unconditional
+    root dependency. `watcher::build_watch_config`'s signature had to change (iterator of
+    `(Option<&HotReloadConfig>, Option<&StaticConfig>)` pairs instead of `&AppConfig`, since
+    `AppConfig`/`SiteConfig` aren't extracted yet) — the one real design departure from a pure
+    relocation. Proactively applied issue #341's ACME-challenge bug-class fix: `router.rs`'s
+    hot-reload path matchers and `request_phase.rs`'s handler-construction arms are now
+    `#[cfg(feature = "hotreload")]`-gated, so disabling the feature degrades cleanly instead of
+    falling through to a 502. Added a `feature_warnings()` case for `hotReload` — there was none
+    at all pre-extraction.
+  - **`conduit-metrics`** — `MetricsConfig` + the real `/metrics` handler, **no top-level
+    feature** (always-on, matches `conduit-cors`/`conduit-ipfilter`/`conduit-security-headers`/
+    `conduit-redirects`). `ConduitMetrics` itself (the metric-*registration* struct) deliberately
+    stays in the root crate for the future `conduit-runtime`, per the issue's own scope note.
+    Gets its own independent `compression` sub-feature (mirrors `conduit-static`'s) for issue
+    #338's whole-body compression of the Prometheus response.
+  - **`conduit-redirects`** — `RedirectRule` + `RedirectGuard`, also always-on, no new feature.
+  - **Two real pre-existing bugs found and fixed** by CodeRabbit reviewing the relocated files
+    as new code (follow-up commit `fa0c5ff`), neither introduced by the extraction itself: (1)
+    the `notify` watcher callback silently discarded backend errors instead of logging them —
+    now logs via `tracing::error!` before returning; (2) `apply_redirects` appended the source
+    query string *after* a target's `#fragment` instead of before it (`/new#top` + `?x=1`
+    produced `/new#top?x=1`, putting `x=1` in the fragment instead of the query string) — fixed
+    by splitting at `#` first, with the security-engineer's re-review additionally confirming the
+    fix incidentally corrected a latent second bug (the old `location.contains('?')` separator
+    check could false-positive on a `?` appearing only inside a fragment). 2 new regression
+    tests. `security-engineer` PASSed twice (once on the extraction itself, once — resumed via a
+    fresh scoped review, not the same `SendMessage`-continued agent — on the follow-up fix
+    commit, per the "PASS is only valid for the exact head SHA reviewed" rule).
+  - Verification: `build-validator` GREEN across default/`--features full`/
+    `--no-default-features`/`--features hotreload` explicitly; `feature-matrix-runner` 65/65
+    each-feature + 230/230 depth-2 powerset GREEN; `footprint-auditor`'s own default-profile
+    delta (+250KB/+2.9% dep-tree lines) cross-checked directly against the `Cargo.lock` diff
+    rather than trusted at face value — confirmed as pure crate-boundary overhead (zero new
+    third-party dependencies, only 3 new internal workspace-member entries), consistent with
+    this migration's established pattern of not blindly trusting a single subagent's footprint
+    number. Docs synced directly (not delegated — a narrow, mechanical multi-file string fix):
+    `docs/building.md`/`docs/cli.md`/`docs/deployment.md`/`docs/configuration.md`'s stale
+    `default = ["compression", "static"]` literal picked up the new `hotreload` entry in 6
+    places across 4 files. 16/16 CI checks green.
+  - **Process note**: two `feature-matrix-runner`/`footprint-auditor` background agents spawned
+    with `isolation: "worktree"` left their worktrees locked by a still-alive harness PID even
+    after reporting task completion (`git worktree remove` refused with "cannot remove a locked
+    working tree"; `Get-Process` on the lock-holding PID showed it genuinely alive, accumulating
+    CPU time, not a stale zombie) — this blocked checking out `claude/cargo-workspace-features-
+    23qxfr` by name in the main checkout to sync post-merge. Worked around by checking out the
+    merge commit directly in detached HEAD (`git checkout d89d841`, which doesn't contend for
+    the branch ref the way a named checkout does) rather than force-unlocking a possibly-still-
+    live agent's worktree, then pushing this very log update via `git push origin
+    HEAD:claude/cargo-workspace-features-23qxfr` from the detached state. Distinct from the
+    already-logged 2026-08-24 "verification-agent isolation incident" (agents reaching *outside*
+    their worktree via an absolute path) — this is agents whose worktree stayed correctly
+    isolated the whole time, just not released afterward. Worth revisiting whether `/cleanup` or
+    a future firing should treat "worktree still locked well after its owning agent's task
+    notification fired" as a check-worthy condition, rather than assuming a live PID always means
+    genuinely in-progress work.
+
+### Реализовано в сессии 2026-09-05 (SonarCloud MCP access discovered — PR #152's real gate failure found and fixed)
+
+- **User asked whether this session has `mcp__sonarqube__*` MCP access.** It does, and it's a real,
+  working connection — `search_my_sonarqube_projects` immediately resolved the `lopatnov_conduit`
+  project. This is a **separate access path from `WebFetch`/browser access to `sonarcloud.io`**,
+  which stays blocked by this environment's egress proxy exactly as documented — the two had never
+  been distinguished before because no prior session had tried the MCP tools specifically.
+- **Used it to finally check what PR #152's "E Security Rating" gate failure actually was**, instead
+  of continuing to extend the 2026-08-24/08-28 speculation. `get_project_quality_gate_status` showed
+  `new_security_hotspots_reviewed: 100%` — meaning the "the `insecure_decode` hotspot re-flags as new
+  on every crate-move" theory this file spent two sessions building on was simply **wrong**, not just
+  unconfirmed (no hotspot was ever the cause). `search_sonar_issues_in_projects` filtered to
+  `impactSoftwareQualities: ["SECURITY"]` found the real cause directly: 2 issues, both false
+  positives on test-only code — `secrets:S6739` BLOCKER on `crates/conduit-cache/src/redis.rs:418`
+  (a `redact_url` unit test's literal fixture password, added in #331/#330) and `rust:S2612` MAJOR on
+  `crates/conduit-acme/src/flow.rs:544` (`write_secret_file_tightens_permissions_on_overwrite`
+  deliberately sets `0o644` to simulate a stale insecure file before asserting the fix re-tightens it
+  — a test *of* the security control, not a vulnerability). Verified both against the actual code
+  before touching anything, matching this repo's established pattern for the JWT-JWKS and
+  auth-consumers hardcoded-test-secret false positives (#133, #289).
+- **Marked both `falsepositive` via `change_sonar_issue_status`** (user confirmed before each
+  write action, since this was the first-ever use of a new write capability) — one call was blocked
+  by the auto-mode permission classifier for no apparent reason on the first attempt, succeeded
+  cleanly on an identical retry. Re-checked the quality gate afterward rather than assuming success:
+  **`OK` across every metric**, `new_security_rating` 5(E)→1(A). Posted the full explanation as a
+  comment on PR #152 (`gh pr comment`, local session with `gh` CLI).
+- **Corrected the record**: rewrote the stale 2026-08-28 "Re-confirmed" paragraph in the CodeQL
+  triage section above (was actively asserting a wrong root cause as settled fact) and added a note
+  to `.claude/rules/index.md`'s "Known-blocked external endpoints" section — check
+  `ToolSearch select:mcp__sonarqube__search_my_sonarqube_projects` before assuming SonarCloud is
+  unreachable, the same "check, don't assume" discipline already established for GitHub access
+  differing by execution context. Not yet confirmed whether `mcp__sonarqube__*` is available in
+  *every* session type (cloud/Routine-fired sessions included) or just this desktop-app one — worth
+  a future session checking and updating the note if it turns out to be context-dependent, mirroring
+  the GitHub `gh`-CLI-vs-MCP split.
+
+### Реализовано в сессии 2026-09-05 (часть 2 — issue #322, Redis rate limiting extended to route/consumer)
+
+- **[PR #356](https://github.com/lopatnov/conduit/pull/356)
+  `feat(ratelimit): extend Redis-backed rate limiting to route and consumer levels (#322)`**
+  (3 commits, squash-merged `eab085e`, issue #322 CLOSED) — `rateLimit.store: "redis://..."`
+  now works at every level (site already worked; route and consumer were previously accepted
+  and syntax-validated but always enforced in-memory regardless of the value). Each level gets
+  its own Redis key scope so buckets never collide: site uses the site label (unchanged),
+  per-route uses the new `rate_limit::redis_route_scope` → `"route\0{site_label}\0{route_key}"`,
+  per-consumer uses the fixed literal `"consumer"` with the username as the client key (mirrors
+  the in-memory limiter's `\0`-tagged namespaces from #303/#304 — see decision #14). Renamed
+  `RedisRateLimiter::check`'s `site_label` parameter → `scope_label` throughout
+  `crates/conduit-ratelimit/src/redis.rs` since it's no longer site-only.
+  **The real bug this issue was actually about**: `connect_redis_rate_limiter_if_configured`
+  (`src/server/builder.rs`) — the function deciding whether to open a Redis connection at
+  startup — only ever scanned site-level `rate_limit.store`. A config using Redis *only* at
+  route or consumer level would never trigger a connection, so `AppState.redis_rate_limiter`
+  stayed `None` forever and the new route/consumer wiring above would have silently been dead
+  code. New `find_redis_rate_limit_store(config) -> Option<String>` scans site → route → consumer,
+  first match wins (matches the pre-existing single-connection-per-process design — only one
+  Redis URL is ever actually connected, confirmed intentional and now explicitly documented in
+  `docs/configuration.md` rather than left implicit).
+  **Second commit, folded in as a fast-follow before merge** (found by `security-engineer`'s
+  own review, not filed separately): `feature_warnings()`'s Redis-without-`--features redis`
+  warning had the identical site-only scan gap — before #322 that was correct (route/consumer
+  Redis was always a no-op regardless of the compiled feature), but after #322 it needed to
+  cover all three levels too, since an operator now silently loses cross-replica quota
+  enforcement with zero warning if they configure Redis only at route/consumer level on a
+  binary built without the feature. New `site_uses_redis_store()` mirrors `find_redis_rate_limit_store`'s
+  scan (bool instead of URL). Both new-code commits negative-control verified (temporarily
+  reverted to the old site-only scan, confirmed the new route/consumer tests fail with the
+  exact pre-fix symptom, restored, confirmed green) — once by the conductor, once independently
+  by `security-engineer` re-deriving its own negative control rather than trusting the report.
+  **Third commit, docs-only**: both `security-engineer` and `gitar-bot` independently flagged
+  the same nuance — the single-shared-connection design means genuinely different Redis URLs
+  configured across levels silently share whichever one was discovered first, with no warning.
+  Documented explicitly in `docs/configuration.md` rather than changed; the actual enhancement
+  (warn on mismatched URLs, and/or re-scan on hot-reload — `connect_redis_rate_limiter_if_configured`
+  is cold-startup-only, confirmed via full-tree grep to have exactly one call site) filed as
+  [#357](https://github.com/lopatnov/conduit/issues/357) rather than folded in, since it needs
+  its own scope decision (warn-only vs. hot-reconnect) rather than being a mechanical fix.
+  `security-engineer` reviewed and PASSed all three commits individually against each new head
+  SHA in turn (per the "PASS is only valid for the exact SHA reviewed" rule) — resumed the same
+  agent via `SendMessage` for the second and third rounds rather than re-briefing from scratch,
+  since each round only needed to verify an incremental diff against context the agent already
+  had. `docs/configuration.md`'s stale "Redis only takes effect at the site level" paragraph and
+  `schema/conduit.schema.json`'s matching per-field descriptions (route-level `store`,
+  consumer-level `RateLimitConfigInline.store`) both updated to reflect the new reality.
+  16/16 CI checks green (Footprint report is informational-only, not a merge gate).
+
+### Реализовано в сессии 2026-09-05 (часть 3 — fast-follow reflex check + issue #357)
+
+- **`fast-follow` GitHub label + `/fast-follow-check` command** — added at the user's
+  explicit request, after noticing #357 had nothing making sure it would get picked up
+  soon instead of aging in the general backlog. New `.claude/commands/fast-follow-check.md`
+  (pointer added to `.claude/rules/index.md`) checks `gh issue list --label fast-follow
+  --state open` before picking the next batch of work — surfaces such issues, deliberately
+  does **not** force-bundle them into whatever PR spawned them (that's exactly the
+  premature scope creep the label exists to avoid for design-judgment follow-ups). No
+  separate log file, unlike `/dependabot-hygiene` — GitHub's own issue/label state already
+  is the log. Labeled #357 as the first instance; later also labeled #358 and #360 (both
+  spawned from #357's own review) the same way.
+- **[PR #359](https://github.com/lopatnov/conduit/pull/359)
+  `fix(validate): warn when Redis rate-limit stores mismatch across levels (#357)`**
+  (3 commits, squash-merged `2a39702`, issue #357 CLOSED) — user picked "warn + hot-reload,
+  both" when asked to scope #357; this PR is the warn-only half. New
+  `check_redis_store_consistency` in `validate()`: collects every distinct
+  `redis://`/`rediss://` URL configured anywhere in the config (site → route → consumer,
+  across all sites) via `collect_redis_stores`, and if more than one is found, emits a
+  `Severity::Warning` naming which URL actually wins (mirrors
+  `find_redis_rate_limit_store`'s exact scan order from #322/#356) and which are silently
+  ignored — advisory, logged via the same `partition_by_severity` pipeline already
+  established for the near-expiry-cert warning (#191/#253).
+  **Three review rounds, two real findings fixed, one corrected mid-review**:
+  - Round 1 (`9b8c6ab`) **HOLD**: the warning message interpolated raw configured Redis
+    URLs verbatim — a `redis://user:pass@host` URL (realistic, since this codebase's `$VAR`
+    secret interpolation has no URL-encoding step) would leak credentials into
+    `tracing::warn!`'s persistent log output. Fixed (`62f076e`) with a local `redact_url`
+    deliberately duplicated from `crates/conduit-cache/src/redis.rs`'s existing helper
+    (#330/#331) rather than shared/promoted — that one is private to the cache crate, and
+    this is config-validation's only Redis-URL log sink, matching the established
+    small-helper-per-module pattern (`is_redis_store` is already duplicated the same way
+    across 3 files). PASSed.
+  - CodeRabbit then reviewed (unusually — normally skips PRs against this non-default base
+    branch, but completed a full review this time) and found two more things: a **real**
+    Major finding (`validate_rate_limit` only checks the `redis://`/`rediss://` prefix on
+    `store`, not for embedded control characters — a raw newline could forge a fake log
+    line in the new warning's output) and a claimed miss (`collect_redis_stores` doesn't
+    scan a `site.routes[*].proxy.rateLimit.store` — replied that `SiteConfig` has no
+    `routes` field, believed at the time to be a false positive).
+  - Fixed the real finding (`f2c1a16`) by piping each redacted URL through this file's
+    existing `sanitize_for_log()` (already used for the identical concern elsewhere in the
+    same file, e.g. proxy-loop target names) before interpolating — negative-control
+    verified both times (once by the conductor, once independently re-derived by
+    `security-engineer`, each confirming the pre-fix code visibly leaks/forges the exact
+    text the fix is meant to stop).
+  - **The "false positive" reply was itself wrong** — caught by `security-engineer`'s
+    round-3 re-review, not before posting. `SiteConfig` **does** have
+    `routes: Option<Vec<RouteConfig>>` (Phase 3.6 advanced routing) — a mechanism entirely
+    separate from `proxy: Option<ProxyConfig>`, resolved through
+    `src/proxy/routes.rs::match_routes`, and each `RouteConfig.proxy` can carry its own
+    `rate_limit`. Corrected the reply on the PR thread with the accurate reasoning after
+    independently re-verifying: not just `collect_redis_stores` misses it —
+    `src/proxy/router.rs::find_route_rate_limit` (the function that actually *enforces* a
+    route's rate limit at runtime) has the identical blind spot, and `routes.rs` has zero
+    rate-limit handling of its own at all (grepped, no matches). So a `rateLimit`
+    configured under `site.routes[*].proxy.rateLimit` — Redis-backed or not — is validated
+    but never enforced for any request resolved via `site.routes[]`, independent of
+    anything in #357/#359. Filed as [#360](https://github.com/lopatnov/conduit/issues/360)
+    (tagged `fast-follow`) rather than patched piecemeal, since fixing only the warning's
+    scan (as the original finding suggested) while leaving the real enforcement gap in
+    place would be worse — a false "fully covered by validation" signal.
+  - Split the hot-reload half of #357 out as
+    [#358](https://github.com/lopatnov/conduit/issues/358) (tagged `fast-follow`) per the
+    user's "do both, as two PRs" scoping decision — `connect_redis_rate_limiter_if_configured`
+    runs exactly once at `AppState` construction (confirmed via full-tree grep, one call
+    site), never re-invoked on `/reload` or a live-provider update; needs its own design
+    call on re-scan semantics, not a mechanical fix.
+  - `docs/configuration.md` updated with the new check; 5 unit tests (later 7, after the
+    two review-driven additions) all negative-control verified. 16/16 CI checks green.
+- **Process note**: hit the now-familiar worktree-left-locked-after-agent-completion
+  pattern twice in a row finishing this PR (`git worktree remove` needed on two
+  already-finished `security-engineer` review worktrees before `gh pr merge
+  --delete-branch` could switch the local checkout back to the migration branch) — same
+  class as the 2026-09-04 Phase 4.3 entry above, not a new issue, just recurring often
+  enough to be worth normalizing as a routine post-merge step rather than a surprise each
+  time.
+
+---
+
+## Session rotation log
+
+> **Policy retired 2026-08-29** (`/retro`, user decision) — periodic full rotation didn't
+> save anything for this routine's daily cadence and had a real tool-access bug; see
+> `.claude/rules/index.md` "Session rotation retired" and `feature-workspace-cycle.md`
+> Step 0a for what replaced it. Full history in `.claude/logs/session-rotation.md`
+> (split out 2026-08-28) — kept for the record, no new rows expected under the old policy.
+
+| Date | Old session | New session | ~Firings since last rotation | Reason |
+|---|---|---|---|---|
+| 2026-08-28 ~22:10 UTC (handoff completion, prompted by the user directly) | `session_01DmUkKXPvj2xAEvRdCTux3G` (GitHub-tool-less, never ran the cycle) | `session_01WhHVM9QyJDcadMX6fQtdXd` | (continuation, not a new rotation — this is the user creating the replacement the previous row asked for) | User created this session directly (via the desktop app, not `create_session`) specifically to become the cycle's new home, confirming the pattern from the row above: `mcp__github__get_me` succeeds immediately here, `ListConnectors`/repo-scope tools all present. This session repointed the Routine itself — created `trig_01Ehd6ceyaWxB6aytQwuydsp` (identical `cron_expression` `0 1 * * *` and `prompt` `/feature-workspace-cycle`) with `persistent_session_id` set to itself, then deleted the stranded `trig_01HGENoJ5nioWvWzbtCBL9Js`. **One caveat surfaced by `create_trigger`'s own response**: it warned "this trigger stores no MCP connectors, so the sessions it fires will run without connector tools" — worth double-checking at the very next firing (2026-08-29 01:0x UTC) that `mcp__github__*` tools are still present, since the warning's wording doesn't distinguish self-bind/persistent-session firings (which just resume this already-configured session — expected fine) from the fresh-session case the warning seems aimed at. If the next firing *does* come up without GitHub tools, that would mean even a same-session Routine firing can drop them, which is a materially different (and worse) finding than anything logged in the rows above — flag it loudly if so. No code/process change was needed beyond what `session-rotate.md` already had (see `c6804b7`) — this row is purely confirming the fix works end-to-end. |
+

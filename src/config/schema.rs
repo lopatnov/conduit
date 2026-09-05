@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-pub const CONFIG_VERSION: u32 = 1;
+pub use conduit_config_core::parse::CONFIG_VERSION;
 
 // ── Top-level entry point ──────────────────────────────────────────────────
 
@@ -60,24 +60,11 @@ pub struct GlobalConfig {
 ///
 /// Requires `--features otlp`.  When the `otlp` feature is disabled the
 /// config field is still accepted (parsed without error) but silently ignored.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct OtlpConfig {
-    /// OTLP gRPC endpoint.  Examples:
-    /// - `"http://localhost:4317"` (local collector)
-    /// - `"https://api.honeycomb.io:443"` (Honeycomb)
-    pub endpoint: String,
-    /// Service name reported in traces.  Defaults to `"conduit"`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_name: Option<String>,
-    /// Fraction of traces to export (0.0 = none, 1.0 = all).
-    /// Defaults to `1.0` (100 %).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sample_rate: Option<f64>,
-    /// Export timeout in milliseconds.  Defaults to `5000`.
-    #[serde(rename = "timeoutMs", skip_serializing_if = "Option::is_none")]
-    pub timeout_ms: Option<u64>,
-}
+///
+/// Extracted into `crates/conduit-otlp` (issue #114/#129) — this is a facade
+/// re-export so `crate::config::schema::OtlpConfig` keeps resolving to the
+/// same type at the same location for every existing call site/test.
+pub use conduit_otlp::OtlpConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -308,6 +295,14 @@ pub struct SiteConfig {
     #[serde(rename = "responseTransform", skip_serializing_if = "Option::is_none")]
     pub response_transform: Option<HeaderTransformConfig>,
     // Phase 5 (optional): pub cgi: Option<CgiConfig>,
+    /// Catches any top-level JSON/YAML key that doesn't match a named field
+    /// above — either a typo, or (once schema fields become `#[cfg]`-gated
+    /// per feature during the Conduit 2.0 workspace migration, #114) a key
+    /// belonging to a feature this binary wasn't compiled with. Never
+    /// populated by well-formed configs against the current, always-present
+    /// field set; see `validate::feature_warnings()` for how it's surfaced.
+    #[serde(flatten)]
+    pub extra: IndexMap<String, serde_json::Value>,
 }
 
 // ── TLS ────────────────────────────────────────────────────────────────────
@@ -361,17 +356,9 @@ pub struct TlsClientAuth {
     pub optional: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct AcmeConfig {
-    pub email: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub directory: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub storage: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub challenge: Option<String>,
-}
+// Extracted into crates/conduit-acme (#114/#130) — always compiled (like
+// `conduit_otlp::OtlpConfig`) so `tls.acme` stays parseable in every build.
+pub use conduit_acme::AcmeConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -449,42 +436,13 @@ pub struct LoggingOptions {
 
 // ── Compression ────────────────────────────────────────────────────────────
 
+/// Extracted into `crates/conduit-compression` (issue #114/#138) — this is a
+/// facade re-export so `crate::config::schema::{CompressionConfig,
+/// CompressionOptions}` keep resolving to the same types at the same
+/// location for every existing call site/test.
+///
 /// `false` | `true` | `{ "algorithms": ["br", "gzip"], "level": 6, "minBytes": 1024 }`
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum CompressionConfig {
-    Enabled(bool),
-    Options(CompressionOptions),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct CompressionOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub algorithms: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub level: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_bytes: Option<u64>,
-    /// Content-Type patterns to compress.
-    ///
-    /// **nginx `gzip_types` pattern.**  Only responses whose `Content-Type` matches
-    /// one of these prefixes are compressed.  Compressing binary content (images,
-    /// video, PDFs, already-compressed archives) wastes CPU and often increases
-    /// the response size.
-    ///
-    /// Default: `["text/", "application/json", "application/xml",
-    ///            "application/javascript", "application/xhtml", "image/svg"]`
-    ///
-    /// Set `["*"]` or `[""]` to compress all content types (not recommended).
-    ///
-    /// ```json
-    /// { "algorithms": ["br", "gzip"],
-    ///   "types": ["text/html", "text/css", "application/json"] }
-    /// ```
-    #[serde(rename = "types", skip_serializing_if = "Option::is_none")]
-    pub types: Option<Vec<String>>,
-}
+pub use conduit_compression::{CompressionConfig, CompressionOptions};
 
 // ── Response time ──────────────────────────────────────────────────────────
 
@@ -505,92 +463,35 @@ pub struct ResponseTimeOptions {
 
 // ── Security headers ───────────────────────────────────────────────────────
 
-/// `false` | `true` | `{ "hstsMaxAgeSecs": 31536000, ... }`
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum SecurityHeadersConfig {
-    Enabled(bool),
-    Options(SecurityHeadersOptions),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct SecurityHeadersOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hsts_max_age_secs: Option<u64>,
-    /// Add `includeSubDomains` to the HSTS header (default: `true` when `hstsMaxAgeSecs` is set).
-    #[serde(
-        rename = "hstsIncludeSubDomains",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub hsts_include_subdomains: Option<bool>,
-    /// Add `preload` directive to the HSTS header for submission to the preload list.
-    #[serde(rename = "hstsPreload", skip_serializing_if = "Option::is_none")]
-    pub hsts_preload: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub csp: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub x_frame_options: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub referrer_policy: Option<String>,
-    /// `Permissions-Policy` header value controlling browser feature access.
-    ///
-    /// Replaces the deprecated `Feature-Policy` header.  Example:
-    /// `"geolocation=(), microphone=(), camera=()"` — deny all device access.
-    #[serde(rename = "permissionsPolicy", skip_serializing_if = "Option::is_none")]
-    pub permissions_policy: Option<String>,
-    /// List of allowed `Host` header values.
-    ///
-    /// When set, requests with a `Host` not in this list are rejected with
-    /// `400 Bad Request`.  Protects against HTTP Host header injection attacks
-    /// where an application generates absolute URLs from an untrusted `Host`.
-    ///
-    /// Pattern from traefik `AllowedHosts`.  Use `*` to allow any host.
-    #[serde(rename = "allowedHosts", skip_serializing_if = "Option::is_none")]
-    pub allowed_hosts: Option<Vec<String>>,
-}
+/// Extracted into `crates/conduit-security-headers` (issue #114/#136) — this
+/// is a facade re-export so `crate::config::schema::SecurityHeadersConfig`
+/// keeps resolving to the same type at the same location for every existing
+/// call site/test.
+pub use conduit_security_headers::SecurityHeadersConfig;
+/// Extracted into `crates/conduit-security-headers` (issue #114/#136) — see
+/// the [`SecurityHeadersConfig`] re-export above.
+pub use conduit_security_headers::SecurityHeadersOptions;
 
 // ── CORS ───────────────────────────────────────────────────────────────────
 
-/// `false` | `true` | `{ "origins": [...], "methods": [...] }`
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum CorsConfig {
-    Enabled(bool),
-    Options(CorsOptions),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct CorsOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub origins: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub methods: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_headers: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub credentials: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_age_secs: Option<u64>,
-}
+/// Extracted into `crates/conduit-cors` (issue #114/#136) — this is a facade
+/// re-export so `crate::config::schema::CorsConfig` keeps resolving to the
+/// same type at the same location for every existing call site/test.
+pub use conduit_cors::CorsConfig;
+/// Extracted into `crates/conduit-cors` (issue #114/#136) — see the
+/// [`CorsConfig`] re-export above.
+pub use conduit_cors::CorsOptions;
 
 // ── Hot reload ─────────────────────────────────────────────────────────────
 
-/// `false` | `true` | `{ "extensions": [".html", ".css"] }`
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum HotReloadConfig {
-    Enabled(bool),
-    Options(HotReloadOptions),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct HotReloadOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub extensions: Option<Vec<String>>,
-}
+/// Extracted into `crates/conduit-hotreload` (issue #114/#140) — this is a
+/// facade re-export so `crate::config::schema::{HotReloadConfig,
+/// HotReloadOptions}` keep resolving to the same types at the same location
+/// for every existing call site/test.
+pub use conduit_hotreload::HotReloadConfig;
+/// Extracted into `crates/conduit-hotreload` (issue #114/#140) — see the
+/// [`HotReloadConfig`] re-export above.
+pub use conduit_hotreload::HotReloadOptions;
 
 // ── Health check (site-level endpoint) ────────────────────────────────────
 
@@ -613,46 +514,13 @@ pub struct HealthCheckOptions {
 
 // ── Auth & rate limiting ───────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct RateLimitConfig {
-    pub window_secs: u64,
-    pub limit: u64,
-    /// Optional burst capacity on top of `limit`.
-    ///
-    /// The token bucket starts with `limit + burst` tokens and refills at
-    /// `limit / windowSecs` per second.  This allows short traffic spikes up to
-    /// `limit + burst` requests without being rate-limited, while the sustained
-    /// throughput is still capped at `limit / windowSecs` requests per second.
-    ///
-    /// Example: `limit: 60, windowSecs: 60, burst: 20` → allows up to 80 requests
-    /// in a burst, sustained at 1 req/s.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub burst: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub algorithm: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key_by: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub skip_paths: Option<Vec<String>>,
-    /// Backend store for the rate limiter.
-    ///
-    /// - `"memory"` (default) — in-process `DashMap<String, TokenBucket>`.
-    /// - `"redis://host:port"` — Redis-backed, with automatic failover to the
-    ///   in-memory bucket when Redis is unavailable.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub store: Option<String>,
-    /// Dry-run mode — log violations but allow requests through.
-    ///
-    /// **nginx `limit_req_dry_run` pattern.**  When `true`, requests that would
-    /// normally be rejected with `429 Too Many Requests` are logged as warnings
-    /// instead and forwarded to the upstream.  Useful for testing rate-limit
-    /// configuration in production without impacting real traffic.
-    ///
-    /// Default: `false` (enforcement active).
-    #[serde(rename = "dryRun", skip_serializing_if = "Option::is_none")]
-    pub dry_run: Option<bool>,
-}
+/// Rate-limit config — moved to `crates/conduit-ratelimit` (issue #114/#137,
+/// slice 1), re-exported here so every existing `crate::config::schema::
+/// RateLimitConfig` path keeps resolving. Shared, byte-identical shape with
+/// `conduit_auth_consumers::RateLimitConfig` — as of #137 slice 1 they're the
+/// *same* type, not just field-compatible duplicates (issue #114/#134's
+/// SonarCloud duplication finding is resolved by this re-export).
+pub use conduit_ratelimit::RateLimitConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -678,228 +546,62 @@ pub struct ApiKeyConfig {
 
 // ── Consumer model ─────────────────────────────────────────────────────────
 
-/// Named-consumer authentication: credentials and per-consumer policies stored
-/// per-consumer rather than per-route.
+/// Extracted into `crates/conduit-auth-consumers` (issue #114/#134) — this
+/// is a facade re-export so `crate::config::schema::{ConsumersConfig,
+/// ConsumersSharedJwtConfig, Consumer, ConsumerBasicAuth, ConsumerJwtConfig}`
+/// keep resolving to the same types at the same location for every existing
+/// call site/test.
 ///
-/// When a request matches a consumer's credentials:
+/// Named-consumer authentication: credentials and per-consumer policies
+/// stored per-consumer rather than per-route. When a request matches a
+/// consumer's credentials:
 /// 1. The consumer's username is injected as `X-Consumer-ID` (or `idHeader`)
 ///    into the upstream request.
 /// 2. Any per-consumer `headers` are also injected.
 /// 3. Per-consumer `rateLimit` is applied (independent of the site rate limit).
 ///
 /// Requests that don't match any consumer receive 401 Unauthorized.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ConsumersConfig {
-    /// The list of named consumers (evaluated in order; first match wins).
-    #[serde(default)]
-    pub consumers: Vec<Consumer>,
-    /// Header name used to inject the consumer's username into the upstream
-    /// request.  Defaults to `"x-consumer-id"`.
-    #[serde(rename = "idHeader", skip_serializing_if = "Option::is_none")]
-    pub id_header: Option<String>,
-    /// Header name used to read the API key from the request.
-    /// Defaults to `"x-api-key"`.  Only relevant for consumers that use
-    /// `apiKey` credentials.
-    #[serde(rename = "apiKeyHeader", skip_serializing_if = "Option::is_none")]
-    pub api_key_header: Option<String>,
-    /// Paths that bypass consumers authentication entirely.
-    /// Same glob syntax as `basicAuth.skipPaths`.
-    #[serde(rename = "skipPaths", skip_serializing_if = "Option::is_none")]
-    pub skip_paths: Option<Vec<String>>,
-    /// Shared JWT configuration for V3 consumer identification.
-    ///
-    /// When set, the Bearer token is validated once against the shared
-    /// JWKS / secret, and the consumer is identified by matching the
-    /// configured `usernameClaim` (default: `"sub"`) against
-    /// `consumer.username`.
-    ///
-    /// This is the canonical Auth0 / Cognito / Keycloak pattern: the identity
-    /// provider issues tokens with `sub = user-id`, and consumers are the list
-    /// of allowed user IDs with per-user policies.
-    ///
-    /// Checked **before** per-consumer credentials (api_key / basicAuth / jwt).
-    ///
-    /// ```yaml
-    /// consumers:
-    ///   sharedJwt:
-    ///     jwksUrl: "https://auth0.example.com/.well-known/jwks.json"
-    ///     audience: ["my-api"]
-    ///     issuer:   "https://auth0.example.com"
-    ///   consumers:
-    ///     - username: user-abc   # identified when jwt.sub == "user-abc"
-    /// ```
-    #[serde(rename = "sharedJwt", skip_serializing_if = "Option::is_none")]
-    pub shared_jwt: Option<ConsumersSharedJwtConfig>,
-}
-
-/// Shared JWT configuration for V3 consumer identification.
 ///
-/// All consumers in the list share one JWKS endpoint (or HS256 secret).
-/// After token validation the `usernameClaim` value is matched against
-/// `consumer.username` to determine which consumer made the request.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ConsumersSharedJwtConfig {
-    /// Remote JWKS URL for RS256 / ES256 tokens.  Mutually exclusive with `secret`.
-    #[serde(rename = "jwksUrl", skip_serializing_if = "Option::is_none")]
-    pub jwks_url: Option<String>,
-    /// HS256 shared secret.  Mutually exclusive with `jwks_url`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secret: Option<String>,
-    /// Expected `aud` claim values.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audience: Option<Vec<String>>,
-    /// Expected `iss` claim value.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub issuer: Option<String>,
-    /// JWT claim whose value is matched against `consumer.username`.
-    ///
-    /// Defaults to `"sub"` (the standard subject claim).  Use a different
-    /// claim name when the identity provider stores the user identifier
-    /// in a non-standard field (e.g., `"email"`, `"preferred_username"`).
-    #[serde(rename = "usernameClaim", skip_serializing_if = "Option::is_none")]
-    pub username_claim: Option<String>,
-}
-
-/// A single named API consumer — a client with its own credentials and limits.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Consumer {
-    /// Unique name injected as `X-Consumer-ID` after identification.
-    pub username: String,
-    /// API key credential.  The consumer is identified when the request
-    /// carries this value in the `apiKeyHeader` (default: `x-api-key`).
-    #[serde(rename = "apiKey", skip_serializing_if = "Option::is_none")]
-    pub api_key: Option<String>,
-    /// HTTP Basic Auth credential.  The consumer is identified when the
-    /// request carries `Authorization: Basic <base64(username:password)>` where
-    /// the username matches `Consumer.username` and the password matches this.
-    #[serde(rename = "basicAuth", skip_serializing_if = "Option::is_none")]
-    pub basic_auth: Option<ConsumerBasicAuth>,
-    /// JWT bearer-token credential (V2).
-    ///
-    /// The consumer is identified when the request carries a valid
-    /// `Authorization: Bearer <token>` whose signature and claims are accepted
-    /// by the configured secret / JWKS endpoint.
-    ///
-    /// Unlike `jwtAuth` at site level, this credential is checked
-    /// independently inside `ConsumersGuard` — no separate `jwtAuth` block is
-    /// required.
-    ///
-    /// ```yaml
-    /// - username: service-a
-    ///   jwt:
-    ///     secret: "$SERVICE_A_SECRET"
-    ///     issuer:  "https://auth.example.com"
-    /// ```
-    #[serde(rename = "jwt", skip_serializing_if = "Option::is_none")]
-    pub jwt: Option<ConsumerJwtConfig>,
-    /// Per-consumer rate limit, evaluated after identification.
-    /// Independent of the site-level `rateLimit`.
-    /// Key: `"consumer:{username}"` (global across all IPs for this consumer).
-    #[serde(rename = "rateLimit", skip_serializing_if = "Option::is_none")]
-    pub rate_limit: Option<RateLimitConfig>,
-    /// Additional request headers to inject into the upstream request for this
-    /// consumer (e.g., `X-Tier: premium`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub headers: Option<IndexMap<String, String>>,
-}
-
-/// Basic Auth password for a `Consumer`.  The username comes from
-/// `Consumer.username`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ConsumerBasicAuth {
-    pub password: String,
-}
-
-/// JWT credential for a `Consumer`.
-///
-/// A simplified subset of [`JwtAuthConfig`] without `skip_paths` or
-/// `jwks_refresh_secs` — those concerns belong to the site-level JWT guard,
-/// not to the per-consumer credential.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ConsumerJwtConfig {
-    /// HMAC-SHA256 secret for HS256 tokens.  Mutually exclusive with `jwks_url`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secret: Option<String>,
-    /// Remote JWKS URL for RS256 / ES256 tokens.  Mutually exclusive with `secret`.
-    #[serde(rename = "jwksUrl", skip_serializing_if = "Option::is_none")]
-    pub jwks_url: Option<String>,
-    /// Expected `aud` claim values.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audience: Option<Vec<String>>,
-    /// Expected `iss` claim value.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub issuer: Option<String>,
-}
+/// **Note:** unlike every sibling facade in this file, `ConsumersGuard`
+/// itself is *not* re-exported here — it stays in this crate's own
+/// `src/filter/chain.rs` (see `conduit_auth_consumers`'s own `src/lib.rs`
+/// doc comment for why: `ConsumersGuard` is a `Session`-coupled request-chain
+/// guard, same category as `IpGuard`/`CorsPreflight` staying out of their
+/// own Layer-0 crates — chain assembly and guard ordering stay in the root
+/// crate per `CLAUDE.md` decision #20, regardless of where the *types* it
+/// carries live. As of #114/#137 slice 1, `RateLimiter` itself now lives in
+/// `conduit-ratelimit`, re-exported via `crate::filter::rate_limit`). Only
+/// the config types and the pure `identify::identify_consumer`
+/// identification logic moved to `conduit-auth-consumers`.
+pub use conduit_auth_consumers::{
+    Consumer, ConsumerBasicAuth, ConsumerJwtConfig, ConsumersConfig, ConsumersSharedJwtConfig,
+};
 
 // ── JWT auth ───────────────────────────────────────────────────────────────
 
 /// JWT bearer-token validation configuration.
 ///
 /// At least one of `secret` or `jwks_url` must be present.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct JwtAuthConfig {
-    /// HMAC-SHA256 secret for HS256-signed tokens.  Mutually exclusive with
-    /// `jwks_url`.  Stored as a plain string (use `$ENV_VAR` for security).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secret: Option<String>,
-    /// Remote JWKS URL for RS256 / ES256 tokens (e.g. Auth0, Google, Cognito).
-    /// Keys are fetched at startup and refreshed every `jwksRefreshSecs` seconds.
-    #[serde(rename = "jwksUrl", skip_serializing_if = "Option::is_none")]
-    pub jwks_url: Option<String>,
-    /// How often to re-fetch the JWKS (seconds).  Default: 3600 (1 hour).
-    #[serde(rename = "jwksRefreshSecs", skip_serializing_if = "Option::is_none")]
-    pub jwks_refresh_secs: Option<u64>,
-    /// Expected `aud` claim.  When set, tokens with a different audience are
-    /// rejected.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audience: Option<Vec<String>>,
-    /// Expected `iss` claim.  When set, tokens from a different issuer are
-    /// rejected.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub issuer: Option<String>,
-    /// Paths that bypass JWT validation (same glob syntax as `basicAuth.skipPaths`).
-    #[serde(rename = "skipPaths", skip_serializing_if = "Option::is_none")]
-    pub skip_paths: Option<Vec<String>>,
-}
+///
+/// Extracted into `crates/conduit-auth-jwt` (issue #114/#133) — this is a
+/// facade re-export so `crate::config::schema::JwtAuthConfig` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test.
+pub use conduit_auth_jwt::JwtAuthConfig;
 
 // ── Forward Auth ──────────────────────────────────────────────────────────
 
-/// External authentication service integration.
+/// Extracted into `crates/conduit-auth-forward` (issue #114/#134) — this is
+/// a facade re-export so `crate::config::schema::ForwardAuthConfig` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test.
 ///
-/// The request is forwarded to the auth URL before reaching the upstream.
-/// The auth service communicates its decision via HTTP status:
+/// External authentication service integration. The request is forwarded to
+/// the auth URL before reaching the upstream. The auth service communicates
+/// its decision via HTTP status:
 /// - 2xx → allow; copy `responseHeaders` to upstream request
 /// - 4xx / 5xx → deny; return the auth service's status to the client
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ForwardAuthConfig {
-    /// URL of the authentication/authorization service.
-    pub url: String,
-    /// Request headers to forward to the auth service.
-    ///
-    /// When absent or empty, only `X-Forwarded-For`, `X-Forwarded-Method`,
-    /// and `X-Forwarded-Uri` are sent.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_headers: Option<Vec<String>>,
-    /// Auth service response headers to inject into the upstream request.
-    ///
-    /// For example: `["X-User-ID", "X-Role"]`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_headers: Option<Vec<String>>,
-    /// Maximum time to wait for the auth service in milliseconds.
-    /// Default: 5000 ms.
-    #[serde(rename = "timeoutMs", skip_serializing_if = "Option::is_none")]
-    pub timeout_ms: Option<u64>,
-    /// Paths that bypass forward-auth entirely (same glob syntax as `skipPaths`).
-    #[serde(rename = "skipPaths", skip_serializing_if = "Option::is_none")]
-    pub skip_paths: Option<Vec<String>>,
-}
+pub use conduit_auth_forward::ForwardAuthConfig;
 
 // ── Header transform ───────────────────────────────────────────────────────
 
@@ -920,154 +622,27 @@ pub struct HeaderTransformConfig {
 
 // ── IP filter ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct IpFilterConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allow: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deny: Option<Vec<String>>,
-    /// When `true`, read the client IP from `X-Forwarded-For` instead of the
-    /// TCP connection address.  Only enable when Conduit is behind a trusted
-    /// reverse proxy that sets this header.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trust_proxy: Option<bool>,
-    /// Dry-run mode — log blocked IPs but allow requests through.
-    ///
-    /// **nginx `ngx_http_limit_conn_module` dry_run pattern.**  When `true`,
-    /// requests from denied IPs (or outside the allowlist) are logged as warnings
-    /// but forwarded.  Safe rollout: enable dry-run first, review logs, then
-    /// disable dry-run to enforce.
-    #[serde(rename = "dryRun", skip_serializing_if = "Option::is_none")]
-    pub dry_run: Option<bool>,
-}
+/// Extracted into `crates/conduit-ipfilter` (issue #114/#136) — this is a
+/// facade re-export so `crate::config::schema::IpFilterConfig` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test.
+pub use conduit_ipfilter::IpFilterConfig;
 
 // ── Request limits ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct LimitsConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_body_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_header_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timeout_secs: Option<u64>,
-    /// Maximum concurrent requests to this site.  When the number of in-flight
-    /// requests reaches this limit, new requests receive `503 Service Unavailable`
-    /// immediately rather than queuing.  Defaults to unlimited.
-    #[serde(
-        rename = "maxInflightRequests",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub max_inflight_requests: Option<u64>,
-    /// Maximum request body size to buffer for retry replay (bytes).
-    ///
-    /// When a route has `retry` configured, Conduit buffers the request body
-    /// up to this limit so it can be replayed on a retry attempt.  If the
-    /// body exceeds this limit, retries are still attempted but without body
-    /// replay (safe only for GET/HEAD which have no body in practice).
-    ///
-    /// Defaults to 1 MiB (1_048_576 bytes).  Set to 0 to disable buffering.
-    #[serde(rename = "maxBodyBufferBytes", skip_serializing_if = "Option::is_none")]
-    pub max_body_buffer_bytes: Option<u64>,
-    /// Maximum number of requests served over a single keepalive connection.
-    ///
-    /// After this many requests the connection is closed and per-connection
-    /// memory is reclaimed.  `None` means unlimited (default Pingora behaviour).
-    ///
-    /// Equivalent to nginx's `keepalive_requests`.
-    #[serde(
-        rename = "keepaliveRequestLimit",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub keepalive_request_limit: Option<u32>,
-    /// Inflight load fraction at which low-priority routes are shed (0.0–1.0).
-    ///
-    /// Requires `maxInflightRequests` to be set.  When
-    /// `inflight / maxInflightRequests ≥ priorityThreshold`, requests whose
-    /// effective priority (from `proxy.*.priority` or the `X-Priority` header)
-    /// is below 50 are rejected with `503 Load Shedding`.  Requests with no
-    /// explicit priority or priority ≥ 50 are always forwarded.
-    ///
-    /// Example: `maxInflightRequests: 1000, priorityThreshold: 0.8` →
-    /// at 800+ concurrent requests, low-priority routes are shed.
-    ///
-    /// Defaults to `0.8` when `maxInflightRequests` is set and any route
-    /// configures a `priority`.
-    #[serde(rename = "priorityThreshold", skip_serializing_if = "Option::is_none")]
-    pub priority_threshold: Option<f64>,
-    /// Maximum concurrent in-flight requests from a single client IP.
-    ///
-    /// **nginx `limit_conn` pattern.**  Unlike `rateLimit` (requests per second),
-    /// this limits the number of *simultaneous* open requests from the same IP.
-    /// Protects against connection-flooding attacks that bypass per-second rate
-    /// limits by opening many slow/hung connections at once.
-    ///
-    /// When the limit is reached, new requests from that IP receive `429 Too Many
-    /// Requests` until an existing connection completes.  The counter is incremented
-    /// at request entry and decremented in the `logging()` hook.
-    ///
-    /// Uses the same IP-trust logic as `ipFilter.trustProxy`.
-    ///
-    /// Default: unlimited (`None`).
-    ///
-    /// ```json
-    /// { "maxConnectionsPerIp": 20 }
-    /// ```
-    #[serde(
-        rename = "maxConnectionsPerIp",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub max_connections_per_ip: Option<u64>,
-    /// Maximum number of headers allowed in an incoming request.
-    ///
-    /// Requests with more headers than this limit are rejected with
-    /// `431 Request Header Fields Too Large`.  Protects against header-flooding
-    /// attacks and misconfigured clients that send excessive headers.
-    ///
-    /// Equivalent to nginx `large_client_header_buffers` count limit.
-    ///
-    /// Default: unlimited (`None`).
-    ///
-    /// ```json
-    /// { "maxRequestHeaders": 100 }
-    /// ```
-    #[serde(rename = "maxRequestHeaders", skip_serializing_if = "Option::is_none")]
-    pub max_request_headers: Option<u32>,
-    /// Minimum upload rate in bytes per second (slow-loris upload defence).
-    ///
-    /// **freenginx / nginx `client_body_min_rate` pattern.**  Uses a leaky-bucket
-    /// algorithm: excess accumulates when the client sends slower than the limit.
-    /// When accumulated excess exceeds the burst allowance (1 second of data by
-    /// default) the request is terminated with `408 Request Timeout`.
-    ///
-    /// Typical values: `1024` (1 KiB/s) for strict protection,
-    /// `256` for slow-network tolerance.
-    ///
-    /// `None` (default) disables the check.
-    ///
-    /// ```yaml
-    /// limits:
-    ///   minUploadRateBytesPerSec: 1024
-    /// ```
-    #[serde(
-        rename = "minUploadRateBytesPerSec",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub min_upload_rate_bytes_per_sec: Option<u64>,
-}
+/// Extracted into `crates/conduit-limits` (issue #114/#137) — this is a
+/// facade re-export so `crate::config::schema::LimitsConfig` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test.
+pub use conduit_limits::LimitsConfig;
 
 // ── Redirects ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct RedirectRule {
-    pub from: String,
-    pub to: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<u16>,
-}
+/// Extracted into `crates/conduit-redirects` (issue #114/#140) — this is a
+/// facade re-export so `crate::config::schema::RedirectRule` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test.
+pub use conduit_redirects::RedirectRule;
 
 // ── Middleware chain ───────────────────────────────────────────────────────
 
@@ -1095,33 +670,13 @@ pub struct MiddlewareEntry {
 
 // ── Static files ───────────────────────────────────────────────────────────
 
+/// Extracted into `crates/conduit-static` (issue #114/#139) — this is a
+/// facade re-export so `crate::config::schema::{StaticConfig,
+/// StaticOptions}` keep resolving to the same types at the same location
+/// for every existing call site/test.
+///
 /// `"./dist"` | `["./a", "./b"]` | `{ "/": "./dist", "/docs": "./docs-dist" }`
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum StaticConfig {
-    Single(String),
-    Multi(Vec<String>),
-    Mapped(IndexMap<String, String>),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct StaticOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub etag: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_modified: Option<bool>,
-    /// Duration string parsed with humantime: "1d", "30m", "1h"
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_age: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub index: Option<Vec<String>>,
-    /// "ignore" | "allow" | "deny"
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dot_files: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pre_compressed: Option<bool>,
-}
+pub use conduit_static::{StaticConfig, StaticOptions};
 
 // ── Proxy ──────────────────────────────────────────────────────────────────
 
@@ -1503,72 +1058,11 @@ pub struct UpstreamHealthCheck {
 
 // ── Cache ──────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct CacheConfig {
-    /// "memory" | "redis://..." | "disk:./cache"
-    pub store: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_size_mb: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ttl_secs: Option<u64>,
-    /// Serve stale content while revalidating in the background (RFC 5861).
-    ///
-    /// When set, a cache entry that has expired within the stale window is
-    /// returned immediately to the client while Pingora fetches a fresh copy
-    /// asynchronously.  The next request after revalidation completes gets
-    /// the fresh copy.  Zero perceived latency for the overwhelming majority
-    /// of requests.
-    ///
-    /// ```yaml
-    /// cache:
-    ///   store: memory
-    ///   ttlSecs: 60
-    ///   staleWhileRevalidateSecs: 300  # serve stale for up to 5 min after TTL expires
-    /// ```
-    #[serde(
-        rename = "staleWhileRevalidateSecs",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub stale_while_revalidate_secs: Option<u32>,
-    /// Serve stale content when the upstream returns an error (RFC 5861
-    /// `stale-if-error`).
-    ///
-    /// When upstream is unreachable or returns 5xx, Conduit serves the most
-    /// recently cached copy for up to `staleIfErrorSecs` seconds instead of
-    /// forwarding the error to the client.
-    #[serde(rename = "staleIfErrorSecs", skip_serializing_if = "Option::is_none")]
-    pub stale_if_error_secs: Option<u32>,
-    /// Proactively refresh a cache entry in the background before it expires.
-    ///
-    /// When the remaining TTL drops below `earlyRefreshSecs`, Conduit fires a
-    /// fire-and-forget GET request to the upstream.  The client is served the
-    /// still-valid cached response with zero latency — the refresh happens
-    /// concurrently.  The cache is updated the moment the background response
-    /// arrives, so the next real request always gets a fresh copy.
-    ///
-    /// Unlike `staleWhileRevalidateSecs`, which activates only *after* the TTL
-    /// expires, `earlyRefreshSecs` ensures the cache never goes stale from the
-    /// client's perspective.
-    ///
-    /// ```yaml
-    /// cache:
-    ///   store: memory
-    ///   ttlSecs: 60
-    ///   earlyRefreshSecs: 10  # refresh 10 s before expiry
-    /// ```
-    #[serde(rename = "earlyRefreshSecs", skip_serializing_if = "Option::is_none")]
-    pub early_refresh_secs: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vary_headers: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub skip_paths: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub skip_if_cookie: Option<bool>,
-    /// Default: ["GET", "HEAD"]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub methods: Option<Vec<String>>,
-}
+// Extracted into `crates/conduit-cache` (issue #114/#135) — re-exported here
+// so `crate::config::schema::CacheConfig` keeps resolving to the same item
+// at the same location for backward compatibility. See
+// `conduit_cache::config::CacheConfig` for the implementation.
+pub use conduit_cache::CacheConfig;
 
 // ── Retry ──────────────────────────────────────────────────────────────────
 
@@ -1601,64 +1095,27 @@ pub struct RetryConfig {
 
 // ── Upload ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct UploadConfig {
-    pub path: String,
-    pub dir: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_file_size_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_total_size_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_files: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_mime_types: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub field_name: Option<String>,
-}
+/// Extracted into `crates/conduit-upload` (issue #114/#131) — this is a
+/// facade re-export so `crate::config::schema::UploadConfig` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test.
+pub use conduit_upload::UploadConfig;
 
 // ── Metrics ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct MetricsConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
-}
+/// Extracted into `crates/conduit-metrics` (issue #114/#140) — this is a
+/// facade re-export so `crate::config::schema::MetricsConfig` keeps
+/// resolving to the same type at the same location for every existing call
+/// site/test.
+pub use conduit_metrics::MetricsConfig;
 
 // ── Fallback ───────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct FallbackConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub body: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub headers: Option<IndexMap<String, String>>,
-    /// Content-negotiated fallback rules keyed by Accept type ("html", "json", "*")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub by_accept: Option<IndexMap<String, FallbackRule>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct FallbackRule {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub body: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub headers: Option<IndexMap<String, String>>,
-}
+/// Extracted into `crates/conduit-static` (issue #114/#139) — this is a
+/// facade re-export so `crate::config::schema::{FallbackConfig,
+/// FallbackRule}` keep resolving to the same types at the same location for
+/// every existing call site/test.
+pub use conduit_static::{FallbackConfig, FallbackRule};
 
 // ── Routes (Phase 3.6) ─────────────────────────────────────────────────────
 
@@ -1724,9 +1181,10 @@ pub struct MatchConfig {
     pub cookies: Option<IndexMap<String, String>>,
 }
 
-/// Fault injection configuration — inject artificial errors or delays into
-/// a percentage of requests.  Useful for chaos engineering and testing
-/// circuit-breaker / retry behaviour without a real failing upstream.
+/// Extracted into `crates/conduit-faults` (issue #114/#132) — this is a
+/// facade re-export so `crate::config::schema::{FaultInjectionConfig,
+/// FaultAbort, FaultDelay}` keep resolving to the same types at the same
+/// location for every existing call site/test.
 ///
 /// ```json
 /// {
@@ -1736,38 +1194,7 @@ pub struct MatchConfig {
 ///   }
 /// }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct FaultInjectionConfig {
-    /// Abort a percentage of requests with the given HTTP status code.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub abort: Option<FaultAbort>,
-    /// Add an artificial delay to a percentage of requests.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub delay: Option<FaultDelay>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct FaultAbort {
-    /// Percentage of requests to abort (0–100).
-    pub percent: f64,
-    /// HTTP status code to return (default: 503).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<u16>,
-    /// Response body text (default: "Fault injected").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub body: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct FaultDelay {
-    /// Percentage of requests to delay (0–100).
-    pub percent: f64,
-    /// Delay in milliseconds.
-    pub ms: u64,
-}
+pub use conduit_faults::{FaultAbort, FaultDelay, FaultInjectionConfig};
 
 /// Passive health checking via Outlier Detection.
 ///
@@ -1798,17 +1225,8 @@ pub struct OutlierDetectionConfig {
 ///
 /// Proxies a raw TCP connection to one of the specified upstream addresses.
 /// No HTTP parsing — bytes are forwarded as-is in both directions.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct TcpConfig {
-    /// Upstream addresses to forward connections to, e.g. `["mysql:3306"]`.
-    /// Plain `host:port` strings — no `http://` prefix.
-    #[serde(default)]
-    pub targets: Vec<String>,
-    /// Load balancing strategy: `"round-robin"` (default) or `"random"`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub strategy: Option<String>,
-    /// Connection timeout to upstream in milliseconds (default: 5000).
-    #[serde(rename = "connectTimeoutMs", skip_serializing_if = "Option::is_none")]
-    pub connect_timeout_ms: Option<u64>,
-}
+///
+/// Extracted into `crates/conduit-tcp` (issue #114/#131) — this is a facade
+/// re-export so `crate::config::schema::TcpConfig` keeps resolving to the
+/// same type at the same location for every existing call site/test.
+pub use conduit_tcp::TcpConfig;

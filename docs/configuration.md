@@ -406,7 +406,11 @@ http2:
 
 ## Compression
 
-Add `Content-Encoding: br` / `zstd` / `gzip` / `deflate` to responses.
+Add `Content-Encoding: br` / `zstd` / `gzip` / `deflate` to responses. Applies
+to static files, the metrics endpoint, and fallback responses (JSON/text body
+or file) — each negotiated independently against the same `minBytes`/`types`
+thresholds, so a small metrics scrape or error body may stay uncompressed
+even with compression enabled.
 
 ```yaml
 # YAML — shorthand (enable with defaults)
@@ -2245,7 +2249,7 @@ See [`examples/consumers.yaml`](../examples/consumers.yaml)
 ## Rate Limiting
 
 In-memory rate limiting requires no feature flag — available in every build,
-including the minimal `default = []`. `store: "redis://..."` requires `--features redis`.
+including the minimal `default = ["compression", "static", "hotreload"]`. `store: "redis://..."` requires `--features redis`.
 
 ### Site-level
 
@@ -2311,6 +2315,7 @@ proxy:
 | `windowSecs` | number   | —          | Sliding window duration (seconds) — **required**                                                            |
 | `limit`      | number   | —          | Max requests per key per window — **required**                                                              |
 | `burst`      | number   | `0`        | Extra burst capacity above `limit` (see below)                                                              |
+| `algorithm`  | string   | —          | Optional; only `"token-bucket"` is supported — a typo fails validation                                      |
 | `keyBy`      | string   | `"ip"`     | `"ip"` or `"header:<name>"`                                                                                 |
 | `store`      | string   | `"memory"` | `"memory"` or `"redis://host:port"` (`--features redis` required for Redis)                                 |
 | `skipPaths`  | string[] | —          | Paths that bypass rate limiting — see [skipPaths glob syntax](#skippaths-glob-syntax)                       |
@@ -2330,6 +2335,39 @@ rateLimit:
   limit: 60
   burst: 20
 ```
+
+**Validation applies at every level.** `windowSecs`/`limit`/`algorithm`/`keyBy`/`store`
+are checked at config-load and reload time for site-level, per-route, and per-consumer
+`rateLimit` blocks alike — a malformed value (e.g. `keyBy: "header:bad name"`, which
+contains a space and isn't a valid HTTP header name) fails validation instead of
+silently collapsing every client into one shared bucket at runtime.
+
+**`store` (Redis) works at every level** — site, per-route, and per-consumer (issue
+#322). Each level uses its own Redis key scope so buckets never collide: site-level
+uses the site label, per-route uses `"route\0{site}\0{route}"`, and per-consumer uses
+the fixed scope `"consumer"` with the consumer's username as the client key (mirroring
+the in-memory limiter's own `\0`-separated key namespaces — see #303/#304). `keyBy` is
+inert at the consumer level specifically, regardless of backend (the bucket key is
+always the username, not derived from the request). `burst`, `skipPaths`, and `dryRun`
+all work at every level that accepts them — `dryRun` isn't accepted at the route level
+at all (the schema rejects it there; it's a site/consumer-only field). `burst` also
+works under a Redis `store`, not just in-memory — implemented as the fixed-window
+counter's admission ceiling rising from `limit` to `limit + burst` within the current
+window, rather than a continuously-refilling allowance like the in-memory token
+bucket's burst.
+
+**Only one Redis connection is ever established per process**, regardless of how many
+levels configure a `store` URL. At startup Conduit scans site, then route, then
+consumer `rateLimit.store` values and connects to the *first* `redis://`/`rediss://`
+URL it finds; every level that configures Redis shares that one connection. If
+different levels are configured with genuinely different Redis URLs, only the
+first-discovered one is actually used — the others silently share it rather than each
+getting their own connection. Point every level's `store` at the same Redis
+instance/URL if you use Redis at more than one level. **This is checked at config-load
+time (issue #357)**: configuring more than one distinct Redis URL across
+site/route/consumer produces an advisory warning (logged, not fatal — same
+non-blocking treatment as the near-expiry-certificate warning) naming which URL is
+actually used and which are ignored.
 
 ---
 

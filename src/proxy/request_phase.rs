@@ -35,6 +35,7 @@ use crate::config::schema::{
     ApiKeyConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig, HealthCheckConfig,
     IpFilterConfig, LimitsConfig, MiddlewareEntry, ProxyTimeout, RateLimitConfig, SiteConfig,
 };
+use crate::filter::auth;
 #[cfg(feature = "consumers")]
 use crate::filter::chain::ConsumersGuard;
 #[cfg(feature = "fault-injection")]
@@ -46,18 +47,25 @@ use crate::filter::chain::{
     HealthBypass, IpGuard, LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard,
     XRequestIdGuard,
 };
+#[cfg(feature = "compression")]
+use crate::filter::compression;
 use crate::filter::rate_limit;
-use crate::filter::{compression, cors, redirects, response_time, security_headers};
+use crate::filter::{cors, redirects, response_time, security_headers};
 #[cfg(feature = "acme")]
 use crate::handler::acme_challenge as acme_handler;
+#[cfg(feature = "hotreload")]
+use crate::handler::hot_reload as hot_reload_handler;
 use crate::handler::response;
-use crate::handler::{
-    fallback, health, hot_reload as hot_reload_handler, metrics as metrics_handler, static_files,
-    LocalHandlerImpl,
-};
+#[cfg(feature = "static")]
+use crate::handler::{fallback, static_files};
+use crate::handler::{health, metrics as metrics_handler, LocalHandlerImpl};
 use crate::proxy::cache as proxy_cache;
 #[cfg(feature = "cache")]
 use crate::proxy::cache_disk;
+// Only used inside request_cache_filter's `#[cfg(feature = "cache")]` body
+// below -- `redis` alone (e.g. for the Redis-backed rate limiter, which
+// doesn't touch this import at all) must not pull in an unused import under
+// `-D warnings` (issue #312).
 #[cfg(all(feature = "redis", feature = "cache"))]
 use crate::proxy::cache_redis;
 use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
@@ -458,7 +466,7 @@ impl ConduitProxy {
             jwt_auth_cfg: jwt_auth_cfg.clone(), // clone — jwt_cfg needed below for claim extraction
             forward_auth_cfg,
             consumers_cfg,
-            site_label,
+            site_label: site_label.clone(),
         };
         if self.run_guard_filters(session, guards).await? {
             return Ok(true);
@@ -475,8 +483,11 @@ impl ConduitProxy {
 
         // ── Per-route rate limiting (applied after site-level guard chain) ──────
         // Checked here — after routing — so we know which route was matched.
+        // Reuses the same `site_label` guards.site_label was built from —
+        // scopes the route-level bucket key so two sites with the same route
+        // key and client don't collide (#304's route-level twin).
         if self
-            .enforce_route_rate_limit(session, &req_ctx, site)
+            .enforce_route_rate_limit(session, &req_ctx, site, &site_label)
             .await?
         {
             return Ok(true);
@@ -494,7 +505,10 @@ impl ConduitProxy {
         // Only available when compiled with --features jwt.
         #[cfg(feature = "jwt")]
         {
-            req_ctx.jwt_claims = jwt_claims_from_session(session, jwt_auth_cfg.as_ref());
+            req_ctx.jwt = conduit_auth_jwt::guard::extract_claims_from_session(
+                session,
+                jwt_auth_cfg.as_ref(),
+            );
         }
 
         // ── Attach OTel span to request context ───────────────────────────────
@@ -569,7 +583,11 @@ impl ConduitProxy {
 
         // 4. Request size / header limits.
         if let Some(cfg) = guards.limits_cfg {
-            chain = chain.push(LimitsGuard { cfg });
+            chain = chain.push(LimitsGuard {
+                cfg,
+                ip_conn_counts: std::sync::Arc::clone(&self.state.ip_conn_counts),
+                client_ip: guards.client_ip.clone(),
+            });
         }
 
         // 5. Token-bucket rate limiting.
@@ -577,6 +595,9 @@ impl ConduitProxy {
             chain = chain.push(RateLimitGuard {
                 cfg,
                 site_label: guards.site_label.clone(),
+                rate_limiter: std::sync::Arc::clone(&self.state.rate_limiter),
+                #[cfg(feature = "redis")]
+                redis_rate_limiter: self.state.redis_rate_limiter.clone(),
             });
         }
 
@@ -586,6 +607,9 @@ impl ConduitProxy {
             chain = chain.push(ConsumersGuard {
                 cfg,
                 path: guards.script_path.clone(),
+                rate_limiter: std::sync::Arc::clone(&self.state.rate_limiter),
+                #[cfg(feature = "redis")]
+                redis_rate_limiter: self.state.redis_rate_limiter.clone(),
             });
         }
 
@@ -645,11 +669,6 @@ impl ConduitProxy {
             session,
             extra_headers: &guards.extra_headers,
             inflight: &self.state.inflight,
-            rate_limiter: &self.state.rate_limiter,
-            #[cfg(feature = "redis")]
-            redis_rate_limiter: self.state.redis_rate_limiter.as_ref(),
-            ip_conn_counts: &self.state.ip_conn_counts,
-            client_ip: guards.client_ip,
         };
 
         chain.run(&mut ctx).await
@@ -686,7 +705,7 @@ impl ConduitProxy {
         // Store the RAII guard; it will automatically decrement the slot
         // counter when RequestCtx is dropped at the end of logging() — no
         // manual fetch_sub needed.
-        req_ctx.ip_conn_slot = Some(crate::filter::chain::IpConnSlotGuard {
+        req_ctx.limits.ip_conn_slot = Some(crate::filter::chain::IpConnSlotGuard {
             ip,
             counts: std::sync::Arc::clone(&self.state.ip_conn_counts),
         });
@@ -697,6 +716,8 @@ impl ConduitProxy {
     ///
     /// `site` is the route-resolved site from the request's config snapshot
     /// (passed in by `do_request_filter`) so this shares the routing snapshot.
+    /// `site_label` scopes the bucket key so the same route key on two
+    /// different sites doesn't collide (see `rate_limit::route_key`).
     ///
     /// Returns `Ok(true)` when the request was rejected with 429 (response
     /// written, inflight counters decremented), `Ok(false)` to continue.
@@ -705,6 +726,7 @@ impl ConduitProxy {
         session: &mut Session,
         req_ctx: &RequestCtx,
         site: Option<&SiteConfig>,
+        site_label: &str,
     ) -> Result<bool> {
         // Borrow the path directly from the session — `find_route_rate_limit`
         // takes `&str`, so there is no need to allocate an owned String on the
@@ -716,23 +738,71 @@ impl ConduitProxy {
         let Some((rl_cfg, route_key)) = router::find_route_rate_limit(site, path) else {
             return Ok(false);
         };
-        let key = format!(
-            "route:{route_key}:{}",
-            rate_limit::extract_client_key(&rl_cfg, session)
-        );
-        let allowed = {
-            self.state
-                .rate_limiter
-                .entry(key)
-                .or_insert_with(|| {
-                    rate_limit::TokenBucket::new(
+        // #307: skipPaths is a documented, undisclaimed route-level field
+        // (unlike dryRun/store, which the schema explicitly states are
+        // site-level-only) — wire it up. Useful for a broad route pattern
+        // that wants specific sub-paths exempted from its own rate limit.
+        if rl_cfg
+            .skip_paths
+            .as_deref()
+            .is_some_and(|sp| auth::is_path_skipped(Some(sp), path))
+        {
+            return Ok(false);
+        }
+        let client_key = rate_limit::extract_client_key(&rl_cfg, session);
+        // #322: route-level `store: "redis://..."` now actually routes
+        // through Redis, mirroring the site-level check in
+        // `filter::chain::rate_limit_allowed`. Scoped by
+        // `redis_route_scope` (site+route, no client_key folded in — the
+        // Redis client takes that as its own parameter) so two routes
+        // (or the same route on two sites) never share a counter.
+        #[cfg(feature = "redis")]
+        if rl_cfg
+            .store
+            .as_deref()
+            .is_some_and(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
+        {
+            if let Some(rrl) = &self.state.redis_rate_limiter {
+                let scope = rate_limit::redis_route_scope(site_label, &route_key);
+                let allowed = rrl
+                    .check(
+                        &scope,
+                        &client_key,
                         rl_cfg.limit,
                         rl_cfg.burst.unwrap_or(0),
                         rl_cfg.window_secs,
                     )
-                })
-                .try_consume()
-        };
+                    .await;
+                return self
+                    .finish_route_rate_limit(session, req_ctx, &route_key, allowed)
+                    .await;
+            }
+        }
+        let key = rate_limit::route_key(site_label, &route_key, &client_key);
+        // Routed through the shared MAX_BUCKETS-capped admission point
+        // (issue #305) instead of a hand-rolled, uncapped
+        // entry()/or_insert_with() — this was a real DoS bypass on the
+        // documented `keyBy: "header:X-Name"` usage pattern, since this map
+        // is shared with the site-level limiter's own cap check.
+        let allowed = conduit_ratelimit::check_key_for(&self.state.rate_limiter, &key, &rl_cfg);
+        self.finish_route_rate_limit(session, req_ctx, &route_key, allowed)
+            .await
+    }
+
+    /// Shared tail of [`Self::enforce_route_rate_limit`] for both the Redis
+    /// and in-memory paths: on rejection, write 429 and unwind the inflight
+    /// counters. Route-level `rateLimit` has no `dryRun` mode (the schema
+    /// rejects the field there — it's a site/consumer-only option, see
+    /// `docs/configuration.md`'s rate-limiting section), so unlike the
+    /// site-level and per-consumer checks, there is no warn-and-continue
+    /// branch here.
+    async fn finish_route_rate_limit(
+        &self,
+        session: &mut Session,
+        req_ctx: &RequestCtx,
+        route_key: &str,
+        allowed: bool,
+    ) -> Result<bool> {
         if allowed {
             return Ok(false);
         }
@@ -931,64 +1001,140 @@ impl ConduitProxy {
                 } else {
                     unreachable!()
                 };
-                Some(Box::new(metrics_handler::MetricsHandler {
-                    token,
-                    extra_headers: extra,
-                }))
-            }
-
-            HandlerKind::StaticFile => {
+                #[cfg(feature = "compression")]
                 let config = self.state.config.load();
+                #[cfg(feature = "compression")]
                 let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                #[cfg(feature = "compression")]
                 let compress_opts = config
                     .sites
                     .get(site_idx)
                     .and_then(|s| s.compression.as_ref())
                     .and_then(compression::effective);
-                let fallback_site = config.sites.get(site_idx).cloned();
+                #[cfg(feature = "compression")]
                 let accept_enc = ctx
                     .as_ref()
                     .map(|c| c.accept_enc.clone())
                     .unwrap_or_default();
-                let (roots, options, strip_prefix) = if let Some(RequestCtx {
-                    upstream:
-                        UpstreamTarget::Local(LocalHandler::StaticFile {
-                            roots,
-                            options,
-                            strip_prefix,
-                        }),
-                    ..
-                }) = ctx.as_ref()
-                {
-                    (roots.clone(), options.clone(), strip_prefix.clone())
-                } else {
-                    unreachable!()
-                };
-                Some(Box::new(static_files::StaticFileHandler {
-                    roots,
-                    options,
-                    strip_prefix,
+                Some(Box::new(metrics_handler::MetricsHandler {
+                    token,
                     extra_headers: extra,
+                    #[cfg(feature = "compression")]
                     compress_opts,
+                    #[cfg(feature = "compression")]
                     accept_enc,
-                    fallback_site,
                 }))
+            }
+
+            HandlerKind::StaticFile => {
+                #[cfg(feature = "static")]
+                {
+                    let config = self.state.config.load();
+                    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                    #[cfg(feature = "compression")]
+                    let compress_opts = config
+                        .sites
+                        .get(site_idx)
+                        .and_then(|s| s.compression.as_ref())
+                        .and_then(compression::effective);
+                    let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
+                    let accept_enc = ctx
+                        .as_ref()
+                        .map(|c| c.accept_enc.clone())
+                        .unwrap_or_default();
+                    let (roots, options, strip_prefix) = if let Some(RequestCtx {
+                        upstream:
+                            UpstreamTarget::Local(LocalHandler::StaticFile {
+                                roots,
+                                options,
+                                strip_prefix,
+                            }),
+                        ..
+                    }) = ctx.as_ref()
+                    {
+                        (roots.clone(), options.clone(), strip_prefix.clone())
+                    } else {
+                        unreachable!()
+                    };
+                    Some(Box::new(static_files::StaticFileHandler {
+                        roots,
+                        options,
+                        strip_prefix,
+                        extra_headers: extra,
+                        #[cfg(feature = "compression")]
+                        compress_opts,
+                        accept_enc,
+                        fallback,
+                    }))
+                }
+                #[cfg(not(feature = "static"))]
+                None
             }
 
             HandlerKind::Fallback => {
-                let config = self.state.config.load();
-                let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
-                let site = config.sites.get(site_idx).cloned();
-                Some(Box::new(fallback::FallbackHandler {
-                    site,
+                #[cfg(feature = "static")]
+                {
+                    let config = self.state.config.load();
+                    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                    let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
+                    #[cfg(feature = "compression")]
+                    let compress_opts = config
+                        .sites
+                        .get(site_idx)
+                        .and_then(|s| s.compression.as_ref())
+                        .and_then(compression::effective);
+                    #[cfg(feature = "compression")]
+                    let accept_enc = ctx
+                        .as_ref()
+                        .map(|c| c.accept_enc.clone())
+                        .unwrap_or_default();
+                    Some(Box::new(fallback::FallbackHandler {
+                        fallback,
+                        extra_headers: extra,
+                        #[cfg(feature = "compression")]
+                        compress_opts,
+                        #[cfg(feature = "compression")]
+                        accept_enc,
+                    }))
+                }
+                // `HandlerKind::Fallback` is the universal "nothing else
+                // matched" terminal case (router.rs/routes.rs construct
+                // `LocalHandler::Fallback` for any unmatched request on any
+                // site, not just a static-file miss) — it must always
+                // return `Some`, never fall through to `dispatch_local`'s
+                // `HandlerKind::Proxy` path, or an unmatched request would
+                // reach `upstream_peer()` with no real upstream and surface
+                // as a 502/500 instead of the plain 404 every disabled
+                // feature otherwise degrades to. Without `static`,
+                // `sites[i].fallback`'s configured behavior (custom body,
+                // byAccept, file serving) is unavailable — matching
+                // `feature_warnings()`'s own "fallback responses (including
+                // the site's default 404) will be disabled" wording — so
+                // this always serves the same bare 404 `FallbackHandler`
+                // already serves today when no `fallback:` is configured at
+                // all.
+                #[cfg(not(feature = "static"))]
+                Some(Box::new(PlainNotFoundHandler {
                     extra_headers: extra,
                 }))
             }
 
+            // `HotReloadJs`/`HotReloadSse` can only be produced by
+            // `router.rs`'s routing when the `hotreload` feature is
+            // compiled in (`is_hot_reload_js_path`/`is_hot_reload_sse_path`
+            // are themselves gated the same way, matching issue #341's
+            // ACME-challenge fix) — so the `None` arm below is genuinely
+            // unreachable, not a request-visible degradation, same
+            // reasoning as `HandlerKind::StaticFile`'s own `None` arm
+            // without `static`.
+            #[cfg(feature = "hotreload")]
             HandlerKind::HotReloadJs => Some(Box::new(hot_reload_handler::HotReloadJsHandler {
                 extra_headers: extra,
             })),
+            #[cfg(not(feature = "hotreload"))]
+            HandlerKind::HotReloadJs => None,
 
+            #[cfg(feature = "hotreload")]
             HandlerKind::HotReloadSse => {
                 let rx = self.state.hot_reload_tx.subscribe();
                 Some(Box::new(hot_reload_handler::HotReloadSseHandler {
@@ -996,6 +1142,8 @@ impl ConduitProxy {
                     rx: Some(rx),
                 }))
             }
+            #[cfg(not(feature = "hotreload"))]
+            HandlerKind::HotReloadSse => None,
 
             HandlerKind::Overloaded => Some(Box::new(OverloadedHandler {
                 extra_headers: extra,
@@ -1288,7 +1436,7 @@ pub(super) async fn request_body_filter(
     };
 
     let chunk_len = body.as_ref().map(|c| c.len()).unwrap_or(0);
-    req_ctx.actual_body_bytes += chunk_len as u64;
+    req_ctx.limits.actual_body_bytes += chunk_len as u64;
 
     // Enforce maxBodyBytes on the ACTUAL received bytes.
     // The LimitsGuard only checks the Content-Length header; chunked clients bypass it.
@@ -1333,18 +1481,19 @@ pub(super) async fn request_body_filter(
             // elapsed_secs = 0 on the first chunk so the chunk bytes are
             // credited to the bucket immediately (no time-based drain).
             let elapsed_secs = req_ctx
+                .limits
                 .upload_last_chunk
                 .map(|last| now.duration_since(last).as_secs_f64())
                 .unwrap_or(0.0);
-            if upload_rate_step(
-                &mut req_ctx.upload_excess_bytes,
+            if crate::filter::limits::upload_rate_step(
+                &mut req_ctx.limits.upload_excess_bytes,
                 chunk_len,
                 min_rate,
                 elapsed_secs,
             ) {
                 tracing::debug!(
                     min_rate,
-                    excess = req_ctx.upload_excess_bytes,
+                    excess = req_ctx.limits.upload_excess_bytes,
                     "upload rate below minimum — closing connection (408)"
                 );
                 *body = None;
@@ -1353,7 +1502,7 @@ pub(super) async fn request_body_filter(
                     "upload rate below minUploadRateBytesPerSec",
                 ));
             }
-            req_ctx.upload_last_chunk = Some(now);
+            req_ctx.limits.upload_last_chunk = Some(now);
         }
     }
 
@@ -1414,7 +1563,7 @@ pub(super) async fn upstream_request_filter(
                 apply_header_transform_request_with_claims(
                     upstream_request,
                     transform,
-                    &req_ctx.jwt_claims,
+                    req_ctx.jwt_claims(),
                 )?;
             }
         }
@@ -1461,7 +1610,7 @@ pub(super) fn request_cache_filter(
         } else if cfg.store.starts_with("redis://") || cfg.store.starts_with("rediss://") {
             #[cfg(feature = "redis")]
             {
-                match cache_redis::get_or_create(&cfg.store) {
+                match cache_redis::get(&cfg.store) {
                     Some(s) => s,
                     None => {
                         tracing::warn!(
@@ -1702,36 +1851,6 @@ pub(super) fn is_safe_http_method(method: &str) -> bool {
     )
 }
 
-/// Leaky-bucket minimum-upload-rate step (#51).
-///
-/// Updates `excess` (surplus bytes above the minimum rate) and returns
-/// `true` when the client has fallen more than one second behind the
-/// minimum rate and should be rejected with 408.
-///
-/// # Arguments
-/// - `excess` — running surplus in bytes (positive = fast, negative = slow).
-///   Modified in place.
-/// - `chunk_len` — bytes received in this chunk.
-/// - `min_rate` — minimum acceptable rate in bytes per second.
-/// - `elapsed_secs` — seconds elapsed since the previous chunk.
-///
-/// # Algorithm
-/// ```text
-/// excess += chunk_len − min_rate × elapsed_secs
-/// excess  = min(excess, min_rate)   // cap surplus (no unlimited burst credit)
-/// reject  = excess < −min_rate       // more than one second of deficit
-/// ```
-pub(crate) fn upload_rate_step(
-    excess: &mut f64,
-    chunk_len: usize,
-    min_rate: u64,
-    elapsed_secs: f64,
-) -> bool {
-    *excess += chunk_len as f64 - min_rate as f64 * elapsed_secs;
-    *excess = excess.min(min_rate as f64);
-    *excess < -(min_rate as f64)
-}
-
 /// Enforce the `maxBodyBytes` hard limit on actual received bytes.
 ///
 /// Returns `true` when the limit was exceeded (caller should return early).
@@ -1746,14 +1865,14 @@ pub(super) fn enforce_max_body_bytes(
     let Some(max) = max_body else {
         return false;
     };
-    if req_ctx.actual_body_bytes > max {
+    if req_ctx.limits.actual_body_bytes > max {
         // Drop this chunk — prevents forwarding to upstream.
         *body = None;
-        let prev = req_ctx.actual_body_bytes - chunk_len as u64;
+        let prev = req_ctx.limits.actual_body_bytes - chunk_len as u64;
         if prev <= max {
             // Log only on first violation.
             tracing::warn!(
-                actual = req_ctx.actual_body_bytes,
+                actual = req_ctx.limits.actual_body_bytes,
                 max,
                 "request body exceeded maxBodyBytes (chunked/no Content-Length) \
                  — body dropped, upstream will receive truncated request"
@@ -2170,6 +2289,32 @@ impl LocalHandlerImpl for OverloadedHandler {
     }
 }
 
+// ── Fallback-of-last-resort handler (no `static` feature) ─────────────────────
+
+/// Plain `404 Not Found` used for `HandlerKind::Fallback` when the `static`
+/// feature isn't compiled in — see the `#[cfg(not(feature = "static"))]`
+/// arm of `build_handler` for why this must exist unconditionally rather
+/// than returning `None`.
+#[cfg(not(feature = "static"))]
+struct PlainNotFoundHandler {
+    extra_headers: Vec<(String, String)>,
+}
+
+#[cfg(not(feature = "static"))]
+#[async_trait]
+impl LocalHandlerImpl for PlainNotFoundHandler {
+    async fn handle(&mut self, session: &mut Session) -> pingora_core::Result<()> {
+        response::write_response(
+            session,
+            404,
+            "text/plain",
+            bytes::Bytes::from_static(b"Not Found"),
+            &self.extra_headers,
+        )
+        .await
+    }
+}
+
 #[derive(Clone)]
 enum HandlerKind {
     Health,
@@ -2258,44 +2403,6 @@ pub(super) fn extract_host(session: &Session) -> String {
         .and_then(|v| v.to_str().ok())
         .map(|h| h.split(':').next().unwrap_or(h).to_owned())
         .unwrap_or_default()
-}
-
-/// Extract JWT claims from the `Authorization: Bearer` header for header
-/// template substitution (`{{ jwt.<claim> }}`).
-///
-/// Returns `None` when JWT auth is not configured, the current path is in
-/// `jwtAuth.skipPaths`, the header is missing or not a Bearer token, or the
-/// token cannot be decoded.
-///
-/// The `skipPaths` check is required here, not just in [`JwtGuard`]: on a
-/// skipped path `JwtGuard` lets the request through *without* verifying the
-/// token's signature at all (see `jwt::jwt_prelude`), so if this function
-/// didn't apply the same check it would decode and trust an attacker-forged,
-/// unsigned token's claims for header-template substitution — effectively
-/// spoofing `{{ jwt.<claim> }}` values (e.g. `{{ jwt.sub }}`) into whatever
-/// upstream header a route's `requestTransform` injects them into, on any
-/// path the operator intentionally exempted from auth.
-///
-/// [`JwtGuard`]: crate::filter::chain::JwtGuard
-#[cfg(feature = "jwt")]
-fn jwt_claims_from_session(
-    session: &Session,
-    jwt_cfg: Option<&crate::config::schema::JwtAuthConfig>,
-) -> Option<std::collections::HashMap<String, serde_json::Value>> {
-    let jwt_cfg = jwt_cfg?;
-    let path = session.req_header().uri.path();
-    if let Some(skip) = &jwt_cfg.skip_paths {
-        if crate::filter::auth::is_path_skipped(Some(skip.as_slice()), path) {
-            return None;
-        }
-    }
-    let auth_hdr = session
-        .req_header()
-        .headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())?;
-    let token = crate::filter::jwt::extract_bearer(Some(auth_hdr))?;
-    crate::filter::jwt::extract_claims_unchecked(token)
 }
 
 /// Append `X-Forwarded-For` and `X-Forwarded-Proto` headers to the upstream request.
@@ -2455,7 +2562,7 @@ pub(super) fn apply_header_transform_request_with_claims(
     if let Some(set) = &transform.set_headers {
         for (name, value) in set {
             let resolved = if value.contains("{{") {
-                expand_jwt_templates(value, jwt_claims)
+                crate::util::jwt_template::expand_jwt_templates(value, jwt_claims)
             } else {
                 value.clone()
             };
@@ -2463,35 +2570,6 @@ pub(super) fn apply_header_transform_request_with_claims(
         }
     }
     Ok(())
-}
-
-/// Expand `{{ jwt.<claim> }}` templates in a string.
-///
-/// Replaces all occurrences of `{{ jwt.CLAIM }}` with the corresponding value
-/// from the JWT payload.  Unknown claims are replaced with an empty string.
-/// Non-string claim values are JSON-serialized (e.g. numbers, arrays).
-/// Expand `{{ jwt.<claim> }}` templates — exposed for unit tests via `pub(crate)`.
-pub(crate) fn expand_jwt_templates(
-    template: &str,
-    claims: &Option<std::collections::HashMap<String, serde_json::Value>>,
-) -> String {
-    static JWT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = JWT_RE.get_or_init(|| {
-        regex::Regex::new(r"\{\{\s*jwt\.(\w+)\s*\}\}").expect("jwt template regex")
-    });
-
-    re.replace_all(template, |caps: &regex::Captures<'_>| {
-        let claim_name = &caps[1];
-        match claims {
-            Some(map) => match map.get(claim_name) {
-                Some(serde_json::Value::String(s)) => s.clone(),
-                Some(v) => v.to_string(),
-                None => String::new(),
-            },
-            None => String::new(),
-        }
-    })
-    .into_owned()
 }
 
 /// Fire-and-forget a copy of the current request to a mirror backend.
@@ -2759,21 +2837,6 @@ mod tests {
             apply_path_rewrites("/v1/users", Some(&rules)),
             "/first/users"
         );
-    }
-
-    // ── expand_jwt_templates (additional cases) ───────────────────────────────
-
-    #[test]
-    fn expand_jwt_templates_no_template_unchanged() {
-        let claims: std::collections::HashMap<String, serde_json::Value> = Default::default();
-        let result = expand_jwt_templates("plain-value", &Some(claims));
-        assert_eq!(result, "plain-value");
-    }
-
-    #[test]
-    fn expand_jwt_templates_null_claims_returns_empty() {
-        let result = expand_jwt_templates("{{ jwt.sub }}", &None);
-        assert_eq!(result, "");
     }
 
     // ── resolve_peer_addr ─────────────────────────────────────────────────────
@@ -3516,6 +3579,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn build_handler_hot_reload_js_returns_some() {
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::HotReloadJs)));
@@ -3524,6 +3588,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn build_handler_hot_reload_sse_returns_some() {
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::HotReloadSse)));
@@ -3532,6 +3597,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "static")]
     fn build_handler_static_file_returns_some() {
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::StaticFile {
@@ -3544,7 +3610,29 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "static"))]
+    fn build_handler_static_file_returns_none_without_feature() {
+        let proxy = make_proxy();
+        let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::StaticFile {
+            roots: vec![std::path::PathBuf::from("./dist")],
+            options: std::sync::Arc::new(Default::default()),
+            strip_prefix: None,
+        })));
+        let result = proxy.build_handler(HandlerKind::StaticFile, &ctx);
+        assert!(
+            result.is_none(),
+            "StaticFile handler must return None without the `static` feature"
+        );
+    }
+
+    #[test]
     fn build_handler_fallback_returns_some() {
+        // `HandlerKind::Fallback` must return `Some` in BOTH feature states —
+        // it's the universal "nothing else matched" terminal case (see the
+        // `#[cfg(not(feature = "static"))]` arm's own doc comment), not
+        // exclusive to the `static` feature. Returning `None` here would
+        // make `dispatch_local` treat an unmatched request as `Proxy` and
+        // hand it to `upstream_peer()`, which has no real upstream to use.
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::Fallback)));
         let result = proxy.build_handler(HandlerKind::Fallback, &ctx);
@@ -3853,100 +3941,6 @@ mod tests {
         assert_eq!(addr, "a:4000");
         // Attempt should be incremented.
         assert_eq!(ctx.retry.unwrap().attempt, 1);
-    }
-
-    // ── upload_rate_step (leaky-bucket minimum rate, #51) ────────────────────
-
-    #[test]
-    fn upload_rate_step_at_exact_min_rate_keeps_excess_zero() {
-        let mut excess = 0.0f64;
-        let min_rate = 1024u64; // 1 KiB/s
-                                // Exactly 1024 bytes in exactly 1 second → excess stays at 0.
-        let rejected = upload_rate_step(&mut excess, 1024, min_rate, 1.0);
-        assert!(!rejected, "exactly at min rate must not reject");
-        assert!(
-            (excess - 0.0).abs() < 0.01,
-            "excess should be ~0, got {excess}"
-        );
-    }
-
-    #[test]
-    fn upload_rate_step_above_min_rate_accumulates_surplus() {
-        let mut excess = 0.0f64;
-        let min_rate = 1024u64;
-        // 2048 bytes in 1 second (twice the minimum rate) → surplus = 1024.
-        let rejected = upload_rate_step(&mut excess, 2048, min_rate, 1.0);
-        assert!(!rejected, "above min rate must not reject");
-        // Surplus capped at min_rate (1024).
-        assert!(
-            (excess - 1024.0).abs() < 0.01,
-            "surplus capped at min_rate: got {excess}"
-        );
-    }
-
-    #[test]
-    fn upload_rate_step_surplus_is_capped_at_one_second() {
-        let mut excess = 0.0f64;
-        let min_rate = 1000u64;
-        // Enormous burst: 1_000_000 bytes in 0.01 seconds.
-        upload_rate_step(&mut excess, 1_000_000, min_rate, 0.01);
-        // Surplus must be capped at min_rate (1000) — not the raw 999_990.
-        assert!(
-            excess <= min_rate as f64 + 0.01,
-            "surplus must be capped at min_rate: got {excess}"
-        );
-    }
-
-    #[test]
-    fn upload_rate_step_below_min_rate_accumulates_deficit() {
-        let mut excess = 0.0f64;
-        let min_rate = 1000u64;
-        // 100 bytes in 1 second (1/10 of min rate) → deficit grows.
-        let rejected = upload_rate_step(&mut excess, 100, min_rate, 1.0);
-        // deficit = 100 - 1000 = -900; not yet past -1000 threshold.
-        assert!(
-            !rejected,
-            "single slow chunk below min rate but deficit < min_rate"
-        );
-        assert!(excess < 0.0, "excess must be negative (deficit): {excess}");
-    }
-
-    #[test]
-    fn upload_rate_step_rejects_when_deficit_exceeds_one_second() {
-        let mut excess = -(1000f64 - 1.0); // just below the rejection threshold
-        let min_rate = 1000u64;
-        // One more tiny chunk with a 1-second gap: excess += 1 - 1000 → -1999+1 = -1999
-        let rejected = upload_rate_step(&mut excess, 1, min_rate, 1.0);
-        assert!(rejected, "deficit > min_rate must trigger rejection");
-        assert!(
-            excess < -(min_rate as f64),
-            "excess must be below -min_rate: {excess}"
-        );
-    }
-
-    #[test]
-    fn upload_rate_step_carries_over_surplus_for_slow_periods() {
-        let mut excess = 0.0f64;
-        let min_rate = 1000u64;
-        // First chunk: big burst that fills the surplus bucket.
-        upload_rate_step(&mut excess, 10_000, min_rate, 0.0);
-        // Surplus capped at 1000.
-        assert!((excess - 1000.0).abs() < 0.01, "surplus capped: {excess}");
-
-        // Second chunk: very slow (1 byte in 1 second).
-        // excess += 1 - 1000 → 1000 + 1 - 1000 = 1.
-        let rejected = upload_rate_step(&mut excess, 1, min_rate, 1.0);
-        assert!(!rejected, "surplus from burst must absorb one slow chunk");
-        assert!(excess >= 0.0, "excess should remain non-negative: {excess}");
-    }
-
-    #[test]
-    fn upload_rate_step_zero_elapsed_never_rejects() {
-        let mut excess = 0.0f64;
-        let min_rate = 1000u64;
-        // First call always has elapsed=0 (first chunk in request_body_filter).
-        let rejected = upload_rate_step(&mut excess, 1, min_rate, 0.0);
-        assert!(!rejected, "first chunk (elapsed=0) must never reject");
     }
 
     // ── record_failed_upstream_for_retry ──────────────────────────────────────

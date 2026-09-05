@@ -1,0 +1,48 @@
+[package]
+name        = "lopatnov-conduit-cache"
+version.workspace    = true
+edition.workspace    = true
+description = "HTTP response caching (config + memory/disk/redis backends) for conduit's feature-driven workspace (issue #114/#135)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_cache"
+path = "src/lib.rs"
+
+[dependencies]
+# CacheConfig (config.rs) and the always-compiled cache-key/policy logic
+# (cache.rs, common.rs, disk.rs — see src/lib.rs doc comment for why these
+# stay unconditional) need these regardless of any Cargo feature.
+serde         = { workspace = true }
+pingora-cache = { workspace = true }
+pingora-http  = { workspace = true }
+pingora-core  = { workspace = true }
+async-trait   = { workspace = true }
+bytes         = { workspace = true }
+dashmap       = { workspace = true }
+tokio         = { workspace = true }
+tracing       = { workspace = true }
+http          = { workspace = true }
+
+# Only needed by the real Redis storage backend (`redis` module), gated
+# behind this crate's own `redis` feature — mirrors the pre-extraction
+# `#![cfg(feature = "redis")]` file-level gate on src/proxy/cache_redis.rs.
+redis  = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile   = { workspace = true }
+
+[features]
+# Marker feature — mirrors the pre-extraction root `cache = []` (see
+# src/lib.rs doc comment: only `cache::should_early_refresh` is actually
+# gated by it in this crate).
+cache = []
+# Marker feature — mirrors the pre-extraction root `disk-cache = ["cache"]`.
+# The `disk` module itself has no feature gate, matching pre-extraction.
+disk-cache = ["cache"]
+# Gates the entire `redis` module (mirrors the pre-extraction
+# `#![cfg(feature = "redis")]` on src/proxy/cache_redis.rs).
+redis = ["dep:redis", "dep:anyhow"]
