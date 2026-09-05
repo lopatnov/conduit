@@ -64,6 +64,19 @@ pub fn identify_consumer<'a>(cfg: &'a ConsumersConfig, session: &Session) -> Opt
         }
     }
 
+    // Deliberately short-circuits at the first match — unlike `check_api_key`'s
+    // non-short-circuiting `fold` over a flat list of anonymous secrets, this
+    // is NOT the same tradeoff. A request only ever reaches a differing scan
+    // length when its credential already matches *some* consumer, so the only
+    // thing timing could leak is "which position my own already-valid
+    // identity occupies" — not another consumer's secret, and not a signal
+    // useful for credential-cracking (issue #234, security-engineer review:
+    // accepted tradeoff, not fixed). A non-short-circuiting scan would also
+    // have a real, asymmetric cost here: every request would pay for every
+    // configured consumer's Basic-Auth decode and, where `consumer.jwt` is
+    // set, a full JWT signature verification (RS256/ES256, possibly a JWKS
+    // round-trip) — disproportionate to the near-zero value of the signal
+    // it would close.
     cfg.consumers
         .iter()
         .find(|consumer| check_consumer_credentials(consumer, api_key_header, session))
