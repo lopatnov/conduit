@@ -2363,7 +2363,11 @@ URL it finds; every level that configures Redis shares that one connection. If
 different levels are configured with genuinely different Redis URLs, only the
 first-discovered one is actually used — the others silently share it rather than each
 getting their own connection. Point every level's `store` at the same Redis
-instance/URL if you use Redis at more than one level.
+instance/URL if you use Redis at more than one level. **This is checked at config-load
+time (issue #357)**: configuring more than one distinct Redis URL across
+site/route/consumer produces an advisory warning (logged, not fatal — same
+non-blocking treatment as the near-expiry-certificate warning) naming which URL is
+actually used and which are ignored.
 
 ---
 

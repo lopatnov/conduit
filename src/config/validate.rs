@@ -20,12 +20,106 @@ pub fn validate(config: &AppConfig) -> Vec<ValidationError> {
     validate_no_duplicate_host_port(config, &mut errors);
     validate_http_redirect_ports(config, &mut errors);
     validate_global(config, &mut errors);
+    #[cfg(feature = "redis")]
+    check_redis_store_consistency(config, &mut errors);
 
     for (i, site) in config.sites.iter().enumerate() {
         validate_site(site, &format!("sites[{i}]"), &mut errors);
     }
 
     errors
+}
+
+/// Warn (advisory, not fatal) when more than one distinct `redis://`/`rediss://`
+/// URL is configured across every site/route/consumer `rateLimit.store` in the
+/// whole config (issue #357).
+///
+/// Only one Redis connection is ever established per process
+/// (`connect_redis_rate_limiter_if_configured` in `src/server/builder.rs`
+/// connects to the first URL found scanning site → route → consumer, across
+/// sites in order) — every level that names a *different* URL silently shares
+/// that one connection instead of getting its own. This can't be a hard error
+/// (a config with mismatched-but-harmless URLs, e.g. a typo'd port an operator
+/// hasn't noticed yet, must still start), so it's `Severity::Warning` like the
+/// near-expiry-cert check (#191/#253) — logged, not fatal.
+#[cfg(feature = "redis")]
+fn check_redis_store_consistency(config: &AppConfig, errors: &mut Vec<ValidationError>) {
+    let mut seen: Vec<String> = Vec::new();
+    for site in &config.sites {
+        collect_redis_stores(site, &mut seen);
+    }
+
+    let mut distinct: Vec<&str> = Vec::new();
+    for url in &seen {
+        if !distinct.contains(&url.as_str()) {
+            distinct.push(url);
+        }
+    }
+
+    if distinct.len() > 1 {
+        errors.push(ValidationError::warning(
+            "rateLimit.store",
+            format!(
+                "multiple distinct Redis URLs configured across site/route/consumer \
+                 rateLimit.store fields ({}). Only one Redis connection is ever \
+                 established per process — Conduit will connect to '{}' and every \
+                 other level configuring a different URL will silently share that \
+                 same connection instead of getting its own. Point every level at \
+                 the same Redis instance to avoid surprises.",
+                distinct.join(", "),
+                distinct[0]
+            ),
+        ));
+    }
+}
+
+/// Collect every `redis://`/`rediss://` `rate_limit.store` value configured on
+/// `site` — site-level, then per-route, then per-consumer — in the same scan
+/// order as `src/server/builder.rs::find_redis_rate_limit_store`, appending to
+/// `out` (not deduped; the caller dedupes across all sites).
+#[cfg(feature = "redis")]
+fn collect_redis_stores(site: &SiteConfig, out: &mut Vec<String>) {
+    fn is_redis_store(store: &str) -> bool {
+        store.starts_with("redis://") || store.starts_with("rediss://")
+    }
+
+    if let Some(store) = site
+        .rate_limit
+        .as_ref()
+        .and_then(|rl| rl.store.as_deref())
+        .filter(|s| is_redis_store(s))
+    {
+        out.push(store.to_owned());
+    }
+
+    if let Some(ProxyConfig::Routes(routes)) = &site.proxy {
+        for target in routes.values() {
+            if let ProxyRouteTarget::Full(cfg) = target {
+                if let Some(store) = cfg
+                    .rate_limit
+                    .as_ref()
+                    .and_then(|rl| rl.store.as_deref())
+                    .filter(|s| is_redis_store(s))
+                {
+                    out.push(store.to_owned());
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "consumers")]
+    if let Some(consumers) = &site.consumers {
+        for consumer in &consumers.consumers {
+            if let Some(store) = consumer
+                .rate_limit
+                .as_ref()
+                .and_then(|rl| rl.store.as_deref())
+                .filter(|s| is_redis_store(s))
+            {
+                out.push(store.to_owned());
+            }
+        }
+    }
 }
 
 /// Return human-readable warnings for config options that require a compile-time
@@ -2218,6 +2312,82 @@ mod tests {
     fn rate_limit_redis_store_valid() {
         assert!(errs(r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://127.0.0.1:6379" } }"#)
             .is_empty());
+    }
+
+    // ── check_redis_store_consistency (issue #357) ──────────────────────────
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_single_url_no_warning() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://a:6379" } } },
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://a:6379" } }"#,
+        );
+        assert!(
+            !e.iter().any(|err| err.path == "rateLimit.store"),
+            "identical URLs at every level must not warn: {e:?}"
+        );
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_mismatched_site_and_route_urls_warns() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://route-host:6379" } } },
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://site-host:6379" } }"#,
+        );
+        let warning = e
+            .iter()
+            .find(|err| err.path == "rateLimit.store")
+            .unwrap_or_else(|| panic!("missing mismatch warning: {e:?}"));
+        assert_eq!(warning.severity, Severity::Warning);
+        assert!(warning.message.contains("redis://site-host:6379"));
+        assert!(warning.message.contains("redis://route-host:6379"));
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_mismatched_urls_across_sites_warns() {
+        let e = errs(
+            r#"[{ "port": 8080, "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://a:6379" } },
+                 { "port": 8081, "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://b:6379" } }]"#,
+        );
+        assert!(
+            e.iter().any(|err| err.path == "rateLimit.store"),
+            "two sites with different Redis URLs must warn: {e:?}"
+        );
+    }
+
+    #[cfg(all(feature = "redis", feature = "consumers"))]
+    #[test]
+    fn redis_store_mismatched_consumer_url_warns() {
+        let e = errs(
+            r#"{ "port": 8080, "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://site-host:6379" },
+                 "consumers": { "consumers": [{ "username": "alice",
+                   "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://consumer-host:6379" } }] } }"#,
+        );
+        assert!(
+            e.iter().any(|err| err.path == "rateLimit.store"),
+            "consumer-level URL differing from site-level must warn: {e:?}"
+        );
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_memory_alongside_redis_does_not_count_as_a_second_url() {
+        // "memory" is a valid `store` value but not a Redis URL — it must not
+        // be treated as a second distinct URL competing with the real one.
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "memory" } } },
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://a:6379" } }"#,
+        );
+        assert!(
+            !e.iter().any(|err| err.path == "rateLimit.store"),
+            "a lone Redis URL alongside a memory store must not warn: {e:?}"
+        );
     }
 
     #[test]
