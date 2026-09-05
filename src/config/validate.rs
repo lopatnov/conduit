@@ -20,12 +20,148 @@ pub fn validate(config: &AppConfig) -> Vec<ValidationError> {
     validate_no_duplicate_host_port(config, &mut errors);
     validate_http_redirect_ports(config, &mut errors);
     validate_global(config, &mut errors);
+    #[cfg(feature = "redis")]
+    check_redis_store_consistency(config, &mut errors);
 
     for (i, site) in config.sites.iter().enumerate() {
         validate_site(site, &format!("sites[{i}]"), &mut errors);
     }
 
     errors
+}
+
+/// Warn (advisory, not fatal) when more than one distinct `redis://`/`rediss://`
+/// URL is configured across every site/route/consumer `rateLimit.store` in the
+/// whole config (issue #357).
+///
+/// Only one Redis connection is ever established per process
+/// (`connect_redis_rate_limiter_if_configured` in `src/server/builder.rs`
+/// connects to the first URL found scanning site → route → consumer, across
+/// sites in order) — every level that names a *different* URL silently shares
+/// that one connection instead of getting its own. This can't be a hard error
+/// (a config with mismatched-but-harmless URLs, e.g. a typo'd port an operator
+/// hasn't noticed yet, must still start), so it's `Severity::Warning` like the
+/// near-expiry-cert check (#191/#253) — logged, not fatal.
+#[cfg(feature = "redis")]
+fn check_redis_store_consistency(config: &AppConfig, errors: &mut Vec<ValidationError>) {
+    let mut seen: Vec<String> = Vec::new();
+    for site in &config.sites {
+        collect_redis_stores(site, &mut seen);
+    }
+
+    let mut distinct: Vec<&str> = Vec::new();
+    for url in &seen {
+        if !distinct.contains(&url.as_str()) {
+            distinct.push(url);
+        }
+    }
+
+    if distinct.len() > 1 {
+        // `validate_rate_limit` only checks the `redis://`/`rediss://` prefix
+        // on `store` — it doesn't reject embedded control characters, so an
+        // operator-supplied URL could carry a raw newline this far.
+        // `sanitize_for_log` (already used above for other config-derived
+        // values reaching a warning/error message) escapes those before they
+        // can forge a fake log line in this warning's output.
+        let redacted: Vec<String> = distinct
+            .iter()
+            .map(|url| sanitize_for_log(&redact_url(url)))
+            .collect();
+        errors.push(ValidationError::warning(
+            "rateLimit.store",
+            format!(
+                "multiple distinct Redis URLs configured across site/route/consumer \
+                 rateLimit.store fields ({}). Only one Redis connection is ever \
+                 established per process — Conduit will connect to '{}' and every \
+                 other level configuring a different URL will silently share that \
+                 same connection instead of getting its own. Point every level at \
+                 the same Redis instance to avoid surprises.",
+                redacted.join(", "),
+                redacted[0]
+            ),
+        ));
+    }
+}
+
+/// Strip userinfo (`user:pass@`) from a Redis URL before it can reach a log
+/// line — this codebase's `$VAR` secret-interpolation model has no
+/// URL-encoding step, so a raw credential in a `redis://user:pass@host`
+/// `rateLimit.store` value is realistic. Mirrors
+/// `crates/conduit-cache/src/redis.rs`'s `redact_url` (added for #330/#331);
+/// duplicated locally rather than shared because that one is private to the
+/// cache crate and this is the config-validation crate's only Redis-URL sink
+/// — same small-helper-per-module pattern already used for `is_redis_store`
+/// in this file, `src/server/builder.rs`, and `src/filter/rate_limit.rs`.
+#[cfg(feature = "redis")]
+fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
+    let Some(scheme_end) = url.find("://") else {
+        return std::borrow::Cow::Borrowed(url);
+    };
+    let authority_start = scheme_end + 3;
+    let rest = &url[authority_start..];
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    // The LAST '@' within the authority is the userinfo/host separator, not
+    // the first — see the cache crate's `redact_url` doc comment for why
+    // (PR #331 review: a password containing its own '@' would otherwise
+    // leak a fragment of itself).
+    let Some(at) = authority.rfind('@') else {
+        return std::borrow::Cow::Borrowed(url);
+    };
+    std::borrow::Cow::Owned(format!(
+        "{}***@{}",
+        &url[..authority_start],
+        &rest[at + 1..]
+    ))
+}
+
+/// Collect every `redis://`/`rediss://` `rate_limit.store` value configured on
+/// `site` — site-level, then per-route, then per-consumer — in the same scan
+/// order as `src/server/builder.rs::find_redis_rate_limit_store`, appending to
+/// `out` (not deduped; the caller dedupes across all sites).
+#[cfg(feature = "redis")]
+fn collect_redis_stores(site: &SiteConfig, out: &mut Vec<String>) {
+    fn is_redis_store(store: &str) -> bool {
+        store.starts_with("redis://") || store.starts_with("rediss://")
+    }
+
+    if let Some(store) = site
+        .rate_limit
+        .as_ref()
+        .and_then(|rl| rl.store.as_deref())
+        .filter(|s| is_redis_store(s))
+    {
+        out.push(store.to_owned());
+    }
+
+    if let Some(ProxyConfig::Routes(routes)) = &site.proxy {
+        for target in routes.values() {
+            if let ProxyRouteTarget::Full(cfg) = target {
+                if let Some(store) = cfg
+                    .rate_limit
+                    .as_ref()
+                    .and_then(|rl| rl.store.as_deref())
+                    .filter(|s| is_redis_store(s))
+                {
+                    out.push(store.to_owned());
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "consumers")]
+    if let Some(consumers) = &site.consumers {
+        for consumer in &consumers.consumers {
+            if let Some(store) = consumer
+                .rate_limit
+                .as_ref()
+                .and_then(|rl| rl.store.as_deref())
+                .filter(|s| is_redis_store(s))
+            {
+                out.push(store.to_owned());
+            }
+        }
+    }
 }
 
 /// Return human-readable warnings for config options that require a compile-time
@@ -2218,6 +2354,142 @@ mod tests {
     fn rate_limit_redis_store_valid() {
         assert!(errs(r#"{ "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://127.0.0.1:6379" } }"#)
             .is_empty());
+    }
+
+    // ── check_redis_store_consistency (issue #357) ──────────────────────────
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_single_url_no_warning() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://a:6379" } } },
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://a:6379" } }"#,
+        );
+        assert!(
+            !e.iter().any(|err| err.path == "rateLimit.store"),
+            "identical URLs at every level must not warn: {e:?}"
+        );
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_mismatched_site_and_route_urls_warns() {
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://route-host:6379" } } },
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://site-host:6379" } }"#,
+        );
+        let warning = e
+            .iter()
+            .find(|err| err.path == "rateLimit.store")
+            .unwrap_or_else(|| panic!("missing mismatch warning: {e:?}"));
+        assert_eq!(warning.severity, Severity::Warning);
+        assert!(warning.message.contains("redis://site-host:6379"));
+        assert!(warning.message.contains("redis://route-host:6379"));
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_mismatched_urls_across_sites_warns() {
+        let e = errs(
+            r#"[{ "port": 8080, "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://a:6379" } },
+                 { "port": 8081, "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://b:6379" } }]"#,
+        );
+        assert!(
+            e.iter().any(|err| err.path == "rateLimit.store"),
+            "two sites with different Redis URLs must warn: {e:?}"
+        );
+    }
+
+    #[cfg(all(feature = "redis", feature = "consumers"))]
+    #[test]
+    fn redis_store_mismatched_consumer_url_warns() {
+        let e = errs(
+            r#"{ "port": 8080, "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://site-host:6379" },
+                 "consumers": { "consumers": [{ "username": "alice",
+                   "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://consumer-host:6379" } }] } }"#,
+        );
+        assert!(
+            e.iter().any(|err| err.path == "rateLimit.store"),
+            "consumer-level URL differing from site-level must warn: {e:?}"
+        );
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_memory_alongside_redis_does_not_count_as_a_second_url() {
+        // "memory" is a valid `store` value but not a Redis URL — it must not
+        // be treated as a second distinct URL competing with the real one.
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "memory" } } },
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://a:6379" } }"#,
+        );
+        assert!(
+            !e.iter().any(|err| err.path == "rateLimit.store"),
+            "a lone Redis URL alongside a memory store must not warn: {e:?}"
+        );
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_mismatch_warning_redacts_credentials() {
+        // Regression for the security-engineer HOLD on PR #359: the mismatch
+        // warning interpolates the raw configured URLs into a message that
+        // reaches tracing::warn! verbatim (via load_and_validate/file_provider/
+        // the /reload handler) -- a credential-bearing URL must never survive
+        // into that log line unredacted.
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://route-host:6379" } } },
+                 "rateLimit": { "windowSecs": 60, "limit": 100,
+                   "store": "redis://alice:s3cret@site-host:6379" } }"#,
+        );
+        let warning = e
+            .iter()
+            .find(|err| err.path == "rateLimit.store")
+            .unwrap_or_else(|| panic!("missing mismatch warning: {e:?}"));
+        assert!(
+            !warning.message.contains("s3cret") && !warning.message.contains("alice"),
+            "credentials must not leak into the warning message: {}",
+            warning.message
+        );
+        assert!(
+            warning.message.contains("redis://***@site-host:6379"),
+            "redacted URL must still be identifiable: {}",
+            warning.message
+        );
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_mismatch_warning_escapes_embedded_control_chars() {
+        // CodeRabbit finding on PR #359: validate_rate_limit only checks the
+        // redis://\rediss:// prefix on `store`, not for embedded control
+        // characters -- a raw newline could otherwise forge a fake log line
+        // in this warning's tracing::warn! output. sanitize_for_log must
+        // escape it before it reaches the message.
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://route-host:6379" } } },
+                 "rateLimit": { "windowSecs": 60, "limit": 100,
+                   "store": "redis://a\nfake log line: [ERROR] pwned:6379" } }"#,
+        );
+        let warning = e
+            .iter()
+            .find(|err| err.path == "rateLimit.store")
+            .unwrap_or_else(|| panic!("missing mismatch warning: {e:?}"));
+        assert!(
+            !warning.message.contains('\n'),
+            "an embedded newline must not survive into the warning message: {}",
+            warning.message
+        );
+        assert!(
+            warning.message.contains("\\nfake log line"),
+            "the newline must be visibly escaped, not silently dropped: {}",
+            warning.message
+        );
     }
 
     #[test]
