@@ -1,6 +1,6 @@
 # Benchmarks
 
-Performance measurements for Conduit v1.3.0 — the `default = []` ("minimal")
+Performance measurements for Conduit v1.4.0 — the `default = []` ("minimal")
 build and the `--features full` build. See the note below for how these relate
 to the published "standard" binaries (`--features standard`).
 
