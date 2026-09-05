@@ -392,6 +392,15 @@ empty) and, if so, run **`/dependabot-hygiene`** (`.claude/commands/dependabot-h
 2026-08-01 after PR #101 sat "held for dedicated review" for ~5 weeks and PR #151 went
 untriaged for a while, both because nothing but the daily cycle firing repeated this check.
 
+## Fast-follow issue reflex check
+
+Before picking the *next* batch of work, run **`/fast-follow-check`**
+(`.claude/commands/fast-follow-check.md`) — checks for open `fast-follow`-labeled issues
+(deferred follow-ups spawned while reviewing some other PR, e.g. #357 from #356) so they
+get surfaced ahead of the general backlog instead of aging silently. Tag such an issue
+with the `fast-follow` label at creation time — see the command file for what counts and
+what doesn't.
+
 ## Subagents available here
 
 - `build-validator` (haiku, read-only) — fmt/clippy/test verdicts, called via `/build`.
@@ -461,6 +470,8 @@ it — call them whenever the same shape of task comes up outside that cycle too
   directly for a quick one.
 - **`dependabot-hygiene`** (`.claude/commands/dependabot-hygiene.md`) — the reflex check
   described above; run it whenever `.claude/logs/dependabot-hygiene.md` is stale.
+- **`fast-follow-check`** (`.claude/commands/fast-follow-check.md`) — the reflex check
+  described above; run it before picking the next batch of work.
 - **`coderabbit-reply`** (`.claude/skills/coderabbit-reply/SKILL.md`) — reply-then-resolve
   mechanics for CodeRabbit/reviewer threads on a PR, written against `mcp__github__*` tools
   (the cloud-firing case — a local session can do the same thing with `gh api`/`gh pr comment`,
