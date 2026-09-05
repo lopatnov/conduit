@@ -77,10 +77,20 @@
     все три формы и суммирует per-client бакеты в один total на (site, route) — раньше
     (до фикса) не парсил вообще ничего реального, всегда отдавал `{}` (issue #303). Redis-бэкенд
     (`crates/conduit-ratelimit/src/redis.rs`, за фичей `redis`, извлечён вместе с фиксом #317
-    как #137 slice 2) — отдельный ключевой неймспейс: `"conduit:rl:{site_label}:{window_secs}:
-    {client_key}"` для реального Redis, `"{site_label}:{client_key}:{limit}:{window_secs}"` для
+    как #137 slice 2) — отдельный ключевой неймспейс: `"conduit:rl:{scope_label}:{window_secs}:
+    {client_key}"` для реального Redis, `"{scope_label}:{client_key}:{limit}:{window_secs}"` для
     его in-process fallback-мапы. `src/filter/rate_limit_redis.rs` в корне — тонкий facade
-    re-export.
+    re-export. **С 2026-09-05 (issue #322)** `scope_label` (переименован из `site_label`,
+    чисто ради ясности — сигнатура не менялась) — это либо site_label как раньше, либо
+    `"route\0{site_label}\0{route_key}"` для per-route (`rate_limit::redis_route_scope`), либо
+    фиксированный литерал `"consumer"` для per-consumer (username передаётся отдельным
+    параметром `client_key`, не встраивается в scope). Redis работает на всех трёх уровнях, но
+    **на процесс устанавливается только одно реальное соединение** — `connect_redis_rate_limiter_if_configured`
+    сканирует site → route → consumer и подключается к первому найденному URL; если на разных
+    уровнях настроены разные Redis URL, все уровни всё равно используют одно (первое найденное)
+    соединение без предупреждения — задокументировано явно в `docs/configuration.md`, доведение
+    до предупреждения/переподключения при hot-reload — issue #357, отдельное архитектурное
+    решение, не сделано.
     **История находки (2026-08-30, Step 1c аудит `rate_limit.rs`)**: до этого фикса запись здесь
     ошибочно приписывала рейт-лимитеру формат `"{site}\0{route}"` — тот формат на самом деле
     принадлежит `UpstreamRegistry.override_key()` в `src/proxy/health.rs`
@@ -2450,6 +2460,56 @@ recurrence of this specific (now-disproven) mechanism.
   *every* session type (cloud/Routine-fired sessions included) or just this desktop-app one — worth
   a future session checking and updating the note if it turns out to be context-dependent, mirroring
   the GitHub `gh`-CLI-vs-MCP split.
+
+### Реализовано в сессии 2026-09-05 (часть 2 — issue #322, Redis rate limiting extended to route/consumer)
+
+- **[PR #356](https://github.com/lopatnov/conduit/pull/356)
+  `feat(ratelimit): extend Redis-backed rate limiting to route and consumer levels (#322)`**
+  (3 commits, squash-merged `eab085e`, issue #322 CLOSED) — `rateLimit.store: "redis://..."`
+  now works at every level (site already worked; route and consumer were previously accepted
+  and syntax-validated but always enforced in-memory regardless of the value). Each level gets
+  its own Redis key scope so buckets never collide: site uses the site label (unchanged),
+  per-route uses the new `rate_limit::redis_route_scope` → `"route\0{site_label}\0{route_key}"`,
+  per-consumer uses the fixed literal `"consumer"` with the username as the client key (mirrors
+  the in-memory limiter's `\0`-tagged namespaces from #303/#304 — see decision #14). Renamed
+  `RedisRateLimiter::check`'s `site_label` parameter → `scope_label` throughout
+  `crates/conduit-ratelimit/src/redis.rs` since it's no longer site-only.
+  **The real bug this issue was actually about**: `connect_redis_rate_limiter_if_configured`
+  (`src/server/builder.rs`) — the function deciding whether to open a Redis connection at
+  startup — only ever scanned site-level `rate_limit.store`. A config using Redis *only* at
+  route or consumer level would never trigger a connection, so `AppState.redis_rate_limiter`
+  stayed `None` forever and the new route/consumer wiring above would have silently been dead
+  code. New `find_redis_rate_limit_store(config) -> Option<String>` scans site → route → consumer,
+  first match wins (matches the pre-existing single-connection-per-process design — only one
+  Redis URL is ever actually connected, confirmed intentional and now explicitly documented in
+  `docs/configuration.md` rather than left implicit).
+  **Second commit, folded in as a fast-follow before merge** (found by `security-engineer`'s
+  own review, not filed separately): `feature_warnings()`'s Redis-without-`--features redis`
+  warning had the identical site-only scan gap — before #322 that was correct (route/consumer
+  Redis was always a no-op regardless of the compiled feature), but after #322 it needed to
+  cover all three levels too, since an operator now silently loses cross-replica quota
+  enforcement with zero warning if they configure Redis only at route/consumer level on a
+  binary built without the feature. New `site_uses_redis_store()` mirrors `find_redis_rate_limit_store`'s
+  scan (bool instead of URL). Both new-code commits negative-control verified (temporarily
+  reverted to the old site-only scan, confirmed the new route/consumer tests fail with the
+  exact pre-fix symptom, restored, confirmed green) — once by the conductor, once independently
+  by `security-engineer` re-deriving its own negative control rather than trusting the report.
+  **Third commit, docs-only**: both `security-engineer` and `gitar-bot` independently flagged
+  the same nuance — the single-shared-connection design means genuinely different Redis URLs
+  configured across levels silently share whichever one was discovered first, with no warning.
+  Documented explicitly in `docs/configuration.md` rather than changed; the actual enhancement
+  (warn on mismatched URLs, and/or re-scan on hot-reload — `connect_redis_rate_limiter_if_configured`
+  is cold-startup-only, confirmed via full-tree grep to have exactly one call site) filed as
+  [#357](https://github.com/lopatnov/conduit/issues/357) rather than folded in, since it needs
+  its own scope decision (warn-only vs. hot-reconnect) rather than being a mechanical fix.
+  `security-engineer` reviewed and PASSed all three commits individually against each new head
+  SHA in turn (per the "PASS is only valid for the exact SHA reviewed" rule) — resumed the same
+  agent via `SendMessage` for the second and third rounds rather than re-briefing from scratch,
+  since each round only needed to verify an incremental diff against context the agent already
+  had. `docs/configuration.md`'s stale "Redis only takes effect at the site level" paragraph and
+  `schema/conduit.schema.json`'s matching per-field descriptions (route-level `store`,
+  consumer-level `RateLimitConfigInline.store`) both updated to reflect the new reality.
+  16/16 CI checks green (Footprint report is informational-only, not a merge gate).
 
 ---
 
