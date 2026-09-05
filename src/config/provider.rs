@@ -38,19 +38,40 @@ pub type FileProvider = conduit_config_core::provider::FileProvider<AppConfig>;
 
 /// Build a [`FileProvider`] for `path`, pre-wired to reject configs that
 /// fail [`validate::validate`].
+///
+/// `conduit_config_core::provider::Validator<C>`'s own contract has no
+/// concept of severity — it treats any non-empty `Vec<ValidationError>` as
+/// a load failure. Advisory findings (e.g. a still-valid cert nearing
+/// expiry, issue #191) must not be treated the same as a real config
+/// error, so this closure partitions them itself before returning: warnings
+/// are logged and swallowed, only hard errors are handed back — same split
+/// `src/cli/serve.rs::run()` and the admin `/reload` handler already do
+/// (issue #253).
 pub fn file_provider(path: impl Into<std::path::PathBuf>) -> FileProvider {
-    FileProvider::new(path).with_validator(validate::validate)
+    FileProvider::new(path).with_validator(|cfg| {
+        let (warnings, hard_errors) = validate::partition_by_severity(validate::validate(cfg));
+        for w in &warnings {
+            tracing::warn!("config: {}: {}", w.path, w.message);
+        }
+        hard_errors
+    })
 }
 
 /// Load a config file, validate it, and return the [`AppConfig`].
 ///
 /// Returns an error if the file cannot be read, fails to parse, or has
-/// validation errors (duplicate ports, etc.).
+/// hard validation errors (duplicate ports, etc.). Advisory findings (e.g.
+/// a still-valid cert nearing expiry, issue #191) are logged but do not
+/// fail the load — same split as [`file_provider`]'s validator and
+/// `src/cli/serve.rs::run()` (issue #253).
 pub fn load_and_validate(path: &Path) -> Result<AppConfig> {
     let cfg = load_config(path)?;
-    let errors = validate::validate(&cfg);
-    if !errors.is_empty() {
-        let msgs: Vec<String> = errors
+    let (warnings, hard_errors) = validate::partition_by_severity(validate::validate(&cfg));
+    for w in &warnings {
+        tracing::warn!("config: {}: {}", w.path, w.message);
+    }
+    if !hard_errors.is_empty() {
+        let msgs: Vec<String> = hard_errors
             .iter()
             .map(|e| format!("{}: {}", e.path, e.message))
             .collect();
@@ -82,6 +103,44 @@ mod tests {
 
     const MINIMAL: &str = r#"{"global":{"admin":{"bind":"127.0.0.1:0"}},"sites":[{"port":0}]}"#;
 
+    /// Generate a self-signed cert/key pair expiring 15 days from now —
+    /// still valid, but inside `check_cert_expiry`'s 30-day warning window
+    /// (issue #191/#253).
+    fn near_expiry_cert_pair() -> (String, String) {
+        let kp = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
+        params.not_before = rcgen::date_time_ymd(2020, 1, 1);
+        params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(15);
+        let cert = params.self_signed(&kp).unwrap();
+        (cert.pem(), kp.serialize_pem())
+    }
+
+    /// Write a config referencing a near-expiry (but valid) TLS cert/key
+    /// pair, returning the temp dir (keeps cert/key/config files alive) and
+    /// the config file path.
+    fn write_near_expiry_tls_config() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let (cert_pem, key_pem) = near_expiry_cert_pair();
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        std::fs::write(&cert_path, cert_pem).unwrap();
+        std::fs::write(&key_path, key_pem).unwrap();
+
+        // FileProvider<AppConfig>::load() deserializes straight into
+        // AppConfig with no ConfigFile-enum shorthand normalization (that
+        // only happens in the root crate's own load_config(), which
+        // load_and_validate() uses) — so this needs the real shape
+        // (explicit `sites` array), not the "Single" catch-all shorthand.
+        let config_path = dir.path().join("conduit.json");
+        let json = format!(
+            r#"{{"sites": [{{"port": 0, "tls": {{"cert": {:?}, "key": {:?}}}}}]}}"#,
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap()
+        );
+        std::fs::write(&config_path, json).unwrap();
+        (dir, config_path)
+    }
+
     // ── load_and_validate ─────────────────────────────────────────────────────
 
     #[test]
@@ -99,6 +158,22 @@ mod tests {
     fn load_and_validate_rejects_parse_error() {
         let (_f, path) = write_config(r#"{"port": "not-a-number"}"#);
         assert!(load_and_validate(&path).is_err());
+    }
+
+    #[test]
+    fn load_and_validate_accepts_near_expiry_cert_as_warning_not_error() {
+        // Regression test for #253: a near-expiry-but-valid cert produces
+        // only a Severity::Warning finding (issue #191) — load_and_validate
+        // must not treat that the same as a hard validation error the way
+        // it did before this fix (any non-empty Vec<ValidationError> was
+        // treated as fatal, warnings included).
+        let (_dir, path) = write_near_expiry_tls_config();
+        let result = load_and_validate(&path);
+        assert!(
+            result.is_ok(),
+            "a near-expiry (but valid) cert must not fail the load: {:?}",
+            result.err()
+        );
     }
 
     // ── file_provider ─────────────────────────────────────────────────────────
@@ -119,6 +194,27 @@ mod tests {
         assert!(
             result.is_err(),
             "duplicate host:port must be rejected by the wired validator"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_provider_accepts_near_expiry_cert_as_warning_not_error() {
+        // Regression test for #253 — same as load_and_validate's version
+        // above, but through FileProvider's own with_validator closure,
+        // which has the identical bug potential (the generic Validator<C>
+        // contract treats any non-empty Vec<ValidationError> as fatal).
+        let (_dir, path) = write_near_expiry_tls_config();
+        let provider = file_provider(&path);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let result = provider.run(tx).await;
+        assert!(
+            result.is_ok(),
+            "a near-expiry (but valid) cert must not fail the load: {:?}",
+            result.err()
+        );
+        assert!(
+            rx.recv().await.is_some(),
+            "the config must still be sent to the receiver"
         );
     }
 }
