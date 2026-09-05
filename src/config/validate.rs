@@ -237,19 +237,18 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
     }
 
     // ── Redis (feature: redis) ────────────────────────────────────────────────
+    //
+    // Checks site, route, and consumer levels alike (issue #322 gave the
+    // latter two real effect when `redis` *is* compiled — before that, a
+    // route/consumer `store: "redis://..."` was always a no-op regardless of
+    // this feature, so warning about it there would have been misleading).
     #[cfg(not(feature = "redis"))]
     {
-        let uses_redis = site
-            .rate_limit
-            .as_ref()
-            .and_then(|rl| rl.store.as_deref())
-            .map(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
-            .unwrap_or(false);
-        if uses_redis {
+        if site_uses_redis_store(site) {
             warnings.push(format!(
-                "sites[{i}].rateLimit.store uses Redis but Conduit was compiled without the \
-                 `redis` feature — falling back to in-memory rate limiting. \
-                 Recompile with `--features redis` to enable."
+                "sites[{i}].rateLimit.store (site, route, or consumer level) uses Redis but \
+                 Conduit was compiled without the `redis` feature — falling back to in-memory \
+                 rate limiting everywhere. Recompile with `--features redis` to enable."
             ));
         }
     }
@@ -407,6 +406,54 @@ fn site_has_cache_config(site: &SiteConfig) -> bool {
             )
         }),
         _ => false,
+    }
+}
+
+/// Return `true` when `site`'s site-, route-, or consumer-level `rateLimit`
+/// configures a `redis://`/`rediss://` store — mirrors
+/// `src/server/builder.rs::find_redis_rate_limit_store`'s scan (issue #322),
+/// but only needs a yes/no answer here rather than the actual URL.
+#[cfg(not(feature = "redis"))]
+fn site_uses_redis_store(site: &SiteConfig) -> bool {
+    fn is_redis_store(store: &str) -> bool {
+        store.starts_with("redis://") || store.starts_with("rediss://")
+    }
+
+    let site_level = site
+        .rate_limit
+        .as_ref()
+        .and_then(|rl| rl.store.as_deref())
+        .is_some_and(is_redis_store);
+    if site_level {
+        return true;
+    }
+
+    let route_level = matches!(&site.proxy, Some(ProxyConfig::Routes(routes)) if routes.values().any(|t| {
+        matches!(t, ProxyRouteTarget::Full(cfg) if cfg
+            .rate_limit
+            .as_ref()
+            .and_then(|rl| rl.store.as_deref())
+            .is_some_and(is_redis_store))
+    }));
+    if route_level {
+        return true;
+    }
+
+    #[cfg(feature = "consumers")]
+    {
+        site.consumers.as_ref().is_some_and(|c| {
+            c.consumers.iter().any(|consumer| {
+                consumer
+                    .rate_limit
+                    .as_ref()
+                    .and_then(|rl| rl.store.as_deref())
+                    .is_some_and(is_redis_store)
+            })
+        })
+    }
+    #[cfg(not(feature = "consumers"))]
+    {
+        false
     }
 }
 
