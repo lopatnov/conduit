@@ -2356,6 +2356,15 @@ counter's admission ceiling rising from `limit` to `limit + burst` within the cu
 window, rather than a continuously-refilling allowance like the in-memory token
 bucket's burst.
 
+**Only one Redis connection is ever established per process**, regardless of how many
+levels configure a `store` URL. At startup Conduit scans site, then route, then
+consumer `rateLimit.store` values and connects to the *first* `redis://`/`rediss://`
+URL it finds; every level that configures Redis shares that one connection. If
+different levels are configured with genuinely different Redis URLs, only the
+first-discovered one is actually used — the others silently share it rather than each
+getting their own connection. Point every level's `store` at the same Redis
+instance/URL if you use Redis at more than one level.
+
 ---
 
 ## Request / Response Transform
