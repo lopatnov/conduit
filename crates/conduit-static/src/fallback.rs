@@ -194,6 +194,17 @@ async fn write_maybe_compressed(
         all_extra.push(("vary".to_owned(), "accept-encoding".to_owned()));
         return write_response(session, status, content_type, body, &all_extra).await;
     }
+    // Compression was configured but not applied to this particular response
+    // (client sent no Accept-Encoding, or the body was below minBytes) — the
+    // representation still varies by Accept-Encoding, so a shared cache must
+    // not store this uncompressed body under a key that ignores it (it could
+    // then serve this exact body to a client that did request compression).
+    #[cfg(feature = "compression")]
+    if compress.is_some() {
+        let mut all_extra = extra.to_vec();
+        all_extra.push(("vary".to_owned(), "accept-encoding".to_owned()));
+        return write_response(session, status, content_type, body, &all_extra).await;
+    }
     write_response(session, status, content_type, body, extra).await
 }
 

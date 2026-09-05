@@ -170,9 +170,9 @@ pub async fn handle_static(
     // and the client accepts the encoding.  This avoids CPU-intensive on-the-fly
     // compression for assets that were pre-compressed at build time.
     if options.pre_compressed.unwrap_or(false) {
-        if let Some((pre_path, encoding)) = find_pre_compressed(&file_path, accept_enc).await {
-            let pre_meta = stat_no_symlink(&pre_path).await;
-            let pre_size = pre_meta.map(|m| m.len()).unwrap_or(0);
+        if let Some((pre_path, encoding, pre_size)) =
+            resolve_pre_compressed(&file_path, accept_enc).await
+        {
             serve_pre_compressed(
                 session,
                 &pre_path,
@@ -404,6 +404,42 @@ async fn find_pre_compressed(
         }
     }
     None
+}
+
+/// Re-stat an already-`find_pre_compressed`-confirmed candidate, returning
+/// its current size.
+///
+/// Split out from [`resolve_pre_compressed`] specifically so this half —
+/// the actual TOCTOU guard — is independently testable: calling
+/// `resolve_pre_compressed` again after removing the file would re-run
+/// `find_pre_compressed` too and short-circuit before ever reaching this
+/// re-stat, so a test built that way would prove nothing about this
+/// function's own failure handling.
+///
+/// On a failed re-stat (the sibling was removed or replaced since
+/// `find_pre_compressed` confirmed it), returns `None` so the caller falls
+/// through to serving the uncompressed original instead of defaulting to a
+/// `pre_size` of `0`, which would send a 200 with `content-length: 0` for
+/// an asset that actually exists uncompressed.
+async fn confirm_pre_compressed(
+    pre_path: PathBuf,
+    encoding: &'static str,
+) -> Option<(PathBuf, &'static str, u64)> {
+    let pre_size = stat_no_symlink(&pre_path).await?.len();
+    Some((pre_path, encoding, pre_size))
+}
+
+/// Resolve a pre-compressed sibling to serve, including its current size.
+///
+/// Guards the same TOCTOU window as the main file check — see
+/// [`confirm_pre_compressed`]'s doc comment for why the re-stat is a
+/// separate function rather than inlined here.
+async fn resolve_pre_compressed(
+    path: &Path,
+    accept_enc: &AcceptEncoding,
+) -> Option<(PathBuf, &'static str, u64)> {
+    let (pre_path, encoding) = find_pre_compressed(path, accept_enc).await?;
+    confirm_pre_compressed(pre_path, encoding).await
 }
 
 /// Serve a pre-compressed file directly — no on-the-fly encoding needed.
@@ -653,6 +689,12 @@ fn make_cache_control(options: &StaticOptions) -> String {
 }
 
 fn parse_range(header: &str, total: u64) -> Option<(u64, u64)> {
+    if total == 0 {
+        // No satisfiable range exists for an empty file — bail out before
+        // any `total - 1` subtraction, which would underflow (panics with
+        // overflow checks enabled, wraps and returns None otherwise).
+        return None;
+    }
     let s = header.strip_prefix("bytes=")?;
     if let Some(suffix) = s.strip_prefix('-') {
         let n: u64 = suffix.trim().parse().ok()?;
@@ -719,6 +761,23 @@ fn sanitize_path(path: &str) -> String {
             ".." => {
                 parts.pop();
             }
+            // A colon-bearing segment enables two distinct Windows-specific
+            // escapes if let through: a drive prefix like `C:` makes
+            // `PathBuf::join` treat the rest as an absolute path (replacing
+            // `root` entirely, since a prefix+root is "absolute" per
+            // `Path::join`'s own documented behavior — verified: `find_file`'s
+            // `root.join(rel)` would resolve straight to `C:/Windows/win.ini`,
+            // not under `root`), and `name.txt:stream` targets an NTFS
+            // alternate data stream instead of the plain file. Neither shape
+            // is meaningful outside Windows — `:` is an ordinary, legal
+            // filename character on Linux/macOS (this repo's actual runtime
+            // targets), so gate the drop to Windows builds only rather than
+            // silently mismatching a legitimately colon-named file on every
+            // platform (Gitar + security-engineer review on PR #348). Drop
+            // the segment rather than rejecting the whole request — matches
+            // how "."/".."/empty segments are already silently filtered out
+            // just above.
+            s if cfg!(windows) && s.contains(':') => {}
             s => parts.push(s),
         }
     }
@@ -778,6 +837,71 @@ mod tests {
         assert!(
             stat_no_symlink(&real_file).await.is_some(),
             "regular file must be served"
+        );
+    }
+
+    // ── resolve_pre_compressed ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn resolve_pre_compressed_returns_size_when_sibling_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("app.js");
+        std::fs::write(&base, "irrelevant").unwrap();
+        std::fs::write(dir.path().join("app.js.gz"), b"compressed-bytes").unwrap();
+
+        let accept_enc = AcceptEncoding {
+            gzip: true,
+            ..Default::default()
+        };
+        let (pre_path, encoding, pre_size) = resolve_pre_compressed(&base, &accept_enc)
+            .await
+            .expect("gz sibling exists and is confirmed by both stats");
+        assert_eq!(pre_path, dir.path().join("app.js.gz"));
+        assert_eq!(encoding, "gzip");
+        assert_eq!(pre_size, "compressed-bytes".len() as u64);
+    }
+
+    #[tokio::test]
+    async fn confirm_pre_compressed_returns_size_when_file_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let gz_path = dir.path().join("app.js.gz");
+        std::fs::write(&gz_path, b"compressed-bytes").unwrap();
+
+        let (returned_path, encoding, pre_size) = confirm_pre_compressed(gz_path.clone(), "gzip")
+            .await
+            .expect("file exists, re-stat must succeed");
+        assert_eq!(returned_path, gz_path);
+        assert_eq!(encoding, "gzip");
+        assert_eq!(pre_size, "compressed-bytes".len() as u64);
+    }
+
+    #[tokio::test]
+    async fn confirm_pre_compressed_falls_through_when_file_removed() {
+        // Directly exercises the TOCTOU guard itself (not resolve_pre_compressed,
+        // which would re-run find_pre_compressed internally and short-circuit
+        // before ever reaching this re-stat if the file were already gone —
+        // confirm_pre_compressed exists precisely so this failure path is
+        // reachable in a deterministic test). Before the fix, the caller
+        // defaulted `pre_size` to 0 and still served a 200 with an empty body
+        // for a file confirmed present moments earlier; the fix must return
+        // `None` here so the caller falls through to the uncompressed original.
+        let dir = tempfile::tempdir().unwrap();
+        let gz_path = dir.path().join("app.js.gz");
+        std::fs::write(&gz_path, b"compressed-bytes").unwrap();
+
+        // Confirm the happy path works before removing the file.
+        assert!(
+            confirm_pre_compressed(gz_path.clone(), "gzip")
+                .await
+                .is_some(),
+            "sanity: re-stat must succeed while the file still exists"
+        );
+
+        std::fs::remove_file(&gz_path).unwrap();
+
+        assert!(
+            confirm_pre_compressed(gz_path, "gzip").await.is_none(),
+            "must fall through, not default pre_size to 0, when the re-stat fails"
         );
     }
 
@@ -845,6 +969,39 @@ mod tests {
     #[test]
     fn sanitize_path_normal_path() {
         assert_eq!(sanitize_path("images/logo.png"), "images/logo.png");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn sanitize_path_drops_windows_drive_prefix() {
+        // `root.join("C:/Windows/win.ini")` on Windows treats the drive
+        // prefix as an absolute path and replaces `root` entirely — the
+        // colon-bearing segment must never survive sanitization. Windows-only:
+        // `:` is an ordinary filename character on Linux/macOS, where this
+        // escape doesn't exist (see sanitize_path_keeps_colon_on_non_windows).
+        assert_eq!(sanitize_path("C:/Windows/win.ini"), "Windows/win.ini");
+        assert_eq!(sanitize_path("/C:/Windows/win.ini"), "Windows/win.ini");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn sanitize_path_drops_ntfs_alternate_data_stream_suffix() {
+        // `name.txt:hidden` targets an NTFS alternate data stream on Windows
+        // rather than the plain file — reject the whole segment, not just
+        // the drive-prefix shape.
+        assert_eq!(sanitize_path("secret.txt:hidden"), "");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn sanitize_path_keeps_colon_on_non_windows() {
+        // `:` is a legal filename character on Linux/macOS (this repo's
+        // actual runtime targets) and neither Windows escape (drive-prefix
+        // absolute-path replacement, NTFS alternate data streams) exists
+        // there — a legitimately colon-named file must stay reachable
+        // rather than being silently dropped/mismatched (Gitar +
+        // security-engineer review on PR #348).
+        assert_eq!(sanitize_path("secret.txt:hidden"), "secret.txt:hidden");
     }
 
     // ── has_dotfile ───────────────────────────────────────────────────────────
@@ -918,6 +1075,16 @@ mod tests {
     fn parse_range_suffix_zero_invalid() {
         // bytes=-0 → zero suffix length is invalid
         assert!(parse_range("bytes=-0", 1000).is_none());
+    }
+
+    #[test]
+    fn parse_range_empty_file_no_panic() {
+        // total=0 must not reach the `total - 1` subtraction (underflow
+        // panics with overflow checks enabled) — no range is satisfiable
+        // for an empty file regardless of header shape.
+        assert!(parse_range("bytes=0-", 0).is_none());
+        assert!(parse_range("bytes=0-0", 0).is_none());
+        assert!(parse_range("bytes=-1", 0).is_none());
     }
 
     // ── make_cache_control ────────────────────────────────────────────────────

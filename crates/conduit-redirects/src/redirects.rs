@@ -72,14 +72,29 @@ fn match_rule(from: &str, to: &str, path: &str) -> Option<String> {
         }
     }
 
-    // Substitute captured values into the `to` template.
-    // Sort by descending name length so that `:id2` is replaced before `:id`,
-    // preventing shorter names from partially matching longer-named placeholders.
+    // Substitute captured values into the `to` template in a single pass, so
+    // that a captured *value* containing `:name` text is never itself
+    // re-substituted by a later replacement (e.g. `from: "/x/:a/:b"`,
+    // `to: "/y/:a/:b"`, path `/x/:b/zzz` must produce `/y/:b/zzz`, not
+    // `/y/zzz/zzz` — a path segment may legally contain `:`). Longest names
+    // are tried first so `:id2` wins over `:id`.
     captures.sort_by_key(|c| std::cmp::Reverse(c.0.len()));
-    let mut result = to.to_string();
-    for (name, value) in &captures {
-        result = result.replace(&format!(":{name}"), value);
+    let mut result = String::with_capacity(to.len());
+    let mut rest = to;
+    'outer: while let Some(idx) = rest.find(':') {
+        result.push_str(&rest[..idx]);
+        let after = &rest[idx + 1..];
+        for (name, value) in &captures {
+            if let Some(stripped) = after.strip_prefix(name) {
+                result.push_str(value);
+                rest = stripped;
+                continue 'outer;
+            }
+        }
+        result.push(':');
+        rest = after;
     }
+    result.push_str(rest);
     Some(result)
 }
 
@@ -186,6 +201,20 @@ mod tests {
         assert_eq!(
             apply_redirects(&rules, "/users/42/posts/7"),
             Some(("/u/42/p/7".into(), 301))
+        );
+    }
+
+    #[test]
+    fn captured_value_is_not_re_substituted() {
+        // A captured value that itself looks like a `:name` placeholder must
+        // not be rewritten by a later substitution — a path segment may
+        // legally contain ':'. Without a single-pass substitution, capturing
+        // a=":b" then substituting :a first produces "/y/:b/:b", and a
+        // second pass over :b then wrongly rewrites that into "/y/zzz/zzz".
+        let rules = vec![rule("/x/:a/:b", "/y/:a/:b", 301)];
+        assert_eq!(
+            apply_redirects(&rules, "/x/:b/zzz"),
+            Some(("/y/:b/zzz".into(), 301))
         );
     }
 

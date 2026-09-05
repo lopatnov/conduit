@@ -362,6 +362,16 @@ fn fallback_body_not_compressed_without_accept_encoding() {
         resp.headers().get("content-encoding").is_none(),
         "no Content-Encoding without a client Accept-Encoding header"
     );
+    // Compression is configured for this site, so the representation still
+    // varies by Accept-Encoding even though this particular response wasn't
+    // compressed — a shared cache must not store this body under a key that
+    // ignores it (issue found reviewing PR #347/#348: Vary was previously
+    // only emitted when compression was actually applied).
+    assert_eq!(
+        resp.headers().get("vary").map(|v| v.to_str().unwrap()),
+        Some("accept-encoding"),
+        "Vary must be present whenever compression is configured, not only when applied"
+    );
     let body: serde_json::Value = resp.json().expect("JSON body");
     assert_eq!(body["message"], large_body);
 }
