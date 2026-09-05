@@ -1348,7 +1348,7 @@ healthCheck:
 | `unhealthyLatencyMs`        | number   | —             | Health-check probe responses slower than this (ms) count as failures, even if the status code is 2xx                                                 |
 | `slowStartSecs`             | number   | `0`           | Traffic ramp-up period after recovery. ⚠️ Not currently wired into routing — see [Circuit Breaker](#circuit-breaker) note below.                     |
 | `maxConnectionsPerUpstream` | number   | —             | [Circuit breaker](#circuit-breaker) threshold                                                                                                        |
-| `prewarmConnections`        | number   | `0`           | Pre-establish N keepalive connections at startup (max 8). ⚠️ Currently warms a throwaway client, not Conduit's real upstream pool — see note below.  |
+| `prewarmConnections`        | number   | `0`           | Pre-establish N keepalive connections at startup (max 8). 🚫 Blocked — warms a throwaway client, not Conduit's real upstream pool (Pingora 0.8 has no public API for it) — see note below.  |
 | `includeUpstreams`          | bool     | `false`       | Include upstream health in `/__health__` response                                                                                                    |
 
 ---
@@ -1390,9 +1390,12 @@ load-balance strategy, across all three config shapes (`proxy: {}` map,
 > see the repo's issue tracker for current status:
 > - `slowStartSecs` is parsed but not yet wired into any strategy's selection
 >   logic — configuring it currently has no effect on traffic ramp-up.
-> - `prewarmConnections` currently warms a short-lived, throwaway HTTP
->   client rather than Conduit's real upstream connection pool, so it
->   doesn't yet deliver its intended latency benefit for real traffic.
+> - **`prewarmConnections` is blocked, not just unimplemented.** It warms a
+>   short-lived, throwaway HTTP client rather than Conduit's real upstream
+>   connection pool — Pingora 0.8 has no public API to reach or pre-populate
+>   the pool `upstream_peer()` actually uses for real traffic (`HttpProxy`'s
+>   `client_upstream` field is private with no accessor). Same class of gap
+>   as OCSP stapling / the request-queue item below — waiting on Pingora 0.9+.
 
 ```yaml
 # YAML
