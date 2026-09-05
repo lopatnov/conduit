@@ -57,8 +57,16 @@ fn check_redis_store_consistency(config: &AppConfig, errors: &mut Vec<Validation
     }
 
     if distinct.len() > 1 {
-        let redacted: Vec<std::borrow::Cow<'_, str>> =
-            distinct.iter().map(|url| redact_url(url)).collect();
+        // `validate_rate_limit` only checks the `redis://`/`rediss://` prefix
+        // on `store` — it doesn't reject embedded control characters, so an
+        // operator-supplied URL could carry a raw newline this far.
+        // `sanitize_for_log` (already used above for other config-derived
+        // values reaching a warning/error message) escapes those before they
+        // can forge a fake log line in this warning's output.
+        let redacted: Vec<String> = distinct
+            .iter()
+            .map(|url| sanitize_for_log(&redact_url(url)))
+            .collect();
         errors.push(ValidationError::warning(
             "rateLimit.store",
             format!(
@@ -68,11 +76,7 @@ fn check_redis_store_consistency(config: &AppConfig, errors: &mut Vec<Validation
                  other level configuring a different URL will silently share that \
                  same connection instead of getting its own. Point every level at \
                  the same Redis instance to avoid surprises.",
-                redacted
-                    .iter()
-                    .map(std::convert::AsRef::as_ref)
-                    .collect::<Vec<&str>>()
-                    .join(", "),
+                redacted.join(", "),
                 redacted[0]
             ),
         ));
@@ -2454,6 +2458,36 @@ mod tests {
         assert!(
             warning.message.contains("redis://***@site-host:6379"),
             "redacted URL must still be identifiable: {}",
+            warning.message
+        );
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn redis_store_mismatch_warning_escapes_embedded_control_chars() {
+        // CodeRabbit finding on PR #359: validate_rate_limit only checks the
+        // redis://\rediss:// prefix on `store`, not for embedded control
+        // characters -- a raw newline could otherwise forge a fake log line
+        // in this warning's tracing::warn! output. sanitize_for_log must
+        // escape it before it reaches the message.
+        let e = errs(
+            r#"{ "port": 8080, "proxy": { "/api": { "targets": ["http://127.0.0.1:9"],
+                 "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://route-host:6379" } } },
+                 "rateLimit": { "windowSecs": 60, "limit": 100,
+                   "store": "redis://a\nfake log line: [ERROR] pwned:6379" } }"#,
+        );
+        let warning = e
+            .iter()
+            .find(|err| err.path == "rateLimit.store")
+            .unwrap_or_else(|| panic!("missing mismatch warning: {e:?}"));
+        assert!(
+            !warning.message.contains('\n'),
+            "an embedded newline must not survive into the warning message: {}",
+            warning.message
+        );
+        assert!(
+            warning.message.contains("\\nfake log line"),
+            "the newline must be visibly escaped, not silently dropped: {}",
             warning.message
         );
     }
