@@ -7,6 +7,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-09-05
+
 ### Security
 
 - **CORS `credentials: true` now requires an explicit, non-wildcard `origins`
@@ -675,7 +677,8 @@ compile-time feature-flag system so the binary stays lean for simple deployments
 - **Release pipeline** — `cross`-compiled binaries for six targets; Docker image
   (musl + `FROM scratch`); npm wrapper (`npx conduit`); crates.io publish.
 
-[Unreleased]: https://github.com/lopatnov/conduit/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/lopatnov/conduit/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/lopatnov/conduit/compare/v1.3.0...v1.4.0
 [1.1.0]: https://github.com/lopatnov/conduit/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/lopatnov/conduit/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/lopatnov/conduit/compare/v0.2.0...v0.3.0
