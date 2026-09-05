@@ -456,11 +456,11 @@
             "skipPaths":  { "type": "array", "items": { "type": "string" } },
             "store": {
               "type": "string",
-              "description": "Accepted and syntax-validated, but has no effect for per-route rate limiting, which always uses in-memory state — Redis applies only at the site level.",
+              "description": "Backend for this route's rate-limiter state (issue #322). \"memory\" (default) uses an in-process DashMap; a Redis URL (e.g. \"redis://127.0.0.1:6379\") uses a Redis fixed-window counter, scoped per route so it never shares a counter with the site-level check or another route.",
               "examples": ["memory", "redis://127.0.0.1:6379"]
             }
           },
-          "description": "Per-route rate limit (in addition to site-level rateLimit). dryRun/store are site-level-only fields and have no effect here."
+          "description": "Per-route rate limit (in addition to site-level rateLimit). dryRun is a site/consumer-only field and has no effect here (the schema rejects it at this level)."
         },
         "priority": {
           "type": "integer",
@@ -721,7 +721,7 @@
         "algorithm":  { "type": "string", "enum": ["token-bucket"] },
         "keyBy":      { "type": "string", "pattern": "^(ip|header:[!#$%&'*+.^_`|~0-9A-Za-z-]+)$", "description": "Validated for syntax, but has no effect at consumer level — the bucket key is always \"consumer:{username}\", not derived from the request." },
         "skipPaths":  { "type": "array", "items": { "type": "string" } },
-        "store":      { "type": "string", "description": "Validated for syntax, but has no effect at consumer level yet — always enforces in-memory." },
+        "store":      { "type": "string", "description": "Backend for this consumer's rate-limiter state (issue #322). \"memory\" (default) uses an in-process DashMap; a Redis URL uses a Redis fixed-window counter under the fixed scope \"consumer\", with the username as the client key (the consumer's quota stays global across sites, per its keyBy note above)." },
         "dryRun":     { "type": "boolean", "description": "Log violations but allow the request through instead of returning 429." }
       }
     }

@@ -608,6 +608,8 @@ impl ConduitProxy {
                 cfg,
                 path: guards.script_path.clone(),
                 rate_limiter: std::sync::Arc::clone(&self.state.rate_limiter),
+                #[cfg(feature = "redis")]
+                redis_rate_limiter: self.state.redis_rate_limiter.clone(),
             });
         }
 
@@ -748,6 +750,34 @@ impl ConduitProxy {
             return Ok(false);
         }
         let client_key = rate_limit::extract_client_key(&rl_cfg, session);
+        // #322: route-level `store: "redis://..."` now actually routes
+        // through Redis, mirroring the site-level check in
+        // `filter::chain::rate_limit_allowed`. Scoped by
+        // `redis_route_scope` (site+route, no client_key folded in — the
+        // Redis client takes that as its own parameter) so two routes
+        // (or the same route on two sites) never share a counter.
+        #[cfg(feature = "redis")]
+        if rl_cfg
+            .store
+            .as_deref()
+            .is_some_and(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
+        {
+            if let Some(rrl) = &self.state.redis_rate_limiter {
+                let scope = rate_limit::redis_route_scope(site_label, &route_key);
+                let allowed = rrl
+                    .check(
+                        &scope,
+                        &client_key,
+                        rl_cfg.limit,
+                        rl_cfg.burst.unwrap_or(0),
+                        rl_cfg.window_secs,
+                    )
+                    .await;
+                return self
+                    .finish_route_rate_limit(session, req_ctx, &route_key, allowed)
+                    .await;
+            }
+        }
         let key = rate_limit::route_key(site_label, &route_key, &client_key);
         // Routed through the shared MAX_BUCKETS-capped admission point
         // (issue #305) instead of a hand-rolled, uncapped
@@ -755,6 +785,24 @@ impl ConduitProxy {
         // documented `keyBy: "header:X-Name"` usage pattern, since this map
         // is shared with the site-level limiter's own cap check.
         let allowed = conduit_ratelimit::check_key_for(&self.state.rate_limiter, &key, &rl_cfg);
+        self.finish_route_rate_limit(session, req_ctx, &route_key, allowed)
+            .await
+    }
+
+    /// Shared tail of [`Self::enforce_route_rate_limit`] for both the Redis
+    /// and in-memory paths: on rejection, write 429 and unwind the inflight
+    /// counters. Route-level `rateLimit` has no `dryRun` mode (the schema
+    /// rejects the field there — it's a site/consumer-only option, see
+    /// `docs/configuration.md`'s rate-limiting section), so unlike the
+    /// site-level and per-consumer checks, there is no warn-and-continue
+    /// branch here.
+    async fn finish_route_rate_limit(
+        &self,
+        session: &mut Session,
+        req_ctx: &RequestCtx,
+        route_key: &str,
+        allowed: bool,
+    ) -> Result<bool> {
         if allowed {
             return Ok(false);
         }

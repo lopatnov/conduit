@@ -2342,16 +2342,19 @@ are checked at config-load and reload time for site-level, per-route, and per-co
 contains a space and isn't a valid HTTP header name) fails validation instead of
 silently collapsing every client into one shared bucket at runtime.
 
-**`store` (Redis) currently only takes effect at the site level.** Setting it on a
-per-route or per-consumer `rateLimit` is accepted (and validated for syntax) but has no
-effect — both layers always enforce in-memory. `keyBy` is also inert at the consumer
-level specifically (the bucket key is always `consumer:{username}`, not derived from the
-request). `burst`, `skipPaths`, and `dryRun` all work at every level that accepts them —
-`dryRun` isn't accepted at the route level at all (the schema rejects it there; it's a
-site/consumer-only field). `burst` also works under a Redis `store`, not just in-memory —
-implemented as the fixed-window counter's admission ceiling rising from `limit` to
-`limit + burst` within the current window, rather than a continuously-refilling
-allowance like the in-memory token bucket's burst.
+**`store` (Redis) works at every level** — site, per-route, and per-consumer (issue
+#322). Each level uses its own Redis key scope so buckets never collide: site-level
+uses the site label, per-route uses `"route\0{site}\0{route}"`, and per-consumer uses
+the fixed scope `"consumer"` with the consumer's username as the client key (mirroring
+the in-memory limiter's own `\0`-separated key namespaces — see #303/#304). `keyBy` is
+inert at the consumer level specifically, regardless of backend (the bucket key is
+always the username, not derived from the request). `burst`, `skipPaths`, and `dryRun`
+all work at every level that accepts them — `dryRun` isn't accepted at the route level
+at all (the schema rejects it there; it's a site/consumer-only field). `burst` also
+works under a Redis `store`, not just in-memory — implemented as the fixed-window
+counter's admission ceiling rising from `limit` to `limit + burst` within the current
+window, rather than a continuously-refilling allowance like the in-memory token
+bucket's burst.
 
 ---
 
