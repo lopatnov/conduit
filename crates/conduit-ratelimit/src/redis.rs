@@ -12,7 +12,7 @@
 //!
 //! # Redis data model
 //!
-//! Each `(site, client)` pair maps to a Redis string that counts requests in
+//! Each `(scope, client)` pair maps to a Redis string that counts requests in
 //! the current window. A single atomic Lua script (`EVAL`) implements the
 //! counter server-side:
 //!
@@ -24,11 +24,18 @@
 //! return c
 //! ```
 //!
-//! against key `conduit:rl:{site_label}:{window_secs}:{client_key}`.
-//! `site_label` scopes the key so two sites sharing a client key don't share
-//! a counter — the Redis-backend twin of the fix `rate_limit::site_key`/
-//! `route_key` applied to the in-memory limiter (issue #317, mirroring
-//! #303/#304). `EXPIRE` normally runs only on the first request of a window
+//! against key `conduit:rl:{scope_label}:{window_secs}:{client_key}`.
+//! `scope_label` scopes the key so two independent rate-limit scopes sharing
+//! a client key don't share a counter — the Redis-backend twin of the fix
+//! `rate_limit::site_key`/`route_key`/`consumer_key` applied to the in-memory
+//! limiter (issue #317, mirroring #303/#304). Originally site-only (hence the
+//! parameter's earlier name, `site_label`); extended to route and consumer
+//! scopes too (issue #322) — callers pass `site_label` unchanged for the
+//! site-level check, `"route\0{site_label}\0{route_key}"` for per-route, and
+//! the fixed literal `"consumer"` (with the consumer's username carried in
+//! `client_key` instead, since a consumer's quota is intentionally global,
+//! not site-scoped — see `rate_limit::consumer_key`'s own doc) for
+//! per-consumer. `EXPIRE` normally runs only on the first request of a window
 //! (count == 1), and also whenever the key has no TTL at all (self-healing
 //! a key leaked by an older two-round-trip version of this code) — see
 //! `redis_fixed_window_check`'s own doc comment for the full story.
@@ -71,8 +78,10 @@ impl RedisRateLimiter {
         })
     }
 
-    /// Check the rate limit for `client_key` on the site identified by
-    /// `site_label`.
+    /// Check the rate limit for `client_key` within the scope identified by
+    /// `scope_label` — a site label, a `"route\0{site}\0{route}"` tag, or the
+    /// literal `"consumer"` (see this module's doc comment for the full
+    /// per-layer convention).
     ///
     /// Returns `true` when the request is within the limit.
     ///
@@ -92,13 +101,13 @@ impl RedisRateLimiter {
     /// `TokenBucket` and a `WARN` trace is emitted (fail-open).
     pub async fn check(
         &self,
-        site_label: &str,
+        scope_label: &str,
         client_key: &str,
         limit: u64,
         burst: u64,
         window_secs: u64,
     ) -> bool {
-        let redis_key = format!("conduit:rl:{site_label}:{window_secs}:{client_key}");
+        let redis_key = format!("conduit:rl:{scope_label}:{window_secs}:{client_key}");
         let mut conn = self.conn.clone();
 
         // Wrap the two-command sequence in a 50 ms deadline.
@@ -112,26 +121,26 @@ impl RedisRateLimiter {
             Ok(Ok(allowed)) => allowed,
             Ok(Err(e)) => {
                 tracing::warn!(
-                    site = site_label,
+                    scope = scope_label,
                     key_len = client_key.len(),
                     "Redis rate-limit error (memory fallback): {e}"
                 );
-                self.fallback_check(site_label, client_key, limit, burst, window_secs)
+                self.fallback_check(scope_label, client_key, limit, burst, window_secs)
             }
             Err(_timeout) => {
                 tracing::warn!(
-                    site = site_label,
+                    scope = scope_label,
                     key_len = client_key.len(),
                     "Redis rate-limit timed out after 50 ms (memory fallback)"
                 );
-                self.fallback_check(site_label, client_key, limit, burst, window_secs)
+                self.fallback_check(scope_label, client_key, limit, burst, window_secs)
             }
         }
     }
 
     fn fallback_check(
         &self,
-        site_label: &str,
+        scope_label: &str,
         client_key: &str,
         limit: u64,
         burst: u64,
@@ -139,7 +148,7 @@ impl RedisRateLimiter {
     ) -> bool {
         fallback_check_impl(
             &self.fallback,
-            site_label,
+            scope_label,
             client_key,
             limit,
             burst,
@@ -162,7 +171,7 @@ impl RedisRateLimiter {
 /// one; a plain `DashMap` doesn't).
 fn fallback_check_impl(
     fallback: &DashMap<String, TokenBucket>,
-    site_label: &str,
+    scope_label: &str,
     client_key: &str,
     limit: u64,
     burst: u64,
@@ -170,9 +179,9 @@ fn fallback_check_impl(
 ) -> bool {
     // Include limit, burst, and window_secs in the key so that post-reload
     // config changes are picked up immediately rather than reusing a stale
-    // bucket. Include site_label so two sites sharing a client key don't
+    // bucket. Include scope_label so two independent scopes sharing a client key don't
     // share a bucket here either (issue #317).
-    let key = format!("{site_label}:{client_key}:{limit}:{burst}:{window_secs}");
+    let key = format!("{scope_label}:{client_key}:{limit}:{burst}:{window_secs}");
     // Routed through the shared MAX_BUCKETS-capped admission point (issue
     // #305's fallback-path counterpart) instead of an uncapped
     // entry()/or_insert_with() — this map has no cap check of its own.
@@ -271,7 +280,7 @@ mod tests {
     // ── fallback_check_impl (issue #317 regression coverage) ────────────
 
     #[test]
-    fn fallback_check_scopes_by_site_label() {
+    fn fallback_check_scopes_by_scope_label() {
         let fallback: DashMap<String, TokenBucket> = DashMap::new();
         assert!(fallback_check_impl(
             &fallback, "site-a", "1.2.3.4", 100, 0, 60

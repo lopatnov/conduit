@@ -236,6 +236,11 @@ pub struct ConsumersGuard {
     pub path: String,
     /// Shared token-bucket rate limiter, used for the per-consumer rate limit.
     pub rate_limiter: Arc<RateLimiter>,
+    /// Optional Redis-backed rate limiter (may be `None` at startup) — used
+    /// when a consumer's `rateLimit.store` is `"redis://..."` (issue #322).
+    /// Only available when compiled with `--features redis`.
+    #[cfg(feature = "redis")]
+    pub redis_rate_limiter: Option<Arc<RedisRateLimiter>>,
 }
 
 #[cfg(feature = "consumers")]
@@ -272,24 +277,52 @@ impl RequestFilter for ConsumersGuard {
         };
 
         // Per-consumer rate limit — global per consumer, not site-scoped
-        // (see rate_limit::consumer_key's doc for why). `keyBy`/`store` stay
-        // no-ops here by design (schema docs: consumer key is always
-        // "consumer:{username}", Redis backend not wired to this layer yet
-        // — issue #307's remaining scope, tracked separately). `skipPaths`
-        // and `dryRun` are wired below (#307) — nothing in their docs
-        // suggested they were meant to be consumer-level no-ops the way
-        // `keyBy`/`store` are.
+        // (see rate_limit::consumer_key's doc for why). `keyBy` stays a
+        // no-op here by design regardless of backend (schema docs: the
+        // consumer bucket key is always the username, never derived from
+        // the request). `store: "redis://..."` is now honored too (issue
+        // #322) — the Redis scope label is the fixed literal `"consumer"`
+        // (not the username), with the username carried in `client_key`
+        // instead, since `RedisRateLimiter::check`'s Redis key already
+        // folds `client_key` in as its own segment.
         if let Some(rl_cfg) = &consumer.rate_limit {
             let skip = rl_cfg
                 .skip_paths
                 .as_deref()
                 .is_some_and(|sp| auth::is_path_skipped(Some(sp), &self.path));
             if !skip {
-                let key = rate_limit::consumer_key(&consumer.username);
-                // Routed through the shared MAX_BUCKETS-capped admission point
-                // (issue #305) instead of a hand-rolled, uncapped
-                // entry()/or_insert_with() — this map has no cap check of its own.
-                let allowed = conduit_ratelimit::check_key_for(&self.rate_limiter, &key, rl_cfg);
+                #[cfg(feature = "redis")]
+                let allowed = if rl_cfg
+                    .store
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
+                {
+                    if let Some(rrl) = &self.redis_rate_limiter {
+                        rrl.check(
+                            "consumer",
+                            &consumer.username,
+                            rl_cfg.limit,
+                            rl_cfg.burst.unwrap_or(0),
+                            rl_cfg.window_secs,
+                        )
+                        .await
+                    } else {
+                        let key = rate_limit::consumer_key(&consumer.username);
+                        conduit_ratelimit::check_key_for(&self.rate_limiter, &key, rl_cfg)
+                    }
+                } else {
+                    let key = rate_limit::consumer_key(&consumer.username);
+                    // Routed through the shared MAX_BUCKETS-capped admission
+                    // point (issue #305) instead of a hand-rolled, uncapped
+                    // entry()/or_insert_with() — this map has no cap check
+                    // of its own.
+                    conduit_ratelimit::check_key_for(&self.rate_limiter, &key, rl_cfg)
+                };
+                #[cfg(not(feature = "redis"))]
+                let allowed = {
+                    let key = rate_limit::consumer_key(&consumer.username);
+                    conduit_ratelimit::check_key_for(&self.rate_limiter, &key, rl_cfg)
+                };
                 if !allowed {
                     if rl_cfg.dry_run.unwrap_or(false) {
                         tracing::warn!(

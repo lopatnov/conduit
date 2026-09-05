@@ -41,6 +41,16 @@ pub fn route_key(site_label: &str, route_key: &str, client_key: &str) -> String 
     format!("route\0{site_label}\0{route_key}\0{client_key}")
 }
 
+/// Build the Redis-backend scope label for a per-route check:
+/// `route\0{site_label}\0{route_key}`.
+///
+/// Unlike [`route_key`] (the in-memory bucket key), this excludes
+/// `client_key` — `RedisRateLimiter::check` takes the client key as its own
+/// parameter and folds it into the Redis key separately (issue #322).
+pub fn redis_route_scope(site_label: &str, route_key: &str) -> String {
+    format!("route\0{site_label}\0{route_key}")
+}
+
 /// Build the consumer-level bucket key: `consumer\0{username}` — global
 /// per consumer, not site-scoped (see the module-level doc above).
 pub fn consumer_key(username: &str) -> String {
@@ -156,6 +166,17 @@ mod tests {
             "two sites with the same route key and client key must not collide"
         );
         assert_eq!(a, "route\0a.example.com:80\0/api\x001.2.3.4");
+    }
+
+    #[test]
+    fn redis_route_scope_scopes_by_site_label_and_route() {
+        let a = redis_route_scope("a.example.com:80", "/api");
+        let b = redis_route_scope("b.example.com:80", "/api");
+        assert_ne!(
+            a, b,
+            "two sites with the same route key must not collide under Redis (#322)"
+        );
+        assert_eq!(a, "route\0a.example.com:80\0/api");
     }
 
     #[test]
