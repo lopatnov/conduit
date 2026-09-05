@@ -2589,6 +2589,70 @@ recurrence of this specific (now-disproven) mechanism.
   enough to be worth normalizing as a routine post-merge step rather than a surprise each
   time.
 
+### Released v1.4.0 (2026-09-05)
+
+- User asked to release whatever was on `main` as `v1.4.0`. `main` was 5 commits ahead of
+  the last tag (`v1.3.0`): 3 real fixes (#343 CORS `credentials:true` without an origins
+  allowlist — CWE-942; #344 forward-auth letting a client-forged identity header survive
+  when the auth service doesn't return it; #345 Redis rate-limiter TTL-leak race between
+  `INCR`/`EXPIRE`), plus #342 (ACME-challenge routing gated on the `acme` feature) and #346
+  (a Dependabot Actions-group bump) — all already individually reviewed and merged in
+  earlier sessions (see the "PR #152 backlog sweep" entry above), this was pure
+  version-bump bookkeeping, not new feature work.
+- **[PR #361](https://github.com/lopatnov/conduit/pull/361)
+  `chore: bump version to 1.4.0`** (3 commits, squash-merged `af899e5` on `main`) — the
+  usual 4-artifact lockstep (`Cargo.toml`/`Cargo.lock`/`npm/package.json`/
+  `docs/{benchmarks,cli,deployment}.md`) plus `CHANGELOG.md`, which already had an accurate
+  `[Unreleased]` section describing exactly these fixes (added in an earlier session,
+  ahead of this repo's own established lockstep convention catching up to it) — converted
+  to a `[1.4.0]` entry. Two CodeRabbit/Gitar follow-ups fixed before merge: the new
+  `[1.4.0]` heading had no matching link-reference definition (and `[Unreleased]`'s own
+  link was stale since 1.2.0) — fixed; a third comment asking to backfill the *missing*
+  `[1.3.0]` entry (a pre-existing gap unrelated to this PR) was declined with reasoning and
+  the thread resolved, rather than scope-creeping a version bump into a changelog
+  archaeology exercise.
+  `security-engineer` PASSed all three commits (confirmed a genuine no-op version/docs
+  bump with zero `.rs` changes, and separately spot-checked the actual diffs of #342-#346
+  by reading them directly rather than trusting the summary, since those are what's
+  actually being shipped).
+  **New process discovery**: `gh pr merge` failed with "the base branch policy prohibits
+  the merge" despite `gh api .../branches/main/protection` returning 404 ("not
+  protected") — `main` is governed by a **repository ruleset** (a separate, newer GitHub
+  mechanism from classic branch protection, checked via `gh api repos/.../rules/branches/
+  main`), which had `required_review_thread_resolution: true`. Replying to a review
+  thread (what this session's `coderabbit-reply`-style workflow already does) is not the
+  same as *resolving* it — resolution needs the GraphQL `resolveReviewThread` mutation
+  (`gh api graphql`), which this session hadn't been doing on top of replies. Worth adding
+  to the PR checklist: on any repo where this ruleset might be enabled, replying to a
+  thread doesn't clear this gate — check `gh pr view <n> --json mergeStateStatus` for
+  `BLOCKED` before assuming a PR with all-green CI is actually mergeable, and resolve
+  every thread via GraphQL, not just reply to it.
+- **Release pipeline**: tag `v1.4.0` pushed, [`release.yml` run
+  33988572421](https://github.com/lopatnov/conduit/actions/runs/33988572421) — all jobs
+  green (8 cross-compile targets × standard+full, 2 Docker image publishes, 2 Trivy scans,
+  build-provenance attestation, crates.io, npm, GitHub Release). Verified artifacts
+  directly rather than trusting the green checkmark alone: [GitHub Release
+  v1.4.0](https://github.com/lopatnov/conduit/releases/tag/v1.4.0) (not draft/prerelease,
+  all binaries + `SHA256SUMS.txt` present), `crates.io/api/v1/crates/lopatnov-conduit`
+  (`newest_version`/`max_version`/`default_version` all `1.4.0`, `yanked: false` —
+  note: crates.io's API silently returns an empty body without a `User-Agent` header, not
+  an error — needed one to actually see the response), `registry.npmjs.org/@lopatnov/
+  conduit/latest` (`1.4.0`). Docker manifests not independently pulled (no `docker` CLI in
+  this environment and the `gh` token lacked `read:packages` scope for the GHCR API) — relied
+  instead on the pipeline's own two Trivy vulnerability-scan jobs passing, which requires
+  actually pulling and scanning the just-pushed `:1.4.0`/`:1.4.0-full` images, as sufficient
+  indirect confirmation they exist and are valid.
+- **Process note on CI-wait pacing**: repeatedly polled `gh pr checks`/`gh run view`
+  directly via short `ScheduleWakeup` cycles for both the PR's CI matrix and the release
+  pipeline before switching to the `Monitor` tool with a poll-loop script — the direct
+  polling worked but was inefficient (many short wakeups). A first `Monitor` attempt for
+  the release pipeline had a real bug (`select(.conclusion != null ...)` fired false
+  "failure" alarms on jobs still `in_progress`, since GitHub's API returns `""` not `null`
+  for an unset conclusion) — caught before actually reacting to the false alarm, fixed to
+  `select(.status == "completed" and .conclusion != "success" ...)`. For any future
+  multi-minute CI/pipeline wait, prefer `Monitor` with a corrected exit-on-completion loop
+  from the start over a chain of `ScheduleWakeup` polls.
+
 ---
 
 ## Session rotation log

@@ -48,6 +48,56 @@ mcp__github__resolve_review_thread(owner: "lopatnov", repo: "conduit", threadId:
 
 (`mcp__github__unresolve_review_thread` is the inverse, same shape — for reopening one.)
 
+## Local-session equivalent (`gh api`)
+
+A local session (see `.claude/rules/index.md` "GitHub access differs by execution
+context") can do the same two steps with `gh api` directly instead of the MCP tools:
+
+```bash
+# Reply (numeric comment id from #discussion_r..., same as above)
+gh api repos/lopatnov/conduit/pulls/<PR>/comments \
+  -f body="..." -F in_reply_to=<numeric comment id>
+
+# Resolve (GraphQL node id, PRRT_..., from the query below)
+gh api graphql -f query='
+mutation {
+  resolveReviewThread(input: {threadId: "<PRRT_...>"}) {
+    thread { isResolved }
+  }
+}'
+
+# Find thread node ids + isResolved state for a PR
+gh api graphql -f query='
+query {
+  repository(owner: "lopatnov", name: "conduit") {
+    pullRequest(number: <PR>) {
+      reviewThreads(first: 20) {
+        nodes { id isResolved comments(first: 1) { nodes { body } } }
+      }
+    }
+  }
+}'
+```
+
+## Resolving isn't optional here — it can be a hard merge gate
+
+> Found the hard way on PR #361 (2026-09-05): `gh pr merge` failed with "the base branch
+> policy prohibits the merge" even though every CI check was green and `gh api repos/
+> .../branches/main/protection` returned 404 ("not protected"). The actual gate is a
+> **repository ruleset** — a separate, newer GitHub mechanism from classic branch
+> protection — checked via `gh api repos/lopatnov/conduit/rules/branches/main`, which can
+> set `required_review_thread_resolution: true` independent of any required-approving-
+> review-count setting (this repo's is 0). Replying to a thread is *not* the same as
+> resolving it for this purpose — only the GraphQL `resolveReviewThread` mutation
+> (or the MCP `mcp__github__resolve_review_thread` equivalent) clears the gate.
+
+Before assuming a PR with all-green CI is actually mergeable, check
+`gh pr view <PR> --json mergeable,mergeStateStatus` — `"mergeStateStatus":"BLOCKED"` with
+`"mergeable":"MERGEABLE"` means something like this is the culprit, not a real merge
+conflict. Resolve every thread you've addressed (see "Don't leave threads dangling"
+below) before attempting the merge, not just reply to it — this applies whether the
+finding was fixed, or declined with reasoning.
+
 ## "Outside diff range" comments
 
 GitHub can't anchor an inline reply to these (a platform limitation, not a tool
