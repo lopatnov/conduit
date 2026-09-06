@@ -77,6 +77,14 @@ use crate::proxy::upstream;
 #[cfg(feature = "cache")]
 use pingora_cache::storage::Storage as CacheStorage;
 
+/// Synthetic status fed to `record_request_latency` for a connect-phase or
+/// proxy-phase-timeout retry failure, neither of which has a real HTTP
+/// status (#216 findings C/D). Must be `>= 500` -- `record_request_latency`
+/// treats anything below that as a success for `consecutive_5xx` purposes
+/// and resets the counter to zero, which would actively defeat outlier
+/// detection rather than merely fail to help it (Gitar finding on PR #371).
+const SYNTHETIC_RETRY_FAILURE_STATUS: u16 = 503;
+
 impl ConduitProxy {
     /// Record passive health (EWMA latency/`consecutive_5xx` via
     /// `record_request_latency`, outlier-detection ejection) and, when
@@ -98,6 +106,16 @@ impl ConduitProxy {
     /// observed) once a connection actually succeeds. A connect-phase
     /// failure never reaches it, so there is nothing to reconcile there;
     /// decrementing the gauge anyway would introduce the opposite leak.
+    ///
+    /// `status` MUST be a real or synthetic failure status `>= 500` for a
+    /// connect-phase/timeout caller (there is no real HTTP status for
+    /// those) -- **never `0`**. `record_request_latency` treats any
+    /// `status < 500` as a *success* for `consecutive_5xx` purposes
+    /// (resets it to zero), so passing `0` would not just fail to feed
+    /// outlier detection (the original findings C/D gap) but *actively
+    /// mask* a hard-down peer by wiping out any `consecutive_5xx` count
+    /// already accumulated from real 5xx responses (caught by Gitar
+    /// reviewing PR #371).
     fn record_retry_failure_health(
         &self,
         req_ctx: &RequestCtx,
@@ -1286,13 +1304,19 @@ impl ConduitProxy {
             // (via record_failed_upstream_for_retry). A peer that's
             // hard-down (connection refused/timed out) on a retry-
             // configured route was never ejected by outlier detection as a
-            // result. status=0 matches this codebase's existing convention
-            // for "no real HTTP response" (see logging_phase.rs's
-            // `passive_effective_status`/terminal recording for the same
-            // shape). connection_established=false: upstream_request_filter
-            // never ran for a connect-phase failure, so there is no
+            // result. SYNTHETIC_RETRY_FAILURE_STATUS (503), not 0: a status
+            // < 500 resets consecutive_5xx to zero in record_request_latency
+            // -- passing 0 would actively mask a hard-down peer instead of
+            // just failing to help (caught by Gitar reviewing PR #371).
+            // connection_established=false: upstream_request_filter never
+            // ran for a connect-phase failure, so there is no
             // active-connections gauge increment to reconcile.
-            self.record_retry_failure_health(req_ctx, config, 0, false);
+            self.record_retry_failure_health(
+                req_ctx,
+                config,
+                SYNTHETIC_RETRY_FAILURE_STATUS,
+                false,
+            );
         }
     }
 
@@ -1339,8 +1363,29 @@ impl ConduitProxy {
                 // upstream_request_filter already incremented the
                 // active-connections gauge for this attempt -- unlike the
                 // connect-phase case, that increment DOES need
-                // reconciling here.
-                self.record_retry_failure_health(req_ctx, config, 0, true);
+                // reconciling here. SYNTHETIC_RETRY_FAILURE_STATUS (503),
+                // not 0 -- see record_retry_failure_health's doc comment
+                // (Gitar finding on PR #371).
+                self.record_retry_failure_health(
+                    req_ctx,
+                    config,
+                    SYNTHETIC_RETRY_FAILURE_STATUS,
+                    true,
+                );
+                // Clear proxy_upstream_url/upstream_conn_slot immediately,
+                // mirroring record_failed_upstream_for_retry's 5xx-path
+                // ordering (record health first, then release), rather than
+                // relying solely on upstream_peer's retry-restore to do it
+                // on the NEXT attempt. Without this, if set_retry(true)
+                // does not actually result in another upstream_peer() call
+                // (e.g. Pingora declines to retry after all -- a truncated
+                // retry buffer, or attempts genuinely exhausted right after
+                // this decision), proxy_upstream_url stays pointing at this
+                // failed attempt and logging()'s own unconditional
+                // active-connections decrement (record_upstream_metrics)
+                // would fire AGAIN for the same URL, driving the gauge
+                // negative (Gitar finding on PR #371).
+                release_conn_slot(req_ctx, &self.state.upstream_health);
             }
         }
     }
@@ -4406,6 +4451,107 @@ mod tests {
             after,
             before - 1.0,
             "connection_established=true must decrement the gauge exactly once"
+        );
+    }
+
+    /// Regression test for the Gitar finding on PR #371: a connect-phase/
+    /// timeout retry failure recorded with `status = 0` would RESET
+    /// `consecutive_5xx` to zero (since `record_request_latency` treats
+    /// anything `< 500` as a success) instead of contributing to outlier
+    /// detection -- actively masking a hard-down peer that had already
+    /// accumulated real 5xx failures, the opposite of findings C/D's
+    /// stated goal. `SYNTHETIC_RETRY_FAILURE_STATUS` (503) must increment
+    /// it instead.
+    #[test]
+    fn record_retry_failure_health_with_synthetic_failure_status_increments_consecutive_5xx() {
+        let proxy = make_proxy();
+        let url = "http://u3:4000";
+        // Simulate 2 prior real 5xx responses already accumulated.
+        crate::proxy::health::record_request_latency(&proxy.state.upstream_health, url, 1_000, 500);
+        crate::proxy::health::record_request_latency(&proxy.state.upstream_health, url, 1_000, 502);
+        assert_eq!(
+            proxy
+                .state
+                .upstream_health
+                .statuses
+                .get(url)
+                .unwrap()
+                .consecutive_5xx,
+            2
+        );
+
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        ctx.proxy_upstream_url = Some(url.to_owned());
+        let config = AppConfig::default();
+
+        proxy.record_retry_failure_health(&ctx, &config, SYNTHETIC_RETRY_FAILURE_STATUS, false);
+
+        assert_eq!(
+            proxy
+                .state
+                .upstream_health
+                .statuses
+                .get(url)
+                .unwrap()
+                .consecutive_5xx,
+            3,
+            "a connect/timeout retry failure must CONTINUE the consecutive_5xx count, \
+             not reset it -- status=0 would incorrectly reset to 0 here"
+        );
+    }
+
+    /// Regression test for the second Gitar finding on PR #371: the
+    /// proxy-phase-timeout branch of `try_retry_proxy_error` must clear
+    /// `proxy_upstream_url`/`upstream_conn_slot` (via `release_conn_slot`)
+    /// immediately after recording health -- not rely solely on
+    /// `upstream_peer`'s retry-restore to do it on a NEXT attempt that
+    /// might never happen (e.g. `set_retry(true)` doesn't actually result
+    /// in Pingora re-invoking `upstream_peer`, such as a truncated retry
+    /// buffer). Without the immediate release, `logging()`'s own
+    /// unconditional active-connections decrement would fire a SECOND time
+    /// for the same URL, driving the gauge negative.
+    #[test]
+    fn record_retry_failure_health_then_release_leaves_no_url_to_double_decrement() {
+        let proxy = make_proxy();
+        let url = "http://u4:4000";
+        proxy
+            .state
+            .metrics
+            .upstream_active_connections
+            .with_label_values(&[url])
+            .inc();
+
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        ctx.proxy_upstream_url = Some(url.to_owned());
+        ctx.upstream_conn_slot = true;
+        proxy.state.upstream_health.conn_inc(url);
+        let config = AppConfig::default();
+
+        // Exactly the sequence try_retry_proxy_error's timeout branch now
+        // performs: record health first (needs proxy_upstream_url still
+        // set), then release.
+        proxy.record_retry_failure_health(&ctx, &config, SYNTHETIC_RETRY_FAILURE_STATUS, true);
+        release_conn_slot(&mut ctx, &proxy.state.upstream_health);
+
+        assert!(
+            ctx.proxy_upstream_url.is_none(),
+            "proxy_upstream_url must be cleared immediately, not left for a retry that may never happen"
+        );
+        assert!(!ctx.upstream_conn_slot);
+        assert_eq!(
+            proxy.state.upstream_health.conn_load(url),
+            0,
+            "the conn_count slot must also be released"
+        );
+        let gauge_after = proxy
+            .state
+            .metrics
+            .upstream_active_connections
+            .with_label_values(&[url])
+            .get();
+        assert_eq!(
+            gauge_after, 0.0,
+            "gauge must be decremented exactly once (by record_retry_failure_health)"
         );
     }
 }
