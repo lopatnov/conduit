@@ -254,6 +254,11 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 - [🚫 BLOCKED] **Request queue + backpressure** — когда upstream на maxconn: ставить в очередь (не сразу 503). Priority queue по классу + timestamp. HAProxy: `queue.c`.
   **Причина:** `ProxyHttp` trait не имеет хука "upstream перегружен, подожди" — Pingora не предоставляет механизма задержки принятия соединения до освобождения upstream slot. Circuit Breaker (`maxConnectionsPerUpstream`) покрывает основной кейс. Ждём Pingora 0.9+.
 - [x] **Upstream slow start** — `UpstreamEntry.recovery_time_secs` + `slow_start_fraction()` в health.rs. `UpstreamHealthCheck.slowStartSecs` config field.
+  **Уточнение 2026-09-06 (issue #157)**: чекбокс был отмечен преждевременно — сам механизм
+  (`slow_start_fraction`) существовал, но нигде не вызывался за пределами собственных тестов;
+  конфиг `slowStartSecs` был полным no-op. Реально подключено фиксом #157 — см. запись в конце
+  файла. `src/proxy/slow_start.rs::Ramp` — probabilistic Bernoulli admission gate внутри
+  `capacity::pick_bounded`, hash-стратегии/sticky — структурно исключены.
 - [x] **Sticky sessions** — `ProxyRouteConfig.sticky.cookie`. `extract_cookie()` в router.rs. Cookie value → consistent-hash key. `StickyConfig` в schema.
 
 ---
@@ -2663,6 +2668,79 @@ recurrence of this specific (now-disproven) mechanism.
   `select(.status == "completed" and .conclusion != "success" ...)`. For any future
   multi-minute CI/pipeline wait, prefer `Monitor` with a corrected exit-on-completion loop
   from the start over a chain of `ScheduleWakeup` polls.
+
+### Реализовано в сессии 2026-09-06 (batch #157/#158/#216/#218/#220/#234/#247 — closing out #157)
+
+- User asked to work through a previously-agreed batch of 7 backlog issues, cheapest-first
+  after being shown they were mostly design-judgment calls, not a mechanical sweep:
+  order settled as #234 → #220 → #158 → #157 → #216 (with #216, "the riskiest design," left
+  last). #218 and #247 turned out already fixed by a historical commit that never had its
+  issues closed — closed both immediately with evidence, no new code.
+- **#234** (`identify_consumer`'s short-circuiting consumer scan) — after
+  `security-engineer`'s judgment call that the only leaked timing signal is "position of
+  the caller's *own* already-valid identity," not another consumer's secret, fixed as a
+  doc-only PR (#362) explaining the accepted tradeoff.
+- **#220** (sticky-session hash mismatch) — went beyond the issue's own text to empirically
+  settle it: a temporary test using conduit's *real* `hash_pick_bounded`/`fnv1a_hash`
+  proved only ~6.5% (5/77) of pinned peers hash back to their own ring index — HMAC-signed
+  sticky sessions are broken from the *second* request onward for ~93% of realistic
+  multi-upstream configs, far worse than the issue as filed suspected. Posted as a GitHub
+  comment with the finding, `bug` label added; user chose "keep it in queue order, but flag
+  the severity" rather than jumping the queue — **not fixed yet**, still open.
+- **#158** (`healthCheck.prewarmConnections`) — confirmed genuinely `[🚫 BLOCKED]` (not just
+  unimplemented) by reading Pingora 0.8.1's actual vendored source: `HttpProxy::
+  client_upstream: Connector<C>` is a private field with no accessor. Doc-only fix (#364).
+  Filed #363 (schema.json missing the field) separately, mechanical.
+- **#157** (`healthCheck.slowStartSecs` fully dead code) — the main event this entry
+  documents. See the plan-mode section directly above and the checkbox correction earlier
+  in this file for the technical detail; summarized here as process:
+  - At the user's request, cloned `.reference/pingora` (gitignored) and ran `architect`
+    twice — once before the clone (abstract), once after (reading the real source) — before
+    committing to a custom implementation instead of reusing/replacing with pingora's own
+    `pingora-load-balancing`. Verdict: pingora has no slow-start concept at all, its own
+    `Weighted<RoundRobin>` has the identical contiguous-burst problem, and wholesale adoption
+    would drop conduit's EWMA/outlier-detection/circuit-breaker/dynamic-upstream machinery
+    and can't represent hostname-based upstreams without adding DNS pre-resolution.
+    `pingora_ketama` is genuinely better than conduit's own naive hash-ring but doesn't fix
+    #220 and is its own separate future project — not part of this fix.
+  - Plan approved via Plan Mode (`snug-toasting-hoare.md`). Implementation on
+    `feat/slow-start-ramp-157`: new `src/proxy/slow_start.rs::Ramp` — a probabilistic
+    Bernoulli admission gate wired into `capacity::pick_bounded` before strategy dispatch
+    (same cross-cutting-concern precedent as the circuit breaker, decision #22 — no
+    `LoadBalancingStrategy` impl touched). Weight-scaling explicitly rejected (6 of 7
+    strategies ignore the `weighted` list — would reproduce #156's own bug class). Hash
+    strategies/sticky sessions structurally exempt via the existing hash-strategy early
+    return. Caught and fixed a real gap in the *approved plan itself* during implementation:
+    the plan only described filtering `candidates`, but `WeightedRoundRobin` reads the
+    separate `weighted` list — added `Ramp::filter_weighted()` as a companion, with the RNG
+    redesigned as a pure function of `(seed, url)` so both filters agree on the same URL
+    within one request. Also fixed: a successful half-open outlier-detection probe never
+    recorded `recovery_time_secs`, so passive recovery would never start ramping.
+  - Negative-control verified throughout (temporarily reverted the fix, confirmed the new
+    regression tests fail with the exact pre-fix symptom, restored it, confirmed they pass)
+    — done for the `LeastConn`/`WeightedRoundRobin` capacity tests and the `health.rs`
+    half-open recovery test.
+  - [PR #365](https://github.com/lopatnov/conduit/pull/365) (2 commits, squash-merged
+    `fc295b3` into the migration branch) — `security-engineer` PASSed twice: once on the
+    initial implementation (one non-blocking finding: a retry-bypass branch's comment
+    overclaimed why hash/sticky routes are exempt there — filed as
+    [#366](https://github.com/lopatnov/conduit/issues/366), not a regression since that path
+    already ignored strategy entirely pre-#157), and again after fixing a real Gitar
+    finding — the new validation warning only checked route-level `strategy`/`sticky`, not
+    each `groups[]` entry's own `strategy`, so a hash-based *group* strategy silently
+    bypassed the ramp with no warning. Both rounds independently re-verified (fmt/clippy/
+    tests), not just trusted from the PR description. Issue #157 closed.
+  - **Process note**: this batch spanned a `security-engineer` subagent call that was cut
+    off mid-execution by a session usage-limit error; resumed cleanly once the user
+    confirmed the limit had reset — same "resume, don't restart" pattern already established
+    for `crate-extractor`/other subagent interruptions earlier in this migration.
+- **Remaining from the original 7-issue batch**: **#216** ("retry attempts bypass
+  `maxConnectionsPerUpstream` and undercount `conn_count`") is the only issue left — the
+  user's own ordering deliberately put "the riskiest design" last. Needs its own
+  investigation and likely its own `architect` pass (the issue's own text calls for
+  "auditing every code path that can end a retry attempt") before implementation. **#220**
+  also remains open, by the user's explicit choice, with its real fix (bypass the hash
+  entirely, use `pinned` directly when healthy+under-capacity) not yet implemented.
 
 ---
 
