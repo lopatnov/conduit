@@ -287,6 +287,23 @@ pub struct RetryState {
     /// The `logging()` hook reads this flag to decrement `AppState.retry_inflight`
     /// after the retry response is delivered.
     pub is_retrying: bool,
+    /// `healthCheck.maxConnectionsPerUpstream` for this route, captured at
+    /// routing time (#216 part 2). `None` = no cap.
+    ///
+    /// Stored here rather than re-read from config inside `upstream_peer`
+    /// so every attempt of one request evaluates capacity against the SAME
+    /// config snapshot that produced `urls` -- the routing-vs-helper
+    /// TOCTOU discipline established by PR #92.
+    pub max_conns_per_upstream: Option<u64>,
+    /// `true` when this route acquires a real `conn_count` slot per retry
+    /// attempt (#216 part 2): `is_least_conn || circuit_tracking` at
+    /// routing time, mirroring the same condition that decided
+    /// `RouteResolution.upstream_conn_slot` for the first attempt.
+    ///
+    /// Only consulted for attempt 1+ -- the first attempt's slot is
+    /// whatever routing already acquired before `upstream_peer` was ever
+    /// called, untouched by the retry machinery.
+    pub tracks_conn_slot: bool,
 }
 
 impl RetryState {
@@ -376,6 +393,8 @@ mod tests {
             backoff_jitter: false,
             budget_percent: None,
             is_retrying: false,
+            max_conns_per_upstream: None,
+            tracks_conn_slot: false,
         }
     }
 
