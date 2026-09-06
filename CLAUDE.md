@@ -2742,6 +2742,73 @@ recurrence of this specific (now-disproven) mechanism.
   also remains open, by the user's explicit choice, with its real fix (bypass the hash
   entirely, use `pinned` directly when healthy+under-capacity) not yet implemented.
 
+### Реализовано в сессии 2026-09-06 (часть 2 — #367, #368, #216 part 1: architect found a real leak, not just an undercount)
+
+- Continuing the batch from the entry above, started #216 ("retry attempts bypass
+  `maxConnectionsPerUpstream` and undercount `conn_count`") with an `architect` design pass,
+  per the user's own "riskiest design, saved for last" ordering. The pass came back far more
+  serious than the issue's own title suggested — and found 2 more independent bugs while
+  tracing the code. Asked the user how to scope the expanded finding; chose "file issues, do
+  all 4 PRs now."
+  - **Real severity correction**: #216 is not an undercount, it's a **permanent, unbounded
+    conn_count leak** on 2 of the 3 retry-failure paths (connect-phase, proxy-phase timeout) —
+    only the 5xx path ever released the slot. Once enough peers on a route leak past
+    `maxConnectionsPerUpstream`, the route returns 503 forever until process restart — the
+    opposite failure direction from "circuit engages later than configured."
+  - **Two new independent bugs found while tracing**, filed separately: **#367** (`routes.rs`'s
+    retry list wasn't anchored to the peer `pick_bounded` actually chose — round-robin was
+    defeated on any `routes[]`-array route with `retry` configured, and every per-peer stat
+    was misattributed) and **#368** (`retry_inflight` leaked +1 per request that took 2+ retry
+    attempts, since the increment fired once per retry *decision* but the decrement in
+    `logging()` fires once per *request* — eventually makes `retry.budgetPercent` silently
+    suppress all retries process-wide).
+  - **[PR #369](https://github.com/lopatnov/conduit/pull/369)** (#367) — rotates the
+    ramp/capacity-filtered retry candidate list so `retry.urls[0] == chosen_url`, mirroring
+    `router.rs::pick_with_retry`'s existing rotation (which already guarantees this by
+    construction; `routes.rs` picks the two separately, so the invariant needed restoring
+    explicitly). Falls back to prepending `chosen_url` when it's absent from the filtered list
+    (possible for hash-based strategies — exempt from ramp during their own pick but not from
+    this separate list's filter, a gap filed as **#366**, not fixed here). Negative-control
+    verified. `security-engineer` PASS.
+  - **[PR #370](https://github.com/lopatnov/conduit/pull/370)** (#368) — guards
+    `retry_budget_allows`'s `retry_inflight.fetch_add` on `!retry.is_retrying`, matching the
+    field's own meaning. `security-engineer` independently re-ran the negative control itself
+    rather than trusting the report, confirmed PASS.
+  - **[PR #371](https://github.com/lopatnov/conduit/pull/371)** (#216 part 1 — the leak, 3
+    commits) — new `release_conn_slot`/`acquire_conn_slot` helpers become the only sanctioned
+    way to mutate `proxy_upstream_url`/`upstream_conn_slot`; `upstream_peer`'s retry-restore
+    block calls `release_conn_slot` **unconditionally** before pointing at the next attempt's
+    URL — idempotent, so it's a no-op on the already-correct 5xx path and the actual fix on
+    the other two. `acquire_conn_slot`'s `tracked: false` deliberately preserves the
+    *undercount* (attempt 2+ still holds no real slot) — per-attempt capacity admission is
+    part 2, its own future solo PR. Also wired passive health/outlier-detection + the
+    Prometheus active-connections gauge into the connect-phase/proxy-timeout paths via new
+    `record_retry_failure_health`, which neither fed at all before.
+    **Two more real rounds of review-driven fixes on this one PR**: Gitar found that passing
+    `status=0` to `record_request_latency` for these new call sites **actively reset**
+    `consecutive_5xx` to zero (any status `< 500` does) instead of contributing to it — worse
+    than the original gap, since it could erase a hard-down peer's already-accumulated 5xx
+    count. Fixed with a named `SYNTHETIC_RETRY_FAILURE_STATUS = 503` constant. Gitar also
+    found the proxy-timeout branch could double-decrement the gauge if a decided retry never
+    actually executes (e.g. a truncated retry buffer) — fixed by calling `release_conn_slot`
+    immediately after recording health, mirroring the 5xx path's own established ordering
+    instead of deferring the clear to a retry attempt that might not happen.
+    `security-engineer`'s own re-review of that fix then spotted the identical asymmetry
+    still present on the connect-phase branch (lower severity — no gauge risk there, just a
+    possible duplicate passive-health sample) — fixed immediately in the same PR for symmetry
+    rather than filed as yet another fast-follow, since the fix was a one-line, fully-understood
+    mirror of the just-reviewed pattern. **Three full `security-engineer` rounds, one per head
+    SHA**, each independently re-deriving the negative controls rather than trusting the
+    commit messages. 16/16 CI green throughout all three rounds.
+  - Issue #216 updated with progress but **left open** — part 2 (real per-attempt capacity
+    admission, forward-probing for an under-capacity peer on each retry attempt) is the
+    riskier half and architect's own recommendation was a solo PR for it.
+  - **Process note**: this stretch spanned a session usage-limit interruption ("Закончился
+    лимит" — the user's own words) mid-way through PR #371's negative-control verification;
+    resumed cleanly from exactly where the tool-call sequence left off once the user said to
+    continue, using the on-disk backup file (`/tmp/request_phase_216_fixed.rs.bak`) already
+    staged for the restore step — no work lost, no re-derivation needed.
+
 ---
 
 ## Session rotation log
