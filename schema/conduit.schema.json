@@ -433,7 +433,8 @@
             "unhealthyThreshold": { "type": "integer", "minimum": 1 },
             "healthyThreshold":   { "type": "integer", "minimum": 1 },
             "slowStartSecs":      { "type": "integer", "minimum": 0, "description": "Slow-start ramp-up window in seconds after recovery. Ignored for ipHash/consistentHash strategies and sticky sessions (see docs/configuration.md's 'Slow start' section)." },
-            "maxConnectionsPerUpstream": { "type": "integer", "minimum": 1, "description": "Circuit breaker: max concurrent connections per upstream, enforced for every load-balance strategy. Skips at-capacity peers in favor of under-capacity ones; returns 503 when all upstreams are at this limit. Soft limit under concurrency (brief overshoot possible, self-corrects)." }
+            "maxConnectionsPerUpstream": { "type": "integer", "minimum": 1, "description": "Circuit breaker: max concurrent connections per upstream, enforced for every load-balance strategy. Skips at-capacity peers in favor of under-capacity ones; returns 503 when all upstreams are at this limit. Soft limit under concurrency (brief overshoot possible, self-corrects)." },
+            "prewarmConnections": { "type": "integer", "minimum": 0, "maximum": 8, "description": "BLOCKED, no effect: number of keepalive connections to pre-establish at startup (values above 8 are clamped). Warms a throwaway HTTP client, not the connection pool Pingora's proxy path actually reuses — Pingora 0.8 exposes no public API for that pool (issue #158). Accepted and validated so configs stay forward-compatible." }
           }
         },
         "mirror": { "type": "string", "format": "uri", "description": "Fire-and-forget mirror URL. V1: headers only." },
