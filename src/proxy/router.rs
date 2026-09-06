@@ -13,6 +13,7 @@ use crate::config::schema::{
 use crate::proxy::capacity;
 use crate::proxy::ctx::{LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
+use crate::proxy::slow_start::Ramp;
 use crate::proxy::upstream;
 
 /// Resolved routing result: all per-route data needed to populate `RequestCtx`.
@@ -289,6 +290,10 @@ struct RouteOptions<'a> {
     mirror: Option<&'a str>,
     upstream_tls: Option<&'a UpstreamTlsConfig>,
     max_conns_per_upstream: Option<u64>,
+    /// `healthCheck.slowStartSecs` (issue #157) — traffic ramp-up window
+    /// after an upstream recovers. Ignored for hash-based strategies and
+    /// sticky sessions; see `slow_start`'s module doc comment for why.
+    slow_start_secs: Option<u64>,
     websocket: bool,
     unhealthy_status: &'a [u16],
     unhealthy_latency_ms: Option<u64>,
@@ -315,6 +320,7 @@ impl<'a> RouteOptions<'a> {
             mirror: cfg.mirror.as_deref(),
             upstream_tls: cfg.upstream_tls.as_ref(),
             max_conns_per_upstream: hc.and_then(|h| h.max_connections_per_upstream),
+            slow_start_secs: hc.and_then(|h| h.slow_start_secs),
             websocket: cfg.websocket.unwrap_or(false),
             unhealthy_status: hc
                 .and_then(|h| h.unhealthy_status.as_deref())
@@ -339,6 +345,7 @@ impl<'a> RouteOptions<'a> {
             mirror: None,
             upstream_tls: None,
             max_conns_per_upstream: None,
+            slow_start_secs: None,
             websocket: false,
             unhealthy_status: &[],
             unhealthy_latency_ms: None,
@@ -422,13 +429,24 @@ fn resolve_proxy_routes(
     // cookie value is always used for backend selection.
     let strategy = effective_strategy(sticky_override.is_some(), opts.strategy);
 
+    // Slow start (#157): ramp traffic to a recently-recovered upstream.
+    // Constructed after `strategy` is resolved so hash/sticky routes (already
+    // forced to `ConsistentHash` above) get the exemption for free -- see
+    // `slow_start`'s module doc comment. `Ramp::new` is a true no-op when
+    // `slow_start_secs` is unset.
+    let ramp = Ramp::new(opts.slow_start_secs, ctx.upstream_health);
+
     // With retry configured, bypass the strategy entirely and rotate a
     // capacity-filtered candidate list (don't retry into a peer already
     // known to be saturated) — mirrors the pre-#156 retry-bypasses-strategy
     // behavior, now capacity-aware.
     let (chosen_url, retry_state, is_least_conn) = if let Some(retry) = opts.retry {
         let candidates = capacity.candidates(&healthy_urls)?;
-        let (url, state) = pick_with_retry(candidates, route_key, ctx.counters, retry)?;
+        // This branch bypasses `pick_bounded` entirely, so without this wrap
+        // `slowStartSecs` would stay a silent no-op on every retry-configured
+        // route -- the same bug class #157 is about, recurring here.
+        let candidates = ramp.filter_candidates(candidates);
+        let (url, state) = pick_with_retry(&candidates, route_key, ctx.counters, retry)?;
         (url, Some(state), false)
     } else {
         let input = capacity::BoundedPick {
@@ -440,6 +458,7 @@ fn resolve_proxy_routes(
             hash_val,
             counters: ctx.counters,
             health: ctx.upstream_health,
+            ramp: &ramp,
         };
         let (url, is_lc) = capacity::pick_bounded(&input)?;
         (url, None, is_lc)
@@ -790,6 +809,10 @@ fn resolve_grouped(
         return Some(overloaded());
     }
     let inner_key = format!("{route_key}__group__{}", group.name);
+    // Slow start (#157): group selection itself stays ramp-unaware (matches
+    // the existing capacity-breaker semantic documented above -- V1 acts
+    // within the selected group only), but the inner target pick honors it.
+    let ramp = Ramp::new(opts.slow_start_secs, ctx.upstream_health);
     let inner_input = capacity::BoundedPick {
         strategy: group.strategy.as_ref(),
         healthy: &healthy_urls,
@@ -799,6 +822,7 @@ fn resolve_grouped(
         hash_val,
         counters: ctx.counters,
         health: ctx.upstream_health,
+        ramp: &ramp,
     };
     let (chosen_url, is_least_conn) = capacity::pick_bounded(&inner_input)?;
     let retry_state: Option<RetryState> = None; // groups don't support retry in V1

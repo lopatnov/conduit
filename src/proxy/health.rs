@@ -201,6 +201,13 @@ pub fn record_request_latency(
             // next ejection cycle starts fresh.
             entry.ejected_until_secs = None;
             entry.ejection_count = 0;
+            // Slow start (#157): a half-open probe succeeding is a genuine
+            // recovery, same as an active health-check flipping the peer back
+            // to healthy (see spawn_health_task) -- and on the routes[]/groups
+            // paths it is the ONLY recovery signal available at all, since
+            // active probes aren't spawned there. Without this, slow_start_fraction
+            // never sees a recovery on those paths and slowStartSecs stays inert.
+            entry.recovery_time_secs = Some(now_secs());
             tracing::info!(url, "half-open probe succeeded — upstream fully recovered");
         } else {
             // Probe failed: re-eject with the next exponential-backoff level.
@@ -316,11 +323,10 @@ pub fn maybe_eject(
 ///
 /// Callers should multiply their selection probability by this value.
 ///
-/// **Not currently wired into any `LoadBalancingStrategy` implementation** —
-/// see the tracking issue for `healthCheck.slowStartSecs` filed from the
-/// 2026-08-03 integrity audit. Configuring `slowStartSecs` today has no
-/// effect on routing; this function and its data (`recovery_time_secs`) exist
-/// but nothing yet calls it outside its own unit tests.
+/// Consumed by [`crate::proxy::slow_start::Ramp`] (issue #157), the single
+/// dispatch point every non-hash `LoadBalancingStrategy` gets ramp admission
+/// from -- hash-based strategies and sticky sessions are deliberately exempt
+/// (see that module's doc comment for why).
 pub fn slow_start_fraction(entry: &UpstreamEntry, window_secs: u64) -> f64 {
     if window_secs == 0 {
         return 1.0;
@@ -1387,6 +1393,31 @@ mod tests {
         assert_eq!(
             e.ejection_count, 0,
             "ejection_count must be reset after success"
+        );
+    }
+
+    #[test]
+    fn successful_half_open_probe_records_recovery_time() {
+        // Slow start (#157): a half-open probe succeeding is a genuine
+        // recovery signal, same as an active health-check flipping the peer
+        // back to healthy -- and on the routes[]/groups paths (whose
+        // active-probe path has its own separate, pre-existing gap) it's the
+        // ONLY recovery signal that exists at all. Without this,
+        // slow_start_fraction never sees a recovery there and slowStartSecs
+        // stays inert regardless of the routing-side fix.
+        let reg = UpstreamRegistry::new();
+        let url = "http://u:4000";
+        {
+            let mut e = reg.statuses.entry(url.to_owned()).or_default();
+            e.ejected_until_secs = Some(now_secs().saturating_sub(1));
+            e.ejection_count = 2;
+        }
+        assert!(reg.is_healthy(url)); // dispatches the half-open probe
+        record_request_latency(&reg, url, 10_000, 200); // probe succeeds
+        let e = reg.statuses.get(url).unwrap();
+        assert!(
+            e.recovery_time_secs.is_some(),
+            "a successful half-open probe must record a recovery time"
         );
     }
 

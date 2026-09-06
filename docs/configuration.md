@@ -1346,7 +1346,7 @@ healthCheck:
 | `healthyThreshold`          | number   | `1`           | Consecutive passes before re-adding                                                                                                                  |
 | `unhealthyStatus`           | number[] | any non-2xx   | HTTP status codes from the health-check probe that count as failures. Default: any non-2xx response. Example: `[429, 500, 502, 503, 504]` |
 | `unhealthyLatencyMs`        | number   | —             | Health-check probe responses slower than this (ms) count as failures, even if the status code is 2xx                                                 |
-| `slowStartSecs`             | number   | `0`           | Traffic ramp-up period after recovery. ⚠️ Not currently wired into routing — see [Circuit Breaker](#circuit-breaker) note below.                     |
+| `slowStartSecs`             | number   | `0`           | [Traffic ramp-up period](#slow-start) after recovery. Ignored for `ipHash`/`consistentHash` and sticky routes.                     |
 | `maxConnectionsPerUpstream` | number   | —             | [Circuit breaker](#circuit-breaker) threshold                                                                                                        |
 | `prewarmConnections`        | number   | `0`           | Pre-establish N keepalive connections at startup (max 8). 🚫 Blocked — warms a throwaway client, not Conduit's real upstream pool (Pingora 0.8 has no public API for it) — see note below.  |
 | `includeUpstreams`          | bool     | `false`       | Include upstream health in `/__health__` response                                                                                                    |
@@ -1388,8 +1388,6 @@ load-balance strategy, across all three config shapes (`proxy: {}` map,
 
 > **Known limitations** still open after the 2026-08-03 integrity audit —
 > see the repo's issue tracker for current status:
-> - `slowStartSecs` is parsed but not yet wired into any strategy's selection
->   logic — configuring it currently has no effect on traffic ramp-up.
 > - **`prewarmConnections` is blocked, not just unimplemented.** It warms a
 >   short-lived, throwaway HTTP client rather than Conduit's real upstream
 >   connection pool — Pingora 0.8 has no public API to reach or pre-populate
@@ -1421,6 +1419,78 @@ proxy:
 ```
 
 See [`examples/circuit-breaker.yaml`](../examples/circuit-breaker.yaml)
+
+---
+
+## Slow start
+
+`healthCheck.slowStartSecs` ramps traffic to an upstream that just recovered
+from an unhealthy state, instead of sending it 100% of its normal share
+immediately (the classic thundering-herd-into-a-just-recovered-backend
+scenario).
+
+For the `slowStartSecs` seconds immediately after recovery, the upstream
+participates in each pick with a probability equal to how far through the
+ramp window it is (0% right after recovery, rising linearly to 100% once the
+window elapses). This applies to every load-balance strategy **except**
+`ipHash`/`consistentHash` and sticky sessions:
+
+- `RoundRobin`, `Random`, `WeightedRoundRobin`, `LeastConn`,
+  `LeastResponseTime`, and `P2c` all honor it. `LeastConn` and
+  `LeastResponseTime` benefit the most — a freshly-recovered peer's
+  connection count and probe latency both look artificially good (drained to
+  near-zero, or measured under no real load), so without this they'd win
+  every pick until real traffic caught them up, which is itself a form of
+  thundering herd.
+- **`ipHash`/`consistentHash` (and sticky sessions, which force
+  `consistentHash`) are deliberately exempt.** A client's hash must map to a
+  fixed upstream for the strategy's own consistency guarantee to hold — a
+  probabilistic ramp gate would divert some hashed clients to a different
+  peer mid-window, breaking exactly the property those strategies exist to
+  provide, and would flap a sticky client's session for the entire ramp.
+  Configuring `slowStartSecs` together with a hash strategy or `sticky` on
+  the same route logs a warning at config-load/reload time rather than
+  silently doing nothing.
+- The ramp **never produces a 503 and never empties an otherwise-routable
+  candidate list** (fails open): if every healthy candidate happens to be
+  mid-ramp, or a route has only one upstream, the gate steps aside and normal
+  selection proceeds. Two consequences worth knowing: a single-upstream route
+  can't ramp (there's nowhere to shift traffic to), and if your *entire*
+  upstream pool recovers at once (e.g. after a fleet-wide outage), full
+  traffic resumes immediately rather than being shed — no admission scheme
+  can shape load when there's no non-ramping sibling to route to instead.
+- Applies to retry rotation too — a retry-configured route won't rotate a
+  failed request into a peer that's still mid-ramp, on either the
+  `proxy: {}` map path or the `routes[]` array path.
+
+Recovery is recorded both when an active health-check probe flips an
+upstream back to healthy, and when a half-open outlier-detection probe
+succeeds — the latter is the *only* recovery signal available for upstreams
+configured via `routes[]`/`groups`, since active probes aren't spawned there.
+
+```yaml
+# YAML — pairs well with least-conn, since that's the strategy slow-start
+# benefits the most
+proxy:
+  /api:
+    targets: ["http://a:4000", "http://b:4000"]
+    strategy: least-conn
+    healthCheck:
+      slowStartSecs: 30
+```
+
+```json
+// JSON
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://a:4000", "http://b:4000"],
+      "strategy": "least-conn",
+      "healthCheck": { "slowStartSecs": 30 }
+    }
+  }
+}
+```
 
 ---
 

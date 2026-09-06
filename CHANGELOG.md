@@ -65,6 +65,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   was no handler to serve it, and the request fell through to Pingora's
   proxy path with no real upstream to select. The path now only matches
   when `acme` is actually compiled in.
+- **`healthCheck.slowStartSecs` now actually ramps traffic to a
+  recently-recovered upstream.** The field was parsed and the underlying
+  fraction calculation existed, but nothing outside its own unit tests ever
+  called it — a freshly-recovered upstream got 100% of its normal traffic
+  share immediately, the exact thundering-herd scenario the feature exists
+  to prevent (`LeastConn` was the worst-affected strategy: a recovered
+  peer's drained connection count made it win every pick until real traffic
+  caught it up). Every load-balance strategy now honors it except
+  `ipHash`/`consistentHash` and sticky sessions, which are deliberately
+  exempt (a probabilistic ramp would break their own consistency
+  guarantee) — configuring both together now logs a warning instead of
+  silently doing nothing.
 
 ### Changed
 
