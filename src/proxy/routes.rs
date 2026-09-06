@@ -330,22 +330,43 @@ fn full_cfg_to_result(
     // and the `Exhausted` case already returned before this point, so
     // `candidates()` is always `Some` here; `unwrap_or(&urls)` is just a
     // defensive fallback, not an expected path.
-    let retry = cfg.retry.as_ref().map(|r| RetryState {
+    let retry = cfg.retry.as_ref().map(|r| {
         // Slow start (#157): this retry list is its own routing decision that
         // never goes through `pick_bounded` -- without wrapping it here, a
         // route with `retry` configured would keep ignoring `slowStartSecs`
         // for its fallback rotation, mirroring the same gap fixed in
         // router.rs's `resolve_proxy_routes` retry-bypass branch.
-        urls: ramp
+        let mut retry_urls: Vec<String> = ramp
             .filter_candidates(capacity.candidates(&urls).unwrap_or(&urls))
-            .into_owned(),
-        attempt: 0,
-        max_attempts: r.attempts as usize,
-        conditions: r.conditions.clone(),
-        backoff_ms: r.backoff_ms,
-        backoff_jitter: r.backoff_jitter.unwrap_or(false),
-        budget_percent: r.budget_percent,
-        is_retrying: false,
+            .into_owned();
+        // Anchor attempt 1 to the peer actually chosen above (#367) — this
+        // list used to be the unrotated candidate list, so attempt 1 always
+        // connected to `retry_urls[0]` regardless of which peer `chosen_url`
+        // (round-robin/least-conn/etc.) actually was, defeating round-robin
+        // and misattributing conn_count/EWMA/access-log stats to the wrong
+        // peer. Mirrors router.rs's `pick_with_retry`, which builds
+        // `chosen_url` and `retry.urls` from the same rotation so the
+        // invariant holds by construction; here the two are picked
+        // separately (via `pick_bounded` vs. this list's own ramp/capacity
+        // filter), so restore it explicitly instead. `chosen_url` can be
+        // absent from this list for a hash-based strategy — exempt from
+        // ramp filtering during its own pick_bounded pick, but not from this
+        // separate list's filter (see #366's analogous gap in router.rs) —
+        // in that case prepend it rather than leaving the invariant broken.
+        match retry_urls.iter().position(|u| u == &chosen_url) {
+            Some(pos) => retry_urls.rotate_left(pos),
+            None => retry_urls.insert(0, chosen_url.clone()),
+        }
+        RetryState {
+            urls: retry_urls,
+            attempt: 0,
+            max_attempts: r.attempts as usize,
+            conditions: r.conditions.clone(),
+            backoff_ms: r.backoff_ms,
+            backoff_jitter: r.backoff_jitter.unwrap_or(false),
+            budget_percent: r.budget_percent,
+            is_retrying: false,
+        }
     });
 
     // proxy_upstream_url is populated unconditionally (#155) so passive-health
@@ -1204,6 +1225,73 @@ mod tests {
             retry.urls,
             vec!["http://b1:4000".to_string()],
             "retry candidate list must exclude the unhealthy target"
+        );
+    }
+
+    /// Regression test for #367: `retry.urls[0]` must always equal the peer
+    /// actually chosen by the route's strategy (`proxy_upstream_url`), not
+    /// just the head of the unrotated candidate list. Drives round-robin
+    /// selection across several requests on a route with two healthy
+    /// targets and `retry` configured — reverting the anchoring fix (using
+    /// the unrotated `ramp.filter_candidates(...)` list directly) would make
+    /// every request's `retry.urls[0]` come back as `http://b1:4000`
+    /// regardless of which peer round-robin actually picked for that
+    /// request, since `chosen_url` alternates but the candidate list never
+    /// rotates on its own.
+    #[test]
+    fn route_to_result_retry_urls_anchored_to_chosen_peer() {
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RetryConfig, RouteConfig,
+        };
+
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://b1:4000".to_string()),
+                    ProxyTarget::Simple("http://b2:4000".to_string()),
+                ],
+                strategy: Some(LoadBalanceStrategy::RoundRobin),
+                retry: Some(RetryConfig {
+                    attempts: 2,
+                    conditions: vec!["connection_error".to_string()],
+                    backoff_ms: Some(50),
+                    backoff_jitter: None,
+                    budget_percent: None,
+                }),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+
+        let mut saw_b1_first = false;
+        let mut saw_b2_first = false;
+        for _ in 0..4 {
+            let res = route_to_result(&route, "/api/users", &counters, &registry, None);
+            let chosen = res
+                .proxy_upstream_url
+                .clone()
+                .expect("proxy_upstream_url must be populated");
+            let retry = res.retry.expect("retry state must be populated");
+            assert_eq!(
+                retry.urls.first(),
+                Some(&chosen),
+                "retry.urls[0] must equal the peer round-robin actually chose"
+            );
+            match chosen.as_str() {
+                "http://b1:4000" => saw_b1_first = true,
+                "http://b2:4000" => saw_b2_first = true,
+                other => panic!("unexpected chosen upstream: {other}"),
+            }
+        }
+        // Round-robin must have actually alternated across 4 requests over
+        // 2 peers — otherwise this test would trivially pass even with the
+        // pre-fix bug (both would be b1 every time).
+        assert!(
+            saw_b1_first && saw_b2_first,
+            "expected round-robin to pick both peers across 4 requests"
         );
     }
 
