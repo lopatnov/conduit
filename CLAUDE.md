@@ -244,6 +244,10 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
   Follow-ups filed, not fixed in #156: #216 (retry attempts bypass the cap and undercount
   `conn_count`), #217 (`routes[]` retry list not health/capacity-filtered), #218
   (`failed_upstream_attempts` is write-only state).
+  **#216 closed 2026-09-06** — turned out to be a real leak, not just an undercount; see the
+  2026-09-06 session-log entries below for the full 4-PR fix (#367, #368, #216 parts 1 and 2).
+  **#217 and #218 were both already closed separately** (2026-08-22 and prior, respectively)
+  before this session picked up #216 — verified via `gh issue view`, not assumed.
 - [x] **Forward Auth** — `forwardAuth: { url, requestHeaders?, responseHeaders?, timeoutMs?, skipPaths? }`. `ForwardAuthGuard` (6d в chain). Subrequest через `reqwest::Client` singleton. 2xx=allow+inject headers, 4xx/5xx=deny, unreachable=fail closed. 5 integration tests.
 - [x] **Service Failover** — `ProxyRouteConfig.backup`. Когда все primary unhealthy → route to backup. Логика в `resolve_proxy()`.
 - [x] **Inflight request limit** — `LimitsConfig.maxInflightRequests`. `LimitsGuard` проверяет `inflight` перед прочими лимитами. 503 при превышении.
@@ -2808,6 +2812,59 @@ recurrence of this specific (now-disproven) mechanism.
     resumed cleanly from exactly where the tool-call sequence left off once the user said to
     continue, using the on-disk backup file (`/tmp/request_phase_216_fixed.rs.bak`) already
     staged for the restore step — no work lost, no re-derivation needed.
+
+### Реализовано в сессии 2026-09-06 (часть 3 — #216 part 2, closing the batch: per-attempt capacity admission)
+
+- User said "Да, продолжай" (yes, continue) when asked whether to proceed with #216's
+  remaining half. Implemented per `architect`'s original design from the earlier pass in
+  this same investigation, re-read against the current (post-part-1) code shape.
+- **[PR #372](https://github.com/lopatnov/conduit/pull/372)
+  `feat(proxy): per-attempt capacity admission for retries (#216 part 2)`** (squash-merge
+  `ff9f291`, issue #216 finally CLOSED) — retry attempts now actually respect
+  `maxConnectionsPerUpstream`, not just avoid leaking a slot (part 1's scope). New
+  `RetryState` fields (`max_conns_per_upstream`, `tracks_conn_slot`) capture the
+  routing-time decision so every attempt of one request evaluates capacity against the
+  same config snapshot that produced the candidate list (PR #92's TOCTOU discipline).
+  New `select_retry_target()` unifies what used to be two independently-recomputed
+  copies of the same rotation formula (one in `resolve_peer_addr`, one in
+  `upstream_peer`'s old retry-restore block from part 1) into one function: **attempt 0
+  trusts routing's own decision verbatim** (`retry.urls[0]`, guaranteed equal to the
+  peer `pick_bounded`/`pick_with_retry` already chose per #367) and never touches
+  capacity or slot bookkeeping — re-probing there would silently override a full
+  strategy-aware, capacity-aware, ramp-aware decision routing already made and already
+  acquired a slot for; **attempt 1+ forward-probes** the retry candidate list for a peer
+  under the cap, mirroring `capacity::hash_pick_bounded`'s existing forward-probe
+  pattern (skip, don't filter — filtering would renumber every subsequent attempt's
+  rotation) and fails open to the naive rotation target when every peer is saturated,
+  matching the same soft-cap convention as `retry.budgetPercent`/the rest of
+  `capacity.rs`.
+  **Caught a real mistake in my own first draft**: the initial forward-probe regression
+  test used `attempt=1`, whose *naive* (non-probing) index happened to already equal the
+  *correct* (post-probe) answer — so the test passed even with probing completely
+  disabled, a tautological test that proved nothing. Found this only because negative-
+  control verification is mandatory in this codebase, not optional — rewrote it with
+  `attempt=2` so the naive index genuinely lands on the saturated peer, re-verified the
+  negative control actually fails with probing disabled, restored, confirmed it passes.
+  A second, similar near-miss on the "attempt 0 trusts routing" test (initial version
+  used a same-peer, same-tracked-value scenario where an incorrect implementation would
+  coincidentally produce the identical final state) was caught and fixed the same way,
+  before this PR was ever opened.
+  `security-engineer` gave this PR the most scrutiny of the whole 4-PR batch (explicitly
+  the riskiest — a real behavior change on the hot retry path, not a bug fix restoring
+  prior behavior), independently re-deriving the forward-probe negative control itself
+  rather than trusting the report — PASS, no findings. CodeRabbit reviewed (unusual for
+  this non-default base branch) and returned "Minimal" merge risk, no actionable
+  comments. 16/16 CI green.
+  `docs/configuration.md`'s Circuit Breaker section corrected (previously said "a retry
+  attempt bypasses the cap," now describes the actual forward-probe/fail-open
+  mechanism); `CHANGELOG.md` got entries for all four PRs in this investigation (#367,
+  #368, #216 parts 1 and 2), none of which had one yet.
+- **All four PRs from the #216 investigation are now merged and closed**: #367
+  (retry-list anchoring), #368 (`retry_inflight` leak), #371 (#216 part 1, the conn-slot
+  leak), #372 (#216 part 2, this entry). The batch that started as "one issue, save it
+  for last, it's the riskiest" ended up as 4 separate PRs and 2 additional issues found
+  along the way — a good illustration of why `architect`'s design pass runs *before*
+  committing to a fix's scope, not after.
 
 ---
 
