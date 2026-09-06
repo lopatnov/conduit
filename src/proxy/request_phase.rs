@@ -1424,36 +1424,15 @@ pub(super) async fn upstream_peer(
         apply_backoff(retry).await;
     }
 
-    let (addr_str, tls, sni) = resolve_peer_addr(req_ctx)?;
-
-    // For retry attempts (#47 companion fix): restore proxy_upstream_url to
-    // the URL for THIS attempt so that logging(), access log, and EWMA
-    // tracking all reflect the *actual* upstream that served the response.
-    //
-    // resolve_peer_addr() already incremented retry.attempt, so the URL
-    // used in this call is urls[(attempt - 1) % len].
-    //
-    // #216: release_conn_slot() runs UNCONDITIONALLY here, for every retry
-    // attempt regardless of which failure mode triggered it -- it's a
-    // structural fix, not one more hand-maintained release site. On the
-    // 5xx path record_failed_upstream_for_retry already released the slot
-    // (this call is then a no-op, since proxy_upstream_url is already
-    // None); on the connect-phase and proxy-phase-timeout paths, NEITHER
-    // of which released anything before this PR, this is the only place
-    // the leak actually gets closed. acquire_conn_slot's `tracked: false`
-    // preserves today's undercount (attempt 2+ still holds no real
-    // conn_count slot) -- per-attempt capacity admission is #216's
-    // separate, riskier follow-up.
-    let retry_restore_url = req_ctx.retry.as_ref().and_then(|retry| {
-        (retry.attempt > 1).then(|| {
-            let idx = (retry.attempt - 1) % retry.urls.len();
-            retry.urls[idx].clone()
-        })
-    });
-    if let Some(next_url) = retry_restore_url {
-        release_conn_slot(req_ctx, &proxy.state.upstream_health);
-        acquire_conn_slot(req_ctx, &proxy.state.upstream_health, next_url, false);
-    }
+    // #47/#216: resolve_peer_addr() -> select_retry_target() owns choosing
+    // this attempt's URL AND all proxy_upstream_url/upstream_conn_slot
+    // bookkeeping for it (release the previous attempt's slot, forward-probe
+    // for capacity, acquire the new one) so that logging(), the access log,
+    // and EWMA tracking all reflect the *actual* upstream this attempt
+    // targets -- see select_retry_target's doc comment for the full design
+    // (#216 part 2 -- real per-attempt capacity admission, not just part
+    // 1's leak fix).
+    let (addr_str, tls, sni) = resolve_peer_addr(req_ctx, &proxy.state.upstream_health)?;
 
     // Derive fallback timeout from `limits.timeoutSecs` on the matched site.
     // Computed here (rather than only below, before `apply_peer_options`) so
@@ -2078,28 +2057,98 @@ pub(super) fn acquire_conn_slot(
     req_ctx.upstream_conn_slot = tracked;
 }
 
+/// Choose the URL for this attempt of a retry-configured request, and own
+/// all `proxy_upstream_url`/`upstream_conn_slot` bookkeeping for it (#216
+/// part 2 — real per-attempt capacity admission, building on part 1's leak
+/// fix). Single source of truth for the retry index: replaces what used to
+/// be two independently-recomputed copies of the same formula (one here,
+/// one in `upstream_peer`'s old retry-restore block) that had to be kept in
+/// lockstep by hand and could silently diverge.
+///
+/// **Attempt 0 (the request's first attempt) trusts routing's decision
+/// verbatim** — `retry.urls[0]` is guaranteed equal to the peer
+/// `pick_bounded`/`pick_with_retry` already chose (#367), and routing
+/// already acquired whatever `conn_count` slot that decision implies
+/// *before* `upstream_peer` was ever called. This function does not
+/// re-probe capacity or touch slot bookkeeping for attempt 0: doing either
+/// would silently override a full strategy-aware, capacity-aware,
+/// ramp-aware decision with a much cruder "first admissible peer in a fixed
+/// rotation" rule, and would double-acquire (or wrongly downgrade) a slot
+/// routing already holds.
+///
+/// **Attempt 1+ (an actual retry) forward-probes** `retry.urls` starting at
+/// this attempt's rotation index for a peer under
+/// `retry.max_conns_per_upstream`, mirroring
+/// [`crate::proxy::capacity::hash_pick_bounded`]'s existing forward-probe
+/// pattern rather than filtering the list — filtering would renumber every
+/// subsequent attempt's rotation instead of skipping just the one saturated
+/// peer. **Fails open** (falls back to the naive rotation URL) when every
+/// peer is saturated, matching this codebase's established soft-cap
+/// convention (`capacity.rs`'s module doc, `retry.budgetPercent`): capacity
+/// having deteriorated mid-request should not turn into a hard failure on a
+/// request that has already spent attempts. `retry.tracks_conn_slot`
+/// mirrors `RouteResolution.upstream_conn_slot`'s own formula
+/// (`is_least_conn || circuit_tracking`) computed at routing time.
+fn select_retry_target(req_ctx: &mut RequestCtx, health: &UpstreamRegistry) -> String {
+    // Compute this attempt's target using only a borrow of req_ctx.retry,
+    // ended before release_conn_slot/acquire_conn_slot need to borrow the
+    // whole req_ctx.
+    let (chosen, tracked) = {
+        let retry = req_ctx
+            .retry
+            .as_mut()
+            .expect("select_retry_target called only when req_ctx.retry.is_some()");
+        let len = retry.urls.len();
+        let base = retry.attempt % len;
+        let is_first_attempt = retry.attempt == 0;
+        retry.attempt += 1;
+
+        if is_first_attempt {
+            (retry.urls[0].clone(), None)
+        } else {
+            let chosen = match retry.max_conns_per_upstream {
+                Some(max) => (0..len)
+                    .map(|i| retry.urls[(base + i) % len].clone())
+                    .find(|u| health.conn_load(u) < max as usize)
+                    .unwrap_or_else(|| retry.urls[base].clone()),
+                None => retry.urls[base].clone(),
+            };
+            (chosen, Some(retry.tracks_conn_slot))
+        }
+    };
+
+    if let Some(tracked) = tracked {
+        release_conn_slot(req_ctx, health);
+        acquire_conn_slot(req_ctx, health, chosen.clone(), tracked);
+    }
+    chosen
+}
+
 /// Resolve the upstream `(addr, tls, sni)` from the request context.
 ///
-/// On a retry the address rotates through the URL list and the attempt counter
-/// is incremented.  On the first attempt the values come from `ctx.upstream`.
+/// For a retry-configured request, delegates to [`select_retry_target`] to
+/// decide which URL this attempt targets — unifying URL selection with the
+/// request's `proxy_upstream_url`/`upstream_conn_slot` bookkeeping into one
+/// decision (#216 part 2). On the first attempt the values come from
+/// `ctx.upstream` directly (no `retry` configured for this route at all).
 pub(super) fn resolve_peer_addr(
     req_ctx: &mut RequestCtx,
+    health: &UpstreamRegistry,
 ) -> pingora_core::Result<(String, bool, String)> {
-    if let Some(ref mut retry) = req_ctx.retry {
-        let url = &retry.urls[retry.attempt % retry.urls.len()];
-        let addr = upstream::url_to_host_port(url).ok_or_else(|| {
+    if req_ctx.retry.is_some() {
+        let url = select_retry_target(req_ctx, health);
+        let addr = upstream::url_to_host_port(&url).ok_or_else(|| {
             pingora_core::Error::explain(
                 pingora_core::ErrorType::ConnectProxyFailure,
                 format!("invalid upstream address: {url}"),
             )
         })?;
-        let tls = upstream::url_is_tls(url);
+        let tls = upstream::url_is_tls(&url);
         let sni = if tls {
-            upstream::url_host(url)
+            upstream::url_host(&url)
         } else {
             String::new()
         };
-        retry.attempt += 1;
         Ok((addr, tls, sni))
     } else {
         match &req_ctx.upstream {
@@ -3028,7 +3077,8 @@ mod tests {
             mirror_url: None,
             upstream_tls: None,
         });
-        let (addr, tls, sni) = resolve_peer_addr(&mut ctx).unwrap();
+        let reg = UpstreamRegistry::new();
+        let (addr, tls, sni) = resolve_peer_addr(&mut ctx, &reg).unwrap();
         assert_eq!(addr, "backend:4000");
         assert!(!tls);
         assert!(sni.is_empty());
@@ -3045,7 +3095,8 @@ mod tests {
             mirror_url: None,
             upstream_tls: None,
         });
-        let (addr, tls, sni) = resolve_peer_addr(&mut ctx).unwrap();
+        let reg = UpstreamRegistry::new();
+        let (addr, tls, sni) = resolve_peer_addr(&mut ctx, &reg).unwrap();
         assert_eq!(addr, "api.example.com:443");
         assert!(tls);
         assert_eq!(sni, "api.example.com");
@@ -3054,8 +3105,9 @@ mod tests {
     #[test]
     fn resolve_peer_addr_local_handler_returns_error() {
         let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        let reg = UpstreamRegistry::new();
         assert!(
-            resolve_peer_addr(&mut ctx).is_err(),
+            resolve_peer_addr(&mut ctx, &reg).is_err(),
             "local handler must return error"
         );
     }
@@ -3841,6 +3893,8 @@ mod tests {
             backoff_jitter: false,
             budget_percent: None, // no budget limit
             is_retrying: false,
+            max_conns_per_upstream: None,
+            tracks_conn_slot: false,
         };
         // No budget configured → always allows retry.
         assert!(proxy.retry_budget_allows(&mut retry));
@@ -3861,6 +3915,8 @@ mod tests {
             backoff_jitter: false,
             budget_percent: Some(50.0), // 50% budget → up to 5 retries
             is_retrying: false,
+            max_conns_per_upstream: None,
+            tracks_conn_slot: false,
         };
         assert!(
             proxy.retry_budget_allows(&mut retry),
@@ -3883,6 +3939,8 @@ mod tests {
             backoff_jitter: false,
             budget_percent: Some(50.0), // 50% → max 5, current=10 → denied
             is_retrying: false,
+            max_conns_per_upstream: None,
+            tracks_conn_slot: false,
         };
         assert!(
             !proxy.retry_budget_allows(&mut retry),
@@ -3914,6 +3972,8 @@ mod tests {
             backoff_jitter: false,
             budget_percent: Some(50.0),
             is_retrying: false,
+            max_conns_per_upstream: None,
+            tracks_conn_slot: false,
         };
         // First retry decision for this request.
         assert!(proxy.retry_budget_allows(&mut retry));
@@ -4135,6 +4195,8 @@ mod tests {
             backoff_jitter: false,
             budget_percent: None,
             is_retrying: false,
+            max_conns_per_upstream: None,
+            tracks_conn_slot: false,
         };
         let mut ctx = make_ctx(UpstreamTarget::Proxy {
             addr: "original:4000".to_owned(),
@@ -4146,10 +4208,200 @@ mod tests {
             upstream_tls: None,
         });
         ctx.retry = Some(retry);
-        let (addr, _, _) = resolve_peer_addr(&mut ctx).unwrap();
+        let reg = UpstreamRegistry::new();
+        let (addr, _, _) = resolve_peer_addr(&mut ctx, &reg).unwrap();
         assert_eq!(addr, "a:4000");
         // Attempt should be incremented.
         assert_eq!(ctx.retry.unwrap().attempt, 1);
+    }
+
+    // ── select_retry_target (#216 part 2) ─────────────────────────────────────
+
+    fn make_retry_ctx(
+        urls: &[&str],
+        attempt: usize,
+        max_conns_per_upstream: Option<u64>,
+        tracks_conn_slot: bool,
+    ) -> RequestCtx {
+        let mut ctx = make_ctx(UpstreamTarget::Proxy {
+            addr: "unused:0".to_owned(),
+            tls: false,
+            sni: String::new(),
+            strip_prefix: None,
+            rewrite: None,
+            mirror_url: None,
+            upstream_tls: None,
+        });
+        ctx.retry = Some(RetryState {
+            urls: urls.iter().map(|u| u.to_string()).collect(),
+            attempt,
+            max_attempts: 5,
+            conditions: vec!["5xx".to_owned()],
+            backoff_ms: None,
+            backoff_jitter: false,
+            budget_percent: None,
+            is_retrying: false,
+            max_conns_per_upstream,
+            tracks_conn_slot,
+        });
+        ctx
+    }
+
+    /// Attempt 0 must trust routing's decision verbatim: return
+    /// `retry.urls[0]` without touching `proxy_upstream_url`/
+    /// `upstream_conn_slot` at all, even when a slot is already held (as
+    /// routing would have already set up before `upstream_peer` runs).
+    /// Re-probing or re-acquiring here would silently override a full
+    /// strategy-aware pick_bounded/pick_with_retry decision.
+    #[test]
+    fn select_retry_target_attempt_zero_trusts_routing_without_touching_slot() {
+        let reg = UpstreamRegistry::new();
+        // Deliberately set retry.tracks_conn_slot to `true` while routing's
+        // OWN decision (upstream_conn_slot below) was `false` -- an
+        // attribution-only pick (e.g. no cap configured and not
+        // least-conn). If attempt 0 incorrectly ran release_conn_slot/
+        // acquire_conn_slot (using retry.tracks_conn_slot), it would flip
+        // upstream_conn_slot to `true` and increment conn_load -- an
+        // observable difference from "untouched" that a same-peer,
+        // same-tracked-value scenario could never catch.
+        let mut ctx = make_retry_ctx(&["http://a:80", "http://b:80"], 0, Some(1), true);
+        // Simulate what routing already set up before upstream_peer ran.
+        ctx.proxy_upstream_url = Some("http://a:80".to_owned());
+        ctx.upstream_conn_slot = false;
+
+        let chosen = select_retry_target(&mut ctx, &reg);
+
+        assert_eq!(chosen, "http://a:80");
+        assert_eq!(ctx.retry.as_ref().unwrap().attempt, 1);
+        assert_eq!(
+            ctx.proxy_upstream_url.as_deref(),
+            Some("http://a:80"),
+            "attempt 0 must not touch proxy_upstream_url"
+        );
+        assert!(
+            !ctx.upstream_conn_slot,
+            "attempt 0 must not touch upstream_conn_slot -- must stay exactly as routing set it, \
+             even though retry.tracks_conn_slot is true"
+        );
+        assert_eq!(
+            reg.conn_load("http://a:80"),
+            0,
+            "attempt 0 must not acquire a slot nothing asked it to"
+        );
+    }
+
+    /// The actual point of #216 part 2: a retry attempt must forward-probe
+    /// past a saturated peer instead of naively rotating into it. Peer at
+    /// `base` is at its cap; the next peer in rotation is under capacity —
+    /// the retry must land on the SECOND peer, not the first.
+    #[test]
+    fn select_retry_target_retry_forward_probes_past_saturated_peer() {
+        let reg = UpstreamRegistry::new();
+        reg.conn_inc("http://a:80"); // a is now at the cap of 1
+                                     // attempt=2, len=2 -> base = 2 % 2 = 0, i.e. the NAIVE (non-probing)
+                                     // target would be urls[0] = "http://a:80", the saturated one --
+                                     // this is the case that actually exercises the forward-probe
+                                     // skipping past it to urls[1].
+        let mut ctx = make_retry_ctx(&["http://a:80", "http://b:80"], 2, Some(1), true);
+
+        let chosen = select_retry_target(&mut ctx, &reg);
+
+        assert_eq!(
+            chosen, "http://b:80",
+            "must forward-probe past the saturated peer to the next admissible one"
+        );
+        assert_eq!(ctx.retry.as_ref().unwrap().attempt, 3);
+        assert_eq!(
+            reg.conn_load("http://b:80"),
+            1,
+            "the new peer's slot must be acquired"
+        );
+    }
+
+    /// Fail-open guarantee: when every peer in the rotation is saturated,
+    /// `select_retry_target` must still return a URL (the naive rotation
+    /// target), never panic or loop forever. Matches this codebase's
+    /// established soft-cap convention (capacity.rs's module doc,
+    /// retry.budgetPercent) -- capacity deteriorating mid-request must not
+    /// turn into a hard failure on a request that already spent attempts.
+    #[test]
+    fn select_retry_target_fails_open_when_every_peer_is_saturated() {
+        let reg = UpstreamRegistry::new();
+        reg.conn_inc("http://a:80");
+        reg.conn_inc("http://b:80");
+        let mut ctx = make_retry_ctx(&["http://a:80", "http://b:80"], 1, Some(1), true);
+
+        let chosen = select_retry_target(&mut ctx, &reg);
+
+        // base = attempt % len = 1 % 2 = 1 -> naive fallback is urls[1].
+        assert_eq!(chosen, "http://b:80");
+        assert_eq!(ctx.retry.as_ref().unwrap().attempt, 2);
+    }
+
+    /// `max_conns_per_upstream: None` (no cap configured) must skip the
+    /// forward-probe entirely and use the naive rotation index -- matching
+    /// pre-#216-part-2 behavior exactly when there's nothing to admit
+    /// against.
+    #[test]
+    fn select_retry_target_no_cap_configured_uses_naive_rotation() {
+        let reg = UpstreamRegistry::new();
+        // Even though b is "saturated" by some unrelated bookkeeping, with
+        // no cap configured there is nothing to forward-probe against --
+        // base = attempt(1) % len(2) = 1, so the naive target is urls[1].
+        reg.conn_inc("http://b:80");
+        reg.conn_inc("http://b:80");
+        reg.conn_inc("http://b:80");
+        let mut ctx = make_retry_ctx(&["http://a:80", "http://b:80"], 1, None, true);
+
+        let chosen = select_retry_target(&mut ctx, &reg);
+
+        assert_eq!(
+            chosen, "http://b:80",
+            "no cap -> naive rotation, no probing"
+        );
+        assert_eq!(ctx.retry.as_ref().unwrap().attempt, 2);
+    }
+
+    /// `tracks_conn_slot: false` must acquire the new URL without
+    /// incrementing conn_count -- matching part 1's undercount-preserving
+    /// behavior for routes that don't track retries (e.g. no cap
+    /// configured and not least-conn).
+    #[test]
+    fn select_retry_target_untracked_acquires_without_incrementing() {
+        let reg = UpstreamRegistry::new();
+        let mut ctx = make_retry_ctx(&["http://a:80", "http://b:80"], 1, None, false);
+
+        let chosen = select_retry_target(&mut ctx, &reg);
+
+        assert_eq!(chosen, "http://b:80");
+        assert_eq!(reg.conn_load("http://b:80"), 0);
+        assert!(!ctx.upstream_conn_slot);
+    }
+
+    /// A retry attempt must release the PREVIOUS attempt's slot before
+    /// acquiring the new one -- the actual leak-closing behavior from part
+    /// 1, still correct after part 2's forward-probing was layered on top.
+    /// base = attempt(1) % len(2) = 1, so the probe starts at (and, being
+    /// under the cap of 5, immediately accepts) `urls[1]` = "http://b:80" --
+    /// a DIFFERENT peer than the one the previous attempt held a slot on.
+    #[test]
+    fn select_retry_target_releases_previous_slot_before_acquiring_new_one() {
+        let reg = UpstreamRegistry::new();
+        reg.conn_inc("http://a:80"); // the previous attempt's slot
+        let mut ctx = make_retry_ctx(&["http://a:80", "http://b:80"], 1, Some(5), true);
+        ctx.proxy_upstream_url = Some("http://a:80".to_owned());
+        ctx.upstream_conn_slot = true;
+
+        let chosen = select_retry_target(&mut ctx, &reg);
+
+        assert_eq!(chosen, "http://b:80");
+        assert_eq!(
+            reg.conn_load("http://a:80"),
+            0,
+            "the previous attempt's slot on a DIFFERENT peer must be released"
+        );
+        assert_eq!(reg.conn_load("http://b:80"), 1);
+        assert_eq!(ctx.proxy_upstream_url.as_deref(), Some("http://b:80"));
     }
 
     // ── record_failed_upstream_for_retry ──────────────────────────────────────

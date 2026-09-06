@@ -1382,9 +1382,15 @@ load-balance strategy, across all three config shapes (`proxy: {}` map,
   checked — if every target in that group is at capacity, the request 503s
   even if a different group has room. Group selection itself is not
   capacity-aware (it's typically hash/affinity-driven).
-- A retry attempt bypasses the cap: capacity is evaluated once, at initial
-  routing time, not re-checked per retry attempt. See tracked follow-up
-  issue for undercounting on retry-heavy routes.
+- A retry attempt re-checks the cap. The first attempt uses whatever peer
+  routing already chose (the usual strategy- and capacity-aware pick); each
+  retry attempt after that forward-probes the route's retry candidate list,
+  starting from its position in the rotation, for the next peer currently
+  **under** the cap — skipping (not permanently removing) a saturated one,
+  the same forward-probe shape `IpHash`/`ConsistentHash` already use above.
+  If every candidate is saturated, it fails open to the naive rotation
+  target rather than 503ing a request that has already spent attempts —
+  the same soft-cap trade-off as the rest of this section.
 
 > **Known limitations** still open after the 2026-08-03 integrity audit —
 > see the repo's issue tracker for current status:

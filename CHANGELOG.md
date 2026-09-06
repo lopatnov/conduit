@@ -77,6 +77,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   exempt (a probabilistic ramp would break their own consistency
   guarantee) — configuring both together now logs a warning instead of
   silently doing nothing.
+- **A `routes[]`-array route with `retry` configured no longer defeats its
+  own load-balancing strategy on the first attempt.** The retry candidate
+  list was built independently of the peer the route's strategy actually
+  chose, so `retry.urls[0]` was always the head of an unrotated list —
+  round-robin never rotated, and per-peer stats (`conn_count`, EWMA,
+  outlier detection, access logs) were attributed to the wrong upstream.
+- **`retry.budgetPercent` no longer self-suppresses over the life of a
+  long-running process.** The internal `retry_inflight` counter incremented
+  once per retry *decision* but was only ever decremented once per
+  *request* — a request that took 2+ retry attempts (e.g. `attempts: 3`
+  fully exhausted) leaked a permanent +1 into the counter. Enough leaked
+  requests eventually make the budget check deny all retries sitewide, with
+  no error or warning.
+- **Retry attempts no longer leak a `conn_count` slot on a connect-phase or
+  proxy-phase-timeout failure.** Only the 5xx-retry path correctly released
+  the connection-capacity slot before moving to the next attempt; a
+  connection refusal/timeout, or a read/write timeout mid-response, left
+  the slot held forever. Once enough slots leaked past
+  `maxConnectionsPerUpstream`, the affected route returned `503` permanently
+  until process restart — the opposite of the circuit breaker's intended
+  behavior. Both failure modes now also feed passive health/outlier
+  detection, which previously only the 5xx path did.
+- **Retry attempts now actually respect `maxConnectionsPerUpstream`.**
+  Capacity used to be evaluated once, at initial routing, and never
+  re-checked as a request moved through its retry attempts — a retry could
+  land on (and further overload) a peer already at its connection cap. Each
+  retry attempt now forward-probes the retry candidate list for the next
+  peer currently under the cap, skipping (not permanently removing) a
+  saturated one — the same forward-probe shape `ipHash`/`consistentHash`
+  already use for capacity. Fails open to the naive rotation target if
+  every candidate is saturated, so a request that has already spent
+  attempts is never 503'd purely because capacity deteriorated mid-request.
 
 ### Changed
 

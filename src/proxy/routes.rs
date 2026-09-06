@@ -366,6 +366,12 @@ fn full_cfg_to_result(
             backoff_jitter: r.backoff_jitter.unwrap_or(false),
             budget_percent: r.budget_percent,
             is_retrying: false,
+            // #216 part 2: mirrors upstream_conn_slot's own formula a few
+            // lines below (is_least_conn || circuit_tracking) -- unlike
+            // router.rs's retry-bypass branch, this path goes through
+            // pick_bounded, so is_least_conn can genuinely be true here.
+            max_conns_per_upstream: max_conns,
+            tracks_conn_slot: is_least_conn || circuit_tracking,
         }
     });
 

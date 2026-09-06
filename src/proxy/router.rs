@@ -446,7 +446,13 @@ fn resolve_proxy_routes(
         // `slowStartSecs` would stay a silent no-op on every retry-configured
         // route -- the same bug class #157 is about, recurring here.
         let candidates = ramp.filter_candidates(candidates);
-        let (url, state) = pick_with_retry(&candidates, route_key, ctx.counters, retry)?;
+        let (url, state) = pick_with_retry(
+            &candidates,
+            route_key,
+            ctx.counters,
+            retry,
+            opts.max_conns_per_upstream,
+        )?;
         (url, Some(state), false)
     } else {
         let input = capacity::BoundedPick {
@@ -914,9 +920,15 @@ fn pick_url_by_strategy(
     upstream_health: &UpstreamRegistry,
     hash_ctx: &HashCtx<'_>,
 ) -> Option<(String, Option<RetryState>, bool)> {
-    // With retry configured, always use round-robin rotation regardless of strategy.
+    // With retry configured, always use round-robin rotation regardless of
+    // strategy. Only ever reached from tests calling this function
+    // directly with `retry_cfg: Some(_)` -- the sole production caller
+    // (`resolve_grouped`'s outer group pick) always passes `None`, since
+    // groups don't support retry in V1 (see `routes.rs`/this module's own
+    // comments to that effect) -- so there is no real
+    // `max_conns_per_upstream` to thread through here.
     if let Some(retry) = retry_cfg {
-        let (url, state) = pick_with_retry(urls, route_key, counters, retry)?;
+        let (url, state) = pick_with_retry(urls, route_key, counters, retry, None)?;
         return Some((url, Some(state), false));
     }
 
@@ -955,11 +967,22 @@ pub fn url_to_proxy_upstream(url: &str, strip_prefix: Option<String>) -> Option<
 
 /// Pick a starting URL and build retry state, rotating the URL list so that
 /// `upstream_peer()` can walk it on each attempt.
+///
+/// `max_conns_per_upstream` is threaded through into `RetryState` so
+/// per-attempt capacity admission (#216 part 2) evaluates every attempt of
+/// one request against the same config snapshot that produced `urls`,
+/// rather than re-reading config from inside `upstream_peer`. This branch
+/// always bypasses `pick_bounded`/strategy dispatch entirely (see this
+/// function's caller), so `is_least_conn` is never true here -- retries on
+/// this path track a `conn_count` slot per attempt exactly when a cap is
+/// configured, mirroring `circuit_tracking`'s own condition for the first
+/// attempt a few lines below this function's call site.
 fn pick_with_retry(
     urls: &[String],
     route_key: &str,
     counters: &DashMap<String, AtomicUsize>,
     retry: &RetryConfig,
+    max_conns_per_upstream: Option<u64>,
 ) -> Option<(String, RetryState)> {
     let start_idx = if urls.len() > 1 {
         let entry = counters
@@ -984,6 +1007,8 @@ fn pick_with_retry(
         backoff_jitter: retry.backoff_jitter.unwrap_or(false),
         budget_percent: retry.budget_percent,
         is_retrying: false,
+        max_conns_per_upstream,
+        tracks_conn_slot: max_conns_per_upstream.is_some(),
     };
     Some((first, state))
 }
@@ -1496,7 +1521,7 @@ mod tests {
             budget_percent: None,
             backoff_jitter: None,
         };
-        let (url, state) = pick_with_retry(&urls, "r", &counters, &retry).unwrap();
+        let (url, state) = pick_with_retry(&urls, "r", &counters, &retry, None).unwrap();
         assert_eq!(url, "http://a:4000");
         assert_eq!(state.max_attempts, 3);
         assert!(state.has_condition("5xx"));
@@ -1514,7 +1539,7 @@ mod tests {
             budget_percent: None,
             backoff_jitter: None,
         };
-        let (url, state) = pick_with_retry(&urls, "r", &counters, &retry).unwrap();
+        let (url, state) = pick_with_retry(&urls, "r", &counters, &retry, None).unwrap();
         assert!(urls.contains(&url));
         assert_eq!(state.urls.len(), 2);
         assert_eq!(state.backoff_ms, Some(50));
@@ -1530,7 +1555,7 @@ mod tests {
             budget_percent: None,
             backoff_jitter: None,
         };
-        assert!(pick_with_retry(&[], "r", &counters, &retry).is_none());
+        assert!(pick_with_retry(&[], "r", &counters, &retry, None).is_none());
     }
 
     // ── pick_url_by_strategy ──────────────────────────────────────────────────
