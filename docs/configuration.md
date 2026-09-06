@@ -1049,6 +1049,21 @@ proxy:
 
 The injected cookie attributes are: `Path=/; HttpOnly; SameSite=Lax`.
 
+**How the pin is applied.** With a `secret` set, the verified cookie names one
+exact upstream, and Conduit routes to *that* upstream directly — the
+configured `strategy` is not consulted at all while the pin can be honored.
+A pin is honored whenever its upstream is healthy and below
+`maxConnectionsPerUpstream`; otherwise Conduit falls back to the strategy and:
+
+- **pinned upstream saturated (but healthy)** — relocate for this request and
+  leave the cookie untouched, so the session returns to its original upstream
+  as soon as capacity frees up;
+- **pinned upstream unhealthy** — relocate *and* re-sign the cookie onto the
+  new upstream, since the original is gone.
+
+Without a `secret`, there is no pinned URL to honor — the cookie value is only
+a hash key, and routing goes through `consistent-hash` as usual.
+
 > **Security note:** store the HMAC secret in an environment variable
 > (`secret: "$STICKY_SECRET"`). Rotate by changing the value and reloading;
 > existing cookies will silently fall through to normal load-balancing for one
