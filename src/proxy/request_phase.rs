@@ -192,8 +192,20 @@ impl ConduitProxy {
                 return false;
             }
         }
-        self.state.retry_inflight.fetch_add(1, Ordering::Relaxed);
-        retry.is_retrying = true;
+        // Increment at most once per request, not once per retry decision
+        // (#368) -- `is_retrying` already tracks "this request is currently
+        // counted," so re-checking it here is what makes the increment
+        // idempotent across a request's 2nd, 3rd, ... retry attempt.
+        // `logging()` decrements exactly once per request when `is_retrying`
+        // is set, so a request with `attempts: 3` that retries twice used to
+        // net +1 permanently leaked per request (+1, +1, -1) -- `inflight`
+        // (the budget's denominator) counts *requests*, so counting a
+        // retrying request once is also the semantically correct reading,
+        // not just a leak patch.
+        if !retry.is_retrying {
+            self.state.retry_inflight.fetch_add(1, Ordering::Relaxed);
+            retry.is_retrying = true;
+        }
         true
     }
 
@@ -3717,6 +3729,43 @@ mod tests {
             "exhausted budget must deny"
         );
         assert!(!retry.is_retrying);
+    }
+
+    /// Regression test for #368: calling `retry_budget_allows` twice on the
+    /// SAME `RetryState` (as happens for a request that retries more than
+    /// once, e.g. `attempts: 3` with both retries taken) must only increment
+    /// `retry_inflight` once, not once per call. Reverting the `is_retrying`
+    /// guard (unconditional `fetch_add`) would make `retry_inflight` end up
+    /// at 2 here instead of 1 -- a leak that compounds across every
+    /// multi-attempt retry sequence for the life of the process and can
+    /// eventually make `retry.budgetPercent` silently suppress all retries
+    /// sitewide.
+    #[test]
+    fn retry_budget_allows_increments_inflight_once_per_request_not_per_attempt() {
+        let proxy = make_proxy();
+        proxy.state.inflight.store(10, Ordering::Relaxed);
+        proxy.state.retry_inflight.store(0, Ordering::Relaxed);
+        let mut retry = RetryState {
+            urls: vec!["http://a:4000".to_owned()],
+            attempt: 0,
+            max_attempts: 3,
+            conditions: vec!["5xx".to_owned()],
+            backoff_ms: None,
+            backoff_jitter: false,
+            budget_percent: Some(50.0),
+            is_retrying: false,
+        };
+        // First retry decision for this request.
+        assert!(proxy.retry_budget_allows(&mut retry));
+        assert_eq!(proxy.state.retry_inflight.load(Ordering::Relaxed), 1);
+        // Second retry decision for the SAME request (e.g. its 2nd retry
+        // attempt) -- must NOT increment again.
+        assert!(proxy.retry_budget_allows(&mut retry));
+        assert_eq!(
+            proxy.state.retry_inflight.load(Ordering::Relaxed),
+            1,
+            "retry_inflight must not increment again for a request already counted as retrying"
+        );
     }
 
     // ── collect_upstream_infos ────────────────────────────────────────────────
