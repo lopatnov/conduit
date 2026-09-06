@@ -1317,6 +1317,17 @@ impl ConduitProxy {
                 SYNTHETIC_RETRY_FAILURE_STATUS,
                 false,
             );
+            // Clear proxy_upstream_url/upstream_conn_slot immediately,
+            // symmetric with try_retry_proxy_error's timeout branch: if
+            // set_retry(true) doesn't actually result in another
+            // upstream_peer() call, leaving the URL set would make
+            // logging()'s terminal release_proxy_upstream record this same
+            // connect failure's health a SECOND time (a spurious extra
+            // consecutive_5xx increment / EWMA sample -- no gauge risk
+            // here specifically, since connection_established=false never
+            // touched it above). Found by security-engineer reviewing
+            // PR #371's fix for the analogous timeout-branch gap.
+            release_conn_slot(req_ctx, &self.state.upstream_health);
         }
     }
 
@@ -4552,6 +4563,55 @@ mod tests {
         assert_eq!(
             gauge_after, 0.0,
             "gauge must be decremented exactly once (by record_retry_failure_health)"
+        );
+    }
+
+    /// Regression test for the symmetric gap `security-engineer` found while
+    /// re-reviewing PR #371's timeout-branch fix: `try_retry_connect_error`
+    /// must ALSO clear `proxy_upstream_url`/release the conn_count slot
+    /// immediately after recording health, not leave it for a retry that
+    /// might never happen. Unlike the proxy-timeout case there is no
+    /// Prometheus gauge to double-decrement (connection_established=false
+    /// never touches it), but leaving the URL set would still make
+    /// `logging()`'s terminal path record this same connect failure's
+    /// health a second time (a spurious extra `consecutive_5xx` increment /
+    /// EWMA sample) if no further retry attempt actually happens.
+    #[test]
+    fn connect_phase_record_then_release_leaves_no_url_for_duplicate_health_recording() {
+        let proxy = make_proxy();
+        let url = "http://u5:4000";
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        ctx.proxy_upstream_url = Some(url.to_owned());
+        ctx.upstream_conn_slot = true;
+        proxy.state.upstream_health.conn_inc(url);
+        let config = AppConfig::default();
+
+        // Exactly the sequence try_retry_connect_error now performs:
+        // record health (connection_established=false, no gauge touched),
+        // then release.
+        proxy.record_retry_failure_health(&ctx, &config, SYNTHETIC_RETRY_FAILURE_STATUS, false);
+        release_conn_slot(&mut ctx, &proxy.state.upstream_health);
+
+        assert!(
+            ctx.proxy_upstream_url.is_none(),
+            "proxy_upstream_url must be cleared immediately, not left for a retry that may never happen"
+        );
+        assert!(!ctx.upstream_conn_slot);
+        assert_eq!(
+            proxy.state.upstream_health.conn_load(url),
+            0,
+            "the conn_count slot must also be released"
+        );
+        assert_eq!(
+            proxy
+                .state
+                .upstream_health
+                .statuses
+                .get(url)
+                .unwrap()
+                .consecutive_5xx,
+            1,
+            "health must have been recorded exactly once"
         );
     }
 }
