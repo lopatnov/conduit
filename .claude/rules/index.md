@@ -182,6 +182,15 @@ what replaced it (no scheduled rotation; an optional, unverified same-session re
 warm). `.claude/commands/handoff.md` still covers the genuinely-manual case — the user
 deciding to close this session out and start fresh themselves — that one isn't retired.
 
+**Local sessions never hold a `RemoteTrigger`, and that's expected, not a bug to chase.**
+Confirmed 2026-09-06 via `mcp__ccd_session_mgmt__get_session session_id:"self"`: a local
+(desktop-app) session's own ID has the `local_...` format, while every `RemoteTrigger`'s
+`persistent_session_id` is a cloud `session_...` ID — the two ID spaces never overlap. So
+when running `/handoff` from a local session, `RemoteTrigger action:"list"` correctly
+returns zero matches for that session's own ID; don't read that as "the trigger got lost"
+or spend time re-querying it. The daily `/feature-workspace-cycle` trigger lives entirely
+in its own separate cloud session regardless of which local session is currently open.
+
 ## Known-blocked external endpoints — ask the user, don't keep retrying
 
 > Added 2026-08-28 after a session burned ~6 tool calls across `WebFetch` and

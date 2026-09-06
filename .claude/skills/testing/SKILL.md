@@ -37,7 +37,17 @@ description: Playbook for writing/extending tests in conduit — when to reach f
    overkill and slower to set up — match the existing pattern in `tests/`.
 5. **`tokio::test`** — async test fn, default multi-thread runtime unless the test needs
    single-thread determinism (then `#[tokio::test(flavor = "current_thread")]`).
-6. **Raw-TCP-client tests (test acting as the *client* against a real server) — don't
+6. **Suspect a hash-distribution/self-mapping bug? Measure it empirically before designing
+   the fix or the regression test.** Write a throwaway `#[cfg(test)] mod tmp_probe` that
+   calls the **real production functions** directly (not a reimplementation of them) across
+   a sweep of realistic inputs, `println!`/`eprintln!` the result with `-- --nocapture`, then
+   delete the probe before committing — `git diff`/`git status` to confirm it's gone. This is
+   how issue #220's actual severity was found (a sticky-session HMAC pin was assumed to route
+   correctly; measuring `fnv1a_hash(url) % ring.len() == index_of(url)` across 2..8-peer rings
+   with the real `hash_pick_bounded` showed ~23% — chance level — and exactly 0% at 4 peers),
+   and it's also the fastest way to *pick fixture values* for the eventual regression test —
+   see the next idiom below, which exists because skipping this step led straight into it.
+7. **Raw-TCP-client tests (test acting as the *client* against a real server) — don't
    `stream.shutdown()` after writing the request.** Confirmed on this dev machine's Windows
    toolchain (2026-08-31, issue #286's regression test): a client half-closing its write side
    before the server's `accept()` has run can drop the connection's still-pending backlog entry
@@ -122,6 +132,50 @@ isolated logic when the file's whole purpose is otherwise well-tested end-to-end
 - **Asserts behavior, not implementation** — for guard-chain tests, assert on the HTTP
   response (status/headers/body), not on internal struct fields where avoidable.
 - **English only** — test names, assertions messages, comments (CLAUDE.md "Language").
+
+## Negative controls need a fixture that can actually fail
+
+This repo's established discipline for a regression test is: temporarily revert the fix,
+confirm the new test fails with the pre-fix symptom, restore the fix, confirm it passes.
+Running that cycle is necessary but **not sufficient** — the fixture values also have to be
+chosen so buggy and correct code genuinely produce different answers. Two adjacent PRs
+(#372, #373) hit this exact trap **four separate times**:
+
+- A test for a retry attempt's forward-probe used `attempt=1` on a 2-URL list. `base =
+  attempt % len` happened to already equal the *correct*, post-probe answer, so the test
+  passed with the probe logic completely disabled — a change to `attempt=2` (where the naive
+  index lands on the deliberately-saturated peer) was needed before the test meant anything.
+- A test for "attempt 0 must not touch the conn-slot machinery" used a same-peer,
+  same-tracked-value scenario, where a broken implementation (touching the slot when it
+  shouldn't) produced the *identical final state* as the correct one (release-then-reacquire
+  on the same peer, same flag, nets out to a no-op either way). Fixed by deliberately setting
+  up a state where routing's own decision *disagrees* with what the buggy code path would
+  compute, so a wrong implementation is forced to visibly diverge.
+- A sticky-session pin test used a 2-peer ring, which — per the empirical measurement in idiom
+  6 above — is one of the ~23% of rings where a peer's URL happens to hash back to its own
+  index. The bug (hashing the pin instead of honoring it directly) was invisible at n=2 and
+  only surfaced once the fixture swept every (ring size, pinned index) pair.
+- A **pre-existing** test from an earlier PR (#156) had the same 2-peer blind spot and was
+  still passing even after the new bug was deliberately, artificially reintroduced during
+  review — caught by `security-engineer`, not by the author. Re-pointing the fixture to a
+  3-peer ring at one of the measured "wrong" indices made it discriminate.
+
+**The check, concretely**: after running the standard revert→fail→restore→pass cycle, ask
+"would this same fixture also pass if I patched in the specific wrong behavior I'm actually
+worried about, rather than just deleting the fix wholesale?" For anything hash/modulo/
+rotation-index-based, that means picking inputs already known (from idiom 6's empirical
+measurement) to be on the *wrong* side of the naive computation, not just any input.
+
+**Also verify the negative control itself actually landed.** A scripted find-and-replace
+(`perl -0pi`, `sed`) used to simulate the bug can silently no-op — this happened in this same
+work because `cargo fmt` had reflowed the target line onto two lines between when the pattern
+was written and when it ran, so the "negative control" changed nothing and the suite came
+back green for the wrong reason (looked like "test doesn't catch the bug" when really nothing
+had been patched). A second such substitution, missing a `/g` flag, collaterally changed an
+unrelated test's fixture line elsewhere in the same file. Before trusting a negative-control
+result: `git diff` the working tree and *read* the change, don't just look at the test output.
+For anything beyond a single unambiguous line, editing by hand (or with enough surrounding
+context to guarantee a unique match) is safer than a scripted regex pass.
 
 ## Where to look for canonical examples
 

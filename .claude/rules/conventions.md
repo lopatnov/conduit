@@ -11,8 +11,12 @@ Format: `<type>(<scope>): <subject>` — matches the actual history (`feat:`, `f
 - **type:** `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`.
 - **subject** — imperative mood, no trailing period, short. English only (CLAUDE.md "Language").
 - Body explains *why*, not *what* — the diff already shows what changed.
-- Always end with `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` (per the global
-  commit instructions) — heredoc the message, never amend unless explicitly asked.
+- Always end with the `Co-Authored-By:` trailer named in the **current** system-reminder's
+  attribution instructions — heredoc the message, never amend unless explicitly asked. Don't
+  hardcode a specific model name here or copy one from an old commit: this has genuinely
+  changed mid-project (seen switching between "Claude Sonnet 5" and "Claude Opus 5" within a
+  single conversation, tied to which model was actually driving the session at commit time),
+  so treat whatever the live instruction says as authoritative, never this file's memory of it.
 
 ## Versioning — SemVer, and where it lives
 
@@ -84,6 +88,14 @@ whether something is patch/minor/major.
       `cli.md`, `deployment.md` as relevant — and `schema/conduit.schema.json` if schema changed).
 - [ ] `CLAUDE.md` backlog checkbox + session log updated if this closes a tracked item
       (see `scrum-master`).
+- [ ] For a new regression test guarding a hash/modulo/ring/rotation-index bug: the negative
+      control was verified by re-reading the *patched source* before trusting the test
+      outcome (a `cargo fmt` reflow or an imprecise find-and-replace can make a scripted
+      negative-control edit silently no-op — see `.claude/skills/testing/SKILL.md` "Negative
+      controls need a fixture that can actually fail"), and the fixture values were chosen so
+      buggy and correct behavior genuinely disagree — not just the first small example that
+      happens to produce the right-looking answer. This bit this repo four times in two
+      adjacent PRs (#372, #373) before it was written down here.
 
 > The CodeRabbit reply/resolve recipe (PR #70) moved to the **`coderabbit-reply`** skill
 > (`.claude/skills/coderabbit-reply/SKILL.md`) 2026-08-28 — load it when actually working
