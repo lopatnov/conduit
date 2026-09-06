@@ -44,10 +44,26 @@ pub struct RequestCtx {
     ///
     /// `false` when `proxy_upstream_url` is populated for passive-health
     /// attribution only (no slot was acquired) — e.g. any non-least-conn
-    /// route with no `maxConnectionsPerUpstream` configured. Reset to `false`
-    /// whenever `proxy_upstream_url` is replaced without a matching
-    /// `conn_inc` (see `record_failed_upstream_for_retry` /
-    /// `upstream_peer`'s retry-restore path).
+    /// route with no `maxConnectionsPerUpstream` configured.
+    ///
+    /// **Invariant (#216):** `upstream_conn_slot == true` ⟺ this request
+    /// holds exactly one outstanding `conn_inc` on the URL currently in
+    /// `proxy_upstream_url`. Every mutation of `proxy_upstream_url` must
+    /// therefore be preceded by [`request_phase::release_conn_slot`] (which
+    /// releases any slot held on the *old* value and clears both fields) —
+    /// never assign `proxy_upstream_url` or this field directly. Use
+    /// [`request_phase::acquire_conn_slot`] to point at a new URL
+    /// afterward. Before #216 this was violated by `upstream_peer`'s
+    /// retry-restore path, which overwrote `proxy_upstream_url` for the
+    /// next retry attempt without releasing the previous value's slot on
+    /// two of the three retry-failure paths (connect-phase and
+    /// proxy-phase-timeout — only the 5xx path, via
+    /// `record_failed_upstream_for_retry`, released correctly) — a real,
+    /// unbounded leak: `conn_count` would rise monotonically until the
+    /// affected upstream was permanently excluded by `Capacity::evaluate`.
+    ///
+    /// [`request_phase::release_conn_slot`]: crate::proxy::request_phase::release_conn_slot
+    /// [`request_phase::acquire_conn_slot`]: crate::proxy::request_phase::acquire_conn_slot
     pub upstream_conn_slot: bool,
     /// Cache configuration for this route (`proxy.*.cache`), if caching is enabled.
     ///
