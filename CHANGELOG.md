@@ -51,6 +51,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **HMAC-signed sticky sessions now actually route to the upstream their
+  cookie names.** After verifying the cookie against a specific upstream,
+  Conduit threw that result away and instead hashed the upstream's *URL
+  string* back through `hash % len` — which lands on the pinned upstream
+  itself only by coincidence. Measured across 2–8-upstream pools, that
+  coincidence holds about 23% of the time (i.e. chance); with exactly four
+  upstreams it never holds. So a signed session was usually served by a
+  different upstream than the one it was pinned to, silently. The pin is now
+  honored directly whenever its upstream is healthy and under
+  `maxConnectionsPerUpstream`, with the previous relocate-and-self-heal
+  behavior kept for when it isn't. Two knock-on effects are fixed with it:
+  `strict: true` was checking the health of the pinned upstream while
+  serving a different one, and the "capacity relocation" guard (which
+  suppresses cookie re-signing) was firing on nearly every sticky request
+  rather than only on real relocations.
+- **A route with `retry` configured no longer ignores its load-balancing
+  strategy.** The retry path bypassed strategy dispatch entirely and did
+  plain round-robin, so `ipHash`/`consistentHash`, weighted round-robin,
+  least-conn *and* sticky affinity were all silently inert the moment
+  `retry` was added to a route. The first attempt now goes through the same
+  strategy dispatch as a non-retry request, and the retry rotation is
+  anchored to whichever upstream that produced.
 - **Response compression now applies to the metrics endpoint and fallback
   responses, not just static files.** `compression`'s negotiation logic
   (`Content-Encoding` selection, `minBytes`/`types` thresholds) was fully
