@@ -3149,9 +3149,16 @@ mod tests {
         routes.insert(
             "/".to_string(),
             ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                // Three peers pinned to "b" deliberately: at n=2 every peer
+                // happens to hash back to its own index, so a 2-peer fixture
+                // routes identically whether the pin is honored directly
+                // (#220's fix) or re-hashed the old way — it cannot tell the
+                // two apart. `b` in a 3-peer ring hashes to `c`, so the
+                // self-heal leg below genuinely discriminates.
                 targets: vec![
                     ProxyTarget::Simple("http://a:4000".to_owned()),
                     ProxyTarget::Simple("http://b:4000".to_owned()),
+                    ProxyTarget::Simple("http://c:4000".to_owned()),
                 ],
                 sticky: Some(StickyConfig {
                     cookie: "srv_id".to_owned(),
@@ -3176,12 +3183,12 @@ mod tests {
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
 
-        // Pin the cookie to "a", then saturate "a" at its cap (still
+        // Pin the cookie to "b", then saturate "b" at its cap (still
         // healthy, just at capacity) so the pick must relocate.
-        let signed_a = hmac_sign_sticky("http://a:4000", "s3cret");
+        let signed_a = hmac_sign_sticky("http://b:4000", "s3cret");
         let mut headers = http::HeaderMap::new();
         headers.insert("cookie", format!("srv_id={signed_a}").parse().unwrap());
-        reg.conn_inc("http://a:4000");
+        reg.conn_inc("http://b:4000");
 
         let ctx = route_request(
             &config,
@@ -3198,7 +3205,7 @@ mod tests {
         );
         match &ctx.upstream {
             UpstreamTarget::Proxy { addr, .. } => {
-                assert_eq!(
+                assert_ne!(
                     addr, "b:4000",
                     "must relocate off the saturated pinned peer"
                 );
@@ -3212,9 +3219,9 @@ mod tests {
             ctx.sticky_set_cookie
         );
 
-        // Free "a"'s slot and present the SAME original cookie again (no new
+        // Free "b"'s slot and present the SAME original cookie again (no new
         // cookie was issued, so the client would still be holding this one).
-        reg.conn_dec("http://a:4000");
+        reg.conn_dec("http://b:4000");
         let ctx2 = route_request(
             &config,
             "localhost",
@@ -3231,7 +3238,7 @@ mod tests {
         match &ctx2.upstream {
             UpstreamTarget::Proxy { addr, .. } => {
                 assert_eq!(
-                    addr, "a:4000",
+                    addr, "b:4000",
                     "must self-heal back to the original pin once capacity frees"
                 );
             }
