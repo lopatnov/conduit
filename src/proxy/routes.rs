@@ -15,6 +15,7 @@ use regex::Regex;
 use crate::config::schema::{MatchConfig, ProxyRouteTarget, RouteConfig, StaticOptions};
 use crate::proxy::ctx::{LocalHandler, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
+use crate::proxy::slow_start::Ramp;
 use crate::proxy::{capacity, router, upstream};
 
 /// Result type shared with the main router.
@@ -256,6 +257,7 @@ fn full_cfg_to_result(
         .health_check
         .as_ref()
         .and_then(|h| h.max_connections_per_upstream);
+    let slow_start_secs = cfg.health_check.as_ref().and_then(|h| h.slow_start_secs);
     let route_key = path; // stable key for round-robin counters
     let capacity = capacity::Capacity::evaluate(&urls, max_conns, route_key, upstream_health);
     if matches!(capacity, capacity::Capacity::Exhausted) {
@@ -275,6 +277,11 @@ fn full_cfg_to_result(
     let hash_val = upstream::fnv1a_hash(path);
     let strategy = cfg.strategy.as_ref();
 
+    // Slow start (#157): ramp traffic to a recently-recovered upstream.
+    // `Ramp::new` is a true no-op when `slowStartSecs` is unset; hash-based
+    // strategies are exempt for free via `pick_bounded`'s own early return.
+    let ramp = Ramp::new(slow_start_secs, upstream_health);
+
     let input = capacity::BoundedPick {
         strategy,
         healthy: &urls,
@@ -284,6 +291,7 @@ fn full_cfg_to_result(
         hash_val,
         counters,
         health: upstream_health,
+        ramp: &ramp,
     };
     let Some((chosen_url, is_least_conn)) = capacity::pick_bounded(&input) else {
         return fallback_result();
@@ -323,7 +331,14 @@ fn full_cfg_to_result(
     // `candidates()` is always `Some` here; `unwrap_or(&urls)` is just a
     // defensive fallback, not an expected path.
     let retry = cfg.retry.as_ref().map(|r| RetryState {
-        urls: capacity.candidates(&urls).unwrap_or(&urls).to_vec(),
+        // Slow start (#157): this retry list is its own routing decision that
+        // never goes through `pick_bounded` -- without wrapping it here, a
+        // route with `retry` configured would keep ignoring `slowStartSecs`
+        // for its fallback rotation, mirroring the same gap fixed in
+        // router.rs's `resolve_proxy_routes` retry-bypass branch.
+        urls: ramp
+            .filter_candidates(capacity.candidates(&urls).unwrap_or(&urls))
+            .into_owned(),
         attempt: 0,
         max_attempts: r.attempts as usize,
         conditions: r.conditions.clone(),

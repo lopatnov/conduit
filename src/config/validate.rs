@@ -1755,6 +1755,50 @@ fn validate_route_config(cfg: &ProxyRouteConfig, prefix: &str, errors: &mut Vec<
             );
         }
     }
+    // Slow start (#157) is deliberately not applied to hash-based strategies
+    // or sticky sessions -- a client's hash/pin must map to a fixed upstream
+    // for the strategy's own consistency guarantee to hold, which a
+    // probabilistic ramp gate would break. Warn rather than silently ignore,
+    // so an operator isn't left believing a recovered upstream on this route
+    // is being ramped when it isn't. Per-route, not sitewide: other routes on
+    // the same site ramp normally.
+    if let Some(window) = cfg.health_check.as_ref().and_then(|h| h.slow_start_secs) {
+        let hash_based = matches!(
+            cfg.strategy,
+            Some(LoadBalanceStrategy::IpHash | LoadBalanceStrategy::ConsistentHash)
+        );
+        if window > 0 && (hash_based || cfg.sticky.is_some()) {
+            tracing::warn!(
+                "{prefix}.healthCheck.slowStartSecs is ignored on this route: hash-based \
+                 strategies and sticky sessions map each client to a fixed upstream, so a \
+                 recovered upstream receives full traffic immediately (see docs/configuration.md, \
+                 'Slow start')"
+            );
+        }
+        // `groups` selects an *inner* strategy per group (resolve_grouped in
+        // router.rs) independent of the route-level `strategy` above -- a
+        // hash-based group strategy hits pick_bounded's same early-return and
+        // silently bypasses the ramp, with no warning otherwise (found by
+        // Gitar reviewing #157/PR #365).
+        if window > 0 {
+            if let Some(groups) = &cfg.groups {
+                for group in groups {
+                    if matches!(
+                        group.strategy,
+                        Some(LoadBalanceStrategy::IpHash | LoadBalanceStrategy::ConsistentHash)
+                    ) {
+                        tracing::warn!(
+                            "{prefix}.healthCheck.slowStartSecs is ignored for group '{}': its \
+                             hash-based strategy maps each client to a fixed upstream, so a \
+                             recovered upstream receives full traffic immediately (see \
+                             docs/configuration.md, 'Slow start')",
+                            group.name
+                        );
+                    }
+                }
+            }
+        }
+    }
     if let Some(cache) = &cfg.cache {
         validate_cache_config(cache, &format!("{prefix}.cache"), errors);
     }

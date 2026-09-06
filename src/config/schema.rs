@@ -982,14 +982,14 @@ pub struct UpstreamHealthCheck {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub healthy_threshold: Option<u32>,
     /// Slow-start ramp-up window in seconds.  After an upstream recovers from
-    /// an unhealthy state, its effective weight is increased linearly from 0 to
-    /// 100 % over this window.  Set to 0 (default) to disable.
+    /// an unhealthy state, its participation probability in each pick rises
+    /// linearly from 0 to 100% over this window (issue #157).  Set to 0
+    /// (default) to disable.
     ///
-    /// **Known limitation** (2026-08-03 integrity audit, see tracking issue):
-    /// this field is parsed and `UpstreamEntry.recovery_time_secs` is set on
-    /// recovery, but no `LoadBalancingStrategy` implementation currently reads
-    /// `health::slow_start_fraction()` back — setting this field has no effect
-    /// on routing today.
+    /// Ignored for `ipHash`/`consistentHash` strategies and sticky sessions —
+    /// see `docs/configuration.md`'s "Slow start" section for why (a
+    /// config-validate-time warning is emitted when both are configured
+    /// together on the same route).
     #[serde(rename = "slowStartSecs", skip_serializing_if = "Option::is_none")]
     pub slow_start_secs: Option<u64>,
     /// Maximum number of concurrent in-flight requests to any single upstream

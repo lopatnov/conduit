@@ -7,6 +7,12 @@
 //! load-balancing strategy could pick — so only `LeastConn` (which always
 //! selects the true minimum-load candidate anyway) incidentally respected the
 //! cap. See issue #156.
+//!
+//! [`pick_bounded`] also applies [`crate::proxy::slow_start::Ramp`] (issue
+//! #157) — a second, soft cross-cutting admission constraint alongside this
+//! module's hard `Capacity` one. Both are evaluated here, in that order
+//! (capacity first, then ramp), so that neither `router.rs`/`routes.rs` nor
+//! any `LoadBalancingStrategy` implementation needs to know either exists.
 
 use std::sync::atomic::AtomicUsize;
 
@@ -14,6 +20,7 @@ use dashmap::DashMap;
 
 use crate::config::schema::LoadBalanceStrategy;
 use crate::proxy::health::UpstreamRegistry;
+use crate::proxy::slow_start::Ramp;
 
 /// Admission decision for one route's healthy candidate list.
 pub(crate) enum Capacity {
@@ -120,6 +127,11 @@ pub(crate) struct BoundedPick<'a> {
     pub hash_val: u64,
     pub counters: &'a DashMap<String, AtomicUsize>,
     pub health: &'a UpstreamRegistry,
+    /// Slow-start admission gate (issue #157). Deliberately not `Option` —
+    /// pass [`Ramp::disabled`] for routes without `slowStartSecs`, so every
+    /// call site is forced to make an explicit choice rather than silently
+    /// defaulting to "no ramp" the way an `Option::None` default would let it.
+    pub ramp: &'a Ramp<'a>,
 }
 
 /// Capacity-aware strategy dispatch. Returns `(url, is_least_conn)` — the
@@ -133,7 +145,10 @@ pub(crate) struct BoundedPick<'a> {
 /// for capacity purposes — `router.rs` and `routes.rs` call this and never
 /// match on the strategy themselves, so adding a new strategy never requires
 /// touching either of them (this keeps the guarantee `strategy.rs`'s own doc
-/// comment makes: "No changes to `router.rs` are required").
+/// comment makes: "No changes to `router.rs` are required"). The same early
+/// return for hash-based strategies is also what makes slow-start's
+/// hash/sticky exemption (issue #157) structural rather than a separate
+/// check: `input.ramp` is never consulted on that path.
 ///
 /// `weighted` is filtered to the admissible subset internally (not by the
 /// caller) specifically because [`crate::proxy::strategy::WeightedRoundRobin`]
@@ -150,6 +165,14 @@ pub(crate) fn pick_bounded(input: &BoundedPick<'_>) -> Option<(String, bool)> {
             .map(|u| (u, false));
     }
 
+    // Slow start (#157): narrow the candidate list to peers not currently
+    // mid-ramp, before strategy dispatch. This is also why the hash-strategy
+    // branch above returns early -- hash-based strategies and sticky sessions
+    // are deliberately exempt (see `slow_start`'s module doc comment) and
+    // must never reach this filter. Fails open: never empties the list.
+    let candidates = input.ramp.filter_candidates(candidates);
+    let candidates = candidates.as_ref();
+
     let filtered: Option<Vec<(String, u32)>> = match input.capacity {
         Capacity::Unlimited => None,
         _ => Some(
@@ -162,6 +185,13 @@ pub(crate) fn pick_bounded(input: &BoundedPick<'_>) -> Option<(String, bool)> {
         ),
     };
     let weighted = filtered.as_deref().unwrap_or(input.weighted);
+    // Same gate, applied to the weighted list -- WeightedRoundRobin reads
+    // `weighted`, not `candidates`, so without this it would be the one
+    // strategy slow-start silently failed to cover (the exact bug class
+    // issue #156 already found once: "only one strategy respects the
+    // constraint").
+    let weighted = input.ramp.filter_weighted(weighted);
+    let weighted = weighted.as_ref();
 
     let strategy = crate::proxy::strategy::from_config(
         input.strategy.unwrap_or(&LoadBalanceStrategy::RoundRobin),
@@ -318,6 +348,7 @@ mod tests {
         let cap = Capacity::evaluate(&healthy, Some(1), "r", &reg);
         let weighted = [(healthy[0].clone(), 1u32)];
         let counters = counters();
+        let ramp = Ramp::disabled(&reg);
         let input = BoundedPick {
             strategy: None,
             healthy: &healthy,
@@ -327,6 +358,7 @@ mod tests {
             hash_val: 0,
             counters: &counters,
             health: &reg,
+            ramp: &ramp,
         };
         assert!(pick_bounded(&input).is_none());
     }
@@ -342,6 +374,7 @@ mod tests {
         let cap = Capacity::evaluate(&healthy, Some(1), "r", &reg);
         let weighted = [(healthy[0].clone(), 10u32), (healthy[1].clone(), 1u32)];
         let counters = counters();
+        let ramp = Ramp::disabled(&reg);
         for _ in 0..10 {
             let input = BoundedPick {
                 strategy: Some(&LoadBalanceStrategy::WeightedRoundRobin),
@@ -352,6 +385,7 @@ mod tests {
                 hash_val: 0,
                 counters: &counters,
                 health: &reg,
+                ramp: &ramp,
             };
             let (url, is_least_conn) = pick_bounded(&input).expect("one admissible peer");
             assert_eq!(url, healthy[1], "must never pick the saturated peer");
@@ -367,6 +401,7 @@ mod tests {
         let healthy = urls(2); // both start at load 0
         let cap = Capacity::evaluate(&healthy, Some(5), "r", &reg);
         let counters = counters();
+        let ramp = Ramp::disabled(&reg);
         let input = BoundedPick {
             strategy: Some(&LoadBalanceStrategy::LeastConn),
             healthy: &healthy,
@@ -376,6 +411,7 @@ mod tests {
             hash_val: 0,
             counters: &counters,
             health: &reg,
+            ramp: &ramp,
         };
         let (url, is_least_conn) = pick_bounded(&input).expect("candidates present");
         assert!(healthy.contains(&url));
@@ -398,6 +434,7 @@ mod tests {
         reg.conn_inc(&healthy[0]); // saturate the fastest peer at cap 1
         let cap = Capacity::evaluate(&healthy, Some(1), "r", &reg);
         let counters = counters();
+        let ramp = Ramp::disabled(&reg);
         let input = BoundedPick {
             strategy: Some(&LoadBalanceStrategy::LeastResponseTime),
             healthy: &healthy,
@@ -407,11 +444,153 @@ mod tests {
             hash_val: 0,
             counters: &counters,
             health: &reg,
+            ramp: &ramp,
         };
         let (url, _) = pick_bounded(&input).expect("one admissible peer");
         assert_eq!(
             url, healthy[1],
             "must skip the saturated peer even though it's fastest"
         );
+    }
+
+    // ── slow start (#157) ────────────────────────────────────────────────────
+
+    fn mark_just_recovered(reg: &UpstreamRegistry, url: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        reg.statuses
+            .entry(url.to_owned())
+            .or_default()
+            .recovery_time_secs = Some(now);
+    }
+
+    #[test]
+    fn pick_bounded_least_conn_avoids_a_zero_fraction_peer_with_a_healthy_sibling() {
+        // This is the negative control that actually proves #157 is fixed:
+        // LeastConn picks the true minimum-conn-load candidate, and a
+        // just-recovered peer's load has drained to 0 while its siblings
+        // carry real traffic -- so *before* this fix, LeastConn picked the
+        // recovering peer on every single call (the worst offender of all
+        // seven strategies, per the architect review for #157).
+        let reg = UpstreamRegistry::new();
+        let healthy = urls(2);
+        mark_just_recovered(&reg, &healthy[0]); // fraction 0.0
+        reg.conn_inc(&healthy[1]); // sibling carries real load
+        let cap = Capacity::evaluate(&healthy, None, "r", &reg);
+        let counters = counters();
+        let ramp = Ramp::new(Some(30), &reg);
+        for _ in 0..20 {
+            let input = BoundedPick {
+                strategy: Some(&LoadBalanceStrategy::LeastConn),
+                healthy: &healthy,
+                capacity: &cap,
+                weighted: &[],
+                route_key: "r",
+                hash_val: 0,
+                counters: &counters,
+                health: &reg,
+                ramp: &ramp,
+            };
+            let (url, is_least_conn) = pick_bounded(&input).expect("candidates present");
+            assert_eq!(
+                url, healthy[1],
+                "must not pick the just-recovered peer despite its lower conn load"
+            );
+            assert!(is_least_conn);
+            reg.conn_dec(&url); // balance the slot LeastConn acquired, keep load fixed
+        }
+    }
+
+    #[test]
+    fn pick_bounded_weighted_round_robin_avoids_a_zero_fraction_peer() {
+        // Proves the `filter_weighted` half of the fix specifically:
+        // WeightedRoundRobin reads `weighted`, not `healthy`, so filtering
+        // only the plain candidate list (and not `weighted` too) would leave
+        // this the one strategy slow-start silently failed to cover -- the
+        // exact bug class #156 already found once for capacity.
+        let reg = UpstreamRegistry::new();
+        let healthy = urls(2);
+        mark_just_recovered(&reg, &healthy[0]); // fraction 0.0
+        let cap = Capacity::evaluate(&healthy, None, "r", &reg);
+        let weighted = [(healthy[0].clone(), 10u32), (healthy[1].clone(), 1u32)];
+        let counters = counters();
+        let ramp = Ramp::new(Some(30), &reg);
+        for _ in 0..20 {
+            let input = BoundedPick {
+                strategy: Some(&LoadBalanceStrategy::WeightedRoundRobin),
+                healthy: &healthy,
+                capacity: &cap,
+                weighted: &weighted,
+                route_key: "r",
+                hash_val: 0,
+                counters: &counters,
+                health: &reg,
+                ramp: &ramp,
+            };
+            let (url, _) = pick_bounded(&input).expect("one admissible peer");
+            assert_eq!(
+                url, healthy[1],
+                "must never pick the just-recovered peer even at 10x weight"
+            );
+        }
+    }
+
+    #[test]
+    fn pick_bounded_hash_strategy_ignores_ramp() {
+        // Proves the hash/sticky exemption end-to-end: a peer at fraction 0.0
+        // sitting at the preferred ring index is still selected -- ramp must
+        // never be consulted on this path.
+        let reg = UpstreamRegistry::new();
+        let ring = urls(3);
+        mark_just_recovered(&reg, &ring[0]); // fraction 0.0, preferred by hash_val=0
+        let cap = Capacity::evaluate(&ring, None, "r", &reg);
+        let counters = counters();
+        let ramp = Ramp::new(Some(30), &reg);
+        let input = BoundedPick {
+            strategy: Some(&LoadBalanceStrategy::ConsistentHash),
+            healthy: &ring,
+            capacity: &cap,
+            weighted: &[],
+            route_key: "r",
+            hash_val: 0,
+            counters: &counters,
+            health: &reg,
+            ramp: &ramp,
+        };
+        let (url, _) = pick_bounded(&input).expect("ring non-empty");
+        assert_eq!(
+            url, ring[0],
+            "hash-based strategies must ignore slow-start entirely"
+        );
+    }
+
+    #[test]
+    fn pick_bounded_fails_open_when_the_only_under_capacity_peer_is_ramping() {
+        // Capacity (hard) and ramp (soft) interaction: peer 1 is over its cap
+        // (excluded by Capacity), peer 0 is under capacity but at fraction
+        // 0.0 -- ramp's fail-open rule must still admit it rather than
+        // returning no candidate at all.
+        let reg = UpstreamRegistry::new();
+        let healthy = urls(2);
+        mark_just_recovered(&reg, &healthy[0]); // fraction 0.0, but under capacity
+        reg.conn_inc(&healthy[1]); // saturate the sibling at cap 1
+        let cap = Capacity::evaluate(&healthy, Some(1), "r", &reg);
+        let counters = counters();
+        let ramp = Ramp::new(Some(30), &reg);
+        let input = BoundedPick {
+            strategy: Some(&LoadBalanceStrategy::RoundRobin),
+            healthy: &healthy,
+            capacity: &cap,
+            weighted: &[],
+            route_key: "r",
+            hash_val: 0,
+            counters: &counters,
+            health: &reg,
+            ramp: &ramp,
+        };
+        let (url, _) = pick_bounded(&input).expect("must fail open, not return None");
+        assert_eq!(url, healthy[0]);
     }
 }
