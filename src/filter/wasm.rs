@@ -1704,4 +1704,43 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn oversized_initial_memory_fails_instantiation() {
+        // A module whose *declared* memory already exceeds the 16 MiB /
+        // 256-page StoreLimits cap (257 pages is one page over) fails
+        // instantiation outright — confirmed against wasmtime 48.0.1's
+        // vendored source: `Memory::limit_new` calls the same
+        // `ResourceLimiter::memory_growing` hook for a module's initial
+        // size as it does for a runtime `memory.grow`, so the cap covers
+        // both, not just growth.
+        //
+        // An earlier draft of this test (removed during PR #382's review)
+        // wrongly concluded the opposite — that only growth is checked —
+        // based on a negative control that only ever tested the
+        // limiter-*disabled* state and never actually compared it against
+        // the limiter-*enabled* state for this same scenario. Tested here
+        // via `run_inner` directly (not `run_wasm`'s Continue/Abort
+        // wrapper, which can't distinguish "instantiation failed and fell
+        // back" from "instantiation succeeded and on_request legitimately
+        // returned 0" — the same tautology class this file's other new
+        // tests were rewritten to avoid) and asserting on the specific
+        // error text, not just "some error occurred".
+        let (_f, p) = compile_wat(
+            r#"(module
+              (memory (export "memory") 257)
+              (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        match run_inner(req(), &p) {
+            Ok(outcome) => {
+                panic!("instantiation must fail for oversized initial memory, got {outcome:?}")
+            }
+            Err(e) => assert!(
+                e.to_string().contains("exceeds memory limits"),
+                "expected a memory-limit rejection, got: {e}"
+            ),
+        }
+        // And the fail-open contract still holds at the run_wasm level.
+        assert!(matches!(run_wasm(req(), &p), WasmOutcome::Continue { .. }));
+    }
 }

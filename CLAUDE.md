@@ -347,7 +347,7 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 
 #### Низкий приоритет
 
-- [x] **WASM plugin system** — `type: "wasm"` вместе с Rhai (не вместо). Wasmtime, `--features wasm`. 17 host-функций (read/modify headers, set response, get_uri, get_header_names, abort_with_redirect, get_request_id). Module cache, fail-open. `src/filter/wasm.rs`, 37 unit-тестов inline WAT (выросло с исходных 15 по мере добавления response-фазы и отдельных host-функций, включая 2 новых из этого же аудита — trap в `on_response` и отказ `memory.grow` за пределами 16 MiB кэпа; число поправлено 2026-09-07, Step 1c аудит).
+- [x] **WASM plugin system** — `type: "wasm"` вместе с Rhai (не вместо). Wasmtime, `--features wasm`. 17 host-функций (read/modify headers, set response, get_uri, get_header_names, abort_with_redirect, get_request_id). Module cache, fail-open. `src/filter/wasm.rs`, 38 unit-тестов inline WAT (выросло с исходных 15 по мере добавления response-фазы и отдельных host-функций, включая 3 новых из этого же аудита — trap в `on_response`, отказ `memory.grow` за пределами 16 MiB кэпа, и отказ инстанцирования при превышении кэпа изначально заявленной памятью; число поправлено 2026-09-07, Step 1c аудит).
 
 #### Запланировано (обсуждено 2026-06-06, issue #65) — порядок строго последовательный
 
