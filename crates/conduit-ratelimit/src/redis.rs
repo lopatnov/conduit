@@ -24,7 +24,7 @@
 //! return c
 //! ```
 //!
-//! against key `conduit:rl:{scope_label}:{window_secs}:{client_key}`.
+//! against key `conduit:rl:{scope_label}\0{window_secs}\0{client_key}`.
 //! `scope_label` scopes the key so two independent rate-limit scopes sharing
 //! a client key don't share a counter — the Redis-backend twin of the fix
 //! `rate_limit::site_key`/`route_key`/`consumer_key` applied to the in-memory
@@ -39,6 +39,25 @@
 //! (count == 1), and also whenever the key has no TTL at all (self-healing
 //! a key leaked by an older two-round-trip version of this code) — see
 //! `redis_fixed_window_check`'s own doc comment for the full story.
+//!
+//! The three dynamic components are joined with `\0` (NUL), not `:` (issue
+//! #350) — `scope_label` can legitimately contain colons itself (a
+//! `"{host}:{port}"` site label, or `redis_route_scope`'s own
+//! `"route\0{site_label}\0{route_key}"`, whose *inner* `site_label` can also
+//! be colon-bearing for an unbracketed IPv6 host), and `client_key` can too
+//! (an IPv6 client address, or an arbitrary `keyBy: "header:X-Name"` value).
+//! With a plain `:` join, two different (scope, client) pairs can produce an
+//! identical literal key string when one's characters happen to fall across
+//! the other's delimiter boundaries — verified directly: `scope_label =
+//! "2001:db8::1:8080"` / `client_key = "60:alice"` and `scope_label =
+//! "2001:db8::1:8080:60"` / `client_key = "alice"` (same `window_secs = 60`)
+//! both encode to the literal string `"conduit:rl:2001:db8::1:8080:60:60:alice"`
+//! under the old `:`-joined format, silently sharing one counter across two
+//! distinct sites. `\0` can't appear in `scope_label` (always Conduit-derived
+//! from config, never from request data) and is stripped from `client_key`
+//! before it ever reaches this module (`rate_limit::extract_client_key`'s
+//! `strip_nul`, issue #320) — so the same collision is not reproducible under
+//! the `\0` join, matching the already-\0-based in-memory key format above.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -107,7 +126,7 @@ impl RedisRateLimiter {
         burst: u64,
         window_secs: u64,
     ) -> bool {
-        let redis_key = format!("conduit:rl:{scope_label}:{window_secs}:{client_key}");
+        let redis_key = build_redis_key(scope_label, window_secs, client_key);
         let mut conn = self.conn.clone();
 
         // Wrap the two-command sequence in a 50 ms deadline.
@@ -165,6 +184,13 @@ impl RedisRateLimiter {
     }
 }
 
+/// Build the real-Redis fixed-window counter key, factored out of
+/// [`RedisRateLimiter::check`] as a free function so the exact encoding is
+/// directly unit-testable (issue #350) without a live Redis connection.
+fn build_redis_key(scope_label: &str, window_secs: u64, client_key: &str) -> String {
+    format!("conduit:rl:{scope_label}\0{window_secs}\0{client_key}")
+}
+
 /// The actual fallback-map admission logic, factored out of
 /// [`RedisRateLimiter::fallback_check`] as a free function so it's testable
 /// without a live Redis connection (`RedisRateLimiter::connect` requires
@@ -180,8 +206,17 @@ fn fallback_check_impl(
     // Include limit, burst, and window_secs in the key so that post-reload
     // config changes are picked up immediately rather than reusing a stale
     // bucket. Include scope_label so two independent scopes sharing a client key don't
-    // share a bucket here either (issue #317).
-    let key = format!("{scope_label}:{client_key}:{limit}:{burst}:{window_secs}");
+    // share a bucket here either (issue #317). `\0`-joined, not `:`-joined
+    // (issue #350, defense-in-depth companion to the real-Redis key fix
+    // above): this single `fallback` map is shared process-wide across
+    // every scope (site/route/consumer) whenever Redis is configured but
+    // unreachable, each with its own scope_label/limit/burst/window_secs —
+    // a colon-bearing scope_label or client_key (unbracketed IPv6, or an
+    // arbitrary `keyBy: "header:X-Name"` value) is one component closer to
+    // a cross-scope collision than the digit-only limit/burst/window_secs
+    // suffix makes trivial to construct, so it gets the same non-ambiguous
+    // separator rather than being treated as safe by omission.
+    let key = format!("{scope_label}\0{client_key}\0{limit}\0{burst}\0{window_secs}");
     // Routed through the shared MAX_BUCKETS-capped admission point (issue
     // #305's fallback-path counterpart) instead of an uncapped
     // entry()/or_insert_with() — this map has no cap check of its own.
@@ -275,6 +310,35 @@ mod tests {
         let result = RedisRateLimiter::connect("redis://127.0.0.1:1").await;
         // Port 1 is reserved / will be refused.
         assert!(result.is_err(), "connection to port 1 must fail");
+    }
+
+    // ── build_redis_key (issue #350 regression coverage) ────────────────
+
+    #[test]
+    fn build_redis_key_disambiguates_a_verified_real_collision() {
+        // A byte-exact collision under the old `:`-joined format, verified
+        // directly (not the issue's own illustrative example, which turned
+        // out not to reproduce exactly): an unbracketed-IPv6-style site
+        // label whose host component itself looks like "<ipv6>:<port>",
+        // paired with a client key crafted to look like the tail of a
+        // *different*, legitimately-configured site's label plus its own
+        // client key. Both encode to the identical literal string
+        // "conduit:rl:2001:db8::1:8080:60:60:alice" under the old
+        // `:`-joined format (window_secs = 60 for both).
+        let site_a = build_redis_key("2001:db8::1:8080", 60, "60:alice");
+        let site_b = build_redis_key("2001:db8::1:8080:60", 60, "alice");
+        assert_ne!(
+            site_a, site_b,
+            "two distinct (scope, client) pairs must never encode to the same Redis key"
+        );
+    }
+
+    #[test]
+    fn build_redis_key_is_stable_for_identical_inputs() {
+        assert_eq!(
+            build_redis_key("example.com:8080", 60, "1.2.3.4"),
+            build_redis_key("example.com:8080", 60, "1.2.3.4")
+        );
     }
 
     // ── fallback_check_impl (issue #317 regression coverage) ────────────

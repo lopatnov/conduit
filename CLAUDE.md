@@ -77,9 +77,14 @@
     все три формы и суммирует per-client бакеты в один total на (site, route) — раньше
     (до фикса) не парсил вообще ничего реального, всегда отдавал `{}` (issue #303). Redis-бэкенд
     (`crates/conduit-ratelimit/src/redis.rs`, за фичей `redis`, извлечён вместе с фиксом #317
-    как #137 slice 2) — отдельный ключевой неймспейс: `"conduit:rl:{scope_label}:{window_secs}:
-    {client_key}"` для реального Redis, `"{scope_label}:{client_key}:{limit}:{window_secs}"` для
-    его in-process fallback-мапы. `src/filter/rate_limit_redis.rs` в корне — тонкий facade
+    как #137 slice 2) — отдельный ключевой неймспейс: `"conduit:rl:{scope_label}\0{window_secs}\0
+    {client_key}"` для реального Redis, `"{scope_label}\0{client_key}\0{limit}\0{burst}\0
+    {window_secs}"` для его in-process fallback-мапы (оба `\0`-разделены, не `:`-разделены — фикс
+    2026-09-07, issue #350: `scope_label`/`client_key` могут легитимно содержать двоеточие —
+    IPv6-хост без скобок в site_label, IPv6 client_key, произвольное значение `keyBy:
+    "header:X-Name"` — что при `:`-разделителе давало реально воспроизводимую коллизию двух разных
+    (scope, client) пар на один физический Redis-ключ; проверено напрямую конкретным примером,
+    не абстрактно). `src/filter/rate_limit_redis.rs` в корне — тонкий facade
     re-export. **С 2026-09-05 (issue #322)** `scope_label` (переименован из `site_label`,
     чисто ради ясности — сигнатура не менялась) — это либо site_label как раньше, либо
     `"route\0{site_label}\0{route_key}"` для per-route (`rate_limit::redis_route_scope`), либо
