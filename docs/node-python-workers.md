@@ -128,7 +128,15 @@ function callAdmin(path, body) {
     const req = http.request(ADMIN_URL + path, { method: 'POST', headers }, res => {
       let chunks = '';
       res.on('data', c => (chunks += c));
-      res.on('end', () => resolve(JSON.parse(chunks)));
+      res.on('end', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          // A 401 (missing/wrong admin token) returns an empty body --
+          // reject before JSON.parse would throw on it.
+          reject(new Error(`Admin API ${path} returned HTTP ${res.statusCode}: ${chunks}`));
+          return;
+        }
+        resolve(chunks ? JSON.parse(chunks) : {});
+      });
     });
     req.on('error', reject);
     req.write(data);
