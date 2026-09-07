@@ -1004,9 +1004,15 @@ wasm-opt -Os -o plugin-opt.wasm plugin.wasm
   A plugin that exceeds the limit is terminated and fails open (request
   passes through). Typical request-phase plugins use well under 100,000 units.
 - **Memory limit:** each plugin instance is capped at 16 MiB of linear
-  memory (`wasmtime::StoreLimits`). A plugin that tries to grow past that
-  (via `memory.grow` or an oversized static allocation) is denied the
-  growth and fails open the same way a fuel-exhaustion trap does.
+  memory (`wasmtime::StoreLimits`). This bounds *growth* — a `memory.grow`
+  call past the cap is denied (the standard Wasm `-1` return, not a trap),
+  and it's up to the plugin to check for and handle that the way it would
+  any other `memory.grow` failure. It does not reject a module whose
+  *initial* declared memory already exceeds 16 MiB at instantiation time —
+  Wasmtime's `ResourceLimiter` only intercepts growth requests. In
+  practice this rarely matters (declaring more than 16 MiB of initial
+  memory with no intent to use it is unusual), but it means the cap is not
+  a substitute for validating what a plugin declares up front.
 
 ---
 

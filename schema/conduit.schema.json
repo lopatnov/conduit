@@ -209,10 +209,10 @@
               },
               "path": {
                 "type": "string",
-                "description": "Path to the Rhai script file. Required when type is \"script\"."
+                "description": "Path to the Rhai script (\"script\") or WASM module (\"wasm\") file. Required for both types."
               }
             },
-            "if": { "properties": { "type": { "const": "script" } }, "required": ["type"] },
+            "if": { "properties": { "type": { "enum": ["script", "wasm"] } }, "required": ["type"] },
             "then": { "required": ["path"] }
           }
         }

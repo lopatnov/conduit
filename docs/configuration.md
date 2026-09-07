@@ -2968,19 +2968,21 @@ middleware:
 > Optional `config` is passed to the script as a JSON value.
 
 **Available Rhai functions** (request phase — `request` is **read-only**;
-mutating a live request isn't supported, only WASM's response phase can
-rewrite headers on the way out, see [WASM Middleware](#wasm-middleware)
-below):
+mutating a live request isn't supported here. A response *can* be rewritten
+on the way out, either via a `phase: "response"` Rhai script — see the
+"Rhai `on_response`" backlog entry in `CLAUDE.md` for its separate
+`response`/`upstream` API — or via WASM's response phase, see
+[WASM Middleware](#wasm-middleware) below):
 
-| Function                | Description                                              |
-| ----------------------- | ---------------------------------------------------------- |
-| `request.header(name)`  | Read a request header                                     |
-| `request.path`          | Get the request path                                      |
-| `request.method`        | Get the HTTP method                                       |
-| `request.query`         | Get the raw query string                                  |
-| `response.status`       | Get/set the short-circuit response status (default `200`) |
-| `response.body`         | Get/set the short-circuit response body                   |
-| `response.header(name)` | Read a header already queued on the short-circuit response |
+| Function                     | Description                                                |
+| ----------------------------- | ---------------------------------------------------------- |
+| `request.header(name)`        | Read a request header                                      |
+| `request.path`                | Get the request path                                       |
+| `request.method`              | Get the HTTP method                                        |
+| `request.query`               | Get the raw query string                                   |
+| `response.status`              | Get/set the short-circuit response status (default `200`) |
+| `response.body`                | Get/set the short-circuit response body                   |
+| `response.header(name, value)` | Append a header to the short-circuit response              |
 
 Return `false` from the script to abort the request with whatever
 `response.status`/`response.body` were set (defaults to `200`/empty if
