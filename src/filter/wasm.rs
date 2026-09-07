@@ -1622,4 +1622,86 @@ mod tests {
             other => panic!("expected Abort, got {other:?}"),
         }
     }
+
+    // ── Resource limits (Step 1c audit, 2026-09-07 — these two mechanisms
+    //    read as correctly wired via standard Wasmtime APIs but had no test
+    //    of their own before this) ───────────────────────────────────────────
+
+    #[test]
+    fn on_response_trap_fails_open() {
+        // A genuine trap (unreachable) inside on_response, not fuel
+        // exhaustion — proves run_response_inner's `?` on `on_response.call`
+        // reaches run_wasm_response's fail-open Err arm, same as the
+        // request-phase infinite_loop_is_terminated_by_fuel_limit test does
+        // for the request phase.
+        //
+        // The module sets a header *before* trapping, on purpose: if the
+        // trap were silently swallowed anywhere between `on_response.call`
+        // and `run_wasm_response`'s match (instead of aborting the whole
+        // call via `?`), the header would still show up in the outcome —
+        // an empty-outcome assertion alone can't tell a real fail-open from
+        // a trap that just never happened. Wasmtime drops the whole `Store`
+        // (and the host-function side effects staged in it) when a call
+        // traps, so only a genuinely-propagated trap leaves this header
+        // unset.
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_set_response_header"
+                (func $set_hdr (param i32 i32 i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "x-before-trap")
+              (data (i32.const 50) "yes")
+              (func (export "on_response") (param i32) (result i32)
+                (call $set_hdr (i32.const 0) (i32.const 13) (i32.const 50) (i32.const 3))
+                unreachable))"#,
+        );
+        let outcome = run_wasm_response(make_response_ctx(200), &p);
+        assert!(
+            outcome.added_headers.is_empty(),
+            "a trap must discard everything the plugin did before it, not just \
+             report no *new* mutations — got added_headers = {:?}",
+            outcome.added_headers
+        );
+        assert!(outcome.removed_headers.is_empty());
+        assert!(outcome.body.is_none());
+    }
+
+    #[test]
+    fn oversized_memory_grow_is_denied() {
+        // Declaring 257 initial pages (one over the 16 MiB / 256-page cap)
+        // does NOT fail instantiation on its own — Wasmtime only enforces
+        // the ResourceLimiter on `memory.grow`, not on a module's static
+        // initial size (confirmed empirically with a scratch probe: even
+        // with the limiter wired in, `run_inner` returns `Ok` for a
+        // 257-page-declared module — an earlier draft of this test
+        // asserted on that and was a tautology, since a plain successful
+        // `on_request` returning 0 produces the identical `Continue`
+        // outcome). So this module starts at 1 page and tries to
+        // `memory.grow` to 257 pages at runtime instead; a denied grow
+        // returns `-1` to the guest (not a trap) per Wasm semantics, and
+        // the module reports which branch ran via a *distinctive* aborted
+        // status code (298 = grow succeeded / cap broken, 299 = grow
+        // denied / cap working) rather than a plain `Continue`/`Abort`
+        // check, so the test can't pass by accident regardless of which
+        // branch actually executes.
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_set_response_status" (func $set_status (param i32)))
+              (memory (export "memory") 1)
+              (func (export "on_request") (result i32)
+                (if (i32.eq (memory.grow (i32.const 256)) (i32.const -1))
+                  (then (call $set_status (i32.const 299)))
+                  (else (call $set_status (i32.const 298))))
+                i32.const 1))"#,
+        );
+        match run_wasm(req(), &p) {
+            WasmOutcome::Abort { status, .. } => assert_eq!(
+                status, 299,
+                "status 298 means memory.grow past the 16 MiB cap SUCCEEDED — the cap isn't enforced"
+            ),
+            WasmOutcome::Continue { .. } => {
+                panic!("on_request always aborts in this module — Continue means it never ran")
+            }
+        }
+    }
 }

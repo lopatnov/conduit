@@ -201,8 +201,8 @@
             "properties": {
               "type": {
                 "type": "string",
-                "enum": ["script", "ipFilter", "rateLimit", "auth", "headers"],
-                "description": "Middleware type. Use \"script\" for Rhai scripts (Phase 4)."
+                "enum": ["script", "wasm", "ipFilter", "rateLimit", "auth", "headers"],
+                "description": "Middleware type. Use \"script\" for Rhai scripts (Phase 4), \"wasm\" for WASM plugins (requires --features wasm)."
               },
               "config": {
                 "description": "Type-specific configuration object (used by built-in types)."
