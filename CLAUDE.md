@@ -1318,3 +1318,81 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   аргументацией и явно указал, где какой план был прав/неправ. Урок: не полагаться на
   собственный пересказ прошлого agent-вызова как на источник истины, когда есть
   расхождение с новым прогоном — давать обоим полный текст и просить явную реконсиляцию.
+
+### Реализовано в сессии 2026-09-07 (PR #386 — Node.js/Python worker-pool recipe, doc-only, `main`)
+
+- **[PR #386](https://github.com/lopatnov/conduit/pull/386)
+  `docs: add Node.js/Python worker-pool recipe via dynamic upstream API`**
+  (branch `docs/node-python-worker-recipe` → `main`, not the migration branch — this is
+  ordinary doc work, not #114) — new `docs/node-python-workers.md` recipe covering issues
+  [#290](https://github.com/lopatnov/conduit/issues/290) (Node.js) and
+  [#291](https://github.com/lopatnov/conduit/issues/291) (Python): run a Node.js/Python app
+  behind Conduit as a fixed pool of worker processes, wired up via the existing dynamic-
+  upstream Admin API (`POST /upstreams/add|remove|weight`) rather than any new Conduit
+  feature. Explicitly scoped as *not* a CGI/Azure-Functions-style invoke-on-demand model —
+  see the business-analyst reconciliation below for why that's a separate, harder problem.
+  Went through 6 rounds of `security-engineer` review (mandatory unconditional gate) across
+  several real bugs found empirically, not just by reading the doc's own code blocks:
+  - **Config shape bug**: the doc's first draft used the flat `{ port, proxy }` shorthand,
+    under which `global.admin` silently doesn't exist at all (`ConfigFile::Single` has no
+    `global` field — see decision #4) — the Admin API never started. Fixed by switching every
+    example to the `{ global: { admin: {...} }, sites: [...] }` shape. Found only by actually
+    building and running `conduit` against the doc's own config, not by reading the code.
+  - **`least-conn` demo bug**: round-robin was swapped in after 20 concurrent curl requests
+    against `least-conn` all landed on the same worker (near-instant synthetic responses make
+    its tie-breaking consistently favor one peer) — confusing for a first-run demo, not a
+    Conduit bug.
+  - **Node `worker.js` missing loopback bind** (security-engineer round 1 HOLD) —
+    `.listen(port, ...)` defaulted to all interfaces; fixed to `.listen(port, '127.0.0.1', ...)`.
+  - **Python startup race** (gitar-bot, round 2) — `pool.py` called `/upstreams/add` before
+    confirming the worker's `HTTPServer` was actually bound. Fixed with a
+    `multiprocessing.Event` readiness handshake (`worker.py` constructs `HTTPServer` first,
+    which binds synchronously, then sets the event, then calls `serve_forever()`).
+  - **`ready.wait()` no-timeout deadlock** (security-engineer round 3, reproduced not just
+    theorized) — a worker crashing before `HTTPServer()` succeeds hangs that slot forever;
+    documented as an inline caveat rather than adding full timeout+retry machinery, matching
+    the reviewer's own suggested minimal remedy.
+  - **Round 4 fixes** (4 unresolved CodeRabbit/gitar threads, found via GraphQL
+    `reviewThreads`, since replying alone doesn't satisfy this repo's
+    `required_review_thread_resolution: true` ruleset — see the v1.4.0 release entry above
+    for where this convention was first established): MD040 fence-language label; reload-
+    reconciliation (the doc wrongly claimed a restarted supervisor re-registering on its own
+    startup made `conduit reload` clearing all in-memory registrations "a non-issue in
+    practice" — wrong, since `reload` fires on *any* config change while the supervisor
+    process itself keeps running untouched; fixed with a 30s periodic re-`/upstreams/add`
+    timer in both examples, relying on that endpoint's documented idempotency); failed-
+    first-registration handling (bounded retry+backoff, kill+respawn on exhaustion); explicit
+    `global.admin.token` recommendation for any host running other processes.
+  - **Round 5 HOLD → round 6 PASS**: security-engineer found the Node.js `callAdmin` never
+    checked `res.statusCode` — a 401 (missing/wrong admin token) returns an empty body, and
+    `JSON.parse('')` throws inside an `'end'` event handler, which is *not* caught by the
+    enclosing Promise and becomes an uncaught exception crashing the whole `pool.js`
+    supervisor (not just the one misconfigured worker). Directly undercut this same PR's own
+    round-4 "set `global.admin.token`" advice. Reproduced the exact crash empirically against
+    a real `conduit` binary with the token configured but not supplied by the client
+    (`SyntaxError: Unexpected end of JSON input`, uncaught, process exit 1), then verified the
+    fix (check `res.statusCode`, reject before `JSON.parse` on non-2xx) instead retries 5x and
+    kills+respawns the worker with the supervisor staying alive throughout — both the buggy
+    and fixed behavior confirmed live, not just read. The Python example was already correct
+    here (`urllib` raises `HTTPError` on any non-2xx before `json.loads` runs).
+  - All 8 review threads replied-then-resolved via GraphQL `resolveReviewThread` (not just
+    replies) before merge, per the same convention as the v1.4.0 release entry.
+- **Business-analyst reconciliation of #290/#291 against this recipe** (pass #2, run
+  specifically because the user's original intent for #290/#291 turned out to be a true
+  CGI/Azure-Functions-style invoke-on-demand model — message-passing, warm/cold process
+  lifecycle, "nothing hangs around besides the server" — not the fixed worker-pool pattern
+  PR #386 actually builds): confirmed the shipped recipe is still worth merging as-is (it
+  answers a real, different need — CPU-parallelism for a steady-throughput Node/Python app
+  behind Conduit's own routing/LB/health/circuit-breaker machinery, "nginx + Node.js" made
+  slightly more convenient), but does **not** answer the invoke-on-demand half of #290/#291's
+  original scope. Conduit itself needs zero new code for the fixed-pool half — confirmed
+  against prior-art research into OpenFaaS `faasd` (single-binary, containerd+CNI, no k8s)
+  and `of-watchdog` (per-function HTTP sidecar doing CGI-style translation), plus Knative's
+  Activator component (holds connections open during cold-start scale-from-zero — a plain
+  reverse proxy is *not* inherently cold-start-aware, a caveat worth remembering if
+  invoke-on-demand is ever attempted). Recommended next steps, **not yet done**: (1) re-scope
+  #290/#291 with a banner splitting the two conflated motivations (CPU-parallelism, resolved
+  by PR #386; true invoke-on-demand FaaS, unaddressed); (2) file a new issue for "Function
+  router: CGI/FaaS-style invoke-on-demand execution" as a separate project (decision #28 — CGI
+  is explicitly out of Conduit's own scope), with a `faasd` build-vs-adopt spike as the first
+  concrete action item, not a bespoke design.
