@@ -95,6 +95,7 @@ const http = require('http');
 const NUM_WORKERS = 4;
 const BASE_PORT = 4001;
 const ADMIN_URL = 'http://127.0.0.1:2019';
+const ADMIN_TOKEN = process.env.CONDUIT_ADMIN_TOKEN; // unset if global.admin.token isn't configured
 const ROUTE = '/api';        // must match a path prefix in conduit.yaml
 // No `site` field below — this example is single-site, so the registration
 // applies to whichever site serves ROUTE. Add `site: "host:port"` for a
@@ -103,10 +104,9 @@ const ROUTE = '/api';        // must match a path prefix in conduit.yaml
 function callAdmin(path, body) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
-    const req = http.request(ADMIN_URL + path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
-    }, res => {
+    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) };
+    if (ADMIN_TOKEN) headers['Authorization'] = `Bearer ${ADMIN_TOKEN}`;
+    const req = http.request(ADMIN_URL + path, { method: 'POST', headers }, res => {
       let chunks = '';
       res.on('data', c => (chunks += c));
       res.on('end', () => resolve(JSON.parse(chunks)));
@@ -154,22 +154,29 @@ http.createServer((req, res) => {
   // propagate it into your own logs for cross-system correlation.
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ handledBy: `worker-${port}`, requestId: req.headers['x-request-id'] }));
-}).listen(port, () => process.send('ready'));
+}).listen(port, '127.0.0.1', () => process.send('ready'));
 ```
 
 ```yaml
-# conduit.yaml
-port: 8080
+# conduit.yaml — the `global:`/`sites:` shape is required here: `global.admin`
+# is only recognized on the full config shape, not the flat single-site
+# shorthand (`{ "port": 8080, "proxy": {...} }`) also shown elsewhere in this
+# repo's docs — the Admin API silently doesn't start under the flat shorthand.
 global:
   admin:
     bind: "127.0.0.1:2019"
-proxy:
-  "/api":
-    strategy: least-conn
-    targets:
-      - http://127.0.0.1:4001   # worker 0 — a static seed target (Conduit
-                                 # rejects an empty targets list); the rest
-                                 # are added dynamically by pool.js
+sites:
+  - port: 8080
+    proxy:
+      "/api":
+        strategy: round-robin   # least-conn/other strategies work too; round-robin
+                                 # makes distribution obvious when trying this out —
+                                 # near-instant responses can make least-conn's tie-
+                                 # breaking consistently favor one worker
+        targets:
+          - http://127.0.0.1:4001   # worker 0 — a static seed target (Conduit
+                                     # rejects an empty targets list); the rest
+                                     # are added dynamically by pool.js
 ```
 
 ## Python example
@@ -185,12 +192,14 @@ processes underneath it.
 # pool.py — worker-pool supervisor
 import json
 import multiprocessing
+import os
 import time
 import urllib.request
 
 NUM_WORKERS = 4
 BASE_PORT = 5001
 ADMIN_URL = "http://127.0.0.1:2019"
+ADMIN_TOKEN = os.environ.get("CONDUIT_ADMIN_TOKEN")  # unset if global.admin.token isn't configured
 ROUTE = "/api"
 # No `site` field below — this example is single-site, so the registration
 # applies to whichever site serves ROUTE. Add site="host:port" for a
@@ -199,12 +208,10 @@ ROUTE = "/api"
 
 def call_admin(path: str, body: dict) -> dict:
     data = json.dumps(body).encode()
-    req = urllib.request.Request(
-        ADMIN_URL + path,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    headers = {"Content-Type": "application/json"}
+    if ADMIN_TOKEN:
+        headers["Authorization"] = f"Bearer {ADMIN_TOKEN}"
+    req = urllib.request.Request(ADMIN_URL + path, data=data, headers=headers, method="POST")
     with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read())
 
@@ -221,12 +228,12 @@ def supervise(port: int) -> None:
         proc.start()
         target = f"http://127.0.0.1:{port}"
         call_admin("/upstreams/add", {"route": ROUTE, "target": target, "weight": 1})
-        print(f"worker {port} registered with Conduit")
+        print(f"worker {port} registered with Conduit", flush=True)
 
         proc.join()  # blocks until the worker process exits
 
         call_admin("/upstreams/remove", {"route": ROUTE, "target": target})
-        print(f"worker {port} exited, respawning...")
+        print(f"worker {port} exited, respawning...", flush=True)
         time.sleep(0.5)
 
 
@@ -266,16 +273,18 @@ def serve(port: int) -> None:
 ```
 
 ```yaml
-# conduit.yaml
-port: 8080
+# conduit.yaml — see the Node.js example above for why the global:/sites:
+# shape is required here rather than the flat single-site shorthand.
 global:
   admin:
     bind: "127.0.0.1:2019"
-proxy:
-  "/api":
-    strategy: least-conn
-    targets:
-      - http://127.0.0.1:5001   # worker 0 — static seed target
+sites:
+  - port: 8080
+    proxy:
+      "/api":
+        strategy: round-robin
+        targets:
+          - http://127.0.0.1:5001   # worker 0 — static seed target
 ```
 
 ## What this deliberately does not do
