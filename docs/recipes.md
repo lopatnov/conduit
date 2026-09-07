@@ -28,6 +28,7 @@ For the full field reference see [configuration.md](configuration.md).
   - [Least connections with health checks](#least-connections-with-health-checks)
   - [Active/passive failover](#activepassive-failover)
   - [Geo-regional routing (upstream groups)](#geo-regional-routing-upstream-groups)
+- [Running Node.js / Python apps behind Conduit as a worker pool](./node-python-workers.md) ↗
 - [Reliability](#reliability)
   - [Circuit breaker + retry budget](#circuit-breaker--retry-budget)
   - [Response caching with stale-while-revalidate](#response-caching-with-stale-while-revalidate)

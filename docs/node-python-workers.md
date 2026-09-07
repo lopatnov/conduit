@@ -1,30 +1,11 @@
 # Running Node.js / Python apps behind Conduit as a worker pool
 
-> **Status**: recipe, no dedicated Conduit feature required. The companion
-> supervisor library referenced below (working name only, **not final**) does
-> not exist yet as a published package — this document describes the pattern
-> and the code it would wrap. See [issue #290](https://github.com/lopatnov/conduit/issues/290)
-> (Node.js) and [issue #291](https://github.com/lopatnov/conduit/issues/291)
-> (Python) for the background discussion and open questions.
-
 ## The idea in one sentence
 
 Conduit does what a reverse proxy does best — TLS, routing, load balancing,
 rate limiting, health checking, retries — and hands the actual request
 handling off to a pool of Node.js or Python worker processes running your
-application code. This is not a new Conduit feature: it's the same
-"nginx + Node.js" / "nginx + Gunicorn" pattern that's been standard practice
-for over a decade, made slightly more convenient with a small supervisor
-script that uses Conduit's existing dynamic-upstream Admin API.
-
-**What this recipe is *not***: a CGI/Azure-Functions-style invoke-on-demand
-model, where a request causes a fresh process to start (or a scaled-to-zero
-one to wake) and nothing else runs in between. The workers here are a fixed
-pool of long-lived processes — always warm, sized for steady CPU-bound
-throughput, not for scale-to-zero or per-request cold starts. If what you
-want is the latter, that's a materially different, not-yet-designed problem;
-see [issue #290](https://github.com/lopatnov/conduit/issues/290)'s discussion
-for the distinction.
+application code.
 
 ## What Conduit already does for you, today, with zero new code
 
@@ -41,7 +22,7 @@ for the distinction.
   logs.
 
 None of that requires anything beyond a normal `proxy:` config pointing at
-`http://127.0.0.1:PORT`. **What's missing** is *pool management*: who starts
+`http://127.0.0.1:PORT`. **What's missing** is _pool management_: who starts
 N worker processes, watches their health, restarts crashed ones, and tells
 Conduit when a worker comes up or goes away. That's what this recipe adds.
 
@@ -71,7 +52,7 @@ POST /upstreams/weight  {"route": "/api", "target": "http://127.0.0.1:4001", "we
   from other processes on the same machine). The examples below already
   read it from `CONDUIT_ADMIN_TOKEN`/`$CONDUIT_ADMIN_TOKEN` when set.
 - Registrations are **in-memory only** — `conduit reload` (re-reading the
-  config file from disk, for *any* config change, not just one related to
+  config file from disk, for _any_ config change, not just one related to
   this route) clears every dynamic registration, immediately, even if the
   supervisor itself keeps running. A supervisor that only registers once at
   startup would silently fall back to the config's static seed target until
@@ -108,14 +89,14 @@ supervisor's only job is keeping the worker list accurate.
 
 ```js
 // pool.js — worker-pool supervisor
-const { fork } = require('child_process');
-const http = require('http');
+const { fork } = require("child_process");
+const http = require("http");
 
 const NUM_WORKERS = 4;
 const BASE_PORT = 4001;
-const ADMIN_URL = 'http://127.0.0.1:2019';
+const ADMIN_URL = "http://127.0.0.1:2019";
 const ADMIN_TOKEN = process.env.CONDUIT_ADMIN_TOKEN; // unset if global.admin.token isn't configured
-const ROUTE = '/api';        // must match a path prefix in conduit.yaml
+const ROUTE = "/api"; // must match a path prefix in conduit.yaml
 // No `site` field below — this example is single-site, so the registration
 // applies to whichever site serves ROUTE. Add `site: "host:port"` for a
 // multi-site deployment.
@@ -123,22 +104,33 @@ const ROUTE = '/api';        // must match a path prefix in conduit.yaml
 function callAdmin(path, body) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
-    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) };
-    if (ADMIN_TOKEN) headers['Authorization'] = `Bearer ${ADMIN_TOKEN}`;
-    const req = http.request(ADMIN_URL + path, { method: 'POST', headers }, res => {
-      let chunks = '';
-      res.on('data', c => (chunks += c));
-      res.on('end', () => {
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          // A 401 (missing/wrong admin token) returns an empty body --
-          // reject before JSON.parse would throw on it.
-          reject(new Error(`Admin API ${path} returned HTTP ${res.statusCode}: ${chunks}`));
-          return;
-        }
-        resolve(chunks ? JSON.parse(chunks) : {});
-      });
-    });
-    req.on('error', reject);
+    const headers = {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(data),
+    };
+    if (ADMIN_TOKEN) headers["Authorization"] = `Bearer ${ADMIN_TOKEN}`;
+    const req = http.request(
+      ADMIN_URL + path,
+      { method: "POST", headers },
+      (res) => {
+        let chunks = "";
+        res.on("data", (c) => (chunks += c));
+        res.on("end", () => {
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            // A 401 (missing/wrong admin token) returns an empty body --
+            // reject before JSON.parse would throw on it.
+            reject(
+              new Error(
+                `Admin API ${path} returned HTTP ${res.statusCode}: ${chunks}`,
+              ),
+            );
+            return;
+          }
+          resolve(chunks ? JSON.parse(chunks) : {});
+        });
+      },
+    );
+    req.on("error", reject);
     req.write(data);
     req.end();
   });
@@ -151,26 +143,32 @@ function callAdmin(path, body) {
 async function registerWithRetry(target, attempts = 5, delayMs = 1000) {
   for (let i = 1; i <= attempts; i++) {
     try {
-      await callAdmin('/upstreams/add', { route: ROUTE, target, weight: 1 });
+      await callAdmin("/upstreams/add", { route: ROUTE, target, weight: 1 });
       return true;
     } catch (err) {
-      console.error(`worker ${target} registration attempt ${i}/${attempts} failed: ${err.message}`);
-      if (i < attempts) await new Promise(r => setTimeout(r, delayMs));
+      console.error(
+        `worker ${target} registration attempt ${i}/${attempts} failed: ${err.message}`,
+      );
+      if (i < attempts) await new Promise((r) => setTimeout(r, delayMs));
     }
   }
   return false;
 }
 
 function spawnWorker(port) {
-  const worker = fork('./worker.js', [], { env: { ...process.env, PORT: port } });
+  const worker = fork("./worker.js", [], {
+    env: { ...process.env, PORT: port },
+  });
   const target = `http://127.0.0.1:${port}`;
   let reregisterTimer = null;
 
-  worker.on('message', async (msg) => {
-    if (msg === 'ready') {
+  worker.on("message", async (msg) => {
+    if (msg === "ready") {
       const ok = await registerWithRetry(target);
       if (!ok) {
-        console.error(`worker ${port}: giving up on registration, killing and respawning`);
+        console.error(
+          `worker ${port}: giving up on registration, killing and respawning`,
+        );
         worker.kill();
         return;
       }
@@ -180,16 +178,22 @@ function spawnWorker(port) {
       // silently drop this worker until it next crashes and respawns.
       // Idempotent — see the Admin API section above.
       reregisterTimer = setInterval(() => {
-        callAdmin('/upstreams/add', { route: ROUTE, target, weight: 1 }).catch(err => {
-          console.error(`worker ${port} periodic re-registration failed: ${err.message}`);
-        });
+        callAdmin("/upstreams/add", { route: ROUTE, target, weight: 1 }).catch(
+          (err) => {
+            console.error(
+              `worker ${port} periodic re-registration failed: ${err.message}`,
+            );
+          },
+        );
       }, 30_000);
     }
   });
 
-  worker.on('exit', async (code) => {
+  worker.on("exit", async (code) => {
     if (reregisterTimer) clearInterval(reregisterTimer);
-    await callAdmin('/upstreams/remove', { route: ROUTE, target }).catch(() => {});
+    await callAdmin("/upstreams/remove", { route: ROUTE, target }).catch(
+      () => {},
+    );
     console.log(`worker ${port} exited (code ${code}), respawning...`);
     setTimeout(() => spawnWorker(port), 500);
   });
@@ -200,15 +204,22 @@ for (let i = 0; i < NUM_WORKERS; i++) spawnWorker(BASE_PORT + i);
 
 ```js
 // worker.js — your application, one instance per worker process
-const http = require('http');
+const http = require("http");
 const port = process.env.PORT;
 
-http.createServer((req, res) => {
-  // req.headers['x-request-id'] is already set by Conduit's XRequestIdGuard —
-  // propagate it into your own logs for cross-system correlation.
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ handledBy: `worker-${port}`, requestId: req.headers['x-request-id'] }));
-}).listen(port, '127.0.0.1', () => process.send('ready'));
+http
+  .createServer((req, res) => {
+    // req.headers['x-request-id'] is already set by Conduit's XRequestIdGuard —
+    // propagate it into your own logs for cross-system correlation.
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        handledBy: `worker-${port}`,
+        requestId: req.headers["x-request-id"],
+      }),
+    );
+  })
+  .listen(port, "127.0.0.1", () => process.send("ready"));
 ```
 
 ```yaml
@@ -223,14 +234,15 @@ sites:
   - port: 8080
     proxy:
       "/api":
-        strategy: round-robin   # least-conn/other strategies work too; round-robin
-                                 # makes distribution obvious when trying this out —
-                                 # near-instant responses can make least-conn's tie-
-                                 # breaking consistently favor one worker
+        strategy:
+          round-robin # least-conn/other strategies work too; round-robin
+          # makes distribution obvious when trying this out —
+          # near-instant responses can make least-conn's tie-
+          # breaking consistently favor one worker
         targets:
-          - http://127.0.0.1:4001   # worker 0 — a static seed target (Conduit
-                                     # rejects an empty targets list); the rest
-                                     # are added dynamically by pool.js
+          - http://127.0.0.1:4001 # worker 0 — a static seed target (Conduit
+            # rejects an empty targets list); the rest
+            # are added dynamically by pool.js
 ```
 
 ## Python example
@@ -384,7 +396,7 @@ sites:
       "/api":
         strategy: round-robin
         targets:
-          - http://127.0.0.1:5001   # worker 0 — static seed target
+          - http://127.0.0.1:5001 # worker 0 — static seed target
 ```
 
 ## What this deliberately does not do
