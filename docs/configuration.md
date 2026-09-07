@@ -2967,16 +2967,26 @@ middleware:
 > **Note:** inline scripts are not supported — use `path` to a `.rhai` file.
 > Optional `config` is passed to the script as a JSON value.
 
-**Available Rhai functions:**
+**Available Rhai functions** (request phase — `request` is **read-only**;
+mutating a live request isn't supported here. A response *can* be rewritten
+on the way out, either via a `phase: "response"` Rhai script — see the
+"Rhai `on_response`" backlog entry in `CLAUDE.md` for its separate
+`response`/`upstream` API — or via WASM's response phase, see
+[WASM Middleware](#wasm-middleware) below):
 
-| Function                             | Description                          |
-| ------------------------------------ | ------------------------------------ |
-| `request.header(name)`               | Read a request header                |
-| `request.set_header(name, value)`    | Set a request header                 |
-| `request.remove_header(name)`        | Remove a request header              |
-| `request.uri()`                      | Get the request URI                  |
-| `request.method()`                   | Get the HTTP method                  |
-| `request.set_response(status, body)` | Short-circuit with a custom response |
+| Function                     | Description                                                |
+| ----------------------------- | ---------------------------------------------------------- |
+| `request.header(name)`        | Read a request header                                      |
+| `request.path`                | Get the request path                                       |
+| `request.method`              | Get the HTTP method                                        |
+| `request.query`               | Get the raw query string                                   |
+| `response.status`              | Get/set the short-circuit response status (default `200`) |
+| `response.body`                | Get/set the short-circuit response body                   |
+| `response.header(name, value)` | Append a header to the short-circuit response              |
+
+Return `false` from the script to abort the request with whatever
+`response.status`/`response.body` were set (defaults to `200`/empty if
+untouched); return `true` (or nothing) to continue the pipeline.
 
 ---
 
@@ -3001,20 +3011,25 @@ middleware:
 Plugins export `on_request() -> i32` and a `memory` export.
 Return `0` to continue, non-zero to reject. Conduit **fails open** on errors.
 
-**Host functions:**
+**Host functions (request phase, `on_request`):**
 
-| Function                      | Description                          |
-| ----------------------------- | ------------------------------------ |
-| `conduit_get_header`          | Read a request header                |
-| `conduit_set_header`          | Set a request header                 |
-| `conduit_remove_header`       | Remove a request header              |
-| `conduit_get_uri`             | Get request URI                      |
-| `conduit_get_method`          | Get HTTP method                      |
-| `conduit_get_header_names`    | List all header names                |
-| `conduit_set_response`        | Short-circuit with a custom response |
-| `conduit_abort_with_redirect` | Redirect the client                  |
-| `conduit_get_request_id`      | Get X-Request-ID                     |
-| `conduit_log`                 | Write to Conduit log                 |
+| Function                         | Description               |
+| --------------------------------- | -------------------------- |
+| `conduit_get_header`               | Read a request header      |
+| `conduit_set_request_header`       | Set a request header       |
+| `conduit_remove_request_header`    | Remove a request header    |
+| `conduit_get_uri`                  | Get request URI            |
+| `conduit_get_method`               | Get HTTP method             |
+| `conduit_get_header_names`         | List all header names      |
+| `conduit_abort_with_redirect`      | Redirect the client        |
+| `conduit_get_request_id`           | Get X-Request-ID           |
+| `conduit_log`                      | Write to Conduit log       |
+
+An optional `on_response(status: i32) -> i32` export gets its own set of
+host functions (read/set/remove response headers and status, replace the
+response body, read plugin config). See [wasm.md](wasm.md) for the complete,
+authoritative ABI reference (request- and response-phase) — this table only
+covers the request phase and isn't meant to be exhaustive.
 
 ---
 

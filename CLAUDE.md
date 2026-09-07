@@ -87,7 +87,17 @@
 23. **CLI Commands** — трейт `CliCommand` в `src/cli/mod.rs`. Новая команда = struct + arm в `dispatch_command()`. `main()` не трогать.
 24. **YAML конфиг** — `serde_yaml`, `from_yaml()` в `parse.rs`, автопоиск `conduit.yaml/yml`.
 25. **Provider pattern** — `Provider` trait в `src/config/provider.rs`. `FileProvider` (one-shot + auto-reload). `KubernetesProvider` (feature = "kubernetes") в `src/config/kubernetes.rs`.
-26. **WASM middleware** — `type: "wasm"` в middleware array, feature = "wasm". Wasmtime, 12 host-функций, fail-open. `src/filter/wasm.rs`. Плагины экспортируют `on_request() -> i32`. Память должна быть экспортирована как `"memory"`.
+26. **WASM middleware** — `type: "wasm"` в middleware array, feature = "wasm". Wasmtime, 17 host-функций
+    в request-фазе (+7 в response-фазе, см. пункт бэклога "WASM `on_response()` hook" — 4 из них те же
+    самые имена, переиспользованные в обоих линкерах (`conduit_set_response_header`,
+    `conduit_set_response_body`, `conduit_get_plugin_config`, `conduit_log`), так что суммарно
+    различных имён — 20), fail-open. `src/filter/wasm.rs`. Плагины экспортируют `on_request() -> i32`.
+    Память должна быть экспортирована как `"memory"`, если плагин вызывает хоть одну host-функцию,
+    читающую или пишущую в неё — плагин без единой такой функции (например, всегда возвращающий
+    `on_request() -> 0`) работает и без `memory` экспорта; см. issue #381 про то, что при пропущенном
+    экспорте это вырождается в молчаливую деградацию без единого warning в лог, а не в чёткую ошибку.
+    (Число реюзов поправлено 2026-09-07 по итогам ревью PR #382 — было ошибочно "2"; счёт "12"→"17"
+    поправлен в этой же сессии, Step 1c аудит, не совпадал ни с одной реальной точкой в истории фичи.)
 27. **MiddlewareGuard** — объединяет Rhai ("script") и WASM ("wasm") в `src/filter/chain.rs`. Порядок entries соблюдается. `ScriptGuard` = type alias для совместимости.
 28. **CGI** — не входит в Conduit, отдельный проект.
 29. **Тесты** — port 0, rcgen, serial_test для Admin API, mock = `TcpListener` без Axum.
@@ -337,7 +347,7 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 
 #### Низкий приоритет
 
-- [x] **WASM plugin system** — `type: "wasm"` вместе с Rhai (не вместо). Wasmtime, `--features wasm`. 17 host-функций (read/modify headers, set response, get_uri, get_header_names, abort_with_redirect, get_request_id). Module cache, fail-open. `src/filter/wasm.rs`, 15 unit-тестов inline WAT.
+- [x] **WASM plugin system** — `type: "wasm"` вместе с Rhai (не вместо). Wasmtime, `--features wasm`. 17 host-функций (read/modify headers, set response, get_uri, get_header_names, abort_with_redirect, get_request_id). Module cache, fail-open. `src/filter/wasm.rs`, 38 unit-тестов inline WAT (выросло с исходных 15 по мере добавления response-фазы и отдельных host-функций, включая 3 новых из этого же аудита — trap в `on_response`, отказ `memory.grow` за пределами 16 MiB кэпа, и отказ инстанцирования при превышении кэпа изначально заявленной памятью; число поправлено 2026-09-07, Step 1c аудит).
 
 #### Запланировано (обсуждено 2026-06-06, issue #65) — порядок строго последовательный
 
