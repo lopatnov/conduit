@@ -191,6 +191,38 @@ fn build_redis_key(scope_label: &str, window_secs: u64, client_key: &str) -> Str
     format!("conduit:rl:{scope_label}\0{window_secs}\0{client_key}")
 }
 
+/// Build the in-process fallback-map key, factored out of
+/// [`fallback_check_impl`] as its own free function (issue #384) so the
+/// exact encoding is directly unit-testable, mirroring [`build_redis_key`].
+///
+/// Include limit, burst, and window_secs in the key so that post-reload
+/// config changes are picked up immediately rather than reusing a stale
+/// bucket. Include scope_label so two independent scopes sharing a client
+/// key don't share a bucket here either (issue #317). `\0`-joined, not
+/// `:`-joined (issue #350, defense-in-depth companion to the real-Redis key
+/// above — and confirmed by issue #384 to be a real, constructible
+/// collision, not just theoretical: `security-engineer` reviewing #383
+/// independently built one against the *fallback* format specifically, not
+/// just the real-Redis one): this single `fallback` map is shared
+/// process-wide across every scope (site/route/consumer) whenever Redis is
+/// configured but unreachable, each with its own
+/// scope_label/limit/burst/window_secs — a colon-bearing scope_label or
+/// client_key (unbracketed IPv6, or an arbitrary `keyBy: "header:X-Name"`
+/// value) can collide two distinct scopes into one bucket under a plain
+/// `:`-join even though `limit`/`burst`/`window_secs` are colon-free
+/// (digit-only) themselves — see
+/// `fallback_key_disambiguates_a_verified_real_collision` for the exact
+/// byte-verified example.
+fn build_fallback_key(
+    scope_label: &str,
+    client_key: &str,
+    limit: u64,
+    burst: u64,
+    window_secs: u64,
+) -> String {
+    format!("{scope_label}\0{client_key}\0{limit}\0{burst}\0{window_secs}")
+}
+
 /// The actual fallback-map admission logic, factored out of
 /// [`RedisRateLimiter::fallback_check`] as a free function so it's testable
 /// without a live Redis connection (`RedisRateLimiter::connect` requires
@@ -203,20 +235,7 @@ fn fallback_check_impl(
     burst: u64,
     window_secs: u64,
 ) -> bool {
-    // Include limit, burst, and window_secs in the key so that post-reload
-    // config changes are picked up immediately rather than reusing a stale
-    // bucket. Include scope_label so two independent scopes sharing a client key don't
-    // share a bucket here either (issue #317). `\0`-joined, not `:`-joined
-    // (issue #350, defense-in-depth companion to the real-Redis key fix
-    // above): this single `fallback` map is shared process-wide across
-    // every scope (site/route/consumer) whenever Redis is configured but
-    // unreachable, each with its own scope_label/limit/burst/window_secs —
-    // a colon-bearing scope_label or client_key (unbracketed IPv6, or an
-    // arbitrary `keyBy: "header:X-Name"` value) is one component closer to
-    // a cross-scope collision than the digit-only limit/burst/window_secs
-    // suffix makes trivial to construct, so it gets the same non-ambiguous
-    // separator rather than being treated as safe by omission.
-    let key = format!("{scope_label}\0{client_key}\0{limit}\0{burst}\0{window_secs}");
+    let key = build_fallback_key(scope_label, client_key, limit, burst, window_secs);
     // Routed through the shared MAX_BUCKETS-capped admission point (issue
     // #305's fallback-path counterpart) instead of an uncapped
     // entry()/or_insert_with() — this map has no cap check of its own.
@@ -339,6 +358,72 @@ mod tests {
             build_redis_key("example.com:8080", 60, "1.2.3.4"),
             build_redis_key("example.com:8080", 60, "1.2.3.4")
         );
+    }
+
+    // ── build_fallback_key (issue #384 regression coverage) ─────────────
+
+    #[test]
+    fn build_fallback_key_disambiguates_a_verified_real_collision() {
+        // A byte-exact collision under the old `:`-joined fallback-map
+        // format, independently constructed by `security-engineer`
+        // reviewing #383 (not just the real-Redis collision reused
+        // verbatim — the fallback format's `client_key` isn't the final
+        // segment, so this needed its own construction with matching
+        // limit/burst/window_secs appended identically on both sides).
+        // Both encode to "2001:db8::1:8080:60:alice:100:0:60" under the
+        // old `:`-joined format.
+        let site_a = build_fallback_key("2001:db8::1:8080", "60:alice", 100, 0, 60);
+        let site_b = build_fallback_key("2001:db8::1:8080:60", "alice", 100, 0, 60);
+        assert_ne!(
+            site_a, site_b,
+            "two distinct (scope, client) pairs must never encode to the same fallback-map key"
+        );
+    }
+
+    #[test]
+    fn build_fallback_key_is_stable_for_identical_inputs() {
+        assert_eq!(
+            build_fallback_key("example.com:8080", "1.2.3.4", 100, 0, 60),
+            build_fallback_key("example.com:8080", "1.2.3.4", 100, 0, 60)
+        );
+    }
+
+    #[test]
+    fn fallback_check_impl_gives_the_two_colliding_scopes_independent_buckets() {
+        // Behavioral confirmation, not just a string-equality check: with
+        // the fix, the two scope/client pairs that used to collide under
+        // the old `:`-joined key genuinely get independent token buckets —
+        // exhausting one's single-request limit must not affect the other.
+        let fallback: DashMap<String, TokenBucket> = DashMap::new();
+        assert!(fallback_check_impl(
+            &fallback,
+            "2001:db8::1:8080",
+            "60:alice",
+            1,
+            0,
+            60
+        ));
+        // The first bucket (limit 1) is now exhausted; a second real
+        // request from the SAME scope+client would be denied.
+        assert!(!fallback_check_impl(
+            &fallback,
+            "2001:db8::1:8080",
+            "60:alice",
+            1,
+            0,
+            60
+        ));
+        // The other, distinct scope+client pair — which used to collide
+        // into the very same bucket under the old format — must get its
+        // own fresh allowance instead of inheriting the exhausted one.
+        assert!(fallback_check_impl(
+            &fallback,
+            "2001:db8::1:8080:60",
+            "alice",
+            1,
+            0,
+            60
+        ));
     }
 
     // ── fallback_check_impl (issue #317 regression coverage) ────────────
