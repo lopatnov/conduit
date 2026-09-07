@@ -17,6 +17,15 @@ application code. This is not a new Conduit feature: it's the same
 for over a decade, made slightly more convenient with a small supervisor
 script that uses Conduit's existing dynamic-upstream Admin API.
 
+**What this recipe is *not***: a CGI/Azure-Functions-style invoke-on-demand
+model, where a request causes a fresh process to start (or a scaled-to-zero
+one to wake) and nothing else runs in between. The workers here are a fixed
+pool of long-lived processes — always warm, sized for steady CPU-bound
+throughput, not for scale-to-zero or per-request cold starts. If what you
+want is the latter, that's a materially different, not-yet-designed problem;
+see [issue #290](https://github.com/lopatnov/conduit/issues/290)'s discussion
+for the distinction.
+
 ## What Conduit already does for you, today, with zero new code
 
 - `proxy:`/`routes:` path/host/header/query matching — route specific paths to
@@ -42,7 +51,7 @@ Conduit when a worker comes up or goes away. That's what this recipe adds.
 over three real HTTP endpoints on the Admin API (bound to `global.admin.bind`,
 e.g. `127.0.0.1:2019`):
 
-```
+```text
 POST /upstreams/add     {"route": "/api", "target": "http://127.0.0.1:4001", "weight": 1, "site": "*:8080"}
 POST /upstreams/remove  {"route": "/api", "target": "http://127.0.0.1:4001", "site": "*:8080"}
 POST /upstreams/weight  {"route": "/api", "target": "http://127.0.0.1:4001", "weight": 3, "site": "*:8080"}
@@ -55,11 +64,21 @@ POST /upstreams/weight  {"route": "/api", "target": "http://127.0.0.1:4001", "we
   Omit it for a single-site deployment (the examples below do) — the
   registration then applies to every site serving this route.
 - If `global.admin.token` is configured, include
-  `Authorization: Bearer <token>` on every call.
-- Registrations are **in-memory only** — they survive a hot-reload but are
-  reset by `conduit reload` (re-reading the config file from disk). A
-  restarted supervisor re-registers its live workers on its own startup, so
-  this is a non-issue in practice as long as the supervisor stays running.
+  `Authorization: Bearer <token>` on every call. **Set one** if anything
+  else runs on the same host as Conduit — without a token, any local
+  process can call `/upstreams/add`, `/reload`, or other Admin API
+  endpoints (the loopback bind keeps this off the network, but not away
+  from other processes on the same machine). The examples below already
+  read it from `CONDUIT_ADMIN_TOKEN`/`$CONDUIT_ADMIN_TOKEN` when set.
+- Registrations are **in-memory only** — `conduit reload` (re-reading the
+  config file from disk, for *any* config change, not just one related to
+  this route) clears every dynamic registration, immediately, even if the
+  supervisor itself keeps running. A supervisor that only registers once at
+  startup would silently fall back to the config's static seed target until
+  it's restarted. The examples below avoid this by re-issuing
+  `/upstreams/add` on a periodic timer for every worker they still consider
+  alive — `/upstreams/add` is idempotent (it updates the existing entry's
+  weight in place, never duplicates), so this is safe to do repeatedly.
 
 Because these are plain HTTP endpoints, **any process in any language** can
 call them directly — not just the `conduit` binary's own CLI. That's the
@@ -117,25 +136,52 @@ function callAdmin(path, body) {
   });
 }
 
+// Registers `target` and retries a few times on failure (Admin API
+// momentarily unreachable, etc.) rather than leaving a live worker
+// silently unregistered. The periodic re-register timer below is the
+// longer-term backstop — this is just for the very first attempt.
+async function registerWithRetry(target, attempts = 5, delayMs = 1000) {
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      await callAdmin('/upstreams/add', { route: ROUTE, target, weight: 1 });
+      return true;
+    } catch (err) {
+      console.error(`worker ${target} registration attempt ${i}/${attempts} failed: ${err.message}`);
+      if (i < attempts) await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  return false;
+}
+
 function spawnWorker(port) {
   const worker = fork('./worker.js', [], { env: { ...process.env, PORT: port } });
+  const target = `http://127.0.0.1:${port}`;
+  let reregisterTimer = null;
 
   worker.on('message', async (msg) => {
     if (msg === 'ready') {
-      await callAdmin('/upstreams/add', {
-        route: ROUTE,
-        target: `http://127.0.0.1:${port}`,
-        weight: 1,
-      });
+      const ok = await registerWithRetry(target);
+      if (!ok) {
+        console.error(`worker ${port}: giving up on registration, killing and respawning`);
+        worker.kill();
+        return;
+      }
       console.log(`worker ${port} registered with Conduit`);
+      // Re-register on a timer so a `conduit reload` (which clears every
+      // dynamic registration, even for an unrelated config change) doesn't
+      // silently drop this worker until it next crashes and respawns.
+      // Idempotent — see the Admin API section above.
+      reregisterTimer = setInterval(() => {
+        callAdmin('/upstreams/add', { route: ROUTE, target, weight: 1 }).catch(err => {
+          console.error(`worker ${port} periodic re-registration failed: ${err.message}`);
+        });
+      }, 30_000);
     }
   });
 
   worker.on('exit', async (code) => {
-    await callAdmin('/upstreams/remove', {
-      route: ROUTE,
-      target: `http://127.0.0.1:${port}`,
-    }).catch(() => {});
+    if (reregisterTimer) clearInterval(reregisterTimer);
+    await callAdmin('/upstreams/remove', { route: ROUTE, target }).catch(() => {});
     console.log(`worker ${port} exited (code ${code}), respawning...`);
     setTimeout(() => spawnWorker(port), 500);
   });
@@ -222,6 +268,22 @@ def run_worker(port: int, ready: multiprocessing.synchronize.Event) -> None:
     serve(port, ready)
 
 
+def register_with_retry(target: str, attempts: int = 5, delay_secs: float = 1.0) -> bool:
+    """Register `target` and retry a few times on failure (Admin API
+    momentarily unreachable, etc.) rather than leaving a live worker
+    silently unregistered. The periodic re-register below is the
+    longer-term backstop -- this is just for the very first attempt."""
+    for i in range(1, attempts + 1):
+        try:
+            call_admin("/upstreams/add", {"route": ROUTE, "target": target, "weight": 1})
+            return True
+        except Exception as e:  # noqa: BLE001 - starter code, log and retry
+            print(f"worker {target} registration attempt {i}/{attempts} failed: {e}", flush=True)
+            if i < attempts:
+                time.sleep(delay_secs)
+    return False
+
+
 def supervise(port: int) -> None:
     while True:
         ready = multiprocessing.Event()
@@ -238,10 +300,25 @@ def supervise(port: int) -> None:
         # your use case.
         ready.wait()
         target = f"http://127.0.0.1:{port}"
-        call_admin("/upstreams/add", {"route": ROUTE, "target": target, "weight": 1})
+        if not register_with_retry(target):
+            print(f"worker {port}: giving up on registration, killing and respawning", flush=True)
+            proc.terminate()
+            proc.join()
+            time.sleep(0.5)
+            continue
         print(f"worker {port} registered with Conduit", flush=True)
 
-        proc.join()  # blocks until the worker process exits
+        # Re-register on a timer so a `conduit reload` (which clears every
+        # dynamic registration, even for an unrelated config change) doesn't
+        # silently drop this worker until it next crashes and respawns.
+        # Idempotent -- see the Admin API section above.
+        while proc.is_alive():
+            proc.join(timeout=30)
+            if proc.is_alive():
+                try:
+                    call_admin("/upstreams/add", {"route": ROUTE, "target": target, "weight": 1})
+                except Exception as e:  # noqa: BLE001 - starter code, log and keep going
+                    print(f"worker {port} periodic re-registration failed: {e}", flush=True)
 
         call_admin("/upstreams/remove", {"route": ROUTE, "target": target})
         print(f"worker {port} exited, respawning...", flush=True)
