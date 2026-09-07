@@ -1,0 +1,309 @@
+# Running Node.js / Python apps behind Conduit as a worker pool
+
+> **Status**: recipe, no dedicated Conduit feature required. The companion
+> supervisor library referenced below (working name only, **not final**) does
+> not exist yet as a published package — this document describes the pattern
+> and the code it would wrap. See [issue #290](https://github.com/lopatnov/conduit/issues/290)
+> (Node.js) and [issue #291](https://github.com/lopatnov/conduit/issues/291)
+> (Python) for the background discussion and open questions.
+
+## The idea in one sentence
+
+Conduit does what a reverse proxy does best — TLS, routing, load balancing,
+rate limiting, health checking, retries — and hands the actual request
+handling off to a pool of Node.js or Python worker processes running your
+application code. This is not a new Conduit feature: it's the same
+"nginx + Node.js" / "nginx + Gunicorn" pattern that's been standard practice
+for over a decade, made slightly more convenient with a small supervisor
+script that uses Conduit's existing dynamic-upstream Admin API.
+
+## What Conduit already does for you, today, with zero new code
+
+- `proxy:`/`routes:` path/host/header/query matching — route specific paths to
+  your worker pool while other paths go elsewhere (static files, a different
+  upstream, etc.).
+- 8 load-balancing strategies (round-robin, least-connections, IP hash, P2C,
+  weighted round-robin, ...) across however many worker instances you run.
+- TLS termination, rate limiting, circuit breaking, passive health tracking
+  (EWMA latency, outlier detection), retries with jitter — all in front of
+  your worker pool, none of it your application code's problem.
+- `X-Request-ID` injection (`XRequestIdGuard`) on every request, so you can
+  correlate a request across Conduit's own access log and your application's
+  logs.
+
+None of that requires anything beyond a normal `proxy:` config pointing at
+`http://127.0.0.1:PORT`. **What's missing** is *pool management*: who starts
+N worker processes, watches their health, restarts crashed ones, and tells
+Conduit when a worker comes up or goes away. That's what this recipe adds.
+
+## The mechanism: Conduit's dynamic upstream Admin API
+
+`conduit upstreams add/remove/weight` (the CLI subcommands) are thin clients
+over three real HTTP endpoints on the Admin API (bound to `global.admin.bind`,
+e.g. `127.0.0.1:2019`):
+
+```
+POST /upstreams/add     {"route": "/api", "target": "http://127.0.0.1:4001", "weight": 1, "site": "*:8080"}
+POST /upstreams/remove  {"route": "/api", "target": "http://127.0.0.1:4001", "site": "*:8080"}
+POST /upstreams/weight  {"route": "/api", "target": "http://127.0.0.1:4001", "weight": 3, "site": "*:8080"}
+```
+
+- `route` — the path prefix from your `proxy:`/`routes:` config this target
+  serves.
+- `target` — the worker's full URL.
+- `site` — optional; scopes the override to one site (`"{host}:{port}"`).
+  Omit it for a single-site deployment (the examples below do) — the
+  registration then applies to every site serving this route.
+- If `global.admin.token` is configured, include
+  `Authorization: Bearer <token>` on every call.
+- Registrations are **in-memory only** — they survive a hot-reload but are
+  reset by `conduit reload` (re-reading the config file from disk). A
+  restarted supervisor re-registers its live workers on its own startup, so
+  this is a non-issue in practice as long as the supervisor stays running.
+
+Because these are plain HTTP endpoints, **any process in any language** can
+call them directly — not just the `conduit` binary's own CLI. That's the
+whole trick: a small supervisor script in your worker pool's own language
+calls `/upstreams/add` when a worker becomes ready and `/upstreams/remove`
+when it exits, and Conduit's existing load balancer does the rest.
+
+## What actually runs
+
+Three kinds of process, side by side:
+
+1. **`conduit`** (Rust) — listens on the public port, routes, load-balances,
+   handles TLS/rate-limiting/health-checks.
+2. **A supervisor process** (your code, in Node.js or Python) — starts N
+   worker processes, watches them, restarts crashed ones, registers/
+   deregisters them with Conduit via the Admin API above.
+3. **N worker processes** (your code) — the actual application, one instance
+   per process, each on its own loopback port.
+
+Request flow: client → `conduit:8080` (TLS, rate limit, route match, pick a
+healthy worker via the configured strategy) → one of the live worker
+processes (your application logic) → response flows back through Conduit.
+Conduit already owns the balancing/health/circuit-breaker decisions; the
+supervisor's only job is keeping the worker list accurate.
+
+## Node.js example
+
+```js
+// pool.js — worker-pool supervisor
+const { fork } = require('child_process');
+const http = require('http');
+
+const NUM_WORKERS = 4;
+const BASE_PORT = 4001;
+const ADMIN_URL = 'http://127.0.0.1:2019';
+const ROUTE = '/api';        // must match a path prefix in conduit.yaml
+// No `site` field below — this example is single-site, so the registration
+// applies to whichever site serves ROUTE. Add `site: "host:port"` for a
+// multi-site deployment.
+
+function callAdmin(path, body) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const req = http.request(ADMIN_URL + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+    }, res => {
+      let chunks = '';
+      res.on('data', c => (chunks += c));
+      res.on('end', () => resolve(JSON.parse(chunks)));
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+function spawnWorker(port) {
+  const worker = fork('./worker.js', [], { env: { ...process.env, PORT: port } });
+
+  worker.on('message', async (msg) => {
+    if (msg === 'ready') {
+      await callAdmin('/upstreams/add', {
+        route: ROUTE,
+        target: `http://127.0.0.1:${port}`,
+        weight: 1,
+      });
+      console.log(`worker ${port} registered with Conduit`);
+    }
+  });
+
+  worker.on('exit', async (code) => {
+    await callAdmin('/upstreams/remove', {
+      route: ROUTE,
+      target: `http://127.0.0.1:${port}`,
+    }).catch(() => {});
+    console.log(`worker ${port} exited (code ${code}), respawning...`);
+    setTimeout(() => spawnWorker(port), 500);
+  });
+}
+
+for (let i = 0; i < NUM_WORKERS; i++) spawnWorker(BASE_PORT + i);
+```
+
+```js
+// worker.js — your application, one instance per worker process
+const http = require('http');
+const port = process.env.PORT;
+
+http.createServer((req, res) => {
+  // req.headers['x-request-id'] is already set by Conduit's XRequestIdGuard —
+  // propagate it into your own logs for cross-system correlation.
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ handledBy: `worker-${port}`, requestId: req.headers['x-request-id'] }));
+}).listen(port, () => process.send('ready'));
+```
+
+```yaml
+# conduit.yaml
+port: 8080
+global:
+  admin:
+    bind: "127.0.0.1:2019"
+proxy:
+  "/api":
+    strategy: least-conn
+    targets:
+      - http://127.0.0.1:4001   # worker 0 — a static seed target (Conduit
+                                 # rejects an empty targets list); the rest
+                                 # are added dynamically by pool.js
+```
+
+## Python example
+
+The same pattern, using `multiprocessing` and `urllib`/`requests` for the
+Admin API calls instead of `child_process`/`http`. A production setup would
+more likely put Gunicorn/uvicorn workers behind this instead of hand-rolling
+`multiprocessing` — the supervisor's job (register/deregister via the Admin
+API) stays the same regardless of what actually manages the worker
+processes underneath it.
+
+```python
+# pool.py — worker-pool supervisor
+import json
+import multiprocessing
+import time
+import urllib.request
+
+NUM_WORKERS = 4
+BASE_PORT = 5001
+ADMIN_URL = "http://127.0.0.1:2019"
+ROUTE = "/api"
+# No `site` field below — this example is single-site, so the registration
+# applies to whichever site serves ROUTE. Add site="host:port" for a
+# multi-site deployment.
+
+
+def call_admin(path: str, body: dict) -> dict:
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        ADMIN_URL + path,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read())
+
+
+def run_worker(port: int) -> None:
+    from worker import serve  # your application's entry point
+
+    serve(port)
+
+
+def supervise(port: int) -> None:
+    while True:
+        proc = multiprocessing.Process(target=run_worker, args=(port,))
+        proc.start()
+        target = f"http://127.0.0.1:{port}"
+        call_admin("/upstreams/add", {"route": ROUTE, "target": target, "weight": 1})
+        print(f"worker {port} registered with Conduit")
+
+        proc.join()  # blocks until the worker process exits
+
+        call_admin("/upstreams/remove", {"route": ROUTE, "target": target})
+        print(f"worker {port} exited, respawning...")
+        time.sleep(0.5)
+
+
+if __name__ == "__main__":
+    procs = [
+        multiprocessing.Process(target=supervise, args=(BASE_PORT + i,))
+        for i in range(NUM_WORKERS)
+    ]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join()
+```
+
+```python
+# worker.py — your application, one instance per worker process
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # self.headers["X-Request-ID"] is already set by Conduit's
+        # XRequestIdGuard — propagate it into your own logs.
+        body = json.dumps({
+            "handledBy": f"worker-{self.server.server_port}",
+            "requestId": self.headers.get("X-Request-ID"),
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def serve(port: int) -> None:
+    HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+```
+
+```yaml
+# conduit.yaml
+port: 8080
+global:
+  admin:
+    bind: "127.0.0.1:2019"
+proxy:
+  "/api":
+    strategy: least-conn
+    targets:
+      - http://127.0.0.1:5001   # worker 0 — static seed target
+```
+
+## What this deliberately does not do
+
+- No custom transport — plain loopback HTTP, reusing everything Conduit
+  already has. A bespoke protocol (Unix socket, shared memory) would only
+  earn its complexity if it measurably beat this, and nothing here has
+  needed that yet.
+- Conduit itself does not spawn, supervise, or restart worker processes —
+  that responsibility stays entirely in the supervisor script above, kept
+  deliberately outside Conduit's own binary/feature-flag system. This is a
+  scope boundary, not an oversight: see #290/#291 for the reasoning (a
+  Conduit-owned process-supervision subsystem is a materially bigger
+  commitment — crash isolation, cross-process debugging, log/trace
+  correlation, resource limits — that changes what "Conduit is a reverse
+  proxy with zero runtime dependencies" means, and hasn't been taken on).
+- No sandboxing of worker code — a worker process is trusted, co-located
+  application code, at the same trust level as any other upstream process on
+  the host. This is a different trust model from Conduit's in-process WASM/
+  Rhai middleware, which run sandboxed inside Conduit's own process (see
+  [wasm.md](wasm.md), [rhai.md](rhai.md)).
+
+## Open questions before this becomes a published package
+
+Tracked in [#290](https://github.com/lopatnov/conduit/issues/290) /
+[#291](https://github.com/lopatnov/conduit/issues/291): the package name
+(placeholder only, not decided), whether to standardize on `child_process`/
+`multiprocessing` or delegate to existing tools (`cluster`/PM2 for Node,
+Gunicorn/uWSGI for Python) for the actual process management, and how much
+of the health-check/backoff logic above is worth generalizing into a real
+library versus leaving as copy-paste-and-adapt starter code.
