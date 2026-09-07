@@ -216,16 +216,20 @@ def call_admin(path: str, body: dict) -> dict:
         return json.loads(resp.read())
 
 
-def run_worker(port: int) -> None:
+def run_worker(port: int, ready: multiprocessing.synchronize.Event) -> None:
     from worker import serve  # your application's entry point
 
-    serve(port)
+    serve(port, ready)
 
 
 def supervise(port: int) -> None:
     while True:
-        proc = multiprocessing.Process(target=run_worker, args=(port,))
+        ready = multiprocessing.Event()
+        proc = multiprocessing.Process(target=run_worker, args=(port, ready))
         proc.start()
+        ready.wait()  # blocks until the worker has actually bound its socket —
+                       # without this, /upstreams/add could register a port
+                       # Conduit can route to before anything is listening on it
         target = f"http://127.0.0.1:{port}"
         call_admin("/upstreams/add", {"route": ROUTE, "target": target, "weight": 1})
         print(f"worker {port} registered with Conduit", flush=True)
@@ -252,6 +256,7 @@ if __name__ == "__main__":
 # worker.py — your application, one instance per worker process
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+import multiprocessing
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -268,8 +273,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def serve(port: int) -> None:
-    HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+def serve(port: int, ready: multiprocessing.synchronize.Event | None = None) -> None:
+    server = HTTPServer(("127.0.0.1", port), Handler)  # binds + listens synchronously
+    if ready is not None:
+        ready.set()  # signal the supervisor only after the socket is actually listening
+    server.serve_forever()
 ```
 
 ```yaml
