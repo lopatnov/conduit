@@ -227,9 +227,16 @@ def supervise(port: int) -> None:
         ready = multiprocessing.Event()
         proc = multiprocessing.Process(target=run_worker, args=(port, ready))
         proc.start()
-        ready.wait()  # blocks until the worker has actually bound its socket —
-                       # without this, /upstreams/add could register a port
-                       # Conduit can route to before anything is listening on it
+        # Blocks until the worker has actually bound its socket — without this,
+        # /upstreams/add could register a port Conduit can route to before
+        # anything is listening on it. Note the tradeoff: ready.wait() has no
+        # timeout here, so a worker that fails *before* HTTPServer(...) ever
+        # succeeds (import error, port already in use, permission error) hangs
+        # this one slot forever instead of respawning — the other workers keep
+        # running unaffected. Add ready.wait(timeout=...) plus a log line and
+        # explicit proc.terminate() on timeout if that failure mode matters for
+        # your use case.
+        ready.wait()
         target = f"http://127.0.0.1:{port}"
         call_admin("/upstreams/add", {"route": ROUTE, "target": target, "weight": 1})
         print(f"worker {port} registered with Conduit", flush=True)
