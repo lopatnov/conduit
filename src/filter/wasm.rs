@@ -1622,4 +1622,125 @@ mod tests {
             other => panic!("expected Abort, got {other:?}"),
         }
     }
+
+    // ── Resource limits (Step 1c audit, 2026-09-07 — these two mechanisms
+    //    read as correctly wired via standard Wasmtime APIs but had no test
+    //    of their own before this) ───────────────────────────────────────────
+
+    #[test]
+    fn on_response_trap_fails_open() {
+        // A genuine trap (unreachable) inside on_response, not fuel
+        // exhaustion — proves run_response_inner's `?` on `on_response.call`
+        // reaches run_wasm_response's fail-open Err arm, same as the
+        // request-phase infinite_loop_is_terminated_by_fuel_limit test does
+        // for the request phase.
+        //
+        // The module sets a header *before* trapping, on purpose: if the
+        // trap were silently swallowed anywhere between `on_response.call`
+        // and `run_wasm_response`'s match (instead of aborting the whole
+        // call via `?`), the header would still show up in the outcome —
+        // an empty-outcome assertion alone can't tell a real fail-open from
+        // a trap that just never happened. Wasmtime drops the whole `Store`
+        // (and the host-function side effects staged in it) when a call
+        // traps, so only a genuinely-propagated trap leaves this header
+        // unset.
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_set_response_header"
+                (func $set_hdr (param i32 i32 i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "x-before-trap")
+              (data (i32.const 50) "yes")
+              (func (export "on_response") (param i32) (result i32)
+                (call $set_hdr (i32.const 0) (i32.const 13) (i32.const 50) (i32.const 3))
+                unreachable))"#,
+        );
+        let outcome = run_wasm_response(make_response_ctx(200), &p);
+        assert!(
+            outcome.added_headers.is_empty(),
+            "a trap must discard everything the plugin did before it, not just \
+             report no *new* mutations — got added_headers = {:?}",
+            outcome.added_headers
+        );
+        assert!(outcome.removed_headers.is_empty());
+        assert!(outcome.body.is_none());
+    }
+
+    #[test]
+    fn oversized_memory_grow_is_denied() {
+        // Declaring 257 initial pages (one over the 16 MiB / 256-page cap)
+        // does NOT fail instantiation on its own — Wasmtime only enforces
+        // the ResourceLimiter on `memory.grow`, not on a module's static
+        // initial size (confirmed empirically with a scratch probe: even
+        // with the limiter wired in, `run_inner` returns `Ok` for a
+        // 257-page-declared module — an earlier draft of this test
+        // asserted on that and was a tautology, since a plain successful
+        // `on_request` returning 0 produces the identical `Continue`
+        // outcome). So this module starts at 1 page and tries to
+        // `memory.grow` to 257 pages at runtime instead; a denied grow
+        // returns `-1` to the guest (not a trap) per Wasm semantics, and
+        // the module reports which branch ran via a *distinctive* aborted
+        // status code (298 = grow succeeded / cap broken, 299 = grow
+        // denied / cap working) rather than a plain `Continue`/`Abort`
+        // check, so the test can't pass by accident regardless of which
+        // branch actually executes.
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_set_response_status" (func $set_status (param i32)))
+              (memory (export "memory") 1)
+              (func (export "on_request") (result i32)
+                (if (i32.eq (memory.grow (i32.const 256)) (i32.const -1))
+                  (then (call $set_status (i32.const 299)))
+                  (else (call $set_status (i32.const 298))))
+                i32.const 1))"#,
+        );
+        match run_wasm(req(), &p) {
+            WasmOutcome::Abort { status, .. } => assert_eq!(
+                status, 299,
+                "status 298 means memory.grow past the 16 MiB cap SUCCEEDED — the cap isn't enforced"
+            ),
+            WasmOutcome::Continue { .. } => {
+                panic!("on_request always aborts in this module — Continue means it never ran")
+            }
+        }
+    }
+
+    #[test]
+    fn oversized_initial_memory_fails_instantiation() {
+        // A module whose *declared* memory already exceeds the 16 MiB /
+        // 256-page StoreLimits cap (257 pages is one page over) fails
+        // instantiation outright — confirmed against wasmtime 48.0.1's
+        // vendored source: `Memory::limit_new` calls the same
+        // `ResourceLimiter::memory_growing` hook for a module's initial
+        // size as it does for a runtime `memory.grow`, so the cap covers
+        // both, not just growth.
+        //
+        // An earlier draft of this test (removed during PR #382's review)
+        // wrongly concluded the opposite — that only growth is checked —
+        // based on a negative control that only ever tested the
+        // limiter-*disabled* state and never actually compared it against
+        // the limiter-*enabled* state for this same scenario. Tested here
+        // via `run_inner` directly (not `run_wasm`'s Continue/Abort
+        // wrapper, which can't distinguish "instantiation failed and fell
+        // back" from "instantiation succeeded and on_request legitimately
+        // returned 0" — the same tautology class this file's other new
+        // tests were rewritten to avoid) and asserting on the specific
+        // error text, not just "some error occurred".
+        let (_f, p) = compile_wat(
+            r#"(module
+              (memory (export "memory") 257)
+              (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        match run_inner(req(), &p) {
+            Ok(outcome) => {
+                panic!("instantiation must fail for oversized initial memory, got {outcome:?}")
+            }
+            Err(e) => assert!(
+                e.to_string().contains("exceeds memory limits"),
+                "expected a memory-limit rejection, got: {e}"
+            ),
+        }
+        // And the fail-open contract still holds at the run_wasm level.
+        assert!(matches!(run_wasm(req(), &p), WasmOutcome::Continue { .. }));
+    }
 }

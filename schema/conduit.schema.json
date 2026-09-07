@@ -201,18 +201,18 @@
             "properties": {
               "type": {
                 "type": "string",
-                "enum": ["script", "ipFilter", "rateLimit", "auth", "headers"],
-                "description": "Middleware type. Use \"script\" for Rhai scripts (Phase 4)."
+                "enum": ["script", "wasm", "ipFilter", "rateLimit", "auth", "headers"],
+                "description": "Middleware type. Use \"script\" for Rhai scripts (Phase 4), \"wasm\" for WASM plugins (requires --features wasm)."
               },
               "config": {
                 "description": "Type-specific configuration object (used by built-in types)."
               },
               "path": {
                 "type": "string",
-                "description": "Path to the Rhai script file. Required when type is \"script\"."
+                "description": "Path to the Rhai script (\"script\") or WASM module (\"wasm\") file. Required for both types."
               }
             },
-            "if": { "properties": { "type": { "const": "script" } }, "required": ["type"] },
+            "if": { "properties": { "type": { "enum": ["script", "wasm"] } }, "required": ["type"] },
             "then": { "required": ["path"] }
           }
         }

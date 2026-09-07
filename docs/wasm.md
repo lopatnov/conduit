@@ -985,17 +985,37 @@ wasm-opt -Os -o plugin-opt.wasm plugin.wasm
 ## Execution model
 
 - Modules are **compiled once** (on first request) by Wasmtime's Cranelift JIT
-  and cached for the lifetime of the process. Hot-reload clears the cache.
+  and cached for the lifetime of the process, keyed by the configured `path`.
+  Overwriting the `.wasm` file at the same path and running `conduit reload`
+  does **not** pick up the new bytes — the process keeps serving the
+  already-compiled module until it's fully restarted (the same
+  compile-once-per-path caching Rhai scripts use, see `AST_CACHE` in
+  `script.rs`). Point `middleware[].path` at a new file path instead of
+  overwriting one in place if you need a running server to pick up a
+  rebuilt plugin without a restart.
 - Each request runs in its **own Wasmtime Store** — no shared mutable state
   between requests, no global variables visible across calls.
 - WASM execution is **synchronous** and runs in the request-handling thread.
 - There is **no network or filesystem access** from within the WASM sandbox —
-  only the host functions listed above (17 in the request phase, plus 3
-  additional response-phase functions available in `on_response`).
+  only the host functions listed above (17 in the request phase) plus the
+  seven host functions available in `on_response` (below).
 - **Fuel limit:** 10,000,000 Wasmtime fuel units per invocation (both
   `on_request` and `on_response`). Each WASM instruction consumes one unit.
   A plugin that exceeds the limit is terminated and fails open (request
   passes through). Typical request-phase plugins use well under 100,000 units.
+- **Memory limit:** each plugin instance is capped at 16 MiB of linear
+  memory (`wasmtime::StoreLimits`). This cap is enforced both for a
+  module's own declared *initial* memory size and for a runtime
+  `memory.grow` call, via the same `ResourceLimiter` hook — confirmed
+  against wasmtime 48.0.1's source (`Memory::limit_new`, called during
+  instantiation for the initial size and again on every `memory.grow`). A
+  denied *initial* allocation fails instantiation outright, which is
+  treated like any other error and fails open (logged, request passes
+  through) — the same as a fuel-exhaustion trap. A denied runtime
+  `memory.grow`, by contrast, returns the standard Wasm `-1` to the guest
+  rather than an error — the plugin keeps running and has to check for
+  and handle that itself, the same as it would any other `memory.grow`
+  failure.
 
 ---
 
