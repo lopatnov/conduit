@@ -3200,6 +3200,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "lopatnov-conduit-middleware"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "bytes",
+ "http",
+ "lopatnov-conduit-core",
+ "lopatnov-conduit-plugin-wasm",
+ "lopatnov-conduit-script-rhai",
+ "pingora-core",
+ "pingora-http",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lopatnov-conduit-otlp"
 version = "2.0.0"
 dependencies = [

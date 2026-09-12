@@ -47,6 +47,9 @@ lopatnov-conduit-static              = { path = "crates/conduit-static", version
 lopatnov-conduit-hotreload           = { path = "crates/conduit-hotreload", version = "2.0.0" }
 lopatnov-conduit-metrics             = { path = "crates/conduit-metrics", version = "2.0.0" }
 lopatnov-conduit-redirects           = { path = "crates/conduit-redirects", version = "2.0.0" }
+lopatnov-conduit-script-rhai         = { path = "crates/conduit-script-rhai", version = "2.0.0" }
+lopatnov-conduit-plugin-wasm         = { path = "crates/conduit-plugin-wasm", version = "2.0.0" }
+lopatnov-conduit-middleware          = { path = "crates/conduit-middleware", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
