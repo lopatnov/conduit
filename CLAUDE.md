@@ -3376,3 +3376,93 @@ recurrence of this specific (now-disproven) mechanism.
   (`conduit-upstream`/`conduit-proxy-http`, #142/#143) are about to touch next — worth a
   deliberate check during that extraction rather than a blind merge, not a reason to avoid
   doing the feature work now.
+
+### Реализовано в сессии 2026-09-12/13 (часть 3 — batch #398: 4 issues + a discovered ACME route bug)
+
+- User asked for a batch of "easy bugs to fix quickly," picked from the open-issue list:
+  **#394** (`MiddlewareEntry.phase` unvalidated — a typo silently ran middleware in the
+  wrong pipeline phase), **#381** (WASM plugin missing `"memory"` export degrades
+  completely silently), **#352** (ACME challenge-server graceful shutdown unbounded), and
+  **#354** (secret-bearing config fields plain-derive `Debug`, repo-wide). Explicitly
+  requested as **one branch, one security review** rather than 4 separate PRs.
+- **[PR #398](https://github.com/lopatnov/conduit/pull/398)** (branch
+  `fix/easy-batch-394-381-352-354` → `claude/cargo-workspace-features-23qxfr`, squash-merge
+  `434d79d`) — all four issues closed:
+  - **#394**: `validate_middleware` (`src/config/validate.rs`) now rejects any `phase`
+    value other than `"request"`/`"response"`. 3 new tests.
+  - **#381**: new `warn_missing_memory_once`/`should_warn_and_mark`/`TracksMemoryWarning`
+    trait in `crates/conduit-plugin-wasm/src/wasm.rs` — logs once per plugin invocation
+    when a host function needing linear memory can't find a `"memory"` export, covering
+    all 6 real call sites (`mem_read_str`/`mem_write`/`mem_read_str_resp`/`mem_write_resp`
+    plus the two inline `conduit_set_response_body` closures). The "warn once" decision is
+    a pure function tested directly (no `wasmtime::Caller` needed) — confirmed via
+    `security-engineer`'s independent grep that all 6 sites are covered and that a
+    genuinely memory-less plugin (one that never calls a memory-touching host function)
+    still never triggers the warning, matching decision #26.
+  - **#352**: `crates/conduit-acme/src/flow.rs`'s challenge-server shutdown wait is now
+    bounded (`CHALLENGE_SHUTDOWN_TIMEOUT_SECS = 10`) via `tokio::time::timeout` +
+    `AbortHandle::abort()` on timeout (confirmed dropping the bare `JoinHandle` does NOT
+    stop the detached spawned task — the abort is load-bearing, not redundant). The
+    originating issue's own premise ("a connection with incomplete headers is treated as
+    active") was **empirically disproven** during test-writing — a standalone probe
+    confirmed the real trigger is a fully-dispatched, still-running handler (matches
+    axum/hyper's documented semantics), not merely-incomplete request bytes. Doc comment
+    and tests were rewritten to reflect what was actually confirmed, not the original,
+    inaccurate theory.
+  - **Found independently while writing #352's tests, not part of the original 4**: the
+    challenge server's route was still registered as
+    `"/.well-known/acme-challenge/:token"` — axum 0.6/0.7 syntax that axum 0.8.9 (this
+    crate's pinned version) rejects outright at `Router::route()` call time with a panic.
+    **This meant every real ACME certificate acquisition would fail before the challenge
+    server ever started accepting connections** — a completely broken feature, masked in
+    CI because the "ACME (Pebble)" job runs Pebble with `PEBBLE_VA_ALWAYS_VALID=1`, which
+    never actually contacts the challenge endpoint at all. Fixed to axum 0.8's `{token}`
+    syntax; added direct end-to-end route tests (`challenge_server_route_serves_a_
+    registered_token`, `..._404s_for_an_unregistered_token`) with a negative control
+    confirming they fail against the broken syntax. `security-engineer` independently
+    verified the severity claim by pulling the actual vendored axum 0.8.9 source (confirms
+    the panic via axum's own `#[should_panic]` test) and tracing the real
+    `obtain_certificate` bootstrap call chain in `src/server/builder.rs`.
+  - **#354**: manual `Debug` impls (a small `Redacted` marker type per file, since the
+    fields span 4 different crates) for `AdminConfig.token`, `StickyConfig.secret`,
+    `BasicAuthConfig.users` (redacts password *values*, keeps usernames visible),
+    `ApiKeyConfig.keys`, `MetricsConfig.token`, `JwtAuthConfig.secret`, and the
+    consumer-model's `ConsumersSharedJwtConfig`/`Consumer`/`ConsumerBasicAuth`/
+    `ConsumerJwtConfig` secret fields — `Option<String>` fields distinguish `Some([REDACTED])`
+    from `None` rather than collapsing both. `Consumer`'s impl delegates to its nested
+    `basic_auth`/`jwt` fields' own redacting `Debug` rather than re-exposing them.
+  - Also lands the previously-untracked `.agents/`/`.codex/`/`AGENTS.md` (Codex-CLI-format
+    mirrors of this repo's `.claude/`/`CLAUDE.md`, of forgotten origin — see the process
+    note below) — vetted by a dedicated `security-engineer` pass (2941 lines read in full,
+    diffed against the trusted originals) before staging: faithful, mechanical ports with
+    only tool-name substitutions, no injected content, just stale (missing everything
+    since the PR #386 merge, including the `.reference/` convention above).
+- **Testing discipline note**: the ACME work is a good example of not trusting an
+  unverified claim from the originating issue text. The initial test reproduction
+  (a connection with incomplete headers) failed to reproduce a hang — rather than assume
+  the test was wrong and force an assertion to pass, built a standalone scratch Cargo
+  project to empirically determine the real trigger condition (a genuinely dispatched slow
+  handler) before rewriting the test and the production doc comment to match reality. Also
+  caught a real bug in the test harness itself along the way: an early draft of
+  `connect_and_send_get` didn't return the connected `TcpStream`, so it was dropped at the
+  end of the helper function — closing the "active" connection before the assertion ran,
+  which was silently making the test's premise false in a different way than the
+  incomplete-headers theory being wrong.
+- **Process note (branch confusion, caught before it caused harm)**: initially worried
+  this branch had been accidentally created off the migration branch instead of `main`
+  (violating the "check which branch before the first edit" rule) — turned out to be
+  correct by chance: all 4 issues were filed against code that only exists in
+  post-extraction crates (`crates/conduit-acme`, `crates/conduit-plugin-wasm`, etc.,
+  confirmed via `git ls-tree -d origin/main` showing no `crates/` directory on `main` at
+  all), found via CodeRabbit reviewing this migration branch's own tracking PR #152 — so
+  branching from the migration branch was actually required, not a mistake. Worth
+  remembering for future "quick bug batch" requests: check whether the referenced code
+  paths exist on `main` at all before assuming ordinary bug fixes belong there.
+- **Also this session**: unrelated Pingora-investigation and `.reference/` convention
+  changes from earlier the same day (main-branch PRs #386, #396, #397) were synced into
+  this branch via a merge commit (`8270d6d`) before this batch started — the merge's own
+  conflict in `CLAUDE.md`/`.claude/rules/index.md` was a pure both-sides-appended-content
+  case (no semantic conflict), resolved by keeping both continuations. A follow-up direct
+  commit (`67a1a6e`, no PR — matches this branch's established convention for `.claude/`
+  tooling changes) added the `/cleanup` exemption for `.reference/` to this branch's own
+  copy of `cleanup.md`, mirroring the rule already merged to `main`.
