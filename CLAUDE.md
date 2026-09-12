@@ -3055,6 +3055,63 @@ recurrence of this specific (now-disproven) mechanism.
 
 ---
 
+### Реализовано в сессии 2026-09-12 (Phase 4.4 — #141: conduit-middleware + conduit-script-rhai + conduit-plugin-wasm)
+
+- **[PR #393](https://github.com/lopatnov/conduit/pull/393)
+  `feat(workspace): extract conduit-middleware + conduit-script-rhai + conduit-plugin-wasm (#141)`**
+  (3 коммита, squash-merge `b45f95a`, issue #141 CLOSED) — три новых workspace-крейта одним PR.
+  Реальный scope оказался в 2 раза шире исходного текста issue (6 точек кода, не 3) — прогнан
+  через `architect` перед началом. Ключевая находка: описанный в #141 `MiddlewarePlugin`
+  trait/registry **никогда не был построен** (`grep` по всему коду — ноль совпадений,
+  только упоминания в agent-definition файлах как гипотетический пример) — реальная
+  диспетчеризация в `MiddlewareGuard::apply` — плоский `match entry.r#type.as_str()`.
+  `architect` рекомендовал **не** вводить trait при этой экстракции (закрытый мир сегодня,
+  два бэкенда несовместимы по интерфейсу, ноль прецедентов на ~20 прошлых экстракциях этой
+  миграции для новых абстракций при переносе, реальный runtime-overhead без текущей пользы —
+  см. decision #30's rationale про TypeMap) — решение зафиксировано отдельным issue
+  [#392](https://github.com/lopatnov/conduit/issues/392) (пересмотреть только при появлении
+  реального третьего бэкенда).
+  **Границы крейтов**: `conduit-plugin-wasm`/`conduit-script-rhai` — чистые relocation'ы
+  (`git mv`, 96%/95% similarity), без `[features]` таблицы вообще (их само существование —
+  и есть фича-гейт, управляемый из `conduit-middleware`); `conduit-middleware` —
+  mandatory-крейт (не `optional = true`, три независимые причины: `SiteConfig.middleware` не
+  гейтится, `check_site_middleware_feature_warnings()` физически не скомпилируется если
+  `MiddlewareEntry` гейтирован, `validate_middleware()` валидирует "script"/"wasm" безусловно),
+  с `rhai`/`wasm` как **свои** опциональные features, тянущие два крейта выше как path-deps.
+  Три тонкости, где легко ошибиться и которые явно проверялись: `tracing` должен остаться
+  mandatory (arm `#[cfg(not(feature = "wasm"))] "wasm" => tracing::warn!(...)` живёт именно
+  когда фича выключена — если загейтить `tracing`, no-feature сборка сломается), то же для
+  `serde_json` (`MiddlewareEntry.config: Option<serde_json::Value>` всегда компилируется).
+  Найден и **не тронут** (per explicit scope, "move verbatim, bugs included") один реальный
+  pre-existing баг при чтении `response_chain.rs` — оказался дубликатом уже открытого
+  [#379](https://github.com/lopatnov/conduit/issues/379) (от Step 1c аудита 2026-09-07,
+  тот же баг: `on_response` body override не работает и утекает в заголовок клиенту) — сам
+  ошибочно завёл как новый #391, поймал дубликат постфактум, закрыл как not-planned в пользу
+  #379, поправил кросс-ссылки в PR-комментарии.
+  **`security-engineer` PASS** (независимо: byte-for-byte diff перенесённых `wasm.rs`/
+  `script.rs` против до-move состояния — только namespace/visibility, ноль логики; проверил
+  видимость демоций (`get_or_compile`→private, 4 Rhai-структуры→`pub(crate)`) на отсутствие
+  внешних вызывающих; сам прогнал `scripts/check-layer-boundaries.sh`, не поверил репорту PR)
+  нашёл ещё 2 реальных, но тоже pre-existing (не внесённых этим PR) гэпа — заведены как
+  [#394](https://github.com/lopatnov/conduit/issues/394) (`MiddlewareEntry.phase` не
+  валидируется — опечатка в значении тихо запускает entry не в той фазе) и
+  [#395](https://github.com/lopatnov/conduit/issues/395) (`MiddlewareGuard::apply` передаёт
+  фиксированный снапшот заголовков каждому entry — мутации от одного WASM-плагина не видны
+  следующему entry в том же chain).
+  **Верификация**: `cargo hack --each-feature` 71/71 + `--feature-powerset --depth 2` 250/250,
+  `check-layer-boundaries.sh` PASS (0 нарушений, без правок `ALLOWED_CRATES`), `Cargo.lock`
+  diff — 0 новых third-party зависимостей, ровно 3 новых internal member-записи. Мехэническая
+  часть выполнена фоновым `crate-extractor` (~3.7M токенов, 455 tool calls) по полному плану
+  `architect` — единственное сознательное отклонение от плана: план предполагал, что корень
+  останется собираемым после коммита 1 (чистый `git mv` без удаления `filter/mod.rs`'s
+  объявлений модулей) — механически невозможно одновременно с буквальным `git mv`; агент
+  выбрал буквальный `git mv` (более явно сформулированная инструкция) и принял, что коммит 1
+  сам по себе не собирается — весь PR целиком собирается и тестируется чисто.
+  **Процессная заметка**: `security-engineer` был запущен с `isolation: "worktree"` в фоне
+  (в отличие от более ранних раундов той же сессии, которые не догадались это указать и
+  работали прямо в общем чекауте, меняя его текущую ветку) — обошлось без гонки за файлы,
+  в отличие от задокументированных инцидентов 2026-08-24/2026-08-30 выше в этом файле.
+
 ## Session rotation log
 
 > **Policy retired 2026-08-29** (`/retro`, user decision) — periodic full rotation didn't
