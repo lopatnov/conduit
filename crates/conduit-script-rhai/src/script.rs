@@ -1,40 +1,7 @@
-#![cfg(feature = "rhai")]
-//! Rhai scripting middleware — Phase 4.1.
+//! Rhai scripting middleware implementation (feature = "rhai").
 //!
-//! Exposes a sandboxed [`run_script`] function that executes a Rhai script
-//! against the current request and returns a decision: continue the pipeline
-//! or abort with a custom response.
-//!
-//! # Script API
-//!
-//! Scripts receive two objects:
-//!
-//! - **`request`** — read-only view of the incoming request:
-//!   - `request.path` → `String`
-//!   - `request.method` → `String`
-//!   - `request.query` → `String` (empty when no query)
-//!   - `request.header("Name")` → `String` (empty when absent, case-insensitive)
-//!
-//! - **`response`** — the response to send when aborting:
-//!   - `response.status` → `int` (get/set, default `200`)
-//!   - `response.body` → `String` (get/set, default `""`)
-//!   - `response.header("Name", "Value")` — append a response header
-//!
-//! A script that returns `true` (or ends without an explicit `false`) passes
-//! the request through to the next pipeline stage.  Returning `false` sends
-//! the response object and stops the pipeline.
-//!
-//! # Example
-//!
-//! ```rhai
-//! let token = request.header("Authorization");
-//! if token == "" {
-//!     response.status = 401;
-//!     response.header("WWW-Authenticate", "Bearer");
-//!     return false;
-//! }
-//! true
-//! ```
+//! See the crate root doc comment (`src/lib.rs`) for the full script API
+//! reference.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -46,7 +13,7 @@ use rhai::{Engine, Scope, AST};
 
 /// Read-only view of the HTTP request, exposed to Rhai scripts as `request`.
 #[derive(Debug, Clone)]
-pub struct ScriptRequest {
+pub(crate) struct ScriptRequest {
     pub path: String,
     pub method: String,
     pub query: String,
@@ -71,7 +38,7 @@ impl ScriptRequest {
 /// Scripts set `status`, `body`, and/or call `header()` before returning
 /// `false` to abort the pipeline.
 #[derive(Debug, Clone)]
-pub struct ScriptResponse {
+pub(crate) struct ScriptResponse {
     pub status: i64,
     pub body: String,
     pub extra_headers: Vec<(String, String)>,
@@ -305,7 +272,7 @@ pub struct ScriptResponseOutcome {
 /// `response.remove_header("Name")` to delete headers, and read the upstream
 /// status with `response.status`.
 #[derive(Debug, Clone)]
-pub struct ScriptResponseBuilder {
+pub(crate) struct ScriptResponseBuilder {
     /// Upstream HTTP status code (read-only to the script).
     pub status: i64,
     pub added_headers: Vec<(String, String)>,
@@ -395,7 +362,7 @@ pub fn run_script_response(
 
 /// Read-only upstream response view exposed as `upstream` in response scripts.
 #[derive(Debug, Clone)]
-pub struct ScriptUpstreamView {
+pub(crate) struct ScriptUpstreamView {
     pub status: i64,
     pub headers: HashMap<String, String>,
 }

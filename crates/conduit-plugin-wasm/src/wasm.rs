@@ -1,56 +1,7 @@
-//! WASM plugin middleware (feature = "wasm").
+//! WASM plugin middleware implementation (feature = "wasm").
 //!
-//! Plugins are compiled `.wasm` binaries that export a single `on_request`
-//! function.  The host exposes a set of `conduit_*` functions for reading the
-//! request, inspecting headers, and writing a rejection/redirect response.
-//!
-//! ## Plugin ABI (17 host functions)
-//!
-//! **Imports** (namespace `"conduit"`):
-//!
-//! ### Request read
-//! | Function | Description |
-//! |---|---|
-//! | `conduit_get_method(buf, buf_len) -> i32` | HTTP method; returns bytes written |
-//! | `conduit_get_path(buf, buf_len) -> i32` | Request path (without query) |
-//! | `conduit_get_query(buf, buf_len) -> i32` | Raw query string (empty if none) |
-//! | `conduit_get_uri(buf, buf_len) -> i32` | Full URI: path + "?" + query |
-//! | `conduit_get_client_ip(buf, buf_len) -> i32` | Remote IP address |
-//! | `conduit_get_request_id(buf, buf_len) -> i32` | X-Request-ID header value |
-//! | `conduit_get_header(name, nlen, buf, buf_len) -> i32` | Named header value; -1 if absent |
-//! | `conduit_get_header_count() -> i32` | Number of request headers |
-//! | `conduit_get_header_names(buf, buf_len) -> i32` | Newline-separated header names |
-//! | `conduit_get_plugin_config(buf, buf_len) -> i32` | JSON from `MiddlewareEntry.config` |
-//!
-//! ### Request mutation
-//! | Function | Description |
-//! |---|---|
-//! | `conduit_set_request_header(name, nlen, val, vlen)` | Add/overwrite request header |
-//! | `conduit_remove_request_header(name, nlen)` | Remove a request header |
-//!
-//! ### Response control (abort path)
-//! | Function | Description |
-//! |---|---|
-//! | `conduit_set_response_status(status)` | Abort with HTTP status code |
-//! | `conduit_set_response_header(name, nlen, val, vlen)` | Add header to abort response |
-//! | `conduit_set_response_body(body, body_len)` | Set body of abort response |
-//! | `conduit_abort_with_redirect(url, url_len)` | Abort with 302 Location redirect |
-//!
-//! ### Logging
-//! | Function | Description |
-//! |---|---|
-//! | `conduit_log(level, msg, msg_len)` | 0=trace 1=debug 2=info 3=warn 4=error |
-//!
-//! **Export** (required):
-//! ```text
-//! on_request() -> i32    // 0 = Continue, 1 = Abort
-//! ```
-//!
-//! **Memory**: plugins must export `"memory"`. All data passes through WASM
-//! linear memory; the host never retains pointers after the call.
-//!
-//! **Error handling**: any error (missing file, compile, link, trap) is logged
-//! as a warning and the request passes through (fail-open, same as Rhai).
+//! See the crate root doc comment (`src/lib.rs`) for the full plugin ABI
+//! reference table.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -104,7 +55,7 @@ fn module_cache() -> &'static DashMap<String, Arc<Module>> {
     WASM_MODULES.get_or_init(DashMap::new)
 }
 
-pub(crate) fn get_or_compile(path: &str) -> anyhow::Result<Arc<Module>> {
+fn get_or_compile(path: &str) -> anyhow::Result<Arc<Module>> {
     let cache = module_cache();
     if let Some(m) = cache.get(path) {
         return Ok(m.clone());
@@ -1090,7 +1041,7 @@ mod tests {
     fn demo_header_injector_wat_injects_headers() {
         // Verify the example request-phase WAT compiles and produces the
         // expected header injections.
-        let src = include_str!("../../examples/middleware-demo/header-injector.wat");
+        let src = include_str!("../../../examples/middleware-demo/header-injector.wat");
         let (_f, p) = compile_wat(src);
 
         let mut r = req();
@@ -1125,7 +1076,7 @@ mod tests {
 
     #[test]
     fn demo_header_injector_no_request_id_skips_trace() {
-        let src = include_str!("../../examples/middleware-demo/header-injector.wat");
+        let src = include_str!("../../../examples/middleware-demo/header-injector.wat");
         let (_f, p) = compile_wat(src);
 
         // No X-Request-ID → X-Trace-Id must NOT be injected.
@@ -1152,7 +1103,7 @@ mod tests {
     fn demo_response_tagger_wat_adds_processed_by() {
         // response-tagger.wat is a response-only plugin — only imports
         // conduit_set_response_header, which the response linker provides.
-        let src = include_str!("../../examples/middleware-demo/response-tagger.wat");
+        let src = include_str!("../../../examples/middleware-demo/response-tagger.wat");
         let (_f, p) = compile_wat(src);
         let ctx = WasmResponseContext {
             status: 200,

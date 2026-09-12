@@ -2930,6 +2930,7 @@ dependencies = [
  "lopatnov-conduit-ipfilter",
  "lopatnov-conduit-limits",
  "lopatnov-conduit-metrics",
+ "lopatnov-conduit-middleware",
  "lopatnov-conduit-otlp",
  "lopatnov-conduit-ratelimit",
  "lopatnov-conduit-redirects",
@@ -2948,7 +2949,6 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest",
- "rhai",
  "rsa",
  "rustls",
  "rustls-pemfile",
@@ -2967,7 +2967,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "wasmtime",
  "wat",
  "x509-parser 0.18.1",
 ]
@@ -3200,6 +3199,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "lopatnov-conduit-middleware"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "bytes",
+ "http",
+ "lopatnov-conduit-core",
+ "lopatnov-conduit-plugin-wasm",
+ "lopatnov-conduit-script-rhai",
+ "pingora-core",
+ "pingora-http",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lopatnov-conduit-otlp"
 version = "2.0.0"
 dependencies = [
@@ -3211,6 +3229,19 @@ dependencies = [
  "serial_test",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "lopatnov-conduit-plugin-wasm"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "dashmap",
+ "tempfile",
+ "tracing",
+ "wasmtime",
+ "wat",
 ]
 
 [[package]]
@@ -3233,6 +3264,17 @@ dependencies = [
  "lopatnov-conduit-core",
  "pingora-core",
  "serde",
+]
+
+[[package]]
+name = "lopatnov-conduit-script-rhai"
+version = "2.0.0"
+dependencies = [
+ "dashmap",
+ "rhai",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
