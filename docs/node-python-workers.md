@@ -178,18 +178,7 @@ async function registerWithRetry(target, attempts = 5, delayMs = 1000) {
   return false;
 }
 
-// Tracks the most recent spawnWorker() generation per port, so a
-// late-landing registration from an already-dead worker can tell whether
-// it's still the latest attempt for that port before undoing itself --
-// otherwise it could deregister a healthy *respawned* worker on the same
-// port instead of cleaning up after itself (both use the identical
-// `target` URL, so they're indistinguishable by target alone).
-const currentGenerationByPort = new Map();
-
 function spawnWorker(port) {
-  const generation = (currentGenerationByPort.get(port) ?? 0) + 1;
-  currentGenerationByPort.set(port, generation);
-
   // Workers don't need Admin API access -- strip the token from their env
   // rather than let a compromised application process reuse it to call
   // /upstreams/add, /reload, or anything else on the Admin API.
@@ -198,54 +187,57 @@ function spawnWorker(port) {
   const worker = fork("./worker.js", [], { env: workerEnv });
   const target = `http://127.0.0.1:${port}`;
   let reregisterTimer = null;
-  // Guards against a 'ready' registration that was already in flight when
-  // the worker exited -- without this, it can resolve *after* 'exit' has
-  // already deregistered the target, then start a periodic timer that
-  // re-adds a dead worker forever.
   let alive = true;
+  // Tracks this generation's 'ready' handling (registration attempt, plus
+  // any compensating cleanup below) so the exit handler can wait for it to
+  // fully settle before respawning -- see the comment on `setTimeout`
+  // below for why that ordering guarantee matters.
+  let readySettled = Promise.resolve();
 
-  worker.on("message", async (msg) => {
-    if (msg === "ready") {
-      const ok = await registerWithRetry(target);
-      if (!alive) {
-        // Exited while registration was in flight. If it landed anyway
-        // (after the 'exit' handler's own, necessarily premature
-        // /upstreams/remove already ran) AND no respawn has re-registered
-        // this port yet, undo it -- otherwise a dead target stays
-        // registered until the next periodic re-register tick. Skip the
-        // undo if a newer generation already exists for this port: by
-        // then the respawned worker may have already registered the same
-        // `target`, and removing it would take down a healthy worker
-        // instead of cleaning up a stale one.
-        if (ok && currentGenerationByPort.get(port) === generation) {
-          callAdmin("/upstreams/remove", { route: ROUTE, target }).catch(
-            () => {},
-          );
-        }
-        return;
-      }
-      if (!ok) {
-        console.error(
-          `worker ${port}: giving up on registration, killing and respawning`,
+  async function handleReady() {
+    const ok = await registerWithRetry(target);
+    if (!alive) {
+      // Exited while registration was in flight. If it landed anyway
+      // (after the 'exit' handler's own, necessarily premature
+      // /upstreams/remove already ran), undo it -- otherwise a dead
+      // target stays registered until the next periodic re-register tick.
+      // Safe to await here (not fire-and-forget): the exit handler's
+      // setTimeout below waits for this whole function to settle before
+      // letting a respawned worker register the same `target`, so this
+      // cleanup is always the *last* Admin API call to land for this
+      // generation, never racing a replacement's own registration.
+      if (ok) {
+        await callAdmin("/upstreams/remove", { route: ROUTE, target }).catch(
+          () => {},
         );
-        worker.kill();
-        return;
       }
-      console.log(`worker ${port} registered with Conduit`);
-      // Re-register on a timer so a `conduit reload` (which clears every
-      // dynamic registration, even for an unrelated config change) doesn't
-      // silently drop this worker until it next crashes and respawns.
-      // Idempotent — see the Admin API section above.
-      reregisterTimer = setInterval(() => {
-        callAdmin("/upstreams/add", { route: ROUTE, target, weight: 1 }).catch(
-          (err) => {
-            console.error(
-              `worker ${port} periodic re-registration failed: ${err.message}`,
-            );
-          },
-        );
-      }, 30_000);
+      return;
     }
+    if (!ok) {
+      console.error(
+        `worker ${port}: giving up on registration, killing and respawning`,
+      );
+      worker.kill();
+      return;
+    }
+    console.log(`worker ${port} registered with Conduit`);
+    // Re-register on a timer so a `conduit reload` (which clears every
+    // dynamic registration, even for an unrelated config change) doesn't
+    // silently drop this worker until it next crashes and respawns.
+    // Idempotent — see the Admin API section above.
+    reregisterTimer = setInterval(() => {
+      callAdmin("/upstreams/add", { route: ROUTE, target, weight: 1 }).catch(
+        (err) => {
+          console.error(
+            `worker ${port} periodic re-registration failed: ${err.message}`,
+          );
+        },
+      );
+    }, 30_000);
+  }
+
+  worker.on("message", (msg) => {
+    if (msg === "ready") readySettled = handleReady();
   });
 
   worker.on("exit", async (code) => {
@@ -255,7 +247,18 @@ function spawnWorker(port) {
       () => {},
     );
     console.log(`worker ${port} exited (code ${code}), respawning...`);
-    setTimeout(() => spawnWorker(port), 500);
+    setTimeout(async () => {
+      // Wait for this generation's own 'ready' handling -- including any
+      // compensating cleanup it might still be running -- to fully settle
+      // before letting the next generation register the same `target`.
+      // Without this, a late compensating remove above could still arrive
+      // at the Admin API *after* the replacement worker's own registration
+      // and take down a healthy worker instead of a dead one. Bounded by
+      // registerWithRetry's own attempts*delayMs (a few seconds, worst
+      // case) -- not a real respawn-latency concern in practice.
+      await readySettled;
+      spawnWorker(port);
+    }, 500);
   });
 }
 
@@ -325,7 +328,6 @@ import urllib.request
 NUM_WORKERS = 4
 BASE_PORT = 5001
 ADMIN_URL = "http://127.0.0.1:2019"
-ADMIN_TOKEN = os.environ.get("CONDUIT_ADMIN_TOKEN")  # unset if global.admin.token isn't configured
 ROUTE = "/api"
 # No `site` field below — this example is single-site, so the registration
 # applies to whichever site serves ROUTE. Add site="host:port" for a
@@ -333,10 +335,20 @@ ROUTE = "/api"
 
 
 def call_admin(path: str, body: dict) -> dict:
+    # Read fresh on every call rather than caching into a module-level
+    # global -- a global would still be reachable from worker code after
+    # run_worker()'s os.environ.pop() below: "fork" workers inherit it as
+    # already-bound memory, and "spawn" workers re-run this module's
+    # top-level code (rebinding it from the still-intact parent env)
+    # before run_worker() ever gets a chance to strip anything. Reading
+    # os.environ directly here means the pop actually takes effect for
+    # any code path -- including a supervisor bug that calls call_admin()
+    # from inside a worker -- not just the supervisor's own normal use.
+    admin_token = os.environ.get("CONDUIT_ADMIN_TOKEN")  # unset if global.admin.token isn't configured
     data = json.dumps(body).encode()
     headers = {"Content-Type": "application/json"}
-    if ADMIN_TOKEN:
-        headers["Authorization"] = f"Bearer {ADMIN_TOKEN}"
+    if admin_token:
+        headers["Authorization"] = f"Bearer {admin_token}"
     req = urllib.request.Request(ADMIN_URL + path, data=data, headers=headers, method="POST")
     with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read())
@@ -376,6 +388,19 @@ def register_with_retry(target: str, attempts: int = 5, delay_secs: float = 1.0)
 
 
 READY_TIMEOUT_SECS = 10.0
+TERMINATE_TIMEOUT_SECS = 5.0
+
+
+def terminate_and_reap(proc: multiprocessing.Process) -> None:
+    """terminate() (SIGTERM) doesn't guarantee the process actually exits --
+    a worker that ignores or is slow to handle it would otherwise hang this
+    join() forever. Escalate to kill() (SIGKILL, not ignorable) if it's
+    still alive after a bounded wait, then join again to actually reap it."""
+    proc.terminate()
+    proc.join(timeout=TERMINATE_TIMEOUT_SECS)
+    if proc.is_alive():
+        proc.kill()
+        proc.join()
 
 
 def supervise(port: int) -> None:
@@ -395,15 +420,13 @@ def supervise(port: int) -> None:
                 f"(exitcode={proc.exitcode}), killing and respawning",
                 flush=True,
             )
-            proc.terminate()
-            proc.join()
+            terminate_and_reap(proc)
             time.sleep(0.5)
             continue
         target = f"http://127.0.0.1:{port}"
         if not register_with_retry(target):
             print(f"worker {port}: giving up on registration, killing and respawning", flush=True)
-            proc.terminate()
-            proc.join()
+            terminate_and_reap(proc)
             time.sleep(0.5)
             continue
         print(f"worker {port} registered with Conduit", flush=True)
