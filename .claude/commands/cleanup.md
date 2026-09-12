@@ -61,6 +61,13 @@ alongside the Dependabot hygiene check. Two independent passes — run whichever
    first to "check the size before deciding" — on this checkout's `target/` (tens of thousands
    of small files) `du` itself can take minutes and stall on Rust's own incremental-build churn
    (files disappearing mid-scan as a background compile touches them); just delete directly.
+5. **`.reference/<name>` — explicitly NOT debris, never remove.** Added 2026-09-12 (user's
+   explicit request) — this is a gitignored but *persistent* cache of vendored
+   dependency/reference sources (pingora, tokio, and others cloned on demand — see
+   `CLAUDE.md` "Локальные репозитории" and `.claude/rules/index.md`), replacing the old
+   top-level `<projects-root>\` clones lost to an OS reinstall. Unlike everything else in
+   this pass, it's meant to be reused across sessions, not swept after one check —
+   deleting it just makes the next session re-pay a clone it already paid for.
 
 ## Pass 2 — code debris left over from a change
 
