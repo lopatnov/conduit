@@ -196,7 +196,19 @@ function spawnWorker(port) {
   worker.on("message", async (msg) => {
     if (msg === "ready") {
       const ok = await registerWithRetry(target);
-      if (!alive) return; // exited while registration was in flight
+      if (!alive) {
+        // Exited while registration was in flight. If it landed anyway
+        // (after the 'exit' handler's own, necessarily premature
+        // /upstreams/remove already ran), undo it -- otherwise a dead
+        // target stays registered until this port's next successful
+        // respawn overwrites it.
+        if (ok) {
+          callAdmin("/upstreams/remove", { route: ROUTE, target }).catch(
+            () => {},
+          );
+        }
+        return;
+      }
       if (!ok) {
         console.error(
           `worker ${port}: giving up on registration, killing and respawning`,
@@ -321,7 +333,11 @@ def run_worker(port: int, ready: multiprocessing.synchronize.Event) -> None:
     # imports) can read it and reuse it against the Admin API. Needed on
     # both the "fork" start method (child inherits the parent's full
     # os.environ) and "spawn" (the new interpreter still inherits the OS
-    # environment by default).
+    # environment by default). Note this doesn't scrub /proc/<pid>/environ
+    # on Linux -- that's a kernel-captured exec-time snapshot, not
+    # something a running process can rewrite -- so this stops the token
+    # from being read by application code via os.environ, not from a
+    # co-resident process with same-uid/root /proc access to this worker.
     os.environ.pop("CONDUIT_ADMIN_TOKEN", None)
     from worker import serve  # your application's entry point
 
