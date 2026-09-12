@@ -164,6 +164,36 @@ API path, entirely separate from local git credentials, and kept working the who
   forbids for subagents, and it applies to the conductor too (the auto-mode permission
   classifier blocked exactly this once already, correctly).
 
+## `.reference/<name>` — a durable source cache, not scratch state
+
+> Added 2026-09-12 (user's explicit request) after the old top-level `<projects-root>\`
+> clones of dependency sources (pingora, tokio, tower, nginx, envoy, etc. — see `CLAUDE.md`
+> "Локальные репозитории") were lost to an OS reinstall. `.reference/pingora` had already
+> been cloned once before this, ad hoc, for a single investigation (issue #157,
+> 2026-09-06) — this rule generalizes that into standing practice.
+
+- **Clone real dependency/reference sources into `.reference/<name>` inside this repo**
+  (already `gitignored` — `/.reference/` in `.gitignore`) whenever checking actual
+  behavior against a vendored source would improve the quality of a task — verifying a
+  changelog claim, checking a breaking change before a version bump, confirming an API
+  actually does what its docs say. Don't wait to be asked; this is exactly the kind of
+  thing `CLAUDE.md`'s own "always read sources" instruction is for, and the friction of
+  cloning on demand (`git clone --depth 1 --branch <tag>`, ideally the tag matching the
+  version actually pinned in `Cargo.lock`) is low enough that it shouldn't be skipped for
+  convenience.
+- **Not all entries in `CLAUDE.md`'s reference table are present at once** — they're
+  populated lazily, per task, not bulk-fetched speculatively (many are large: wasmtime,
+  envoy, h2o). Check `ls .reference/` before assuming one is or isn't already there.
+- **`/cleanup` must never remove anything under `.reference/`** — unlike a WSL scratch
+  clone or an isolated worktree (both genuinely one-shot, correctly swept by `/cleanup`'s
+  existing Pass 1), this is a deliberately **persistent, reusable cache** future sessions
+  are expected to read from — removing it just means the next session re-pays the clone
+  cost for no benefit. If `/cleanup`'s own instructions ever list generic "stray cloned
+  repos" as debris, `.reference/` is the explicit exception.
+- When a clone genuinely goes stale (conduit bumps the pinned version), it's fine to
+  `git fetch`+`checkout` the new tag in place rather than re-cloning — same convention
+  already used for the Pingora 0.9.0 check (2026-09-12 session log entry in `CLAUDE.md`).
+
 ## Build discipline
 
 - Run **`/build`** (delegates to `build-validator`) after any non-trivial change, and before
