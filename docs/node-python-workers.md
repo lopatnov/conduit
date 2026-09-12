@@ -1,11 +1,30 @@
 # Running Node.js / Python apps behind Conduit as a worker pool
 
+> **Status**: recipe, no dedicated Conduit feature required. The companion
+> supervisor library referenced below (working name only, **not final**) does
+> not exist yet as a published package — this document describes the pattern
+> and the code it would wrap. See [issue #290](https://github.com/lopatnov/conduit/issues/290)
+> (Node.js) and [issue #291](https://github.com/lopatnov/conduit/issues/291)
+> (Python) for the background discussion and open questions.
+
 ## The idea in one sentence
 
 Conduit does what a reverse proxy does best — TLS, routing, load balancing,
 rate limiting, health checking, retries — and hands the actual request
 handling off to a pool of Node.js or Python worker processes running your
-application code.
+application code. This is not a new Conduit feature: it's the same
+"nginx + Node.js" / "nginx + Gunicorn" pattern that's been standard practice
+for over a decade, made slightly more convenient with a small supervisor
+script that uses Conduit's existing dynamic-upstream Admin API.
+
+**What this recipe is _not_**: a CGI/Azure-Functions-style invoke-on-demand
+model, where a request causes a fresh process to start (or a scaled-to-zero
+one to wake) and nothing else runs in between. The workers here are a fixed
+pool of long-lived processes — always warm, sized for steady CPU-bound
+throughput, not for scale-to-zero or per-request cold starts. If what you
+want is the latter, that's a materially different, not-yet-designed problem;
+see [issue #290](https://github.com/lopatnov/conduit/issues/290)'s discussion
+for the distinction.
 
 ## What Conduit already does for you, today, with zero new code
 
@@ -50,7 +69,11 @@ POST /upstreams/weight  {"route": "/api", "target": "http://127.0.0.1:4001", "we
   process can call `/upstreams/add`, `/reload`, or other Admin API
   endpoints (the loopback bind keeps this off the network, but not away
   from other processes on the same machine). The examples below already
-  read it from `CONDUIT_ADMIN_TOKEN`/`$CONDUIT_ADMIN_TOKEN` when set.
+  read it from `CONDUIT_ADMIN_TOKEN`/`$CONDUIT_ADMIN_TOKEN` when set. The
+  bearer token is **local authorization, not transport confidentiality** —
+  it still travels as plain HTTP on loopback. Don't point the Admin API bind
+  at a non-loopback address with this token scheme as-is; that needs TLS in
+  front of it first, which isn't part of this recipe.
 - Registrations are **in-memory only** — `conduit reload` (re-reading the
   config file from disk, for _any_ config change, not just one related to
   this route) clears every dynamic registration, immediately, even if the
@@ -156,15 +179,24 @@ async function registerWithRetry(target, attempts = 5, delayMs = 1000) {
 }
 
 function spawnWorker(port) {
-  const worker = fork("./worker.js", [], {
-    env: { ...process.env, PORT: port },
-  });
+  // Workers don't need Admin API access -- strip the token from their env
+  // rather than let a compromised application process reuse it to call
+  // /upstreams/add, /reload, or anything else on the Admin API.
+  const workerEnv = { ...process.env, PORT: port };
+  delete workerEnv.CONDUIT_ADMIN_TOKEN;
+  const worker = fork("./worker.js", [], { env: workerEnv });
   const target = `http://127.0.0.1:${port}`;
   let reregisterTimer = null;
+  // Guards against a 'ready' registration that was already in flight when
+  // the worker exited -- without this, it can resolve *after* 'exit' has
+  // already deregistered the target, then start a periodic timer that
+  // re-adds a dead worker forever.
+  let alive = true;
 
   worker.on("message", async (msg) => {
     if (msg === "ready") {
       const ok = await registerWithRetry(target);
+      if (!alive) return; // exited while registration was in flight
       if (!ok) {
         console.error(
           `worker ${port}: giving up on registration, killing and respawning`,
@@ -190,6 +222,7 @@ function spawnWorker(port) {
   });
 
   worker.on("exit", async (code) => {
+    alive = false;
     if (reregisterTimer) clearInterval(reregisterTimer);
     await callAdmin("/upstreams/remove", { route: ROUTE, target }).catch(
       () => {},
@@ -283,6 +316,13 @@ def call_admin(path: str, body: dict) -> dict:
 
 
 def run_worker(port: int, ready: multiprocessing.synchronize.Event) -> None:
+    # Workers don't need Admin API access -- strip the token from this
+    # process's environment before your application code (or anything it
+    # imports) can read it and reuse it against the Admin API. Needed on
+    # both the "fork" start method (child inherits the parent's full
+    # os.environ) and "spawn" (the new interpreter still inherits the OS
+    # environment by default).
+    os.environ.pop("CONDUIT_ADMIN_TOKEN", None)
     from worker import serve  # your application's entry point
 
     serve(port, ready)
@@ -304,21 +344,30 @@ def register_with_retry(target: str, attempts: int = 5, delay_secs: float = 1.0)
     return False
 
 
+READY_TIMEOUT_SECS = 10.0
+
+
 def supervise(port: int) -> None:
     while True:
         ready = multiprocessing.Event()
         proc = multiprocessing.Process(target=run_worker, args=(port, ready))
         proc.start()
-        # Blocks until the worker has actually bound its socket — without this,
-        # /upstreams/add could register a port Conduit can route to before
-        # anything is listening on it. Note the tradeoff: ready.wait() has no
-        # timeout here, so a worker that fails *before* HTTPServer(...) ever
-        # succeeds (import error, port already in use, permission error) hangs
-        # this one slot forever instead of respawning — the other workers keep
-        # running unaffected. Add ready.wait(timeout=...) plus a log line and
-        # explicit proc.terminate() on timeout if that failure mode matters for
-        # your use case.
-        ready.wait()
+        # Blocks (bounded) until the worker has actually bound its socket --
+        # without this, /upstreams/add could register a port Conduit can
+        # route to before anything is listening on it. Bounded so a worker
+        # that fails *before* HTTPServer(...) ever succeeds (import error,
+        # port already in use, permission error) doesn't hang this slot
+        # forever -- the other workers keep running unaffected either way.
+        if not ready.wait(timeout=READY_TIMEOUT_SECS):
+            print(
+                f"worker {port}: not ready after {READY_TIMEOUT_SECS}s "
+                f"(exitcode={proc.exitcode}), killing and respawning",
+                flush=True,
+            )
+            proc.terminate()
+            proc.join()
+            time.sleep(0.5)
+            continue
         target = f"http://127.0.0.1:{port}"
         if not register_with_retry(target):
             print(f"worker {port}: giving up on registration, killing and respawning", flush=True)
@@ -340,7 +389,10 @@ def supervise(port: int) -> None:
                 except Exception as e:  # noqa: BLE001 - starter code, log and keep going
                     print(f"worker {port} periodic re-registration failed: {e}", flush=True)
 
-        call_admin("/upstreams/remove", {"route": ROUTE, "target": target})
+        try:
+            call_admin("/upstreams/remove", {"route": ROUTE, "target": target})
+        except Exception as e:  # noqa: BLE001 - starter code, log and keep respawning
+            print(f"worker {port} deregistration failed: {e}", flush=True)
         print(f"worker {port} exited, respawning...", flush=True)
         time.sleep(0.5)
 
