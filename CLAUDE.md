@@ -5,35 +5,50 @@
 
 ---
 
-## Локальные репозитории (<projects-root>\) — всегда читать источники
+## Локальные репозитории источников — читать перед доверием к changelog/памяти
+
+> **Изменено 2026-09-12**: старые копии на `<projects-root>\` (`C:\projects\...`) пропали
+> при переустановке ОС и не будут восстановлены как отдельные top-level клоны. Новый дом —
+> **`.reference/<name>` внутри самого репозитория conduit** (gitignored — см. `/.reference/`
+> в `.gitignore`, тот же паттерн уже использовался разово для `.reference/pingora` в сессии
+> 2026-09-06 при расследовании #157). Не все проекты из таблицы ниже присутствуют
+> одновременно — клонируются **по мере необходимости** во время работы над конкретной
+> задачей (`git clone --depth 1 --branch <tag>`, по возможности на тот же tag/версию, что
+> реально запинена в `Cargo.lock` — так правки в исходнике будут соответствовать
+> реальному поведению зависимости, а не произвольной более новой/старой версии).
+> **`/cleanup` не должен трогать `.reference/`** — это не разовый scratch для одной
+> проверки, а накопительный кэш источников, которым сессии пользуются повторно; см. также
+> `.claude/rules/index.md`. По состоянию на 2026-09-12 уже склонированы: `pingora` (tag
+> `0.9.0` — при апгрейде с текущего запиненного 0.8.1, см. сессионный лог ниже) и `tokio`
+> (tag `tokio-1.53.1`, совпадает с `Cargo.lock`).
 
 ### Rust (прямо применимо к Conduit)
-| Путь | Что даёт |
+| `.reference/<name>` | Что даёт |
 |------|---------|
-| `<projects-root>\pingora` | v0.8.1 — КРИТИЧНО. ProxyHttp, TlsSettings, CachePhase, все хуки. Main содержит незарелизенные фичи для 0.9.0 |
-| `<projects-root>\tokio` | Async runtime, spawn, channels |
-| `<projects-root>\tower` | Service/middleware traits (наш FilterChain построен похоже) |
-| `<projects-root>\http` | HeaderMap, Request/Response типы |
-| `<projects-root>\reqwest` | HTTP client (mirror, forwardauth, JWKS) |
-| `<projects-root>\wasmtime` | v46 WASM engine source |
-| `<projects-root>\linkerd2-proxy` | **Rust proxy** — `linkerd/http/retry/src/replay.rs` = ReplayBody (body buffering для retry) |
-| `<projects-root>\azure-sdk-for-rust` | Azure SDK — `azure_identity` (Managed Identity), `azure_security_keyvault` (Key Vault). Источник для `--features azure` |
+| `pingora` | КРИТИЧНО. ProxyHttp, TlsSettings, CachePhase, все хуки. Conduit запинен на 0.8.1 (`Cargo.toml`); 0.9.0 вышел 2026-09-09 — см. сессионный лог внизу файла за находки по факту чтения исходника (не changelog), включая реально unblocked backlog-пункты |
+| `tokio` | Async runtime, spawn, channels |
+| `tower` | Service/middleware traits (наш FilterChain построен похоже) |
+| `http` | HeaderMap, Request/Response типы |
+| `reqwest` | HTTP client (mirror, forwardauth, JWKS) |
+| `wasmtime` | WASM engine source — клонировать на tag, совпадающий с `Cargo.lock`'s `wasmtime` (менялся, см. Dependabot-лог) |
+| `linkerd2-proxy` | **Rust proxy** — `linkerd/http/retry/src/replay.rs` = ReplayBody (body buffering для retry) |
+| `azure-sdk-for-rust` | Azure SDK — `azure_identity` (Managed Identity), `azure_security_keyvault` (Key Vault). Источник для `--features azure` |
 
 ### Proxy/gateway (паттерны и идеи)
-| Путь | Язык | Что даёт |
+| `.reference/<name>` | Язык | Что даёт |
 |------|------|---------|
-| `<projects-root>\nginx` | C | mTLS, upstream TLS, buffering |
-| `<projects-root>\angie` | C | nginx fork (российский, активно развивается) — HTTP/3, ACME, статистика |
-| `<projects-root>\freenginx` | C | nginx fork от Igor Sysoev — community-driven, минималистичный |
-| `<projects-root>\h2o` | C | HTTP/2 server — mruby scripting, aggressive H2 optimizations, QUIC/H3 |
-| `<projects-root>\traefik` | Go | mTLS `ClientAuth`, middleware chain, OTLP |
-| `<projects-root>\envoy` | C++ | CircuitBreaker `resource_manager.h`, queue |
-| `<projects-root>\haproxy` | C | `src/queue.c` — request queue + backpressure |
-| `<projects-root>\apisix` | Lua/Go | Consumer model, 12-phase response pipeline |
-| `<projects-root>\oathkeeper` | Go | Authenticator→Authorizer→Mutator (наш ForwardAuth) |
-| `<projects-root>\caddy` | Go | Auto-TLS, Let's Encrypt patterns |
-| `<projects-root>\squid` | C | Cache patterns |
-| `<projects-root>\unit` | C | nginx Unit, модульная архитектура |
+| `nginx` | C | mTLS, upstream TLS, buffering |
+| `angie` | C | nginx fork (российский, активно развивается) — HTTP/3, ACME, статистика |
+| `freenginx` | C | nginx fork от Igor Sysoev — community-driven, минималистичный |
+| `h2o` | C | HTTP/2 server — mruby scripting, aggressive H2 optimizations, QUIC/H3 |
+| `traefik` | Go | mTLS `ClientAuth`, middleware chain, OTLP |
+| `envoy` | C++ | CircuitBreaker `resource_manager.h`, queue |
+| `haproxy` | C | `src/queue.c` — request queue + backpressure |
+| `apisix` | Lua/Go | Consumer model, 12-phase response pipeline |
+| `oathkeeper` | Go | Authenticator→Authorizer→Mutator (наш ForwardAuth) |
+| `caddy` | Go | Auto-TLS, Let's Encrypt patterns |
+| `squid` | C | Cache patterns |
+| `unit` | C | nginx Unit, модульная архитектура |
 
 ---
 
@@ -1489,3 +1504,85 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   actioned this session (worth a future `/retro` note if it recurs, per "GitHub access
   differs by execution context" — this may be a subagent-specific variant of that same
   environment-dependent-tool-access pattern, not yet confirmed as such).
+
+### Реализовано в сессии 2026-09-12 (часть 2 — Pingora 0.9.0 released: real findings from vendored source, not changelog)
+
+- User asked whether Pingora had a new version. It did — **0.9.0**, published to crates.io
+  2026-09-09 (conduit currently pins `0.8.1`). Rather than trust the GitHub release-notes
+  prose, cloned the actual `0.9.0` tag into `.reference/pingora` (see the new "Локальные
+  репозитории" convention above) and traced the specific claims against real source.
+- **Confirmed genuine unblocks** for backlog items previously marked `[🚫 BLOCKED]`/waiting
+  on 0.9: (1) **zero-downtime cert rotation** — `TlsSettings::set_cert_resolver(Arc<dyn
+  ResolvesServerCert>)` is real and wired into `build()`
+  (`pingora-core/src/listeners/tls/rustls/mod.rs`); a resolver backed by an `ArcSwap`-style
+  shared cert store would let `POST /certs/reload` hot-swap the live cert with no restart.
+  (2) **`upstreamTls.ca` per-peer CA** — `PeerOptions.ca: Option<Arc<CaType>>` genuinely
+  feeds a per-peer `RootCertStore` in the rustls connector
+  (`pingora-core/src/connectors/tls/rustls/mod.rs:142`), confirmed by reading the actual
+  connector code, not just the field's existence. (3) The previously-accepted-open
+  CVE-2025-53605 tracking note (protobuf via `prometheus@0.13.4` pulled unconditionally by
+  `pingora-core`) resolves automatically on upgrade — `pingora-prometheus` is now a
+  **dev-dependency only** of the top-level `pingora` crate; `pingora-core` doesn't depend
+  on `prometheus`/`protobuf` at all anymore. (4) `ServerConf.daemon_wait_for_ready` +
+  real SIGUSR1 signalling in `server/daemon.rs` confirmed implemented (graceful
+  process-handoff backlog item). (5) `tls.versions`/`tls.ciphers` (issue #189): partial —
+  `TlsSettings::build()` itself is unchanged (still hardcodes TLS1.2+1.3, no cipher
+  control), but the new `Acceptor::from_server_config(Arc<ServerConfig>)` lets conduit
+  build its own `rustls::ServerConfig` with real version/cipher control and bypass
+  `TlsSettings` entirely for that path — a real route, not yet proven end-to-end.
+- **Real breaking-change cost found by reading conduit's own source against the new API,
+  not by reading the changelog's "Potential Breaking Changes" list alone**:
+  `RequestHeader`/`ResponseHeader` lost `DerefMut` (kept `Deref`) — grepped the whole
+  codebase and found **5 real call sites** relying on it: `resp.headers.remove(&name)` /
+  `resp.headers.remove("transfer-encoding")` / `resp.headers.remove("age")` /
+  `resp.headers.remove(name.as_str())` in `src/filter/response_chain.rs`, and
+  `req.headers.remove(name.as_str())` in `src/proxy/request_phase.rs:2452`. Confirmed the
+  fix is a trivial 1:1 rename to the already-present `.remove_header(...)` method (same
+  `AsHeaderName`-generic signature) — and actually a **latent correctness fix**, since the
+  raw `.headers.remove()` deref path bypasses `pingora-http`'s internal
+  `header_name_map` bookkeeping that `remove_header()` maintains for header-case
+  preservation, while the direct deref route doesn't touch it.
+- **Second real behavioral finding**: 0.9 ships a new `PeerOptions.
+  http_upstream_request_policy: HttpUpstreamRequestPolicy` field, defaulting (via
+  `HttpUpstreamRequestPolicy::default()` = `standard()`) to stripping hop-by-hop headers
+  and a `WebSocketOnly` upgrade policy on every upstream request. Since this field didn't
+  exist in 0.8, conduit would silently inherit the new stricter default on upgrade (no
+  code change forced, but real behavior change) — traced the call sites
+  (`pingora-proxy/src/proxy_h1.rs`/`proxy_h2.rs`) to confirm it's genuinely
+  `PeerOptions`-driven, not a global switch. Looks compatible with conduit's existing
+  WebSocket feature (`WebSocketOnly` still explicitly allows real WebSocket upgrades) but
+  not yet verified against conduit's own WebSocket/Java-duplicate-chunked tests — a
+  `HttpUpstreamRequestPolicy::preserve()` escape hatch exists if it regresses anything.
+  mTLS API (`WebPkiClientVerifier`, `load_ca_file_into_store`, `set_client_cert_verifier`)
+  confirmed unchanged. MSRV bump to 1.85/1.88 is a non-issue (this environment/CI already
+  on rustc 1.98.0).
+- **Not yet done, deliberately** — this was scoped as a research pass, not an
+  implementation. Recommended to the user: route the actual upgrade through the normal
+  `business-analyst`/`architect` process given it touches TLS/cert-handling and upstream
+  header-forwarding (both security-sensitive), land the mechanical `.remove_header()` fix
+  + WebSocket-policy verification as its own PR first to prove the bump itself is safe,
+  then scope the newly-unblocked features (cert hot-swap, per-peer CA) as separate
+  follow-ups rather than bundling everything into one PR.
+- **`.reference/` convention established** (see "Локальные репозитории" above and
+  `.claude/rules/index.md`) — the old `<projects-root>\` top-level clones were lost to an
+  OS reinstall; `.reference/<name>` inside this repo (gitignored) is the new home,
+  populated on demand rather than bulk-fetched, and explicitly exempt from `/cleanup`
+  (it's a reusable cache, not one-shot scratch state). `pingora` (tag `0.9.0`) and `tokio`
+  (tag `tokio-1.53.1`, matching `Cargo.lock`) cloned this session as the first two entries.
+- **Migration-vs-main prioritization question, asked directly by the user**: given #114
+  (the Conduit 2.0 workspace migration) still has ~13 sub-issues remaining (Phase 4.5
+  k8s through Phase 6.4 lockstep publishing — confirmed by reading the epic's actual body,
+  not estimated), is it better to pause new `main` work until the migration finishes, or
+  keep doing both and pay a heavier eventual merge? Pointed out that the epic **already
+  has a recorded owner decision on this exact question** (2026-08-23, item 5 in #114's
+  body): interleave, don't choose one exclusively — bug/gap fixes route through `main`'s
+  ordinary process and get folded into #114 sub-issue selection, already implemented via
+  `feature-workspace-cycle.md` Step 2. Recommended keeping that policy (the sync log shows
+  dozens of clean, low-conflict merges under it already), with one refinement specific to
+  the Pingora findings above: TLS itself has no extraction sub-issue before the very last
+  phase (#147, Phase 6.3) — confirmed via the epic body's own text — so cert-rotation/
+  per-peer-CA work is safe to do on `main` now with low near-term conflict risk; the
+  per-peer-CA change also touches `upstream_peer()`/`health.rs`, which Phase 5.1/5.2
+  (`conduit-upstream`/`conduit-proxy-http`, #142/#143) are about to touch next — worth a
+  deliberate check during that extraction rather than a blind merge, not a reason to avoid
+  doing the feature work now.
