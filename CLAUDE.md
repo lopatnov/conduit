@@ -1416,3 +1416,76 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   router: CGI/FaaS-style invoke-on-demand execution" as a separate project (decision #28 — CGI
   is explicitly out of Conduit's own scope), with a `faasd` build-vs-adopt spike as the first
   concrete action item, not a bespoke design.
+
+### Реализовано в сессии 2026-09-12 (PR #386 tail closed — 4 more review rounds, merged)
+
+- PR #386 had been left open since 2026-09-07 (handoff note from an earlier session):
+  the author pushed a further "minor edits" commit (`4be5025`) after the round-6 PASS —
+  a Prettier-style reformat that incidentally **dropped two prose blocks** (the intro
+  status callout with #290/#291 links, and the "this is not an invoke-on-demand model"
+  disclaimer) with no reformatting reason to touch either, and left 5 CodeRabbit findings
+  unresolved. Since any commit after a PASS invalidates it (see `workflow.md` "Security
+  review is unconditional"), this needed a fresh review chain, not a rubber-stamp merge.
+- **`72db4eb`** — restored both dropped prose blocks verbatim, fixed all 5 outstanding
+  findings: documented the Admin API bearer token as local authorization (not transport
+  confidentiality), stripped `CONDUIT_ADMIN_TOKEN` from the Node.js/Python worker's own
+  env (`delete workerEnv.CONDUIT_ADMIN_TOKEN` / `os.environ.pop(...)` inside `run_worker`),
+  added a Node.js `alive` guard against a `'ready'` registration resolving after the
+  worker already exited (previously could start a periodic timer re-adding a dead target
+  forever), bounded the Python `ready.wait()` with a timeout instead of an unbounded
+  block, wrapped the Python deregistration call in try/except. `security-engineer` PASS
+  with 2 non-blocking findings.
+- **`006181d`** — folded in both non-blocking findings: the `alive` guard could skip
+  cleanup when a late registration *succeeded* after exit (fixed with a compensating
+  `/upstreams/remove`), and a doc caveat that stripping the token doesn't scrub
+  `/proc/<pid>/environ` on Linux (verified directly via WSL2, both `fork` and `spawn`
+  multiprocessing start methods). `security-engineer` PASS — but gitar-bot's own review
+  of this same commit immediately flagged a narrower residual race (the compensating
+  remove could deregister a *respawned* worker on the same port instead of the stale one).
+- **`1947e8d`** — closed gitar's finding with a per-port generation counter (only undo a
+  late registration if no respawn has happened yet for that port). `security-engineer`
+  PASS on the fix's own correctness — but flagged that a **fresh CodeRabbit review had
+  landed on this exact head one minute before the review started**, posting 3 new Major
+  findings: HOLD, correctly not rubber-stamped.
+- **`6663e08`** — fixed all 3 CodeRabbit findings for real rather than narrowing further:
+  (1) the generation-counter heuristic still allowed the compensating remove to be
+  dispatched-but-not-yet-landed when a fast respawn's own registration arrived first —
+  replaced entirely with genuine serialization (`spawnWorker`'s `'ready'` handling
+  extracted into `async function handleReady()`, its promise stored in `readySettled`,
+  and the exit handler's respawn `setTimeout` now `await`s it before calling
+  `spawnWorker(port)` again — so a respawn literally cannot start until any pending
+  cleanup for the same port has fully landed, by construction, not by heuristic);
+  (2) Python's `ADMIN_TOKEN` was a **module-level global** that `run_worker()`'s
+  `os.environ.pop()` never actually reached (a forked child inherits it as already-bound
+  memory; a spawned child re-binds it via module re-import before `run_worker` ever
+  runs) — fixed by reading `os.environ.get(...)` fresh inside `call_admin()` on every
+  call instead of caching it (CWE-522, real finding, not a false positive); (3) bare
+  `proc.terminate()` + unbounded `proc.join()` in two Python failure branches could hang
+  the whole supervisor loop if a worker ignored/was slow to handle SIGTERM — new
+  `terminate_and_reap()` helper bounds the wait before escalating to `proc.kill()`
+  (SIGKILL, not ignorable) and joining again. **Final `security-engineer` PASS** — all 4
+  scenarios (original bug, `006181d`'s late-success undo, the generation-counter gap,
+  and the fully-serialized fix) verified together in one test harness with negative
+  controls confirming each catches the regression it claims to guard against. Merged
+  `6663e08` via squash into `main` as `d75c6d5`.
+- **Testing discipline note, generalizing this repo's existing "negative controls need a
+  fixture that can actually fail" rule** (`conventions.md`/`testing/SKILL.md`, previously
+  written for hash/modulo/ring-index bugs specifically): the same discipline applied
+  cleanly to a pure async-ordering race with no hash/modulo involved at all — an isolated
+  harness reproducing the exact event interleaving (stubbed `fork`/`callAdmin` with
+  controllable network delays), run once with the fix and once with it reverted, at every
+  one of the 4 review rounds. Caught a real test-harness bug of its own along the way (a
+  manually-scheduled `emit("ready")` at a fixed absolute time raced ahead of when the
+  real code would have attached its listeners — an artifact of the test, not the code
+  under test — caught because the "PASS" result looked suspicious given the harness's own
+  assumptions, not because anything crashed).
+- **Process note**: this session picked up mid-review after a `security-engineer` subagent
+  call was cut off by the session's own usage-limit reset — resumed via `SendMessage` to
+  the same `agentId` (not a fresh spawn) per the established pattern, twice in a row for
+  the same underlying investigation across two different limit resets. Also: the final
+  review round's own agent noted its tool-grant description says it has no `gh` CLI, but
+  `gh` was in fact present and already authenticated in that particular sandbox instance —
+  used read-only for CI/merge-state checks, no credential-hunting involved. Not otherwise
+  actioned this session (worth a future `/retro` note if it recurs, per "GitHub access
+  differs by execution context" — this may be a subagent-specific variant of that same
+  environment-dependent-tool-access pattern, not yet confirmed as such).
