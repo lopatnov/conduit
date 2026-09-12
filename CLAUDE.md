@@ -108,7 +108,7 @@
 17. **LoadBalanceStrategy** — 8 вариантов (включая P2c). Веса статические. Для IpHash/CH — `hash_key: "ip" | "header:X-Key" | "url"`. P2C: splitmix64 RNG, O(1).
 18. **Динамические upstream'ы** — только в памяти. `UpstreamRegistry` отдельно от конфига. `conduit reload` сбрасывает overrides.
 19. **Upstream groups** — `groups` + `groupStrategy`. Phase 3.7b.
-20. **Filter Chain (CoR)** — `src/filter/chain.rs`. Новый guard = `impl RequestFilter` + push в chain. `service.rs` не трогать. `phase: "response"` scripts пропускаются в request-фазе (`MiddlewareGuard::apply`).
+20. **Filter Chain (CoR)** — `src/filter/chain.rs`. Новый guard = `impl RequestFilter` + push в chain. `service.rs` не трогать. `phase: "response"` scripts пропускаются в request-фазе (`MiddlewareGuard::apply`, теперь в `crates/conduit-middleware/src/guard.rs` — issue #114/#141; сборка chain'а остаётся здесь, в `src/filter/chain.rs`).
 20a. **Feature warnings** — `config::validate::feature_warnings()`. WASM (без `--features wasm`) + OTLP (без `--features otlp`) → `tracing::warn!` при старте и hot-reload. `/reload` response включает поле `warnings: [...]`.
 21. **Handler Registry** — трейт `LocalHandlerImpl` в `src/handler/mod.rs`. 7 handler structs реализованы. `dispatch_local` → `build_handler()` + `handle()`.
 22. **Routing Strategy** — трейт `LoadBalancingStrategy` в `src/proxy/strategy.rs`. Новая стратегия = новый struct + `from_config()` arm. `router.rs` не трогать.
@@ -119,14 +119,18 @@
     в request-фазе (+7 в response-фазе, см. пункт бэклога "WASM `on_response()` hook" — 4 из них те же
     самые имена, переиспользованные в обоих линкерах (`conduit_set_response_header`,
     `conduit_set_response_body`, `conduit_get_plugin_config`, `conduit_log`), так что суммарно
-    различных имён — 20), fail-open. `src/filter/wasm.rs`. Плагины экспортируют `on_request() -> i32`.
+    различных имён — 20), fail-open. `crates/conduit-plugin-wasm/src/wasm.rs` (issue #114/#141, было
+    `src/filter/wasm.rs` до извлечения крейта). Плагины экспортируют `on_request() -> i32`.
     Память должна быть экспортирована как `"memory"`, если плагин вызывает хоть одну host-функцию,
     читающую или пишущую в неё — плагин без единой такой функции (например, всегда возвращающий
     `on_request() -> 0`) работает и без `memory` экспорта; см. issue #381 про то, что при пропущенном
     экспорте это вырождается в молчаливую деградацию без единого warning в лог, а не в чёткую ошибку.
     (Число реюзов поправлено 2026-09-07 по итогам ревью PR #382 — было ошибочно "2"; счёт "12"→"17"
     поправлен в этой же сессии, Step 1c аудит, не совпадал ни с одной реальной точкой в истории фичи.)
-27. **MiddlewareGuard** — объединяет Rhai ("script") и WASM ("wasm") в `src/filter/chain.rs`. Порядок entries соблюдается. `ScriptGuard` = type alias для совместимости.
+27. **MiddlewareGuard** — объединяет Rhai ("script") и WASM ("wasm") в `crates/conduit-middleware/src/guard.rs`
+    (issue #114/#141, было `src/filter/chain.rs` до извлечения крейта; сборка chain'а сама по себе
+    остаётся в `src/filter/chain.rs` — правило "Filter Chain" ниже про это). Порядок entries
+    соблюдается. `ScriptGuard` = type alias для совместимости.
 28. **CGI** — вопрос "входит в Conduit или отдельный проект" остаётся **открытым**
     (пере-рассмотрено 2026-09-12, было "не входит, отдельный проект" — см. ниже);
     реализацию не начинать до снятия блокеров.

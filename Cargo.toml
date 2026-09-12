@@ -392,6 +392,19 @@ lopatnov-conduit-metrics.workspace           = true
 # `lopatnov-conduit-ipfilter`/`lopatnov-conduit-cors` above (`CLAUDE.md`
 # decision #31). Owns `RedirectRule` and the real `guard::RedirectGuard`.
 lopatnov-conduit-redirects.workspace         = true
+# Mandatory (like every other crate above), not `optional = true`:
+# `MiddlewareEntry` and the `sites[].middleware` field must stay parseable in
+# every build so `feature_warnings()` can keep warning on a
+# config-without-feature mismatch for `type: "wasm"` entries. Only the real
+# `guard::MiddlewareGuard`/`response::MiddlewareResponseFilter` dispatch arms
+# are gated, via `lopatnov-conduit-middleware/rhai` and
+# `lopatnov-conduit-middleware/wasm` in the `rhai`/`wasm` features below.
+# Unlike every extraction above, this crate itself depends on two *other* new
+# crates (`lopatnov-conduit-script-rhai`/`lopatnov-conduit-plugin-wasm`,
+# #114/#141) as its own optional path-dependencies — neither is a direct
+# root-crate dependency anymore, since this is the only crate that calls into
+# either.
+lopatnov-conduit-middleware.workspace        = true
 
 # --- Config & parsing ---
 serde.workspace      = true
@@ -481,7 +494,10 @@ hmac.workspace      = true
 sha2.workspace      = true
 
 # --- Rhai scripting middleware (feature: rhai) ---
-rhai = { workspace = true, optional = true }
+# `rhai` itself moved to `crates/conduit-script-rhai` (#114/#141) and is no
+# longer a direct root-crate dependency — only `lopatnov-conduit-middleware`
+# depends on it directly, gated behind that crate's own `rhai` feature (see
+# the [dependencies] comment on `lopatnov-conduit-middleware` below).
 
 # --- HTTP client (feature: jwt for JWKS via crates/conduit-auth-jwt,
 # forward-auth, mirroring) ---
@@ -508,7 +524,10 @@ schemars    = { workspace = true, optional = true }
 futures     = { workspace = true, optional = true }
 
 # --- WASM plugin middleware (optional feature) ---
-wasmtime = { workspace = true, optional = true }
+# `wasmtime` itself moved to `crates/conduit-plugin-wasm` (#114/#141) and is
+# no longer a direct root-crate dependency — only `lopatnov-conduit-middleware`
+# depends on it directly, gated behind that crate's own `wasm` feature (see
+# the [dependencies] comment on `lopatnov-conduit-middleware` below).
 
 # --- OpenTelemetry OTLP tracing (optional feature) ---
 # `opentelemetry` (base API) is still needed directly here for per-request
@@ -645,10 +664,17 @@ consumers = ["lopatnov-conduit-auth-consumers/consumers"]
 forward-auth = ["lopatnov-conduit-auth-forward/forward-auth"]
 
 # ── Scripting & plugins ────────────────────────────────────────────────────────
-# Rhai scripting middleware (type: "script" in middleware[]).
-rhai = ["dep:rhai"]
-# WASM plugin middleware (type: "wasm" in middleware[]).
-wasm = ["dep:wasmtime"]
+# Rhai scripting middleware (type: "script" in middleware[]). `MiddlewareEntry`
+# moved to `crates/conduit-middleware` (#114/#141) and is always a dependency
+# (see the [dependencies] comment above); this forwards into that crate's own
+# `rhai` feature, which pulls in `crates/conduit-script-rhai` as an optional
+# path-dependency and gates the real Rhai dispatch arm.
+rhai = ["lopatnov-conduit-middleware/rhai"]
+# WASM plugin middleware (type: "wasm" in middleware[]). Forwards into
+# `crates/conduit-middleware`'s own `wasm` feature, which pulls in
+# `crates/conduit-plugin-wasm` as an optional path-dependency and gates the
+# real WASM dispatch arm.
+wasm = ["lopatnov-conduit-middleware/wasm"]
 
 # ── Protocol extensions ────────────────────────────────────────────────────────
 # TCP passthrough proxy (type: "tcp" site config). `TcpConfig` moved to

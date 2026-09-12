@@ -333,3 +333,50 @@ the root `Cargo.toml` via `<field>.workspace = true`.
     trait directly (see `CONTRIBUTING.md`'s "conduit-core dependency is
     opt-in, not automatic"). Chain assembly stays in the root crate's
     `src/filter/chain.rs` (`CLAUDE.md` decision #20).
+
+- **`conduit-script-rhai`**, **`conduit-plugin-wasm`**, **`conduit-middleware`**
+  (Phase 4.4, [#141](https://github.com/lopatnov/conduit/issues/141)) — three
+  crates landing together because `conduit-middleware` depends on the other
+  two as its own optional path-dependencies (see `CONTRIBUTING.md`'s "A
+  config struct's implementation backends can live in their own crates" for
+  the general shape).
+  - **`conduit-script-rhai`** owns the Rhai scripting backend
+    (`run_script`/`run_script_response`, moved from `src/filter/script.rs`).
+    **No `[features]` table at all** — whether it's compiled in is controlled
+    entirely by `conduit-middleware`'s own `rhai` feature, not by anything
+    declared here. No dependency on `lopatnov-conduit-core` either — it
+    implements no chain trait, only plain functions taking/returning
+    primitives and outcome enums. `ScriptRequest`/`ScriptResponse`/
+    `ScriptResponseBuilder`/`ScriptUpstreamView` are `pub(crate)` — Rhai's
+    `register_type_with_name`/`register_fn` need `'static + Clone + Send +
+    Sync`, not `pub` visibility, and none has a caller outside this crate.
+  - **`conduit-plugin-wasm`** owns the WASM plugin backend
+    (`run_wasm`/`run_wasm_response`, moved from `src/filter/wasm.rs`, plugin
+    ABI documented in this crate's own `src/lib.rs`). Same shape as
+    `conduit-script-rhai` — no `[features]` table, no `conduit-core`
+    dependency; `get_or_compile` (the WASM module cache lookup) demoted from
+    `pub(crate)` to a private `fn` during the move (no caller outside its own
+    module).
+  - **`conduit-middleware`** owns `MiddlewareEntry` (the `sites[].middleware[]`
+    config struct, `src/config.rs`, always compiled — same config-always-on
+    rationale as `conduit-faults`/`conduit-otlp`) and the real dispatchers:
+    `guard::MiddlewareGuard` (request phase, moved from `src/filter/chain.rs`)
+    and `response::MiddlewareResponseFilter` (response phase, moved from
+    `src/filter/response_chain.rs`). Both dispatch on `entry.r#type` with a
+    closed `match` — deliberately **not** a `MiddlewarePlugin` trait/registry
+    (issue #141's own original body described one that was never built; see
+    issue #392 for that as a separate, later design question). Its own
+    `rhai`/`wasm` Cargo features pull in `conduit-script-rhai`/
+    `conduit-plugin-wasm` as optional path-dependencies and gate the
+    corresponding dispatch arms — the root crate's `rhai`/`wasm` features
+    simply forward into these. `tracing`/`serde_json`/`bytes`/`tokio` are
+    mandatory dependencies here, not gated behind `any(rhai, wasm)`, because
+    the "feature disabled: warn" arm in `guard::MiddlewareGuard::apply` is
+    live precisely when `wasm` is OFF, and `MiddlewareEntry.config:
+    Option<serde_json::Value>` is always compiled. `base64` is gated behind
+    the `wasm` feature only (needed by the WASM response-body-override header
+    hack in `response::apply_response_mutations` — a real, separately-filed
+    pre-existing bug, issue #391, moved verbatim and not fixed as part of
+    this extraction). Neither `conduit-script-rhai` nor `conduit-plugin-wasm`
+    is a direct root-crate dependency anymore — `conduit-middleware` is the
+    only crate that calls into either.

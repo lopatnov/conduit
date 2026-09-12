@@ -87,8 +87,12 @@ src/
 │   ├── rate_limit_redis.rs  Redis fixed-window counter with fallback
 │   ├── redirects.rs     path redirects with :param captures
 │   ├── response_time.rs X-Response-Time header
-│   ├── script.rs        Rhai scripting middleware (Phase 4)
 │   └── security_headers.rs  HSTS, CSP, X-Frame-Options, etc.
+│   (Rhai scripting middleware moved to crates/conduit-script-rhai, WASM
+│    plugin middleware to crates/conduit-plugin-wasm, and the
+│    MiddlewareGuard/MiddlewareResponseFilter dispatch to
+│    crates/conduit-middleware — issue #114/#141; formerly filter/script.rs
+│    and filter/wasm.rs here)
 ├── admin/
 │   └── api.rs           Admin API (Axum) — status, reload, upstream management
 ├── upload/
@@ -165,6 +169,24 @@ Two functions can share a name and *look* like duplication candidates without be
 duplicates — e.g. `conduit_core::filter::path::path_matches` (exact-only fallback) vs.
 `src/proxy/cache.rs`'s private `path_matches` (prefix-matches even without `/**`). Check
 behavior, not just the signature, before "deduplicating" anything found this way.
+
+### A config struct's implementation backends can live in their own crates
+
+`conduit-middleware` (issue #114/#141) is the first extraction where a config struct
+(`MiddlewareEntry`) and its feature-gated implementation backends land in **three**
+different crates rather than one: `conduit-middleware` owns `MiddlewareEntry` plus the
+dispatcher (`MiddlewareGuard`/`MiddlewareResponseFilter`, moved verbatim — still a closed
+`match` on `entry.r#type`, not a new plugin trait/registry), while the two backends it
+dispatches to (`run_script`/`run_script_response` for Rhai, `run_wasm`/`run_wasm_response`
+for WASM) live in their own sibling crates (`conduit-script-rhai`, `conduit-plugin-wasm`)
+and are pulled in as `conduit-middleware`'s *own* optional path-dependencies, gated behind
+its own `rhai`/`wasm` Cargo features. The root crate's `rhai`/`wasm` features simply
+forward into `conduit-middleware`'s features — this is the only crate that depends on
+either backend crate directly. Worth this shape specifically when a dispatcher's backends
+are large/independent enough to be their own crates (bringing their own dependency trees —
+`wasmtime`, `rhai` — that nothing else in the workspace needs) but the dispatcher itself
+still needs to be always-compiled for the same config-parses-everywhere reason every other
+`MiddlewareEntry`-shaped struct is (`CLAUDE.md` decision-#20a-style `feature_warnings()`).
 
 ---
 

@@ -2930,6 +2930,7 @@ dependencies = [
  "lopatnov-conduit-ipfilter",
  "lopatnov-conduit-limits",
  "lopatnov-conduit-metrics",
+ "lopatnov-conduit-middleware",
  "lopatnov-conduit-otlp",
  "lopatnov-conduit-ratelimit",
  "lopatnov-conduit-redirects",
@@ -2948,7 +2949,6 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest",
- "rhai",
  "rsa",
  "rustls",
  "rustls-pemfile",
@@ -2967,7 +2967,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "wasmtime",
  "wat",
  "x509-parser 0.18.1",
 ]
