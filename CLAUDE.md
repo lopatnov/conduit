@@ -5,35 +5,50 @@
 
 ---
 
-## Локальные репозитории (<projects-root>\) — всегда читать источники
+## Локальные репозитории источников — читать перед доверием к changelog/памяти
+
+> **Изменено 2026-09-12**: старые копии на `<projects-root>\` (`C:\projects\...`) пропали
+> при переустановке ОС и не будут восстановлены как отдельные top-level клоны. Новый дом —
+> **`.reference/<name>` внутри самого репозитория conduit** (gitignored — см. `/.reference/`
+> в `.gitignore`, тот же паттерн уже использовался разово для `.reference/pingora` в сессии
+> 2026-09-06 при расследовании #157). Не все проекты из таблицы ниже присутствуют
+> одновременно — клонируются **по мере необходимости** во время работы над конкретной
+> задачей (`git clone --depth 1 --branch <tag>`, по возможности на тот же tag/версию, что
+> реально запинена в `Cargo.lock` — так правки в исходнике будут соответствовать
+> реальному поведению зависимости, а не произвольной более новой/старой версии).
+> **`/cleanup` не должен трогать `.reference/`** — это не разовый scratch для одной
+> проверки, а накопительный кэш источников, которым сессии пользуются повторно; см. также
+> `.claude/rules/index.md`. По состоянию на 2026-09-12 уже склонированы: `pingora` (tag
+> `0.9.0` — при апгрейде с текущего запиненного 0.8.1, см. сессионный лог ниже) и `tokio`
+> (tag `tokio-1.53.1`, совпадает с `Cargo.lock`).
 
 ### Rust (прямо применимо к Conduit)
-| Путь | Что даёт |
+| `.reference/<name>` | Что даёт |
 |------|---------|
-| `<projects-root>\pingora` | v0.8.1 — КРИТИЧНО. ProxyHttp, TlsSettings, CachePhase, все хуки. Main содержит незарелизенные фичи для 0.9.0 |
-| `<projects-root>\tokio` | Async runtime, spawn, channels |
-| `<projects-root>\tower` | Service/middleware traits (наш FilterChain построен похоже) |
-| `<projects-root>\http` | HeaderMap, Request/Response типы |
-| `<projects-root>\reqwest` | HTTP client (mirror, forwardauth, JWKS) |
-| `<projects-root>\wasmtime` | v46 WASM engine source |
-| `<projects-root>\linkerd2-proxy` | **Rust proxy** — `linkerd/http/retry/src/replay.rs` = ReplayBody (body buffering для retry) |
-| `<projects-root>\azure-sdk-for-rust` | Azure SDK — `azure_identity` (Managed Identity), `azure_security_keyvault` (Key Vault). Источник для `--features azure` |
+| `pingora` | КРИТИЧНО. ProxyHttp, TlsSettings, CachePhase, все хуки. Conduit запинен на 0.8.1 (`Cargo.toml`); 0.9.0 вышел 2026-09-09 — см. сессионный лог внизу файла за находки по факту чтения исходника (не changelog), включая реально unblocked backlog-пункты |
+| `tokio` | Async runtime, spawn, channels |
+| `tower` | Service/middleware traits (наш FilterChain построен похоже) |
+| `http` | HeaderMap, Request/Response типы |
+| `reqwest` | HTTP client (mirror, forwardauth, JWKS) |
+| `wasmtime` | WASM engine source — клонировать на tag, совпадающий с `Cargo.lock`'s `wasmtime` (менялся, см. Dependabot-лог) |
+| `linkerd2-proxy` | **Rust proxy** — `linkerd/http/retry/src/replay.rs` = ReplayBody (body buffering для retry) |
+| `azure-sdk-for-rust` | Azure SDK — `azure_identity` (Managed Identity), `azure_security_keyvault` (Key Vault). Источник для `--features azure` |
 
 ### Proxy/gateway (паттерны и идеи)
-| Путь | Язык | Что даёт |
+| `.reference/<name>` | Язык | Что даёт |
 |------|------|---------|
-| `<projects-root>\nginx` | C | mTLS, upstream TLS, buffering |
-| `<projects-root>\angie` | C | nginx fork (российский, активно развивается) — HTTP/3, ACME, статистика |
-| `<projects-root>\freenginx` | C | nginx fork от Igor Sysoev — community-driven, минималистичный |
-| `<projects-root>\h2o` | C | HTTP/2 server — mruby scripting, aggressive H2 optimizations, QUIC/H3 |
-| `<projects-root>\traefik` | Go | mTLS `ClientAuth`, middleware chain, OTLP |
-| `<projects-root>\envoy` | C++ | CircuitBreaker `resource_manager.h`, queue |
-| `<projects-root>\haproxy` | C | `src/queue.c` — request queue + backpressure |
-| `<projects-root>\apisix` | Lua/Go | Consumer model, 12-phase response pipeline |
-| `<projects-root>\oathkeeper` | Go | Authenticator→Authorizer→Mutator (наш ForwardAuth) |
-| `<projects-root>\caddy` | Go | Auto-TLS, Let's Encrypt patterns |
-| `<projects-root>\squid` | C | Cache patterns |
-| `<projects-root>\unit` | C | nginx Unit, модульная архитектура |
+| `nginx` | C | mTLS, upstream TLS, buffering |
+| `angie` | C | nginx fork (российский, активно развивается) — HTTP/3, ACME, статистика |
+| `freenginx` | C | nginx fork от Igor Sysoev — community-driven, минималистичный |
+| `h2o` | C | HTTP/2 server — mruby scripting, aggressive H2 optimizations, QUIC/H3 |
+| `traefik` | Go | mTLS `ClientAuth`, middleware chain, OTLP |
+| `envoy` | C++ | CircuitBreaker `resource_manager.h`, queue |
+| `haproxy` | C | `src/queue.c` — request queue + backpressure |
+| `apisix` | Lua/Go | Consumer model, 12-phase response pipeline |
+| `oathkeeper` | Go | Authenticator→Authorizer→Mutator (наш ForwardAuth) |
+| `caddy` | Go | Auto-TLS, Let's Encrypt patterns |
+| `squid` | C | Cache patterns |
+| `unit` | C | nginx Unit, модульная архитектура |
 
 ---
 
@@ -3129,3 +3144,235 @@ recurrence of this specific (now-disproven) mechanism.
 |---|---|---|---|---|
 | 2026-08-28 ~22:10 UTC (handoff completion, prompted by the user directly) | `session_01DmUkKXPvj2xAEvRdCTux3G` (GitHub-tool-less, never ran the cycle) | `session_01WhHVM9QyJDcadMX6fQtdXd` | (continuation, not a new rotation — this is the user creating the replacement the previous row asked for) | User created this session directly (via the desktop app, not `create_session`) specifically to become the cycle's new home, confirming the pattern from the row above: `mcp__github__get_me` succeeds immediately here, `ListConnectors`/repo-scope tools all present. This session repointed the Routine itself — created `trig_01Ehd6ceyaWxB6aytQwuydsp` (identical `cron_expression` `0 1 * * *` and `prompt` `/feature-workspace-cycle`) with `persistent_session_id` set to itself, then deleted the stranded `trig_01HGENoJ5nioWvWzbtCBL9Js`. **One caveat surfaced by `create_trigger`'s own response**: it warned "this trigger stores no MCP connectors, so the sessions it fires will run without connector tools" — worth double-checking at the very next firing (2026-08-29 01:0x UTC) that `mcp__github__*` tools are still present, since the warning's wording doesn't distinguish self-bind/persistent-session firings (which just resume this already-configured session — expected fine) from the fresh-session case the warning seems aimed at. If the next firing *does* come up without GitHub tools, that would mean even a same-session Routine firing can drop them, which is a materially different (and worse) finding than anything logged in the rows above — flag it loudly if so. No code/process change was needed beyond what `session-rotate.md` already had (see `c6804b7`) — this row is purely confirming the fix works end-to-end. |
 
+### Реализовано в сессии 2026-09-07 (PR #386 — Node.js/Python worker-pool recipe, doc-only, `main`)
+
+- **[PR #386](https://github.com/lopatnov/conduit/pull/386)
+  `docs: add Node.js/Python worker-pool recipe via dynamic upstream API`**
+  (branch `docs/node-python-worker-recipe` → `main`, not the migration branch — this is
+  ordinary doc work, not #114) — new `docs/node-python-workers.md` recipe covering issues
+  [#290](https://github.com/lopatnov/conduit/issues/290) (Node.js) and
+  [#291](https://github.com/lopatnov/conduit/issues/291) (Python): run a Node.js/Python app
+  behind Conduit as a fixed pool of worker processes, wired up via the existing dynamic-
+  upstream Admin API (`POST /upstreams/add|remove|weight`) rather than any new Conduit
+  feature. Explicitly scoped as *not* a CGI/Azure-Functions-style invoke-on-demand model —
+  see the business-analyst reconciliation below for why that's a separate, harder problem.
+  Went through 6 rounds of `security-engineer` review (mandatory unconditional gate) across
+  several real bugs found empirically, not just by reading the doc's own code blocks:
+  - **Config shape bug**: the doc's first draft used the flat `{ port, proxy }` shorthand,
+    under which `global.admin` silently doesn't exist at all (`ConfigFile::Single` has no
+    `global` field — see decision #4) — the Admin API never started. Fixed by switching every
+    example to the `{ global: { admin: {...} }, sites: [...] }` shape. Found only by actually
+    building and running `conduit` against the doc's own config, not by reading the code.
+  - **`least-conn` demo bug**: round-robin was swapped in after 20 concurrent curl requests
+    against `least-conn` all landed on the same worker (near-instant synthetic responses make
+    its tie-breaking consistently favor one peer) — confusing for a first-run demo, not a
+    Conduit bug.
+  - **Node `worker.js` missing loopback bind** (security-engineer round 1 HOLD) —
+    `.listen(port, ...)` defaulted to all interfaces; fixed to `.listen(port, '127.0.0.1', ...)`.
+  - **Python startup race** (gitar-bot, round 2) — `pool.py` called `/upstreams/add` before
+    confirming the worker's `HTTPServer` was actually bound. Fixed with a
+    `multiprocessing.Event` readiness handshake (`worker.py` constructs `HTTPServer` first,
+    which binds synchronously, then sets the event, then calls `serve_forever()`).
+  - **`ready.wait()` no-timeout deadlock** (security-engineer round 3, reproduced not just
+    theorized) — a worker crashing before `HTTPServer()` succeeds hangs that slot forever;
+    documented as an inline caveat rather than adding full timeout+retry machinery, matching
+    the reviewer's own suggested minimal remedy.
+  - **Round 4 fixes** (4 unresolved CodeRabbit/gitar threads, found via GraphQL
+    `reviewThreads`, since replying alone doesn't satisfy this repo's
+    `required_review_thread_resolution: true` ruleset — see the v1.4.0 release entry above
+    for where this convention was first established): MD040 fence-language label; reload-
+    reconciliation (the doc wrongly claimed a restarted supervisor re-registering on its own
+    startup made `conduit reload` clearing all in-memory registrations "a non-issue in
+    practice" — wrong, since `reload` fires on *any* config change while the supervisor
+    process itself keeps running untouched; fixed with a 30s periodic re-`/upstreams/add`
+    timer in both examples, relying on that endpoint's documented idempotency); failed-
+    first-registration handling (bounded retry+backoff, kill+respawn on exhaustion); explicit
+    `global.admin.token` recommendation for any host running other processes.
+  - **Round 5 HOLD → round 6 PASS**: security-engineer found the Node.js `callAdmin` never
+    checked `res.statusCode` — a 401 (missing/wrong admin token) returns an empty body, and
+    `JSON.parse('')` throws inside an `'end'` event handler, which is *not* caught by the
+    enclosing Promise and becomes an uncaught exception crashing the whole `pool.js`
+    supervisor (not just the one misconfigured worker). Directly undercut this same PR's own
+    round-4 "set `global.admin.token`" advice. Reproduced the exact crash empirically against
+    a real `conduit` binary with the token configured but not supplied by the client
+    (`SyntaxError: Unexpected end of JSON input`, uncaught, process exit 1), then verified the
+    fix (check `res.statusCode`, reject before `JSON.parse` on non-2xx) instead retries 5x and
+    kills+respawns the worker with the supervisor staying alive throughout — both the buggy
+    and fixed behavior confirmed live, not just read. The Python example was already correct
+    here (`urllib` raises `HTTPError` on any non-2xx before `json.loads` runs).
+  - All 8 review threads replied-then-resolved via GraphQL `resolveReviewThread` (not just
+    replies) before merge, per the same convention as the v1.4.0 release entry.
+- **Business-analyst reconciliation of #290/#291 against this recipe** (pass #2, run
+  specifically because the user's original intent for #290/#291 turned out to be a true
+  CGI/Azure-Functions-style invoke-on-demand model — message-passing, warm/cold process
+  lifecycle, "nothing hangs around besides the server" — not the fixed worker-pool pattern
+  PR #386 actually builds): confirmed the shipped recipe is still worth merging as-is (it
+  answers a real, different need — CPU-parallelism for a steady-throughput Node/Python app
+  behind Conduit's own routing/LB/health/circuit-breaker machinery, "nginx + Node.js" made
+  slightly more convenient), but does **not** answer the invoke-on-demand half of #290/#291's
+  original scope. Conduit itself needs zero new code for the fixed-pool half — confirmed
+  against prior-art research into OpenFaaS `faasd` (single-binary, containerd+CNI, no k8s)
+  and `of-watchdog` (per-function HTTP sidecar doing CGI-style translation), plus Knative's
+  Activator component (holds connections open during cold-start scale-from-zero — a plain
+  reverse proxy is *not* inherently cold-start-aware, a caveat worth remembering if
+  invoke-on-demand is ever attempted). Recommended next steps, **not yet done**: (1) re-scope
+  #290/#291 with a banner splitting the two conflated motivations (CPU-parallelism, resolved
+  by PR #386; true invoke-on-demand FaaS, unaddressed); (2) file a new issue for "Function
+  router: CGI/FaaS-style invoke-on-demand execution" as a separate project (decision #28 — CGI
+  is explicitly out of Conduit's own scope), with a `faasd` build-vs-adopt spike as the first
+  concrete action item, not a bespoke design.
+
+### Реализовано в сессии 2026-09-12 (PR #386 tail closed — 4 more review rounds, merged)
+
+- PR #386 had been left open since 2026-09-07 (handoff note from an earlier session):
+  the author pushed a further "minor edits" commit (`4be5025`) after the round-6 PASS —
+  a Prettier-style reformat that incidentally **dropped two prose blocks** (the intro
+  status callout with #290/#291 links, and the "this is not an invoke-on-demand model"
+  disclaimer) with no reformatting reason to touch either, and left 5 CodeRabbit findings
+  unresolved. Since any commit after a PASS invalidates it (see `workflow.md` "Security
+  review is unconditional"), this needed a fresh review chain, not a rubber-stamp merge.
+- **`72db4eb`** — restored both dropped prose blocks verbatim, fixed all 5 outstanding
+  findings: documented the Admin API bearer token as local authorization (not transport
+  confidentiality), stripped `CONDUIT_ADMIN_TOKEN` from the Node.js/Python worker's own
+  env (`delete workerEnv.CONDUIT_ADMIN_TOKEN` / `os.environ.pop(...)` inside `run_worker`),
+  added a Node.js `alive` guard against a `'ready'` registration resolving after the
+  worker already exited (previously could start a periodic timer re-adding a dead target
+  forever), bounded the Python `ready.wait()` with a timeout instead of an unbounded
+  block, wrapped the Python deregistration call in try/except. `security-engineer` PASS
+  with 2 non-blocking findings.
+- **`006181d`** — folded in both non-blocking findings: the `alive` guard could skip
+  cleanup when a late registration *succeeded* after exit (fixed with a compensating
+  `/upstreams/remove`), and a doc caveat that stripping the token doesn't scrub
+  `/proc/<pid>/environ` on Linux (verified directly via WSL2, both `fork` and `spawn`
+  multiprocessing start methods). `security-engineer` PASS — but gitar-bot's own review
+  of this same commit immediately flagged a narrower residual race (the compensating
+  remove could deregister a *respawned* worker on the same port instead of the stale one).
+- **`1947e8d`** — closed gitar's finding with a per-port generation counter (only undo a
+  late registration if no respawn has happened yet for that port). `security-engineer`
+  PASS on the fix's own correctness — but flagged that a **fresh CodeRabbit review had
+  landed on this exact head one minute before the review started**, posting 3 new Major
+  findings: HOLD, correctly not rubber-stamped.
+- **`6663e08`** — fixed all 3 CodeRabbit findings for real rather than narrowing further:
+  (1) the generation-counter heuristic still allowed the compensating remove to be
+  dispatched-but-not-yet-landed when a fast respawn's own registration arrived first —
+  replaced entirely with genuine serialization (`spawnWorker`'s `'ready'` handling
+  extracted into `async function handleReady()`, its promise stored in `readySettled`,
+  and the exit handler's respawn `setTimeout` now `await`s it before calling
+  `spawnWorker(port)` again — so a respawn literally cannot start until any pending
+  cleanup for the same port has fully landed, by construction, not by heuristic);
+  (2) Python's `ADMIN_TOKEN` was a **module-level global** that `run_worker()`'s
+  `os.environ.pop()` never actually reached (a forked child inherits it as already-bound
+  memory; a spawned child re-binds it via module re-import before `run_worker` ever
+  runs) — fixed by reading `os.environ.get(...)` fresh inside `call_admin()` on every
+  call instead of caching it (CWE-522, real finding, not a false positive); (3) bare
+  `proc.terminate()` + unbounded `proc.join()` in two Python failure branches could hang
+  the whole supervisor loop if a worker ignored/was slow to handle SIGTERM — new
+  `terminate_and_reap()` helper bounds the wait before escalating to `proc.kill()`
+  (SIGKILL, not ignorable) and joining again. **Final `security-engineer` PASS** — all 4
+  scenarios (original bug, `006181d`'s late-success undo, the generation-counter gap,
+  and the fully-serialized fix) verified together in one test harness with negative
+  controls confirming each catches the regression it claims to guard against. Merged
+  `6663e08` via squash into `main` as `d75c6d5`.
+- **Testing discipline note, generalizing this repo's existing "negative controls need a
+  fixture that can actually fail" rule** (`conventions.md`/`testing/SKILL.md`, previously
+  written for hash/modulo/ring-index bugs specifically): the same discipline applied
+  cleanly to a pure async-ordering race with no hash/modulo involved at all — an isolated
+  harness reproducing the exact event interleaving (stubbed `fork`/`callAdmin` with
+  controllable network delays), run once with the fix and once with it reverted, at every
+  one of the 4 review rounds. Caught a real test-harness bug of its own along the way (a
+  manually-scheduled `emit("ready")` at a fixed absolute time raced ahead of when the
+  real code would have attached its listeners — an artifact of the test, not the code
+  under test — caught because the "PASS" result looked suspicious given the harness's own
+  assumptions, not because anything crashed).
+- **Process note**: this session picked up mid-review after a `security-engineer` subagent
+  call was cut off by the session's own usage-limit reset — resumed via `SendMessage` to
+  the same `agentId` (not a fresh spawn) per the established pattern, twice in a row for
+  the same underlying investigation across two different limit resets. Also: the final
+  review round's own agent noted its tool-grant description says it has no `gh` CLI, but
+  `gh` was in fact present and already authenticated in that particular sandbox instance —
+  used read-only for CI/merge-state checks, no credential-hunting involved. Not otherwise
+  actioned this session (worth a future `/retro` note if it recurs, per "GitHub access
+  differs by execution context" — this may be a subagent-specific variant of that same
+  environment-dependent-tool-access pattern, not yet confirmed as such).
+
+### Реализовано в сессии 2026-09-12 (часть 2 — Pingora 0.9.0 released: real findings from vendored source, not changelog)
+
+- User asked whether Pingora had a new version. It did — **0.9.0**, published to crates.io
+  2026-09-09 (conduit currently pins `0.8.1`). Rather than trust the GitHub release-notes
+  prose, cloned the actual `0.9.0` tag into `.reference/pingora` (see the new "Локальные
+  репозитории" convention above) and traced the specific claims against real source.
+- **Confirmed genuine unblocks** for backlog items previously marked `[🚫 BLOCKED]`/waiting
+  on 0.9: (1) **zero-downtime cert rotation** — `TlsSettings::set_cert_resolver(Arc<dyn
+  ResolvesServerCert>)` is real and wired into `build()`
+  (`pingora-core/src/listeners/tls/rustls/mod.rs`); a resolver backed by an `ArcSwap`-style
+  shared cert store would let `POST /certs/reload` hot-swap the live cert with no restart.
+  (2) **`upstreamTls.ca` per-peer CA** — `PeerOptions.ca: Option<Arc<CaType>>` genuinely
+  feeds a per-peer `RootCertStore` in the rustls connector
+  (`pingora-core/src/connectors/tls/rustls/mod.rs:142`), confirmed by reading the actual
+  connector code, not just the field's existence. (3) The previously-accepted-open
+  CVE-2025-53605 tracking note (protobuf via `prometheus@0.13.4` pulled unconditionally by
+  `pingora-core`) resolves automatically on upgrade — `pingora-prometheus` is now a
+  **dev-dependency only** of the top-level `pingora` crate; `pingora-core` doesn't depend
+  on `prometheus`/`protobuf` at all anymore. (4) `ServerConf.daemon_wait_for_ready` +
+  real SIGUSR1 signalling in `server/daemon.rs` confirmed implemented (graceful
+  process-handoff backlog item). (5) `tls.versions`/`tls.ciphers` (issue #189): partial —
+  `TlsSettings::build()` itself is unchanged (still hardcodes TLS1.2+1.3, no cipher
+  control), but the new `Acceptor::from_server_config(Arc<ServerConfig>)` lets conduit
+  build its own `rustls::ServerConfig` with real version/cipher control and bypass
+  `TlsSettings` entirely for that path — a real route, not yet proven end-to-end.
+- **Real breaking-change cost found by reading conduit's own source against the new API,
+  not by reading the changelog's "Potential Breaking Changes" list alone**:
+  `RequestHeader`/`ResponseHeader` lost `DerefMut` (kept `Deref`) — grepped the whole
+  codebase and found **5 real call sites** relying on it: `resp.headers.remove(&name)` /
+  `resp.headers.remove("transfer-encoding")` / `resp.headers.remove("age")` /
+  `resp.headers.remove(name.as_str())` in `src/filter/response_chain.rs`, and
+  `req.headers.remove(name.as_str())` in `src/proxy/request_phase.rs:2452`. Confirmed the
+  fix is a trivial 1:1 rename to the already-present `.remove_header(...)` method (same
+  `AsHeaderName`-generic signature) — and actually a **latent correctness fix**, since the
+  raw `.headers.remove()` deref path bypasses `pingora-http`'s internal
+  `header_name_map` bookkeeping that `remove_header()` maintains for header-case
+  preservation, while the direct deref route doesn't touch it.
+- **Second real behavioral finding**: 0.9 ships a new `PeerOptions.
+  http_upstream_request_policy: HttpUpstreamRequestPolicy` field, defaulting (via
+  `HttpUpstreamRequestPolicy::default()` = `standard()`) to stripping hop-by-hop headers
+  and a `WebSocketOnly` upgrade policy on every upstream request. Since this field didn't
+  exist in 0.8, conduit would silently inherit the new stricter default on upgrade (no
+  code change forced, but real behavior change) — traced the call sites
+  (`pingora-proxy/src/proxy_h1.rs`/`proxy_h2.rs`) to confirm it's genuinely
+  `PeerOptions`-driven, not a global switch. Looks compatible with conduit's existing
+  WebSocket feature (`WebSocketOnly` still explicitly allows real WebSocket upgrades) but
+  not yet verified against conduit's own WebSocket/Java-duplicate-chunked tests — a
+  `HttpUpstreamRequestPolicy::preserve()` escape hatch exists if it regresses anything.
+  mTLS API (`WebPkiClientVerifier`, `load_ca_file_into_store`, `set_client_cert_verifier`)
+  confirmed unchanged. MSRV bump to 1.85/1.88 is a non-issue (this environment/CI already
+  on rustc 1.98.0).
+- **Not yet done, deliberately** — this was scoped as a research pass, not an
+  implementation. Recommended to the user: route the actual upgrade through the normal
+  `business-analyst`/`architect` process given it touches TLS/cert-handling and upstream
+  header-forwarding (both security-sensitive), land the mechanical `.remove_header()` fix
+  + WebSocket-policy verification as its own PR first to prove the bump itself is safe,
+  then scope the newly-unblocked features (cert hot-swap, per-peer CA) as separate
+  follow-ups rather than bundling everything into one PR.
+- **`.reference/` convention established** (see "Локальные репозитории" above and
+  `.claude/rules/index.md`) — the old `<projects-root>\` top-level clones were lost to an
+  OS reinstall; `.reference/<name>` inside this repo (gitignored) is the new home,
+  populated on demand rather than bulk-fetched, and explicitly exempt from `/cleanup`
+  (it's a reusable cache, not one-shot scratch state). `pingora` (tag `0.9.0`) and `tokio`
+  (tag `tokio-1.53.1`, matching `Cargo.lock`) cloned this session as the first two entries.
+- **Migration-vs-main prioritization question, asked directly by the user**: given #114
+  (the Conduit 2.0 workspace migration) still has ~13 sub-issues remaining (Phase 4.5
+  k8s through Phase 6.4 lockstep publishing — confirmed by reading the epic's actual body,
+  not estimated), is it better to pause new `main` work until the migration finishes, or
+  keep doing both and pay a heavier eventual merge? Pointed out that the epic **already
+  has a recorded owner decision on this exact question** (2026-08-23, item 5 in #114's
+  body): interleave, don't choose one exclusively — bug/gap fixes route through `main`'s
+  ordinary process and get folded into #114 sub-issue selection, already implemented via
+  `feature-workspace-cycle.md` Step 2. Recommended keeping that policy (the sync log shows
+  dozens of clean, low-conflict merges under it already), with one refinement specific to
+  the Pingora findings above: TLS itself has no extraction sub-issue before the very last
+  phase (#147, Phase 6.3) — confirmed via the epic body's own text — so cert-rotation/
+  per-peer-CA work is safe to do on `main` now with low near-term conflict risk; the
+  per-peer-CA change also touches `upstream_peer()`/`health.rs`, which Phase 5.1/5.2
+  (`conduit-upstream`/`conduit-proxy-http`, #142/#143) are about to touch next — worth a
+  deliberate check during that extraction rather than a blind merge, not a reason to avoid
+  doing the feature work now.
