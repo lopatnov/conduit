@@ -1280,6 +1280,19 @@ fn validate_middleware(
                 ));
             }
         }
+
+        // Only "request" (the default) and "response" are ever checked against —
+        // any other value (a typo like "resposne") silently falls through both the
+        // request-phase and response-phase skip checks and runs in whichever phase
+        // it wasn't meant for, or in both. Catch it here instead.
+        if let Some(phase) = entry.phase.as_deref() {
+            if phase != "request" && phase != "response" {
+                errors.push(ValidationError::new(
+                    format!("{entry_prefix}.phase"),
+                    format!("invalid phase \"{phase}\" — must be \"request\" or \"response\""),
+                ));
+            }
+        }
     }
 }
 
@@ -2732,6 +2745,40 @@ mod tests {
             ] }"#,
         );
         assert_eq!(e.len(), 1, "exactly one script entry is missing path");
+    }
+
+    #[test]
+    fn middleware_phase_typo_is_invalid() {
+        let e = errs(
+            r#"{ "middleware": [
+                { "type": "script", "path": "./ok.rhai", "phase": "resposne" }
+            ] }"#,
+        );
+        assert!(!e.is_empty(), "misspelled phase must be rejected");
+        assert!(
+            e.iter().any(|err| err.path.contains("phase")),
+            "error path must mention phase: {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn middleware_phase_request_and_response_are_valid() {
+        assert!(errs(
+            r#"{ "middleware": [{ "type": "script", "path": "./ok.rhai", "phase": "request" }] }"#
+        )
+        .is_empty());
+        assert!(errs(
+            r#"{ "middleware": [{ "type": "script", "path": "./ok.rhai", "phase": "response" }] }"#
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn middleware_phase_absent_is_valid() {
+        assert!(
+            errs(r#"{ "middleware": [{ "type": "script", "path": "./ok.rhai" }] }"#).is_empty()
+        );
     }
 
     #[test]

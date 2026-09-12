@@ -97,6 +97,10 @@ struct WasmState {
     /// Per-call resource limiter — enforces a 16 MiB linear memory cap to
     /// prevent a plugin from exhausting the proxy's address space.
     resource_limits: wasmtime::StoreLimits,
+    /// Set once a memory-touching host function has already warned about a
+    /// missing "memory" export for this invocation (issue #381) — avoids
+    /// spamming the log if the plugin calls several such functions.
+    warned_missing_memory: bool,
 }
 
 impl WasmState {
@@ -111,15 +115,67 @@ impl WasmState {
             resource_limits: wasmtime::StoreLimitsBuilder::new()
                 .memory_size(16 * 1024 * 1024) // 16 MiB max per plugin call
                 .build(),
+            warned_missing_memory: false,
         }
     }
 }
 
 // ── Memory helpers ────────────────────────────────────────────────────────────
 
+/// Lets `warn_missing_memory_once` work for both the request-phase and
+/// response-phase Store state types without duplicating the check-and-log
+/// logic at each of their several call sites.
+trait TracksMemoryWarning {
+    fn memory_warned_mut(&mut self) -> &mut bool;
+}
+
+impl TracksMemoryWarning for WasmState {
+    fn memory_warned_mut(&mut self) -> &mut bool {
+        &mut self.warned_missing_memory
+    }
+}
+
+impl TracksMemoryWarning for WasmResponseState {
+    fn memory_warned_mut(&mut self) -> &mut bool {
+        &mut self.warned_missing_memory
+    }
+}
+
+/// Logs once per plugin invocation when a host function needs the module's
+/// linear memory but the module doesn't export one named "memory" (issue
+/// #381) — previously this degraded completely silently: every
+/// memory-touching host call just returned an empty string or 0 bytes
+/// written, indistinguishable from "found but empty." A plugin that never
+/// calls a memory-touching host function still needs no "memory" export at
+/// all (see `CLAUDE.md` decision #26) — this only fires when one actually
+/// tries to and can't.
+fn warn_missing_memory_once<S: TracksMemoryWarning>(caller: &mut Caller<'_, S>, host_fn: &str) {
+    if should_warn_and_mark(caller.data_mut().memory_warned_mut()) {
+        tracing::warn!(
+            host_fn,
+            "WASM plugin called a host function needing linear memory, but the module \
+             does not export \"memory\" -- treating reads as empty and writes as 0 bytes"
+        );
+    }
+}
+
+/// The actual "only once" decision, factored out of `warn_missing_memory_once`
+/// so it's testable without a real `wasmtime::Caller` — flips `warned` to
+/// `true` and returns `true` on the first call, returns `false` on every
+/// call after that.
+fn should_warn_and_mark(warned: &mut bool) -> bool {
+    if *warned {
+        false
+    } else {
+        *warned = true;
+        true
+    }
+}
+
 /// Read UTF-8 from WASM linear memory at (`ptr`, `len`).
 fn mem_read_str(caller: &mut Caller<'_, WasmState>, ptr: i32, len: i32) -> String {
     let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+        warn_missing_memory_once(caller, "mem_read_str");
         return String::new();
     };
     let data = mem.data(&*caller);
@@ -131,6 +187,7 @@ fn mem_read_str(caller: &mut Caller<'_, WasmState>, ptr: i32, len: i32) -> Strin
 /// Write `src` into WASM memory at (`buf`, `buf_len`). Returns bytes written.
 fn mem_write(caller: &mut Caller<'_, WasmState>, src: &[u8], buf: i32, buf_len: i32) -> i32 {
     let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+        warn_missing_memory_once(caller, "mem_write");
         return 0;
     };
     let to_write = src.len().min(buf_len as usize);
@@ -263,6 +320,7 @@ fn register_host_functions(linker: &mut Linker<WasmState>) -> anyhow::Result<()>
         "conduit_set_response_body",
         |mut c: Caller<'_, WasmState>, body_ptr: i32, body_len: i32| {
             let Some(mem) = c.get_export("memory").and_then(|e| e.into_memory()) else {
+                warn_missing_memory_once(&mut c, "conduit_set_response_body");
                 return;
             };
             let start = body_ptr as usize;
@@ -439,6 +497,8 @@ struct WasmResponseState {
     removed_headers: Vec<String>,
     response_body: Option<Vec<u8>>,
     resource_limits: wasmtime::StoreLimits,
+    /// See `WasmState::warned_missing_memory` (issue #381).
+    warned_missing_memory: bool,
 }
 
 impl WasmResponseState {
@@ -451,6 +511,7 @@ impl WasmResponseState {
             resource_limits: wasmtime::StoreLimitsBuilder::new()
                 .memory_size(16 * 1024 * 1024)
                 .build(),
+            warned_missing_memory: false,
         }
     }
 }
@@ -523,6 +584,7 @@ fn register_response_host_functions(linker: &mut Linker<WasmResponseState>) -> a
         "conduit_set_response_body",
         |mut c: Caller<'_, WasmResponseState>, body_ptr: i32, body_len: i32| {
             let Some(mem) = c.get_export("memory").and_then(|e| e.into_memory()) else {
+                warn_missing_memory_once(&mut c, "conduit_set_response_body");
                 return;
             };
             let start = body_ptr as usize;
@@ -564,6 +626,7 @@ fn register_response_host_functions(linker: &mut Linker<WasmResponseState>) -> a
 /// Memory helpers for the response-phase Store type.
 fn mem_read_str_resp(caller: &mut Caller<'_, WasmResponseState>, ptr: i32, len: i32) -> String {
     let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+        warn_missing_memory_once(caller, "mem_read_str_resp");
         return String::new();
     };
     let data = mem.data(&*caller);
@@ -579,6 +642,7 @@ fn mem_write_resp(
     buf_len: i32,
 ) -> i32 {
     let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+        warn_missing_memory_once(caller, "mem_write_resp");
         return 0;
     };
     let to_write = src.len().min(buf_len as usize);
@@ -1145,6 +1209,55 @@ mod tests {
             }
             other => panic!("expected Continue after log, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn host_conduit_log_without_memory_export_still_fails_open() {
+        // Issue #381: a module with no "memory" export that still calls a
+        // memory-touching host function (conduit_log, via mem_read_str) must
+        // not panic or abort the plugin -- it degrades to reading an empty
+        // message and logs a warning (not independently assertable here
+        // without a tracing-capture dependency; see should_warn_and_mark_*
+        // below for direct coverage of the actual "warn once" logic this
+        // path now exercises).
+        let (_f, p) = compile_wat(
+            r#"(module
+              (import "conduit" "conduit_log" (func $log (param i32 i32 i32)))
+              (func (export "on_request") (result i32)
+                (call $log (i32.const 2) (i32.const 0) (i32.const 17))
+                i32.const 0))"#,
+        );
+        match run_wasm(req(), &p) {
+            WasmOutcome::Continue { .. } => {}
+            other => panic!("expected fail-open Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_warn_and_mark_fires_once() {
+        let mut warned = false;
+        assert!(
+            should_warn_and_mark(&mut warned),
+            "first call must signal a warning"
+        );
+        assert!(warned, "flag must be set after the first call");
+        assert!(
+            !should_warn_and_mark(&mut warned),
+            "second call must not signal another warning"
+        );
+        assert!(
+            !should_warn_and_mark(&mut warned),
+            "third call must still not signal another warning"
+        );
+    }
+
+    #[test]
+    fn should_warn_and_mark_starts_unwarned() {
+        let mut warned = true;
+        assert!(
+            !should_warn_and_mark(&mut warned),
+            "an already-warned flag must not fire again"
+        );
     }
 
     // ── conduit_get_query ────────────────────────────────────────────────────

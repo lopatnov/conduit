@@ -1,5 +1,18 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// Marker printed in place of a secret value in a manual `Debug` impl (issue
+/// #354 — every secret-bearing field in this module used to derive plain
+/// `Debug`, printing the raw value verbatim on any `{:?}`-formatted print or
+/// panic message that happens to include it).
+struct Redacted;
+
+impl fmt::Debug for Redacted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[REDACTED]")
+    }
+}
 
 /// Named-consumer authentication: credentials and per-consumer policies stored
 /// per-consumer rather than per-route.
@@ -61,7 +74,7 @@ pub struct ConsumersConfig {
 /// All consumers in the list share one JWKS endpoint (or HS256 secret).
 /// After token validation the `usernameClaim` value is matched against
 /// `consumer.username` to determine which consumer made the request.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ConsumersSharedJwtConfig {
     /// Remote JWKS URL for RS256 / ES256 tokens.  Mutually exclusive with `secret`.
@@ -85,8 +98,20 @@ pub struct ConsumersSharedJwtConfig {
     pub username_claim: Option<String>,
 }
 
+impl fmt::Debug for ConsumersSharedJwtConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConsumersSharedJwtConfig")
+            .field("jwks_url", &self.jwks_url)
+            .field("secret", &self.secret.as_ref().map(|_| Redacted))
+            .field("audience", &self.audience)
+            .field("issuer", &self.issuer)
+            .field("username_claim", &self.username_claim)
+            .finish()
+    }
+}
+
 /// A single named API consumer — a client with its own credentials and limits.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Consumer {
     /// Unique name injected as `X-Consumer-ID` after identification.
@@ -143,12 +168,35 @@ pub struct Consumer {
     pub headers: Option<IndexMap<String, String>>,
 }
 
+impl fmt::Debug for Consumer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Consumer")
+            .field("username", &self.username)
+            .field("api_key", &self.api_key.as_ref().map(|_| Redacted))
+            // basic_auth/jwt are Option<_> of their own manually-redacting
+            // Debug types below, so their own secret fields stay hidden too.
+            .field("basic_auth", &self.basic_auth)
+            .field("jwt", &self.jwt)
+            .field("rate_limit", &self.rate_limit)
+            .field("headers", &self.headers)
+            .finish()
+    }
+}
+
 /// Basic Auth password for a `Consumer`.  The username comes from
 /// `Consumer.username`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConsumerBasicAuth {
     pub password: String,
+}
+
+impl fmt::Debug for ConsumerBasicAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConsumerBasicAuth")
+            .field("password", &Redacted)
+            .finish()
+    }
 }
 
 /// JWT credential for a `Consumer`.
@@ -156,7 +204,7 @@ pub struct ConsumerBasicAuth {
 /// A simplified subset of `JwtAuthConfig` (`crates/conduit-auth-jwt`)
 /// without `skip_paths` or `jwks_refresh_secs` — those concerns belong to
 /// the site-level JWT guard, not to the per-consumer credential.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ConsumerJwtConfig {
     /// HMAC-SHA256 secret for HS256 tokens.  Mutually exclusive with `jwks_url`.
@@ -173,9 +221,111 @@ pub struct ConsumerJwtConfig {
     pub issuer: Option<String>,
 }
 
+impl fmt::Debug for ConsumerJwtConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConsumerJwtConfig")
+            .field("secret", &self.secret.as_ref().map(|_| Redacted))
+            .field("jwks_url", &self.jwks_url)
+            .field("audience", &self.audience)
+            .field("issuer", &self.issuer)
+            .finish()
+    }
+}
+
 /// Rate-limit config — moved to `crates/conduit-ratelimit` (issue #114/#137,
 /// slice 1), re-exported here so `conduit_auth_consumers::RateLimitConfig`
 /// keeps resolving. See [`Consumer::rate_limit`]'s doc comment for the full
 /// history (this used to be a deliberate, temporary duplicate of the root
 /// crate's own type).
 pub use conduit_ratelimit::RateLimitConfig;
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    #[test]
+    fn shared_jwt_config_secret_is_redacted() {
+        let cfg = ConsumersSharedJwtConfig {
+            jwks_url: None,
+            secret: Some("shared-jwt-hmac-secret".to_string()),
+            audience: None,
+            issuer: None,
+            username_claim: Some("sub".to_string()),
+        };
+        let debug = format!("{cfg:?}");
+        assert!(!debug.contains("shared-jwt-hmac-secret"), "got: {debug}");
+        assert!(debug.contains("[REDACTED]"), "got: {debug}");
+        assert!(
+            debug.contains("sub"),
+            "non-secret field must still print: {debug}"
+        );
+    }
+
+    #[test]
+    fn consumer_api_key_is_redacted_but_username_is_not() {
+        let consumer = Consumer {
+            username: "alice".to_string(),
+            api_key: Some("alices-raw-api-key".to_string()),
+            basic_auth: None,
+            jwt: None,
+            rate_limit: None,
+            headers: None,
+        };
+        let debug = format!("{consumer:?}");
+        assert!(!debug.contains("alices-raw-api-key"), "got: {debug}");
+        assert!(debug.contains("[REDACTED]"), "got: {debug}");
+        assert!(
+            debug.contains("alice"),
+            "username isn't secret and should still print: {debug}"
+        );
+    }
+
+    #[test]
+    fn consumer_nested_basic_auth_and_jwt_secrets_are_redacted_too() {
+        let consumer = Consumer {
+            username: "bob".to_string(),
+            api_key: None,
+            basic_auth: Some(ConsumerBasicAuth {
+                password: "bobs-plaintext-password".to_string(),
+            }),
+            jwt: Some(ConsumerJwtConfig {
+                secret: Some("bobs-jwt-secret".to_string()),
+                jwks_url: None,
+                audience: None,
+                issuer: None,
+            }),
+            rate_limit: None,
+            headers: None,
+        };
+        let debug = format!("{consumer:?}");
+        assert!(!debug.contains("bobs-plaintext-password"), "got: {debug}");
+        assert!(!debug.contains("bobs-jwt-secret"), "got: {debug}");
+    }
+
+    #[test]
+    fn consumer_basic_auth_password_is_redacted() {
+        let cfg = ConsumerBasicAuth {
+            password: "hunter2".to_string(),
+        };
+        let debug = format!("{cfg:?}");
+        assert!(!debug.contains("hunter2"), "got: {debug}");
+        assert!(debug.contains("[REDACTED]"), "got: {debug}");
+    }
+
+    #[test]
+    fn consumer_jwt_config_secret_is_redacted() {
+        let cfg = ConsumerJwtConfig {
+            secret: Some("per-consumer-jwt-secret".to_string()),
+            jwks_url: None,
+            audience: None,
+            issuer: Some("https://issuer.example.com".to_string()),
+        };
+        let debug = format!("{cfg:?}");
+        assert!(!debug.contains("per-consumer-jwt-secret"), "got: {debug}");
+        assert!(debug.contains("[REDACTED]"), "got: {debug}");
+        assert!(
+            debug.contains("issuer.example.com"),
+            "non-secret field must still print: {debug}"
+        );
+    }
+}
