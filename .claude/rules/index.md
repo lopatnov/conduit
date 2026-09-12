@@ -32,6 +32,27 @@
   main repo root), so editing `<projects-root>\conduit\CLAUDE.md` already persists.
   **User memory is fine** too (`<user-home>\.claude\projects\...\memory\`).
 
+## Background agents that write files need `isolation: "worktree"` too, not just verification agents
+
+> Added 2026-09-12 after `crate-extractor` was launched in the background for a 3-crate
+> extraction (#141) without `isolation: "worktree"` — no incident this time (no other file/git
+> work happened in the shared checkout while it ran), but the agent used `C:\projects\conduit`
+> directly as its `cwd`, created its own branch there, and left the shared checkout switched to
+> that branch when it finished. This is a different flavor of the two isolation incidents
+> already logged in `CLAUDE.md`'s session history (2026-08-24: a *verification* agent reaching
+> outside its worktree via an absolute `--manifest-path`; 2026-08-30 part 2: a *review* agent's
+> own `git diff`/branch bookkeeping racing an uncommitted conductor edit) — those were both
+> about agents that already had a worktree failing to stay inside it. This is an agent that was
+> never given one at all, doing real mechanical work (many file writes, multiple commits) in the
+> conductor's own live checkout.
+
+Pass `isolation: "worktree"` for `crate-extractor` and any other agent that will write several
+files or create commits — not just for `security-engineer`/other review-only agents (which
+already get this right after the earlier incidents). The cost of forgetting isn't always visible
+immediately — it only bites if the conductor (or another background agent) touches git state or
+files in the shared checkout while the write-heavy agent is still running. Don't rely on "nothing
+went wrong last time" as evidence it's safe to skip.
+
 ## `git checkout -b` is the *first* action of implementation work, not a later cleanup step
 
 > This exact near-miss — editing production code directly on `claude/cargo-workspace-
@@ -319,6 +340,21 @@ API path, entirely separate from local git credentials, and kept working the who
 - **Subagents have neither**, regardless of context — see "On a subagent tool gap" above; the
   local/cloud split is about the conductor/main session only, not anything spawned via `Agent`.
 
+## Unfamiliar untracked files in the working directory may belong to another tool the user runs on this checkout
+
+> Added 2026-09-12 after `.agents/`, `.codex/`, and `AGENTS.md` showed up as untracked files
+> partway through a session (neither created by that session nor explained by anything in its
+> history) — cost a couple of `git status`/`ls` calls to confirm they weren't a side effect of
+> anything this session did, then were correctly left alone rather than staged, deleted, or
+> investigated further.
+
+If `git status` shows untracked files/directories this session didn't create and can't explain,
+don't assume they're stray debris to clean up or a sign something's wrong — the user (or another
+AI coding tool they've pointed at the same checkout, e.g. `.codex/`/`AGENTS.md` are conventions
+from other agent tooling) may simply be using this working directory for something else in
+parallel. Confirm briefly that they're not yours to worry about, then leave them untouched —
+don't stage, delete, or read into them without being asked.
+
 ## Build discipline
 
 - Run **`/build`** (delegates to `build-validator`) after any non-trivial change, and before
@@ -390,6 +426,42 @@ API path, entirely separate from local git credentials, and kept working the who
   so plainly and ask the user whether they'd rather act manually (they may be able to
   resolve/close from the GitHub UI immediately, unblocked by whatever's rate-limiting the
   API token).
+
+## A `gh pr list`/`gh issue list` sighting of something unrelated is not the same as attending to it
+
+> Added 2026-09-12 after PR #386 (a docs-only recipe, unrelated to the #114 migration work
+> the session was actually doing) sat with a stale, invalidated `security-engineer` PASS and 5
+> new unresolved review threads for the rest of a long session — despite `gh pr list` surfacing
+> it, correctly, at least twice along the way for unrelated reasons (an early PR triage, then
+> again right before starting unrelated #141 work). It only got noticed while preparing a
+> `/handoff` summary at the very end, because that command's checklist forces an explicit
+> `gh pr list` re-read. Nothing was wrong with the *data* the session had access to — the PR was
+> right there in the output both times — the gap was that seeing it in a listing run for a
+> different purpose didn't trigger any action or even a recorded "deferring this, here's why."
+
+When `gh pr list`/`gh issue list` (or their MCP equivalents) surfaces something outside the
+current task's scope, don't let it pass silently just because the call was made for something
+else. Either triage it right there if it's cheap, or write down explicitly *why* it's being
+deferred (a short chat note is enough — it doesn't need a formal issue) so a later sighting of
+the same item registers as "still true" rather than "new information nobody's looked at yet."
+This is the same shape as the existing `feature-workspace-cycle.md` Step 1 rule ("needs a
+dedicated look is not a resting state") but that one only fires during an actual PR-triage step —
+this gap was a listing surfaced *incidentally*, mid-task, for an unrelated purpose.
+
+## Search existing issues before filing one for a bug found while reviewing something else
+
+> Added 2026-09-12 after filing #391 (a bug found by `architect` while scoping #141) only to
+> discover, while writing `CLAUDE.md`'s session-log entry, that it was an exact duplicate of
+> already-open #379 — filed 5 days earlier by a Step 1c integrity-audit firing on the very same
+> file (`wasm.rs`/`response_chain.rs`). Cost: a wasted issue number, a close-as-duplicate, and
+> corrections to three places that had already cross-referenced the wrong number (an issue
+> comment, a PR body, a PR comment).
+
+Before filing a "found this while doing something else" bug issue — especially in a file
+`CLAUDE.md`'s integrity-audit log records as already audited — do a quick `gh issue list
+--search "<distinctive symptom text>"` or check the audit log's own entries for that file first.
+Cheap (one call), and the alternative cost (a duplicate discovered only later, requiring cleanup
+across every place that cited it) is exactly what happened here.
 
 ## Dependabot & branch hygiene reflex check
 
@@ -490,14 +562,16 @@ it — call them whenever the same shape of task comes up outside that cycle too
   verification state, and for code a change should have removed or wired in but didn't. Run
   it after any task that created throwaway state; see "Clean up ephemeral debris" above.
 
-> **Note (2026-08-29):** the `claude/cargo-workspace-features-23qxfr` migration branch has
-> further `.claude/` tooling not yet merged here — a `dependabot-hygiene` command and
-> append-only logs split into `.claude/logs/*.md`. Don't assume any of that exists on `main`
-> (or any other branch) until it's actually merged; see "Different branches of this repo can
-> have genuinely different `.claude/` tooling" above. (A `session-rotate` command briefly
-> existed here too but was retired the same day it's mentioned below — see "Session rotation
-> retired" further up this file — so don't resurrect it on the strength of an older note
-> that still describes it as current.)
+> **Note (originally added 2026-08-29, corrected 2026-09-12):** this note used to warn that
+> the `claude/cargo-workspace-features-23qxfr` migration branch had further `.claude/` tooling
+> (`dependabot-hygiene`, `.claude/logs/*.md`) not yet merged to wherever this copy of the file
+> lived. **If you're reading this copy of `index.md` while checked out on the migration branch
+> itself, that warning doesn't apply to you — it's already all here** (confirmed 2026-09-12:
+> `.claude/commands/dependabot-hygiene.md` and `.claude/logs/*.md` both exist on this branch).
+> The warning is still meaningful for a session working from `main` or another branch that
+> hasn't merged this tooling in — check the *specific* branch you're actually on, per "Different
+> branches of this repo can have genuinely different `.claude/` tooling" above, rather than
+> trusting this note's date or assuming it still describes a gap that exists on every branch.
 
 > `.claude/` and `CLAUDE.md` are tracked in git for this repo (not gitignored — they ship
 > with the source tree so cloud/remote sessions get the same tooling as local ones) but are
