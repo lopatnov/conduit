@@ -1,5 +1,20 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// Marker printed in place of a secret value in a manual `Debug` impl —
+/// distinguishing "present" (`Some([REDACTED])`) from "absent" (`None`)
+/// without ever printing the actual value (issue #354: every secret-bearing
+/// config field used to derive plain `Debug`, so a `{:?}`-formatted print or
+/// a panic message that happened to include one would leak it verbatim).
+#[derive(Clone)]
+struct Redacted;
+
+impl fmt::Debug for Redacted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[REDACTED]")
+    }
+}
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -66,7 +81,7 @@ pub struct GlobalConfig {
 /// same type at the same location for every existing call site/test.
 pub use conduit_otlp::OtlpConfig;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -85,6 +100,15 @@ pub struct AdminConfig {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+}
+
+impl fmt::Debug for AdminConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AdminConfig")
+            .field("bind", &self.bind)
+            .field("token", &self.token.as_ref().map(|_| Redacted))
+            .finish()
+    }
 }
 
 // ── Site config ────────────────────────────────────────────────────────────
@@ -522,7 +546,7 @@ pub struct HealthCheckOptions {
 /// SonarCloud duplication finding is resolved by this re-export).
 pub use conduit_ratelimit::RateLimitConfig;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BasicAuthConfig {
     pub users: IndexMap<String, String>,
@@ -534,7 +558,22 @@ pub struct BasicAuthConfig {
     pub skip_paths: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+impl fmt::Debug for BasicAuthConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Usernames (map keys) aren't secret; passwords (values) are —
+        // redact only the values, keeping the user list itself visible.
+        let users: IndexMap<&str, Redacted> =
+            self.users.keys().map(|k| (k.as_str(), Redacted)).collect();
+        f.debug_struct("BasicAuthConfig")
+            .field("users", &users)
+            .field("challenge", &self.challenge)
+            .field("realm", &self.realm)
+            .field("skip_paths", &self.skip_paths)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiKeyConfig {
     pub keys: Vec<String>,
@@ -542,6 +581,16 @@ pub struct ApiKeyConfig {
     pub header: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_paths: Option<Vec<String>>,
+}
+
+impl fmt::Debug for ApiKeyConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ApiKeyConfig")
+            .field("keys", &vec![Redacted; self.keys.len()])
+            .field("header", &self.header)
+            .field("skip_paths", &self.skip_paths)
+            .finish()
+    }
 }
 
 // ── Consumer model ─────────────────────────────────────────────────────────
@@ -808,7 +857,7 @@ pub struct ProxyRouteConfig {
 }
 
 /// Configuration for cookie-based sticky sessions.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StickyConfig {
     /// Name of the cookie to use as the session affinity key.
@@ -832,6 +881,16 @@ pub struct StickyConfig {
     /// Default: `false` (fall back to normal load-balancing).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
+}
+
+impl fmt::Debug for StickyConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StickyConfig")
+            .field("cookie", &self.cookie)
+            .field("secret", &self.secret.as_ref().map(|_| Redacted))
+            .field("strict", &self.strict)
+            .finish()
+    }
 }
 
 /// Upstream TLS configuration (used with `https://` proxy targets).
@@ -1214,3 +1273,91 @@ pub struct OutlierDetectionConfig {
 /// re-export so `crate::config::schema::TcpConfig` keeps resolving to the
 /// same type at the same location for every existing call site/test.
 pub use conduit_tcp::TcpConfig;
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    #[test]
+    fn admin_config_token_is_redacted() {
+        let cfg = AdminConfig {
+            bind: Some("0.0.0.0:2019".to_string()),
+            token: Some("super-secret-admin-token".to_string()),
+        };
+        let debug = format!("{cfg:?}");
+        assert!(
+            !debug.contains("super-secret-admin-token"),
+            "token leaked into Debug output: {debug}"
+        );
+        assert!(debug.contains("[REDACTED]"), "got: {debug}");
+        assert!(
+            debug.contains("0.0.0.0:2019"),
+            "non-secret field must still print: {debug}"
+        );
+    }
+
+    #[test]
+    fn admin_config_absent_token_shows_none() {
+        let cfg = AdminConfig {
+            bind: None,
+            token: None,
+        };
+        let debug = format!("{cfg:?}");
+        assert!(
+            debug.contains("None"),
+            "absent secret must still distinguish None from Some: {debug}"
+        );
+        assert!(!debug.contains("[REDACTED]"), "got: {debug}");
+    }
+
+    #[test]
+    fn sticky_config_secret_is_redacted() {
+        let cfg = StickyConfig {
+            cookie: "route".to_string(),
+            secret: Some("hmac-signing-secret".to_string()),
+            strict: Some(true),
+        };
+        let debug = format!("{cfg:?}");
+        assert!(!debug.contains("hmac-signing-secret"), "got: {debug}");
+        assert!(debug.contains("[REDACTED]"), "got: {debug}");
+        assert!(
+            debug.contains("route"),
+            "non-secret field must still print: {debug}"
+        );
+    }
+
+    #[test]
+    fn basic_auth_config_passwords_are_redacted_but_usernames_are_not() {
+        let mut users = IndexMap::new();
+        users.insert("alice".to_string(), "alices-plaintext-password".to_string());
+        let cfg = BasicAuthConfig {
+            users,
+            challenge: None,
+            realm: None,
+            skip_paths: None,
+        };
+        let debug = format!("{cfg:?}");
+        assert!(!debug.contains("alices-plaintext-password"), "got: {debug}");
+        assert!(
+            debug.contains("alice"),
+            "usernames aren't secret and should still print: {debug}"
+        );
+        assert!(debug.contains("[REDACTED]"), "got: {debug}");
+    }
+
+    #[test]
+    fn api_key_config_keys_are_redacted() {
+        let cfg = ApiKeyConfig {
+            keys: vec!["key-one".to_string(), "key-two".to_string()],
+            header: Some("x-api-key".to_string()),
+            skip_paths: None,
+        };
+        let debug = format!("{cfg:?}");
+        assert!(!debug.contains("key-one"), "got: {debug}");
+        assert!(!debug.contains("key-two"), "got: {debug}");
+        assert!(
+            debug.contains("x-api-key"),
+            "non-secret field must still print: {debug}"
+        );
+    }
+}
