@@ -178,7 +178,18 @@ async function registerWithRetry(target, attempts = 5, delayMs = 1000) {
   return false;
 }
 
+// Tracks the most recent spawnWorker() generation per port, so a
+// late-landing registration from an already-dead worker can tell whether
+// it's still the latest attempt for that port before undoing itself --
+// otherwise it could deregister a healthy *respawned* worker on the same
+// port instead of cleaning up after itself (both use the identical
+// `target` URL, so they're indistinguishable by target alone).
+const currentGenerationByPort = new Map();
+
 function spawnWorker(port) {
+  const generation = (currentGenerationByPort.get(port) ?? 0) + 1;
+  currentGenerationByPort.set(port, generation);
+
   // Workers don't need Admin API access -- strip the token from their env
   // rather than let a compromised application process reuse it to call
   // /upstreams/add, /reload, or anything else on the Admin API.
@@ -199,10 +210,14 @@ function spawnWorker(port) {
       if (!alive) {
         // Exited while registration was in flight. If it landed anyway
         // (after the 'exit' handler's own, necessarily premature
-        // /upstreams/remove already ran), undo it -- otherwise a dead
-        // target stays registered until this port's next successful
-        // respawn overwrites it.
-        if (ok) {
+        // /upstreams/remove already ran) AND no respawn has re-registered
+        // this port yet, undo it -- otherwise a dead target stays
+        // registered until the next periodic re-register tick. Skip the
+        // undo if a newer generation already exists for this port: by
+        // then the respawned worker may have already registered the same
+        // `target`, and removing it would take down a healthy worker
+        // instead of cleaning up a stale one.
+        if (ok && currentGenerationByPort.get(port) === generation) {
           callAdmin("/upstreams/remove", { route: ROUTE, target }).catch(
             () => {},
           );
