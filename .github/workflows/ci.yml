@@ -318,7 +318,7 @@ jobs:
               srv.ListenAndServe()
           }
           GOEOF
-          cd /tmp/bench-upstream && go build -o /tmp/bench-upstream-bin .
+          cd /tmp/bench-upstream && go mod init bench-upstream && go build -o /tmp/bench-upstream-bin .
 
       # Same "find associated PR" reasoning as the footprint job above (#114
       # sub-issue PRs target the migration branch via `push`, not
