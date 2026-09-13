@@ -419,3 +419,50 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   `SiteConfig`/`AppConfig` JSON round-trip stayed in root's
   `src/config/kubernetes.rs`, the only place that can construct the real
   schema types.
+
+- **`conduit-upstream`** (Phase 5.1, [#142](https://github.com/lopatnov/conduit/issues/142))
+  — owns `UpstreamRegistry` (per-upstream health state, inflight connection
+  counts, the runtime upstream-override registry), Peak EWMA latency
+  tracking, Outlier Detection, active health-check/connection-warmup
+  background tasks, the half-open circuit breaker (`health` module, moved
+  from `src/proxy/health.rs`), the `LoadBalancingStrategy` trait and all 8
+  concrete strategy structs (`strategy` module, moved from
+  `src/proxy/strategy.rs`), and URL parsing + the plain-slice load-balancing
+  "pick" algorithms (`targets` module, most of the former
+  `src/proxy/upstream.rs`). Also owns the LB/health config types:
+  `LoadBalanceStrategy`, `ProxyTarget`/`WeightedTarget`, `UpstreamGroup`,
+  `UpstreamHealthCheck`, `UpstreamTlsConfig`, `OutlierDetectionConfig`
+  (`config` module). **No `[features]` table at all** — unlike almost every
+  sibling extraction, upstream selection/health tracking is not an optional
+  Cargo feature in the first place; every dependency is mandatory, matching
+  `conduit-ipfilter`/`conduit-cors`/`conduit-metrics`'s always-on shape
+  (`CLAUDE.md` decision #31) for a reason specific to this domain rather than
+  that decision's own "light logic, no heavy dependency" rationale. No
+  dependency on `lopatnov-conduit-core` either (see `CONTRIBUTING.md`'s
+  "conduit-core dependency is opt-in, not automatic") — the Pingora
+  `ProxyHttp` trait-method bodies stay in the root crate, calling into this
+  crate's plain functions.
+  **Partial extraction, deliberately not everything issue #142 named**:
+  `ProxyTarget`/`WeightedTarget` moved here (`UpstreamGroup`, also in scope,
+  embeds `Vec<ProxyTarget>` directly — they had to travel together), but
+  `ProxyConfig`/`ProxyRouteTarget` and the four functions that used to
+  consume them (`target_urls`, `weighted_targets`, `target_urls_from_proxy`,
+  `strip_prefix_enabled`) **stayed in the root crate's own
+  `src/proxy/upstream.rs`**, right next to a facade re-export of everything
+  that did move — `ProxyRouteTarget::Full` embeds `ProxyRouteConfig`, a large
+  struct itself embedding `CacheConfig`/`RetryConfig`/`ConnectionPoolConfig`/
+  `RateLimitConfig`/etc., none of which are extracted yet (a later migration
+  phase, #143/#144, extracts proxy routing itself) — moving those four
+  functions here would have forced `ProxyRouteConfig` to move too, a genuine
+  circular dependency with several other not-yet-extracted crates.
+  **The one real design decision, called out explicitly in issue #142's own
+  text**: `health::spawn_health_checks`/`health::spawn_connection_warmup`
+  used to take `&AppConfig` directly — for the same reason as the paragraph
+  above, they now take an iterator of already-resolved
+  `(&config::UpstreamHealthCheck, &[String])` pairs instead. The root
+  crate's own call site (`admin/api.rs::health_check_routes`) resolves
+  `AppConfig` down to that shape before calling in — the same "narrower
+  slice instead of a root-only type" pattern `conduit-hotreload`'s
+  `build_watch_config` already established for its own analogous problem
+  (issue #114/#140), applied here to a second function pair in the same
+  extraction rather than a new design.
