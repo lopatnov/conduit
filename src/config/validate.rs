@@ -116,52 +116,23 @@ fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// Collect every `redis://`/`rediss://` `rate_limit.store` value configured on
-/// `site` — site-level, then per-route, then per-consumer — in the same scan
-/// order as `src/server/builder.rs::find_redis_rate_limit_store`, appending to
-/// `out` (not deduped; the caller dedupes across all sites).
+/// `site` — site-level, then per-route (`proxy` map AND `routes[]`, issue
+/// #360), then per-consumer — in the same scan order as
+/// `src/server/builder.rs::find_redis_rate_limit_store`, appending to `out`
+/// (not deduped; the caller dedupes across all sites). Delegates to the
+/// shared [`crate::config::rate_limit_scan::iter_rate_limit_configs`] walk.
 #[cfg(feature = "redis")]
 fn collect_redis_stores(site: &SiteConfig, out: &mut Vec<String>) {
     fn is_redis_store(store: &str) -> bool {
         store.starts_with("redis://") || store.starts_with("rediss://")
     }
 
-    if let Some(store) = site
-        .rate_limit
-        .as_ref()
-        .and_then(|rl| rl.store.as_deref())
-        .filter(|s| is_redis_store(s))
-    {
-        out.push(store.to_owned());
-    }
-
-    if let Some(ProxyConfig::Routes(routes)) = &site.proxy {
-        for target in routes.values() {
-            if let ProxyRouteTarget::Full(cfg) = target {
-                if let Some(store) = cfg
-                    .rate_limit
-                    .as_ref()
-                    .and_then(|rl| rl.store.as_deref())
-                    .filter(|s| is_redis_store(s))
-                {
-                    out.push(store.to_owned());
-                }
-            }
-        }
-    }
-
-    #[cfg(feature = "consumers")]
-    if let Some(consumers) = &site.consumers {
-        for consumer in &consumers.consumers {
-            if let Some(store) = consumer
-                .rate_limit
-                .as_ref()
-                .and_then(|rl| rl.store.as_deref())
-                .filter(|s| is_redis_store(s))
-            {
-                out.push(store.to_owned());
-            }
-        }
-    }
+    out.extend(
+        crate::config::rate_limit_scan::iter_rate_limit_configs(site)
+            .filter_map(|rl| rl.store.as_deref())
+            .filter(|s| is_redis_store(s))
+            .map(str::to_owned),
+    );
 }
 
 /// Return human-readable warnings for config options that require a compile-time
@@ -545,52 +516,21 @@ fn site_has_cache_config(site: &SiteConfig) -> bool {
     }
 }
 
-/// Return `true` when `site`'s site-, route-, or consumer-level `rateLimit`
-/// configures a `redis://`/`rediss://` store — mirrors
-/// `src/server/builder.rs::find_redis_rate_limit_store`'s scan (issue #322),
-/// but only needs a yes/no answer here rather than the actual URL.
+/// Return `true` when `site`'s site-, route- (`proxy` map or `routes[]`,
+/// issue #360), or consumer-level `rateLimit` configures a `redis://`/
+/// `rediss://` store — mirrors `src/server/builder.rs::
+/// find_redis_rate_limit_store`'s scan (issue #322), but only needs a yes/no
+/// answer here rather than the actual URL. Delegates to the shared
+/// [`crate::config::rate_limit_scan::iter_rate_limit_configs`] walk.
 #[cfg(not(feature = "redis"))]
 fn site_uses_redis_store(site: &SiteConfig) -> bool {
     fn is_redis_store(store: &str) -> bool {
         store.starts_with("redis://") || store.starts_with("rediss://")
     }
 
-    let site_level = site
-        .rate_limit
-        .as_ref()
-        .and_then(|rl| rl.store.as_deref())
-        .is_some_and(is_redis_store);
-    if site_level {
-        return true;
-    }
-
-    let route_level = matches!(&site.proxy, Some(ProxyConfig::Routes(routes)) if routes.values().any(|t| {
-        matches!(t, ProxyRouteTarget::Full(cfg) if cfg
-            .rate_limit
-            .as_ref()
-            .and_then(|rl| rl.store.as_deref())
-            .is_some_and(is_redis_store))
-    }));
-    if route_level {
-        return true;
-    }
-
-    #[cfg(feature = "consumers")]
-    {
-        site.consumers.as_ref().is_some_and(|c| {
-            c.consumers.iter().any(|consumer| {
-                consumer
-                    .rate_limit
-                    .as_ref()
-                    .and_then(|rl| rl.store.as_deref())
-                    .is_some_and(is_redis_store)
-            })
-        })
-    }
-    #[cfg(not(feature = "consumers"))]
-    {
-        false
-    }
+    crate::config::rate_limit_scan::iter_rate_limit_configs(site)
+        .filter_map(|rl| rl.store.as_deref())
+        .any(is_redis_store)
 }
 
 /// Warn when a proxy target points back to a port Conduit itself is listening on.

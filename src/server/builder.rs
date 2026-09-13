@@ -150,59 +150,27 @@ fn is_redis_store(store: &str) -> bool {
 }
 
 /// Find the first `redis://`/`rediss://` `rateLimit.store` configured anywhere
-/// in `config` — site-level, per-route (`proxy.*.rateLimit`), or per-consumer
+/// in `config` — site-level, per-route (`proxy.*.rateLimit` AND
+/// `routes[*].proxy.rateLimit`, issue #360), or per-consumer
 /// (`consumers.consumers[].rateLimit`) — so a Redis backend is connected at
 /// startup even when Redis is used *only* at the route/consumer layer (issue
 /// #322: previously only the site level was scanned, so a route/consumer-only
 /// Redis config silently fell back to the in-memory limiter forever, since
 /// `AppState.redis_rate_limiter` was never populated in the first place).
+///
+/// Scan order (site → `proxy` map → `routes[]` → consumer, across sites in
+/// declaration order) is shared with `config::validate`'s Redis-consistency
+/// checks via [`crate::config::rate_limit_scan::iter_rate_limit_configs`] —
+/// see that module for why the walk lives in exactly one place.
 #[cfg(feature = "redis")]
 fn find_redis_rate_limit_store(config: &AppConfig) -> Option<String> {
-    use crate::config::schema::{ProxyConfig, ProxyRouteTarget};
-
-    config.sites.iter().find_map(|s| {
-        let site_store = s
-            .rate_limit
-            .as_ref()
-            .and_then(|rl| rl.store.as_deref())
-            .filter(|store| is_redis_store(store));
-        if let Some(store) = site_store {
-            return Some(store.to_owned());
-        }
-
-        let route_store = s.proxy.as_ref().and_then(|proxy| match proxy {
-            ProxyConfig::Routes(routes) => routes.values().find_map(|target| match target {
-                ProxyRouteTarget::Full(cfg) => cfg
-                    .rate_limit
-                    .as_ref()
-                    .and_then(|rl| rl.store.as_deref())
-                    .filter(|store| is_redis_store(store)),
-                _ => None,
-            }),
-            ProxyConfig::Single(_) => None,
-        });
-        if let Some(store) = route_store {
-            return Some(store.to_owned());
-        }
-
-        #[cfg(feature = "consumers")]
-        {
-            s.consumers.as_ref().and_then(|c| {
-                c.consumers.iter().find_map(|consumer| {
-                    consumer
-                        .rate_limit
-                        .as_ref()
-                        .and_then(|rl| rl.store.as_deref())
-                        .filter(|store| is_redis_store(store))
-                        .map(str::to_owned)
-                })
-            })
-        }
-        #[cfg(not(feature = "consumers"))]
-        {
-            None
-        }
-    })
+    config
+        .sites
+        .iter()
+        .flat_map(crate::config::rate_limit_scan::iter_rate_limit_configs)
+        .filter_map(|rl| rl.store.as_deref())
+        .find(|store| is_redis_store(store))
+        .map(str::to_owned)
 }
 
 /// Connect to Redis for rate limiting if any site, route, or consumer has a

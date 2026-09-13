@@ -158,6 +158,24 @@ pub struct RequestCtx {
     /// Format: `(cookie_name, hmac_signed_value)`.  The `upstream_response_filter`
     /// injects the corresponding `Set-Cookie` header.
     pub sticky_set_cookie: Option<(String, String)>,
+    /// Per-route rate limit selected during routing (issue #360), together
+    /// with the bucket-key fragment identifying which route it came from.
+    ///
+    /// Populated by whichever matcher actually resolved this request — the
+    /// legacy `proxy` map (`router.rs::resolve_proxy_routes`) or the newer
+    /// `routes[]` array (`routes.rs::match_routes`) — so
+    /// `request_phase.rs::enforce_route_rate_limit` can enforce exactly the
+    /// matched route's limit instead of re-deriving it from `site.proxy`
+    /// after the fact, which could silently apply a *different* route's
+    /// limit (or none at all) when the request actually resolved via
+    /// `site.routes[]`. `None` when the matched route has no `rateLimit`
+    /// configured.
+    pub route_rate_limit: Option<crate::proxy::router::RouteRateLimit>,
+    /// Effective route priority (`proxy.*.priority` / `routes[].proxy.priority`)
+    /// selected during routing (issue #360), for post-routing load shedding
+    /// (`request_phase.rs::shed_low_priority_request`). `None` when the
+    /// matched route has no `priority` configured.
+    pub route_priority: Option<u8>,
 }
 
 impl RequestCtx {
@@ -200,6 +218,8 @@ impl RequestCtx {
             #[cfg(feature = "cache")]
             cache: None,
             sticky_set_cookie: None,
+            route_rate_limit: None,
+            route_priority: None,
             #[cfg(feature = "otlp")]
             otel_span: None,
         }
