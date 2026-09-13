@@ -23,9 +23,10 @@
 > (tag `tokio-1.53.1`, совпадает с `Cargo.lock`), `dashmap` (tag `v6.2.1`), `axum` (tag
 > `axum-v0.8.9`), `kube` (tag `4.2.0`), `k8s-openapi` (tag `v0.28.0`), `rhai` (tag `v1.26.0`),
 > `wasmtime` (tag `v48.0.1`, без submodules — `--no-recurse-submodules`, ~118 MB даже так,
-> самый крупный клон в `.reference/`) — последние шесть добавлены по прямому запросу
-> пользователя ("странно что не скачиваешь то, что мы используем") ровно на версии, реально
-> запиненные в `Cargo.lock` на момент клонирования.
+> самый крупный клон в `.reference/`), `arc-swap` (tag `v1.9.1` — Cargo.lock пинит `1.9.2`,
+> но на GitHub нет такого тега, используем последний доступный `v1.9.1`) — последние семь добавлены
+> по прямому запросу пользователя ("странно что не скачиваешь то, что мы используем") ровно на версии,
+> реально запиненные в `Cargo.lock` на момент клонирования.
 
 ### Rust (прямо применимо к Conduit)
 | `.reference/<name>` | Что даёт |
@@ -34,6 +35,7 @@
 | `tokio` | Async runtime, spawn, channels |
 | `dashmap` | Concurrent hashmap (`DashMap<String, TokenBucket>` в rate limiter, `UpstreamRegistry` в health.rs, connection tracking). Запинен на `"6"`, реально `6.2.1` |
 | `axum` | Admin API (порт 2019), upload loopback-сервис, hot-reload SSE-эндпоинт. Запинен на `"0.8"` (`Cargo.toml`) — актуально для `{param}` vs `:param` route-синтаксиса (0.7→0.8 breaking change, см. issue #352's ACME-сервер баг) |
+| `arc-swap` | Atomic read-copy-update контейнер для `AppState.config: Arc<ArcSwap<AppConfig>>` — безлокновая горячая переконфигурация через `POST /reload`, см. decision #12 ("Всё остальное — hot через ArcSwap"). Запинен на `"1"`, реально `1.9.2` в Cargo.lock (но на GitHub только tag `v1.9.1`) |
 | `kube` | `KubernetesProvider` (`--features kubernetes`), CRD `ConduitSite`. Запинен на `"4.0"`, реально `4.2.0` |
 | `k8s-openapi` | Типы K8s API объектов для `kube`. Запинен на `"0.28"`, feature `v1_32` |
 | `rhai` | Rhai-скриптинг для `type: "script"` middleware (`ScriptGuard`, `on_response` фаза). Запинен на `"1"` с `features = ["sync"]`, реально `1.26.0` |
