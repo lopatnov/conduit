@@ -3416,6 +3416,18 @@ mod tests {
             .or_default()
             .recovery_time_secs = Some(now_secs);
 
+        // "10.0.0.1" is deliberate, not arbitrary: fnv1a_hash("10.0.0.1") % 2
+        // == 1, so the *primary* pick lands on "b", not "a" -- unlike
+        // "127.0.0.1" (hashes to index 0 == "a"), which made this test
+        // tautological. `retry_state_for` unconditionally re-inserts
+        // `chosen_url` at the front of the retry list whenever it's absent
+        // from the (possibly ramp-filtered) candidates -- a real, correct
+        // invariant for #367/#216 part 2, but it means that if the primary
+        // pick were "a" itself, "a" would always appear in `retry.urls`
+        // regardless of whether the #375 exemption actually ran. With "b" as
+        // the primary pick, "a" can only appear in `retry.urls` because the
+        // exemption kept it in the ramp-filtered candidate list -- exactly
+        // the mechanism this test is meant to prove.
         let ctx = route_request(
             &config,
             "localhost",
@@ -3423,13 +3435,18 @@ mod tests {
             "GET",
             &http::HeaderMap::new(),
             None,
-            "127.0.0.1",
+            "10.0.0.1",
             80,
             &counters,
             &reg,
             None,
         );
         let retry = ctx.retry.expect("retry must be configured for this route");
+        assert_eq!(
+            retry.urls[0], "http://b:4000",
+            "sanity check: primary pick must be \"b\", not \"a\", or this \
+             test cannot discriminate the bug it's meant to catch"
+        );
         assert!(
             retry.urls.iter().any(|u| u == "http://a:4000"),
             "mid-ramp peer must still appear in the retry candidate list on \
