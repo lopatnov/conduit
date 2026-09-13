@@ -2907,15 +2907,12 @@ dependencies = [
  "criterion",
  "dashmap",
  "dialoguer",
- "futures",
  "hmac 0.13.0",
  "http",
  "httpdate",
  "indexmap 2.14.1",
  "indicatif",
  "jsonwebtoken",
- "k8s-openapi",
- "kube",
  "lopatnov-conduit-acme",
  "lopatnov-conduit-auth-consumers",
  "lopatnov-conduit-auth-forward",
@@ -2928,6 +2925,7 @@ dependencies = [
  "lopatnov-conduit-faults",
  "lopatnov-conduit-hotreload",
  "lopatnov-conduit-ipfilter",
+ "lopatnov-conduit-k8s",
  "lopatnov-conduit-limits",
  "lopatnov-conduit-metrics",
  "lopatnov-conduit-middleware",
@@ -2952,7 +2950,6 @@ dependencies = [
  "rsa",
  "rustls",
  "rustls-pemfile",
- "schemars",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3165,6 +3162,23 @@ dependencies = [
  "pingora-core",
  "pingora-proxy",
  "serde",
+ "tracing",
+]
+
+[[package]]
+name = "lopatnov-conduit-k8s"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "lopatnov-conduit-config-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
  "tracing",
 ]
 

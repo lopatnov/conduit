@@ -380,3 +380,42 @@ the root `Cargo.toml` via `<field>.workspace = true`.
     this extraction). Neither `conduit-script-rhai` nor `conduit-plugin-wasm`
     is a direct root-crate dependency anymore — `conduit-middleware` is the
     only crate that calls into either.
+
+- **`conduit-k8s`** (Phase 4.5, [#249](https://github.com/lopatnov/conduit/issues/249))
+  — the `KubernetesProvider`/`ConduitSite` CRD list+watch mechanism moved from
+  `src/config/kubernetes.rs`. **No `[features]` table at all** — unlike most
+  other optional-feature crates, every dependency here (`kube`, `k8s-openapi`,
+  `schemars`, `futures`, plus the usual `tokio`/`async-trait`/`serde`/
+  `serde_json`/`anyhow`/`tracing`) is a plain, non-optional dependency of this
+  crate; the crate's own presence in the dependency graph — gated behind the
+  root's `kubernetes` feature via `dep:lopatnov-conduit-k8s` — is what makes
+  it optional, the same shape as `conduit-script-rhai`/`conduit-plugin-wasm`
+  above.
+  `KubernetesProvider<B>` and `build_app_config<B>` are generic over a new
+  `CrdConfigBuilder` trait (`type Site`, `type Config`, `site_from_spec`,
+  `build_config`) rather than naming `AppConfig`/`SiteConfig` directly — this
+  crate can't know about conduit's real schema without creating a dependency
+  cycle. Root's `src/config/kubernetes.rs` implements `CrdConfigBuilder` on a
+  zero-sized `ConduitSchema` type and binds `pub type KubernetesProvider =
+  conduit_k8s::KubernetesProvider<ConduitSchema>;` — the same "generic-in-
+  crate, bound-by-type-alias-in-root" pattern as `conduit-config-core`'s own
+  `Provider<C>`/`FileProvider<C>` above, just for a single bigger trait
+  instead of a smaller generic parameter (the shape `conduit_upload`'s
+  `UploadConfigSource` also follows). `build_app_config`/`spec_to_site_config`
+  keep their pre-migration names and non-generic signatures in root via thin
+  wrappers (recipe rule 3) rather than a direct `pub use` — the generic
+  versions need an explicit `::<ConduitSchema>` turbofish that the original
+  call sites (including this crate's own former unit tests) never had to
+  supply.
+  `PhantomData<fn() -> B>` (not bare `PhantomData<B>`) keeps
+  `KubernetesProvider<B>` unconditionally `Send + Sync` regardless of `B` — a
+  function pointer's phantom is always `Send + Sync`, so the struct's own
+  auto-trait bounds don't accidentally depend on whatever concrete `B` the
+  root crate binds.
+  Test coverage split by what each half can test without creating a cycle:
+  this crate's own tests cover the generic mechanism only (constructor/
+  builder fields, `build_app_config`'s CRD-name error-attribution) via a
+  trivial test-only schema binding; the tests exercising the *real*
+  `SiteConfig`/`AppConfig` JSON round-trip stayed in root's
+  `src/config/kubernetes.rs`, the only place that can construct the real
+  schema types.

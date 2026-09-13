@@ -29,289 +29,89 @@
 //! ```bash
 //! kubectl apply -f contrib/k8s/conduitsite-crd.yaml
 //! ```
+//!
+//! The generic list+watch mechanism (`KubernetesProvider<B>`, the CRD types,
+//! and the watch machinery) lives in the Layer-0 [`conduit_k8s`] crate
+//! (issue #114/#249) — it cannot know about [`AppConfig`]/[`SiteConfig`]
+//! without creating a dependency cycle (see `CONTRIBUTING.md`'s crate
+//! extraction recipe, rule 2: "generic-in-crate, bound-by-type-alias-in-
+//! root"). This module binds the generic mechanism to conduit's real schema
+//! via [`ConduitSchema`] and re-exports everything at its original path so
+//! `crate::config::kubernetes::*` call sites (`src/cli/serve.rs`) don't change.
 
 use anyhow::Result;
-use async_trait::async_trait;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 
-use futures::StreamExt as _;
-use kube::runtime::watcher::{watcher, Config as WatcherConfig};
-use kube::{Api, Client, CustomResource};
+use conduit_k8s::CrdConfigBuilder;
 
-use crate::config::provider::Provider;
 use crate::config::schema::{AdminConfig, AppConfig, GlobalConfig, SiteConfig};
 
-// ── Custom Resource Definition ────────────────────────────────────────────────
+pub use conduit_k8s::{ConduitSite, ConduitSiteSpec, ConduitSiteStatus};
 
-/// Spec of a `ConduitSite` Kubernetes custom resource.
+/// Binds [`conduit_k8s::CrdConfigBuilder`] to conduit's real config schema.
 ///
-/// Field names match the Conduit JSON config schema so that the spec can be
-/// round-tripped through `serde_json` into a [`SiteConfig`].
-#[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
-#[kube(
-    group = "conduit.io",
-    version = "v1",
-    kind = "ConduitSite",
-    namespaced,
-    status = "ConduitSiteStatus",
-    shortname = "cs",
-    printcolumn = r#"{"name":"Port","type":"integer","jsonPath":".spec.port"}"#,
-    printcolumn = r#"{"name":"Host","type":"string","jsonPath":".spec.host"}"#
-)]
-pub struct ConduitSiteSpec {
-    /// TCP port to listen on. Default: 80 (HTTP) or 443 (HTTPS).
-    pub port: Option<u16>,
+/// `site_from_spec` relies on [`ConduitSiteSpec`] using the same field names
+/// (and serde renames) as [`SiteConfig`], so serializing to JSON and
+/// deserializing as `SiteConfig` produces the correct result.
+pub struct ConduitSchema;
 
-    /// Virtual host for request matching. Omit for catch-all.
-    pub host: Option<String>,
+impl CrdConfigBuilder for ConduitSchema {
+    type Site = SiteConfig;
+    type Config = AppConfig;
 
-    /// Upstream proxy target(s). Accepts the same values as `proxy` in
-    /// conduit.json: a URL string, array of URLs, or a route map object.
-    pub proxy: Option<serde_json::Value>,
+    fn site_from_spec(spec: &ConduitSiteSpec) -> Result<SiteConfig> {
+        let json = serde_json::to_value(spec)?;
+        let site: SiteConfig = serde_json::from_value(json)?;
+        Ok(site)
+    }
 
-    /// Static file directory path (equivalent to `static` in conduit.json).
-    #[serde(rename = "static")]
-    pub static_files: Option<serde_json::Value>,
-
-    /// Enable the `/__health__` health-check endpoint.
-    #[serde(rename = "healthCheck")]
-    pub health_check: Option<serde_json::Value>,
-
-    /// TLS configuration (cert, key, acme, httpRedirectPort).
-    pub tls: Option<serde_json::Value>,
-
-    /// Custom response headers added to every response.
-    pub headers: Option<serde_json::Value>,
-
-    /// Fallback response when no route matches.
-    pub fallback: Option<serde_json::Value>,
-
-    /// Access logging configuration.
-    pub logging: Option<serde_json::Value>,
-
-    /// Response compression.
-    pub compression: Option<serde_json::Value>,
-
-    /// Token-bucket rate limiting.
-    #[serde(rename = "rateLimit")]
-    pub rate_limit: Option<serde_json::Value>,
-
-    /// HTTP Basic authentication.
-    #[serde(rename = "basicAuth")]
-    pub basic_auth: Option<serde_json::Value>,
-
-    /// API-key authentication.
-    #[serde(rename = "apiKey")]
-    pub api_key: Option<serde_json::Value>,
-
-    /// IP allow/deny filter.
-    #[serde(rename = "ipFilter")]
-    pub ip_filter: Option<serde_json::Value>,
-
-    /// CORS configuration.
-    pub cors: Option<serde_json::Value>,
-
-    /// Prometheus metrics endpoint.
-    pub metrics: Option<serde_json::Value>,
-
-    /// File upload endpoint.
-    pub upload: Option<serde_json::Value>,
-
-    /// Redirect rules.
-    pub redirects: Option<serde_json::Value>,
-
-    /// Rhai scripting middleware.
-    pub middleware: Option<serde_json::Value>,
-
-    /// Advanced routes array.
-    pub routes: Option<serde_json::Value>,
+    fn build_config(sites: Vec<SiteConfig>, admin_bind: &str) -> AppConfig {
+        AppConfig {
+            global: Some(GlobalConfig {
+                admin: Some(AdminConfig {
+                    bind: Some(admin_bind.to_owned()),
+                    token: None,
+                }),
+                ..Default::default()
+            }),
+            sites,
+        }
+    }
 }
-
-/// Status subresource written back by the Conduit controller.
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, Default)]
-pub struct ConduitSiteStatus {
-    /// Human-readable summary (e.g. "Listening on :8080").
-    pub message: Option<String>,
-    /// Whether this site is currently active.
-    pub ready: Option<bool>,
-}
-
-// ── Provider ──────────────────────────────────────────────────────────────────
 
 /// Stream [`AppConfig`] updates from `ConduitSite` Kubernetes CRDs.
 ///
-/// Connects to the current cluster (via `KUBECONFIG` or in-cluster service
-/// account), lists all `ConduitSite` resources in the configured namespace,
-/// and watches for changes.  Every add/modify/delete event rebuilds the full
-/// [`AppConfig`] and sends it on the channel.
-pub struct KubernetesProvider {
-    /// Kubernetes namespace to watch. Use `"default"` for the default namespace
-    /// or `"*"` to watch all namespaces.
-    pub namespace: String,
-    /// Address for the Admin API (forwarded into the generated GlobalConfig).
-    pub admin_bind: String,
-}
+/// See [`conduit_k8s::KubernetesProvider`] for the generic mechanism
+/// (list+watch, namespace handling, error recovery).
+pub type KubernetesProvider = conduit_k8s::KubernetesProvider<ConduitSchema>;
 
-impl KubernetesProvider {
-    /// Create a provider that watches the given namespace.
-    pub fn new(namespace: impl Into<String>) -> Self {
-        Self {
-            namespace: namespace.into(),
-            admin_bind: "127.0.0.1:2019".to_owned(),
-        }
-    }
-
-    /// Override the Admin API bind address in the generated config.
-    #[must_use]
-    pub fn with_admin_bind(mut self, bind: impl Into<String>) -> Self {
-        self.admin_bind = bind.into();
-        self
-    }
-}
-
-#[async_trait]
-impl Provider<AppConfig> for KubernetesProvider {
-    fn name(&self) -> &'static str {
-        "kubernetes"
-    }
-
-    async fn run(&self, tx: mpsc::Sender<AppConfig>) -> Result<()> {
-        let client = Client::try_default().await?;
-        let api: Api<ConduitSite> = make_api(&client, &self.namespace);
-
-        // Build and send the initial config from the current list of CRDs.
-        let list = api.list(&Default::default()).await?;
-        let cfg = build_app_config(list.items.iter(), &self.admin_bind)?;
-        if tx.send(cfg).await.is_err() {
-            return Ok(());
-        }
-        tracing::info!(
-            provider = "kubernetes",
-            namespace = %self.namespace,
-            sites = list.items.len(),
-            "initial config loaded from ConduitSite CRDs"
-        );
-
-        // Watch for changes and rebuild the full config on every event.
-        let mut stream = watcher(api, WatcherConfig::default()).boxed();
-        while let Some(event) = stream.next().await {
-            match event {
-                Ok(_) => {
-                    if !handle_watch_event(&client, &self.namespace, &self.admin_bind, &tx).await {
-                        return Ok(());
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "ConduitSite watch error");
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
-
-// ── Internal watch helpers ────────────────────────────────────────────────────
-
-/// Create a typed API client scoped to the given namespace.
-/// Use `"*"` to watch all namespaces.
-fn make_api(client: &Client, namespace: &str) -> Api<ConduitSite> {
-    if namespace == "*" {
-        Api::all(client.clone())
-    } else {
-        Api::namespaced(client.clone(), namespace)
-    }
-}
-
-/// Re-list all `ConduitSite` CRDs and send a fresh [`AppConfig`] on the channel.
+/// Convert a [`ConduitSiteSpec`] to a [`SiteConfig`] via JSON round-trip.
 ///
-/// Returns `true` if the update was sent (or was a no-op), `false` when the
-/// receiver has been dropped and the caller should shut down.
-async fn handle_watch_event(
-    client: &Client,
-    namespace: &str,
-    admin_bind: &str,
-    tx: &mpsc::Sender<AppConfig>,
-) -> bool {
-    // Re-list to get a consistent snapshot after any change.
-    // In production this could be optimised to maintain an in-memory cache
-    // updated by the events.
-    let api: Api<ConduitSite> = make_api(client, namespace);
-    match api.list(&Default::default()).await {
-        Ok(list) => {
-            let cfg = match build_app_config(list.items.iter(), admin_bind) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "failed to rebuild config from ConduitSite CRDs — keeping current config"
-                    );
-                    return true;
-                }
-            };
-            tracing::info!(
-                provider = "kubernetes",
-                sites = list.items.len(),
-                "config updated from ConduitSite CRDs"
-            );
-            tx.send(cfg).await.is_ok()
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to re-list ConduitSite CRDs after event");
-            true
-        }
-    }
+/// Thin wrapper over [`ConduitSchema::site_from_spec`] kept at its original
+/// name and signature (recipe rule 3) — `conduit_k8s::build_app_config` is
+/// generic over the schema binding, so a direct re-export can't preserve the
+/// original turbofish-free call signature the way this wrapper does.
+pub fn spec_to_site_config(spec: &ConduitSiteSpec) -> Result<SiteConfig> {
+    ConduitSchema::site_from_spec(spec)
 }
-
-// ── CRD → AppConfig conversion ────────────────────────────────────────────────
 
 /// Build an [`AppConfig`] from a list of `ConduitSite` CRDs.
 ///
-/// Each spec is converted to a [`SiteConfig`] via a `serde_json` round-trip,
-/// which works because `ConduitSiteSpec` field names mirror `SiteConfig`.
+/// Thin wrapper over [`conduit_k8s::build_app_config`] bound to
+/// [`ConduitSchema`] — same reasoning as [`spec_to_site_config`] above.
 pub fn build_app_config<'a>(
     sites: impl Iterator<Item = &'a ConduitSite>,
     admin_bind: &str,
 ) -> Result<AppConfig> {
-    let mut site_configs: Vec<SiteConfig> = Vec::new();
-
-    for crd in sites {
-        let site = spec_to_site_config(&crd.spec).map_err(|e| {
-            anyhow::anyhow!(
-                "ConduitSite '{}': {}",
-                crd.metadata.name.as_deref().unwrap_or("<unnamed>"),
-                e
-            )
-        })?;
-        site_configs.push(site);
-    }
-
-    Ok(AppConfig {
-        global: Some(GlobalConfig {
-            admin: Some(AdminConfig {
-                bind: Some(admin_bind.to_owned()),
-                token: None,
-            }),
-            ..Default::default()
-        }),
-        sites: site_configs,
-    })
-}
-
-/// Convert a [`ConduitSiteSpec`] to a [`SiteConfig`] via JSON round-trip.
-///
-/// This relies on `ConduitSiteSpec` using the same field names (and serde
-/// renames) as `SiteConfig`, so serializing to JSON and deserializing as
-/// `SiteConfig` produces the correct result.
-pub fn spec_to_site_config(spec: &ConduitSiteSpec) -> Result<SiteConfig> {
-    let json = serde_json::to_value(spec)?;
-    let site: SiteConfig = serde_json::from_value(json)?;
-    Ok(site)
+    conduit_k8s::build_app_config::<ConduitSchema>(sites, admin_bind)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+//
+// These cover the *schema-specific* behavior of `ConduitSchema`'s JSON
+// round-trip against the real `SiteConfig`/`AppConfig` types — the generic
+// list+watch mechanism's own tests (constructor/builder fields, generic
+// error-attribution) moved to `crates/conduit-k8s/src/provider.rs`, which
+// can't test against the real schema without creating a dependency cycle.
 
 #[cfg(test)]
 mod tests {
@@ -419,6 +219,7 @@ mod tests {
 
     #[test]
     fn kubernetes_provider_name_is_kubernetes() {
+        use conduit_config_core::provider::Provider as _;
         assert_eq!(KubernetesProvider::new("default").name(), "kubernetes");
     }
 
