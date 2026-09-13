@@ -815,6 +815,68 @@ mod jwt {
         );
     }
 
+    /// #360: a `rateLimit` configured under `routes[*].proxy.rateLimit`
+    /// (Phase 3.6 advanced routing) must actually be enforced — previously
+    /// the enforcement path (`router.rs::find_route_rate_limit`) only ever
+    /// scanned the legacy `proxy` map, so this config parsed and validated
+    /// fine but was completely inert at runtime for any request resolved via
+    /// `routes[]`.
+    #[test]
+    fn routes_array_rate_limit_exceeded_returns_429() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in upstream.incoming() {
+                let Ok(mut s) = stream else { break };
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+            }
+        });
+
+        let port = common::free_port();
+        let admin_port = common::free_port();
+        let srv = common::TestServer::start_with_config(
+            port,
+            admin_port,
+            serde_json::json!({
+                "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+                "sites": [{
+                    "port": port,
+                    "routes": [{
+                        "match": { "path": "/api/**" },
+                        "proxy": {
+                            "targets": [ format!("http://{upstream_addr}") ],
+                            "rateLimit": { "windowSecs": 3600, "limit": 2, "keyBy": "ip" }
+                        }
+                    }]
+                }]
+            }),
+        );
+
+        // First 2 requests (limit=2) pass.
+        for _ in 0..2 {
+            let resp = plain_client()
+                .get(srv.url("/api/x"))
+                .send()
+                .expect("GET /api/x");
+            assert_eq!(resp.status().as_u16(), 200, "first 2 requests should pass");
+        }
+        // 3rd request must be rate-limited.
+        let resp = plain_client()
+            .get(srv.url("/api/x"))
+            .send()
+            .expect("GET /api/x");
+        assert_eq!(
+            resp.status().as_u16(),
+            429,
+            "3rd request must be rate-limited (routes[] per-route limit=2)"
+        );
+    }
+
     // ── JWKS / RS256 / ES256 end-to-end (issue #164) ────────────────────────
     //
     // RSA-2048 / P-256 test key material is generated fresh at test-run

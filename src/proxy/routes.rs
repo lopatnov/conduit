@@ -38,15 +38,26 @@ pub fn match_routes(
     upstream_health: &UpstreamRegistry,
     static_options: Option<&StaticOptions>,
 ) -> Option<RouteResult> {
-    for route in routes {
+    for (i, route) in routes.iter().enumerate() {
         if route_matches(&route.r#match, path, method, req_headers, query) {
-            return Some(route_to_result(
-                route,
-                path,
-                counters,
-                upstream_health,
-                static_options,
-            ));
+            let mut result =
+                route_to_result(route, path, counters, upstream_health, static_options);
+            // Stamp the matched route's rate limit/priority (#360), same as
+            // the `proxy` map path in `router.rs::resolve_proxy_routes` —
+            // applied regardless of which of `route_to_result`'s internal
+            // outcomes (proxy/static/overloaded/fallback) actually returned.
+            // An index-based key (`routes[{i}]`) is used rather than the
+            // match pattern itself: two `routes[]` entries can legally share
+            // a path glob and differ only by method/header, and would
+            // otherwise wrongly share a rate-limit bucket.
+            if let Some(target) = &route.proxy {
+                let route_key = format!("routes[{i}]");
+                let (route_rate_limit, route_priority) =
+                    router::route_limits_from_target(target, &route_key);
+                result.route_rate_limit = route_rate_limit;
+                result.route_priority = route_priority;
+            }
+            return Some(result);
         }
     }
     None
@@ -400,6 +411,10 @@ fn full_cfg_to_result(
             .and_then(|hc| hc.unhealthy_latency_ms),
         websocket_allowed: cfg.websocket.unwrap_or(false),
         sticky_set_cookie: None, // routes.rs path: sticky is handled in router.rs
+        // Stamped by `match_routes` after this function returns (#360), same
+        // as every other return path in this file (fallback/overloaded).
+        route_rate_limit: None,
+        route_priority: None,
     }
 }
 

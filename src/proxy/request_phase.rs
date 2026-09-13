@@ -523,7 +523,7 @@ impl ConduitProxy {
         // scopes the route-level bucket key so two sites with the same route
         // key and client don't collide (#304's route-level twin).
         if self
-            .enforce_route_rate_limit(session, &req_ctx, site, &site_label)
+            .enforce_route_rate_limit(session, &req_ctx, &site_label)
             .await?
         {
             return Ok(true);
@@ -750,10 +750,15 @@ impl ConduitProxy {
     /// Per-route token-bucket rate limiting, applied after the site-level
     /// guard chain — once the route is known.
     ///
-    /// `site` is the route-resolved site from the request's config snapshot
-    /// (passed in by `do_request_filter`) so this shares the routing snapshot.
-    /// `site_label` scopes the bucket key so the same route key on two
-    /// different sites doesn't collide (see `rate_limit::route_key`).
+    /// Reads `req_ctx.route_rate_limit`, stamped at routing time by whichever
+    /// matcher actually matched (`proxy` map or `routes[]` — see
+    /// `router::RouteRateLimit`, issue #360). This replaced a second,
+    /// post-routing path matcher (`router::find_route_rate_limit`, deleted)
+    /// that only ever scanned `site.proxy` — a site with both `routes[]` and
+    /// a `proxy` map could get the *non-selected* mechanism's rate limit
+    /// applied to a `routes[]`-served request. `site_label` scopes the bucket
+    /// key so the same route key on two different sites doesn't collide (see
+    /// `rate_limit::route_key`).
     ///
     /// Returns `Ok(true)` when the request was rejected with 429 (response
     /// written, inflight counters decremented), `Ok(false)` to continue.
@@ -761,19 +766,16 @@ impl ConduitProxy {
         &self,
         session: &mut Session,
         req_ctx: &RequestCtx,
-        site: Option<&SiteConfig>,
         site_label: &str,
     ) -> Result<bool> {
-        // Borrow the path directly from the session — `find_route_rate_limit`
-        // takes `&str`, so there is no need to allocate an owned String on the
-        // rate-limit hot path.
+        let Some(route_rl) = req_ctx.route_rate_limit.as_ref() else {
+            return Ok(false);
+        };
+        let rl_cfg = &route_rl.config;
+        let route_key = route_rl.route_key.as_str();
+        // Borrow the path directly from the session — only needed for the
+        // `skipPaths` check below, no allocation on the rate-limit hot path.
         let path = session.req_header().uri.path();
-        let Some(site) = site else {
-            return Ok(false);
-        };
-        let Some((rl_cfg, route_key)) = router::find_route_rate_limit(site, path) else {
-            return Ok(false);
-        };
         // #307: skipPaths is a documented, undisclaimed route-level field
         // (unlike dryRun/store, which the schema explicitly states are
         // site-level-only) — wire it up. Useful for a broad route pattern
@@ -785,7 +787,7 @@ impl ConduitProxy {
         {
             return Ok(false);
         }
-        let client_key = rate_limit::extract_client_key(&rl_cfg, session);
+        let client_key = rate_limit::extract_client_key(rl_cfg, session);
         // #322: route-level `store: "redis://..."` now actually routes
         // through Redis, mirroring the site-level check in
         // `filter::chain::rate_limit_allowed`. Scoped by
@@ -799,7 +801,7 @@ impl ConduitProxy {
             .is_some_and(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
         {
             if let Some(rrl) = &self.state.redis_rate_limiter {
-                let scope = rate_limit::redis_route_scope(site_label, &route_key);
+                let scope = rate_limit::redis_route_scope(site_label, route_key);
                 let allowed = rrl
                     .check(
                         &scope,
@@ -810,18 +812,18 @@ impl ConduitProxy {
                     )
                     .await;
                 return self
-                    .finish_route_rate_limit(session, req_ctx, &route_key, allowed)
+                    .finish_route_rate_limit(session, req_ctx, route_key, allowed)
                     .await;
             }
         }
-        let key = rate_limit::route_key(site_label, &route_key, &client_key);
+        let key = rate_limit::route_key(site_label, route_key, &client_key);
         // Routed through the shared MAX_BUCKETS-capped admission point
         // (issue #305) instead of a hand-rolled, uncapped
         // entry()/or_insert_with() — this was a real DoS bypass on the
         // documented `keyBy: "header:X-Name"` usage pattern, since this map
         // is shared with the site-level limiter's own cap check.
-        let allowed = conduit_ratelimit::check_key_for(&self.state.rate_limiter, &key, &rl_cfg);
-        self.finish_route_rate_limit(session, req_ctx, &route_key, allowed)
+        let allowed = conduit_ratelimit::check_key_for(&self.state.rate_limiter, &key, rl_cfg);
+        self.finish_route_rate_limit(session, req_ctx, route_key, allowed)
             .await
     }
 
@@ -864,8 +866,11 @@ impl ConduitProxy {
     /// Priority-based load shedding (post-routing).
     ///
     /// When the site is above its priority threshold, low-priority routes
-    /// are shed with 503.  Priority is determined solely by the route config
-    /// (proxy.*.priority).
+    /// are shed with 503.  Priority is read from `req_ctx.route_priority`,
+    /// stamped at routing time by whichever matcher actually matched
+    /// (`proxy` map or `routes[]` — see `router::route_limits_from_target`,
+    /// issue #360) instead of being re-derived here via a second,
+    /// post-routing path matcher that could disagree with routing.
     ///
     /// SECURITY: We intentionally do NOT trust the `X-Priority` header from
     /// downstream clients — an attacker could send `X-Priority: 100` to
@@ -873,7 +878,8 @@ impl ConduitProxy {
     /// prevent it from leaking to the upstream as well.
     ///
     /// `site` is the route-resolved site from the request's config snapshot
-    /// (passed in by `do_request_filter`) so this shares the routing snapshot.
+    /// (passed in by `do_request_filter`) so this shares the routing snapshot
+    /// — still needed here for `site.limits`.
     ///
     /// Returns `Ok(true)` when the request was shed with 503 (response
     /// written, inflight counters decremented), `Ok(false)` to continue.
@@ -887,9 +893,6 @@ impl ConduitProxy {
         // by the upstream to grant itself elevated priority on retries.
         let _ = session.req_header_mut().remove_header("x-priority");
 
-        // Borrow the path directly from the session — it is only used for the
-        // route priority lookup below, which takes `&str`.
-        let path = session.req_header().uri.path();
         let Some(site) = site else {
             return Ok(false);
         };
@@ -911,7 +914,7 @@ impl ConduitProxy {
         // set this header; Conduit maps urgency 0–7 to 100–2 and takes the
         // maximum so that clients can signal high urgency but not bypass
         // server-assigned priority.
-        let route_priority = router::find_route_priority(site, path).unwrap_or(50);
+        let route_priority = req_ctx.route_priority.unwrap_or(50);
         let rfc9218_priority = session
             .req_header()
             .headers

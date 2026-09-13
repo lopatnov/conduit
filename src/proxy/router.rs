@@ -7,14 +7,29 @@ use dashmap::DashMap;
 
 use crate::config::schema::{
     AppConfig, CacheConfig, ConnectionPoolConfig, LoadBalanceStrategy, ProxyConfig,
-    ProxyRouteTarget, ProxyTimeout, RetryConfig, RewriteRule, SiteConfig, StickyConfig,
-    UpstreamGroup, UpstreamTlsConfig,
+    ProxyRouteTarget, ProxyTimeout, RateLimitConfig, RetryConfig, RewriteRule, SiteConfig,
+    StickyConfig, UpstreamGroup, UpstreamTlsConfig,
 };
 use crate::proxy::capacity;
 use crate::proxy::ctx::{LocalHandler, RequestCtx, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
 use crate::proxy::slow_start::Ramp;
 use crate::proxy::upstream;
+
+/// Per-route rate limit plus the bucket-key fragment identifying the route
+/// it came from. Populated at routing time by whichever matcher matched
+/// (`proxy` map or `routes[]`), so enforcement (`request_phase.rs::
+/// enforce_route_rate_limit`) can never disagree with the routing decision —
+/// see issue #360, which found the previous approach (a *second*,
+/// post-routing path matcher scanning only `site.proxy`) could apply the
+/// wrong route's rate limit to a request that actually resolved via
+/// `site.routes[]`.
+#[derive(Debug, Clone)]
+pub struct RouteRateLimit {
+    pub config: RateLimitConfig,
+    /// `proxy` map key (e.g. `/api`) or `routes[{i}]`.
+    pub route_key: String,
+}
 
 /// Resolved routing result: all per-route data needed to populate `RequestCtx`.
 ///
@@ -57,6 +72,14 @@ pub struct RouteResolution {
     /// `Some((name, value))` when `sticky.secret` is configured.  The
     /// `upstream_response_filter` in `service.rs` injects the header.
     pub sticky_set_cookie: Option<(String, String)>,
+    /// Per-route rate limit selected during routing (#360). `None` when the
+    /// matched route has no `rateLimit` configured, or for `ProxyConfig::
+    /// Single`/static/fallback resolutions (`local()` below).
+    pub route_rate_limit: Option<RouteRateLimit>,
+    /// Effective route priority (`proxy.*.priority`) selected during routing
+    /// (#360), for post-routing load-shedding. `None` when the matched route
+    /// has no `priority` configured.
+    pub route_priority: Option<u8>,
 }
 
 impl RouteResolution {
@@ -76,6 +99,8 @@ impl RouteResolution {
             passive_unhealthy_latency_ms: None,
             websocket_allowed: false,
             sticky_set_cookie: None,
+            route_rate_limit: None,
+            route_priority: None,
         }
     }
 }
@@ -148,6 +173,12 @@ pub fn route_request(
     ctx.websocket_allowed = res.websocket_allowed;
     ctx.sticky_set_cookie = res.sticky_set_cookie;
     ctx.upstream_conn_slot = res.upstream_conn_slot;
+    // #360: carried on the routing decision itself so enforcement
+    // (`request_phase.rs::enforce_route_rate_limit`/`shed_low_priority_request`)
+    // can never disagree with which mechanism (`proxy` map vs. `routes[]`)
+    // actually matched.
+    ctx.route_rate_limit = res.route_rate_limit;
+    ctx.route_priority = res.route_priority;
     ctx
 }
 
@@ -363,12 +394,58 @@ fn resolve_proxy(config: &ProxyConfig, ctx: &ProxyCtx<'_>) -> Option<RouteResult
     }
 }
 
+/// Match a request against the `proxy` map's routes and stamp the matched
+/// route's rate limit/priority onto the resulting resolution.
+///
+/// The stamp is applied **after** [`resolve_proxy_routes_for_target`]
+/// returns, regardless of which of its several internal return paths
+/// (grouped / backup / overloaded / sticky-reject / normal) actually
+/// produced the result — a request that matches a route but falls through to
+/// an overloaded/backup outcome must still carry that route's rate limit
+/// (#360): the previous design (a second, post-routing path matcher) applied
+/// unconditionally to every outcome, so replicating that here means
+/// evaluating `route_limits_from_target` once up front and applying it to
+/// whatever `Some(result)` comes back, rather than stamping only inside the
+/// "normal" success branch.
 fn resolve_proxy_routes(
     routes: &indexmap::IndexMap<String, ProxyRouteTarget>,
     ctx: &ProxyCtx<'_>,
 ) -> Option<RouteResult> {
     let (route_key, route_target) = find_route(routes, ctx.path)?;
+    let (route_rate_limit, route_priority) = route_limits_from_target(route_target, route_key);
 
+    let mut result = resolve_proxy_routes_for_target(route_key, route_target, ctx)?;
+    result.route_rate_limit = route_rate_limit;
+    result.route_priority = route_priority;
+    Some(result)
+}
+
+/// Extract the per-route rate limit / priority from a matched `ProxyRouteTarget`.
+///
+/// Returns `(None, None)` for the `Url`/`RoundRobin` shorthand variants —
+/// only `Full(ProxyRouteConfig)` carries `rateLimit`/`priority`. Shared
+/// between the legacy `proxy` map path (`resolve_proxy_routes` above) and the
+/// `routes[]` array path (`routes.rs::match_routes`) so both matchers stamp
+/// the resolution the exact same way (#360).
+pub(crate) fn route_limits_from_target(
+    target: &ProxyRouteTarget,
+    route_key: &str,
+) -> (Option<RouteRateLimit>, Option<u8>) {
+    let ProxyRouteTarget::Full(cfg) = target else {
+        return (None, None);
+    };
+    let rate_limit = cfg.rate_limit.clone().map(|config| RouteRateLimit {
+        config,
+        route_key: route_key.to_owned(),
+    });
+    (rate_limit, cfg.priority)
+}
+
+fn resolve_proxy_routes_for_target(
+    route_key: &str,
+    route_target: &ProxyRouteTarget,
+    ctx: &ProxyCtx<'_>,
+) -> Option<RouteResult> {
     // ── Two-level (grouped) routing ─────────────────────────────────────────
     // When the route config has `groups`, bypass flat-target logic and
     // resolve via pick_group → pick_within_group.
@@ -607,6 +684,10 @@ fn resolve_proxy_routes(
         passive_unhealthy_latency_ms: opts.unhealthy_latency_ms,
         websocket_allowed: opts.websocket,
         sticky_set_cookie,
+        // Stamped by the `resolve_proxy_routes` wrapper below, regardless of
+        // which of this function's return paths produced the result (#360).
+        route_rate_limit: None,
+        route_priority: None,
     })
 }
 
@@ -972,6 +1053,10 @@ fn resolve_grouped(
         passive_unhealthy_latency_ms: None,
         websocket_allowed: false, // groups don't support websocket config in V1
         sticky_set_cookie: None,  // groups don't support sticky in V1
+        // Stamped by the `resolve_proxy_routes` wrapper (#360), same as the
+        // flat-target path above.
+        route_rate_limit: None,
+        route_priority: None,
     })
 }
 
@@ -1193,46 +1278,18 @@ fn find_route<'a>(
     best
 }
 
-/// Find the per-route rate-limit config for the given request path.
-///
-/// Returns `(RateLimitConfig, route_key)` when the matched proxy route has a
-/// `rateLimit` block.  The `route_key` is prepended to the bucket key so that
-/// per-route buckets don't clash with site-level buckets.
-///
-/// Returns `None` when:
-/// - The site has no `proxy` config
-/// - The matched route has no `rateLimit` block
-/// - The route is not a `Full(ProxyRouteConfig)` variant
-pub fn find_route_rate_limit(
-    site: &SiteConfig,
-    path: &str,
-) -> Option<(crate::config::schema::RateLimitConfig, String)> {
-    use crate::config::schema::ProxyConfig;
-    if let Some(ProxyConfig::Routes(routes)) = &site.proxy {
-        if let Some((route_key, ProxyRouteTarget::Full(cfg))) = find_route(routes, path) {
-            if let Some(rl) = &cfg.rate_limit {
-                return Some((rl.clone(), route_key.to_owned()));
-            }
-        }
-    }
-    None
-}
-
-/// Return the effective priority for the matched route, if any.
-///
-/// Returns `None` when:
-/// - The site has no `routes` proxy block
-/// - No route matches `path`
-/// - The matched route has no `priority` field
-pub fn find_route_priority(site: &SiteConfig, path: &str) -> Option<u8> {
-    use crate::config::schema::ProxyConfig;
-    if let Some(ProxyConfig::Routes(routes)) = &site.proxy {
-        if let Some((_, ProxyRouteTarget::Full(cfg))) = find_route(routes, path) {
-            return cfg.priority;
-        }
-    }
-    None
-}
+// `find_route_rate_limit`/`find_route_priority` (a second, post-routing path
+// matcher scanning only `site.proxy`) were deleted for issue #360 — they
+// could disagree with the routing decision itself: a site with both
+// `routes[]` and a `proxy` map (a legal, documented backward-compatible
+// shape) got the *non-selected* mechanism's rate limit applied to
+// `routes[]`-served requests. Rate limit/priority are now stamped onto the
+// `RouteResolution`/`RequestCtx` directly by whichever matcher actually
+// matched (`route_limits_from_target` above, called from both
+// `resolve_proxy_routes` here and `routes.rs::match_routes`), so enforcement
+// reads `RequestCtx.route_rate_limit`/`route_priority` and can never disagree
+// with routing. See the deleted functions' former test coverage, now ported
+// to assert through `route_request(...)` instead, further down this file.
 
 /// Parse an RFC 9218 `Priority:` header value and convert to Conduit's 0–100 scale.
 ///
@@ -2235,13 +2292,26 @@ mod tests {
         assert_eq!(parse_rfc9218_priority("u=abc"), None);
     }
 
-    // ── find_route_priority ───────────────────────────────────────────────────
+    // ── route_priority stamping (#360, formerly `find_route_priority`) ────────
+    //
+    // `find_route_priority` was a second, post-routing path matcher that
+    // re-scanned `site.proxy` after routing already happened — deleted for
+    // issue #360 (it could disagree with which mechanism actually matched).
+    // These tests now assert the same behavior through the real routing
+    // entry point, `route_request(...)`, reading `RequestCtx.route_priority`
+    // — proving the legacy `proxy` map path stamps the identical value it
+    // used to return.
 
     fn make_priority_site(path: &str, priority: u8) -> SiteConfig {
-        use crate::config::schema::{ProxyConfig, ProxyRouteConfig, ProxyRouteTarget};
+        use crate::config::schema::{ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget};
         let mut routes = indexmap::IndexMap::new();
+        // A real upstream target is required: with an empty `targets` list,
+        // routing itself produces no resolution at all (not even a
+        // fallback/overloaded one) for this route, so there is nothing to
+        // stamp `route_priority` onto — same reason `route_rate_limit`'s own
+        // fixtures below always carry a real target.
         let mut cfg = ProxyRouteConfig {
-            targets: vec![],
+            targets: vec![ProxyTarget::Simple("http://b:4000".to_owned())],
             ..Default::default()
         };
         cfg.priority = Some(priority);
@@ -2252,14 +2322,39 @@ mod tests {
         }
     }
 
-    #[test]
-    fn find_route_priority_returns_configured_value() {
-        let site = make_priority_site("/api", 80);
-        assert_eq!(find_route_priority(&site, "/api/users"), Some(80));
+    /// Route `path` against `site` (the sole site in a fresh `AppConfig`) and
+    /// return the resulting `RequestCtx.route_priority`.
+    fn route_priority_for(site: SiteConfig, path: &str) -> Option<u8> {
+        let config = AppConfig {
+            sites: vec![site],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        route_request(
+            &config,
+            "localhost",
+            path,
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        )
+        .route_priority
     }
 
     #[test]
-    fn find_route_priority_returns_none_when_not_set() {
+    fn route_priority_returns_configured_value() {
+        let site = make_priority_site("/api", 80);
+        assert_eq!(route_priority_for(site, "/api/users"), Some(80));
+    }
+
+    #[test]
+    fn route_priority_returns_none_when_not_set() {
         use crate::config::schema::{ProxyConfig, ProxyRouteTarget};
         let mut routes = indexmap::IndexMap::new();
         routes.insert(
@@ -2270,20 +2365,21 @@ mod tests {
             proxy: Some(ProxyConfig::Routes(routes)),
             ..Default::default()
         };
-        assert!(find_route_priority(&site, "/").is_none());
+        assert!(route_priority_for(site, "/").is_none());
     }
 
     #[test]
-    fn find_route_priority_no_match_returns_none() {
+    fn route_priority_no_match_returns_none() {
         let site = make_priority_site("/api", 80);
-        // Path does not start with /api → no match → None.
-        assert!(find_route_priority(&site, "/other").is_none());
+        // Path does not start with /api → no match → falls through to
+        // static/fallback, which carries no route priority.
+        assert!(route_priority_for(site, "/other").is_none());
     }
 
     #[test]
-    fn find_route_priority_low_priority_is_zero() {
+    fn route_priority_low_priority_is_zero() {
         let site = make_priority_site("/batch", 0);
-        assert_eq!(find_route_priority(&site, "/batch/jobs"), Some(0));
+        assert_eq!(route_priority_for(site, "/batch/jobs"), Some(0));
     }
 
     #[test]
@@ -2496,16 +2592,46 @@ mod tests {
         ));
     }
 
-    // ── find_route_rate_limit ─────────────────────────────────────────────────
+    // ── route_rate_limit stamping (#360, formerly `find_route_rate_limit`) ────
+    //
+    // `find_route_rate_limit` was the rate-limit twin of `find_route_priority`
+    // above — same deletion reason (#360). These tests assert the identical
+    // `(config, route_key)` pair is now stamped onto `RequestCtx.route_rate_limit`
+    // by the real routing entry point instead.
 
-    #[test]
-    fn find_route_rate_limit_returns_none_when_no_proxy() {
-        let site = SiteConfig::default();
-        assert!(find_route_rate_limit(&site, "/api").is_none());
+    /// Route `path` against `site` (the sole site in a fresh `AppConfig`) and
+    /// return the resulting `RequestCtx.route_rate_limit`.
+    fn route_rate_limit_for(site: SiteConfig, path: &str) -> Option<RouteRateLimit> {
+        let config = AppConfig {
+            sites: vec![site],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        route_request(
+            &config,
+            "localhost",
+            path,
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        )
+        .route_rate_limit
     }
 
     #[test]
-    fn find_route_rate_limit_returns_rl_when_configured() {
+    fn route_rate_limit_returns_none_when_no_proxy() {
+        let site = SiteConfig::default();
+        assert!(route_rate_limit_for(site, "/api").is_none());
+    }
+
+    #[test]
+    fn route_rate_limit_returns_rl_when_configured() {
         use crate::config::schema::{
             ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig,
         };
@@ -2532,11 +2658,147 @@ mod tests {
             proxy: Some(ProxyConfig::Routes(routes)),
             ..Default::default()
         };
-        let result = find_route_rate_limit(&site, "/api/users");
+        let result = route_rate_limit_for(site, "/api/users");
         assert!(result.is_some(), "rate limit must be found for /api prefix");
-        let (rl, key) = result.unwrap();
-        assert_eq!(rl.limit, 100);
-        assert!(key.contains("api"), "route key must contain 'api': {key}");
+        let result = result.unwrap();
+        assert_eq!(result.config.limit, 100);
+        assert!(
+            result.route_key.contains("api"),
+            "route key must contain 'api': {}",
+            result.route_key
+        );
+    }
+
+    /// The core regression this fix guards against: a site with BOTH
+    /// `routes[]` and a legacy `proxy` map (a legal, documented
+    /// backward-compatible shape) must not let the *non-selected* mechanism's
+    /// rate limit leak onto a request served by the other one. Before #360's
+    /// fix, `find_route_rate_limit` scanned only `site.proxy` regardless of
+    /// which mechanism actually matched — a request resolved via `routes[]`
+    /// would wrongly inherit the proxy map's rate limit. Confirmed to fail
+    /// against the pre-fix code (see this PR's description) before trusting
+    /// this as a regression guard.
+    #[test]
+    fn routes_array_match_does_not_inherit_proxy_map_rate_limit() {
+        use crate::config::schema::{
+            MatchConfig, ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget,
+            RateLimitConfig, RouteConfig,
+        };
+        let mut proxy_map = indexmap::IndexMap::new();
+        proxy_map.insert(
+            "/".to_owned(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://legacy:4000".to_owned())],
+                rate_limit: Some(RateLimitConfig {
+                    limit: 5,
+                    window_secs: 60,
+                    burst: None,
+                    key_by: None,
+                    skip_paths: None,
+                    dry_run: None,
+                    store: None,
+                    algorithm: None,
+                }),
+                ..Default::default()
+            })),
+        );
+        let route = RouteConfig {
+            r#match: MatchConfig {
+                path: Some("/api/**".to_owned()),
+                ..Default::default()
+            },
+            // No `rateLimit` on the routes[] entry itself.
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://api:4000".to_owned())],
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let site = SiteConfig {
+            proxy: Some(ProxyConfig::Routes(proxy_map)),
+            routes: Some(vec![route]),
+            ..Default::default()
+        };
+        assert!(
+            route_rate_limit_for(site, "/api/x").is_none(),
+            "a routes[]-matched request must not inherit the non-selected proxy map's rate limit"
+        );
+    }
+
+    /// A route matches but every upstream is at its connection cap (circuit
+    /// breaker → `Overloaded`, not the "normal" success `RouteResolution`
+    /// literal). The rate limit must still be stamped on this outcome — the
+    /// old design (a second, outcome-independent post-routing scan) applied
+    /// regardless of what routing actually produced, so stamping only on the
+    /// success path would silently drop rate limiting exactly when every
+    /// upstream is down (a DoS regression). Proves the stamp is applied by
+    /// `resolve_proxy_routes`'s wrapper around every return path, not just
+    /// inline in the success branch.
+    #[test]
+    fn route_rate_limit_stamped_even_when_overloaded() {
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig,
+            UpstreamHealthCheck,
+        };
+        let mut routes = indexmap::IndexMap::new();
+        routes.insert(
+            "/api".to_owned(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://b:4000".to_owned())],
+                health_check: Some(UpstreamHealthCheck {
+                    max_connections_per_upstream: Some(1),
+                    ..Default::default()
+                }),
+                rate_limit: Some(RateLimitConfig {
+                    limit: 10,
+                    window_secs: 60,
+                    burst: None,
+                    key_by: None,
+                    skip_paths: None,
+                    dry_run: None,
+                    store: None,
+                    algorithm: None,
+                }),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        // Fill the connection slot (count = 1 = max) so capacity is exhausted.
+        reg.conn_inc("http://b:4000");
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/api/x",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(
+            matches!(
+                ctx.upstream,
+                UpstreamTarget::Local(LocalHandler::Overloaded)
+            ),
+            "expected Overloaded, got {:?}",
+            ctx.upstream
+        );
+        assert!(
+            ctx.route_rate_limit.is_some(),
+            "rate limit must still be stamped on an overloaded resolution, not only on the success path"
+        );
     }
 
     // ── match_static_or_fallback ──────────────────────────────────────────────
