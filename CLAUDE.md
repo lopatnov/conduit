@@ -18,19 +18,28 @@
 > реальному поведению зависимости, а не произвольной более новой/старой версии).
 > **`/cleanup` не должен трогать `.reference/`** — это не разовый scratch для одной
 > проверки, а накопительный кэш источников, которым сессии пользуются повторно; см. также
-> `.claude/rules/index.md`. По состоянию на 2026-09-12 уже склонированы: `pingora` (tag
-> `0.9.0` — при апгрейде с текущего запиненного 0.8.1, см. сессионный лог ниже) и `tokio`
-> (tag `tokio-1.53.1`, совпадает с `Cargo.lock`).
+> `.claude/rules/index.md`. По состоянию на 2026-09-13 уже склонированы: `pingora` (tag
+> `0.9.0` — при апгрейде с текущего запиненного 0.8.1, см. сессионный лог ниже), `tokio`
+> (tag `tokio-1.53.1`, совпадает с `Cargo.lock`), `axum` (tag `axum-v0.8.9`), `kube` (tag
+> `4.2.0`), `k8s-openapi` (tag `v0.28.0`), `rhai` (tag `v1.26.0`), `wasmtime` (tag
+> `v48.0.1`, без submodules — `--no-recurse-submodules`, ~118 MB даже так, самый крупный
+> клон в `.reference/`) — все пять последних добавлены по прямому запросу пользователя
+> ("странно что не скачиваешь то, что мы используем") ровно на версии, реально запиненные
+> в `Cargo.lock` на момент клонирования.
 
 ### Rust (прямо применимо к Conduit)
 | `.reference/<name>` | Что даёт |
 |------|---------|
 | `pingora` | КРИТИЧНО. ProxyHttp, TlsSettings, CachePhase, все хуки. Conduit запинен на 0.8.1 (`Cargo.toml`); 0.9.0 вышел 2026-09-09 — см. сессионный лог внизу файла за находки по факту чтения исходника (не changelog), включая реально unblocked backlog-пункты |
 | `tokio` | Async runtime, spawn, channels |
-| `tower` | Service/middleware traits (наш FilterChain построен похоже) |
+| `axum` | Admin API (порт 2019), upload loopback-сервис, hot-reload SSE-эндпоинт. Запинен на `"0.8"` (`Cargo.toml`) — актуально для `{param}` vs `:param` route-синтаксиса (0.7→0.8 breaking change, см. issue #352's ACME-сервер баг) |
+| `kube` | `KubernetesProvider` (`--features kubernetes`), CRD `ConduitSite`. Запинен на `"4.0"`, реально `4.2.0` |
+| `k8s-openapi` | Типы K8s API объектов для `kube`. Запинен на `"0.28"`, feature `v1_32` |
+| `rhai` | Rhai-скриптинг для `type: "script"` middleware (`ScriptGuard`, `on_response` фаза). Запинен на `"1"` с `features = ["sync"]`, реально `1.26.0` |
+| `wasmtime` | WASM plugin middleware (`type: "wasm"`) engine source. Клонировать на tag, совпадающий с `Cargo.lock`'s `wasmtime` (менялся, см. Dependabot-лог) — сейчас `48.0.1` |
+| `tower` | Service/middleware traits (наш FilterChain построен похоже) — не прямая зависимость conduit, только транзитивная через `axum`; референс для дизайна, не для версийной сверки |
 | `http` | HeaderMap, Request/Response типы |
 | `reqwest` | HTTP client (mirror, forwardauth, JWKS) |
-| `wasmtime` | WASM engine source — клонировать на tag, совпадающий с `Cargo.lock`'s `wasmtime` (менялся, см. Dependabot-лог) |
 | `linkerd2-proxy` | **Rust proxy** — `linkerd/http/retry/src/replay.rs` = ReplayBody (body buffering для retry) |
 | `azure-sdk-for-rust` | Azure SDK — `azure_identity` (Managed Identity), `azure_security_keyvault` (Key Vault). Источник для `--features azure` |
 
