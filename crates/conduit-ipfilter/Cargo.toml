@@ -1,0 +1,25 @@
+[package]
+name        = "lopatnov-conduit-ipfilter"
+version.workspace    = true
+edition.workspace    = true
+description = "IP allow/deny filtering config + guard for conduit's feature-driven workspace (issue #114/#136)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_ipfilter"
+path = "src/lib.rs"
+
+[dependencies]
+# No [features] table — ipFilter is always-on (CLAUDE.md decision #31), so
+# every dependency here (including lopatnov-conduit-core, needed by
+# guard::IpGuard) is mandatory, not `optional = true`. See src/lib.rs doc
+# comment for why this crate is not feature-gated like its sibling
+# extractions.
+serde                 = { workspace = true }
+async-trait           = { workspace = true }
+bytes                 = { workspace = true }
+tracing               = { workspace = true }
+pingora-core          = { workspace = true }
+pingora-proxy         = { workspace = true }
+lopatnov-conduit-core = { workspace = true }

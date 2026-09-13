@@ -32,8 +32,8 @@ pub(super) async fn logging(
     // Decrement inflight for proxy requests (local handlers decrement inline).
     proxy.state.metrics.active_connections.dec();
     // The per-IP connection slot is released automatically here:
-    // RequestCtx.ip_conn_slot (IpConnSlotGuard) is dropped when ctx is
-    // cleared at the end of this function, so no manual fetch_sub needed.
+    // RequestCtx.limits.ip_conn_slot (IpConnSlotGuard) is dropped when ctx
+    // is cleared at the end of this function, so no manual fetch_sub needed.
     release_proxy_upstream(proxy, session, ctx);
 
     write_access_log_entry(proxy, session, ctx);
@@ -163,7 +163,7 @@ fn write_access_log_entry(proxy: &ConduitProxy, session: &Session, ctx: &Option<
     logging::write_access_log(
         session,
         start_time,
-        site,
+        site.and_then(|s| s.logging.as_ref()),
         &proxy.state.log_writer,
         &logging::AccessLogContext {
             request_id,
@@ -294,10 +294,11 @@ fn record_cache_metrics(proxy: &ConduitProxy, session: &Session, ctx: &Option<Re
 /// request is still in flight.
 #[cfg(feature = "cache")]
 fn spawn_early_cache_refresh(session: &Session, ctx: &Option<RequestCtx>) {
-    let Some(early_url) = ctx
-        .as_ref()
-        .and_then(|c| c.early_refresh_upstream_url.as_deref().map(str::to_owned))
-    else {
+    let Some(early_url) = ctx.as_ref().and_then(|c| {
+        c.cache
+            .as_ref()
+            .and_then(|s| s.early_refresh_upstream_url.as_deref().map(str::to_owned))
+    }) else {
         return;
     };
     let path = session

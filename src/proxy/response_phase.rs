@@ -64,7 +64,10 @@ pub(super) async fn upstream_response_filter(
             CachePhase::Hit | CachePhase::Stale | CachePhase::StaleUpdating
         ) {
             if let Some(req_ctx_mut) = ctx.as_mut() {
-                req_ctx_mut.cache_age_secs = Some(compute_response_age(upstream_response));
+                req_ctx_mut
+                    .cache
+                    .get_or_insert_with(Default::default)
+                    .cache_age_secs = Some(compute_response_age(upstream_response));
             }
         }
     }
@@ -267,7 +270,10 @@ pub(super) async fn response_filter(
                 early_window_secs,
                 "cache TTL within early-refresh window — scheduling background refresh"
             );
-            req_ctx.early_refresh_upstream_url = Some(upstream_url);
+            req_ctx
+                .cache
+                .get_or_insert_with(Default::default)
+                .early_refresh_upstream_url = Some(upstream_url);
         }
     }
     #[cfg(not(feature = "cache"))]

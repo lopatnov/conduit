@@ -1,0 +1,59 @@
+[package]
+name        = "lopatnov-conduit-acme"
+version.workspace    = true
+edition.workspace    = true
+description = "ACME (Let's Encrypt) auto-TLS config + HTTP-01 certificate flow for conduit's feature-driven workspace (issue #114/#130)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_acme"
+path = "src/lib.rs"
+
+[dependencies]
+# AcmeConfig itself is always compiled — see src/lib.rs doc comment.
+serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
+
+# Everything below is only needed by the real ACME HTTP-01 flow (`flow`) and
+# its challenge-response handler (`challenge`), both gated behind this
+# crate's own `acme` feature (mirrors the pre-extraction
+# `#![cfg(feature = "acme")]` file-level gate). The root crate's `acme`
+# feature forwards into this one via `lopatnov-conduit-acme/acme`.
+anyhow                = { workspace = true, optional = true }
+tracing               = { workspace = true, optional = true }
+dashmap               = { workspace = true, optional = true }
+tokio                 = { workspace = true, optional = true }
+async-trait           = { workspace = true, optional = true }
+bytes                 = { workspace = true, optional = true }
+axum                  = { workspace = true, optional = true }
+pingora-core          = { workspace = true, optional = true }
+pingora-proxy         = { workspace = true, optional = true }
+lopatnov-conduit-core = { workspace = true, optional = true }
+instant-acme          = { workspace = true, optional = true }
+rcgen                 = { workspace = true, optional = true }
+x509-parser           = { workspace = true, optional = true }
+libc                  = { workspace = true, optional = true }
+
+[dev-dependencies]
+time     = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+acme = [
+    "dep:anyhow",
+    "dep:serde_json",
+    "dep:tracing",
+    "dep:dashmap",
+    "dep:tokio",
+    "dep:async-trait",
+    "dep:bytes",
+    "dep:axum",
+    "dep:pingora-core",
+    "dep:pingora-proxy",
+    "dep:lopatnov-conduit-core",
+    "dep:instant-acme",
+    "dep:rcgen",
+    "dep:x509-parser",
+    "dep:libc",
+]

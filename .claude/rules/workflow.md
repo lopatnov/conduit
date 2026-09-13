@@ -76,6 +76,13 @@ Concretely:
   workflow SHA pin). "This one's obviously fine" is precisely the judgment call this rule
   removes — the cost of always running it is deliberately accepted in exchange for not
   having a skippable step at all.
+- **Expect it to sometimes find a gap in the PR's own *new tests*, not just in production
+  code** — this is real value from the gate, not review noise to brush past. Happened twice
+  in immediately adjacent PRs (#372, #373): a freshly-written regression test that passed
+  the standard revert-and-restore negative control anyway had a fixture that couldn't
+  discriminate the bug it claimed to guard (see `.claude/skills/testing/SKILL.md` "Negative
+  controls need a fixture that can actually fail"). Budget for at least one follow-up commit
+  when a PR's main content is a new hash/modulo/ring-selection regression test.
 
 ## When NOT to call an agent (economy)
 
@@ -125,3 +132,26 @@ new state (`scrum-master`).
 - Finish what's started before chasing new ideas — park new ideas in the `CLAUDE.md` backlog.
 - If you see a real risk of running out of budget mid-task: stop, record state clearly
   (for the next session), leave a recommendation — don't push through and lose context.
+- **The account's session-wide model rate limit is a separate resource from the context
+  window, and delegating to a subagent doesn't dodge it** — a same-tier subagent call
+  (e.g. `security-engineer`, sonnet like the conductor) draws from the same pool, so a
+  string of subagent spawns can trip a 429 even with plenty of context headroom left. Hit
+  for real on 2026-08-28: a `security-engineer` delegation failed outright with
+  `rate_limit`/HTTP 429 mid-session. There's no workaround in the moment — report the
+  block to the user (with the stated reset time, if the error gives one) rather than
+  retrying immediately. **Not necessarily a context-size problem**: a `/retro` on
+  2026-08-29 concluded periodic full session rotation (the previous "longer-term fix" this
+  bullet pointed at) doesn't actually address this — this repo's harness compacts context
+  automatically as it nears the ceiling, so a session-wide 429 is more likely an
+  account-level usage-window limit than accumulated context; see
+  `.claude/commands/feature-workspace-cycle.md` Step 0a for the current reasoning.
+- **Once the limit resets, resume the interrupted subagent — don't respawn it fresh.**
+  Confirmed working repeatedly across this project (`crate-extractor` mid-extraction on
+  #134, `security-engineer` mid-review on #158/#345/#371/#373, each at least once): use
+  `SendMessage` addressed to the cut-off agent's own `agentId` (given in its tool result,
+  even on a truncated/errored call) rather than a new `Agent` spawn. The resumed agent
+  keeps everything it had already found or written and just continues from there; a fresh
+  spawn re-derives all of that from a cold-start briefing, which is both slower and risks
+  losing a finding that was never written down anywhere else. This applies whether the
+  session itself was interrupted (the user later says "I hit my usage limit, it's reset
+  now, please continue") or just one subagent call inside an otherwise-continuing session.

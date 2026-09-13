@@ -1,5 +1,4 @@
 pub mod cache;
-mod cache_common;
 pub mod cache_disk;
 #[cfg(feature = "redis")]
 pub mod cache_redis;
@@ -12,6 +11,7 @@ mod response_phase;
 pub mod router;
 pub mod routes;
 pub mod service;
+pub(crate) mod slow_start;
 pub mod strategy;
 #[cfg(feature = "tcp")]
 pub mod tcp;

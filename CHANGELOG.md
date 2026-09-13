@@ -7,10 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [1.4.0] — 2026-09-05
-
 ### Security
 
+- **Per-route and per-consumer rate limiting no longer bypass the shared
+  memory-exhaustion cap.** `rateLimit` at the site level has always refused
+  to create more than 100,000 distinct token buckets, to stop an attacker
+  sending unbounded unique `keyBy: "header:X-Name"` values from exhausting
+  memory. Per-route and per-consumer rate limits shared the same underlying
+  map but bypassed that cap entirely — confirmed as a real DoS vector on the
+  documented usage pattern. All three layers (plus the Redis fallback path)
+  now share one capacity-checked admission point.
+- **Per-route `rateLimit` is now validated at config-load time.** Previously
+  `windowSecs`/`limit`/`algorithm`/`keyBy`/`store` on a per-route rate limit
+  were parsed but never checked — a malformed `keyBy: "header:bad name"`
+  silently collapsed every client into one shared bucket at runtime instead
+  of failing validation up front. Site-level and per-consumer rate limits
+  already validated these fields; per-route now does too, matching them.
 - **CORS `credentials: true` now requires an explicit, non-wildcard `origins`
   allowlist.** Previously, `credentials: true` with `origins` unset (or
   containing `"*"`) echoed the request's `Origin` header back verbatim with
@@ -33,16 +45,105 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the configured limit, that one client is rejected *permanently* instead
   of just for the current window (a transient blip degrading into a
   permanent fail-closed, contradicting the module's own fail-open design).
-  Both commands now run as a single atomic Lua script (`EVAL`).
+  Both commands now run as a single atomic Lua script (`EVAL`), which also
+  self-heals any key already leaked by the old two-round-trip code the next
+  time it's checked.
 
 ### Fixed
 
+- **HMAC-signed sticky sessions now actually route to the upstream their
+  cookie names.** After verifying the cookie against a specific upstream,
+  Conduit threw that result away and instead hashed the upstream's *URL
+  string* back through `hash % len` — which lands on the pinned upstream
+  itself only by coincidence. Measured across 2–8-upstream pools, that
+  coincidence holds about 23% of the time (i.e. chance); with exactly four
+  upstreams it never holds. So a signed session was usually served by a
+  different upstream than the one it was pinned to, silently. The pin is now
+  honored directly whenever its upstream is healthy and under
+  `maxConnectionsPerUpstream`, with the previous relocate-and-self-heal
+  behavior kept for when it isn't. Two knock-on effects are fixed with it:
+  `strict: true` was checking the health of the pinned upstream while
+  serving a different one, and the "capacity relocation" guard (which
+  suppresses cookie re-signing) was firing on nearly every sticky request
+  rather than only on real relocations.
+- **A route with `retry` configured no longer ignores its load-balancing
+  strategy.** The retry path bypassed strategy dispatch entirely and did
+  plain round-robin, so `ipHash`/`consistentHash`, weighted round-robin,
+  least-conn *and* sticky affinity were all silently inert the moment
+  `retry` was added to a route. The first attempt now goes through the same
+  strategy dispatch as a non-retry request, and the retry rotation is
+  anchored to whichever upstream that produced.
+- **Response compression now applies to the metrics endpoint and fallback
+  responses, not just static files.** `compression`'s negotiation logic
+  (`Content-Encoding` selection, `minBytes`/`types` thresholds) was fully
+  implemented and tested but never actually wired into the `/__metrics__`
+  handler or fallback (404/SPA-shell/custom-body) responses — both were
+  always served uncompressed regardless of config. Each response type is
+  still negotiated independently against the site's `compression` config, so
+  a small response may stay uncompressed exactly as before.
 - **A request to `/.well-known/acme-challenge/*` on a build without
   `--features acme` no longer surfaces as a 502.** The path matched
   unconditionally regardless of the compiled feature; without `acme` there
   was no handler to serve it, and the request fell through to Pingora's
   proxy path with no real upstream to select. The path now only matches
   when `acme` is actually compiled in.
+- **`healthCheck.slowStartSecs` now actually ramps traffic to a
+  recently-recovered upstream.** The field was parsed and the underlying
+  fraction calculation existed, but nothing outside its own unit tests ever
+  called it — a freshly-recovered upstream got 100% of its normal traffic
+  share immediately, the exact thundering-herd scenario the feature exists
+  to prevent (`LeastConn` was the worst-affected strategy: a recovered
+  peer's drained connection count made it win every pick until real traffic
+  caught it up). Every load-balance strategy now honors it except
+  `ipHash`/`consistentHash` and sticky sessions, which are deliberately
+  exempt (a probabilistic ramp would break their own consistency
+  guarantee) — configuring both together now logs a warning instead of
+  silently doing nothing.
+- **A `routes[]`-array route with `retry` configured no longer defeats its
+  own load-balancing strategy on the first attempt.** The retry candidate
+  list was built independently of the peer the route's strategy actually
+  chose, so `retry.urls[0]` was always the head of an unrotated list —
+  round-robin never rotated, and per-peer stats (`conn_count`, EWMA,
+  outlier detection, access logs) were attributed to the wrong upstream.
+- **`retry.budgetPercent` no longer self-suppresses over the life of a
+  long-running process.** The internal `retry_inflight` counter incremented
+  once per retry *decision* but was only ever decremented once per
+  *request* — a request that took 2+ retry attempts (e.g. `attempts: 3`
+  fully exhausted) leaked a permanent +1 into the counter. Enough leaked
+  requests eventually make the budget check deny all retries sitewide, with
+  no error or warning.
+- **Retry attempts no longer leak a `conn_count` slot on a connect-phase or
+  proxy-phase-timeout failure.** Only the 5xx-retry path correctly released
+  the connection-capacity slot before moving to the next attempt; a
+  connection refusal/timeout, or a read/write timeout mid-response, left
+  the slot held forever. Once enough slots leaked past
+  `maxConnectionsPerUpstream`, the affected route returned `503` permanently
+  until process restart — the opposite of the circuit breaker's intended
+  behavior. Both failure modes now also feed passive health/outlier
+  detection, which previously only the 5xx path did.
+- **Retry attempts now actually respect `maxConnectionsPerUpstream`.**
+  Capacity used to be evaluated once, at initial routing, and never
+  re-checked as a request moved through its retry attempts — a retry could
+  land on (and further overload) a peer already at its connection cap. Each
+  retry attempt now forward-probes the retry candidate list for the next
+  peer currently under the cap, skipping (not permanently removing) a
+  saturated one — the same forward-probe shape `ipHash`/`consistentHash`
+  already use for capacity. Fails open to the naive rotation target if
+  every candidate is saturated, so a request that has already spent
+  attempts is never 503'd purely because capacity deteriorated mid-request.
+
+### Changed
+
+- `RateLimitConfig` moved to its own crate (`conduit-ratelimit`, issue
+  #114/#137 slice 1) — no config shape or behavior change, this closes a
+  code-duplication finding between the root crate and
+  `conduit-auth-consumers`.
+- Static-file serving and fallback (404/SPA-shell/custom-body) responses
+  moved to their own crate (`conduit-static`, issue #114/#139) behind a new
+  `static` Cargo feature. **Default-on**, like `compression` — a plain
+  `cargo build` keeps serving static files and fallback responses exactly
+  like before; only `--no-default-features` (without re-adding `static`)
+  now produces a build with neither capability compiled in.
 
 ---
 
@@ -112,6 +213,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Consumer `rateLimit.limit`/`windowSecs` of `0` is now rejected at
   config-validation time**, instead of silently locking the consumer out of
   every request at runtime.
+
+---
+
+## [2.0.0] — in progress on `claude/cargo-workspace-features-23qxfr`
+
+Marks the start of the feature-driven Cargo workspace migration (see GitHub
+issue #114): splitting the single `lopatnov-conduit` crate into one crate per
+feature so a build only compiles the code and dependencies a chosen feature
+set actually needs. This is a long-lived migration branch, not a cut release —
+`main` and its `1.x` line are unaffected until the migration lands. Every PR
+merged into this branch bumps the workspace minor version (`2.1.0`, `2.2.0`,
+...) so migration progress is traceable; the branch is retired into a real
+`2.0.0` release once #114's sub-issues are all closed.
 
 ---
 

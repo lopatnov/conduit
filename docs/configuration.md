@@ -406,7 +406,11 @@ http2:
 
 ## Compression
 
-Add `Content-Encoding: br` / `zstd` / `gzip` / `deflate` to responses.
+Add `Content-Encoding: br` / `zstd` / `gzip` / `deflate` to responses. Applies
+to static files, the metrics endpoint, and fallback responses (JSON/text body
+or file) — each negotiated independently against the same `minBytes`/`types`
+thresholds, so a small metrics scrape or error body may stay uncompressed
+even with compression enabled.
 
 ```yaml
 # YAML — shorthand (enable with defaults)
@@ -1045,6 +1049,21 @@ proxy:
 
 The injected cookie attributes are: `Path=/; HttpOnly; SameSite=Lax`.
 
+**How the pin is applied.** With a `secret` set, the verified cookie names one
+exact upstream, and Conduit routes to *that* upstream directly — the
+configured `strategy` is not consulted at all while the pin can be honored.
+A pin is honored whenever its upstream is healthy and below
+`maxConnectionsPerUpstream`; otherwise Conduit falls back to the strategy and:
+
+- **pinned upstream saturated (but healthy)** — relocate for this request and
+  leave the cookie untouched, so the session returns to its original upstream
+  as soon as capacity frees up;
+- **pinned upstream unhealthy** — relocate *and* re-sign the cookie onto the
+  new upstream, since the original is gone.
+
+Without a `secret`, there is no pinned URL to honor — the cookie value is only
+a hash key, and routing goes through `consistent-hash` as usual.
+
 > **Security note:** store the HMAC secret in an environment variable
 > (`secret: "$STICKY_SECRET"`). Rotate by changing the value and reloading;
 > existing cookies will silently fall through to normal load-balancing for one
@@ -1356,9 +1375,9 @@ healthCheck:
 | `healthyThreshold`          | number   | `1`           | Consecutive passes before re-adding                                                                                                                  |
 | `unhealthyStatus`           | number[] | any non-2xx   | HTTP status codes from the health-check probe that count as failures. Default: any non-2xx response. Example: `[429, 500, 502, 503, 504]` |
 | `unhealthyLatencyMs`        | number   | —             | Health-check probe responses slower than this (ms) count as failures, even if the status code is 2xx                                                 |
-| `slowStartSecs`             | number   | `0`           | Traffic ramp-up period after recovery. ⚠️ Not currently wired into routing — see [Circuit Breaker](#circuit-breaker) note below.                     |
+| `slowStartSecs`             | number   | `0`           | [Traffic ramp-up period](#slow-start) after recovery. Ignored for `ipHash`/`consistentHash` and sticky routes.                     |
 | `maxConnectionsPerUpstream` | number   | —             | [Circuit breaker](#circuit-breaker) threshold                                                                                                        |
-| `prewarmConnections`        | number   | `0`           | Pre-establish N keepalive connections at startup (max 8). ⚠️ Currently warms a throwaway client, not Conduit's real upstream pool — see note below.  |
+| `prewarmConnections`        | number   | `0`           | Pre-establish N keepalive connections at startup (max 8). 🚫 Blocked — warms a throwaway client, not Conduit's real upstream pool (Pingora 0.8 has no public API for it) — see note below.  |
 | `includeUpstreams`          | bool     | `false`       | Include upstream health in `/__health__` response                                                                                                    |
 
 ---
@@ -1392,17 +1411,24 @@ load-balance strategy, across all three config shapes (`proxy: {}` map,
   checked — if every target in that group is at capacity, the request 503s
   even if a different group has room. Group selection itself is not
   capacity-aware (it's typically hash/affinity-driven).
-- A retry attempt bypasses the cap: capacity is evaluated once, at initial
-  routing time, not re-checked per retry attempt. See tracked follow-up
-  issue for undercounting on retry-heavy routes.
+- A retry attempt re-checks the cap. The first attempt uses whatever peer
+  routing already chose (the usual strategy- and capacity-aware pick); each
+  retry attempt after that forward-probes the route's retry candidate list,
+  starting from its position in the rotation, for the next peer currently
+  **under** the cap — skipping (not permanently removing) a saturated one,
+  the same forward-probe shape `IpHash`/`ConsistentHash` already use above.
+  If every candidate is saturated, it fails open to the naive rotation
+  target rather than 503ing a request that has already spent attempts —
+  the same soft-cap trade-off as the rest of this section.
 
 > **Known limitations** still open after the 2026-08-03 integrity audit —
 > see the repo's issue tracker for current status:
-> - `slowStartSecs` is parsed but not yet wired into any strategy's selection
->   logic — configuring it currently has no effect on traffic ramp-up.
-> - `prewarmConnections` currently warms a short-lived, throwaway HTTP
->   client rather than Conduit's real upstream connection pool, so it
->   doesn't yet deliver its intended latency benefit for real traffic.
+> - **`prewarmConnections` is blocked, not just unimplemented.** It warms a
+>   short-lived, throwaway HTTP client rather than Conduit's real upstream
+>   connection pool — Pingora 0.8 has no public API to reach or pre-populate
+>   the pool `upstream_peer()` actually uses for real traffic (`HttpProxy`'s
+>   `client_upstream` field is private with no accessor). Same class of gap
+>   as OCSP stapling / the request-queue item below — waiting on Pingora 0.9+.
 
 ```yaml
 # YAML
@@ -1428,6 +1454,78 @@ proxy:
 ```
 
 See [`examples/circuit-breaker.yaml`](../examples/circuit-breaker.yaml)
+
+---
+
+## Slow start
+
+`healthCheck.slowStartSecs` ramps traffic to an upstream that just recovered
+from an unhealthy state, instead of sending it 100% of its normal share
+immediately (the classic thundering-herd-into-a-just-recovered-backend
+scenario).
+
+For the `slowStartSecs` seconds immediately after recovery, the upstream
+participates in each pick with a probability equal to how far through the
+ramp window it is (0% right after recovery, rising linearly to 100% once the
+window elapses). This applies to every load-balance strategy **except**
+`ipHash`/`consistentHash` and sticky sessions:
+
+- `RoundRobin`, `Random`, `WeightedRoundRobin`, `LeastConn`,
+  `LeastResponseTime`, and `P2c` all honor it. `LeastConn` and
+  `LeastResponseTime` benefit the most — a freshly-recovered peer's
+  connection count and probe latency both look artificially good (drained to
+  near-zero, or measured under no real load), so without this they'd win
+  every pick until real traffic caught them up, which is itself a form of
+  thundering herd.
+- **`ipHash`/`consistentHash` (and sticky sessions, which force
+  `consistentHash`) are deliberately exempt.** A client's hash must map to a
+  fixed upstream for the strategy's own consistency guarantee to hold — a
+  probabilistic ramp gate would divert some hashed clients to a different
+  peer mid-window, breaking exactly the property those strategies exist to
+  provide, and would flap a sticky client's session for the entire ramp.
+  Configuring `slowStartSecs` together with a hash strategy or `sticky` on
+  the same route logs a warning at config-load/reload time rather than
+  silently doing nothing.
+- The ramp **never produces a 503 and never empties an otherwise-routable
+  candidate list** (fails open): if every healthy candidate happens to be
+  mid-ramp, or a route has only one upstream, the gate steps aside and normal
+  selection proceeds. Two consequences worth knowing: a single-upstream route
+  can't ramp (there's nowhere to shift traffic to), and if your *entire*
+  upstream pool recovers at once (e.g. after a fleet-wide outage), full
+  traffic resumes immediately rather than being shed — no admission scheme
+  can shape load when there's no non-ramping sibling to route to instead.
+- Applies to retry rotation too — a retry-configured route won't rotate a
+  failed request into a peer that's still mid-ramp, on either the
+  `proxy: {}` map path or the `routes[]` array path.
+
+Recovery is recorded both when an active health-check probe flips an
+upstream back to healthy, and when a half-open outlier-detection probe
+succeeds — the latter is the *only* recovery signal available for upstreams
+configured via `routes[]`/`groups`, since active probes aren't spawned there.
+
+```yaml
+# YAML — pairs well with least-conn, since that's the strategy slow-start
+# benefits the most
+proxy:
+  /api:
+    targets: ["http://a:4000", "http://b:4000"]
+    strategy: least-conn
+    healthCheck:
+      slowStartSecs: 30
+```
+
+```json
+// JSON
+{
+  "proxy": {
+    "/api": {
+      "targets": ["http://a:4000", "http://b:4000"],
+      "strategy": "least-conn",
+      "healthCheck": { "slowStartSecs": 30 }
+    }
+  }
+}
+```
 
 ---
 
@@ -2259,7 +2357,7 @@ See [`examples/consumers.yaml`](../examples/consumers.yaml)
 ## Rate Limiting
 
 In-memory rate limiting requires no feature flag — available in every build,
-including the minimal `default = []`. `store: "redis://..."` requires `--features redis`.
+including the minimal `default = ["compression", "static", "hotreload"]`. `store: "redis://..."` requires `--features redis`.
 
 ### Site-level
 
@@ -2325,6 +2423,7 @@ proxy:
 | `windowSecs` | number   | —          | Sliding window duration (seconds) — **required**                                                            |
 | `limit`      | number   | —          | Max requests per key per window — **required**                                                              |
 | `burst`      | number   | `0`        | Extra burst capacity above `limit` (see below)                                                              |
+| `algorithm`  | string   | —          | Optional; only `"token-bucket"` is supported — a typo fails validation                                      |
 | `keyBy`      | string   | `"ip"`     | `"ip"` or `"header:<name>"`                                                                                 |
 | `store`      | string   | `"memory"` | `"memory"` or `"redis://host:port"` (`--features redis` required for Redis)                                 |
 | `skipPaths`  | string[] | —          | Paths that bypass rate limiting — see [skipPaths glob syntax](#skippaths-glob-syntax)                       |
@@ -2344,6 +2443,39 @@ rateLimit:
   limit: 60
   burst: 20
 ```
+
+**Validation applies at every level.** `windowSecs`/`limit`/`algorithm`/`keyBy`/`store`
+are checked at config-load and reload time for site-level, per-route, and per-consumer
+`rateLimit` blocks alike — a malformed value (e.g. `keyBy: "header:bad name"`, which
+contains a space and isn't a valid HTTP header name) fails validation instead of
+silently collapsing every client into one shared bucket at runtime.
+
+**`store` (Redis) works at every level** — site, per-route, and per-consumer (issue
+#322). Each level uses its own Redis key scope so buckets never collide: site-level
+uses the site label, per-route uses `"route\0{site}\0{route}"`, and per-consumer uses
+the fixed scope `"consumer"` with the consumer's username as the client key (mirroring
+the in-memory limiter's own `\0`-separated key namespaces — see #303/#304). `keyBy` is
+inert at the consumer level specifically, regardless of backend (the bucket key is
+always the username, not derived from the request). `burst`, `skipPaths`, and `dryRun`
+all work at every level that accepts them — `dryRun` isn't accepted at the route level
+at all (the schema rejects it there; it's a site/consumer-only field). `burst` also
+works under a Redis `store`, not just in-memory — implemented as the fixed-window
+counter's admission ceiling rising from `limit` to `limit + burst` within the current
+window, rather than a continuously-refilling allowance like the in-memory token
+bucket's burst.
+
+**Only one Redis connection is ever established per process**, regardless of how many
+levels configure a `store` URL. At startup Conduit scans site, then route, then
+consumer `rateLimit.store` values and connects to the *first* `redis://`/`rediss://`
+URL it finds; every level that configures Redis shares that one connection. If
+different levels are configured with genuinely different Redis URLs, only the
+first-discovered one is actually used — the others silently share it rather than each
+getting their own connection. Point every level's `store` at the same Redis
+instance/URL if you use Redis at more than one level. **This is checked at config-load
+time (issue #357)**: configuring more than one distinct Redis URL across
+site/route/consumer produces an advisory warning (logged, not fatal — same
+non-blocking treatment as the near-expiry-certificate warning) naming which URL is
+actually used and which are ignored.
 
 ---
 

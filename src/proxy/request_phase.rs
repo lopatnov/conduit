@@ -35,6 +35,7 @@ use crate::config::schema::{
     ApiKeyConfig, BasicAuthConfig, ConnectionPoolConfig, CorsConfig, HealthCheckConfig,
     IpFilterConfig, LimitsConfig, MiddlewareEntry, ProxyTimeout, RateLimitConfig, SiteConfig,
 };
+use crate::filter::auth;
 #[cfg(feature = "consumers")]
 use crate::filter::chain::ConsumersGuard;
 #[cfg(feature = "fault-injection")]
@@ -46,21 +47,29 @@ use crate::filter::chain::{
     HealthBypass, IpGuard, LimitsGuard, MiddlewareGuard, RateLimitGuard, RedirectGuard,
     XRequestIdGuard,
 };
+#[cfg(feature = "compression")]
+use crate::filter::compression;
 use crate::filter::rate_limit;
-use crate::filter::{compression, cors, redirects, response_time, security_headers};
+use crate::filter::{cors, redirects, response_time, security_headers};
 #[cfg(feature = "acme")]
 use crate::handler::acme_challenge as acme_handler;
+#[cfg(feature = "hotreload")]
+use crate::handler::hot_reload as hot_reload_handler;
 use crate::handler::response;
-use crate::handler::{
-    fallback, health, hot_reload as hot_reload_handler, metrics as metrics_handler, static_files,
-    LocalHandlerImpl,
-};
+#[cfg(feature = "static")]
+use crate::handler::{fallback, static_files};
+use crate::handler::{health, metrics as metrics_handler, LocalHandlerImpl};
 use crate::proxy::cache as proxy_cache;
 #[cfg(feature = "cache")]
 use crate::proxy::cache_disk;
+// Only used inside request_cache_filter's `#[cfg(feature = "cache")]` body
+// below -- `redis` alone (e.g. for the Redis-backed rate limiter, which
+// doesn't touch this import at all) must not pull in an unused import under
+// `-D warnings` (issue #312).
 #[cfg(all(feature = "redis", feature = "cache"))]
 use crate::proxy::cache_redis;
 use crate::proxy::ctx::{AcceptEncoding, LocalHandler, RequestCtx, RetryState, UpstreamTarget};
+use crate::proxy::health::UpstreamRegistry;
 use crate::proxy::router;
 use crate::proxy::service::ConduitProxy;
 use crate::proxy::upstream;
@@ -68,23 +77,98 @@ use crate::proxy::upstream;
 #[cfg(feature = "cache")]
 use pingora_cache::storage::Storage as CacheStorage;
 
+/// Synthetic status fed to `record_request_latency` for a connect-phase or
+/// proxy-phase-timeout retry failure, neither of which has a real HTTP
+/// status (#216 findings C/D). Must be `>= 500` -- `record_request_latency`
+/// treats anything below that as a success for `consecutive_5xx` purposes
+/// and resets the counter to zero, which would actively defeat outlier
+/// detection rather than merely fail to help it (Gitar finding on PR #371).
+const SYNTHETIC_RETRY_FAILURE_STATUS: u16 = 503;
+
 impl ConduitProxy {
+    /// Record passive health (EWMA latency/`consecutive_5xx` via
+    /// `record_request_latency`, outlier-detection ejection) and, when
+    /// `connection_established` is `true`, the Prometheus per-upstream
+    /// stats for the peer `req_ctx.proxy_upstream_url` currently points at
+    /// — before it's abandoned for a retry.
+    ///
+    /// Shared by all three retry-decision paths (5xx, connect-phase,
+    /// proxy-phase timeout) so a peer that fails mid-retry-sequence is
+    /// treated identically regardless of which failure mode caught it
+    /// (#216 findings C/D — previously only the 5xx path fed *any* of
+    /// this). No-ops when no upstream URL is currently tracked.
+    ///
+    /// `connection_established` distinguishes "a response was received (or
+    /// the connection was at least established and a request sent)" from
+    /// "the connection attempt itself failed" — `upstream_request_filter`
+    /// only ever runs (incrementing `upstream_active_connections` and
+    /// later needing `upstream_requests_total`/`upstream_latency_seconds`
+    /// observed) once a connection actually succeeds. A connect-phase
+    /// failure never reaches it, so there is nothing to reconcile there;
+    /// decrementing the gauge anyway would introduce the opposite leak.
+    ///
+    /// `status` MUST be a real or synthetic failure status `>= 500` for a
+    /// connect-phase/timeout caller (there is no real HTTP status for
+    /// those) -- **never `0`**. `record_request_latency` treats any
+    /// `status < 500` as a *success* for `consecutive_5xx` purposes
+    /// (resets it to zero), so passing `0` would not just fail to feed
+    /// outlier detection (the original findings C/D gap) but *actively
+    /// mask* a hard-down peer by wiping out any `consecutive_5xx` count
+    /// already accumulated from real 5xx responses (caught by Gitar
+    /// reviewing PR #371).
+    fn record_retry_failure_health(
+        &self,
+        req_ctx: &RequestCtx,
+        config: &crate::config::schema::AppConfig,
+        status: u16,
+        connection_established: bool,
+    ) {
+        let Some(url) = req_ctx.proxy_upstream_url.as_deref() else {
+            return;
+        };
+        let elapsed_us = req_ctx.start_time.elapsed().as_micros() as u64;
+        crate::proxy::health::record_request_latency(
+            &self.state.upstream_health,
+            url,
+            elapsed_us,
+            status,
+        );
+        if let Some(od) = config
+            .sites
+            .get(req_ctx.site_idx)
+            .and_then(|s| s.outlier_detection.as_ref())
+        {
+            crate::proxy::health::maybe_eject(&self.state.upstream_health, url, od);
+        }
+        if connection_established {
+            self.state
+                .metrics
+                .upstream_active_connections
+                .with_label_values(&[url])
+                .dec();
+            self.state
+                .metrics
+                .upstream_requests_total
+                .with_label_values(&[url, &status.to_string()])
+                .inc();
+            if let Some(upstream_secs) = req_ctx.upstream_start.map(|t| t.elapsed().as_secs_f64()) {
+                self.state
+                    .metrics
+                    .upstream_latency_seconds
+                    .with_label_values(&[url])
+                    .observe(upstream_secs);
+            }
+        }
+    }
+
     /// Record a failed upstream attempt immediately before triggering a Pingora
     /// retry.
     ///
     /// Updates all passive health state for the upstream that just returned
-    /// `status`:
-    ///
-    /// - Releases the connection slot (`conn_dec`) — only if this attempt
-    ///   actually held one (`upstream_conn_slot`) — so the next
-    ///   `upstream_peer()` call can acquire a new slot for the retry target.
-    /// - Records latency into the EWMA and increments `consecutive_5xx` via
-    ///   `record_request_latency`.
-    /// - Runs outlier-detection ejection (`maybe_eject`) if configured.
-    /// - Decrements the Prometheus `upstream_active_connections` gauge and
-    ///   increments `upstream_requests_total` / `upstream_latency_seconds`,
-    ///   then clears `proxy_upstream_url` and `upstream_conn_slot` so the next
-    ///   `upstream_peer()` starts fresh with no inherited slot.
+    /// `status` via [`record_retry_failure_health`](Self::record_retry_failure_health),
+    /// then releases the connection slot (via
+    /// [`release_conn_slot`]) so the next `upstream_peer()` call starts
+    /// with no inherited slot.
     ///
     /// Without this, a successful retry on a different backend would silently
     /// absorb the failure without updating the health record of the backend that
@@ -95,69 +179,17 @@ impl ConduitProxy {
         config: &crate::config::schema::AppConfig,
         status: u16,
     ) {
-        let req_ctx_mut = match ctx.as_mut() {
-            Some(c) => c,
-            None => return,
+        let Some(req_ctx_mut) = ctx.as_mut() else {
+            return;
         };
-        // Use take() to extract the URL and simultaneously clear the field,
-        // avoiding a clone and the explicit `= None` at the end of the function.
-        let url = match req_ctx_mut.proxy_upstream_url.take() {
-            Some(u) => u,
-            None => return,
-        };
-        // Also clear the slot flag: the next attempt's URL (set below by
-        // upstream_peer's retry-restore) never goes through conn_inc, so it
-        // must start without an inherited slot to release.
-        let had_conn_slot = std::mem::take(&mut req_ctx_mut.upstream_conn_slot);
-
-        let elapsed_us = req_ctx_mut.start_time.elapsed().as_micros() as u64;
-        // Release the connection slot for the failed upstream immediately —
-        // only if this request actually held one.
-        if had_conn_slot {
-            self.state.upstream_health.conn_dec(&url);
+        if req_ctx_mut.proxy_upstream_url.is_none() {
+            return;
         }
-        crate::proxy::health::record_request_latency(
-            &self.state.upstream_health,
-            &url,
-            elapsed_us,
-            status,
-        );
-
-        // Trigger outlier detection for the failed upstream.
-        let site_idx = req_ctx_mut.site_idx;
-        if let Some(od) = config
-            .sites
-            .get(site_idx)
-            .and_then(|s| s.outlier_detection.as_ref())
-        {
-            crate::proxy::health::maybe_eject(&self.state.upstream_health, &url, od);
-        }
-
-        // Update Prometheus per-upstream metrics so the active-connections gauge
-        // doesn't leak (it was incremented by upstream_request_filter when we
-        // first forwarded to this backend).
-        self.state
-            .metrics
-            .upstream_active_connections
-            .with_label_values(&[&url])
-            .dec();
-        self.state
-            .metrics
-            .upstream_requests_total
-            .with_label_values(&[&url, &status.to_string()])
-            .inc();
-        if let Some(upstream_secs) = req_ctx_mut
-            .upstream_start
-            .map(|t| t.elapsed().as_secs_f64())
-        {
-            self.state
-                .metrics
-                .upstream_latency_seconds
-                .with_label_values(&[&url])
-                .observe(upstream_secs);
-        }
-        // Reset upstream_start for the retry attempt.
-        // proxy_upstream_url was already cleared by the take() above.
+        // Record health/metrics for the failed peer BEFORE releasing its
+        // slot -- record_retry_failure_health reads proxy_upstream_url,
+        // which release_conn_slot below clears.
+        self.record_retry_failure_health(req_ctx_mut, config, status, true);
+        release_conn_slot(req_ctx_mut, &self.state.upstream_health);
         req_ctx_mut.upstream_start = None;
     }
 
@@ -184,8 +216,20 @@ impl ConduitProxy {
                 return false;
             }
         }
-        self.state.retry_inflight.fetch_add(1, Ordering::Relaxed);
-        retry.is_retrying = true;
+        // Increment at most once per request, not once per retry decision
+        // (#368) -- `is_retrying` already tracks "this request is currently
+        // counted," so re-checking it here is what makes the increment
+        // idempotent across a request's 2nd, 3rd, ... retry attempt.
+        // `logging()` decrements exactly once per request when `is_retrying`
+        // is set, so a request with `attempts: 3` that retries twice used to
+        // net +1 permanently leaked per request (+1, +1, -1) -- `inflight`
+        // (the budget's denominator) counts *requests*, so counting a
+        // retrying request once is also the semantically correct reading,
+        // not just a leak patch.
+        if !retry.is_retrying {
+            self.state.retry_inflight.fetch_add(1, Ordering::Relaxed);
+            retry.is_retrying = true;
+        }
         true
     }
 
@@ -458,7 +502,7 @@ impl ConduitProxy {
             jwt_auth_cfg: jwt_auth_cfg.clone(), // clone — jwt_cfg needed below for claim extraction
             forward_auth_cfg,
             consumers_cfg,
-            site_label,
+            site_label: site_label.clone(),
         };
         if self.run_guard_filters(session, guards).await? {
             return Ok(true);
@@ -475,8 +519,11 @@ impl ConduitProxy {
 
         // ── Per-route rate limiting (applied after site-level guard chain) ──────
         // Checked here — after routing — so we know which route was matched.
+        // Reuses the same `site_label` guards.site_label was built from —
+        // scopes the route-level bucket key so two sites with the same route
+        // key and client don't collide (#304's route-level twin).
         if self
-            .enforce_route_rate_limit(session, &req_ctx, site)
+            .enforce_route_rate_limit(session, &req_ctx, site, &site_label)
             .await?
         {
             return Ok(true);
@@ -494,7 +541,10 @@ impl ConduitProxy {
         // Only available when compiled with --features jwt.
         #[cfg(feature = "jwt")]
         {
-            req_ctx.jwt_claims = jwt_claims_from_session(session, jwt_auth_cfg.as_ref());
+            req_ctx.jwt = conduit_auth_jwt::guard::extract_claims_from_session(
+                session,
+                jwt_auth_cfg.as_ref(),
+            );
         }
 
         // ── Attach OTel span to request context ───────────────────────────────
@@ -569,7 +619,11 @@ impl ConduitProxy {
 
         // 4. Request size / header limits.
         if let Some(cfg) = guards.limits_cfg {
-            chain = chain.push(LimitsGuard { cfg });
+            chain = chain.push(LimitsGuard {
+                cfg,
+                ip_conn_counts: std::sync::Arc::clone(&self.state.ip_conn_counts),
+                client_ip: guards.client_ip.clone(),
+            });
         }
 
         // 5. Token-bucket rate limiting.
@@ -577,6 +631,9 @@ impl ConduitProxy {
             chain = chain.push(RateLimitGuard {
                 cfg,
                 site_label: guards.site_label.clone(),
+                rate_limiter: std::sync::Arc::clone(&self.state.rate_limiter),
+                #[cfg(feature = "redis")]
+                redis_rate_limiter: self.state.redis_rate_limiter.clone(),
             });
         }
 
@@ -586,6 +643,9 @@ impl ConduitProxy {
             chain = chain.push(ConsumersGuard {
                 cfg,
                 path: guards.script_path.clone(),
+                rate_limiter: std::sync::Arc::clone(&self.state.rate_limiter),
+                #[cfg(feature = "redis")]
+                redis_rate_limiter: self.state.redis_rate_limiter.clone(),
             });
         }
 
@@ -645,11 +705,6 @@ impl ConduitProxy {
             session,
             extra_headers: &guards.extra_headers,
             inflight: &self.state.inflight,
-            rate_limiter: &self.state.rate_limiter,
-            #[cfg(feature = "redis")]
-            redis_rate_limiter: self.state.redis_rate_limiter.as_ref(),
-            ip_conn_counts: &self.state.ip_conn_counts,
-            client_ip: guards.client_ip,
         };
 
         chain.run(&mut ctx).await
@@ -686,7 +741,7 @@ impl ConduitProxy {
         // Store the RAII guard; it will automatically decrement the slot
         // counter when RequestCtx is dropped at the end of logging() — no
         // manual fetch_sub needed.
-        req_ctx.ip_conn_slot = Some(crate::filter::chain::IpConnSlotGuard {
+        req_ctx.limits.ip_conn_slot = Some(crate::filter::chain::IpConnSlotGuard {
             ip,
             counts: std::sync::Arc::clone(&self.state.ip_conn_counts),
         });
@@ -697,6 +752,8 @@ impl ConduitProxy {
     ///
     /// `site` is the route-resolved site from the request's config snapshot
     /// (passed in by `do_request_filter`) so this shares the routing snapshot.
+    /// `site_label` scopes the bucket key so the same route key on two
+    /// different sites doesn't collide (see `rate_limit::route_key`).
     ///
     /// Returns `Ok(true)` when the request was rejected with 429 (response
     /// written, inflight counters decremented), `Ok(false)` to continue.
@@ -705,6 +762,7 @@ impl ConduitProxy {
         session: &mut Session,
         req_ctx: &RequestCtx,
         site: Option<&SiteConfig>,
+        site_label: &str,
     ) -> Result<bool> {
         // Borrow the path directly from the session — `find_route_rate_limit`
         // takes `&str`, so there is no need to allocate an owned String on the
@@ -716,23 +774,71 @@ impl ConduitProxy {
         let Some((rl_cfg, route_key)) = router::find_route_rate_limit(site, path) else {
             return Ok(false);
         };
-        let key = format!(
-            "route:{route_key}:{}",
-            rate_limit::extract_client_key(&rl_cfg, session)
-        );
-        let allowed = {
-            self.state
-                .rate_limiter
-                .entry(key)
-                .or_insert_with(|| {
-                    rate_limit::TokenBucket::new(
+        // #307: skipPaths is a documented, undisclaimed route-level field
+        // (unlike dryRun/store, which the schema explicitly states are
+        // site-level-only) — wire it up. Useful for a broad route pattern
+        // that wants specific sub-paths exempted from its own rate limit.
+        if rl_cfg
+            .skip_paths
+            .as_deref()
+            .is_some_and(|sp| auth::is_path_skipped(Some(sp), path))
+        {
+            return Ok(false);
+        }
+        let client_key = rate_limit::extract_client_key(&rl_cfg, session);
+        // #322: route-level `store: "redis://..."` now actually routes
+        // through Redis, mirroring the site-level check in
+        // `filter::chain::rate_limit_allowed`. Scoped by
+        // `redis_route_scope` (site+route, no client_key folded in — the
+        // Redis client takes that as its own parameter) so two routes
+        // (or the same route on two sites) never share a counter.
+        #[cfg(feature = "redis")]
+        if rl_cfg
+            .store
+            .as_deref()
+            .is_some_and(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
+        {
+            if let Some(rrl) = &self.state.redis_rate_limiter {
+                let scope = rate_limit::redis_route_scope(site_label, &route_key);
+                let allowed = rrl
+                    .check(
+                        &scope,
+                        &client_key,
                         rl_cfg.limit,
                         rl_cfg.burst.unwrap_or(0),
                         rl_cfg.window_secs,
                     )
-                })
-                .try_consume()
-        };
+                    .await;
+                return self
+                    .finish_route_rate_limit(session, req_ctx, &route_key, allowed)
+                    .await;
+            }
+        }
+        let key = rate_limit::route_key(site_label, &route_key, &client_key);
+        // Routed through the shared MAX_BUCKETS-capped admission point
+        // (issue #305) instead of a hand-rolled, uncapped
+        // entry()/or_insert_with() — this was a real DoS bypass on the
+        // documented `keyBy: "header:X-Name"` usage pattern, since this map
+        // is shared with the site-level limiter's own cap check.
+        let allowed = conduit_ratelimit::check_key_for(&self.state.rate_limiter, &key, &rl_cfg);
+        self.finish_route_rate_limit(session, req_ctx, &route_key, allowed)
+            .await
+    }
+
+    /// Shared tail of [`Self::enforce_route_rate_limit`] for both the Redis
+    /// and in-memory paths: on rejection, write 429 and unwind the inflight
+    /// counters. Route-level `rateLimit` has no `dryRun` mode (the schema
+    /// rejects the field there — it's a site/consumer-only option, see
+    /// `docs/configuration.md`'s rate-limiting section), so unlike the
+    /// site-level and per-consumer checks, there is no warn-and-continue
+    /// branch here.
+    async fn finish_route_rate_limit(
+        &self,
+        session: &mut Session,
+        req_ctx: &RequestCtx,
+        route_key: &str,
+        allowed: bool,
+    ) -> Result<bool> {
         if allowed {
             return Ok(false);
         }
@@ -931,64 +1037,140 @@ impl ConduitProxy {
                 } else {
                     unreachable!()
                 };
-                Some(Box::new(metrics_handler::MetricsHandler {
-                    token,
-                    extra_headers: extra,
-                }))
-            }
-
-            HandlerKind::StaticFile => {
+                #[cfg(feature = "compression")]
                 let config = self.state.config.load();
+                #[cfg(feature = "compression")]
                 let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                #[cfg(feature = "compression")]
                 let compress_opts = config
                     .sites
                     .get(site_idx)
                     .and_then(|s| s.compression.as_ref())
                     .and_then(compression::effective);
-                let fallback_site = config.sites.get(site_idx).cloned();
+                #[cfg(feature = "compression")]
                 let accept_enc = ctx
                     .as_ref()
                     .map(|c| c.accept_enc.clone())
                     .unwrap_or_default();
-                let (roots, options, strip_prefix) = if let Some(RequestCtx {
-                    upstream:
-                        UpstreamTarget::Local(LocalHandler::StaticFile {
-                            roots,
-                            options,
-                            strip_prefix,
-                        }),
-                    ..
-                }) = ctx.as_ref()
-                {
-                    (roots.clone(), options.clone(), strip_prefix.clone())
-                } else {
-                    unreachable!()
-                };
-                Some(Box::new(static_files::StaticFileHandler {
-                    roots,
-                    options,
-                    strip_prefix,
+                Some(Box::new(metrics_handler::MetricsHandler {
+                    token,
                     extra_headers: extra,
+                    #[cfg(feature = "compression")]
                     compress_opts,
+                    #[cfg(feature = "compression")]
                     accept_enc,
-                    fallback_site,
                 }))
+            }
+
+            HandlerKind::StaticFile => {
+                #[cfg(feature = "static")]
+                {
+                    let config = self.state.config.load();
+                    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                    #[cfg(feature = "compression")]
+                    let compress_opts = config
+                        .sites
+                        .get(site_idx)
+                        .and_then(|s| s.compression.as_ref())
+                        .and_then(compression::effective);
+                    let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
+                    let accept_enc = ctx
+                        .as_ref()
+                        .map(|c| c.accept_enc.clone())
+                        .unwrap_or_default();
+                    let (roots, options, strip_prefix) = if let Some(RequestCtx {
+                        upstream:
+                            UpstreamTarget::Local(LocalHandler::StaticFile {
+                                roots,
+                                options,
+                                strip_prefix,
+                            }),
+                        ..
+                    }) = ctx.as_ref()
+                    {
+                        (roots.clone(), options.clone(), strip_prefix.clone())
+                    } else {
+                        unreachable!()
+                    };
+                    Some(Box::new(static_files::StaticFileHandler {
+                        roots,
+                        options,
+                        strip_prefix,
+                        extra_headers: extra,
+                        #[cfg(feature = "compression")]
+                        compress_opts,
+                        accept_enc,
+                        fallback,
+                    }))
+                }
+                #[cfg(not(feature = "static"))]
+                None
             }
 
             HandlerKind::Fallback => {
-                let config = self.state.config.load();
-                let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
-                let site = config.sites.get(site_idx).cloned();
-                Some(Box::new(fallback::FallbackHandler {
-                    site,
+                #[cfg(feature = "static")]
+                {
+                    let config = self.state.config.load();
+                    let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
+                    let fallback = config.sites.get(site_idx).and_then(|s| s.fallback.clone());
+                    #[cfg(feature = "compression")]
+                    let compress_opts = config
+                        .sites
+                        .get(site_idx)
+                        .and_then(|s| s.compression.as_ref())
+                        .and_then(compression::effective);
+                    #[cfg(feature = "compression")]
+                    let accept_enc = ctx
+                        .as_ref()
+                        .map(|c| c.accept_enc.clone())
+                        .unwrap_or_default();
+                    Some(Box::new(fallback::FallbackHandler {
+                        fallback,
+                        extra_headers: extra,
+                        #[cfg(feature = "compression")]
+                        compress_opts,
+                        #[cfg(feature = "compression")]
+                        accept_enc,
+                    }))
+                }
+                // `HandlerKind::Fallback` is the universal "nothing else
+                // matched" terminal case (router.rs/routes.rs construct
+                // `LocalHandler::Fallback` for any unmatched request on any
+                // site, not just a static-file miss) — it must always
+                // return `Some`, never fall through to `dispatch_local`'s
+                // `HandlerKind::Proxy` path, or an unmatched request would
+                // reach `upstream_peer()` with no real upstream and surface
+                // as a 502/500 instead of the plain 404 every disabled
+                // feature otherwise degrades to. Without `static`,
+                // `sites[i].fallback`'s configured behavior (custom body,
+                // byAccept, file serving) is unavailable — matching
+                // `feature_warnings()`'s own "fallback responses (including
+                // the site's default 404) will be disabled" wording — so
+                // this always serves the same bare 404 `FallbackHandler`
+                // already serves today when no `fallback:` is configured at
+                // all.
+                #[cfg(not(feature = "static"))]
+                Some(Box::new(PlainNotFoundHandler {
                     extra_headers: extra,
                 }))
             }
 
+            // `HotReloadJs`/`HotReloadSse` can only be produced by
+            // `router.rs`'s routing when the `hotreload` feature is
+            // compiled in (`is_hot_reload_js_path`/`is_hot_reload_sse_path`
+            // are themselves gated the same way, matching issue #341's
+            // ACME-challenge fix) — so the `None` arm below is genuinely
+            // unreachable, not a request-visible degradation, same
+            // reasoning as `HandlerKind::StaticFile`'s own `None` arm
+            // without `static`.
+            #[cfg(feature = "hotreload")]
             HandlerKind::HotReloadJs => Some(Box::new(hot_reload_handler::HotReloadJsHandler {
                 extra_headers: extra,
             })),
+            #[cfg(not(feature = "hotreload"))]
+            HandlerKind::HotReloadJs => None,
 
+            #[cfg(feature = "hotreload")]
             HandlerKind::HotReloadSse => {
                 let rx = self.state.hot_reload_tx.subscribe();
                 Some(Box::new(hot_reload_handler::HotReloadSseHandler {
@@ -996,6 +1178,8 @@ impl ConduitProxy {
                     rx: Some(rx),
                 }))
             }
+            #[cfg(not(feature = "hotreload"))]
+            HandlerKind::HotReloadSse => None,
 
             HandlerKind::Overloaded => Some(Box::new(OverloadedHandler {
                 extra_headers: extra,
@@ -1077,8 +1261,9 @@ impl ConduitProxy {
     pub(super) fn try_retry_connect_error(
         &self,
         session: &Session,
-        retry: &mut RetryState,
+        req_ctx: &mut RequestCtx,
         e: &mut Box<pingora_core::Error>,
+        config: &crate::config::schema::AppConfig,
     ) {
         use pingora_core::ErrorType::*;
         let is_conn_err = matches!(
@@ -1098,17 +1283,51 @@ impl ConduitProxy {
         };
         // Only retry safe/idempotent HTTP methods — RFC 7231 § 4.2.2.
         let method = session.req_header().method.as_str();
-        if is_safe_http_method(method)
-            && ((is_conn_err && retry.has_condition("connection_error"))
-                || (is_timeout && retry.has_condition("timeout")))
-            && self.retry_budget_allows(retry)
-        {
+        let should_retry = {
+            let Some(retry) = req_ctx.retry.as_mut() else {
+                return;
+            };
+            is_safe_http_method(method)
+                && ((is_conn_err && retry.has_condition("connection_error"))
+                    || (is_timeout && retry.has_condition("timeout")))
+                && self.retry_budget_allows(retry)
+        };
+        if should_retry {
             e.set_retry(true);
             self.state
                 .metrics
                 .retry_attempts_total
                 .with_label_values(&["<connect>", condition])
                 .inc();
+            // #216 (findings C/D): connect-phase failures never fed passive
+            // health / outlier detection before -- only the 5xx path did
+            // (via record_failed_upstream_for_retry). A peer that's
+            // hard-down (connection refused/timed out) on a retry-
+            // configured route was never ejected by outlier detection as a
+            // result. SYNTHETIC_RETRY_FAILURE_STATUS (503), not 0: a status
+            // < 500 resets consecutive_5xx to zero in record_request_latency
+            // -- passing 0 would actively mask a hard-down peer instead of
+            // just failing to help (caught by Gitar reviewing PR #371).
+            // connection_established=false: upstream_request_filter never
+            // ran for a connect-phase failure, so there is no
+            // active-connections gauge increment to reconcile.
+            self.record_retry_failure_health(
+                req_ctx,
+                config,
+                SYNTHETIC_RETRY_FAILURE_STATUS,
+                false,
+            );
+            // Clear proxy_upstream_url/upstream_conn_slot immediately,
+            // symmetric with try_retry_proxy_error's timeout branch: if
+            // set_retry(true) doesn't actually result in another
+            // upstream_peer() call, leaving the URL set would make
+            // logging()'s terminal release_proxy_upstream record this same
+            // connect failure's health a SECOND time (a spurious extra
+            // consecutive_5xx increment / EWMA sample -- no gauge risk
+            // here specifically, since connection_established=false never
+            // touched it above). Found by security-engineer reviewing
+            // PR #371's fix for the analogous timeout-branch gap.
+            release_conn_slot(req_ctx, &self.state.upstream_health);
         }
     }
 
@@ -1116,8 +1335,9 @@ impl ConduitProxy {
     pub(super) fn try_retry_proxy_error(
         &self,
         session: &Session,
-        retry: &mut RetryState,
+        req_ctx: &mut RequestCtx,
         e: &mut Box<pingora_core::Error>,
+        config: &crate::config::schema::AppConfig,
     ) {
         use pingora_core::ErrorType::*;
         let is_timeout = matches!(e.etype(), ReadTimedout | WriteTimedout);
@@ -1125,11 +1345,16 @@ impl ConduitProxy {
         let condition = if is_timeout { "timeout" } else { "5xx" };
         // Only retry safe/idempotent methods.
         let method = session.req_header().method.as_str();
-        if is_safe_http_method(method)
-            && ((is_timeout && retry.has_condition("timeout"))
-                || (is_5xx_retry && retry.has_condition("5xx")))
-            && self.retry_budget_allows(retry)
-        {
+        let should_retry = {
+            let Some(retry) = req_ctx.retry.as_mut() else {
+                return;
+            };
+            is_safe_http_method(method)
+                && ((is_timeout && retry.has_condition("timeout"))
+                    || (is_5xx_retry && retry.has_condition("5xx")))
+                && self.retry_budget_allows(retry)
+        };
+        if should_retry {
             e.set_retry(true);
             let route = session.req_header().uri.path().to_owned();
             self.state
@@ -1137,6 +1362,42 @@ impl ConduitProxy {
                 .retry_attempts_total
                 .with_label_values(&[route.as_str(), condition])
                 .inc();
+            // #216 (findings C/D): only the timeout branch needs new
+            // health recording here -- a 5xx failure was already fully
+            // recorded (health, gauge, upstream_requests_total/latency) by
+            // record_failed_upstream_for_retry in response_phase.rs, which
+            // runs BEFORE this Custom("5xx_retry") error is even
+            // constructed; recording it again here would double-count.
+            if is_timeout {
+                // connection_established=true: a read/write timeout occurs
+                // only after the connection succeeded and
+                // upstream_request_filter already incremented the
+                // active-connections gauge for this attempt -- unlike the
+                // connect-phase case, that increment DOES need
+                // reconciling here. SYNTHETIC_RETRY_FAILURE_STATUS (503),
+                // not 0 -- see record_retry_failure_health's doc comment
+                // (Gitar finding on PR #371).
+                self.record_retry_failure_health(
+                    req_ctx,
+                    config,
+                    SYNTHETIC_RETRY_FAILURE_STATUS,
+                    true,
+                );
+                // Clear proxy_upstream_url/upstream_conn_slot immediately,
+                // mirroring record_failed_upstream_for_retry's 5xx-path
+                // ordering (record health first, then release), rather than
+                // relying solely on upstream_peer's retry-restore to do it
+                // on the NEXT attempt. Without this, if set_retry(true)
+                // does not actually result in another upstream_peer() call
+                // (e.g. Pingora declines to retry after all -- a truncated
+                // retry buffer, or attempts genuinely exhausted right after
+                // this decision), proxy_upstream_url stays pointing at this
+                // failed attempt and logging()'s own unconditional
+                // active-connections decrement (record_upstream_metrics)
+                // would fire AGAIN for the same URL, driving the gauge
+                // negative (Gitar finding on PR #371).
+                release_conn_slot(req_ctx, &self.state.upstream_health);
+            }
         }
     }
 }
@@ -1163,26 +1424,15 @@ pub(super) async fn upstream_peer(
         apply_backoff(retry).await;
     }
 
-    let (addr_str, tls, sni) = resolve_peer_addr(req_ctx)?;
-
-    // For retry attempts (#47 companion fix): restore proxy_upstream_url to
-    // the URL for THIS attempt so that logging(), access log, and EWMA
-    // tracking all reflect the *actual* upstream that served the response.
-    //
-    // resolve_peer_addr() already incremented retry.attempt, so the URL
-    // used in this call is urls[(attempt - 1) % len].
-    if let Some(ref retry) = req_ctx.retry {
-        if retry.attempt > 1 {
-            // This is a retry (attempt was >0 before incrementing).
-            let idx = (retry.attempt - 1) % retry.urls.len();
-            req_ctx.proxy_upstream_url = Some(retry.urls[idx].clone());
-            // This attempt never went through conn_inc, so it must not
-            // inherit a slot to release (record_failed_upstream_for_retry
-            // already clears this, but assert the invariant here too since
-            // this is the exact site a future change could reintroduce it).
-            req_ctx.upstream_conn_slot = false;
-        }
-    }
+    // #47/#216: resolve_peer_addr() -> select_retry_target() owns choosing
+    // this attempt's URL AND all proxy_upstream_url/upstream_conn_slot
+    // bookkeeping for it (release the previous attempt's slot, forward-probe
+    // for capacity, acquire the new one) so that logging(), the access log,
+    // and EWMA tracking all reflect the *actual* upstream this attempt
+    // targets -- see select_retry_target's doc comment for the full design
+    // (#216 part 2 -- real per-attempt capacity admission, not just part
+    // 1's leak fix).
+    let (addr_str, tls, sni) = resolve_peer_addr(req_ctx, &proxy.state.upstream_health)?;
 
     // Derive fallback timeout from `limits.timeoutSecs` on the matched site.
     // Computed here (rather than only below, before `apply_peer_options`) so
@@ -1288,7 +1538,7 @@ pub(super) async fn request_body_filter(
     };
 
     let chunk_len = body.as_ref().map(|c| c.len()).unwrap_or(0);
-    req_ctx.actual_body_bytes += chunk_len as u64;
+    req_ctx.limits.actual_body_bytes += chunk_len as u64;
 
     // Enforce maxBodyBytes on the ACTUAL received bytes.
     // The LimitsGuard only checks the Content-Length header; chunked clients bypass it.
@@ -1333,18 +1583,19 @@ pub(super) async fn request_body_filter(
             // elapsed_secs = 0 on the first chunk so the chunk bytes are
             // credited to the bucket immediately (no time-based drain).
             let elapsed_secs = req_ctx
+                .limits
                 .upload_last_chunk
                 .map(|last| now.duration_since(last).as_secs_f64())
                 .unwrap_or(0.0);
-            if upload_rate_step(
-                &mut req_ctx.upload_excess_bytes,
+            if crate::filter::limits::upload_rate_step(
+                &mut req_ctx.limits.upload_excess_bytes,
                 chunk_len,
                 min_rate,
                 elapsed_secs,
             ) {
                 tracing::debug!(
                     min_rate,
-                    excess = req_ctx.upload_excess_bytes,
+                    excess = req_ctx.limits.upload_excess_bytes,
                     "upload rate below minimum — closing connection (408)"
                 );
                 *body = None;
@@ -1353,7 +1604,7 @@ pub(super) async fn request_body_filter(
                     "upload rate below minUploadRateBytesPerSec",
                 ));
             }
-            req_ctx.upload_last_chunk = Some(now);
+            req_ctx.limits.upload_last_chunk = Some(now);
         }
     }
 
@@ -1414,7 +1665,7 @@ pub(super) async fn upstream_request_filter(
                 apply_header_transform_request_with_claims(
                     upstream_request,
                     transform,
-                    &req_ctx.jwt_claims,
+                    req_ctx.jwt_claims(),
                 )?;
             }
         }
@@ -1461,7 +1712,7 @@ pub(super) fn request_cache_filter(
         } else if cfg.store.starts_with("redis://") || cfg.store.starts_with("rediss://") {
             #[cfg(feature = "redis")]
             {
-                match cache_redis::get_or_create(&cfg.store) {
+                match cache_redis::get(&cfg.store) {
                     Some(s) => s,
                     None => {
                         tracing::warn!(
@@ -1609,10 +1860,14 @@ pub(super) fn fail_to_connect(
     mut e: Box<pingora_core::Error>,
 ) -> Box<pingora_core::Error> {
     if let Some(req_ctx) = ctx.as_mut() {
-        if let Some(retry) = &mut req_ctx.retry {
-            if retry.has_attempts_left() {
-                proxy.try_retry_connect_error(session, retry, &mut e);
-            }
+        let has_attempts_left = req_ctx
+            .retry
+            .as_ref()
+            .map(RetryState::has_attempts_left)
+            .unwrap_or(false);
+        if has_attempts_left {
+            let config = proxy.state.config.load();
+            proxy.try_retry_connect_error(session, req_ctx, &mut e, &config);
         }
     }
     e
@@ -1632,10 +1887,14 @@ pub(super) fn error_while_proxy(
         .decide_reuse(client_reused && !session.as_ref().retry_buffer_truncated());
 
     if let Some(req_ctx) = ctx.as_mut() {
-        if let Some(retry) = &mut req_ctx.retry {
-            if retry.has_attempts_left() {
-                proxy.try_retry_proxy_error(session, retry, &mut e);
-            }
+        let has_attempts_left = req_ctx
+            .retry
+            .as_ref()
+            .map(RetryState::has_attempts_left)
+            .unwrap_or(false);
+        if has_attempts_left {
+            let config = proxy.state.config.load();
+            proxy.try_retry_proxy_error(session, req_ctx, &mut e, &config);
         }
     }
     e
@@ -1702,36 +1961,6 @@ pub(super) fn is_safe_http_method(method: &str) -> bool {
     )
 }
 
-/// Leaky-bucket minimum-upload-rate step (#51).
-///
-/// Updates `excess` (surplus bytes above the minimum rate) and returns
-/// `true` when the client has fallen more than one second behind the
-/// minimum rate and should be rejected with 408.
-///
-/// # Arguments
-/// - `excess` — running surplus in bytes (positive = fast, negative = slow).
-///   Modified in place.
-/// - `chunk_len` — bytes received in this chunk.
-/// - `min_rate` — minimum acceptable rate in bytes per second.
-/// - `elapsed_secs` — seconds elapsed since the previous chunk.
-///
-/// # Algorithm
-/// ```text
-/// excess += chunk_len − min_rate × elapsed_secs
-/// excess  = min(excess, min_rate)   // cap surplus (no unlimited burst credit)
-/// reject  = excess < −min_rate       // more than one second of deficit
-/// ```
-pub(crate) fn upload_rate_step(
-    excess: &mut f64,
-    chunk_len: usize,
-    min_rate: u64,
-    elapsed_secs: f64,
-) -> bool {
-    *excess += chunk_len as f64 - min_rate as f64 * elapsed_secs;
-    *excess = excess.min(min_rate as f64);
-    *excess < -(min_rate as f64)
-}
-
 /// Enforce the `maxBodyBytes` hard limit on actual received bytes.
 ///
 /// Returns `true` when the limit was exceeded (caller should return early).
@@ -1746,14 +1975,14 @@ pub(super) fn enforce_max_body_bytes(
     let Some(max) = max_body else {
         return false;
     };
-    if req_ctx.actual_body_bytes > max {
+    if req_ctx.limits.actual_body_bytes > max {
         // Drop this chunk — prevents forwarding to upstream.
         *body = None;
-        let prev = req_ctx.actual_body_bytes - chunk_len as u64;
+        let prev = req_ctx.limits.actual_body_bytes - chunk_len as u64;
         if prev <= max {
             // Log only on first violation.
             tracing::warn!(
-                actual = req_ctx.actual_body_bytes,
+                actual = req_ctx.limits.actual_body_bytes,
                 max,
                 "request body exceeded maxBodyBytes (chunked/no Content-Length) \
                  — body dropped, upstream will receive truncated request"
@@ -1787,28 +2016,139 @@ pub(super) fn buffer_body_chunk(req_ctx: &mut RequestCtx, chunk: &bytes::Bytes, 
     }
 }
 
+/// Release the `conn_count` slot this request currently holds (if any) and
+/// clear both `proxy_upstream_url` and `upstream_conn_slot` (#216).
+///
+/// Idempotent: a no-op when `proxy_upstream_url` is already `None` (e.g.
+/// already released by `record_failed_upstream_for_retry` on the 5xx retry
+/// path). This is the only correct way to stop pointing at an upstream —
+/// see the invariant documented on [`RequestCtx::upstream_conn_slot`].
+pub(super) fn release_conn_slot(req_ctx: &mut RequestCtx, health: &UpstreamRegistry) {
+    let Some(url) = req_ctx.proxy_upstream_url.take() else {
+        return;
+    };
+    if std::mem::take(&mut req_ctx.upstream_conn_slot) {
+        health.conn_dec(&url);
+    }
+}
+
+/// Point this request at `url`, acquiring a real `conn_count` slot when
+/// `tracked` is `true` (#216).
+///
+/// Debug-asserts that no slot is currently held — callers must
+/// [`release_conn_slot`] first, never assign `proxy_upstream_url` /
+/// `upstream_conn_slot` directly.
+pub(super) fn acquire_conn_slot(
+    req_ctx: &mut RequestCtx,
+    health: &UpstreamRegistry,
+    url: String,
+    tracked: bool,
+) {
+    debug_assert!(
+        req_ctx.proxy_upstream_url.is_none() && !req_ctx.upstream_conn_slot,
+        "acquire_conn_slot called while a slot is already held for {:?} — call \
+         release_conn_slot first",
+        req_ctx.proxy_upstream_url
+    );
+    if tracked {
+        health.conn_inc(&url);
+    }
+    req_ctx.proxy_upstream_url = Some(url);
+    req_ctx.upstream_conn_slot = tracked;
+}
+
+/// Choose the URL for this attempt of a retry-configured request, and own
+/// all `proxy_upstream_url`/`upstream_conn_slot` bookkeeping for it (#216
+/// part 2 — real per-attempt capacity admission, building on part 1's leak
+/// fix). Single source of truth for the retry index: replaces what used to
+/// be two independently-recomputed copies of the same formula (one here,
+/// one in `upstream_peer`'s old retry-restore block) that had to be kept in
+/// lockstep by hand and could silently diverge.
+///
+/// **Attempt 0 (the request's first attempt) trusts routing's decision
+/// verbatim** — `retry.urls[0]` is guaranteed equal to the peer
+/// `pick_bounded`/`pick_with_retry` already chose (#367), and routing
+/// already acquired whatever `conn_count` slot that decision implies
+/// *before* `upstream_peer` was ever called. This function does not
+/// re-probe capacity or touch slot bookkeeping for attempt 0: doing either
+/// would silently override a full strategy-aware, capacity-aware,
+/// ramp-aware decision with a much cruder "first admissible peer in a fixed
+/// rotation" rule, and would double-acquire (or wrongly downgrade) a slot
+/// routing already holds.
+///
+/// **Attempt 1+ (an actual retry) forward-probes** `retry.urls` starting at
+/// this attempt's rotation index for a peer under
+/// `retry.max_conns_per_upstream`, mirroring
+/// [`crate::proxy::capacity::hash_pick_bounded`]'s existing forward-probe
+/// pattern rather than filtering the list — filtering would renumber every
+/// subsequent attempt's rotation instead of skipping just the one saturated
+/// peer. **Fails open** (falls back to the naive rotation URL) when every
+/// peer is saturated, matching this codebase's established soft-cap
+/// convention (`capacity.rs`'s module doc, `retry.budgetPercent`): capacity
+/// having deteriorated mid-request should not turn into a hard failure on a
+/// request that has already spent attempts. `retry.tracks_conn_slot`
+/// mirrors `RouteResolution.upstream_conn_slot`'s own formula
+/// (`is_least_conn || circuit_tracking`) computed at routing time.
+fn select_retry_target(req_ctx: &mut RequestCtx, health: &UpstreamRegistry) -> String {
+    // Compute this attempt's target using only a borrow of req_ctx.retry,
+    // ended before release_conn_slot/acquire_conn_slot need to borrow the
+    // whole req_ctx.
+    let (chosen, tracked) = {
+        let retry = req_ctx
+            .retry
+            .as_mut()
+            .expect("select_retry_target called only when req_ctx.retry.is_some()");
+        let len = retry.urls.len();
+        let base = retry.attempt % len;
+        let is_first_attempt = retry.attempt == 0;
+        retry.attempt += 1;
+
+        if is_first_attempt {
+            (retry.urls[0].clone(), None)
+        } else {
+            let chosen = match retry.max_conns_per_upstream {
+                Some(max) => (0..len)
+                    .map(|i| retry.urls[(base + i) % len].clone())
+                    .find(|u| health.conn_load(u) < max as usize)
+                    .unwrap_or_else(|| retry.urls[base].clone()),
+                None => retry.urls[base].clone(),
+            };
+            (chosen, Some(retry.tracks_conn_slot))
+        }
+    };
+
+    if let Some(tracked) = tracked {
+        release_conn_slot(req_ctx, health);
+        acquire_conn_slot(req_ctx, health, chosen.clone(), tracked);
+    }
+    chosen
+}
+
 /// Resolve the upstream `(addr, tls, sni)` from the request context.
 ///
-/// On a retry the address rotates through the URL list and the attempt counter
-/// is incremented.  On the first attempt the values come from `ctx.upstream`.
+/// For a retry-configured request, delegates to [`select_retry_target`] to
+/// decide which URL this attempt targets — unifying URL selection with the
+/// request's `proxy_upstream_url`/`upstream_conn_slot` bookkeeping into one
+/// decision (#216 part 2). On the first attempt the values come from
+/// `ctx.upstream` directly (no `retry` configured for this route at all).
 pub(super) fn resolve_peer_addr(
     req_ctx: &mut RequestCtx,
+    health: &UpstreamRegistry,
 ) -> pingora_core::Result<(String, bool, String)> {
-    if let Some(ref mut retry) = req_ctx.retry {
-        let url = &retry.urls[retry.attempt % retry.urls.len()];
-        let addr = upstream::url_to_host_port(url).ok_or_else(|| {
+    if req_ctx.retry.is_some() {
+        let url = select_retry_target(req_ctx, health);
+        let addr = upstream::url_to_host_port(&url).ok_or_else(|| {
             pingora_core::Error::explain(
                 pingora_core::ErrorType::ConnectProxyFailure,
                 format!("invalid upstream address: {url}"),
             )
         })?;
-        let tls = upstream::url_is_tls(url);
+        let tls = upstream::url_is_tls(&url);
         let sni = if tls {
-            upstream::url_host(url)
+            upstream::url_host(&url)
         } else {
             String::new()
         };
-        retry.attempt += 1;
         Ok((addr, tls, sni))
     } else {
         match &req_ctx.upstream {
@@ -2170,6 +2510,32 @@ impl LocalHandlerImpl for OverloadedHandler {
     }
 }
 
+// ── Fallback-of-last-resort handler (no `static` feature) ─────────────────────
+
+/// Plain `404 Not Found` used for `HandlerKind::Fallback` when the `static`
+/// feature isn't compiled in — see the `#[cfg(not(feature = "static"))]`
+/// arm of `build_handler` for why this must exist unconditionally rather
+/// than returning `None`.
+#[cfg(not(feature = "static"))]
+struct PlainNotFoundHandler {
+    extra_headers: Vec<(String, String)>,
+}
+
+#[cfg(not(feature = "static"))]
+#[async_trait]
+impl LocalHandlerImpl for PlainNotFoundHandler {
+    async fn handle(&mut self, session: &mut Session) -> pingora_core::Result<()> {
+        response::write_response(
+            session,
+            404,
+            "text/plain",
+            bytes::Bytes::from_static(b"Not Found"),
+            &self.extra_headers,
+        )
+        .await
+    }
+}
+
 #[derive(Clone)]
 enum HandlerKind {
     Health,
@@ -2258,44 +2624,6 @@ pub(super) fn extract_host(session: &Session) -> String {
         .and_then(|v| v.to_str().ok())
         .map(|h| h.split(':').next().unwrap_or(h).to_owned())
         .unwrap_or_default()
-}
-
-/// Extract JWT claims from the `Authorization: Bearer` header for header
-/// template substitution (`{{ jwt.<claim> }}`).
-///
-/// Returns `None` when JWT auth is not configured, the current path is in
-/// `jwtAuth.skipPaths`, the header is missing or not a Bearer token, or the
-/// token cannot be decoded.
-///
-/// The `skipPaths` check is required here, not just in [`JwtGuard`]: on a
-/// skipped path `JwtGuard` lets the request through *without* verifying the
-/// token's signature at all (see `jwt::jwt_prelude`), so if this function
-/// didn't apply the same check it would decode and trust an attacker-forged,
-/// unsigned token's claims for header-template substitution — effectively
-/// spoofing `{{ jwt.<claim> }}` values (e.g. `{{ jwt.sub }}`) into whatever
-/// upstream header a route's `requestTransform` injects them into, on any
-/// path the operator intentionally exempted from auth.
-///
-/// [`JwtGuard`]: crate::filter::chain::JwtGuard
-#[cfg(feature = "jwt")]
-fn jwt_claims_from_session(
-    session: &Session,
-    jwt_cfg: Option<&crate::config::schema::JwtAuthConfig>,
-) -> Option<std::collections::HashMap<String, serde_json::Value>> {
-    let jwt_cfg = jwt_cfg?;
-    let path = session.req_header().uri.path();
-    if let Some(skip) = &jwt_cfg.skip_paths {
-        if crate::filter::auth::is_path_skipped(Some(skip.as_slice()), path) {
-            return None;
-        }
-    }
-    let auth_hdr = session
-        .req_header()
-        .headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())?;
-    let token = crate::filter::jwt::extract_bearer(Some(auth_hdr))?;
-    crate::filter::jwt::extract_claims_unchecked(token)
 }
 
 /// Append `X-Forwarded-For` and `X-Forwarded-Proto` headers to the upstream request.
@@ -2455,7 +2783,7 @@ pub(super) fn apply_header_transform_request_with_claims(
     if let Some(set) = &transform.set_headers {
         for (name, value) in set {
             let resolved = if value.contains("{{") {
-                expand_jwt_templates(value, jwt_claims)
+                crate::util::jwt_template::expand_jwt_templates(value, jwt_claims)
             } else {
                 value.clone()
             };
@@ -2463,35 +2791,6 @@ pub(super) fn apply_header_transform_request_with_claims(
         }
     }
     Ok(())
-}
-
-/// Expand `{{ jwt.<claim> }}` templates in a string.
-///
-/// Replaces all occurrences of `{{ jwt.CLAIM }}` with the corresponding value
-/// from the JWT payload.  Unknown claims are replaced with an empty string.
-/// Non-string claim values are JSON-serialized (e.g. numbers, arrays).
-/// Expand `{{ jwt.<claim> }}` templates — exposed for unit tests via `pub(crate)`.
-pub(crate) fn expand_jwt_templates(
-    template: &str,
-    claims: &Option<std::collections::HashMap<String, serde_json::Value>>,
-) -> String {
-    static JWT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = JWT_RE.get_or_init(|| {
-        regex::Regex::new(r"\{\{\s*jwt\.(\w+)\s*\}\}").expect("jwt template regex")
-    });
-
-    re.replace_all(template, |caps: &regex::Captures<'_>| {
-        let claim_name = &caps[1];
-        match claims {
-            Some(map) => match map.get(claim_name) {
-                Some(serde_json::Value::String(s)) => s.clone(),
-                Some(v) => v.to_string(),
-                None => String::new(),
-            },
-            None => String::new(),
-        }
-    })
-    .into_owned()
 }
 
 /// Fire-and-forget a copy of the current request to a mirror backend.
@@ -2761,21 +3060,6 @@ mod tests {
         );
     }
 
-    // ── expand_jwt_templates (additional cases) ───────────────────────────────
-
-    #[test]
-    fn expand_jwt_templates_no_template_unchanged() {
-        let claims: std::collections::HashMap<String, serde_json::Value> = Default::default();
-        let result = expand_jwt_templates("plain-value", &Some(claims));
-        assert_eq!(result, "plain-value");
-    }
-
-    #[test]
-    fn expand_jwt_templates_null_claims_returns_empty() {
-        let result = expand_jwt_templates("{{ jwt.sub }}", &None);
-        assert_eq!(result, "");
-    }
-
     // ── resolve_peer_addr ─────────────────────────────────────────────────────
 
     fn make_ctx(upstream: UpstreamTarget) -> RequestCtx {
@@ -2793,7 +3077,8 @@ mod tests {
             mirror_url: None,
             upstream_tls: None,
         });
-        let (addr, tls, sni) = resolve_peer_addr(&mut ctx).unwrap();
+        let reg = UpstreamRegistry::new();
+        let (addr, tls, sni) = resolve_peer_addr(&mut ctx, &reg).unwrap();
         assert_eq!(addr, "backend:4000");
         assert!(!tls);
         assert!(sni.is_empty());
@@ -2810,7 +3095,8 @@ mod tests {
             mirror_url: None,
             upstream_tls: None,
         });
-        let (addr, tls, sni) = resolve_peer_addr(&mut ctx).unwrap();
+        let reg = UpstreamRegistry::new();
+        let (addr, tls, sni) = resolve_peer_addr(&mut ctx, &reg).unwrap();
         assert_eq!(addr, "api.example.com:443");
         assert!(tls);
         assert_eq!(sni, "api.example.com");
@@ -2819,8 +3105,9 @@ mod tests {
     #[test]
     fn resolve_peer_addr_local_handler_returns_error() {
         let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        let reg = UpstreamRegistry::new();
         assert!(
-            resolve_peer_addr(&mut ctx).is_err(),
+            resolve_peer_addr(&mut ctx, &reg).is_err(),
             "local handler must return error"
         );
     }
@@ -3516,6 +3803,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn build_handler_hot_reload_js_returns_some() {
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::HotReloadJs)));
@@ -3524,6 +3812,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hotreload")]
     fn build_handler_hot_reload_sse_returns_some() {
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::HotReloadSse)));
@@ -3532,6 +3821,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "static")]
     fn build_handler_static_file_returns_some() {
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::StaticFile {
@@ -3544,7 +3834,29 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "static"))]
+    fn build_handler_static_file_returns_none_without_feature() {
+        let proxy = make_proxy();
+        let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::StaticFile {
+            roots: vec![std::path::PathBuf::from("./dist")],
+            options: std::sync::Arc::new(Default::default()),
+            strip_prefix: None,
+        })));
+        let result = proxy.build_handler(HandlerKind::StaticFile, &ctx);
+        assert!(
+            result.is_none(),
+            "StaticFile handler must return None without the `static` feature"
+        );
+    }
+
+    #[test]
     fn build_handler_fallback_returns_some() {
+        // `HandlerKind::Fallback` must return `Some` in BOTH feature states —
+        // it's the universal "nothing else matched" terminal case (see the
+        // `#[cfg(not(feature = "static"))]` arm's own doc comment), not
+        // exclusive to the `static` feature. Returning `None` here would
+        // make `dispatch_local` treat an unmatched request as `Proxy` and
+        // hand it to `upstream_peer()`, which has no real upstream to use.
         let proxy = make_proxy();
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::Fallback)));
         let result = proxy.build_handler(HandlerKind::Fallback, &ctx);
@@ -3581,6 +3893,8 @@ mod tests {
             backoff_jitter: false,
             budget_percent: None, // no budget limit
             is_retrying: false,
+            max_conns_per_upstream: None,
+            tracks_conn_slot: false,
         };
         // No budget configured → always allows retry.
         assert!(proxy.retry_budget_allows(&mut retry));
@@ -3601,6 +3915,8 @@ mod tests {
             backoff_jitter: false,
             budget_percent: Some(50.0), // 50% budget → up to 5 retries
             is_retrying: false,
+            max_conns_per_upstream: None,
+            tracks_conn_slot: false,
         };
         assert!(
             proxy.retry_budget_allows(&mut retry),
@@ -3623,12 +3939,53 @@ mod tests {
             backoff_jitter: false,
             budget_percent: Some(50.0), // 50% → max 5, current=10 → denied
             is_retrying: false,
+            max_conns_per_upstream: None,
+            tracks_conn_slot: false,
         };
         assert!(
             !proxy.retry_budget_allows(&mut retry),
             "exhausted budget must deny"
         );
         assert!(!retry.is_retrying);
+    }
+
+    /// Regression test for #368: calling `retry_budget_allows` twice on the
+    /// SAME `RetryState` (as happens for a request that retries more than
+    /// once, e.g. `attempts: 3` with both retries taken) must only increment
+    /// `retry_inflight` once, not once per call. Reverting the `is_retrying`
+    /// guard (unconditional `fetch_add`) would make `retry_inflight` end up
+    /// at 2 here instead of 1 -- a leak that compounds across every
+    /// multi-attempt retry sequence for the life of the process and can
+    /// eventually make `retry.budgetPercent` silently suppress all retries
+    /// sitewide.
+    #[test]
+    fn retry_budget_allows_increments_inflight_once_per_request_not_per_attempt() {
+        let proxy = make_proxy();
+        proxy.state.inflight.store(10, Ordering::Relaxed);
+        proxy.state.retry_inflight.store(0, Ordering::Relaxed);
+        let mut retry = RetryState {
+            urls: vec!["http://a:4000".to_owned()],
+            attempt: 0,
+            max_attempts: 3,
+            conditions: vec!["5xx".to_owned()],
+            backoff_ms: None,
+            backoff_jitter: false,
+            budget_percent: Some(50.0),
+            is_retrying: false,
+            max_conns_per_upstream: None,
+            tracks_conn_slot: false,
+        };
+        // First retry decision for this request.
+        assert!(proxy.retry_budget_allows(&mut retry));
+        assert_eq!(proxy.state.retry_inflight.load(Ordering::Relaxed), 1);
+        // Second retry decision for the SAME request (e.g. its 2nd retry
+        // attempt) -- must NOT increment again.
+        assert!(proxy.retry_budget_allows(&mut retry));
+        assert_eq!(
+            proxy.state.retry_inflight.load(Ordering::Relaxed),
+            1,
+            "retry_inflight must not increment again for a request already counted as retrying"
+        );
     }
 
     // ── collect_upstream_infos ────────────────────────────────────────────────
@@ -3838,6 +4195,8 @@ mod tests {
             backoff_jitter: false,
             budget_percent: None,
             is_retrying: false,
+            max_conns_per_upstream: None,
+            tracks_conn_slot: false,
         };
         let mut ctx = make_ctx(UpstreamTarget::Proxy {
             addr: "original:4000".to_owned(),
@@ -3849,104 +4208,200 @@ mod tests {
             upstream_tls: None,
         });
         ctx.retry = Some(retry);
-        let (addr, _, _) = resolve_peer_addr(&mut ctx).unwrap();
+        let reg = UpstreamRegistry::new();
+        let (addr, _, _) = resolve_peer_addr(&mut ctx, &reg).unwrap();
         assert_eq!(addr, "a:4000");
         // Attempt should be incremented.
         assert_eq!(ctx.retry.unwrap().attempt, 1);
     }
 
-    // ── upload_rate_step (leaky-bucket minimum rate, #51) ────────────────────
+    // ── select_retry_target (#216 part 2) ─────────────────────────────────────
 
+    fn make_retry_ctx(
+        urls: &[&str],
+        attempt: usize,
+        max_conns_per_upstream: Option<u64>,
+        tracks_conn_slot: bool,
+    ) -> RequestCtx {
+        let mut ctx = make_ctx(UpstreamTarget::Proxy {
+            addr: "unused:0".to_owned(),
+            tls: false,
+            sni: String::new(),
+            strip_prefix: None,
+            rewrite: None,
+            mirror_url: None,
+            upstream_tls: None,
+        });
+        ctx.retry = Some(RetryState {
+            urls: urls.iter().map(|u| u.to_string()).collect(),
+            attempt,
+            max_attempts: 5,
+            conditions: vec!["5xx".to_owned()],
+            backoff_ms: None,
+            backoff_jitter: false,
+            budget_percent: None,
+            is_retrying: false,
+            max_conns_per_upstream,
+            tracks_conn_slot,
+        });
+        ctx
+    }
+
+    /// Attempt 0 must trust routing's decision verbatim: return
+    /// `retry.urls[0]` without touching `proxy_upstream_url`/
+    /// `upstream_conn_slot` at all, even when a slot is already held (as
+    /// routing would have already set up before `upstream_peer` runs).
+    /// Re-probing or re-acquiring here would silently override a full
+    /// strategy-aware pick_bounded/pick_with_retry decision.
     #[test]
-    fn upload_rate_step_at_exact_min_rate_keeps_excess_zero() {
-        let mut excess = 0.0f64;
-        let min_rate = 1024u64; // 1 KiB/s
-                                // Exactly 1024 bytes in exactly 1 second → excess stays at 0.
-        let rejected = upload_rate_step(&mut excess, 1024, min_rate, 1.0);
-        assert!(!rejected, "exactly at min rate must not reject");
+    fn select_retry_target_attempt_zero_trusts_routing_without_touching_slot() {
+        let reg = UpstreamRegistry::new();
+        // Deliberately set retry.tracks_conn_slot to `true` while routing's
+        // OWN decision (upstream_conn_slot below) was `false` -- an
+        // attribution-only pick (e.g. no cap configured and not
+        // least-conn). If attempt 0 incorrectly ran release_conn_slot/
+        // acquire_conn_slot (using retry.tracks_conn_slot), it would flip
+        // upstream_conn_slot to `true` and increment conn_load -- an
+        // observable difference from "untouched" that a same-peer,
+        // same-tracked-value scenario could never catch.
+        let mut ctx = make_retry_ctx(&["http://a:80", "http://b:80"], 0, Some(1), true);
+        // Simulate what routing already set up before upstream_peer ran.
+        ctx.proxy_upstream_url = Some("http://a:80".to_owned());
+        ctx.upstream_conn_slot = false;
+
+        let chosen = select_retry_target(&mut ctx, &reg);
+
+        assert_eq!(chosen, "http://a:80");
+        assert_eq!(ctx.retry.as_ref().unwrap().attempt, 1);
+        assert_eq!(
+            ctx.proxy_upstream_url.as_deref(),
+            Some("http://a:80"),
+            "attempt 0 must not touch proxy_upstream_url"
+        );
         assert!(
-            (excess - 0.0).abs() < 0.01,
-            "excess should be ~0, got {excess}"
+            !ctx.upstream_conn_slot,
+            "attempt 0 must not touch upstream_conn_slot -- must stay exactly as routing set it, \
+             even though retry.tracks_conn_slot is true"
+        );
+        assert_eq!(
+            reg.conn_load("http://a:80"),
+            0,
+            "attempt 0 must not acquire a slot nothing asked it to"
         );
     }
 
+    /// The actual point of #216 part 2: a retry attempt must forward-probe
+    /// past a saturated peer instead of naively rotating into it. Peer at
+    /// `base` is at its cap; the next peer in rotation is under capacity —
+    /// the retry must land on the SECOND peer, not the first.
     #[test]
-    fn upload_rate_step_above_min_rate_accumulates_surplus() {
-        let mut excess = 0.0f64;
-        let min_rate = 1024u64;
-        // 2048 bytes in 1 second (twice the minimum rate) → surplus = 1024.
-        let rejected = upload_rate_step(&mut excess, 2048, min_rate, 1.0);
-        assert!(!rejected, "above min rate must not reject");
-        // Surplus capped at min_rate (1024).
-        assert!(
-            (excess - 1024.0).abs() < 0.01,
-            "surplus capped at min_rate: got {excess}"
+    fn select_retry_target_retry_forward_probes_past_saturated_peer() {
+        let reg = UpstreamRegistry::new();
+        reg.conn_inc("http://a:80"); // a is now at the cap of 1
+                                     // attempt=2, len=2 -> base = 2 % 2 = 0, i.e. the NAIVE (non-probing)
+                                     // target would be urls[0] = "http://a:80", the saturated one --
+                                     // this is the case that actually exercises the forward-probe
+                                     // skipping past it to urls[1].
+        let mut ctx = make_retry_ctx(&["http://a:80", "http://b:80"], 2, Some(1), true);
+
+        let chosen = select_retry_target(&mut ctx, &reg);
+
+        assert_eq!(
+            chosen, "http://b:80",
+            "must forward-probe past the saturated peer to the next admissible one"
+        );
+        assert_eq!(ctx.retry.as_ref().unwrap().attempt, 3);
+        assert_eq!(
+            reg.conn_load("http://b:80"),
+            1,
+            "the new peer's slot must be acquired"
         );
     }
 
+    /// Fail-open guarantee: when every peer in the rotation is saturated,
+    /// `select_retry_target` must still return a URL (the naive rotation
+    /// target), never panic or loop forever. Matches this codebase's
+    /// established soft-cap convention (capacity.rs's module doc,
+    /// retry.budgetPercent) -- capacity deteriorating mid-request must not
+    /// turn into a hard failure on a request that already spent attempts.
     #[test]
-    fn upload_rate_step_surplus_is_capped_at_one_second() {
-        let mut excess = 0.0f64;
-        let min_rate = 1000u64;
-        // Enormous burst: 1_000_000 bytes in 0.01 seconds.
-        upload_rate_step(&mut excess, 1_000_000, min_rate, 0.01);
-        // Surplus must be capped at min_rate (1000) — not the raw 999_990.
-        assert!(
-            excess <= min_rate as f64 + 0.01,
-            "surplus must be capped at min_rate: got {excess}"
+    fn select_retry_target_fails_open_when_every_peer_is_saturated() {
+        let reg = UpstreamRegistry::new();
+        reg.conn_inc("http://a:80");
+        reg.conn_inc("http://b:80");
+        let mut ctx = make_retry_ctx(&["http://a:80", "http://b:80"], 1, Some(1), true);
+
+        let chosen = select_retry_target(&mut ctx, &reg);
+
+        // base = attempt % len = 1 % 2 = 1 -> naive fallback is urls[1].
+        assert_eq!(chosen, "http://b:80");
+        assert_eq!(ctx.retry.as_ref().unwrap().attempt, 2);
+    }
+
+    /// `max_conns_per_upstream: None` (no cap configured) must skip the
+    /// forward-probe entirely and use the naive rotation index -- matching
+    /// pre-#216-part-2 behavior exactly when there's nothing to admit
+    /// against.
+    #[test]
+    fn select_retry_target_no_cap_configured_uses_naive_rotation() {
+        let reg = UpstreamRegistry::new();
+        // Even though b is "saturated" by some unrelated bookkeeping, with
+        // no cap configured there is nothing to forward-probe against --
+        // base = attempt(1) % len(2) = 1, so the naive target is urls[1].
+        reg.conn_inc("http://b:80");
+        reg.conn_inc("http://b:80");
+        reg.conn_inc("http://b:80");
+        let mut ctx = make_retry_ctx(&["http://a:80", "http://b:80"], 1, None, true);
+
+        let chosen = select_retry_target(&mut ctx, &reg);
+
+        assert_eq!(
+            chosen, "http://b:80",
+            "no cap -> naive rotation, no probing"
         );
+        assert_eq!(ctx.retry.as_ref().unwrap().attempt, 2);
     }
 
+    /// `tracks_conn_slot: false` must acquire the new URL without
+    /// incrementing conn_count -- matching part 1's undercount-preserving
+    /// behavior for routes that don't track retries (e.g. no cap
+    /// configured and not least-conn).
     #[test]
-    fn upload_rate_step_below_min_rate_accumulates_deficit() {
-        let mut excess = 0.0f64;
-        let min_rate = 1000u64;
-        // 100 bytes in 1 second (1/10 of min rate) → deficit grows.
-        let rejected = upload_rate_step(&mut excess, 100, min_rate, 1.0);
-        // deficit = 100 - 1000 = -900; not yet past -1000 threshold.
-        assert!(
-            !rejected,
-            "single slow chunk below min rate but deficit < min_rate"
+    fn select_retry_target_untracked_acquires_without_incrementing() {
+        let reg = UpstreamRegistry::new();
+        let mut ctx = make_retry_ctx(&["http://a:80", "http://b:80"], 1, None, false);
+
+        let chosen = select_retry_target(&mut ctx, &reg);
+
+        assert_eq!(chosen, "http://b:80");
+        assert_eq!(reg.conn_load("http://b:80"), 0);
+        assert!(!ctx.upstream_conn_slot);
+    }
+
+    /// A retry attempt must release the PREVIOUS attempt's slot before
+    /// acquiring the new one -- the actual leak-closing behavior from part
+    /// 1, still correct after part 2's forward-probing was layered on top.
+    /// base = attempt(1) % len(2) = 1, so the probe starts at (and, being
+    /// under the cap of 5, immediately accepts) `urls[1]` = "http://b:80" --
+    /// a DIFFERENT peer than the one the previous attempt held a slot on.
+    #[test]
+    fn select_retry_target_releases_previous_slot_before_acquiring_new_one() {
+        let reg = UpstreamRegistry::new();
+        reg.conn_inc("http://a:80"); // the previous attempt's slot
+        let mut ctx = make_retry_ctx(&["http://a:80", "http://b:80"], 1, Some(5), true);
+        ctx.proxy_upstream_url = Some("http://a:80".to_owned());
+        ctx.upstream_conn_slot = true;
+
+        let chosen = select_retry_target(&mut ctx, &reg);
+
+        assert_eq!(chosen, "http://b:80");
+        assert_eq!(
+            reg.conn_load("http://a:80"),
+            0,
+            "the previous attempt's slot on a DIFFERENT peer must be released"
         );
-        assert!(excess < 0.0, "excess must be negative (deficit): {excess}");
-    }
-
-    #[test]
-    fn upload_rate_step_rejects_when_deficit_exceeds_one_second() {
-        let mut excess = -(1000f64 - 1.0); // just below the rejection threshold
-        let min_rate = 1000u64;
-        // One more tiny chunk with a 1-second gap: excess += 1 - 1000 → -1999+1 = -1999
-        let rejected = upload_rate_step(&mut excess, 1, min_rate, 1.0);
-        assert!(rejected, "deficit > min_rate must trigger rejection");
-        assert!(
-            excess < -(min_rate as f64),
-            "excess must be below -min_rate: {excess}"
-        );
-    }
-
-    #[test]
-    fn upload_rate_step_carries_over_surplus_for_slow_periods() {
-        let mut excess = 0.0f64;
-        let min_rate = 1000u64;
-        // First chunk: big burst that fills the surplus bucket.
-        upload_rate_step(&mut excess, 10_000, min_rate, 0.0);
-        // Surplus capped at 1000.
-        assert!((excess - 1000.0).abs() < 0.01, "surplus capped: {excess}");
-
-        // Second chunk: very slow (1 byte in 1 second).
-        // excess += 1 - 1000 → 1000 + 1 - 1000 = 1.
-        let rejected = upload_rate_step(&mut excess, 1, min_rate, 1.0);
-        assert!(!rejected, "surplus from burst must absorb one slow chunk");
-        assert!(excess >= 0.0, "excess should remain non-negative: {excess}");
-    }
-
-    #[test]
-    fn upload_rate_step_zero_elapsed_never_rejects() {
-        let mut excess = 0.0f64;
-        let min_rate = 1000u64;
-        // First call always has elapsed=0 (first chunk in request_body_filter).
-        let rejected = upload_rate_step(&mut excess, 1, min_rate, 0.0);
-        assert!(!rejected, "first chunk (elapsed=0) must never reject");
+        assert_eq!(reg.conn_load("http://b:80"), 1);
+        assert_eq!(ctx.proxy_upstream_url.as_deref(), Some("http://b:80"));
     }
 
     // ── record_failed_upstream_for_retry ──────────────────────────────────────
@@ -4032,5 +4487,383 @@ mod tests {
 
         // Must not panic — exercises the maybe_eject() call inside the if-let branch.
         proxy.record_failed_upstream_for_retry(&mut ctx, &config, 503);
+    }
+
+    // ── release_conn_slot / acquire_conn_slot (#216) ──────────────────────────
+
+    #[test]
+    fn release_conn_slot_noop_when_no_url_held() {
+        let reg = UpstreamRegistry::new();
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        assert!(ctx.proxy_upstream_url.is_none());
+        release_conn_slot(&mut ctx, &reg); // must not panic
+        assert!(ctx.proxy_upstream_url.is_none());
+        assert!(!ctx.upstream_conn_slot);
+    }
+
+    #[test]
+    fn release_conn_slot_decrements_when_tracked() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://u:4000";
+        reg.conn_inc(url);
+        assert_eq!(reg.conn_load(url), 1);
+
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        ctx.proxy_upstream_url = Some(url.to_owned());
+        ctx.upstream_conn_slot = true;
+
+        release_conn_slot(&mut ctx, &reg);
+
+        assert_eq!(
+            reg.conn_load(url),
+            0,
+            "release must decrement a tracked slot"
+        );
+        assert!(ctx.proxy_upstream_url.is_none());
+        assert!(!ctx.upstream_conn_slot);
+    }
+
+    #[test]
+    fn release_conn_slot_does_not_decrement_when_untracked() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://u:4000";
+        // No conn_inc — attribution-only, matching the "passive-health-only"
+        // shape documented on RequestCtx::upstream_conn_slot.
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        ctx.proxy_upstream_url = Some(url.to_owned());
+        ctx.upstream_conn_slot = false;
+
+        release_conn_slot(&mut ctx, &reg);
+
+        assert_eq!(reg.conn_load(url), 0);
+        assert!(ctx.proxy_upstream_url.is_none());
+    }
+
+    #[test]
+    fn release_conn_slot_is_idempotent() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://u:4000";
+        reg.conn_inc(url);
+
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        ctx.proxy_upstream_url = Some(url.to_owned());
+        ctx.upstream_conn_slot = true;
+
+        release_conn_slot(&mut ctx, &reg);
+        assert_eq!(reg.conn_load(url), 0);
+        // Second call on the same (now-cleared) ctx must be a no-op, not a
+        // second (incorrect, underflowing) decrement.
+        release_conn_slot(&mut ctx, &reg);
+        assert_eq!(reg.conn_load(url), 0);
+    }
+
+    #[test]
+    fn acquire_conn_slot_increments_when_tracked() {
+        let reg = UpstreamRegistry::new();
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+
+        acquire_conn_slot(&mut ctx, &reg, "http://u:4000".to_owned(), true);
+
+        assert_eq!(reg.conn_load("http://u:4000"), 1);
+        assert_eq!(ctx.proxy_upstream_url.as_deref(), Some("http://u:4000"));
+        assert!(ctx.upstream_conn_slot);
+    }
+
+    #[test]
+    fn acquire_conn_slot_does_not_increment_when_untracked() {
+        let reg = UpstreamRegistry::new();
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+
+        acquire_conn_slot(&mut ctx, &reg, "http://u:4000".to_owned(), false);
+
+        assert_eq!(reg.conn_load("http://u:4000"), 0);
+        assert_eq!(ctx.proxy_upstream_url.as_deref(), Some("http://u:4000"));
+        assert!(!ctx.upstream_conn_slot);
+    }
+
+    /// Regression test for #216: release-then-acquire-a-different-URL — the
+    /// EXACT sequence `upstream_peer`'s retry-restore block now performs on
+    /// every retry attempt — must leave the FIRST url's slot at 0 and the
+    /// SECOND at 1. Before this fix, a connect-phase or proxy-phase-timeout
+    /// retry failure never released the first URL's slot at all (only the
+    /// 5xx path did, via `record_failed_upstream_for_retry`), leaking it
+    /// permanently: `conn_count` would rise monotonically until the
+    /// affected upstream was permanently excluded by `Capacity::evaluate`.
+    #[test]
+    fn release_then_acquire_different_url_transfers_the_slot_cleanly() {
+        let reg = UpstreamRegistry::new();
+        let url1 = "http://u1:4000";
+        let url2 = "http://u2:4000";
+        reg.conn_inc(url1); // simulates attempt 1's routing-time conn_inc
+
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        ctx.proxy_upstream_url = Some(url1.to_owned());
+        ctx.upstream_conn_slot = true;
+
+        // Exactly what upstream_peer's retry-restore block does on the next
+        // attempt after ANY failure mode (connect-phase, proxy-phase
+        // timeout, or 5xx).
+        release_conn_slot(&mut ctx, &reg);
+        acquire_conn_slot(&mut ctx, &reg, url2.to_owned(), false);
+
+        assert_eq!(
+            reg.conn_load(url1),
+            0,
+            "the OLD url's slot must be released, not leaked"
+        );
+        assert_eq!(reg.conn_load(url2), 0, "tracked=false acquires no new slot");
+        assert_eq!(ctx.proxy_upstream_url.as_deref(), Some(url2));
+        assert!(!ctx.upstream_conn_slot);
+    }
+
+    #[test]
+    #[should_panic(expected = "acquire_conn_slot called while a slot is already held")]
+    fn acquire_conn_slot_panics_in_debug_if_slot_already_held() {
+        let reg = UpstreamRegistry::new();
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        ctx.proxy_upstream_url = Some("http://u1:4000".to_owned());
+        ctx.upstream_conn_slot = true;
+        // Missing release_conn_slot() call before this -- must trip the
+        // debug_assert! guarding the invariant documented on
+        // RequestCtx::upstream_conn_slot.
+        acquire_conn_slot(&mut ctx, &reg, "http://u2:4000".to_owned(), true);
+    }
+
+    // ── record_retry_failure_health (#216 findings C/D) ───────────────────────
+
+    #[test]
+    fn record_retry_failure_health_noop_when_no_url_tracked() {
+        let proxy = make_proxy();
+        let ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        assert!(ctx.proxy_upstream_url.is_none());
+        let config = AppConfig::default();
+        // Must not panic on the early-return path.
+        proxy.record_retry_failure_health(&ctx, &config, 0, false);
+    }
+
+    /// connection_established=false (connect-phase failure) must NOT touch
+    /// the Prometheus active-connections gauge — upstream_request_filter
+    /// never ran for a connect that never succeeded, so there is nothing to
+    /// reconcile. Decrementing anyway would introduce the OPPOSITE leak.
+    #[test]
+    fn record_retry_failure_health_skips_gauge_when_connection_not_established() {
+        let proxy = make_proxy();
+        let url = "http://u:4000";
+        // Simulate the gauge already at its natural starting point for a
+        // connect-phase failure: never incremented for this attempt.
+        let before = proxy
+            .state
+            .metrics
+            .upstream_active_connections
+            .with_label_values(&[url])
+            .get();
+
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        ctx.proxy_upstream_url = Some(url.to_owned());
+        let config = AppConfig::default();
+
+        proxy.record_retry_failure_health(&ctx, &config, 0, false);
+
+        let after = proxy
+            .state
+            .metrics
+            .upstream_active_connections
+            .with_label_values(&[url])
+            .get();
+        assert_eq!(
+            before, after,
+            "connection_established=false must not touch the gauge"
+        );
+    }
+
+    /// connection_established=true (proxy-phase timeout, or the 5xx path via
+    /// `record_failed_upstream_for_retry`) MUST decrement the gauge —
+    /// `upstream_request_filter` incremented it when the connection
+    /// succeeded, so it needs reconciling here before the retry.
+    #[test]
+    fn record_retry_failure_health_decrements_gauge_when_connection_established() {
+        let proxy = make_proxy();
+        let url = "http://u2:4000";
+        // Simulate upstream_request_filter's earlier increment for this attempt.
+        proxy
+            .state
+            .metrics
+            .upstream_active_connections
+            .with_label_values(&[url])
+            .inc();
+        let before = proxy
+            .state
+            .metrics
+            .upstream_active_connections
+            .with_label_values(&[url])
+            .get();
+
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        ctx.proxy_upstream_url = Some(url.to_owned());
+        let config = AppConfig::default();
+
+        proxy.record_retry_failure_health(&ctx, &config, 0, true);
+
+        let after = proxy
+            .state
+            .metrics
+            .upstream_active_connections
+            .with_label_values(&[url])
+            .get();
+        assert_eq!(
+            after,
+            before - 1.0,
+            "connection_established=true must decrement the gauge exactly once"
+        );
+    }
+
+    /// Regression test for the Gitar finding on PR #371: a connect-phase/
+    /// timeout retry failure recorded with `status = 0` would RESET
+    /// `consecutive_5xx` to zero (since `record_request_latency` treats
+    /// anything `< 500` as a success) instead of contributing to outlier
+    /// detection -- actively masking a hard-down peer that had already
+    /// accumulated real 5xx failures, the opposite of findings C/D's
+    /// stated goal. `SYNTHETIC_RETRY_FAILURE_STATUS` (503) must increment
+    /// it instead.
+    #[test]
+    fn record_retry_failure_health_with_synthetic_failure_status_increments_consecutive_5xx() {
+        let proxy = make_proxy();
+        let url = "http://u3:4000";
+        // Simulate 2 prior real 5xx responses already accumulated.
+        crate::proxy::health::record_request_latency(&proxy.state.upstream_health, url, 1_000, 500);
+        crate::proxy::health::record_request_latency(&proxy.state.upstream_health, url, 1_000, 502);
+        assert_eq!(
+            proxy
+                .state
+                .upstream_health
+                .statuses
+                .get(url)
+                .unwrap()
+                .consecutive_5xx,
+            2
+        );
+
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        ctx.proxy_upstream_url = Some(url.to_owned());
+        let config = AppConfig::default();
+
+        proxy.record_retry_failure_health(&ctx, &config, SYNTHETIC_RETRY_FAILURE_STATUS, false);
+
+        assert_eq!(
+            proxy
+                .state
+                .upstream_health
+                .statuses
+                .get(url)
+                .unwrap()
+                .consecutive_5xx,
+            3,
+            "a connect/timeout retry failure must CONTINUE the consecutive_5xx count, \
+             not reset it -- status=0 would incorrectly reset to 0 here"
+        );
+    }
+
+    /// Regression test for the second Gitar finding on PR #371: the
+    /// proxy-phase-timeout branch of `try_retry_proxy_error` must clear
+    /// `proxy_upstream_url`/`upstream_conn_slot` (via `release_conn_slot`)
+    /// immediately after recording health -- not rely solely on
+    /// `upstream_peer`'s retry-restore to do it on a NEXT attempt that
+    /// might never happen (e.g. `set_retry(true)` doesn't actually result
+    /// in Pingora re-invoking `upstream_peer`, such as a truncated retry
+    /// buffer). Without the immediate release, `logging()`'s own
+    /// unconditional active-connections decrement would fire a SECOND time
+    /// for the same URL, driving the gauge negative.
+    #[test]
+    fn record_retry_failure_health_then_release_leaves_no_url_to_double_decrement() {
+        let proxy = make_proxy();
+        let url = "http://u4:4000";
+        proxy
+            .state
+            .metrics
+            .upstream_active_connections
+            .with_label_values(&[url])
+            .inc();
+
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        ctx.proxy_upstream_url = Some(url.to_owned());
+        ctx.upstream_conn_slot = true;
+        proxy.state.upstream_health.conn_inc(url);
+        let config = AppConfig::default();
+
+        // Exactly the sequence try_retry_proxy_error's timeout branch now
+        // performs: record health first (needs proxy_upstream_url still
+        // set), then release.
+        proxy.record_retry_failure_health(&ctx, &config, SYNTHETIC_RETRY_FAILURE_STATUS, true);
+        release_conn_slot(&mut ctx, &proxy.state.upstream_health);
+
+        assert!(
+            ctx.proxy_upstream_url.is_none(),
+            "proxy_upstream_url must be cleared immediately, not left for a retry that may never happen"
+        );
+        assert!(!ctx.upstream_conn_slot);
+        assert_eq!(
+            proxy.state.upstream_health.conn_load(url),
+            0,
+            "the conn_count slot must also be released"
+        );
+        let gauge_after = proxy
+            .state
+            .metrics
+            .upstream_active_connections
+            .with_label_values(&[url])
+            .get();
+        assert_eq!(
+            gauge_after, 0.0,
+            "gauge must be decremented exactly once (by record_retry_failure_health)"
+        );
+    }
+
+    /// Regression test for the symmetric gap `security-engineer` found while
+    /// re-reviewing PR #371's timeout-branch fix: `try_retry_connect_error`
+    /// must ALSO clear `proxy_upstream_url`/release the conn_count slot
+    /// immediately after recording health, not leave it for a retry that
+    /// might never happen. Unlike the proxy-timeout case there is no
+    /// Prometheus gauge to double-decrement (connection_established=false
+    /// never touches it), but leaving the URL set would still make
+    /// `logging()`'s terminal path record this same connect failure's
+    /// health a second time (a spurious extra `consecutive_5xx` increment /
+    /// EWMA sample) if no further retry attempt actually happens.
+    #[test]
+    fn connect_phase_record_then_release_leaves_no_url_for_duplicate_health_recording() {
+        let proxy = make_proxy();
+        let url = "http://u5:4000";
+        let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
+        ctx.proxy_upstream_url = Some(url.to_owned());
+        ctx.upstream_conn_slot = true;
+        proxy.state.upstream_health.conn_inc(url);
+        let config = AppConfig::default();
+
+        // Exactly the sequence try_retry_connect_error now performs:
+        // record health (connection_established=false, no gauge touched),
+        // then release.
+        proxy.record_retry_failure_health(&ctx, &config, SYNTHETIC_RETRY_FAILURE_STATUS, false);
+        release_conn_slot(&mut ctx, &proxy.state.upstream_health);
+
+        assert!(
+            ctx.proxy_upstream_url.is_none(),
+            "proxy_upstream_url must be cleared immediately, not left for a retry that may never happen"
+        );
+        assert!(!ctx.upstream_conn_slot);
+        assert_eq!(
+            proxy.state.upstream_health.conn_load(url),
+            0,
+            "the conn_count slot must also be released"
+        );
+        assert_eq!(
+            proxy
+                .state
+                .upstream_health
+                .statuses
+                .get(url)
+                .unwrap()
+                .consecutive_5xx,
+            1,
+            "health must have been recorded exactly once"
+        );
     }
 }

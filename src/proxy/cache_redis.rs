@@ -1,330 +1,198 @@
 #![cfg(feature = "redis")]
-//! Redis-backed proxy cache storage (Phase 3.8).
+//! Extracted into `crates/conduit-cache` (issue #114/#135) — this is a
+//! facade re-export so `crate::proxy::cache_redis::get` keeps resolving to
+//! the same item at the same location for backward compatibility
+//! (`src/proxy/request_phase.rs`). See `conduit_cache::redis` for the
+//! implementation.
 //!
-//! Implements the `pingora_cache::Storage` trait using Redis as the backend.
-//! Each cache entry is stored as three Redis hash fields under a single key:
-//!
-//! ```text
-//! HSET conduit:pcache:{key}  m0 <meta_internal>  m1 <meta_header>  b <body>
-//! EXPIRE conduit:pcache:{key}  <ttl_secs>
-//! ```
-//!
-//! The TTL is derived from `CacheMeta::fresh_until()` relative to `now()`.
-//! On a cache miss the `RedisMissHandler` buffers the body in memory and
-//! writes all three fields atomically in `finish()`.
-//!
-//! # Fail-open
-//!
-//! Any Redis error during `lookup` or `get_miss_handler` returns `None` /
-//! falls through to a normal upstream fetch.  Errors are logged at `WARN`
-//! level so they are visible without being fatal.
+//! This module also owns the config-walking glue that connects every
+//! distinct `redis://`/`rediss://` `cache.store` URL up front, at server
+//! startup and again on every hot reload (issue #330) — `conduit-cache`
+//! itself has no knowledge of `AppConfig`/`SiteConfig` (see
+//! `CONTRIBUTING.md`'s crate-extraction recipe), so the root crate has to
+//! do the walking and hand bare URLs to `conduit_cache::redis`.
 
-use std::any::Any;
-use std::sync::OnceLock;
-use std::time::{Duration, SystemTime};
+pub use conduit_cache::redis::get;
 
-use async_trait::async_trait;
-use bytes::Bytes;
-use dashmap::DashMap;
-use pingora_cache::{
-    storage::{HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeType, Storage},
-    trace::SpanHandle,
-    CacheKey, CacheMeta,
-};
-use pingora_core::Result as PingoraResult;
-use pingora_core::{Error, ErrorType};
-use redis::aio::ConnectionManager;
-use redis::AsyncCommands;
+#[cfg(feature = "cache")]
+use std::collections::BTreeSet;
 
-use super::cache_common::{bytes_to_hex, SimpleHitHandler};
+#[cfg(feature = "cache")]
+use crate::config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget};
 
-// ── Registry of per-URL storage instances ────────────────────────────────────
+/// Every distinct `redis://`/`rediss://` `cache.store` URL configured
+/// anywhere in `config` — both under the `proxy` shorthand and under
+/// `routes[].proxy` (`ProxyRouteTarget::Full`'s `cache` field in either
+/// place). Deduplicated and sorted so N routes sharing one URL connect it
+/// once, and so iteration order is deterministic for tests.
+#[cfg(feature = "cache")]
+pub(crate) fn collect_redis_cache_urls(config: &AppConfig) -> Vec<String> {
+    let mut urls = BTreeSet::new();
 
-static REDIS_STORES: OnceLock<DashMap<String, &RedisCacheStorage>> = OnceLock::new();
+    let mut push_if_redis = |target: &ProxyRouteTarget| {
+        if let ProxyRouteTarget::Full(cfg) = target {
+            if let Some(cache) = &cfg.cache {
+                if cache.store.starts_with("redis://") || cache.store.starts_with("rediss://") {
+                    urls.insert(cache.store.clone());
+                }
+            }
+        }
+    };
 
-fn redis_stores() -> &'static DashMap<String, &'static RedisCacheStorage> {
-    REDIS_STORES.get_or_init(DashMap::new)
+    for site in &config.sites {
+        if let Some(ProxyConfig::Routes(routes)) = &site.proxy {
+            routes.values().for_each(&mut push_if_redis);
+        }
+        if let Some(routes) = &site.routes {
+            for route in routes {
+                if let Some(target) = &route.proxy {
+                    push_if_redis(target);
+                }
+            }
+        }
+    }
+
+    urls.into_iter().collect()
 }
 
-/// Return (or create) the `'static` Redis storage for the given URL.
+/// Establish every Redis cache connection named by `config` up front, so
+/// the request path never has to connect from inside Pingora's own runtime
+/// (issue #330).
 ///
-/// Returns `None` when the connection fails so the caller can disable caching
-/// gracefully rather than crashing.  The failure is logged at ERROR level.
-pub fn get_or_create(url: &str) -> Option<&'static RedisCacheStorage> {
-    if let Some(s) = redis_stores().get(url) {
-        return Some(*s);
-    }
-    match RedisCacheStorage::new_blocking(url) {
-        Ok(storage) => {
-            let leaked = Box::leak(Box::new(storage));
-            redis_stores().insert(url.to_owned(), leaked);
-            Some(leaked)
-        }
-        Err(_) => None,
-    }
-}
-
-// ── RedisCacheStorage ─────────────────────────────────────────────────────────
-
-/// Redis-backed proxy cache storage.
-pub struct RedisCacheStorage {
-    conn: ConnectionManager,
-}
-
-impl RedisCacheStorage {
-    /// Connect to Redis synchronously (using a temporary single-thread runtime).
-    ///
-    /// Returns a zero-overhead storage instance backed by a `ConnectionManager`
-    /// that reconnects automatically on failure.
-    /// Connect to Redis synchronously.
-    ///
-    /// Returns `Err` when the URL is invalid or Redis is unreachable so the
-    /// caller can disable caching gracefully rather than crashing.
-    pub fn new_blocking(url: &str) -> anyhow::Result<Self> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| anyhow::anyhow!("tokio rt for redis cache: {e}"))?;
-        match rt.block_on(Self::new(url)) {
-            Ok(s) => {
-                tracing::info!(url, "Redis proxy cache connected");
-                Ok(s)
-            }
-            Err(e) => {
-                tracing::error!(url, "Redis proxy cache connect failed: {e}");
-                Err(e)
-            }
-        }
-    }
-
-    async fn new(url: &str) -> anyhow::Result<Self> {
-        let client =
-            redis::Client::open(url).map_err(|e| anyhow::anyhow!("invalid Redis URL: {e}"))?;
-        let conn = ConnectionManager::new(client)
-            .await
-            .map_err(|e| anyhow::anyhow!("cannot connect to Redis ({url}): {e}"))?;
-        Ok(Self { conn })
-    }
-
-    fn redis_key(key: &CacheKey) -> String {
-        let compact = key.to_compact();
-        format!("conduit:pcache:{}", bytes_to_hex(&compact.primary))
-    }
-
-    fn compact_redis_key(key: &pingora_cache::key::CompactCacheKey) -> String {
-        format!("conduit:pcache:{}", bytes_to_hex(&key.primary))
+/// Fail-open: individual connect failures are logged by
+/// [`conduit_cache::redis::connect_and_register`] and skipped — an
+/// unreachable cache must never block startup or a reload. Idempotent
+/// (already-registered URLs are a cheap no-op), so this is safe to call on
+/// every reload, not just once at startup.
+///
+/// Connects concurrently, not sequentially (Gitar review finding on PR
+/// #331): `ConnectionManager::new` retries with backoff before giving up on
+/// an unreachable URL, so awaiting each URL in turn would let N unreachable
+/// stores serially stack their retry budgets on the startup/reload critical
+/// path — one bad URL config shouldn't slow down every other store's
+/// connect. `tokio::spawn` per URL (not `futures::join_all`, to avoid
+/// pulling that crate into the `redis`+`cache` feature combo just for this)
+/// gives real concurrency with no new dependency edge.
+#[cfg(feature = "cache")]
+pub(crate) async fn connect_all(config: &AppConfig) {
+    let handles: Vec<_> = collect_redis_cache_urls(config)
+        .into_iter()
+        .map(|url| {
+            tokio::spawn(async move {
+                conduit_cache::redis::connect_and_register(&url).await;
+            })
+        })
+        .collect();
+    for handle in handles {
+        // A panicking connect task shouldn't be possible (connect_and_register
+        // is fail-open by design), but even if one somehow did, the other
+        // connects must not be aborted by it -- just move on.
+        let _ = handle.await;
     }
 }
 
-// ── Storage impl ──────────────────────────────────────────────────────────────
-
-#[async_trait]
-impl Storage for RedisCacheStorage {
-    async fn lookup(
-        &'static self,
-        key: &CacheKey,
-        _trace: &SpanHandle,
-    ) -> PingoraResult<Option<(CacheMeta, HitHandler)>> {
-        let redis_key = Self::redis_key(key);
-        let mut conn = self.conn.clone();
-
-        let result: redis::RedisResult<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>)> =
-            redis::cmd("HMGET")
-                .arg(&redis_key)
-                .arg("m0")
-                .arg("m1")
-                .arg("b")
-                .query_async(&mut conn)
-                .await;
-
-        match result {
-            Ok((Some(m0), Some(m1), Some(body))) => match CacheMeta::deserialize(&m0, &m1) {
-                Ok(meta) => {
-                    let handler = Box::new(SimpleHitHandler::new(Bytes::from(body))) as HitHandler;
-                    Ok(Some((meta, handler)))
-                }
-                Err(e) => {
-                    tracing::warn!(key = %redis_key, "Redis cache meta deserialize error: {e}");
-                    Ok(None)
-                }
-            },
-            Ok(_) => Ok(None), // key not found or partial data
-            Err(e) => {
-                tracing::warn!(key = %redis_key, "Redis cache lookup error: {e}");
-                Ok(None) // fail-open
-            }
-        }
-    }
-
-    async fn get_miss_handler(
-        &'static self,
-        key: &CacheKey,
-        meta: &CacheMeta,
-        _trace: &SpanHandle,
-    ) -> PingoraResult<MissHandler> {
-        let ttl = meta
-            .fresh_until()
-            .duration_since(SystemTime::now())
-            .unwrap_or(Duration::from_secs(60))
-            .as_secs()
-            .max(1);
-
-        let (meta0, meta1) = meta
-            .serialize()
-            .map_err(|e| Error::because(ErrorType::InternalError, "cache meta serialize", e))?;
-
-        Ok(Box::new(RedisMissHandler {
-            redis_key: Self::redis_key(key),
-            conn: self.conn.clone(),
-            meta0,
-            meta1,
-            body: Vec::new(),
-            ttl,
-        }) as MissHandler)
-    }
-
-    async fn purge(
-        &'static self,
-        key: &pingora_cache::key::CompactCacheKey,
-        _purge_type: PurgeType,
-        _trace: &SpanHandle,
-    ) -> PingoraResult<bool> {
-        let redis_key = Self::compact_redis_key(key);
-        let mut conn = self.conn.clone();
-        let removed: u64 = conn.del(&redis_key).await.unwrap_or(0);
-        Ok(removed > 0)
-    }
-
-    async fn update_meta(
-        &'static self,
-        key: &CacheKey,
-        meta: &CacheMeta,
-        _trace: &SpanHandle,
-    ) -> PingoraResult<bool> {
-        let redis_key = Self::redis_key(key);
-        let mut conn = self.conn.clone();
-
-        let (m0, m1) = meta
-            .serialize()
-            .map_err(|e| Error::because(ErrorType::InternalError, "cache meta serialize", e))?;
-
-        let res: redis::RedisResult<()> = redis::cmd("HMSET")
-            .arg(&redis_key)
-            .arg("m0")
-            .arg(m0)
-            .arg("m1")
-            .arg(m1)
-            .query_async(&mut conn)
-            .await;
-
-        match res {
-            Ok(_) => Ok(true),
-            Err(e) => {
-                tracing::warn!(key = %redis_key, "Redis cache update_meta error: {e}");
-                Ok(false)
-            }
-        }
-    }
-
-    fn as_any(&self) -> &(dyn Any + Send + Sync + 'static) {
-        self
-    }
-}
-
-// ── RedisMissHandler ──────────────────────────────────────────────────────────
-
-struct RedisMissHandler {
-    redis_key: String,
-    conn: ConnectionManager,
-    meta0: Vec<u8>,
-    meta1: Vec<u8>,
-    body: Vec<u8>,
-    ttl: u64,
-}
-
-#[async_trait]
-impl HandleMiss for RedisMissHandler {
-    async fn write_body(&mut self, data: Bytes, _eof: bool) -> PingoraResult<()> {
-        self.body.extend_from_slice(&data);
-        Ok(())
-    }
-
-    async fn finish(self: Box<Self>) -> PingoraResult<MissFinishType> {
-        let size = self.body.len();
-        let mut conn = self.conn.clone();
-
-        // HSET + EXPIRE as a pipeline for atomicity and efficiency.
-        let res: redis::RedisResult<()> = redis::pipe()
-            .cmd("HSET")
-            .arg(&self.redis_key)
-            .arg("m0")
-            .arg(&self.meta0)
-            .arg("m1")
-            .arg(&self.meta1)
-            .arg("b")
-            .arg(&self.body)
-            .ignore()
-            .cmd("EXPIRE")
-            .arg(&self.redis_key)
-            .arg(self.ttl)
-            .ignore()
-            .query_async(&mut conn)
-            .await;
-
-        if let Err(e) = res {
-            tracing::warn!(key = %self.redis_key, "Redis cache write error: {e}");
-        }
-
-        Ok(MissFinishType::Created(size))
-    }
-}
-
-// ── Unit tests ────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
+#[cfg(all(test, feature = "cache"))]
 mod tests {
     use super::*;
 
-    #[test]
-    fn redis_key_format() {
-        let key = CacheKey::new("example.com", "http:/foo", "");
-        let rk = RedisCacheStorage::redis_key(&key);
-        assert!(rk.starts_with("conduit:pcache:"), "key: {rk}");
+    fn cfg(json: &str) -> AppConfig {
+        crate::config::parse::from_str(json).expect("valid config")
     }
 
     #[test]
-    fn redis_key_is_32_hex_chars_after_prefix() {
-        let key = CacheKey::new("host.example", "https:/path", "");
-        let rk = RedisCacheStorage::redis_key(&key);
-        let hex_part = rk.strip_prefix("conduit:pcache:").unwrap();
+    fn finds_url_under_proxy_shorthand() {
+        let config = cfg(
+            r#"{"sites":[{"port":8080,"proxy":{"/":{"targets":["http://up:1"],
+                "cache":{"store":"redis://127.0.0.1:6379","ttlSecs":60}}}}]}"#,
+        );
         assert_eq!(
-            hex_part.len(),
-            32,
-            "expected 32 hex chars, got {hex_part:?}"
-        );
-        assert!(
-            hex_part.chars().all(|c| c.is_ascii_hexdigit()),
-            "non-hex chars in key: {hex_part}"
+            collect_redis_cache_urls(&config),
+            vec!["redis://127.0.0.1:6379".to_owned()]
         );
     }
 
     #[test]
-    fn two_different_keys_produce_different_redis_keys() {
-        let k1 = CacheKey::new("host1.example", "https:/path1", "");
-        let k2 = CacheKey::new("host2.example", "https:/path2", "");
-        let rk1 = RedisCacheStorage::redis_key(&k1);
-        let rk2 = RedisCacheStorage::redis_key(&k2);
-        assert_ne!(rk1, rk2, "different cache keys must not collide");
+    fn finds_url_under_routes_array() {
+        let config = cfg(r#"{"sites":[{"port":8080,"routes":[{"match":{"path":"/"},
+                "proxy":{"targets":["http://up:1"],
+                "cache":{"store":"redis://127.0.0.1:6380","ttlSecs":60}}}]}]}"#);
+        assert_eq!(
+            collect_redis_cache_urls(&config),
+            vec!["redis://127.0.0.1:6380".to_owned()]
+        );
     }
 
     #[test]
-    fn unreachable_redis_returns_none_not_panic() {
-        // Port 1 is reserved and never listening — connection is refused immediately,
-        // no Redis instance needed. Verifies fail-open: must return None, not panic.
-        let result = get_or_create("redis://127.0.0.1:1");
-        assert!(
-            result.is_none(),
-            "unreachable Redis must return None, not panic"
+    fn deduplicates_one_url_shared_by_two_routes() {
+        let config = cfg(r#"{"sites":[{"port":8080,"proxy":{
+                "/a":{"targets":["http://up:1"],"cache":{"store":"redis://127.0.0.1:6379","ttlSecs":60}},
+                "/b":{"targets":["http://up:2"],"cache":{"store":"redis://127.0.0.1:6379","ttlSecs":60}}
+            }}]}"#);
+        assert_eq!(
+            collect_redis_cache_urls(&config),
+            vec!["redis://127.0.0.1:6379".to_owned()]
         );
+    }
+
+    #[test]
+    fn two_distinct_urls_both_returned_in_sorted_order() {
+        let config = cfg(r#"{"sites":[{"port":8080,"proxy":{
+                "/a":{"targets":["http://up:1"],"cache":{"store":"redis://z-host:6379","ttlSecs":60}},
+                "/b":{"targets":["http://up:2"],"cache":{"store":"redis://a-host:6379","ttlSecs":60}}
+            }}]}"#);
+        assert_eq!(
+            collect_redis_cache_urls(&config),
+            vec![
+                "redis://a-host:6379".to_owned(),
+                "redis://z-host:6379".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn accepts_rediss_tls_scheme() {
+        let config = cfg(
+            r#"{"sites":[{"port":8080,"proxy":{"/":{"targets":["http://up:1"],
+                "cache":{"store":"rediss://secure-host:6380","ttlSecs":60}}}}]}"#,
+        );
+        assert_eq!(
+            collect_redis_cache_urls(&config),
+            vec!["rediss://secure-host:6380".to_owned()]
+        );
+    }
+
+    #[test]
+    fn skips_memory_disk_and_unsupported_stores() {
+        let config = cfg(r#"{"sites":[{"port":8080,"proxy":{
+                "/a":{"targets":["http://up:1"],"cache":{"store":"memory","ttlSecs":60}},
+                "/b":{"targets":["http://up:2"],"cache":{"store":"disk:/var/cache","ttlSecs":60}},
+                "/c":{"targets":["http://up:3"],"cache":{"store":"s3://bucket","ttlSecs":60}}
+            }}]}"#);
+        assert!(collect_redis_cache_urls(&config).is_empty());
+    }
+
+    #[test]
+    fn empty_for_single_string_proxy_and_route_without_cache() {
+        let config = cfg(r#"{"sites":[
+                {"port":8080,"proxy":"http://up:1"},
+                {"port":8081,"proxy":{"/":{"targets":["http://up:2"]}}}
+            ]}"#);
+        assert!(collect_redis_cache_urls(&config).is_empty());
+    }
+
+    /// Regression for a Gitar review finding on PR #331: `connect_all` used
+    /// to await each URL's connect sequentially, so N unreachable stores
+    /// would serially stack their retry/backoff budgets on the startup/
+    /// reload critical path. This doesn't assert timing (too flaky) --  it
+    /// proves the concurrent-spawn version completes cleanly (no panic, no
+    /// hang) for multiple distinct unreachable URLs, which the sequential
+    /// version would too, just slower.
+    #[tokio::test]
+    async fn connect_all_completes_for_multiple_unreachable_urls() {
+        let config = cfg(r#"{"sites":[{"port":8080,"proxy":{
+                "/a":{"targets":["http://up:1"],"cache":{"store":"redis://127.0.0.1:1","ttlSecs":60}},
+                "/b":{"targets":["http://up:2"],"cache":{"store":"redis://127.0.0.1:2","ttlSecs":60}}
+            }}]}"#);
+        connect_all(&config).await;
     }
 }

@@ -1,0 +1,27 @@
+[package]
+name        = "lopatnov-conduit-tcp"
+version.workspace    = true
+edition.workspace    = true
+description = "Raw TCP passthrough proxy config + implementation for conduit's feature-driven workspace (issue #114/#131)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_tcp"
+path = "src/lib.rs"
+
+[dependencies]
+# TcpConfig itself is always compiled — see src/lib.rs doc comment.
+serde = { workspace = true }
+
+# Everything below is only needed by the real TcpProxy (`proxy`), gated
+# behind this crate's own `tcp` feature (mirrors the pre-extraction
+# `#![cfg(feature = "tcp")]` file-level gate). The root crate's `tcp`
+# feature forwards into this one via `lopatnov-conduit-tcp/tcp`.
+async-trait  = { workspace = true, optional = true }
+tokio        = { workspace = true, optional = true }
+pingora-core = { workspace = true, optional = true }
+tracing      = { workspace = true, optional = true }
+
+[features]
+tcp = ["dep:async-trait", "dep:tokio", "dep:pingora-core", "dep:tracing"]

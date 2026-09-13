@@ -6,6 +6,7 @@ Thank you for your interest in contributing! This document explains how to get s
 
 - [Development Setup](#development-setup)
 - [Project Structure](#project-structure)
+- [Cargo Workspace Crate Extraction Recipe](#cargo-workspace-crate-extraction-recipe)
 - [Running Tests](#running-tests)
 - [Code Style](#code-style)
 - [Submitting Changes](#submitting-changes)
@@ -86,8 +87,12 @@ src/
 │   ├── rate_limit_redis.rs  Redis fixed-window counter with fallback
 │   ├── redirects.rs     path redirects with :param captures
 │   ├── response_time.rs X-Response-Time header
-│   ├── script.rs        Rhai scripting middleware (Phase 4)
 │   └── security_headers.rs  HSTS, CSP, X-Frame-Options, etc.
+│   (Rhai scripting middleware moved to crates/conduit-script-rhai, WASM
+│    plugin middleware to crates/conduit-plugin-wasm, and the
+│    MiddlewareGuard/MiddlewareResponseFilter dispatch to
+│    crates/conduit-middleware — issue #114/#141; formerly filter/script.rs
+│    and filter/wasm.rs here)
 ├── admin/
 │   └── api.rs           Admin API (Axum) — status, reload, upstream management
 ├── upload/
@@ -98,6 +103,90 @@ src/
     ├── path.rs          path utilities
     └── net.rs           network utilities
 ```
+
+---
+
+## Cargo Workspace Crate Extraction Recipe
+
+Conduit 2.0 (issue [#114](https://github.com/lopatnov/conduit/issues/114)) moves each
+Cargo feature into its own workspace member crate under `crates/`. Every extraction —
+`conduit-otlp`, `conduit-acme`, `conduit-auth-jwt`, ... — follows the same recipe, derived
+from how `conduit-core` ([#126](https://github.com/lopatnov/conduit/issues/126)) and
+`conduit-config-core` ([#127](https://github.com/lopatnov/conduit/issues/127)) were
+actually built and independently audited. Read this before extracting a new crate,
+whether by hand or via the `crate-extractor` agent.
+
+### The four rules
+
+1. **Re-export at the original location.** Every relocated item gets a `pub use` at its
+   original file (and, where practical, its original line) in the root crate — e.g.
+   `src/config/schema.rs` still has `CONFIG_VERSION` at the same line it always did, now
+   as `pub use conduit_config_core::parse::CONFIG_VERSION;`. This is what keeps
+   `conduit::`-prefixed paths — and therefore every existing integration test — compiling
+   unchanged. Never do one blanket top-level re-export (`pub use conduit_x as x;` in
+   `lib.rs`) — if the root already has a real module at that name (e.g. `conduit::config`
+   holding `AppConfig`/`SiteConfig`), a blanket re-export conflicts with it instead of
+   extending it.
+
+2. **Generic-in-crate, bound-by-type-alias-in-root.** If the extracted item became generic
+   over the config payload type (because the member crate can't know about `AppConfig`),
+   root binds it: `pub type X = crate_x::X<AppConfig>;` plus a constructor that injects any
+   root-only policy (a validator closure, etc.). See `Provider<C>`/`FileProvider<C>` in
+   `crates/README.md` for the worked example. Path preserved; signature intentionally
+   changed — record that as a deliberate break, don't pretend it's transparent.
+
+3. **Schema-bound wrapper, same name and signature.** If the extracted item is generic
+   *and* root's version does extra schema-specific work on top, keep a wrapper in root with
+   the **identical pre-migration name and signature** that calls the generic version and
+   then does the schema step — e.g. `src/config/parse.rs`'s `load_config`/`from_str`/
+   `from_yaml` call `conduit_config_core::parse::{load_file, from_json_str, from_yaml_str}`
+   and then `normalize()` into `AppConfig`.
+
+4. **Anything not re-exported must be `pub(crate)`, not `pub`.** A member crate's `pub` API
+   is a semver commitment once these crates start publishing to crates.io (see the
+   `crates.io publishing` risk in [#114](https://github.com/lopatnov/conduit/issues/114)).
+   Before merging an extraction, grep the new crate for `pub fn`/`pub struct`/`pub enum`
+   and confirm each either has a re-export site in root or is genuinely meant to be public
+   API — don't leave something `pub` just because it compiles. (This rule exists because
+   `conduit_core::filter::path::path_matches` was accidentally hoisted from `pub(crate)` to
+   `pub` during the `conduit-core` extraction and caught only in a later audit — see
+   `crates/conduit-core/src/filter/path.rs`.)
+
+### Two things that are *not* part of the recipe (deliberately)
+
+- **`conduit-core` dependency is opt-in, not automatic.** Only depend on
+  `lopatnov-conduit-core` if the new crate implements a chain trait (`RequestFilter`,
+  `ResponseFilter`) and therefore needs `&mut Session`/pingora types. A crate with no
+  request-lifecycle behavior (like `conduit-otlp`'s tracer init) takes primitives
+  (`&str`, `u16`, ...) instead and has no pingora dependency at all.
+- **Chain assembly and ordering stay in the root crate.** `src/filter/chain.rs` decides
+  guard order (see `CLAUDE.md` decision #20); a feature crate exports a filter
+  implementation and a constructor, never a chain position.
+
+### Watch for name collisions during extraction
+
+Two functions can share a name and *look* like duplication candidates without being
+duplicates — e.g. `conduit_core::filter::path::path_matches` (exact-only fallback) vs.
+`src/proxy/cache.rs`'s private `path_matches` (prefix-matches even without `/**`). Check
+behavior, not just the signature, before "deduplicating" anything found this way.
+
+### A config struct's implementation backends can live in their own crates
+
+`conduit-middleware` (issue #114/#141) is the first extraction where a config struct
+(`MiddlewareEntry`) and its feature-gated implementation backends land in **three**
+different crates rather than one: `conduit-middleware` owns `MiddlewareEntry` plus the
+dispatcher (`MiddlewareGuard`/`MiddlewareResponseFilter`, moved verbatim — still a closed
+`match` on `entry.r#type`, not a new plugin trait/registry), while the two backends it
+dispatches to (`run_script`/`run_script_response` for Rhai, `run_wasm`/`run_wasm_response`
+for WASM) live in their own sibling crates (`conduit-script-rhai`, `conduit-plugin-wasm`)
+and are pulled in as `conduit-middleware`'s *own* optional path-dependencies, gated behind
+its own `rhai`/`wasm` Cargo features. The root crate's `rhai`/`wasm` features simply
+forward into `conduit-middleware`'s features — this is the only crate that depends on
+either backend crate directly. Worth this shape specifically when a dispatcher's backends
+are large/independent enough to be their own crates (bringing their own dependency trees —
+`wasmtime`, `rhai` — that nothing else in the workspace needs) but the dispatcher itself
+still needs to be always-compiled for the same config-parses-everywhere reason every other
+`MiddlewareEntry`-shaped struct is (`CLAUDE.md` decision-#20a-style `feature_warnings()`).
 
 ---
 

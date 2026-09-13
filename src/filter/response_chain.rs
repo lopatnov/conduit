@@ -29,34 +29,19 @@ use crate::config::schema::{AppConfig, HeaderTransformConfig, ResponseTimeConfig
 use crate::filter::response_time;
 use crate::proxy::ctx::RequestCtx;
 
-// ── Outcome ───────────────────────────────────────────────────────────────────
+// ── Outcome + Trait (Layer-0 vocabulary, #114/#120/#126) ────────────────────────
 
-/// What a response filter returns after processing.
-pub enum ResponseFilterOutcome {
-    /// Apply the changes and continue to the next filter.
-    Continue,
-    /// This response should be retried against the upstream.
-    ///
-    /// Returned by `RetryOnErrorFilter` on 5xx when retries are configured.
-    /// The caller must propagate a Pingora `Custom("5xx_retry")` error.
-    RetryUpstream,
-    /// The response body should be replaced with a generic error JSON.
-    ///
-    /// Returned by `ErrorMaskFilter` on 5xx when `maskErrors: true` is set.
-    /// The caller sets `RequestCtx.mask_upstream_body = true` and updates
-    /// the `Content-Type` / `Content-Length` headers.
-    MaskBody,
-}
+pub use conduit_core::filter::response_chain::{
+    ResponseCtx, ResponseFilter, ResponseFilterOutcome,
+};
 
-// ── Trait ─────────────────────────────────────────────────────────────────────
-
-/// A single phase in the response filter pipeline.
-pub trait ResponseFilter: Send + Sync {
-    fn apply(
-        &self,
-        resp: &mut ResponseHeader,
-        req_ctx: &RequestCtx,
-    ) -> Result<ResponseFilterOutcome>;
+impl ResponseCtx for RequestCtx {
+    fn cache_age_secs(&self) -> Option<u64> {
+        // Calls the inherent `RequestCtx::cache_age_secs` accessor (defined
+        // in `proxy/ctx.rs`) — Rust resolves inherent methods before trait
+        // methods on `self.method()` calls, so this is not recursive.
+        self.cache_age_secs()
+    }
 }
 
 // ── Chain ─────────────────────────────────────────────────────────────────────
@@ -87,7 +72,7 @@ impl ResponseFilterChain {
     pub fn run(
         &self,
         resp: &mut ResponseHeader,
-        req_ctx: &RequestCtx,
+        req_ctx: &dyn ResponseCtx,
     ) -> Result<ResponseFilterOutcome> {
         for filter in &self.filters {
             match filter.apply(resp, req_ctx)? {
@@ -195,7 +180,7 @@ impl ResponseFilter for CrlfProtectionFilter {
     fn apply(
         &self,
         resp: &mut ResponseHeader,
-        _req_ctx: &RequestCtx,
+        _req_ctx: &dyn ResponseCtx,
     ) -> Result<ResponseFilterOutcome> {
         // Remove headers containing CR or LF (header-injection protection).
         let bad: Vec<http::header::HeaderName> = resp
@@ -296,7 +281,7 @@ impl ResponseFilter for InjectExtraHeadersFilter {
     fn apply(
         &self,
         resp: &mut ResponseHeader,
-        req_ctx: &RequestCtx,
+        req_ctx: &dyn ResponseCtx,
     ) -> Result<ResponseFilterOutcome> {
         // Strip Pingora's default `Server: Pingora` banner — it leaks the
         // proxy software name, helping attackers target Pingora-specific CVEs.
@@ -318,7 +303,7 @@ impl ResponseFilter for InjectExtraHeadersFilter {
         // Remove any `Age` value carried by the stored response before
         // inserting the freshly computed one — prevents double-counting when
         // a cached response already has an `Age` header from a prior hop.
-        if let Some(age_secs) = req_ctx.cache_age_secs {
+        if let Some(age_secs) = req_ctx.cache_age_secs() {
             resp.headers.remove("age");
             resp.insert_header("age", age_secs.to_string())?;
         }
@@ -339,7 +324,7 @@ impl ResponseFilter for ResponseTransformFilter {
     fn apply(
         &self,
         resp: &mut ResponseHeader,
-        _req_ctx: &RequestCtx,
+        _req_ctx: &dyn ResponseCtx,
     ) -> Result<ResponseFilterOutcome> {
         if let Some(remove) = &self.transform.remove_headers {
             for name in remove {
@@ -365,7 +350,7 @@ impl ResponseFilter for ResponseTimeFilter {
     fn apply(
         &self,
         resp: &mut ResponseHeader,
-        _req_ctx: &RequestCtx,
+        _req_ctx: &dyn ResponseCtx,
     ) -> Result<ResponseFilterOutcome> {
         if response_time::is_enabled(self.rt_cfg.as_ref()) {
             let digits = response_time::decimal_digits(self.rt_cfg.as_ref());
@@ -393,7 +378,7 @@ impl ResponseFilter for ServerTimingFilter {
     fn apply(
         &self,
         resp: &mut ResponseHeader,
-        _req_ctx: &RequestCtx,
+        _req_ctx: &dyn ResponseCtx,
     ) -> Result<ResponseFilterOutcome> {
         let total_ms = self.start_time.elapsed().as_secs_f64() * 1000.0;
         let value = match self.upstream_start {
@@ -439,7 +424,7 @@ impl ResponseFilter for RetryOnErrorFilter {
     fn apply(
         &self,
         resp: &mut ResponseHeader,
-        _req_ctx: &RequestCtx,
+        _req_ctx: &dyn ResponseCtx,
     ) -> Result<ResponseFilterOutcome> {
         if resp.status.as_u16() >= 500 {
             // Retry takes priority when budget and conditions are available.
@@ -475,7 +460,7 @@ impl ResponseFilter for ErrorMaskFilter {
     fn apply(
         &self,
         resp: &mut ResponseHeader,
-        _req_ctx: &RequestCtx,
+        _req_ctx: &dyn ResponseCtx,
     ) -> Result<ResponseFilterOutcome> {
         if self.mask_enabled && resp.status.as_u16() >= 500 {
             return Ok(ResponseFilterOutcome::MaskBody);
@@ -484,117 +469,13 @@ impl ResponseFilter for ErrorMaskFilter {
     }
 }
 
-// ── Phase 7: Rhai / WASM on_response middleware ───────────────────────────────
-
-use crate::config::schema::MiddlewareEntry;
-
-/// Phase 7 — Run Rhai and WASM middleware entries that are configured for the
-/// response phase.
-///
-/// - **WASM** (`type: "wasm"`): if the module exports `on_response(status) -> i32`,
-///   it is called here.  The export is optional — modules without it are skipped.
-/// - **Rhai** (`type: "script"`, `phase: "response"`): runs the script with
-///   `upstream.status`, `upstream.header("Name")`, `response.set_header()`, etc.
-///
-/// All header mutations collected by the plugins are applied to `resp`.
-pub struct MiddlewareResponseFilter {
-    pub middleware: Vec<MiddlewareEntry>,
-}
-
-impl ResponseFilter for MiddlewareResponseFilter {
-    fn apply(
-        &self,
-        #[cfg_attr(not(any(feature = "rhai", feature = "wasm")), allow(unused_variables))]
-        resp: &mut ResponseHeader,
-        _req_ctx: &RequestCtx,
-    ) -> Result<ResponseFilterOutcome> {
-        // Status and headers are only needed by rhai/wasm plugins.
-        #[cfg(any(feature = "rhai", feature = "wasm"))]
-        let status = resp.status.as_u16();
-        #[cfg(any(feature = "rhai", feature = "wasm"))]
-        let headers: std::collections::HashMap<String, String> = resp
-            .headers
-            .iter()
-            .filter_map(|(k, v)| {
-                v.to_str()
-                    .ok()
-                    .map(|vs| (k.as_str().to_ascii_lowercase(), vs.to_owned()))
-            })
-            .collect();
-
-        for entry in &self.middleware {
-            match entry.r#type.as_str() {
-                // ── Rhai response scripts ─────────────────────────────────────
-                #[cfg(feature = "rhai")]
-                "script" => {
-                    let phase = entry.phase.as_deref().unwrap_or("request");
-                    if phase != "response" {
-                        continue;
-                    }
-                    let Some(ref path) = entry.path else { continue };
-                    let outcome = crate::filter::script::run_script_response(
-                        path,
-                        status,
-                        headers.clone(),
-                        entry.config.as_ref(),
-                    );
-                    apply_response_mutations(resp, outcome.added_headers, outcome.removed_headers);
-                }
-
-                // ── WASM on_response ──────────────────────────────────────────
-                #[cfg(feature = "wasm")]
-                "wasm" => {
-                    let Some(ref path) = entry.path else { continue };
-                    let plugin_config = entry
-                        .config
-                        .as_ref()
-                        .and_then(|v| serde_json::to_vec(v).ok())
-                        .unwrap_or_default();
-                    let ctx = crate::filter::wasm::WasmResponseContext {
-                        status,
-                        headers: headers.clone(),
-                        plugin_config,
-                    };
-                    let outcome = crate::filter::wasm::run_wasm_response(ctx, path);
-                    apply_response_mutations(resp, outcome.added_headers, outcome.removed_headers);
-                    if let Some(body_bytes) = outcome.body {
-                        // Store the override body in the upstream_response_body
-                        // override slot — handled by upstream_response_body_filter.
-                        // We signal this via a custom header that the body filter reads.
-                        // (Using a header is simpler than extending RequestCtx here.)
-                        let _ = resp.insert_header(
-                            "x-conduit-wasm-body-override",
-                            format!("{}", body_bytes.len()),
-                        );
-                        // Store body bytes via header value (base64 for safety).
-                        use base64::Engine as _;
-                        let encoded = base64::engine::general_purpose::STANDARD.encode(&body_bytes);
-                        let _ = resp.insert_header("x-conduit-wasm-body-b64", encoded);
-                    }
-                }
-
-                _ => {}
-            }
-        }
-
-        Ok(ResponseFilterOutcome::Continue)
-    }
-}
-
-/// Apply header mutations to a Pingora response header.
-#[cfg(any(feature = "rhai", feature = "wasm"))]
-fn apply_response_mutations(
-    resp: &mut ResponseHeader,
-    added: Vec<(String, String)>,
-    removed: Vec<String>,
-) {
-    for name in removed {
-        resp.remove_header(&name);
-    }
-    for (name, value) in added {
-        let _ = resp.insert_header(name.clone(), value.as_str());
-    }
-}
+/// Extracted into `crates/conduit-middleware` (issue #114/#141) — this is a
+/// facade re-export so `crate::filter::response_chain::MiddlewareResponseFilter`
+/// keeps resolving to the same type at the same location for every existing
+/// call site/test. See that crate's `src/response.rs` for the implementation:
+/// Phase 7 — runs Rhai/WASM middleware entries configured for the response
+/// phase and applies their header/body mutations to the upstream response.
+pub use conduit_middleware::response::MiddlewareResponseFilter;
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
@@ -892,7 +773,7 @@ mod tests {
             fn apply(
                 &self,
                 _: &mut ResponseHeader,
-                _: &RequestCtx,
+                _: &dyn ResponseCtx,
             ) -> Result<ResponseFilterOutcome> {
                 Ok(ResponseFilterOutcome::RetryUpstream)
             }
@@ -902,7 +783,7 @@ mod tests {
             fn apply(
                 &self,
                 _: &mut ResponseHeader,
-                _: &RequestCtx,
+                _: &dyn ResponseCtx,
             ) -> Result<ResponseFilterOutcome> {
                 panic!("filter should not be called after terminal outcome")
             }
@@ -1159,14 +1040,18 @@ mod tests {
 
     // ── InjectExtraHeadersFilter — Age header (RFC 7234 §5.1, #49) ──────────
 
+    #[cfg(feature = "cache")]
     #[test]
     fn inject_filter_injects_age_header_when_cache_age_set() {
-        // When RequestCtx.cache_age_secs is Some, the filter must inject
+        // When RequestCtx.cache_age_secs() is Some, the filter must inject
         // an `Age` header with the computed value.
         let filter = InjectExtraHeadersFilter { headers: vec![] };
         let mut resp = make_resp(200);
         let mut ctx = dummy_ctx();
-        ctx.cache_age_secs = Some(42);
+        ctx.cache = Some(conduit_cache::CacheReqState {
+            cache_age_secs: Some(42),
+            ..Default::default()
+        });
         filter.apply(&mut resp, &ctx).unwrap();
         assert_eq!(
             resp.headers.get("age").and_then(|v| v.to_str().ok()),
@@ -1188,6 +1073,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "cache")]
     #[test]
     fn inject_filter_replaces_existing_age_header() {
         // When the cached response already carries an Age header from a prior
@@ -1197,7 +1083,10 @@ mod tests {
         let mut resp = make_resp(200);
         resp.insert_header("age", "10").unwrap(); // stale Age from stored response
         let mut ctx = dummy_ctx();
-        ctx.cache_age_secs = Some(75);
+        ctx.cache = Some(conduit_cache::CacheReqState {
+            cache_age_secs: Some(75),
+            ..Default::default()
+        });
         filter.apply(&mut resp, &ctx).unwrap();
         let values: Vec<_> = resp.headers.get_all("age").iter().collect();
         assert_eq!(values.len(), 1, "exactly one Age header must remain");
@@ -1272,36 +1161,8 @@ mod tests {
         );
     }
 
-    // ── MiddlewareResponseFilter ──────────────────────────────────────────────
-
-    #[test]
-    fn middleware_response_filter_empty_middleware_is_noop() {
-        let filter = MiddlewareResponseFilter { middleware: vec![] };
-        let mut resp = make_resp(200);
-        let ctx = dummy_ctx();
-        let outcome = filter.apply(&mut resp, &ctx).unwrap();
-        assert!(matches!(outcome, ResponseFilterOutcome::Continue));
-    }
-
-    #[test]
-    #[cfg(feature = "rhai")]
-    fn middleware_response_filter_request_phase_script_is_skipped() {
-        use crate::config::schema::MiddlewareEntry;
-        // A script with phase="request" must be skipped in response phase.
-        let filter = MiddlewareResponseFilter {
-            middleware: vec![MiddlewareEntry {
-                r#type: "script".to_owned(),
-                path: Some("nonexistent.rhai".to_owned()),
-                phase: Some("request".to_owned()), // request phase → skip in response
-                config: None,
-            }],
-        };
-        let mut resp = make_resp(200);
-        let ctx = dummy_ctx();
-        // Must not panic even though the file doesn't exist (script skipped).
-        let outcome = filter.apply(&mut resp, &ctx).unwrap();
-        assert!(matches!(outcome, ResponseFilterOutcome::Continue));
-    }
+    // ── MiddlewareResponseFilter — tests moved to
+    //    crates/conduit-middleware/src/response.rs (issue #114/#141)
 
     // ── ResponseTransformFilter edge cases ────────────────────────────────────
 
@@ -1343,30 +1204,8 @@ mod tests {
         assert_eq!(resp.headers.get("x-keep").unwrap(), "yes");
     }
 
-    // ── apply_response_mutations ──────────────────────────────────────────────
-
-    #[test]
-    #[cfg(any(feature = "rhai", feature = "wasm"))]
-    fn apply_response_mutations_adds_and_removes() {
-        let mut resp = make_resp(200);
-        resp.insert_header("x-old", "value").unwrap();
-        apply_response_mutations(
-            &mut resp,
-            vec![("x-new".to_owned(), "injected".to_owned())],
-            vec!["x-old".to_owned()],
-        );
-        assert!(resp.headers.get("x-old").is_none(), "x-old must be removed");
-        assert_eq!(resp.headers.get("x-new").unwrap(), "injected");
-    }
-
-    #[test]
-    #[cfg(any(feature = "rhai", feature = "wasm"))]
-    fn apply_response_mutations_empty_vecs_is_noop() {
-        let mut resp = make_resp(200);
-        resp.insert_header("x-keep", "yes").unwrap();
-        apply_response_mutations(&mut resp, vec![], vec![]);
-        assert_eq!(resp.headers.get("x-keep").unwrap(), "yes");
-    }
+    // ── apply_response_mutations — tests moved to
+    //    crates/conduit-middleware/src/response.rs (issue #114/#141)
 
     // ── dedup_chunked_transfer_encoding ──────────────────────────────────────
 

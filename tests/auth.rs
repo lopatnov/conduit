@@ -7,7 +7,7 @@ use reqwest::blocking::Client;
 #[cfg(feature = "jwt")]
 use serde_json::json;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── helpers ────────────────────────────────────────────────────────────
 
 fn plain_client() -> Client {
     Client::new()
@@ -163,7 +163,7 @@ fn basic_auth_no_challenge_flag() {
     );
 }
 
-// ── API key tests ─────────────────────────────────────────────────────────────
+// ── API key tests ──────────────────────────────────────────────────────────────
 
 fn server_with_api_key() -> common::TestServer {
     let port = common::free_port();
@@ -239,7 +239,7 @@ fn api_key_skip_path_bypasses_auth() {
     assert_eq!(resp.status().as_u16(), 200);
 }
 
-// ── Rate limiting tests ───────────────────────────────────────────────────────
+// ── Rate limiting tests ─────────────────────────────────────────────────────────
 
 fn server_with_rate_limit(limit: u64, window_secs: u64) -> common::TestServer {
     let port = common::free_port();
@@ -331,7 +331,7 @@ fn rate_limit_health_always_passes_at_handler_level() {
     }
 }
 
-// ── Combined: Basic Auth + Rate Limit ────────────────────────────────────────
+// ── Combined: Basic Auth + Rate Limit ──────────────────────────────────
 
 #[test]
 fn basic_auth_and_rate_limit_combined() {
@@ -389,7 +389,7 @@ fn basic_auth_and_rate_limit_combined() {
     assert_eq!(r_limited.status().as_u16(), 429);
 }
 
-// ── Rate limit keyBy: "header:..." ───────────────────────────────────────
+// ── Rate limit keyBy: "header:..." ──────────────────────────────
 
 #[test]
 fn rate_limit_key_by_header_separate_clients_have_independent_buckets() {
@@ -496,7 +496,7 @@ fn rate_limit_key_by_header_missing_header_falls_back_to_shared_bucket() {
     );
 }
 
-// ── JWT helpers (used by JWT and Consumer JWT tests) ─────────────────────────
+// ── JWT helpers (used by JWT and Consumer JWT tests) ───────────────────────
 // These live outside any mod so both jwt and consumers_tests can access them.
 #[cfg(feature = "jwt")]
 fn jwt_secret() -> &'static str {
@@ -516,7 +516,7 @@ fn make_jwt(secret: &str, exp_offset_secs: i64) -> String {
     encode(&Header::new(Algorithm::HS256), &claims, &key).unwrap()
 }
 
-// ── JWT Auth tests (require --features jwt) ───────────────────────────────────
+// ── JWT Auth tests (require --features jwt) ──────────────────────────────
 #[cfg(feature = "jwt")]
 mod jwt {
     use super::*;
@@ -689,7 +689,7 @@ mod jwt {
         );
     }
 
-    // ── Per-route rate limit tests ────────────────────────────────────────────────
+    // ── Per-route rate limit tests ─────────────────────────────────────
 
     fn server_with_per_route_rate_limit() -> common::TestServer {
         use std::io::{Read, Write};
@@ -756,7 +756,66 @@ mod jwt {
         );
     }
 
-    // ── JWKS / RS256 / ES256 end-to-end (issue #164) ──────────────────────────
+    #[test]
+    fn per_route_rate_limit_skip_path_not_counted() {
+        // #307: rateLimit.skipPaths was silently ignored at the route level.
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in upstream.incoming() {
+                let Ok(mut s) = stream else { break };
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+            }
+        });
+
+        let port = common::free_port();
+        let admin_port = common::free_port();
+        let srv = common::TestServer::start_with_config(
+            port,
+            admin_port,
+            serde_json::json!({
+                "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+                "sites": [{
+                    "port": port,
+                    "proxy": {
+                        "/api": {
+                            "targets": [ format!("http://{upstream_addr}") ],
+                            "rateLimit": {
+                                "windowSecs": 3600, "limit": 1, "keyBy": "ip",
+                                "skipPaths": ["/api/exempt"]
+                            }
+                        }
+                    }
+                }]
+            }),
+        );
+
+        // Exhaust the limit=1 budget on a non-exempt path.
+        plain_client().get(srv.url("/api/data")).send().ok();
+        let resp = plain_client()
+            .get(srv.url("/api/data"))
+            .send()
+            .expect("GET /api/data");
+        assert_eq!(resp.status().as_u16(), 429, "budget must be exhausted");
+
+        // The exempt path must still pass, even with the budget exhausted.
+        let resp = plain_client()
+            .get(srv.url("/api/exempt"))
+            .send()
+            .expect("GET /api/exempt");
+        assert_ne!(
+            resp.status().as_u16(),
+            429,
+            "skipPaths-matched route path must not be rate-limited"
+        );
+    }
+
+    // ── JWKS / RS256 / ES256 end-to-end (issue #164) ────────────────────────
     //
     // RSA-2048 / P-256 test key material is generated fresh at test-run
     // time (not embedded as static PEM literals) — matches the `rcgen`
@@ -982,7 +1041,7 @@ mod jwt {
     }
 } // mod jwt
 
-// ── Consumer model tests (require --features consumers) ───────────────────────
+// ── Consumer model tests (require --features consumers) ──────────────────────────
 #[cfg(feature = "consumers")]
 mod consumers_tests {
     use super::*;
@@ -1352,7 +1411,101 @@ mod consumers_tests {
         );
     }
 
-    // ── Consumer JWT V2 tests (also require --features jwt) ──────────────────────
+    #[test]
+    fn consumers_per_consumer_rate_limit_skip_path_not_counted() {
+        // #307: rateLimit.skipPaths was silently ignored at the consumer level.
+        let port = common::free_port();
+        let admin_port = common::free_port();
+        let srv = common::TestServer::start_with_config(
+            port,
+            admin_port,
+            serde_json::json!({
+                "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+                "sites": [{
+                    "port": port,
+                    "consumers": {
+                        "consumers": [{
+                            "username": "limited",
+                            "apiKey": "limited-key",
+                            "rateLimit": {
+                                "windowSecs": 3600, "limit": 1,
+                                "skipPaths": ["/exempt"]
+                            }
+                        }]
+                    }
+                }]
+            }),
+        );
+
+        // Exhaust the limit=1 budget on a non-exempt path.
+        plain_client()
+            .get(srv.url("/"))
+            .header("x-api-key", "limited-key")
+            .send()
+            .ok();
+        let resp = plain_client()
+            .get(srv.url("/"))
+            .header("x-api-key", "limited-key")
+            .send()
+            .expect("GET /");
+        assert_eq!(resp.status().as_u16(), 429, "budget must be exhausted");
+
+        // The exempt path must still pass, even with the budget exhausted.
+        let resp = plain_client()
+            .get(srv.url("/exempt"))
+            .header("x-api-key", "limited-key")
+            .send()
+            .expect("GET /exempt");
+        assert_ne!(
+            resp.status().as_u16(),
+            429,
+            "skipPaths-matched consumer rate limit must not reject"
+        );
+    }
+
+    #[test]
+    fn consumers_per_consumer_rate_limit_dry_run_logs_but_allows() {
+        // #307: rateLimit.dryRun was silently ignored at the consumer level.
+        let port = common::free_port();
+        let admin_port = common::free_port();
+        let srv = common::TestServer::start_with_config(
+            port,
+            admin_port,
+            serde_json::json!({
+                "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+                "sites": [{
+                    "port": port,
+                    "consumers": {
+                        "consumers": [{
+                            "username": "limited",
+                            "apiKey": "limited-key",
+                            "rateLimit": { "windowSecs": 3600, "limit": 1, "dryRun": true }
+                        }]
+                    }
+                }]
+            }),
+        );
+
+        // Exhaust the limit=1 budget.
+        plain_client()
+            .get(srv.url("/"))
+            .header("x-api-key", "limited-key")
+            .send()
+            .ok();
+        // With dryRun, the 2nd request must still pass through (not 429).
+        let resp = plain_client()
+            .get(srv.url("/"))
+            .header("x-api-key", "limited-key")
+            .send()
+            .expect("GET /");
+        assert_ne!(
+            resp.status().as_u16(),
+            429,
+            "dryRun must allow the request through instead of rejecting"
+        );
+    }
+
+    // ── Consumer JWT V2 tests (also require --features jwt) ──────────────────────────
     // These tests use JWT tokens and require both consumers AND jwt features.
 
     #[cfg(feature = "jwt")]

@@ -494,9 +494,18 @@ curl http://localhost:2019/rate-limits
 ```
 
 The outer key is the site label (`host:port` or `"*"` for wildcard rules) and the
-inner key is the route prefix. Both `passed` and `rejected` are monotonically
-increasing counters that reset when the process restarts or `POST /reload` is called
-(reload clears in-memory rate-limiter state).
+inner key is the route prefix, or `"*"` for the site-level (non-route) bucket. Since
+each client gets its own bucket internally, the numbers shown here are summed across
+every client that has hit that site/route — this endpoint reports totals, not
+per-client detail (and never exposes individual client keys/IPs). Both `passed` and
+`rejected` are monotonically increasing counters that reset when the process restarts
+or `POST /reload` is called (reload clears in-memory rate-limiter state).
+
+Only the in-memory rate limiter is reflected here (site-level and per-route
+buckets). Per-consumer rate limits are global across every site a consumer is
+allowed to call, not attributable to one site or route, so they're excluded
+from this endpoint. Requests admitted through a Redis-backed rate limit
+(`rateLimit.store: redis://...`) are also not reflected here.
 
 ---
 

@@ -5,7 +5,9 @@
 //! Routes are evaluated in declaration order; the first match wins.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+#[cfg(feature = "static")]
+use std::sync::Arc;
+use std::sync::OnceLock;
 
 use dashmap::DashMap;
 use regex::Regex;
@@ -13,6 +15,7 @@ use regex::Regex;
 use crate::config::schema::{MatchConfig, ProxyRouteTarget, RouteConfig, StaticOptions};
 use crate::proxy::ctx::{LocalHandler, RetryState, UpstreamTarget};
 use crate::proxy::health::UpstreamRegistry;
+use crate::proxy::slow_start::Ramp;
 use crate::proxy::{capacity, router, upstream};
 
 /// Result type shared with the main router.
@@ -164,12 +167,18 @@ fn cookie_value<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
 ///
 /// Priority: `proxy` beats `static`.  If neither is set the route is a
 /// no-op (unlikely in practice) and returns the fallback.
+///
+/// Without the `static` feature compiled in, `route.static` is never
+/// resolved into a `StaticFile` handler — see `router::match_static_or_fallback`'s
+/// doc comment for the shared degradation rationale.
 fn route_to_result(
     route: &RouteConfig,
     path: &str,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
-    static_options: Option<&StaticOptions>,
+    #[cfg_attr(not(feature = "static"), allow(unused_variables))] static_options: Option<
+        &StaticOptions,
+    >,
 ) -> RouteResult {
     // ── Proxy action ─────────────────────────────────────────────────────────
     if let Some(proxy_target) = &route.proxy {
@@ -177,6 +186,7 @@ fn route_to_result(
     }
 
     // ── Static action ─────────────────────────────────────────────────────────
+    #[cfg(feature = "static")]
     if let Some(static_cfg) = &route.static_files {
         let options = Arc::new(static_options.cloned().unwrap_or_default());
         let (roots, strip_prefix) = router::resolve_static_roots(static_cfg, path);
@@ -234,7 +244,7 @@ fn full_cfg_to_result(
         .collect();
 
     // Filter to healthy upstreams; fail-open when all are down.
-    let healthy = upstream_health.filter_healthy(&all_urls);
+    let (healthy, _fail_open) = upstream_health.filter_healthy(&all_urls);
     let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
 
     if urls.is_empty() {
@@ -247,6 +257,7 @@ fn full_cfg_to_result(
         .health_check
         .as_ref()
         .and_then(|h| h.max_connections_per_upstream);
+    let slow_start_secs = cfg.health_check.as_ref().and_then(|h| h.slow_start_secs);
     let route_key = path; // stable key for round-robin counters
     let capacity = capacity::Capacity::evaluate(&urls, max_conns, route_key, upstream_health);
     if matches!(capacity, capacity::Capacity::Exhausted) {
@@ -266,6 +277,11 @@ fn full_cfg_to_result(
     let hash_val = upstream::fnv1a_hash(path);
     let strategy = cfg.strategy.as_ref();
 
+    // Slow start (#157): ramp traffic to a recently-recovered upstream.
+    // `Ramp::new` is a true no-op when `slowStartSecs` is unset; hash-based
+    // strategies are exempt for free via `pick_bounded`'s own early return.
+    let ramp = Ramp::new(slow_start_secs, upstream_health);
+
     let input = capacity::BoundedPick {
         strategy,
         healthy: &urls,
@@ -275,6 +291,7 @@ fn full_cfg_to_result(
         hash_val,
         counters,
         health: upstream_health,
+        ramp: &ramp,
     };
     let Some((chosen_url, is_least_conn)) = capacity::pick_bounded(&input) else {
         return fallback_result();
@@ -313,15 +330,49 @@ fn full_cfg_to_result(
     // and the `Exhausted` case already returned before this point, so
     // `candidates()` is always `Some` here; `unwrap_or(&urls)` is just a
     // defensive fallback, not an expected path.
-    let retry = cfg.retry.as_ref().map(|r| RetryState {
-        urls: capacity.candidates(&urls).unwrap_or(&urls).to_vec(),
-        attempt: 0,
-        max_attempts: r.attempts as usize,
-        conditions: r.conditions.clone(),
-        backoff_ms: r.backoff_ms,
-        backoff_jitter: r.backoff_jitter.unwrap_or(false),
-        budget_percent: r.budget_percent,
-        is_retrying: false,
+    let retry = cfg.retry.as_ref().map(|r| {
+        // Slow start (#157): this retry list is its own routing decision that
+        // never goes through `pick_bounded` -- without wrapping it here, a
+        // route with `retry` configured would keep ignoring `slowStartSecs`
+        // for its fallback rotation, mirroring the same gap fixed in
+        // router.rs's `resolve_proxy_routes` retry-bypass branch.
+        let mut retry_urls: Vec<String> = ramp
+            .filter_candidates(capacity.candidates(&urls).unwrap_or(&urls))
+            .into_owned();
+        // Anchor attempt 1 to the peer actually chosen above (#367) — this
+        // list used to be the unrotated candidate list, so attempt 1 always
+        // connected to `retry_urls[0]` regardless of which peer `chosen_url`
+        // (round-robin/least-conn/etc.) actually was, defeating round-robin
+        // and misattributing conn_count/EWMA/access-log stats to the wrong
+        // peer. Mirrors router.rs's `pick_with_retry`, which builds
+        // `chosen_url` and `retry.urls` from the same rotation so the
+        // invariant holds by construction; here the two are picked
+        // separately (via `pick_bounded` vs. this list's own ramp/capacity
+        // filter), so restore it explicitly instead. `chosen_url` can be
+        // absent from this list for a hash-based strategy — exempt from
+        // ramp filtering during its own pick_bounded pick, but not from this
+        // separate list's filter (see #366's analogous gap in router.rs) —
+        // in that case prepend it rather than leaving the invariant broken.
+        match retry_urls.iter().position(|u| u == &chosen_url) {
+            Some(pos) => retry_urls.rotate_left(pos),
+            None => retry_urls.insert(0, chosen_url.clone()),
+        }
+        RetryState {
+            urls: retry_urls,
+            attempt: 0,
+            max_attempts: r.attempts as usize,
+            conditions: r.conditions.clone(),
+            backoff_ms: r.backoff_ms,
+            backoff_jitter: r.backoff_jitter.unwrap_or(false),
+            budget_percent: r.budget_percent,
+            is_retrying: false,
+            // #216 part 2: mirrors upstream_conn_slot's own formula a few
+            // lines below (is_least_conn || circuit_tracking) -- unlike
+            // router.rs's retry-bypass branch, this path goes through
+            // pick_bounded, so is_least_conn can genuinely be true here.
+            max_conns_per_upstream: max_conns,
+            tracks_conn_slot: is_least_conn || circuit_tracking,
+        }
     });
 
     // proxy_upstream_url is populated unconditionally (#155) so passive-health
@@ -1183,6 +1234,73 @@ mod tests {
         );
     }
 
+    /// Regression test for #367: `retry.urls[0]` must always equal the peer
+    /// actually chosen by the route's strategy (`proxy_upstream_url`), not
+    /// just the head of the unrotated candidate list. Drives round-robin
+    /// selection across several requests on a route with two healthy
+    /// targets and `retry` configured — reverting the anchoring fix (using
+    /// the unrotated `ramp.filter_candidates(...)` list directly) would make
+    /// every request's `retry.urls[0]` come back as `http://b1:4000`
+    /// regardless of which peer round-robin actually picked for that
+    /// request, since `chosen_url` alternates but the candidate list never
+    /// rotates on its own.
+    #[test]
+    fn route_to_result_retry_urls_anchored_to_chosen_peer() {
+        use crate::config::schema::{
+            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RetryConfig, RouteConfig,
+        };
+
+        let registry = crate::proxy::health::UpstreamRegistry::new();
+        let route = RouteConfig {
+            r#match: MatchConfig::default(),
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://b1:4000".to_string()),
+                    ProxyTarget::Simple("http://b2:4000".to_string()),
+                ],
+                strategy: Some(LoadBalanceStrategy::RoundRobin),
+                retry: Some(RetryConfig {
+                    attempts: 2,
+                    conditions: vec!["connection_error".to_string()],
+                    backoff_ms: Some(50),
+                    backoff_jitter: None,
+                    budget_percent: None,
+                }),
+                ..Default::default()
+            }))),
+            static_files: None,
+        };
+        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
+
+        let mut saw_b1_first = false;
+        let mut saw_b2_first = false;
+        for _ in 0..4 {
+            let res = route_to_result(&route, "/api/users", &counters, &registry, None);
+            let chosen = res
+                .proxy_upstream_url
+                .clone()
+                .expect("proxy_upstream_url must be populated");
+            let retry = res.retry.expect("retry state must be populated");
+            assert_eq!(
+                retry.urls.first(),
+                Some(&chosen),
+                "retry.urls[0] must equal the peer round-robin actually chose"
+            );
+            match chosen.as_str() {
+                "http://b1:4000" => saw_b1_first = true,
+                "http://b2:4000" => saw_b2_first = true,
+                other => panic!("unexpected chosen upstream: {other}"),
+            }
+        }
+        // Round-robin must have actually alternated across 4 requests over
+        // 2 peers — otherwise this test would trivially pass even with the
+        // pre-fix bug (both would be b1 every time).
+        assert!(
+            saw_b1_first && saw_b2_first,
+            "expected round-robin to pick both peers across 4 requests"
+        );
+    }
+
     #[test]
     fn route_to_result_full_proxy_least_response_time() {
         use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
@@ -1206,6 +1324,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "static")]
     fn route_to_result_static_files() {
         use crate::config::schema::{RouteConfig, StaticConfig};
         use crate::proxy::ctx::{LocalHandler, UpstreamTarget};

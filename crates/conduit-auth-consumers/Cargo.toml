@@ -1,0 +1,66 @@
+[package]
+name        = "lopatnov-conduit-auth-consumers"
+version.workspace    = true
+edition.workspace    = true
+description = "Consumer-model auth (per-consumer API key / Basic Auth / JWT credentials) config + identification logic for conduit's feature-driven workspace (issue #114/#134)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_auth_consumers"
+path = "src/lib.rs"
+
+[dependencies]
+# ConsumersConfig/Consumer/etc. (config.rs) are always compiled — see
+# src/lib.rs doc comment. `config::RateLimitConfig` is a re-export of
+# `lopatnov-conduit-ratelimit`'s type (issue #114/#137 slice 1) — this used
+# to be a deliberate, documented duplicate of the root crate's own type, see
+# `Consumer::rate_limit`'s doc comment for the history.
+serde    = { workspace = true }
+indexmap = { workspace = true }
+lopatnov-conduit-ratelimit = { workspace = true }
+
+# Everything below is only needed by the real consumer-identification logic
+# (`identify`), gated behind this crate's own `consumers` feature (mirrors
+# the pre-extraction `#[cfg(feature = "consumers")]` gates in
+# src/filter/auth.rs). The root crate's `consumers` feature forwards into
+# this one via `lopatnov-conduit-auth-consumers/consumers`.
+base64                = { workspace = true, optional = true }
+serde_json            = { workspace = true, optional = true }
+pingora-proxy         = { workspace = true, optional = true }
+lopatnov-conduit-core = { workspace = true, optional = true }
+
+# JWT-credential checking (per-consumer `jwt` (V2) and `consumers.sharedJwt`
+# (V3)) is a further-gated subset of `consumers` identification, behind this
+# crate's own `jwt` feature — kept separate from `consumers` because it
+# needs `lopatnov-conduit-auth-jwt`'s own `jwt` feature (JWKS fetch/HS256/
+# RS256/ES256 validation), independently toggleable at the root. The root
+# crate's `jwt` feature forwards into this one via
+# `lopatnov-conduit-auth-consumers/jwt` (see root Cargo.toml's own comment)
+# so that `--features jwt,consumers` activates both halves together — see
+# `identify.rs`'s module doc comment for the failure mode this prevents.
+lopatnov-conduit-auth-jwt = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Test-only: identify.rs's own unit tests build a real pingora_proxy::Session
+# over an in-memory tokio::io::duplex pipe (see .claude/skills/testing/SKILL.md's
+# narrow exception for this, added 2026-08-23 alongside #248), and the
+# shared-JWT test generates a real HS256 token. `pingora-core` is needed only
+# for the `pingora_core::protocols::Stream` type the test helper boxes the
+# duplex pipe into — production identify.rs code never touches pingora-core
+# directly (only pingora-proxy's `Session`).
+tokio        = { workspace = true }
+pingora-core = { workspace = true }
+jsonwebtoken = { workspace = true }
+
+[features]
+consumers = [
+    "dep:base64",
+    "dep:serde_json",
+    "dep:pingora-proxy",
+    "dep:lopatnov-conduit-core",
+]
+jwt = [
+    "dep:lopatnov-conduit-auth-jwt",
+    "lopatnov-conduit-auth-jwt/jwt",
+]

@@ -201,6 +201,13 @@ pub fn record_request_latency(
             // next ejection cycle starts fresh.
             entry.ejected_until_secs = None;
             entry.ejection_count = 0;
+            // Slow start (#157): a half-open probe succeeding is a genuine
+            // recovery, same as an active health-check flipping the peer back
+            // to healthy (see spawn_health_task) -- and on the routes[]/groups
+            // paths it is the ONLY recovery signal available at all, since
+            // active probes aren't spawned there. Without this, slow_start_fraction
+            // never sees a recovery on those paths and slowStartSecs stays inert.
+            entry.recovery_time_secs = Some(now_secs());
             tracing::info!(url, "half-open probe succeeded — upstream fully recovered");
         } else {
             // Probe failed: re-eject with the next exponential-backoff level.
@@ -316,11 +323,10 @@ pub fn maybe_eject(
 ///
 /// Callers should multiply their selection probability by this value.
 ///
-/// **Not currently wired into any `LoadBalancingStrategy` implementation** —
-/// see the tracking issue for `healthCheck.slowStartSecs` filed from the
-/// 2026-08-03 integrity audit. Configuring `slowStartSecs` today has no
-/// effect on routing; this function and its data (`recovery_time_secs`) exist
-/// but nothing yet calls it outside its own unit tests.
+/// Consumed by [`crate::proxy::slow_start::Ramp`] (issue #157), the single
+/// dispatch point every non-hash `LoadBalancingStrategy` gets ramp admission
+/// from -- hash-based strategies and sticky sessions are deliberately exempt
+/// (see that module's doc comment for why).
 pub fn slow_start_fraction(entry: &UpstreamEntry, window_secs: u64) -> f64 {
     if window_secs == 0 {
         return 1.0;
@@ -497,13 +503,24 @@ impl UpstreamRegistry {
     /// Filter `urls` to only healthy ones.
     ///
     /// If all upstreams are down the original list is returned unchanged so
-    /// the proxy continues to try rather than hard-failing.
-    pub fn filter_healthy<'a>(&self, urls: &'a [String]) -> Vec<&'a String> {
+    /// the proxy continues to try rather than hard-failing. The second
+    /// tuple element is `true` exactly in that fail-open case -- callers
+    /// that need to tell "genuinely healthy" apart from "nothing is
+    /// healthy, trying anyway" (issue #374) should check it rather than
+    /// re-deriving health from the returned list, which can't make that
+    /// distinction on its own. Deliberately does **not** offer a second,
+    /// independent way to ask "is this URL really healthy" instead (e.g. a
+    /// second call to [`Self::is_healthy`] on the same URL within one
+    /// request) -- `is_healthy`'s half-open probe promotion is stateful and
+    /// only fires once per ejection cycle, so a second call for the same
+    /// URL in the same request would see the *first* call's side effect
+    /// and silently disagree with it.
+    pub fn filter_healthy<'a>(&self, urls: &'a [String]) -> (Vec<&'a String>, bool) {
         let healthy: Vec<&String> = urls.iter().filter(|u| self.is_healthy(u)).collect();
         if healthy.is_empty() {
-            urls.iter().collect()
+            (urls.iter().collect(), true)
         } else {
-            healthy
+            (healthy, false)
         }
     }
 
@@ -659,14 +676,26 @@ pub fn spawn_health_checks(registry: Arc<UpstreamRegistry>, config: &AppConfig) 
 /// For each such route, sends `n` sequential HEAD requests to the configured
 /// health-check path immediately after startup.
 ///
-/// **Known limitation** (2026-08-03 integrity audit, see tracking issue): each
-/// request currently goes through its own freshly-built, short-lived
-/// `reqwest::Client` (see `warmup_url`), which is dropped at the end of the
-/// loop body — it does not populate Pingora's own upstream connector pool
-/// used by `upstream_peer()` for real proxied traffic, so real user requests
-/// still pay the full TCP-handshake cost. Left in place because it's
-/// otherwise harmless (a handful of HEAD requests at startup); does not yet
-/// deliver the latency benefit its name implies.
+/// **`[🚫 BLOCKED]`** (2026-08-03 integrity audit; confirmed genuinely
+/// blocked, not just unimplemented, 2026-09-06 — issue #158): each request
+/// currently goes through its own freshly-built, short-lived `reqwest::Client`
+/// (see `warmup_url`), which is dropped at the end of the loop body — it does
+/// not populate Pingora's own upstream connector pool used by
+/// `upstream_peer()` for real proxied traffic, so real user requests still
+/// pay the full TCP-handshake cost.
+///
+/// Confirmed via `pingora-proxy` 0.8.1's vendored source
+/// (`pingora-proxy-0.8.1/src/lib.rs`): `HttpProxy<SV, C>::client_upstream`
+/// (the actual `Connector` whose keepalive pool `upstream_peer()`'s request
+/// path reads from) is a **private field with no public accessor** anywhere
+/// in the struct's `impl` blocks, and the `ProxyHttp` trait Conduit
+/// implements never receives a reference to it in any hook. There is no
+/// public API in Pingora 0.8 to reach, share, or pre-populate that specific
+/// pool from outside the crate — the same class of gap as this repo's other
+/// `[🚫 BLOCKED]` items (OCSP stapling, request queue + backpressure), waiting
+/// on Pingora 0.9+. Left in place because it's otherwise harmless (a handful
+/// of HEAD requests at startup); does not deliver the latency benefit its
+/// name implies, and cannot until Pingora exposes the real pool.
 pub fn spawn_connection_warmup(config: &AppConfig) {
     for site in &config.sites {
         let Some(crate::config::schema::ProxyConfig::Routes(routes)) = &site.proxy else {
@@ -1177,9 +1206,11 @@ mod tests {
             },
         );
 
-        // filter_healthy must return all when all are down (fail-open).
-        let result = reg.filter_healthy(&urls);
+        // filter_healthy must return all when all are down (fail-open), and
+        // report that it did so via the second tuple element (#374).
+        let (result, fail_open) = reg.filter_healthy(&urls);
         assert_eq!(result.len(), 2);
+        assert!(fail_open, "fail_open must be true when every peer is down");
     }
 
     #[test]
@@ -1196,9 +1227,13 @@ mod tests {
         );
         // b is unknown — defaults to healthy
 
-        let result = reg.filter_healthy(&urls);
+        let (result, fail_open) = reg.filter_healthy(&urls);
         assert_eq!(result.len(), 1);
         assert_eq!(*result[0], "http://b:4000");
+        assert!(
+            !fail_open,
+            "fail_open must be false when at least one peer is genuinely healthy"
+        );
     }
 
     // ── override management ───────────────────────────────────────────────────
@@ -1379,6 +1414,31 @@ mod tests {
     }
 
     #[test]
+    fn successful_half_open_probe_records_recovery_time() {
+        // Slow start (#157): a half-open probe succeeding is a genuine
+        // recovery signal, same as an active health-check flipping the peer
+        // back to healthy -- and on the routes[]/groups paths (whose
+        // active-probe path has its own separate, pre-existing gap) it's the
+        // ONLY recovery signal that exists at all. Without this,
+        // slow_start_fraction never sees a recovery there and slowStartSecs
+        // stays inert regardless of the routing-side fix.
+        let reg = UpstreamRegistry::new();
+        let url = "http://u:4000";
+        {
+            let mut e = reg.statuses.entry(url.to_owned()).or_default();
+            e.ejected_until_secs = Some(now_secs().saturating_sub(1));
+            e.ejection_count = 2;
+        }
+        assert!(reg.is_healthy(url)); // dispatches the half-open probe
+        record_request_latency(&reg, url, 10_000, 200); // probe succeeds
+        let e = reg.statuses.get(url).unwrap();
+        assert!(
+            e.recovery_time_secs.is_some(),
+            "a successful half-open probe must record a recovery time"
+        );
+    }
+
+    #[test]
     fn failed_probe_re_ejects_with_backoff() {
         let reg = UpstreamRegistry::new();
         let url = "http://u:4000";
@@ -1514,8 +1574,12 @@ mod tests {
         let reg = UpstreamRegistry::new();
         let urls = vec!["http://a:4000".to_owned(), "http://b:4000".to_owned()];
         // No health status set → all optimistically healthy.
-        let healthy = reg.filter_healthy(&urls);
+        let (healthy, fail_open) = reg.filter_healthy(&urls);
         assert_eq!(healthy.len(), 2);
+        assert!(
+            !fail_open,
+            "optimistic-healthy is a real result, not a fail-open passthrough"
+        );
     }
 
     #[test]
@@ -1525,9 +1589,10 @@ mod tests {
         let url_b = "http://b:4000".to_owned();
         reg.statuses.entry(url_a.clone()).or_default().healthy = false;
         let urls = vec![url_a, url_b.clone()];
-        let healthy = reg.filter_healthy(&urls);
+        let (healthy, fail_open) = reg.filter_healthy(&urls);
         assert_eq!(healthy.len(), 1);
         assert_eq!(*healthy[0], url_b);
+        assert!(!fail_open);
     }
 
     // ── filter_healthy: all-unhealthy fail-open ───────────────────────────────
@@ -1541,12 +1606,16 @@ mod tests {
         reg.statuses.entry(url_a.clone()).or_default().healthy = false;
         reg.statuses.entry(url_b.clone()).or_default().healthy = false;
         let urls = vec![url_a.clone(), url_b.clone()];
-        let result = reg.filter_healthy(&urls);
+        let (result, fail_open) = reg.filter_healthy(&urls);
         // All unhealthy → fail-open: return all (try anyway).
         assert_eq!(
             result.len(),
             2,
             "fail-open: all must be returned when none healthy"
+        );
+        assert!(
+            fail_open,
+            "#374: callers must be able to tell this was fail-open"
         );
     }
 

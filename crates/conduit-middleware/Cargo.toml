@@ -1,0 +1,49 @@
+[package]
+name        = "lopatnov-conduit-middleware"
+version.workspace    = true
+edition.workspace    = true
+description = "Rhai/WASM middleware chain (config + guard + response filter) for conduit's feature-driven workspace (issue #114/#141)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_middleware"
+path = "src/lib.rs"
+
+[dependencies]
+# Mandatory (like conduit-otlp/conduit-acme/conduit-faults): `MiddlewareEntry`
+# and the `sites[].middleware` field must stay parseable in every build so
+# `feature_warnings()` can keep warning on a config-without-feature mismatch.
+serde      = { workspace = true }
+serde_json = { workspace = true }
+
+# Mandatory — this crate's own `guard::MiddlewareGuard`/
+# `response::MiddlewareResponseFilter` implement conduit-core's chain traits
+# directly and are always compiled (only their "script"/"wasm" match arms are
+# feature-gated internally), unlike the guard-shaped extractions above whose
+# *entire* guard is gated. See src/lib.rs doc comment for why tracing/
+# serde_json/bytes/tokio are mandatory too, not gated behind any(rhai, wasm).
+async-trait           = { workspace = true }
+bytes                 = { workspace = true }
+tokio                 = { workspace = true }
+tracing               = { workspace = true }
+pingora-core          = { workspace = true }
+pingora-http          = { workspace = true }
+lopatnov-conduit-core = { workspace = true }
+
+# Optional sibling crates — see src/lib.rs doc comment ("Depends on two
+# sibling crates, both optional"). Neither is a direct root-crate dependency
+# anymore; this is the only crate that calls into either.
+lopatnov-conduit-script-rhai = { workspace = true, optional = true }
+lopatnov-conduit-plugin-wasm = { workspace = true, optional = true }
+# WASM response-body-override header hack in response::apply_response_mutations
+# (issue #391, pre-existing, moved verbatim — not fixed as part of this
+# extraction). Only needed by the "wasm" feature.
+base64 = { workspace = true, optional = true }
+
+[dev-dependencies]
+http = { workspace = true }
+
+[features]
+rhai = ["dep:lopatnov-conduit-script-rhai"]
+wasm = ["dep:lopatnov-conduit-plugin-wasm", "dep:base64"]

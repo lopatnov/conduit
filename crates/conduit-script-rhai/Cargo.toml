@@ -1,0 +1,29 @@
+[package]
+name        = "lopatnov-conduit-script-rhai"
+version.workspace    = true
+edition.workspace    = true
+description = "Rhai scripting middleware backend for conduit's feature-driven workspace (issue #114/#141)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_script_rhai"
+path = "src/lib.rs"
+
+[dependencies]
+# No [features] table at all — same reasoning as conduit-plugin-wasm's own
+# Cargo.toml: whether this crate is compiled into the dependency graph is
+# controlled from conduit-middleware's own Cargo.toml
+# (`rhai = ["dep:lopatnov-conduit-script-rhai"]`), not from a feature table
+# here. No `lopatnov-conduit-core` dependency either — no chain trait is
+# implemented here; `run_script`/`run_script_response` take/return primitives
+# and outcome enums for conduit-middleware's guard/response-filter to
+# interpret (see CONTRIBUTING.md's "conduit-core dependency is opt-in, not
+# automatic").
+rhai       = { workspace = true }
+dashmap    = { workspace = true }
+serde_json = { workspace = true }
+tracing    = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
