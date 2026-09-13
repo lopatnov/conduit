@@ -503,13 +503,24 @@ impl UpstreamRegistry {
     /// Filter `urls` to only healthy ones.
     ///
     /// If all upstreams are down the original list is returned unchanged so
-    /// the proxy continues to try rather than hard-failing.
-    pub fn filter_healthy<'a>(&self, urls: &'a [String]) -> Vec<&'a String> {
+    /// the proxy continues to try rather than hard-failing. The second
+    /// tuple element is `true` exactly in that fail-open case -- callers
+    /// that need to tell "genuinely healthy" apart from "nothing is
+    /// healthy, trying anyway" (issue #374) should check it rather than
+    /// re-deriving health from the returned list, which can't make that
+    /// distinction on its own. Deliberately does **not** offer a second,
+    /// independent way to ask "is this URL really healthy" instead (e.g. a
+    /// second call to [`Self::is_healthy`] on the same URL within one
+    /// request) -- `is_healthy`'s half-open probe promotion is stateful and
+    /// only fires once per ejection cycle, so a second call for the same
+    /// URL in the same request would see the *first* call's side effect
+    /// and silently disagree with it.
+    pub fn filter_healthy<'a>(&self, urls: &'a [String]) -> (Vec<&'a String>, bool) {
         let healthy: Vec<&String> = urls.iter().filter(|u| self.is_healthy(u)).collect();
         if healthy.is_empty() {
-            urls.iter().collect()
+            (urls.iter().collect(), true)
         } else {
-            healthy
+            (healthy, false)
         }
     }
 
@@ -1195,9 +1206,11 @@ mod tests {
             },
         );
 
-        // filter_healthy must return all when all are down (fail-open).
-        let result = reg.filter_healthy(&urls);
+        // filter_healthy must return all when all are down (fail-open), and
+        // report that it did so via the second tuple element (#374).
+        let (result, fail_open) = reg.filter_healthy(&urls);
         assert_eq!(result.len(), 2);
+        assert!(fail_open, "fail_open must be true when every peer is down");
     }
 
     #[test]
@@ -1214,9 +1227,13 @@ mod tests {
         );
         // b is unknown — defaults to healthy
 
-        let result = reg.filter_healthy(&urls);
+        let (result, fail_open) = reg.filter_healthy(&urls);
         assert_eq!(result.len(), 1);
         assert_eq!(*result[0], "http://b:4000");
+        assert!(
+            !fail_open,
+            "fail_open must be false when at least one peer is genuinely healthy"
+        );
     }
 
     // ── override management ───────────────────────────────────────────────────
@@ -1557,8 +1574,12 @@ mod tests {
         let reg = UpstreamRegistry::new();
         let urls = vec!["http://a:4000".to_owned(), "http://b:4000".to_owned()];
         // No health status set → all optimistically healthy.
-        let healthy = reg.filter_healthy(&urls);
+        let (healthy, fail_open) = reg.filter_healthy(&urls);
         assert_eq!(healthy.len(), 2);
+        assert!(
+            !fail_open,
+            "optimistic-healthy is a real result, not a fail-open passthrough"
+        );
     }
 
     #[test]
@@ -1568,9 +1589,10 @@ mod tests {
         let url_b = "http://b:4000".to_owned();
         reg.statuses.entry(url_a.clone()).or_default().healthy = false;
         let urls = vec![url_a, url_b.clone()];
-        let healthy = reg.filter_healthy(&urls);
+        let (healthy, fail_open) = reg.filter_healthy(&urls);
         assert_eq!(healthy.len(), 1);
         assert_eq!(*healthy[0], url_b);
+        assert!(!fail_open);
     }
 
     // ── filter_healthy: all-unhealthy fail-open ───────────────────────────────
@@ -1584,12 +1606,16 @@ mod tests {
         reg.statuses.entry(url_a.clone()).or_default().healthy = false;
         reg.statuses.entry(url_b.clone()).or_default().healthy = false;
         let urls = vec![url_a.clone(), url_b.clone()];
-        let result = reg.filter_healthy(&urls);
+        let (result, fail_open) = reg.filter_healthy(&urls);
         // All unhealthy → fail-open: return all (try anyway).
         assert_eq!(
             result.len(),
             2,
             "fail-open: all must be returned when none healthy"
+        );
+        assert!(
+            fail_open,
+            "#374: callers must be able to tell this was fail-open"
         );
     }
 

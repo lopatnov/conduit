@@ -244,7 +244,7 @@ fn full_cfg_to_result(
         .collect();
 
     // Filter to healthy upstreams; fail-open when all are down.
-    let healthy = upstream_health.filter_healthy(&all_urls);
+    let (healthy, _fail_open) = upstream_health.filter_healthy(&all_urls);
     let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
 
     if urls.is_empty() {
