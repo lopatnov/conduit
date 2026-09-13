@@ -1595,3 +1595,141 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   (`conduit-upstream`/`conduit-proxy-http`, #142/#143) are about to touch next — worth a
   deliberate check during that extraction rather than a blind merge, not a reason to avoid
   doing the feature work now.
+
+### Released v1.4.0 (2026-09-05)
+
+> Backfilled 2026-09-13 — this entry existed on the migration branch's own copy of
+> `CLAUDE.md` but was never ported to `main`'s, leaving two later entries in this same
+> file (PR #386's session log) with dangling references to "the v1.4.0 release entry
+> above" that didn't actually exist here. Content below is unchanged from the migration
+> branch's original.
+
+- User asked to release whatever was on `main` as `v1.4.0`. `main` was 5 commits ahead of
+  the last tag (`v1.3.0`): 3 real fixes (#343 CORS `credentials:true` without an origins
+  allowlist — CWE-942; #344 forward-auth letting a client-forged identity header survive
+  when the auth service doesn't return it; #345 Redis rate-limiter TTL-leak race between
+  `INCR`/`EXPIRE`), plus #342 (ACME-challenge routing gated on the `acme` feature) and #346
+  (a Dependabot Actions-group bump) — all already individually reviewed and merged in
+  earlier sessions (see the "PR #152 backlog sweep" entry above), this was pure
+  version-bump bookkeeping, not new feature work.
+- **[PR #361](https://github.com/lopatnov/conduit/pull/361)
+  `chore: bump version to 1.4.0`** (3 commits, squash-merged `af899e5` on `main`) — the
+  usual 4-artifact lockstep (`Cargo.toml`/`Cargo.lock`/`npm/package.json`/
+  `docs/{benchmarks,cli,deployment}.md`) plus `CHANGELOG.md`, which already had an accurate
+  `[Unreleased]` section describing exactly these fixes (added in an earlier session,
+  ahead of this repo's own established lockstep convention catching up to it) — converted
+  to a `[1.4.0]` entry. Two CodeRabbit/Gitar follow-ups fixed before merge: the new
+  `[1.4.0]` heading had no matching link-reference definition (and `[Unreleased]`'s own
+  link was stale since 1.2.0) — fixed; a third comment asking to backfill the *missing*
+  `[1.3.0]` entry (a pre-existing gap unrelated to this PR) was declined with reasoning and
+  the thread resolved, rather than scope-creeping a version bump into a changelog
+  archaeology exercise.
+  `security-engineer` PASSed all three commits (confirmed a genuine no-op version/docs
+  bump with zero `.rs` changes, and separately spot-checked the actual diffs of #342-#346
+  by reading them directly rather than trusting the summary, since those are what's
+  actually being shipped).
+  **New process discovery**: `gh pr merge` failed with "the base branch policy prohibits
+  the merge" despite `gh api .../branches/main/protection` returning 404 ("not
+  protected") — `main` is governed by a **repository ruleset** (a separate, newer GitHub
+  mechanism from classic branch protection, checked via `gh api repos/.../rules/branches/
+  main`), which had `required_review_thread_resolution: true`. Replying to a review
+  thread (what this session's `coderabbit-reply`-style workflow already does) is not the
+  same as *resolving* it — resolution needs the GraphQL `resolveReviewThread` mutation
+  (`gh api graphql`), which this session hadn't been doing on top of replies. Worth adding
+  to the PR checklist: on any repo where this ruleset might be enabled, replying to a
+  thread doesn't clear this gate — check `gh pr view <n> --json mergeStateStatus` for
+  `BLOCKED` before assuming a PR with all-green CI is actually mergeable, and resolve
+  every thread via GraphQL, not just reply to it.
+- **Release pipeline**: tag `v1.4.0` pushed, [`release.yml` run
+  33988572421](https://github.com/lopatnov/conduit/actions/runs/33988572421) — all jobs
+  green (8 cross-compile targets × standard+full, 2 Docker image publishes, 2 Trivy scans,
+  build-provenance attestation, crates.io, npm, GitHub Release). Verified artifacts
+  directly rather than trusting the green checkmark alone: [GitHub Release
+  v1.4.0](https://github.com/lopatnov/conduit/releases/tag/v1.4.0) (not draft/prerelease,
+  all binaries + `SHA256SUMS.txt` present), `crates.io/api/v1/crates/lopatnov-conduit`
+  (`newest_version`/`max_version`/`default_version` all `1.4.0`, `yanked: false` —
+  note: crates.io's API silently returns an empty body without a `User-Agent` header, not
+  an error — needed one to actually see the response), `registry.npmjs.org/@lopatnov/
+  conduit/latest` (`1.4.0`). Docker manifests not independently pulled (no `docker` CLI in
+  this environment and the `gh` token lacked `read:packages` scope for the GHCR API) — relied
+  instead on the pipeline's own two Trivy vulnerability-scan jobs passing, which requires
+  actually pulling and scanning the just-pushed `:1.4.0`/`:1.4.0-full` images, as sufficient
+  indirect confirmation they exist and are valid.
+- **Process note on CI-wait pacing**: repeatedly polled `gh pr checks`/`gh run view`
+  directly via short `ScheduleWakeup` cycles for both the PR's CI matrix and the release
+  pipeline before switching to the `Monitor` tool with a poll-loop script — the direct
+  polling worked but was inefficient (many short wakeups). A first `Monitor` attempt for
+  the release pipeline had a real bug (`select(.conclusion != null ...)` fired false
+  "failure" alarms on jobs still `in_progress`, since GitHub's API returns `""` not `null`
+  for an unset conclusion) — caught before actually reacting to the false alarm, fixed to
+  `select(.status == "completed" and .conclusion != "success" ...)`. For any future
+  multi-minute CI/pipeline wait, prefer `Monitor` with a corrected exit-on-completion loop
+  from the start over a chain of `ScheduleWakeup` polls.
+
+### Released v1.5.0 (2026-09-13)
+
+- **User's explicit call**: `main` and the Conduit 2.0 migration branch
+  (`claude/cargo-workspace-features-23qxfr`) have diverged enough that continuing to
+  develop both is no longer worth the merge cost — ship whatever's on `main` now as one
+  clean minor release, then freeze `main` (no further changes) until the migration branch
+  replaces it wholesale.
+- **[PR #410](https://github.com/lopatnov/conduit/pull/410) `chore: bump version to
+  1.5.0`** (squash-merge `2180fcf`) — the usual 4-artifact lockstep plus a new
+  `CHANGELOG.md` `[1.5.0]` entry for the 10 commits since `v1.4.0`: a real
+  `schema/conduit.schema.json` bug fix (`middleware[].type` enum missing `"wasm"`, from
+  #382's Step 1c audit fix), the new Node.js/Python worker-pool recipe (#386), and the
+  `fallback.byAccept` docs fix (#405). Routine Dependabot patch bumps (indexmap, rcgen,
+  async-compression) omitted from the changelog per its existing convention.
+  `security-engineer` PASSed (confirmed via `git diff --stat` that only the 7 expected
+  files changed, and that `Cargo.lock`'s only diff hunk is the root package's own version
+  line — no dependency drift riding along).
+  **Real verification incident, not a code problem**: two `build-validator` agents were
+  spawned back-to-back without `isolation: "worktree"` (a repeat of the exact class of
+  mistake already logged in `.claude/rules/index.md` — this time for a *nominally
+  read-only* agent, not a write-heavy one) and raced on the shared checkout, each reporting
+  RED with confusing, non-reproducible failures — one even reported `conduit_ratelimit`/
+  `conduit_limits` crate-not-found errors that only make sense on the *migration* branch,
+  not on `main` or this release branch. Diagnosed by checking the shared checkout's actual
+  state directly (clean, correctly on `main`, no real corruption — the confusion was
+  entirely in the racing agents' own transient cross-contamination) and then getting a
+  decisive, trustworthy answer by cloning the exact release commit fresh into WSL (a
+  genuinely separate, uncontended Linux environment the user had just installed a Rust
+  toolchain into) and running the full suite there in one atomic shot: **exit 0, all 34
+  test binaries reporting 0 failed**, 1109 lib tests + every integration suite green. Every
+  individual test that had "failed" in the racing agents' reports also passed cleanly every
+  time when re-run in isolation on Windows — textbook resource-contention flakiness, not a
+  regression from a docs+version-string-only diff. Saved as a feedback memory
+  (`feedback_build_validator_checkout_race.md`) so this doesn't recur.
+- **One CodeQL "Analyze (actions)" job failed on PR #410**, unrelated to its content (the
+  diff touches zero workflow files) — not a required status check for this branch (no
+  `required_status_checks` rule exists for `main`, confirmed via `gh api repos/.../rules/
+  branches/main`), and the specific run couldn't be re-triggered through normal means
+  (fired via GitHub's own code-scanning default-setup "dynamic" trigger, which rejects
+  both single-job and whole-run reruns). Merged past it with the reasoning recorded in the
+  merge commit message rather than silently ignoring a red check.
+- **Release pipeline**: tag `v1.5.0` pushed → [`release.yml` run
+  34750169582](https://github.com/lopatnov/conduit/actions/runs/34750169582) — succeeded.
+  Verified artifacts directly: [GitHub Release
+  v1.5.0](https://github.com/lopatnov/conduit/releases/tag/v1.5.0) (not draft/prerelease,
+  all 8 target binaries + `-full` variants + `SHA256SUMS.txt` present),
+  `crates.io/api/v1/crates/lopatnov-conduit` (`newest_version`/`max_version` `1.5.0`,
+  not yanked), `registry.npmjs.org/@lopatnov/conduit/latest` (`1.5.0`).
+- **GitHub Release descriptions backfilled for all 10 published releases** (`v0.2.0`,
+  `v0.3.0`, `v1.0.0`, `v1.1.0`, `v1.1.1`, `v1.1.2`, `v1.2.0`, `v1.3.0`, `v1.4.0`, `v1.5.0`)
+  — every one had nothing but GitHub's own auto-generated "What's Changed" raw PR list, no
+  human-readable summary of what actually changed. User originally asked only about
+  `v1.3.0`/`v1.4.0`/`v1.5.0` (pointed out directly, having noticed on the real [Releases
+  page](https://github.com/lopatnov/conduit/releases) rather than in this file), then asked
+  whether backfilling the remaining 7 was worth the effort — judged easy, did all of them.
+  `v1.3.0` also had no `CHANGELOG.md` `[1.3.0]` entry at all to draw from (a pre-existing
+  gap from PR #361's review, deliberately left alone at the time rather than scope-creeping
+  a version bump into changelog archaeology) — wrote a short one from scratch by reading
+  the actual merged PRs (#298 log-injection sanitization, #299 `tls.versions`/`ciphers`
+  hard-rejection, #296 DNS-resolution caching, #263 CLI UX fix). `v1.4.0`/`v1.5.0`
+  summaries condensed from their existing `CHANGELOG.md` entries; the other 7 (pre-dating
+  `CHANGELOG.md`'s own existence) written from scratch by reading each release's actual
+  merged PR list. Each release's existing "What's Changed" PR list kept intact, with a
+  short `## Summary` prepended above it via `gh release edit --notes-file` (had to pass
+  `--repo lopatnov/conduit` explicitly — running from a scratch directory outside the git
+  checkout otherwise silently no-ops the edit despite `gh` exiting 0 and printing nothing
+  that reads as an error).
