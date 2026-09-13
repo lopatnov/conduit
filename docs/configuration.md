@@ -1272,7 +1272,21 @@ fallback:
 | `body`     | any    | —       | Response body (string or JSON object)                               |
 | `status`   | number | `200`   | HTTP status code                                                    |
 | `headers`  | object | —       | Response headers to set                                             |
-| `byAccept` | object | —       | Content-type-aware rules keyed by Accept type (`html`, `json`, `*`) |
+| `byAccept` | object | —       | Content-type-aware rules keyed by Accept type (see key matching below) |
+
+`byAccept` keys are matched against the request's `Accept` header (the header value is
+lowercased before matching; a configured key like `xml` is matched case-sensitively
+against it, so a literal-substring key should be written in lowercase), checked in the
+order they're defined, first match wins:
+
+| Key            | Matches when `Accept` contains |
+| -------------- | ------------------------------- |
+| `html`         | `text/html`                     |
+| `json`         | `application/json`              |
+| `text`         | `text/plain` or `text/`         |
+| `image`        | `image/`                        |
+| any other key  | the key itself, as a literal substring (e.g. `xml` matches `application/xml`) |
+| `*`            | wildcard fallback, checked only after every other key has been tried |
 
 ---
 
