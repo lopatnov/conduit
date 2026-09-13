@@ -51,6 +51,7 @@ lopatnov-conduit-script-rhai         = { path = "crates/conduit-script-rhai", ve
 lopatnov-conduit-plugin-wasm         = { path = "crates/conduit-plugin-wasm", version = "2.0.0" }
 lopatnov-conduit-middleware          = { path = "crates/conduit-middleware", version = "2.0.0" }
 lopatnov-conduit-k8s                 = { path = "crates/conduit-k8s", version = "2.0.0" }
+lopatnov-conduit-upstream            = { path = "crates/conduit-upstream", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -411,6 +412,19 @@ lopatnov-conduit-redirects.workspace         = true
 # root-crate dependency anymore, since this is the only crate that calls into
 # either.
 lopatnov-conduit-middleware.workspace        = true
+# Mandatory, no `[features]` table at all — upstream selection/health
+# tracking is always-compiled core proxy functionality (issue #114/#142),
+# not an optional Cargo feature like most sibling extractions — so there is
+# no forwarding root-crate feature to gate this behind, unlike every entry
+# above. Owns `LoadBalanceStrategy`/`ProxyTarget`/`WeightedTarget`/
+# `UpstreamGroup`/`UpstreamHealthCheck`/`UpstreamTlsConfig`/
+# `OutlierDetectionConfig` and the real `health::UpstreamRegistry`/
+# `strategy::LoadBalancingStrategy` dispatch. `ProxyConfig`/`ProxyRouteTarget`
+# and the four functions that convert them into target-URL lists
+# (`target_urls`/`weighted_targets`/`target_urls_from_proxy`/
+# `strip_prefix_enabled`) deliberately stayed in this crate's own
+# `src/proxy/upstream.rs` — see that file's doc comment for why.
+lopatnov-conduit-upstream.workspace           = true
 
 # --- Config & parsing ---
 serde.workspace      = true

@@ -2936,6 +2936,7 @@ dependencies = [
  "lopatnov-conduit-static",
  "lopatnov-conduit-tcp",
  "lopatnov-conduit-upload",
+ "lopatnov-conduit-upstream",
  "opentelemetry",
  "p256",
  "pingora-cache",
@@ -3352,6 +3353,17 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "lopatnov-conduit-upstream"
+version = "2.0.0"
+dependencies = [
+ "dashmap",
+ "reqwest",
+ "serde",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

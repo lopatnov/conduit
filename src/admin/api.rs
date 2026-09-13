@@ -33,6 +33,45 @@ fn subtle_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.ct_eq(b).into()
 }
 
+/// Resolve `(healthCheck config, target URLs)` pairs for every `proxy: {}`
+/// route (the legacy map form) that has `healthCheck` configured, across
+/// every site.
+///
+/// Lives in the root crate, not `crates/conduit-upstream` — it needs
+/// `AppConfig`/`ProxyConfig`/`ProxyRouteTarget`, root-only types not yet
+/// extracted (a later migration phase — #143/#144). `conduit_upstream`'s
+/// `spawn_health_checks`/`spawn_connection_warmup` take this narrower,
+/// already-resolved slice instead of `&AppConfig` directly — see issue #142
+/// and `crates/conduit-upstream/src/health.rs`'s own doc comment. The same
+/// pattern `conduit-hotreload`'s `build_watch_config` call site
+/// (`config.sites.iter().map(...)`, a few lines above `start()`'s hot-reload
+/// block) already uses for its own analogous problem — this one is just a
+/// deeper extraction (sites → routes → route targets) instead of a flat
+/// per-site map, so it earns its own named helper rather than being inlined
+/// at each of the three call sites.
+fn health_check_routes(
+    config: &crate::config::schema::AppConfig,
+) -> Vec<(&crate::config::schema::UpstreamHealthCheck, Vec<String>)> {
+    use crate::config::schema::{ProxyConfig, ProxyRouteTarget};
+
+    config
+        .sites
+        .iter()
+        .filter_map(|site| match &site.proxy {
+            Some(ProxyConfig::Routes(routes)) => Some(routes.values()),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|route_target| {
+            let ProxyRouteTarget::Full(cfg) = route_target else {
+                return None;
+            };
+            let hc = cfg.health_check.as_ref()?;
+            Some((hc, crate::proxy::upstream::target_urls(route_target)))
+        })
+        .collect()
+}
+
 // ── Typed error responses ─────────────────────────────────────────────────────
 
 /// Typed error for Admin API handlers.
@@ -161,9 +200,13 @@ impl BackgroundService for AdminApiService {
         // Spawn upstream health check tasks for every route that has healthCheck configured.
         {
             let config = self.state.config.load();
-            health::spawn_health_checks(self.state.upstream_health.clone(), &config);
+            let routes = health_check_routes(&config);
+            health::spawn_health_checks(
+                self.state.upstream_health.clone(),
+                routes.iter().map(|(hc, urls)| (*hc, urls.as_slice())),
+            );
             // Warm up connection pools for routes with prewarmConnections set.
-            health::spawn_connection_warmup(&config);
+            health::spawn_connection_warmup(routes.iter().map(|(hc, urls)| (*hc, urls.as_slice())));
         }
 
         // Connect every configured Redis-backed proxy cache up front (issue
@@ -387,7 +430,13 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
     }
 
     // Spawn health-check tasks for any newly-configured routes.
-    health::spawn_health_checks(state.upstream_health.clone(), &new_config);
+    {
+        let routes = health_check_routes(&new_config);
+        health::spawn_health_checks(
+            state.upstream_health.clone(),
+            routes.iter().map(|(hc, urls)| (*hc, urls.as_slice())),
+        );
+    }
 
     // Connect any Redis-backed proxy cache URL introduced by this reload
     // (issue #330) -- before the config swap below, so there's no window
