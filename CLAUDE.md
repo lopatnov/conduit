@@ -3475,3 +3475,82 @@ recurrence of this specific (now-disproven) mechanism.
   commit (`67a1a6e`, no PR — matches this branch's established convention for `.claude/`
   tooling changes) added the `/cleanup` exemption for `.reference/` to this branch's own
   copy of `cleanup.md`, mirroring the rule already merged to `main`.
+
+### Реализовано в сессии 2026-09-13 (Phase 4.5 — #249 conduit-k8s, closes Phase 4; plus #405/#406 tail on `main`)
+
+- **`.reference/` расширен по прямому запросу пользователя** ("странно что не скачиваешь
+  то, что мы используем") — склонированы `axum` (tag `axum-v0.8.9`), `kube` (tag `4.2.0`),
+  `k8s-openapi` (tag `v0.28.0`), `rhai` (tag `v1.26.0`), `wasmtime` (tag `v48.0.1`,
+  `--no-recurse-submodules`, ~118 MB) на версии, реально запиненные в `Cargo.lock`.
+  [PR #406](https://github.com/lopatnov/conduit/pull/406) на `main` (docs-only,
+  `CLAUDE.md`'s reference table), `security-engineer` PASS, синхронизировано в эту ветку
+  merge-коммитом `ce6f84e`. Это же кэширование `kube`/`k8s-openapi` оказалось прямо кстати
+  для следующего пункта.
+- **[PR #405](https://github.com/lopatnov/conduit/pull/405) на `main`** (низкорисковые
+  находки Step 1c аудита `conduit-static` от предыдущего firing'а) прошёл через реальный
+  `security-engineer` HOLD → фикс → повторный PASS цикл на **отдельном** PR
+  ([#399](https://github.com/lopatnov/conduit/pull/399), issues #374/#375) — тест
+  `slow_start_exemption_covers_the_retry_candidate_list_on_hash_routes` оказался
+  тавтологичным (client IP `"127.0.0.1"` хешируется на тот же пир, который тест исключает
+  через ramp-фильтр; `retry_state_for`'s безусловный anchor-fallback подставлял его в
+  `retry.urls` независимо от того, работает ли фикс #375). Пофикшено сменой IP на
+  `"10.0.0.1"` (хеш → другой пир) + sanity-check assert, подтверждено негативным
+  контролем в обе стороны, `security-engineer` перепроверил и подтвердил на новом SHA.
+  Оба PR (#399, #405) смерджены; #405 потребовал ручного портирования тестов в
+  `crates/conduit-static/src/roots.rs` при синке `main` в эту ветку — наивный `git merge`
+  текстово вернул тесты в `src/proxy/router.rs`, где `find_best_mapped_prefix` там больше
+  не существует (перенесён в #139). Найдено и исправлено до пуша.
+  Процессная находка: два `build-validator`-агента, запущенные без `isolation: "worktree"`
+  подряд, поймали гонку за общий чекаут — один сам вызвал `git stash` (несмотря на
+  read-only мандат) и стешировал незакоммиченную правку conductor'а; ничего не потеряно
+  (`git stash list` нашёл и восстановил), но стоило цикла ре-диагностики. Залогировано в
+  `.claude/logs/integrity-audit.md`.
+- **[PR #407](https://github.com/lopatnov/conduit/pull/407)
+  `feat(workspace): extract conduit-k8s crate (#249)`** (squash-merge `298bf15`, issue
+  #249 CLOSED) — **закрывает Phase 4 целиком** (#138-141 уже были закрыты, #249 был
+  последним). Делегировано `crate-extractor` с уже разрешённым `architect`-планом из тела
+  issue (не заново выведенным) — новый trait `CrdConfigBuilder` (`type Site`, `type
+  Config`, `site_from_spec`, `build_config`) снимает зависимость `KubernetesProvider`/
+  `build_app_config` от `AppConfig`/`SiteConfig` (иначе цикл зависимостей), root
+  реализует его на zero-sized `ConduitSchema` и биндит `pub type KubernetesProvider =
+  conduit_k8s::KubernetesProvider<ConduitSchema>` — тот же паттерн "generic-in-crate,
+  bound-by-type-alias-in-root", что уже у `conduit-config-core`'s `Provider<C>` и
+  `conduit-upload`'s `UploadConfigSource`. `PhantomData<fn() -> B>` (не голый
+  `PhantomData<B>`) держит `KubernetesProvider<B>` безусловно `Send + Sync` независимо от
+  `B`. `kube`/`k8s-openapi`/`schemars`/`futures` (самое тяжёлое дерево зависимостей одной
+  фичи во всём проекте) теперь зависимости нового крейта, а не 4 отдельных optional-поля
+  корня — `kubernetes = ["dep:kube", ...]` схлопнулся в `kubernetes =
+  ["dep:lopatnov-conduit-k8s"]`.
+  **Единственное отклонение от плана, явно задокументированное**: иллюстративный сниппет
+  плана показывал прямой `pub use conduit_k8s::{..., build_app_config,
+  spec_to_site_config};` — не компилируется, т.к. generic `build_app_config<B>` требует
+  явный `::<ConduitSchema>` turbofish, которого у исходных non-generic call site'ов
+  (включая собственные тесты файла) никогда не было. Реализован собственный fallback
+  плана (recipe rule 3): обе функции — тонкие non-generic wrapper'ы в root facade.
+  Тесты разделены по тому, что каждая половина может тестировать без цикла зависимостей:
+  3 schema-независимых теста переехали в новый крейт (+1 новый на error-attribution путь,
+  ранее не изолированный), 9 schema-специфичных остались в root (полное покрытие
+  сохранено, у security-engineer'а независимая цифра — 16 тестов всего, не 12→13 как
+  ошибочно посчитано в теле PR — косметика, не блокер).
+  Верификация: `feature-matrix-runner` 72/72 each-feature + 251/251 depth-2 powerset;
+  `footprint-auditor` подтвердил ожидаемый ноль-дельта для `--no-default-features`
+  (kube и так были gated и раньше) и чистый +8 строк crate-boundary overhead для
+  `--features kubernetes` (без новых/promoted зависимостей — реальная ценность здесь не в
+  весе сегодня, а в организации кода и будущей переиспользуемости `conduit-k8s` отдельно).
+  `security-engineer` независимо перепроверил (не поверил самоотчёту): построчный дифф
+  control-flow до/после, `cargo check`/`test`/`clippy` реально прогнаны агентом, grep на
+  `unsafe` (ноль), `scripts/check-layer-boundaries.sh` чисто.
+  **Один реальный, но pre-existing баг найден CodeRabbit'ом**: watch loop's `Ok(_) =>
+  handle_watch_event(...)` реагирует на КАЖДОЕ kube-runtime `Init`/`InitApply` событие при
+  начальном resync'е, не только на `InitDone` — для M CRD это M+2 избыточных
+  list+rebuild+send циклов на каждый старт/recovery. Подтверждено через `git log`/`git
+  show`, что паттерн существовал в файле ещё до этого PR (перенесён дословно, не внесён
+  экстракцией) — заведено отдельно как
+  [#408](https://github.com/lopatnov/conduit/issues/408) с готовым фиксом от ревьюера,
+  не исправлено inline (сохраняет diff экстракции чистым).
+- Итог Phase 4 (все закрыты): #138 conduit-compression, #139 conduit-static, #140
+  conduit-hotreload/conduit-metrics/conduit-redirects, #141 conduit-middleware/
+  conduit-script-rhai/conduit-plugin-wasm, #249 conduit-k8s. Следующее: Phase 5 (#142
+  conduit-upstream, #143 conduit-proxy-http, #144 — сделать `proxy` опциональным, заявленная
+  веха миграции) + параллельный конфиг-schema-декомпозиции трек (#314/#315/#316/#222),
+  оба ещё не начаты.
