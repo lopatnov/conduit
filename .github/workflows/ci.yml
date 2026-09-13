@@ -234,6 +234,257 @@ jobs:
               "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" -d "$payload" > /dev/null
           fi
 
+  # ── Performance report: informational throughput/latency, one profile ───────
+  # Companion to the footprint job above — that one catches silent binary-size
+  # regressions, this one catches silent throughput/latency regressions the
+  # same way. Deliberately informational only (not a required status check —
+  # nothing in this repo's branch ruleset names this job), since a single
+  # shared CI runner's wrk/oha numbers are inherently noisier run-to-run than
+  # a binary-size measurement; a hard gate here would produce false-positive
+  # reds. Runs one scenario (reverse-proxy passthrough, matching
+  # docs/benchmarks.md's own "Reverse Proxy Passthrough" table) against the
+  # `default` feature profile — the one most users actually run, and the one
+  # under discussion when this job was added (a Step 1c-style investigation
+  # found `default`'s footprint had grown ~21% for identical functionality
+  # since before the Conduit 2.0 workspace migration, #114 — this job exists
+  # so a distributed regression like that gets caught per-PR instead of only
+  # by an occasional manual audit).
+  #
+  # `oha` (https://github.com/hatoo/oha) instead of `wrk` (which the docs'
+  # manual methodology uses): a single pinned static Linux binary needs no
+  # apt/luarocks build step, and its `--output-format json` `metrics` object
+  # is explicitly documented as "CI friendly statistics" — stable field names
+  # (`requests_per_sec`, `latency_ms.p50/p95/p99`, `success_rate`) instead of
+  # regex-scraping wrk's human-oriented text output.
+  #
+  # Builds and benchmarks the PR head, then (same job, sequential — avoids a
+  # second full matrix job just for one extra data point) checks out and
+  # benchmarks the PR's base commit for a head-vs-base delta. Posts via the
+  # same plain-curl + GITHUB_TOKEN pattern as the footprint job, own comment
+  # (own marker) so the two reports don't collide.
+  performance:
+    name: Performance report
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable
+        with:
+          toolchain: stable
+
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00  # v6.0.0
+        with:
+          go-version: "1.24"
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: performance
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: Install oha (load generator)
+        run: |
+          set -euo pipefail
+          curl -sSL -o /usr/local/bin/oha \
+            https://github.com/hatoo/oha/releases/download/v1.16.0/oha-linux-amd64
+          chmod +x /usr/local/bin/oha
+          oha --version
+
+      - name: Write minimal Go echo upstream
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/bench-upstream
+          cat > /tmp/bench-upstream/main.go <<'GOEOF'
+          package main
+
+          import (
+              "net/http"
+              "time"
+          )
+
+          func main() {
+              body := []byte(`{"status":"ok","ts":0}`)
+              http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+                  w.Header().Set("Content-Type", "application/json")
+                  w.Write(body)
+              })
+              srv := &http.Server{Addr: ":4000", ReadTimeout: 5 * time.Second}
+              srv.ListenAndServe()
+          }
+          GOEOF
+          cd /tmp/bench-upstream && go mod init bench-upstream && go build -o /tmp/bench-upstream-bin .
+
+      # Same "find associated PR" reasoning as the footprint job above (#114
+      # sub-issue PRs target the migration branch via `push`, not
+      # `pull_request`) — additionally resolves the PR's base SHA so the
+      # measurement step below has something to diff the head build against.
+      - name: Find associated PR + base SHA
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "number=$EVENT_PR_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "base_sha=$EVENT_BASE_SHA" >> "$GITHUB_OUTPUT"
+          else
+            pr_json=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/pulls?head=$REPO_OWNER:$REF_NAME&state=open")
+            echo "number=$(echo "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['number'] if d else '')")" >> "$GITHUB_OUTPUT"
+            echo "base_sha=$(echo "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['base']['sha'] if d else '')")" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Measure PR head and base
+        id: bench
+        env:
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+
+          start_upstream() {
+            /tmp/bench-upstream-bin &
+            UPSTREAM_PID=$!
+            for _ in $(seq 1 30); do
+              curl -sf http://127.0.0.1:4000/ > /dev/null 2>&1 && return 0
+              sleep 0.5
+            done
+            echo "upstream never became ready" >&2; exit 1
+          }
+
+          start_conduit() {
+            printf '{ "port": 8080, "proxy": "http://127.0.0.1:4000" }' > /tmp/bench-conduit.json
+            ./target/release/conduit -c /tmp/bench-conduit.json &
+            CONDUIT_PID=$!
+            for _ in $(seq 1 30); do
+              curl -sf http://127.0.0.1:8080/__health__ > /dev/null 2>&1 && return 0
+              sleep 0.5
+            done
+            echo "conduit never became ready" >&2; exit 1
+          }
+
+          measure() {
+            local label="$1"
+            cargo build --release -q
+            start_upstream
+            start_conduit
+            oha -z 10s -c 50 --no-tui --output-format json http://127.0.0.1:8080/ > "/tmp/oha-${label}.json"
+            kill "$CONDUIT_PID" "$UPSTREAM_PID" 2>/dev/null || true
+            wait "$CONDUIT_PID" "$UPSTREAM_PID" 2>/dev/null || true
+
+            python3 -c "
+          import json
+          m = json.load(open('/tmp/oha-${label}.json'))['metrics']
+          print(f'${label}_rps={round(m[\"requests_per_sec\"])}')
+          print(f'${label}_p50={round(m[\"latency_ms\"][\"p50\"], 2)}')
+          print(f'${label}_p99={round(m[\"latency_ms\"][\"p99\"], 2)}')
+          print(f'${label}_ok={round(m[\"success_rate\"] * 100, 1)}')
+          " >> "$GITHUB_OUTPUT"
+          }
+
+          measure head
+
+          if [ -n "$BASE_SHA" ]; then
+            git fetch --depth 1 origin "$BASE_SHA" 2>/dev/null || true
+            git checkout --quiet "$BASE_SHA"
+            measure base
+          fi
+
+      - name: Post/update PR comment
+        if: steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          MARKER: "<!-- performance-report -->"
+          HEAD_RPS: ${{ steps.bench.outputs.head_rps }}
+          HEAD_P50: ${{ steps.bench.outputs.head_p50 }}
+          HEAD_P99: ${{ steps.bench.outputs.head_p99 }}
+          HEAD_OK: ${{ steps.bench.outputs.head_ok }}
+          BASE_RPS: ${{ steps.bench.outputs.base_rps }}
+          BASE_P50: ${{ steps.bench.outputs.base_p50 }}
+          BASE_P99: ${{ steps.bench.outputs.base_p99 }}
+          BASE_OK: ${{ steps.bench.outputs.base_ok }}
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import json, os
+
+          def f(name):
+              v = os.environ.get(name, '')
+              return float(v) if v else None
+
+          head = {'rps': f('HEAD_RPS'), 'p50': f('HEAD_P50'), 'p99': f('HEAD_P99'), 'ok': f('HEAD_OK')}
+          base = {'rps': f('BASE_RPS'), 'p50': f('BASE_P50'), 'p99': f('BASE_P99'), 'ok': f('BASE_OK')}
+
+          def delta(k, higher_is_better):
+              if base[k] is None or base[k] == 0:
+                  return '—'
+              pct = (head[k] - base[k]) / base[k] * 100
+              arrow = '▲' if pct > 0 else ('▼' if pct < 0 else '—')
+              good = (pct > 0) == higher_is_better
+              sign = '+' if pct > 0 else ''
+              flag = ' ⚠️' if abs(pct) >= 10 and not good else ''
+              return f'{arrow} {sign}{pct:.1f}%{flag}'
+
+          lines = ['<!-- performance-report -->', '', '## ⚡ Performance report', '',
+                   '_Reverse-proxy passthrough, \`default\` feature profile, \`oha -z 10s -c 50\` — informational only, not a merge gate; single shared CI runner, treat as a trend signal, not a lab measurement._', '']
+
+          if base['rps'] is None:
+              lines += ['Metric | PR head', '---|---',
+                        f\"Requests/sec | {head['rps']:.0f}\",
+                        f\"p50 latency | {head['p50']:.2f} ms\",
+                        f\"p99 latency | {head['p99']:.2f} ms\",
+                        f\"Success rate | {head['ok']:.1f}%\",
+                        '', '_No base commit measured (couldn'\"'\"'t resolve this PR'\"'\"'s base SHA) — nothing to diff against._']
+          else:
+              lines += ['Metric | Base | PR head | Δ', '---|---|---|---',
+                        f\"Requests/sec | {base['rps']:.0f} | {head['rps']:.0f} | {delta('rps', True)}\",
+                        f\"p50 latency | {base['p50']:.2f} ms | {head['p50']:.2f} ms | {delta('p50', False)}\",
+                        f\"p99 latency | {base['p99']:.2f} ms | {head['p99']:.2f} ms | {delta('p99', False)}\",
+                        f\"Success rate | {base['ok']:.1f}% | {head['ok']:.1f}% | {delta('ok', True)}\"]
+
+          with open('/tmp/comment-body.md', 'w') as fh:
+              fh.write('\n'.join(lines) + '\n')
+          "
+
+          existing_id=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
+            | python3 -c "
+          import json, os, sys
+          data = json.load(sys.stdin)
+          marker = os.environ['MARKER']
+          for c in data:
+              if marker in c['body']:
+                  print(c['id'])
+                  break
+          ")
+
+          payload=$(python3 -c "
+          import json
+          with open('/tmp/comment-body.md') as f:
+              print(json.dumps({'body': f.read()}))
+          ")
+
+          if [ -n "$existing_id" ]; then
+            curl -sS -X PATCH -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/issues/comments/$existing_id" -d "$payload" > /dev/null
+          else
+            curl -sS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" -d "$payload" > /dev/null
+          fi
+
   # ── Feature-gating isolation check (cargo-hack) ──────────────────────────────
   # Proves each optional feature actually compiles *in isolation* — the
   # default/all-features/standard-bundle jobs above only ever build feature
