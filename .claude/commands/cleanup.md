@@ -23,6 +23,20 @@ alongside the Dependabot hygiene check. Two independent passes — run whichever
    changes *and* you've confirmed those changes are already captured elsewhere, e.g. in the
    merged PR), then `git branch -D <branch>` for the now-redundant local ref. If a worktree's
    branch has an *open* PR or no PR at all, leave it — it may be in-progress work, not debris.
+   **Windows-specific recurring quirk (seen repeatedly under `.claude/worktrees/agent-*` and
+   this session's own scratchpad worktree paths, both deeply nested)**: `git worktree remove`
+   often succeeds at clearing git's own tracking (`git worktree list` stops showing the entry)
+   but fails to delete the actual directory with `error: failed to delete '<path>': Filename
+   too long` — a Windows MAX_PATH limitation on the long nested path, not a real lock. Two
+   fixes, try in order: (a) a plain `rm -rf <path>` moments later often just works (the
+   underlying files aren't actually locked, `git`'s own deletion routine is just pickier about
+   path length than a generic `rm`); (b) if `rm -rf` instead reports "Device or resource busy"
+   (distinct from "Filename too long" — this means a process genuinely still has a handle
+   open, most likely a lingering `cargo`/`rustc` child from whatever agent used that worktree)
+   confirm via `Get-CimInstance Win32_Process` (PowerShell) that no process's `CommandLine`
+   references the path before retrying — don't `rm -rf` past a genuinely-live process. A
+   leftover directory that resists both is safe to leave for a later pass; it costs disk space,
+   not correctness — `git worktree list`'s own bookkeeping is already clean either way.
 2. **WSL scratch clones** (see the `wsl-docker-linux-verification` project memory): a clone
    made under `~/verify` or similar for one-off CI-matching verification has no reason to
    persist once the check is done. Remove it the same session, not "next time someone
