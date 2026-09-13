@@ -2416,6 +2416,16 @@ proxy:
 }
 ```
 
+Per-route rate limiting also applies to routes matched via the advanced `routes[]`
+mechanism (`site.routes[*].proxy.rateLimit`), not just the `proxy` map shown above —
+each `routes[]` entry gets its own bucket, keyed by its position (`routes[0]`,
+`routes[1]`, ...). One consequence of the positional key: reordering `site.routes[]`
+entries across a hot reload can hand a route a bucket previously used by whatever
+entry occupied that position before — the same accepted trade-off as this codebase's
+existing "buckets aren't preserved across a config reload" behavior elsewhere. If this
+matters for a specific deployment, avoid reordering `routes[]` entries in a live config
+(appending/removing at the end is unaffected).
+
 ### Rate limit field reference
 
 | Field        | Type     | Default    | Description                                                                                                 |
