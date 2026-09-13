@@ -1274,8 +1274,10 @@ fallback:
 | `headers`  | object | —       | Response headers to set                                             |
 | `byAccept` | object | —       | Content-type-aware rules keyed by Accept type (see key matching below) |
 
-`byAccept` keys are matched against the request's `Accept` header (case-insensitive
-substring match), checked in the order they're defined, first match wins:
+`byAccept` keys are matched against the request's `Accept` header (the header value is
+lowercased before matching; a configured key like `xml` is matched case-sensitively
+against it, so a literal-substring key should be written in lowercase), checked in the
+order they're defined, first match wins:
 
 | Key            | Matches when `Accept` contains |
 | -------------- | ------------------------------- |
