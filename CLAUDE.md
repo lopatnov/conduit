@@ -1708,5 +1708,28 @@ release-бинарники, un-suffixed Docker-образ и riscv64gc cross-com
   both single-job and whole-run reruns). Merged past it with the reasoning recorded in the
   merge commit message rather than silently ignoring a red check.
 - **Release pipeline**: tag `v1.5.0` pushed → [`release.yml` run
-  34750169582](https://github.com/lopatnov/conduit/actions/runs/34750169582).
-  <!-- TODO: fill in final job/artifact verification once the pipeline completes -->
+  34750169582](https://github.com/lopatnov/conduit/actions/runs/34750169582) — succeeded.
+  Verified artifacts directly: [GitHub Release
+  v1.5.0](https://github.com/lopatnov/conduit/releases/tag/v1.5.0) (not draft/prerelease,
+  all 8 target binaries + `-full` variants + `SHA256SUMS.txt` present),
+  `crates.io/api/v1/crates/lopatnov-conduit` (`newest_version`/`max_version` `1.5.0`,
+  not yanked), `registry.npmjs.org/@lopatnov/conduit/latest` (`1.5.0`).
+- **GitHub Release descriptions backfilled for all 10 published releases** (`v0.2.0`,
+  `v0.3.0`, `v1.0.0`, `v1.1.0`, `v1.1.1`, `v1.1.2`, `v1.2.0`, `v1.3.0`, `v1.4.0`, `v1.5.0`)
+  — every one had nothing but GitHub's own auto-generated "What's Changed" raw PR list, no
+  human-readable summary of what actually changed. User originally asked only about
+  `v1.3.0`/`v1.4.0`/`v1.5.0` (pointed out directly, having noticed on the real [Releases
+  page](https://github.com/lopatnov/conduit/releases) rather than in this file), then asked
+  whether backfilling the remaining 7 was worth the effort — judged easy, did all of them.
+  `v1.3.0` also had no `CHANGELOG.md` `[1.3.0]` entry at all to draw from (a pre-existing
+  gap from PR #361's review, deliberately left alone at the time rather than scope-creeping
+  a version bump into changelog archaeology) — wrote a short one from scratch by reading
+  the actual merged PRs (#298 log-injection sanitization, #299 `tls.versions`/`ciphers`
+  hard-rejection, #296 DNS-resolution caching, #263 CLI UX fix). `v1.4.0`/`v1.5.0`
+  summaries condensed from their existing `CHANGELOG.md` entries; the other 7 (pre-dating
+  `CHANGELOG.md`'s own existence) written from scratch by reading each release's actual
+  merged PR list. Each release's existing "What's Changed" PR list kept intact, with a
+  short `## Summary` prepended above it via `gh release edit --notes-file` (had to pass
+  `--repo lopatnov/conduit` explicitly — running from a scratch directory outside the git
+  checkout otherwise silently no-ops the edit despite `gh` exiting 0 and printing nothing
+  that reads as an error).
