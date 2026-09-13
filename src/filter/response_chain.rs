@@ -118,7 +118,7 @@ impl ResponseFilterChain {
         if site.and_then(|s| s.server_timing).unwrap_or(false) {
             chain = chain.push(ServerTimingFilter {
                 start_time: req_ctx.start_time,
-                upstream_start: req_ctx.upstream_start,
+                upstream_start: req_ctx.proxy.upstream_start,
             });
         }
 
@@ -128,13 +128,14 @@ impl ResponseFilterChain {
         // (or retry budget is exhausted).  This allows Pingora to call
         // `should_serve_stale()` and serve a cached stale response on 5xx (#48).
         let stale_on_error = req_ctx
+            .proxy
             .proxy_cache_cfg
             .as_ref()
             .and_then(|c| c.stale_if_error_secs)
             .unwrap_or(0)
             > 0;
         chain = chain.push(RetryOnErrorFilter {
-            retry: req_ctx.retry.as_ref().map(|r| RetrySpec {
+            retry: req_ctx.proxy.retry.as_ref().map(|r| RetrySpec {
                 has_attempts_left: r.has_attempts_left(),
                 has_5xx_condition: r.has_condition("5xx"),
             }),
@@ -490,7 +491,7 @@ mod tests {
     }
 
     fn dummy_ctx() -> RequestCtx {
-        use crate::proxy::ctx::UpstreamTarget;
+        use crate::proxy::ctx::{ProxyReqState, UpstreamTarget};
         RequestCtx::new(
             0,
             UpstreamTarget::Proxy {
@@ -502,12 +503,7 @@ mod tests {
                 mirror_url: None,
                 upstream_tls: None,
             },
-            None,
-            None,
-            None,
-            false,
-            None,
-            None,
+            ProxyReqState::default(),
             None,
         )
     }
