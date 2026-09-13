@@ -1491,33 +1491,9 @@ mod tests {
 
     // find_best_mapped_prefix() (private helper of resolve_static_roots) and
     // its own unit tests moved to crates/conduit-static/src/roots.rs
-    // (issue #114/#139) — equivalent coverage now lives in that module's
-    // `static_roots_mapped_matches_prefix`/`static_roots_mapped_no_match_returns_empty`.
-
-    #[test]
-    fn mapped_prefix_rejects_non_boundary_match() {
-        // "/apiextra" must not match the "/api" prefix — a naive
-        // `path.starts_with(prefix)` (without requiring a `/` or exact
-        // match after it) would incorrectly treat these as the same route.
-        use indexmap::IndexMap;
-        let mut m = IndexMap::new();
-        m.insert("/api".to_string(), "./api-root".to_string());
-        assert!(find_best_mapped_prefix(&m, "/apiextra").is_none());
-    }
-
-    #[test]
-    fn mapped_prefix_longest_wins_among_nested_prefixes() {
-        // Two genuinely overlapping, non-root prefixes competing for the
-        // same path — the more specific ("/api/v2") must win over its own
-        // ancestor ("/api"), not just over the wildcard root.
-        use indexmap::IndexMap;
-        let mut m = IndexMap::new();
-        m.insert("/api".to_string(), "./api-root".to_string());
-        m.insert("/api/v2".to_string(), "./api-v2-root".to_string());
-        let (pfx, root) = find_best_mapped_prefix(&m, "/api/v2/users").unwrap();
-        assert_eq!(pfx, "/api/v2");
-        assert_eq!(root, "./api-v2-root");
-    }
+    // (issue #114/#139) — equivalent coverage (including the boundary-match
+    // and nested-prefix tests added by PR #405, merged in from `main`) now
+    // lives in that module's own test suite.
 
     // ── is_health_path ────────────────────────────────────────────────────────
 
