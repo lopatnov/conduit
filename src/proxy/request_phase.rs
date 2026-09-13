@@ -89,7 +89,7 @@ impl ConduitProxy {
     /// Record passive health (EWMA latency/`consecutive_5xx` via
     /// `record_request_latency`, outlier-detection ejection) and, when
     /// `connection_established` is `true`, the Prometheus per-upstream
-    /// stats for the peer `req_ctx.proxy_upstream_url` currently points at
+    /// stats for the peer `req_ctx.proxy.proxy_upstream_url` currently points at
     /// — before it's abandoned for a retry.
     ///
     /// Shared by all three retry-decision paths (5xx, connect-phase,
@@ -123,7 +123,7 @@ impl ConduitProxy {
         status: u16,
         connection_established: bool,
     ) {
-        let Some(url) = req_ctx.proxy_upstream_url.as_deref() else {
+        let Some(url) = req_ctx.proxy.proxy_upstream_url.as_deref() else {
             return;
         };
         let elapsed_us = req_ctx.start_time.elapsed().as_micros() as u64;
@@ -151,7 +151,11 @@ impl ConduitProxy {
                 .upstream_requests_total
                 .with_label_values(&[url, &status.to_string()])
                 .inc();
-            if let Some(upstream_secs) = req_ctx.upstream_start.map(|t| t.elapsed().as_secs_f64()) {
+            if let Some(upstream_secs) = req_ctx
+                .proxy
+                .upstream_start
+                .map(|t| t.elapsed().as_secs_f64())
+            {
                 self.state
                     .metrics
                     .upstream_latency_seconds
@@ -182,7 +186,7 @@ impl ConduitProxy {
         let Some(req_ctx_mut) = ctx.as_mut() else {
             return;
         };
-        if req_ctx_mut.proxy_upstream_url.is_none() {
+        if req_ctx_mut.proxy.proxy_upstream_url.is_none() {
             return;
         }
         // Record health/metrics for the failed peer BEFORE releasing its
@@ -190,7 +194,7 @@ impl ConduitProxy {
         // which release_conn_slot below clears.
         self.record_retry_failure_health(req_ctx_mut, config, status, true);
         release_conn_slot(req_ctx_mut, &self.state.upstream_health);
-        req_ctx_mut.upstream_start = None;
+        req_ctx_mut.proxy.upstream_start = None;
     }
 
     /// Check the retry budget and increment `retry_inflight` if a retry is allowed.
@@ -750,7 +754,7 @@ impl ConduitProxy {
     /// Per-route token-bucket rate limiting, applied after the site-level
     /// guard chain — once the route is known.
     ///
-    /// Reads `req_ctx.route_rate_limit`, stamped at routing time by whichever
+    /// Reads `req_ctx.proxy.route_rate_limit`, stamped at routing time by whichever
     /// matcher actually matched (`proxy` map or `routes[]` — see
     /// `router::RouteRateLimit`, issue #360). This replaced a second,
     /// post-routing path matcher (`router::find_route_rate_limit`, deleted)
@@ -768,7 +772,7 @@ impl ConduitProxy {
         req_ctx: &RequestCtx,
         site_label: &str,
     ) -> Result<bool> {
-        let Some(route_rl) = req_ctx.route_rate_limit.as_ref() else {
+        let Some(route_rl) = req_ctx.proxy.route_rate_limit.as_ref() else {
             return Ok(false);
         };
         let rl_cfg = &route_rl.config;
@@ -866,7 +870,7 @@ impl ConduitProxy {
     /// Priority-based load shedding (post-routing).
     ///
     /// When the site is above its priority threshold, low-priority routes
-    /// are shed with 503.  Priority is read from `req_ctx.route_priority`,
+    /// are shed with 503.  Priority is read from `req_ctx.proxy.route_priority`,
     /// stamped at routing time by whichever matcher actually matched
     /// (`proxy` map or `routes[]` — see `router::route_limits_from_target`,
     /// issue #360) instead of being re-derived here via a second,
@@ -914,7 +918,7 @@ impl ConduitProxy {
         // set this header; Conduit maps urgency 0–7 to 100–2 and takes the
         // maximum so that clients can signal high urgency but not bypass
         // server-assigned priority.
-        let route_priority = req_ctx.route_priority.unwrap_or(50);
+        let route_priority = req_ctx.proxy.route_priority.unwrap_or(50);
         let rfc9218_priority = session
             .req_header()
             .headers
@@ -1287,7 +1291,7 @@ impl ConduitProxy {
         // Only retry safe/idempotent HTTP methods — RFC 7231 § 4.2.2.
         let method = session.req_header().method.as_str();
         let should_retry = {
-            let Some(retry) = req_ctx.retry.as_mut() else {
+            let Some(retry) = req_ctx.proxy.retry.as_mut() else {
                 return;
             };
             is_safe_http_method(method)
@@ -1349,7 +1353,7 @@ impl ConduitProxy {
         // Only retry safe/idempotent methods.
         let method = session.req_header().method.as_str();
         let should_retry = {
-            let Some(retry) = req_ctx.retry.as_mut() else {
+            let Some(retry) = req_ctx.proxy.retry.as_mut() else {
                 return;
             };
             is_safe_http_method(method)
@@ -1423,7 +1427,7 @@ pub(super) async fn upstream_peer(
 ) -> Result<Box<HttpPeer>> {
     let req_ctx = ctx.as_mut().expect("ctx set in request_filter");
 
-    if let Some(ref retry) = req_ctx.retry {
+    if let Some(ref retry) = req_ctx.proxy.retry {
         apply_backoff(retry).await;
     }
 
@@ -1450,6 +1454,7 @@ pub(super) async fn upstream_peer(
             .and_then(|l| l.timeout_secs)
     };
     let resolution_timeout = req_ctx
+        .proxy
         .proxy_timeout
         .as_ref()
         .and_then(|t| t.connect_ms)
@@ -1462,7 +1467,7 @@ pub(super) async fn upstream_peer(
     let mut peer = HttpPeer::new(socket_addr, tls, sni);
 
     // Negotiate HTTP/2 with the upstream when the route sets `http2: true`.
-    if req_ctx.proxy_http2 {
+    if req_ctx.proxy.proxy_http2 {
         peer.options.alpn = pingora_core::upstreams::peer::ALPN::H2H1;
     }
 
@@ -1489,8 +1494,8 @@ pub(super) async fn upstream_peer(
 
     apply_peer_options(
         &mut peer,
-        req_ctx.proxy_timeout.as_ref(),
-        req_ctx.proxy_pool.as_ref(),
+        req_ctx.proxy.proxy_timeout.as_ref(),
+        req_ctx.proxy.proxy_pool.as_ref(),
         limits_timeout_secs,
     );
 
@@ -1613,7 +1618,7 @@ pub(super) async fn request_body_filter(
 
     // Retry body buffering (separate from size enforcement).
     // Only buffer when retry is configured (otherwise wasteful).
-    if req_ctx.retry.is_none() || req_ctx.body_too_large {
+    if req_ctx.proxy.retry.is_none() || req_ctx.body_too_large {
         return Ok(());
     }
 
@@ -1643,8 +1648,8 @@ pub(super) async fn upstream_request_filter(
     // `logging()` can compute upstream_response_time_ms.
     // Also increment the per-upstream active-connections gauge.
     if let Some(req_ctx) = ctx.as_mut() {
-        req_ctx.upstream_start = Some(std::time::Instant::now());
-        if let Some(url) = req_ctx.proxy_upstream_url.as_deref() {
+        req_ctx.proxy.upstream_start = Some(std::time::Instant::now());
+        if let Some(url) = req_ctx.proxy.proxy_upstream_url.as_deref() {
             proxy
                 .state
                 .metrics
@@ -1705,7 +1710,7 @@ pub(super) fn request_cache_filter(
         let Some(req_ctx) = ctx.as_ref() else {
             return Ok(());
         };
-        let Some(ref cfg) = req_ctx.proxy_cache_cfg else {
+        let Some(ref cfg) = req_ctx.proxy.proxy_cache_cfg else {
             return Ok(());
         };
 
@@ -1786,7 +1791,7 @@ pub(super) fn should_serve_stale(
     let Some(req_ctx) = ctx.as_ref() else {
         return false;
     };
-    let Some(ref cfg) = req_ctx.proxy_cache_cfg else {
+    let Some(ref cfg) = req_ctx.proxy.proxy_cache_cfg else {
         return false;
     };
     match error {
@@ -1840,7 +1845,7 @@ pub(super) fn cache_key_callback(
         let config = proxy.state.config.load();
         config.sites.get(site_idx).and_then(|_s| {
             ctx.as_ref()
-                .and_then(|c| c.proxy_cache_cfg.as_ref())
+                .and_then(|c| c.proxy.proxy_cache_cfg.as_ref())
                 .and_then(|cc| cc.vary_headers.clone())
         })
     };
@@ -1864,6 +1869,7 @@ pub(super) fn fail_to_connect(
 ) -> Box<pingora_core::Error> {
     if let Some(req_ctx) = ctx.as_mut() {
         let has_attempts_left = req_ctx
+            .proxy
             .retry
             .as_ref()
             .map(RetryState::has_attempts_left)
@@ -1891,6 +1897,7 @@ pub(super) fn error_while_proxy(
 
     if let Some(req_ctx) = ctx.as_mut() {
         let has_attempts_left = req_ctx
+            .proxy
             .retry
             .as_ref()
             .map(RetryState::has_attempts_left)
@@ -2027,10 +2034,10 @@ pub(super) fn buffer_body_chunk(req_ctx: &mut RequestCtx, chunk: &bytes::Bytes, 
 /// path). This is the only correct way to stop pointing at an upstream —
 /// see the invariant documented on [`RequestCtx::upstream_conn_slot`].
 pub(super) fn release_conn_slot(req_ctx: &mut RequestCtx, health: &UpstreamRegistry) {
-    let Some(url) = req_ctx.proxy_upstream_url.take() else {
+    let Some(url) = req_ctx.proxy.proxy_upstream_url.take() else {
         return;
     };
-    if std::mem::take(&mut req_ctx.upstream_conn_slot) {
+    if std::mem::take(&mut req_ctx.proxy.upstream_conn_slot) {
         health.conn_dec(&url);
     }
 }
@@ -2048,16 +2055,16 @@ pub(super) fn acquire_conn_slot(
     tracked: bool,
 ) {
     debug_assert!(
-        req_ctx.proxy_upstream_url.is_none() && !req_ctx.upstream_conn_slot,
+        req_ctx.proxy.proxy_upstream_url.is_none() && !req_ctx.proxy.upstream_conn_slot,
         "acquire_conn_slot called while a slot is already held for {:?} — call \
          release_conn_slot first",
-        req_ctx.proxy_upstream_url
+        req_ctx.proxy.proxy_upstream_url
     );
     if tracked {
         health.conn_inc(&url);
     }
-    req_ctx.proxy_upstream_url = Some(url);
-    req_ctx.upstream_conn_slot = tracked;
+    req_ctx.proxy.proxy_upstream_url = Some(url);
+    req_ctx.proxy.upstream_conn_slot = tracked;
 }
 
 /// Choose the URL for this attempt of a retry-configured request, and own
@@ -2093,14 +2100,15 @@ pub(super) fn acquire_conn_slot(
 /// mirrors `RouteResolution.upstream_conn_slot`'s own formula
 /// (`is_least_conn || circuit_tracking`) computed at routing time.
 fn select_retry_target(req_ctx: &mut RequestCtx, health: &UpstreamRegistry) -> String {
-    // Compute this attempt's target using only a borrow of req_ctx.retry,
+    // Compute this attempt's target using only a borrow of req_ctx.proxy.retry,
     // ended before release_conn_slot/acquire_conn_slot need to borrow the
     // whole req_ctx.
     let (chosen, tracked) = {
         let retry = req_ctx
+            .proxy
             .retry
             .as_mut()
-            .expect("select_retry_target called only when req_ctx.retry.is_some()");
+            .expect("select_retry_target called only when req_ctx.proxy.retry.is_some()");
         let len = retry.urls.len();
         let base = retry.attempt % len;
         let is_first_attempt = retry.attempt == 0;
@@ -2138,7 +2146,7 @@ pub(super) fn resolve_peer_addr(
     req_ctx: &mut RequestCtx,
     health: &UpstreamRegistry,
 ) -> pingora_core::Result<(String, bool, String)> {
-    if req_ctx.retry.is_some() {
+    if req_ctx.proxy.retry.is_some() {
         let url = select_retry_target(req_ctx, health);
         let addr = upstream::url_to_host_port(&url).ok_or_else(|| {
             pingora_core::Error::explain(
@@ -2937,6 +2945,7 @@ mod tests {
     use super::*;
 
     use crate::config::schema::AppConfig;
+    use crate::proxy::ctx::ProxyReqState;
     use crate::proxy::service::AppState;
     use serial_test::serial;
 
@@ -3066,7 +3075,7 @@ mod tests {
     // ── resolve_peer_addr ─────────────────────────────────────────────────────
 
     fn make_ctx(upstream: UpstreamTarget) -> RequestCtx {
-        RequestCtx::new(0, upstream, None, None, None, false, None, None, None)
+        RequestCtx::new(0, upstream, ProxyReqState::default(), None)
     }
 
     #[test]
@@ -4210,12 +4219,12 @@ mod tests {
             mirror_url: None,
             upstream_tls: None,
         });
-        ctx.retry = Some(retry);
+        ctx.proxy.retry = Some(retry);
         let reg = UpstreamRegistry::new();
         let (addr, _, _) = resolve_peer_addr(&mut ctx, &reg).unwrap();
         assert_eq!(addr, "a:4000");
         // Attempt should be incremented.
-        assert_eq!(ctx.retry.unwrap().attempt, 1);
+        assert_eq!(ctx.proxy.retry.unwrap().attempt, 1);
     }
 
     // ── select_retry_target (#216 part 2) ─────────────────────────────────────
@@ -4235,7 +4244,7 @@ mod tests {
             mirror_url: None,
             upstream_tls: None,
         });
-        ctx.retry = Some(RetryState {
+        ctx.proxy.retry = Some(RetryState {
             urls: urls.iter().map(|u| u.to_string()).collect(),
             attempt,
             max_attempts: 5,
@@ -4269,20 +4278,20 @@ mod tests {
         // same-tracked-value scenario could never catch.
         let mut ctx = make_retry_ctx(&["http://a:80", "http://b:80"], 0, Some(1), true);
         // Simulate what routing already set up before upstream_peer ran.
-        ctx.proxy_upstream_url = Some("http://a:80".to_owned());
-        ctx.upstream_conn_slot = false;
+        ctx.proxy.proxy_upstream_url = Some("http://a:80".to_owned());
+        ctx.proxy.upstream_conn_slot = false;
 
         let chosen = select_retry_target(&mut ctx, &reg);
 
         assert_eq!(chosen, "http://a:80");
-        assert_eq!(ctx.retry.as_ref().unwrap().attempt, 1);
+        assert_eq!(ctx.proxy.retry.as_ref().unwrap().attempt, 1);
         assert_eq!(
-            ctx.proxy_upstream_url.as_deref(),
+            ctx.proxy.proxy_upstream_url.as_deref(),
             Some("http://a:80"),
             "attempt 0 must not touch proxy_upstream_url"
         );
         assert!(
-            !ctx.upstream_conn_slot,
+            !ctx.proxy.upstream_conn_slot,
             "attempt 0 must not touch upstream_conn_slot -- must stay exactly as routing set it, \
              even though retry.tracks_conn_slot is true"
         );
@@ -4313,7 +4322,7 @@ mod tests {
             chosen, "http://b:80",
             "must forward-probe past the saturated peer to the next admissible one"
         );
-        assert_eq!(ctx.retry.as_ref().unwrap().attempt, 3);
+        assert_eq!(ctx.proxy.retry.as_ref().unwrap().attempt, 3);
         assert_eq!(
             reg.conn_load("http://b:80"),
             1,
@@ -4338,7 +4347,7 @@ mod tests {
 
         // base = attempt % len = 1 % 2 = 1 -> naive fallback is urls[1].
         assert_eq!(chosen, "http://b:80");
-        assert_eq!(ctx.retry.as_ref().unwrap().attempt, 2);
+        assert_eq!(ctx.proxy.retry.as_ref().unwrap().attempt, 2);
     }
 
     /// `max_conns_per_upstream: None` (no cap configured) must skip the
@@ -4362,7 +4371,7 @@ mod tests {
             chosen, "http://b:80",
             "no cap -> naive rotation, no probing"
         );
-        assert_eq!(ctx.retry.as_ref().unwrap().attempt, 2);
+        assert_eq!(ctx.proxy.retry.as_ref().unwrap().attempt, 2);
     }
 
     /// `tracks_conn_slot: false` must acquire the new URL without
@@ -4378,7 +4387,7 @@ mod tests {
 
         assert_eq!(chosen, "http://b:80");
         assert_eq!(reg.conn_load("http://b:80"), 0);
-        assert!(!ctx.upstream_conn_slot);
+        assert!(!ctx.proxy.upstream_conn_slot);
     }
 
     /// A retry attempt must release the PREVIOUS attempt's slot before
@@ -4392,8 +4401,8 @@ mod tests {
         let reg = UpstreamRegistry::new();
         reg.conn_inc("http://a:80"); // the previous attempt's slot
         let mut ctx = make_retry_ctx(&["http://a:80", "http://b:80"], 1, Some(5), true);
-        ctx.proxy_upstream_url = Some("http://a:80".to_owned());
-        ctx.upstream_conn_slot = true;
+        ctx.proxy.proxy_upstream_url = Some("http://a:80".to_owned());
+        ctx.proxy.upstream_conn_slot = true;
 
         let chosen = select_retry_target(&mut ctx, &reg);
 
@@ -4404,7 +4413,7 @@ mod tests {
             "the previous attempt's slot on a DIFFERENT peer must be released"
         );
         assert_eq!(reg.conn_load("http://b:80"), 1);
-        assert_eq!(ctx.proxy_upstream_url.as_deref(), Some("http://b:80"));
+        assert_eq!(ctx.proxy.proxy_upstream_url.as_deref(), Some("http://b:80"));
     }
 
     // ── record_failed_upstream_for_retry ──────────────────────────────────────
@@ -4425,7 +4434,7 @@ mod tests {
         let proxy = make_proxy();
         let inner = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
         // proxy_upstream_url defaults to None — no URL to record.
-        assert!(inner.proxy_upstream_url.is_none());
+        assert!(inner.proxy.proxy_upstream_url.is_none());
         let mut ctx = Some(inner);
         let config = AppConfig::default();
         // Must not panic on the early-return path.
@@ -4438,16 +4447,16 @@ mod tests {
     fn record_failed_upstream_records_attempt_and_clears_url() {
         let proxy = make_proxy();
         let mut inner = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        inner.proxy_upstream_url = Some("http://backend:4000".to_owned());
-        inner.upstream_start = None;
+        inner.proxy.proxy_upstream_url = Some("http://backend:4000".to_owned());
+        inner.proxy.upstream_start = None;
         let mut ctx = Some(inner);
         let config = AppConfig::default();
         proxy.record_failed_upstream_for_retry(&mut ctx, &config, 502);
         let req = ctx.as_ref().unwrap();
         // URL must have been taken (cleared).
-        assert!(req.proxy_upstream_url.is_none());
+        assert!(req.proxy.proxy_upstream_url.is_none());
         // upstream_start should remain None (wasn't set).
-        assert!(req.upstream_start.is_none());
+        assert!(req.proxy.upstream_start.is_none());
     }
 
     /// When upstream_start is set, the latency histogram observe branch runs.
@@ -4455,15 +4464,15 @@ mod tests {
     fn record_failed_upstream_observes_latency_when_start_is_set() {
         let proxy = make_proxy();
         let mut inner = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        inner.proxy_upstream_url = Some("http://backend:4001".to_owned());
-        inner.upstream_start = Some(std::time::Instant::now());
+        inner.proxy.proxy_upstream_url = Some("http://backend:4001".to_owned());
+        inner.proxy.upstream_start = Some(std::time::Instant::now());
         let mut ctx = Some(inner);
         let config = AppConfig::default();
         // Must not panic even when upstream_start is Some.
         proxy.record_failed_upstream_for_retry(&mut ctx, &config, 500);
         let req = ctx.as_ref().unwrap();
         // upstream_start reset to None after recording.
-        assert!(req.upstream_start.is_none());
+        assert!(req.proxy.upstream_start.is_none());
     }
 
     /// When the site config has outlier_detection set, maybe_eject() is called.
@@ -4471,7 +4480,7 @@ mod tests {
     fn record_failed_upstream_triggers_outlier_detection_when_configured() {
         let proxy = make_proxy();
         let mut inner = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        inner.proxy_upstream_url = Some("http://backend:4002".to_owned());
+        inner.proxy.proxy_upstream_url = Some("http://backend:4002".to_owned());
         inner.site_idx = 0;
         let mut ctx = Some(inner);
 
@@ -4498,10 +4507,10 @@ mod tests {
     fn release_conn_slot_noop_when_no_url_held() {
         let reg = UpstreamRegistry::new();
         let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        assert!(ctx.proxy_upstream_url.is_none());
+        assert!(ctx.proxy.proxy_upstream_url.is_none());
         release_conn_slot(&mut ctx, &reg); // must not panic
-        assert!(ctx.proxy_upstream_url.is_none());
-        assert!(!ctx.upstream_conn_slot);
+        assert!(ctx.proxy.proxy_upstream_url.is_none());
+        assert!(!ctx.proxy.upstream_conn_slot);
     }
 
     #[test]
@@ -4512,8 +4521,8 @@ mod tests {
         assert_eq!(reg.conn_load(url), 1);
 
         let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        ctx.proxy_upstream_url = Some(url.to_owned());
-        ctx.upstream_conn_slot = true;
+        ctx.proxy.proxy_upstream_url = Some(url.to_owned());
+        ctx.proxy.upstream_conn_slot = true;
 
         release_conn_slot(&mut ctx, &reg);
 
@@ -4522,8 +4531,8 @@ mod tests {
             0,
             "release must decrement a tracked slot"
         );
-        assert!(ctx.proxy_upstream_url.is_none());
-        assert!(!ctx.upstream_conn_slot);
+        assert!(ctx.proxy.proxy_upstream_url.is_none());
+        assert!(!ctx.proxy.upstream_conn_slot);
     }
 
     #[test]
@@ -4533,13 +4542,13 @@ mod tests {
         // No conn_inc — attribution-only, matching the "passive-health-only"
         // shape documented on RequestCtx::upstream_conn_slot.
         let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        ctx.proxy_upstream_url = Some(url.to_owned());
-        ctx.upstream_conn_slot = false;
+        ctx.proxy.proxy_upstream_url = Some(url.to_owned());
+        ctx.proxy.upstream_conn_slot = false;
 
         release_conn_slot(&mut ctx, &reg);
 
         assert_eq!(reg.conn_load(url), 0);
-        assert!(ctx.proxy_upstream_url.is_none());
+        assert!(ctx.proxy.proxy_upstream_url.is_none());
     }
 
     #[test]
@@ -4549,8 +4558,8 @@ mod tests {
         reg.conn_inc(url);
 
         let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        ctx.proxy_upstream_url = Some(url.to_owned());
-        ctx.upstream_conn_slot = true;
+        ctx.proxy.proxy_upstream_url = Some(url.to_owned());
+        ctx.proxy.upstream_conn_slot = true;
 
         release_conn_slot(&mut ctx, &reg);
         assert_eq!(reg.conn_load(url), 0);
@@ -4568,8 +4577,11 @@ mod tests {
         acquire_conn_slot(&mut ctx, &reg, "http://u:4000".to_owned(), true);
 
         assert_eq!(reg.conn_load("http://u:4000"), 1);
-        assert_eq!(ctx.proxy_upstream_url.as_deref(), Some("http://u:4000"));
-        assert!(ctx.upstream_conn_slot);
+        assert_eq!(
+            ctx.proxy.proxy_upstream_url.as_deref(),
+            Some("http://u:4000")
+        );
+        assert!(ctx.proxy.upstream_conn_slot);
     }
 
     #[test]
@@ -4580,8 +4592,11 @@ mod tests {
         acquire_conn_slot(&mut ctx, &reg, "http://u:4000".to_owned(), false);
 
         assert_eq!(reg.conn_load("http://u:4000"), 0);
-        assert_eq!(ctx.proxy_upstream_url.as_deref(), Some("http://u:4000"));
-        assert!(!ctx.upstream_conn_slot);
+        assert_eq!(
+            ctx.proxy.proxy_upstream_url.as_deref(),
+            Some("http://u:4000")
+        );
+        assert!(!ctx.proxy.upstream_conn_slot);
     }
 
     /// Regression test for #216: release-then-acquire-a-different-URL — the
@@ -4600,8 +4615,8 @@ mod tests {
         reg.conn_inc(url1); // simulates attempt 1's routing-time conn_inc
 
         let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        ctx.proxy_upstream_url = Some(url1.to_owned());
-        ctx.upstream_conn_slot = true;
+        ctx.proxy.proxy_upstream_url = Some(url1.to_owned());
+        ctx.proxy.upstream_conn_slot = true;
 
         // Exactly what upstream_peer's retry-restore block does on the next
         // attempt after ANY failure mode (connect-phase, proxy-phase
@@ -4615,8 +4630,8 @@ mod tests {
             "the OLD url's slot must be released, not leaked"
         );
         assert_eq!(reg.conn_load(url2), 0, "tracked=false acquires no new slot");
-        assert_eq!(ctx.proxy_upstream_url.as_deref(), Some(url2));
-        assert!(!ctx.upstream_conn_slot);
+        assert_eq!(ctx.proxy.proxy_upstream_url.as_deref(), Some(url2));
+        assert!(!ctx.proxy.upstream_conn_slot);
     }
 
     #[test]
@@ -4624,8 +4639,8 @@ mod tests {
     fn acquire_conn_slot_panics_in_debug_if_slot_already_held() {
         let reg = UpstreamRegistry::new();
         let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        ctx.proxy_upstream_url = Some("http://u1:4000".to_owned());
-        ctx.upstream_conn_slot = true;
+        ctx.proxy.proxy_upstream_url = Some("http://u1:4000".to_owned());
+        ctx.proxy.upstream_conn_slot = true;
         // Missing release_conn_slot() call before this -- must trip the
         // debug_assert! guarding the invariant documented on
         // RequestCtx::upstream_conn_slot.
@@ -4638,7 +4653,7 @@ mod tests {
     fn record_retry_failure_health_noop_when_no_url_tracked() {
         let proxy = make_proxy();
         let ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        assert!(ctx.proxy_upstream_url.is_none());
+        assert!(ctx.proxy.proxy_upstream_url.is_none());
         let config = AppConfig::default();
         // Must not panic on the early-return path.
         proxy.record_retry_failure_health(&ctx, &config, 0, false);
@@ -4662,7 +4677,7 @@ mod tests {
             .get();
 
         let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        ctx.proxy_upstream_url = Some(url.to_owned());
+        ctx.proxy.proxy_upstream_url = Some(url.to_owned());
         let config = AppConfig::default();
 
         proxy.record_retry_failure_health(&ctx, &config, 0, false);
@@ -4702,7 +4717,7 @@ mod tests {
             .get();
 
         let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        ctx.proxy_upstream_url = Some(url.to_owned());
+        ctx.proxy.proxy_upstream_url = Some(url.to_owned());
         let config = AppConfig::default();
 
         proxy.record_retry_failure_health(&ctx, &config, 0, true);
@@ -4747,7 +4762,7 @@ mod tests {
         );
 
         let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        ctx.proxy_upstream_url = Some(url.to_owned());
+        ctx.proxy.proxy_upstream_url = Some(url.to_owned());
         let config = AppConfig::default();
 
         proxy.record_retry_failure_health(&ctx, &config, SYNTHETIC_RETRY_FAILURE_STATUS, false);
@@ -4788,8 +4803,8 @@ mod tests {
             .inc();
 
         let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        ctx.proxy_upstream_url = Some(url.to_owned());
-        ctx.upstream_conn_slot = true;
+        ctx.proxy.proxy_upstream_url = Some(url.to_owned());
+        ctx.proxy.upstream_conn_slot = true;
         proxy.state.upstream_health.conn_inc(url);
         let config = AppConfig::default();
 
@@ -4800,10 +4815,10 @@ mod tests {
         release_conn_slot(&mut ctx, &proxy.state.upstream_health);
 
         assert!(
-            ctx.proxy_upstream_url.is_none(),
+            ctx.proxy.proxy_upstream_url.is_none(),
             "proxy_upstream_url must be cleared immediately, not left for a retry that may never happen"
         );
-        assert!(!ctx.upstream_conn_slot);
+        assert!(!ctx.proxy.upstream_conn_slot);
         assert_eq!(
             proxy.state.upstream_health.conn_load(url),
             0,
@@ -4836,8 +4851,8 @@ mod tests {
         let proxy = make_proxy();
         let url = "http://u5:4000";
         let mut ctx = make_ctx(UpstreamTarget::Local(LocalHandler::Health));
-        ctx.proxy_upstream_url = Some(url.to_owned());
-        ctx.upstream_conn_slot = true;
+        ctx.proxy.proxy_upstream_url = Some(url.to_owned());
+        ctx.proxy.upstream_conn_slot = true;
         proxy.state.upstream_health.conn_inc(url);
         let config = AppConfig::default();
 
@@ -4848,10 +4863,10 @@ mod tests {
         release_conn_slot(&mut ctx, &proxy.state.upstream_health);
 
         assert!(
-            ctx.proxy_upstream_url.is_none(),
+            ctx.proxy.proxy_upstream_url.is_none(),
             "proxy_upstream_url must be cleared immediately, not left for a retry that may never happen"
         );
-        assert!(!ctx.upstream_conn_slot);
+        assert!(!ctx.proxy.upstream_conn_slot);
         assert_eq!(
             proxy.state.upstream_health.conn_load(url),
             0,

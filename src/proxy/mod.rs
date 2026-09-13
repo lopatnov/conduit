@@ -10,6 +10,7 @@ pub(crate) mod request_phase;
 mod response_phase;
 pub mod router;
 pub mod routes;
+pub(crate) mod routing;
 pub mod service;
 pub(crate) mod slow_start;
 pub mod strategy;

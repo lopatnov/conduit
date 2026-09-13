@@ -75,6 +75,7 @@ fn release_proxy_upstream(proxy: &ConduitProxy, session: &Session, ctx: &Option<
     proxy.state.inflight.fetch_sub(1, Ordering::Relaxed);
     // Decrement retry budget counter if this request was a retry.
     if req_ctx
+        .proxy
         .retry
         .as_ref()
         .map(|r| r.is_retrying)
@@ -85,10 +86,10 @@ fn release_proxy_upstream(proxy: &ConduitProxy, session: &Session, ctx: &Option<
     // proxy_upstream_url is populated for every proxied request (#155) so
     // passive-health attribution below runs regardless of strategy; only
     // release the conn_count slot when this request actually holds one.
-    let Some(ref url) = req_ctx.proxy_upstream_url else {
+    let Some(ref url) = req_ctx.proxy.proxy_upstream_url else {
         return;
     };
-    if req_ctx.upstream_conn_slot {
+    if req_ctx.proxy.upstream_conn_slot {
         proxy.state.upstream_health.conn_dec(url);
     }
 
@@ -121,9 +122,10 @@ fn release_proxy_upstream(proxy: &ConduitProxy, session: &Session, ctx: &Option<
 /// A failure is signalled to `record_request_latency` by returning 503.
 fn passive_effective_status(req_ctx: &RequestCtx, url: &str, status: u16, elapsed_us: u64) -> u16 {
     let latency_ms = elapsed_us / 1000;
-    let unhealthy_by_status = !req_ctx.passive_unhealthy_status.is_empty()
-        && req_ctx.passive_unhealthy_status.contains(&status);
+    let unhealthy_by_status = !req_ctx.proxy.passive_unhealthy_status.is_empty()
+        && req_ctx.proxy.passive_unhealthy_status.contains(&status);
     let unhealthy_by_latency = req_ctx
+        .proxy
         .passive_unhealthy_latency_ms
         .map(|t| latency_ms > t)
         .unwrap_or(false);
@@ -155,10 +157,12 @@ fn write_access_log_entry(proxy: &ConduitProxy, session: &Session, ctx: &Option<
         .headers
         .get("x-request-id")
         .and_then(|v| v.to_str().ok());
-    let upstream_addr = ctx.as_ref().and_then(|c| c.proxy_upstream_url.as_deref());
+    let upstream_addr = ctx
+        .as_ref()
+        .and_then(|c| c.proxy.proxy_upstream_url.as_deref());
     let upstream_ms = ctx
         .as_ref()
-        .and_then(|c| c.upstream_start)
+        .and_then(|c| c.proxy.upstream_start)
         .map(|t| t.elapsed().as_millis() as u64);
     logging::write_access_log(
         session,
@@ -219,7 +223,10 @@ fn record_upstream_metrics(
     status: &str,
     status_u16: u16,
 ) {
-    let Some(url) = ctx.as_ref().and_then(|c| c.proxy_upstream_url.as_deref()) else {
+    let Some(url) = ctx
+        .as_ref()
+        .and_then(|c| c.proxy.proxy_upstream_url.as_deref())
+    else {
         return;
     };
     // Decrement the active-connections gauge now that this request finished.
@@ -241,7 +248,7 @@ fn record_upstream_metrics(
     crate::proxy::health::record_response_status(&proxy.state.upstream_health, url, status_u16);
     if let Some(upstream_secs) = ctx
         .as_ref()
-        .and_then(|c| c.upstream_start)
+        .and_then(|c| c.proxy.upstream_start)
         .map(|t| t.elapsed().as_secs_f64())
     {
         proxy
@@ -257,7 +264,7 @@ fn record_upstream_metrics(
 fn record_cache_metrics(proxy: &ConduitProxy, session: &Session, ctx: &Option<RequestCtx>) {
     if ctx
         .as_ref()
-        .and_then(|c| c.proxy_cache_cfg.as_ref())
+        .and_then(|c| c.proxy.proxy_cache_cfg.as_ref())
         .is_none()
     {
         return;
@@ -339,7 +346,7 @@ fn finish_otel_span(
     // `finish_otel_span` is the last helper called in `logging()` and has
     // mutable access to `ctx`, so take the URL instead of cloning it — the
     // context is cleared by Pingora immediately after this returns.
-    if let Some(url) = req_ctx.proxy_upstream_url.take() {
+    if let Some(url) = req_ctx.proxy.proxy_upstream_url.take() {
         span.set_attribute(KeyValue::new("upstream.url", url));
     }
     // Attach the X-Request-ID so the trace is correlatable with logs.

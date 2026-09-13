@@ -7,29 +7,16 @@ use dashmap::DashMap;
 
 use crate::config::schema::{
     AppConfig, CacheConfig, ConnectionPoolConfig, LoadBalanceStrategy, ProxyConfig,
-    ProxyRouteTarget, ProxyTimeout, RateLimitConfig, RetryConfig, RewriteRule, SiteConfig,
-    StickyConfig, UpstreamGroup, UpstreamTlsConfig,
+    ProxyRouteTarget, ProxyTimeout, RetryConfig, RewriteRule, SiteConfig, StickyConfig,
+    UpstreamGroup, UpstreamTlsConfig,
 };
 use crate::proxy::capacity;
-use crate::proxy::ctx::{LocalHandler, RequestCtx, RetryState, UpstreamTarget};
+use crate::proxy::ctx::{
+    LocalHandler, ProxyReqState, RequestCtx, RetryState, RouteRateLimit, UpstreamTarget,
+};
 use crate::proxy::health::UpstreamRegistry;
 use crate::proxy::slow_start::Ramp;
 use crate::proxy::upstream;
-
-/// Per-route rate limit plus the bucket-key fragment identifying the route
-/// it came from. Populated at routing time by whichever matcher matched
-/// (`proxy` map or `routes[]`), so enforcement (`request_phase.rs::
-/// enforce_route_rate_limit`) can never disagree with the routing decision —
-/// see issue #360, which found the previous approach (a *second*,
-/// post-routing path matcher scanning only `site.proxy`) could apply the
-/// wrong route's rate limit to a request that actually resolved via
-/// `site.routes[]`.
-#[derive(Debug, Clone)]
-pub struct RouteRateLimit {
-    pub config: RateLimitConfig,
-    /// `proxy` map key (e.g. `/api`) or `routes[{i}]`.
-    pub route_key: String,
-}
 
 /// Resolved routing result: all per-route data needed to populate `RequestCtx`.
 ///
@@ -156,30 +143,28 @@ pub fn route_request(
     };
 
     let response_transform = site.and_then(|s| s.response_transform.clone());
-    let mut ctx = RequestCtx::new(
-        site_idx,
-        res.upstream,
-        res.retry,
-        res.proxy_timeout,
-        res.proxy_pool,
-        res.proxy_http2,
-        res.proxy_upstream_url,
-        res.proxy_cache_cfg,
-        response_transform,
-    );
-    // Populate passive health thresholds so logging() can apply them.
-    ctx.passive_unhealthy_status = res.passive_unhealthy_status;
-    ctx.passive_unhealthy_latency_ms = res.passive_unhealthy_latency_ms;
-    ctx.websocket_allowed = res.websocket_allowed;
-    ctx.sticky_set_cookie = res.sticky_set_cookie;
-    ctx.upstream_conn_slot = res.upstream_conn_slot;
-    // #360: carried on the routing decision itself so enforcement
-    // (`request_phase.rs::enforce_route_rate_limit`/`shed_low_priority_request`)
-    // can never disagree with which mechanism (`proxy` map vs. `routes[]`)
-    // actually matched.
-    ctx.route_rate_limit = res.route_rate_limit;
-    ctx.route_priority = res.route_priority;
-    ctx
+    let proxy = ProxyReqState {
+        retry: res.retry,
+        proxy_timeout: res.proxy_timeout,
+        proxy_pool: res.proxy_pool,
+        proxy_http2: res.proxy_http2,
+        proxy_upstream_url: res.proxy_upstream_url,
+        upstream_conn_slot: res.upstream_conn_slot,
+        proxy_cache_cfg: res.proxy_cache_cfg,
+        // Populate passive health thresholds so logging() can apply them.
+        passive_unhealthy_status: res.passive_unhealthy_status,
+        passive_unhealthy_latency_ms: res.passive_unhealthy_latency_ms,
+        websocket_allowed: res.websocket_allowed,
+        sticky_set_cookie: res.sticky_set_cookie,
+        // #360: carried on the routing decision itself so enforcement
+        // (`request_phase.rs::enforce_route_rate_limit`/`shed_low_priority_request`)
+        // can never disagree with which mechanism (`proxy` map vs. `routes[]`)
+        // actually matched.
+        route_rate_limit: res.route_rate_limit,
+        route_priority: res.route_priority,
+        ..Default::default()
+    };
+    RequestCtx::new(site_idx, res.upstream, proxy, response_transform)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1287,7 +1272,7 @@ fn find_route<'a>(
 // `RouteResolution`/`RequestCtx` directly by whichever matcher actually
 // matched (`route_limits_from_target` above, called from both
 // `resolve_proxy_routes` here and `routes.rs::match_routes`), so enforcement
-// reads `RequestCtx.route_rate_limit`/`route_priority` and can never disagree
+// reads `RequestCtx.proxy.route_rate_limit`/`route_priority` and can never disagree
 // with routing. See the deleted functions' former test coverage, now ported
 // to assert through `route_request(...)` instead, further down this file.
 
@@ -2298,7 +2283,7 @@ mod tests {
     // re-scanned `site.proxy` after routing already happened — deleted for
     // issue #360 (it could disagree with which mechanism actually matched).
     // These tests now assert the same behavior through the real routing
-    // entry point, `route_request(...)`, reading `RequestCtx.route_priority`
+    // entry point, `route_request(...)`, reading `RequestCtx.proxy.route_priority`
     // — proving the legacy `proxy` map path stamps the identical value it
     // used to return.
 
@@ -2323,7 +2308,7 @@ mod tests {
     }
 
     /// Route `path` against `site` (the sole site in a fresh `AppConfig`) and
-    /// return the resulting `RequestCtx.route_priority`.
+    /// return the resulting `RequestCtx.proxy.route_priority`.
     fn route_priority_for(site: SiteConfig, path: &str) -> Option<u8> {
         let config = AppConfig {
             sites: vec![site],
@@ -2344,6 +2329,7 @@ mod tests {
             &reg,
             None,
         )
+        .proxy
         .route_priority
     }
 
@@ -2596,11 +2582,11 @@ mod tests {
     //
     // `find_route_rate_limit` was the rate-limit twin of `find_route_priority`
     // above — same deletion reason (#360). These tests assert the identical
-    // `(config, route_key)` pair is now stamped onto `RequestCtx.route_rate_limit`
+    // `(config, route_key)` pair is now stamped onto `RequestCtx.proxy.route_rate_limit`
     // by the real routing entry point instead.
 
     /// Route `path` against `site` (the sole site in a fresh `AppConfig`) and
-    /// return the resulting `RequestCtx.route_rate_limit`.
+    /// return the resulting `RequestCtx.proxy.route_rate_limit`.
     fn route_rate_limit_for(site: SiteConfig, path: &str) -> Option<RouteRateLimit> {
         let config = AppConfig {
             sites: vec![site],
@@ -2621,6 +2607,7 @@ mod tests {
             &reg,
             None,
         )
+        .proxy
         .route_rate_limit
     }
 
@@ -2796,7 +2783,7 @@ mod tests {
             ctx.upstream
         );
         assert!(
-            ctx.route_rate_limit.is_some(),
+            ctx.proxy.route_rate_limit.is_some(),
             "rate limit must still be stamped on an overloaded resolution, not only on the success path"
         );
     }
@@ -2995,7 +2982,7 @@ mod tests {
             // request completing, matching what logging() does in production
             // — otherwise B would itself saturate after the first iteration.
             assert!(
-                ctx.upstream_conn_slot,
+                ctx.proxy.upstream_conn_slot,
                 "round-robin with a cap set must acquire a slot via circuit_tracking"
             );
             reg.conn_dec("http://b:4000");
@@ -3040,7 +3027,7 @@ mod tests {
                 UpstreamTarget::Proxy { addr, .. } => addr,
                 other => panic!("expected Proxy, got {other:?}"),
             };
-            if ctx.upstream_conn_slot {
+            if ctx.proxy.upstream_conn_slot {
                 reg.conn_dec(&format!("http://{addr}"));
             }
             addr
@@ -3389,7 +3376,11 @@ mod tests {
                     expected_addr,
                     "n={n}, pin {pin_idx}: retry-configured route must still honor the pin"
                 );
-                let retry_state = ctx.retry.as_ref().expect("retry state must be populated");
+                let retry_state = ctx
+                    .proxy
+                    .retry
+                    .as_ref()
+                    .expect("retry state must be populated");
                 assert_eq!(
                     retry_state.urls.first(),
                     Some(&expected_url),
@@ -3502,10 +3493,10 @@ mod tests {
             other => panic!("expected Proxy upstream, got {:?}", other),
         }
         assert!(
-            ctx.sticky_set_cookie.is_none(),
+            ctx.proxy.sticky_set_cookie.is_none(),
             "capacity relocation must NOT re-sign the cookie — doing so would \
              permanently migrate the session to the fallback peer: {:?}",
-            ctx.sticky_set_cookie
+            ctx.proxy.sticky_set_cookie
         );
 
         // Free "b"'s slot and present the SAME original cookie again (no new
@@ -3609,10 +3600,10 @@ mod tests {
             None,
         );
         assert!(
-            ctx.sticky_set_cookie.is_some(),
+            ctx.proxy.sticky_set_cookie.is_some(),
             "a total outage with a saturated pin must re-sign the cookie, not \
              silently keep pointing at an unverifiable peer: {:?}",
-            ctx.sticky_set_cookie
+            ctx.proxy.sticky_set_cookie
         );
     }
 
@@ -3704,7 +3695,10 @@ mod tests {
             &reg,
             None,
         );
-        let retry = ctx.retry.expect("retry must be configured for this route");
+        let retry = ctx
+            .proxy
+            .retry
+            .expect("retry must be configured for this route");
         assert_eq!(
             retry.urls[0], "http://b:4000",
             "sanity check: primary pick must be \"b\", not \"a\", or this \
@@ -3859,6 +3853,7 @@ mod tests {
         // set the wrong cookie name or signed for the wrong upstream must fail
         // this test.
         let (cookie_name, cookie_value) = ctx
+            .proxy
             .sticky_set_cookie
             .as_ref()
             .expect("a fresh signed cookie must still be set for the chosen upstream");
@@ -3932,11 +3927,11 @@ mod tests {
             None,
         );
         assert!(
-            ctx.proxy_upstream_url.is_some(),
+            ctx.proxy.proxy_upstream_url.is_some(),
             "URL must be populated for passive-health attribution regardless of strategy"
         );
         assert!(
-            !ctx.upstream_conn_slot,
+            !ctx.proxy.upstream_conn_slot,
             "round-robin without a connection cap must not claim a conn_count slot"
         );
     }
@@ -3963,9 +3958,9 @@ mod tests {
             &reg,
             None,
         );
-        assert!(ctx.proxy_upstream_url.is_some());
+        assert!(ctx.proxy.proxy_upstream_url.is_some());
         assert!(
-            ctx.upstream_conn_slot,
+            ctx.proxy.upstream_conn_slot,
             "least-conn always acquires a conn_count slot"
         );
     }
@@ -3990,9 +3985,9 @@ mod tests {
             &reg,
             None,
         );
-        assert!(ctx.proxy_upstream_url.is_some());
+        assert!(ctx.proxy.proxy_upstream_url.is_some());
         assert!(
-            ctx.upstream_conn_slot,
+            ctx.proxy.upstream_conn_slot,
             "round-robin with maxConnectionsPerUpstream set must acquire a conn_count slot"
         );
     }
@@ -4046,7 +4041,7 @@ mod tests {
             &reg,
             None,
         );
-        assert!(ctx_lc.upstream_conn_slot);
+        assert!(ctx_lc.proxy.upstream_conn_slot);
         assert_eq!(
             reg.conn_load(SHARED),
             1,
@@ -4067,11 +4062,11 @@ mod tests {
             None,
         );
         assert!(
-            ctx_rr.proxy_upstream_url.is_some(),
+            ctx_rr.proxy.proxy_upstream_url.is_some(),
             "round-robin route still gets the URL for attribution"
         );
         assert!(
-            !ctx_rr.upstream_conn_slot,
+            !ctx_rr.proxy.upstream_conn_slot,
             "round-robin route on a shared target must not claim a slot"
         );
         assert_eq!(
