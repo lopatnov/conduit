@@ -389,7 +389,7 @@ fn resolve_proxy_routes(
     }
 
     // Filter to healthy upstreams; if all are down keep all (fail-open).
-    let healthy = ctx.upstream_health.filter_healthy(&all_urls);
+    let (healthy, fail_open) = ctx.upstream_health.filter_healthy(&all_urls);
     let healthy_urls: Vec<String> = healthy.iter().cloned().cloned().collect();
 
     // Circuit breaker: per-upstream capacity filtering (#156). `Exhausted`
@@ -488,7 +488,21 @@ fn resolve_proxy_routes(
     // no-op just because `retry` is configured (#157).
     let retry_state = opts.retry.map(|retry| {
         let candidates = capacity.candidates(&healthy_urls).unwrap_or(&healthy_urls);
-        let candidates = ramp.filter_candidates(candidates);
+        // #375: exempt hash/sticky routes from ramp-filtering the retry
+        // candidate list too, mirroring `pick_bounded`'s own exemption for
+        // the primary pick. Without this, a hash-based or sticky route
+        // with `retry` configured could have a mid-ramp peer silently
+        // excluded from retry attempts 1+ -- `slow_start.rs`'s own
+        // "structural, needs zero code" claim only ever covered the
+        // primary pick, not this separate retry-list filter.
+        let candidates: std::borrow::Cow<'_, [String]> = if matches!(
+            strategy,
+            Some(LoadBalanceStrategy::IpHash | LoadBalanceStrategy::ConsistentHash)
+        ) {
+            std::borrow::Cow::Borrowed(candidates)
+        } else {
+            ramp.filter_candidates(candidates)
+        };
         retry_state_for(
             &candidates,
             &chosen_url,
@@ -560,8 +574,20 @@ fn resolve_proxy_routes(
     // `pinned && !honored` can only mean unhealthy-or-saturated, and the
     // `healthy` check cleanly separates the two: saturated → keep the cookie
     // (self-heal), gone → re-sign onto wherever the strategy relocated us.
-    let sticky_relocated =
-        pinned.is_some_and(|p| honored_pin.is_none() && healthy_urls.iter().any(|h| h == p));
+    //
+    // `!fail_open` (#374): during a total-pool outage, `healthy_urls` is a
+    // fail-open passthrough containing *every* peer, including one that's
+    // actually down -- so `healthy_urls.contains(pin)` can't tell "pin is
+    // genuinely healthy but over capacity" apart from "nothing is healthy,
+    // pin included, we're just trying anyway." When `fail_open` is true we
+    // already know for certain the pin isn't really healthy (fail-open only
+    // triggers when *zero* peers pass the real check), so don't classify
+    // this as a self-healing capacity relocation -- re-sign the cookie onto
+    // wherever we actually landed instead of quietly promising a comeback
+    // that isn't backed by a real health signal.
+    let sticky_relocated = pinned.is_some_and(|p| {
+        honored_pin.is_none() && !fail_open && healthy_urls.iter().any(|h| h == p)
+    });
     let sticky_set_cookie = if sticky_relocated {
         None
     } else {
@@ -844,7 +870,7 @@ fn resolve_grouped(
         })
         .collect();
 
-    let healthy = ctx.upstream_health.filter_healthy(&all_urls);
+    let (healthy, _fail_open) = ctx.upstream_health.filter_healthy(&all_urls);
     let healthy_urls: Vec<String> = healthy.iter().cloned().cloned().collect();
     // WeightedRoundRobin reads `weighted`, not the healthy URL list — filter
     // it to health here (capacity-filtering happens inside `pick_bounded`).
@@ -3244,6 +3270,189 @@ mod tests {
             }
             other => panic!("expected Proxy upstream, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn sticky_total_outage_with_saturated_pin_re_signs_cookie_not_self_heal() {
+        // #374: during a total-pool outage (every peer marked unhealthy,
+        // filter_healthy fails open), a pin that's ALSO over its connection
+        // cap must not be classified as a "self-healing capacity
+        // relocation" (which keeps the old cookie, betting on a comeback) --
+        // fail-open's "healthy" list can't actually vouch for the pin, so
+        // the old `healthy_urls.contains(pin)` check trivially succeeded
+        // here even though nothing in the pool is genuinely healthy.
+        // Correct behavior: re-sign the cookie onto wherever the request
+        // actually landed, the same as a genuinely-gone pin.
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, StickyConfig,
+            UpstreamHealthCheck,
+        };
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://a:4000".to_owned()),
+                    ProxyTarget::Simple("http://b:4000".to_owned()),
+                    ProxyTarget::Simple("http://c:4000".to_owned()),
+                ],
+                sticky: Some(StickyConfig {
+                    cookie: "srv_id".to_owned(),
+                    secret: Some("s3cret".to_owned()),
+                    strict: None,
+                }),
+                health_check: Some(UpstreamHealthCheck {
+                    max_connections_per_upstream: Some(1),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+
+        // Every peer genuinely unhealthy -- filter_healthy() will fail open.
+        for url in ["http://a:4000", "http://b:4000", "http://c:4000"] {
+            reg.statuses.entry(url.to_owned()).or_default().healthy = false;
+        }
+        // Pin to "b" and also saturate it, so `honored_pin` is None due to
+        // capacity -- the specific compound case #374 is about.
+        let signed = hmac_sign_sticky("http://b:4000", "s3cret");
+        let mut headers = http::HeaderMap::new();
+        headers.insert("cookie", format!("srv_id={signed}").parse().unwrap());
+        reg.conn_inc("http://b:4000");
+
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &headers,
+            None,
+            "127.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        assert!(
+            ctx.sticky_set_cookie.is_some(),
+            "a total outage with a saturated pin must re-sign the cookie, not \
+             silently keep pointing at an unverifiable peer: {:?}",
+            ctx.sticky_set_cookie
+        );
+    }
+
+    #[test]
+    fn slow_start_exemption_covers_the_retry_candidate_list_on_hash_routes() {
+        // #375: slow_start.rs's own module doc claims the hash/sticky
+        // exemption is structural and needs zero code -- true for the
+        // *primary* pick (pick_bounded early-returns before the ramp is
+        // ever consulted), but the retry-candidate list used a separate,
+        // unconditional ramp filter that didn't check strategy at all. On
+        // an ipHash/consistentHash route with retry configured, a
+        // just-recovered ("mid-ramp") peer could be silently dropped from
+        // retry attempts 1+ even though it's fully eligible for the
+        // primary pick under the same strategy.
+        use crate::config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, UpstreamHealthCheck,
+        };
+        use indexmap::IndexMap;
+
+        let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
+        routes.insert(
+            "/".to_string(),
+            ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![
+                    ProxyTarget::Simple("http://a:4000".to_owned()),
+                    ProxyTarget::Simple("http://b:4000".to_owned()),
+                ],
+                strategy: Some(LoadBalanceStrategy::IpHash),
+                health_check: Some(UpstreamHealthCheck {
+                    slow_start_secs: Some(30),
+                    ..Default::default()
+                }),
+                retry: Some(RetryConfig {
+                    attempts: 3,
+                    conditions: vec!["5xx".to_owned()],
+                    backoff_ms: None,
+                    backoff_jitter: None,
+                    budget_percent: None,
+                }),
+                ..Default::default()
+            })),
+        );
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(routes)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let counters = DashMap::new();
+        let reg = UpstreamRegistry::new();
+        // "a" just recovered -- fraction 0.0, deterministically excluded by
+        // the ramp filter if it isn't exempt. "b" has no recorded recovery
+        // (fully ramped), so the filter can't fail open here -- if the
+        // exemption is broken, exactly "a" goes missing from the list, not
+        // both.
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        reg.statuses
+            .entry("http://a:4000".to_owned())
+            .or_default()
+            .recovery_time_secs = Some(now_secs);
+
+        // "10.0.0.1" is deliberate, not arbitrary: fnv1a_hash("10.0.0.1") % 2
+        // == 1, so the *primary* pick lands on "b", not "a" -- unlike
+        // "127.0.0.1" (hashes to index 0 == "a"), which made this test
+        // tautological. `retry_state_for` unconditionally re-inserts
+        // `chosen_url` at the front of the retry list whenever it's absent
+        // from the (possibly ramp-filtered) candidates -- a real, correct
+        // invariant for #367/#216 part 2, but it means that if the primary
+        // pick were "a" itself, "a" would always appear in `retry.urls`
+        // regardless of whether the #375 exemption actually ran. With "b" as
+        // the primary pick, "a" can only appear in `retry.urls` because the
+        // exemption kept it in the ramp-filtered candidate list -- exactly
+        // the mechanism this test is meant to prove.
+        let ctx = route_request(
+            &config,
+            "localhost",
+            "/",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "10.0.0.1",
+            80,
+            &counters,
+            &reg,
+            None,
+        );
+        let retry = ctx.retry.expect("retry must be configured for this route");
+        assert_eq!(
+            retry.urls[0], "http://b:4000",
+            "sanity check: primary pick must be \"b\", not \"a\", or this \
+             test cannot discriminate the bug it's meant to catch"
+        );
+        assert!(
+            retry.urls.iter().any(|u| u == "http://a:4000"),
+            "mid-ramp peer must still appear in the retry candidate list on \
+             a hash-strategy route -- got {:?}",
+            retry.urls
+        );
     }
 
     #[test]
