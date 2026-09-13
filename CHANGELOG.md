@@ -7,6 +7,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-09-13
+
+### Fixed
+
+- `schema/conduit.schema.json`'s `middleware[].type` enum was missing
+  `"wasm"` entirely, even though `validate.rs` has recognized it since the
+  feature shipped — a documented, working WASM middleware config would fail
+  schema validation.
+
+### Documentation
+
+- **New recipe: running Node.js/Python apps behind conduit as a fixed
+  worker pool**, wired up via the existing dynamic-upstream Admin API
+  (`POST /upstreams/add|remove|weight`) rather than any new conduit
+  feature — see `docs/node-python-workers.md`.
+- **`fallback.byAccept` key-matching semantics documented** — `text`/
+  `image` are special substring-matching keys (`text/`/`image/` prefix
+  families); any other key falls back to a literal-substring match against
+  `Accept`. Previously only `html`/`json`/`*` were shown as bare examples
+  with no explanation of the actual matching rules.
+- Corrected several stale WASM-plugin doc claims: `docs/configuration.md`'s
+  host-function and Rhai-function tables listed functions that don't
+  actually exist under those names; `docs/wasm.md`'s "hot-reload clears the
+  module cache" claim was false (the module cache is compile-once-per-path,
+  same as Rhai's `AST_CACHE`).
+
 ## [1.4.0] — 2026-09-05
 
 ### Security
@@ -677,7 +703,8 @@ compile-time feature-flag system so the binary stays lean for simple deployments
 - **Release pipeline** — `cross`-compiled binaries for six targets; Docker image
   (musl + `FROM scratch`); npm wrapper (`npx conduit`); crates.io publish.
 
-[Unreleased]: https://github.com/lopatnov/conduit/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/lopatnov/conduit/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/lopatnov/conduit/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/lopatnov/conduit/compare/v1.3.0...v1.4.0
 [1.1.0]: https://github.com/lopatnov/conduit/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/lopatnov/conduit/compare/v0.3.0...v1.0.0
