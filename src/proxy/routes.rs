@@ -3,32 +3,51 @@
 //! Each [`RouteConfig`] contains a [`MatchConfig`] (path glob, method list,
 //! header predicates, query predicates) plus an action (`proxy` or `static`).
 //! Routes are evaluated in declaration order; the first match wins.
+//!
+//! Proxy-target resolution itself (issue #143, PR A2 of a 3-PR plan) lives in
+//! `routing::routes_resolve` — this file owns matching only.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(feature = "static")]
-use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::sync::OnceLock;
 
 use dashmap::DashMap;
 use regex::Regex;
 
-use crate::config::schema::{MatchConfig, ProxyRouteTarget, RouteConfig, StaticOptions};
-use crate::proxy::ctx::{LocalHandler, RetryState, UpstreamTarget};
+use crate::config::schema::{MatchConfig, RouteConfig};
 use crate::proxy::health::UpstreamRegistry;
-use crate::proxy::slow_start::Ramp;
-use crate::proxy::{capacity, router, upstream};
-
-/// Result type shared with the main router.
-type RouteResult = router::RouteResultAlias;
+use crate::proxy::routing::outcome::ProxyResolution;
+use crate::proxy::routing::{resolve, routes_resolve};
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+/// Outcome of matching a single `routes[]` entry.
+pub(crate) enum RouteMatch {
+    /// `routes[index]` matched and has a `proxy` action.
+    Proxy {
+        /// Kept for symmetry with [`Self::NonProxy`] and for the eventual
+        /// `conduit-proxy-http` crate extraction (issue #143 PR B), which
+        /// may want it for logging/metrics — the current sole caller
+        /// (`router.rs::resolve_routes_array`) doesn't need it, since the
+        /// rate-limit/priority stamp is already baked into `resolution`.
+        #[allow(dead_code)]
+        index: usize,
+        /// Boxed: `ProxyResolution` is ~800+ bytes (embeds `ProxyReqState`,
+        /// which carries several `Option<...>` config-sized fields) — far
+        /// larger than the `NonProxy` variant's single `usize`, which would
+        /// otherwise blow up every `RouteMatch` to the size of its largest
+        /// variant (`clippy::large_enum_variant`).
+        resolution: Box<ProxyResolution>,
+    },
+    /// `routes[index]` matched but has no `proxy` action — the caller
+    /// resolves its `static` action (or falls back).
+    NonProxy { index: usize },
+}
+
 /// Try to match the request against the site's `routes` list.
 ///
-/// Returns the first matching [`UpstreamTarget`] (wrapped in a `RouteResult`)
-/// or `None` when no route matches.
+/// Returns the first matching [`RouteMatch`] or `None` when no route matches.
 #[allow(clippy::too_many_arguments)]
-pub fn match_routes(
+pub(crate) fn match_routes(
     routes: &[RouteConfig],
     path: &str,
     method: &str,
@@ -36,28 +55,31 @@ pub fn match_routes(
     query: Option<&str>,
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
-    static_options: Option<&StaticOptions>,
-) -> Option<RouteResult> {
+) -> Option<RouteMatch> {
     for (i, route) in routes.iter().enumerate() {
         if route_matches(&route.r#match, path, method, req_headers, query) {
-            let mut result =
-                route_to_result(route, path, counters, upstream_health, static_options);
+            let Some(target) = &route.proxy else {
+                return Some(RouteMatch::NonProxy { index: i });
+            };
+            let mut resolution =
+                routes_resolve::resolve_route_target(target, path, counters, upstream_health);
             // Stamp the matched route's rate limit/priority (#360), same as
-            // the `proxy` map path in `router.rs::resolve_proxy_routes` —
-            // applied regardless of which of `route_to_result`'s internal
-            // outcomes (proxy/static/overloaded/fallback) actually returned.
-            // An index-based key (`routes[{i}]`) is used rather than the
-            // match pattern itself: two `routes[]` entries can legally share
-            // a path glob and differ only by method/header, and would
-            // otherwise wrongly share a rate-limit bucket.
-            if let Some(target) = &route.proxy {
-                let route_key = format!("routes[{i}]");
-                let (route_rate_limit, route_priority) =
-                    router::route_limits_from_target(target, &route_key);
-                result.route_rate_limit = route_rate_limit;
-                result.route_priority = route_priority;
-            }
-            return Some(result);
+            // the `proxy` map path in `router.rs::resolve_legacy_proxy` —
+            // applied regardless of which of `resolve_route_target`'s
+            // internal outcomes (proxy/overloaded/unresolved) actually
+            // returned. An index-based key (`routes[{i}]`) is used rather
+            // than the match pattern itself: two `routes[]` entries can
+            // legally share a path glob and differ only by method/header,
+            // and would otherwise wrongly share a rate-limit bucket.
+            let route_key = format!("routes[{i}]");
+            let (route_rate_limit, route_priority) =
+                resolve::route_limits_from_target(target, &route_key);
+            resolution.state.route_rate_limit = route_rate_limit;
+            resolution.state.route_priority = route_priority;
+            return Some(RouteMatch::Proxy {
+                index: i,
+                resolution: Box::new(resolution),
+            });
         }
     }
     None
@@ -170,288 +192,6 @@ fn cookie_value<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
         }
     }
     None
-}
-
-// ── Action dispatch ───────────────────────────────────────────────────────────
-
-/// Convert a matched [`RouteConfig`] into a [`RouteResult`].
-///
-/// Priority: `proxy` beats `static`.  If neither is set the route is a
-/// no-op (unlikely in practice) and returns the fallback.
-///
-/// Without the `static` feature compiled in, `route.static` is never
-/// resolved into a `StaticFile` handler — see `router::match_static_or_fallback`'s
-/// doc comment for the shared degradation rationale.
-fn route_to_result(
-    route: &RouteConfig,
-    path: &str,
-    counters: &DashMap<String, AtomicUsize>,
-    upstream_health: &UpstreamRegistry,
-    #[cfg_attr(not(feature = "static"), allow(unused_variables))] static_options: Option<
-        &StaticOptions,
-    >,
-) -> RouteResult {
-    // ── Proxy action ─────────────────────────────────────────────────────────
-    if let Some(proxy_target) = &route.proxy {
-        return proxy_target_to_result(proxy_target, path, counters, upstream_health);
-    }
-
-    // ── Static action ─────────────────────────────────────────────────────────
-    #[cfg(feature = "static")]
-    if let Some(static_cfg) = &route.static_files {
-        let options = Arc::new(static_options.cloned().unwrap_or_default());
-        let (roots, strip_prefix) = router::resolve_static_roots(static_cfg, path);
-        if !roots.is_empty() {
-            return router::RouteResolution::local(UpstreamTarget::Local(
-                LocalHandler::StaticFile {
-                    roots,
-                    options,
-                    strip_prefix,
-                },
-            ));
-        }
-    }
-
-    // No action configured — fall through to fallback.
-    fallback_result()
-}
-
-/// Convert a [`ProxyRouteTarget`] to a [`RouteResult`].
-fn proxy_target_to_result(
-    target: &ProxyRouteTarget,
-    path: &str,
-    counters: &DashMap<String, AtomicUsize>,
-    upstream_health: &UpstreamRegistry,
-) -> RouteResult {
-    match target {
-        ProxyRouteTarget::Url(url) => url_target_to_result(url),
-        ProxyRouteTarget::RoundRobin(urls) => round_robin_target_to_result(urls, counters),
-        ProxyRouteTarget::Full(cfg) => full_cfg_to_result(cfg, path, counters, upstream_health),
-    }
-}
-
-/// Handle the `Full` form of a proxy route target (strategy selection, health filtering, etc.).
-fn full_cfg_to_result(
-    cfg: &crate::config::schema::ProxyRouteConfig,
-    path: &str,
-    counters: &DashMap<String, AtomicUsize>,
-    upstream_health: &UpstreamRegistry,
-) -> RouteResult {
-    let all_urls: Vec<String> = cfg
-        .targets
-        .iter()
-        .map(|t| match t {
-            crate::config::schema::ProxyTarget::Simple(u) => u.clone(),
-            crate::config::schema::ProxyTarget::Weighted(w) => w.url.clone(),
-        })
-        .collect();
-    let all_weighted: Vec<(String, u32)> = cfg
-        .targets
-        .iter()
-        .map(|t| match t {
-            crate::config::schema::ProxyTarget::Simple(u) => (u.clone(), 1),
-            crate::config::schema::ProxyTarget::Weighted(w) => (w.url.clone(), w.weight),
-        })
-        .collect();
-
-    // Filter to healthy upstreams; fail-open when all are down.
-    let (healthy, _fail_open) = upstream_health.filter_healthy(&all_urls);
-    let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
-
-    if urls.is_empty() {
-        return fallback_result();
-    }
-
-    // Circuit breaker: per-upstream capacity filtering (#156), shared with
-    // the legacy `proxy` map and `groups` paths via `capacity::pick_bounded`.
-    let max_conns = cfg
-        .health_check
-        .as_ref()
-        .and_then(|h| h.max_connections_per_upstream);
-    let slow_start_secs = cfg.health_check.as_ref().and_then(|h| h.slow_start_secs);
-    let route_key = path; // stable key for round-robin counters
-    let capacity = capacity::Capacity::evaluate(&urls, max_conns, route_key, upstream_health);
-    if matches!(capacity, capacity::Capacity::Exhausted) {
-        // Distinct from `fallback_result()`: capacity exhaustion is a 503,
-        // not "no route matched" — matches the legacy `proxy` map path.
-        return overloaded_result();
-    }
-
-    let weighted: Vec<(String, u32)> = all_weighted
-        .iter()
-        .filter(|(u, _)| urls.contains(u))
-        .cloned()
-        .collect();
-
-    // Use path as the hash input since client IP is not available at
-    // route-match time (the routes array doesn't carry it through).
-    let hash_val = upstream::fnv1a_hash(path);
-    let strategy = cfg.strategy.as_ref();
-
-    // Slow start (#157): ramp traffic to a recently-recovered upstream.
-    // `Ramp::new` is a true no-op when `slowStartSecs` is unset; hash-based
-    // strategies are exempt for free via `pick_bounded`'s own early return.
-    let ramp = Ramp::new(slow_start_secs, upstream_health);
-
-    let input = capacity::BoundedPick {
-        strategy,
-        healthy: &urls,
-        capacity: &capacity,
-        weighted: &weighted,
-        route_key,
-        hash_val,
-        counters,
-        health: upstream_health,
-        ramp: &ramp,
-    };
-    let Some((chosen_url, is_least_conn)) = capacity::pick_bounded(&input) else {
-        return fallback_result();
-    };
-
-    let strip = cfg.strip_prefix.unwrap_or(false).then(|| path.to_string());
-
-    // url_to_proxy_upstream may return None for a malformed URL. Parse
-    // BEFORE acquiring the circuit_tracking slot below (matches the
-    // ordering invariant in router.rs's resolve_proxy_routes) so a
-    // malformed-URL request can never leak a slot nothing will release.
-    let upstream = match router::url_to_proxy_upstream(&chosen_url, strip) {
-        Some(u) => u,
-        None => {
-            if is_least_conn {
-                upstream_health.conn_dec(&chosen_url);
-            }
-            return fallback_result();
-        }
-    };
-
-    // Same accounting shape as the legacy `proxy` map path (#155/#156): a
-    // slot is only acquired when least-conn didn't already track it but a
-    // cap is configured, so the capacity check above stays fed for every
-    // strategy.
-    let circuit_tracking = max_conns.is_some() && !is_least_conn;
-    if circuit_tracking {
-        upstream_health.conn_inc(&chosen_url);
-    }
-
-    // Fixed (#217): retry.urls now comes from the same health/capacity-
-    // filtered candidate list used to pick chosen_url above, matching
-    // router.rs's resolve_proxy_routes — a retry can no longer rotate into a
-    // peer already known unhealthy or at its connection cap. `capacity` was
-    // evaluated against `urls` (the health-filtered list) a few lines up,
-    // and the `Exhausted` case already returned before this point, so
-    // `candidates()` is always `Some` here; `unwrap_or(&urls)` is just a
-    // defensive fallback, not an expected path.
-    let retry = cfg.retry.as_ref().map(|r| {
-        // Slow start (#157): this retry list is its own routing decision that
-        // never goes through `pick_bounded` -- without wrapping it here, a
-        // route with `retry` configured would keep ignoring `slowStartSecs`
-        // for its fallback rotation, mirroring the same gap fixed in
-        // router.rs's `resolve_proxy_routes` retry-bypass branch.
-        let mut retry_urls: Vec<String> = ramp
-            .filter_candidates(capacity.candidates(&urls).unwrap_or(&urls))
-            .into_owned();
-        // Anchor attempt 1 to the peer actually chosen above (#367) — this
-        // list used to be the unrotated candidate list, so attempt 1 always
-        // connected to `retry_urls[0]` regardless of which peer `chosen_url`
-        // (round-robin/least-conn/etc.) actually was, defeating round-robin
-        // and misattributing conn_count/EWMA/access-log stats to the wrong
-        // peer. Mirrors router.rs's `pick_with_retry`, which builds
-        // `chosen_url` and `retry.urls` from the same rotation so the
-        // invariant holds by construction; here the two are picked
-        // separately (via `pick_bounded` vs. this list's own ramp/capacity
-        // filter), so restore it explicitly instead. `chosen_url` can be
-        // absent from this list for a hash-based strategy — exempt from
-        // ramp filtering during its own pick_bounded pick, but not from this
-        // separate list's filter (see #366's analogous gap in router.rs) —
-        // in that case prepend it rather than leaving the invariant broken.
-        match retry_urls.iter().position(|u| u == &chosen_url) {
-            Some(pos) => retry_urls.rotate_left(pos),
-            None => retry_urls.insert(0, chosen_url.clone()),
-        }
-        RetryState {
-            urls: retry_urls,
-            attempt: 0,
-            max_attempts: r.attempts as usize,
-            conditions: r.conditions.clone(),
-            backoff_ms: r.backoff_ms,
-            backoff_jitter: r.backoff_jitter.unwrap_or(false),
-            budget_percent: r.budget_percent,
-            is_retrying: false,
-            // #216 part 2: mirrors upstream_conn_slot's own formula a few
-            // lines below (is_least_conn || circuit_tracking) -- unlike
-            // router.rs's retry-bypass branch, this path goes through
-            // pick_bounded, so is_least_conn can genuinely be true here.
-            max_conns_per_upstream: max_conns,
-            tracks_conn_slot: is_least_conn || circuit_tracking,
-        }
-    });
-
-    // proxy_upstream_url is populated unconditionally (#155) so passive-health
-    // attribution works for every strategy; upstream_conn_slot tracks whether
-    // this request actually holds a conn_count slot to release.
-    let proxy_upstream_url = Some(chosen_url.clone());
-
-    router::RouteResolution {
-        upstream,
-        retry,
-        proxy_timeout: cfg.timeout.clone(),
-        proxy_pool: cfg.pool.clone(),
-        proxy_http2: cfg.http2.unwrap_or(false),
-        proxy_upstream_url,
-        upstream_conn_slot: is_least_conn || circuit_tracking,
-        proxy_cache_cfg: cfg.cache.clone(),
-        passive_unhealthy_status: cfg
-            .health_check
-            .as_ref()
-            .and_then(|hc| hc.unhealthy_status.clone())
-            .unwrap_or_default(),
-        passive_unhealthy_latency_ms: cfg
-            .health_check
-            .as_ref()
-            .and_then(|hc| hc.unhealthy_latency_ms),
-        websocket_allowed: cfg.websocket.unwrap_or(false),
-        sticky_set_cookie: None, // routes.rs path: sticky is handled in router.rs
-        // Stamped by `match_routes` after this function returns (#360), same
-        // as every other return path in this file (fallback/overloaded).
-        route_rate_limit: None,
-        route_priority: None,
-    }
-}
-
-/// Convert a single-URL `ProxyRouteTarget::Url` to a [`RouteResult`].
-fn url_target_to_result(url: &str) -> RouteResult {
-    match router::url_to_proxy_upstream(url, None) {
-        Some(upstream) => router::RouteResolution::local(upstream),
-        None => fallback_result(),
-    }
-}
-
-/// Rotate through `urls` round-robin and convert the chosen URL to a [`RouteResult`].
-fn round_robin_target_to_result(
-    urls: &[String],
-    counters: &DashMap<String, AtomicUsize>,
-) -> RouteResult {
-    let key = urls.join(",");
-    let counter = counters.entry(key).or_insert_with(|| AtomicUsize::new(0));
-    let idx = counter.fetch_add(1, Ordering::Relaxed) % urls.len();
-    match router::url_to_proxy_upstream(&urls[idx], None) {
-        Some(upstream) => router::RouteResolution::local(upstream),
-        None => fallback_result(),
-    }
-}
-
-/// Convenience: return the canonical "fall through to fallback" result.
-#[inline]
-fn fallback_result() -> RouteResult {
-    router::RouteResolution::local(UpstreamTarget::Local(LocalHandler::Fallback))
-}
-
-/// Convenience: return the canonical "circuit open, 503" result. Distinct
-/// from [`fallback_result`] — capacity exhaustion means every healthy peer
-/// is at its connection cap, not "no route matched" (#156).
-#[inline]
-fn overloaded_result() -> RouteResult {
-    router::RouteResolution::local(UpstreamTarget::Local(LocalHandler::Overloaded))
 }
 
 // ── Glob path matching ────────────────────────────────────────────────────────
@@ -584,7 +324,6 @@ fn query_param_value<'a>(qs: &'a str, key: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::LoadBalanceStrategy;
     use indexmap::IndexMap;
 
     // ── glob_match ────────────────────────────────────────────────────────────
@@ -825,7 +564,6 @@ mod tests {
             None,
             &counters,
             &registry,
-            None,
         );
         assert!(result.is_none());
     }
@@ -851,7 +589,6 @@ mod tests {
             None,
             &counters,
             &registry,
-            None,
         );
         assert!(result.is_none());
     }
@@ -859,7 +596,7 @@ mod tests {
     #[test]
     fn match_routes_first_match_wins() {
         use crate::config::schema::{ProxyRouteTarget, RouteConfig};
-        use crate::proxy::ctx::UpstreamTarget;
+        use crate::proxy::routing::outcome::ProxyOutcome;
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = crate::proxy::health::UpstreamRegistry::new();
         let routes = vec![
@@ -888,660 +625,22 @@ mod tests {
             None,
             &counters,
             &registry,
-            None,
         );
-        assert!(result.is_some());
-        let target = result.unwrap().upstream;
+        let route_match = result.expect("must match");
+        let RouteMatch::Proxy { resolution, .. } = route_match else {
+            panic!("expected a Proxy match");
+        };
         // First route should win — addr must contain port 4000.
-        if let UpstreamTarget::Proxy { addr, .. } = target {
-            assert!(addr.contains("4000"), "expected first:4000, got {addr}");
-        } else {
-            panic!("expected Proxy target");
-        }
-    }
-
-    // ── route_to_result / proxy_target_to_result ──────────────────────────────
-
-    #[test]
-    fn route_to_result_url_proxy() {
-        use crate::config::schema::{ProxyRouteTarget, RouteConfig};
-        use crate::proxy::ctx::UpstreamTarget;
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Url("http://backend:4000".to_string())),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
-    }
-
-    #[test]
-    fn route_to_result_invalid_url_gives_fallback() {
-        use crate::config::schema::{ProxyRouteTarget, RouteConfig};
-        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
-        // "http://" has an empty host segment — url_to_host_port returns None.
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Url("http://".to_string())),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        assert!(matches!(
-            target,
-            UpstreamTarget::Local(LocalHandler::Fallback)
-        ));
-    }
-
-    #[test]
-    fn route_to_result_round_robin_proxy() {
-        use crate::config::schema::{ProxyRouteTarget, RouteConfig};
-        use crate::proxy::ctx::UpstreamTarget;
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::RoundRobin(vec![
-                "http://b1:4000".to_string(),
-                "http://b2:4001".to_string(),
-            ])),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
-    }
-
-    #[test]
-    fn route_to_result_round_robin_rotates() {
-        use crate::config::schema::{ProxyRouteTarget, RouteConfig};
-        use crate::proxy::ctx::UpstreamTarget;
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::RoundRobin(vec![
-                "http://b1:4000".to_string(),
-                "http://b2:4001".to_string(),
-            ])),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-
-        let t1 = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        let t2 = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-
-        // Round-robin must select different upstreams on consecutive calls.
-        let a1 = match t1 {
-            UpstreamTarget::Proxy { ref addr, .. } => addr.clone(),
-            _ => panic!("expected Proxy target for first pick"),
-        };
-        let a2 = match t2 {
-            UpstreamTarget::Proxy { ref addr, .. } => addr.clone(),
-            _ => panic!("expected Proxy target for second pick"),
-        };
-        assert_ne!(a1, a2, "round-robin must rotate across upstreams");
-    }
-
-    #[test]
-    fn route_to_result_no_proxy_no_static_gives_fallback() {
-        use crate::config::schema::RouteConfig;
-        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: None,
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        assert!(matches!(
-            target,
-            UpstreamTarget::Local(LocalHandler::Fallback)
-        ));
-    }
-
-    #[test]
-    fn route_to_result_full_proxy_round_robin() {
-        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
-        use crate::proxy::ctx::UpstreamTarget;
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![
-                    ProxyTarget::Simple("http://b1:4000".to_string()),
-                    ProxyTarget::Simple("http://b2:4001".to_string()),
-                ],
-                strategy: Some(LoadBalanceStrategy::RoundRobin),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
-    }
-
-    #[test]
-    fn route_to_result_full_proxy_random_strategy() {
-        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
-        use crate::proxy::ctx::UpstreamTarget;
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![ProxyTarget::Simple("http://b1:4000".to_string())],
-                strategy: Some(LoadBalanceStrategy::Random),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
-    }
-
-    #[test]
-    fn route_to_result_full_proxy_least_conn_strategy() {
-        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
-        use crate::proxy::ctx::UpstreamTarget;
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![ProxyTarget::Simple("http://b1:4000".to_string())],
-                strategy: Some(LoadBalanceStrategy::LeastConn),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
-    }
-
-    #[test]
-    fn route_to_result_full_proxy_ip_hash_strategy() {
-        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
-        use crate::proxy::ctx::UpstreamTarget;
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![ProxyTarget::Simple("http://b1:4000".to_string())],
-                strategy: Some(LoadBalanceStrategy::IpHash),
-                hash_key: Some("ip".to_string()),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/api/users", &counters, &registry, None).upstream;
-        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
-    }
-
-    #[test]
-    fn route_to_result_full_proxy_weighted_round_robin() {
-        use crate::config::schema::{
-            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig, WeightedTarget,
-        };
-        use crate::proxy::ctx::UpstreamTarget;
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![
-                    ProxyTarget::Weighted(WeightedTarget {
-                        url: "http://b1:4000".to_string(),
-                        weight: 3,
-                    }),
-                    ProxyTarget::Weighted(WeightedTarget {
-                        url: "http://b2:4001".to_string(),
-                        weight: 1,
-                    }),
-                ],
-                strategy: Some(LoadBalanceStrategy::WeightedRoundRobin),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
-    }
-
-    #[test]
-    fn route_to_result_full_proxy_consistent_hash() {
-        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
-        use crate::proxy::ctx::UpstreamTarget;
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![ProxyTarget::Simple("http://b1:4000".to_string())],
-                strategy: Some(LoadBalanceStrategy::ConsistentHash),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/api/items/42", &counters, &registry, None).upstream;
-        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
-    }
-
-    #[test]
-    fn route_to_result_full_proxy_all_unhealthy_fails_open() {
-        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
-        use crate::proxy::ctx::UpstreamTarget;
-        use crate::proxy::health::UpstreamEntry;
-
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        // Mark the only upstream as unhealthy.
-        registry.statuses.insert(
-            "http://b1:4000".to_string(),
-            UpstreamEntry {
-                healthy: false,
-                ..Default::default()
-            },
-        );
-
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![ProxyTarget::Simple("http://b1:4000".to_string())],
-                strategy: Some(LoadBalanceStrategy::RoundRobin),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        // Fail-open: when all upstreams are unhealthy the router falls back to
-        // the full (unhealthy) pool rather than refusing traffic.
-        assert!(
-            matches!(target, UpstreamTarget::Proxy { .. }),
-            "fail-open must still pick from the full upstream pool, got {target:?}"
-        );
-    }
-
-    #[test]
-    fn route_to_result_full_proxy_with_strip_prefix_and_retry() {
-        use crate::config::schema::{
-            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RetryConfig, RouteConfig,
-        };
-        use crate::proxy::ctx::UpstreamTarget;
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![ProxyTarget::Simple("http://b1:4000".to_string())],
-                strategy: Some(LoadBalanceStrategy::RoundRobin),
-                strip_prefix: Some(true),
-                retry: Some(RetryConfig {
-                    attempts: 2,
-                    conditions: vec!["connection_error".to_string()],
-                    backoff_ms: Some(50),
-                    backoff_jitter: None,
-                    budget_percent: None,
-                }),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let _res = route_to_result(&route, "/api/users", &counters, &registry, None);
-        let target = _res.upstream;
-        let retry = _res.retry;
-        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
-        assert!(retry.is_some(), "expected retry state to be populated");
-    }
-
-    /// Regression test for #217: `retry.urls` must come from the
-    /// health-filtered candidate list, not the raw config target list — a
-    /// retry must never be able to rotate into a peer already known
-    /// unhealthy. Reverting the fix (`urls: all_urls.clone()`) would make
-    /// this test fail, since `all_urls` still contains the unhealthy target.
-    #[test]
-    fn route_to_result_retry_urls_exclude_unhealthy_targets() {
-        use crate::config::schema::{
-            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RetryConfig, RouteConfig,
-        };
-        use crate::proxy::health::UpstreamEntry;
-
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        // Mark b2 unhealthy; b1 stays healthy (default).
-        registry.statuses.insert(
-            "http://b2:4000".to_string(),
-            UpstreamEntry {
-                healthy: false,
-                ..Default::default()
-            },
-        );
-
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![
-                    ProxyTarget::Simple("http://b1:4000".to_string()),
-                    ProxyTarget::Simple("http://b2:4000".to_string()),
-                ],
-                strategy: Some(LoadBalanceStrategy::RoundRobin),
-                retry: Some(RetryConfig {
-                    attempts: 2,
-                    conditions: vec!["connection_error".to_string()],
-                    backoff_ms: Some(50),
-                    backoff_jitter: None,
-                    budget_percent: None,
-                }),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let res = route_to_result(&route, "/api/users", &counters, &registry, None);
-        let retry = res.retry.expect("retry state must be populated");
-        assert_eq!(
-            retry.urls,
-            vec!["http://b1:4000".to_string()],
-            "retry candidate list must exclude the unhealthy target"
-        );
-    }
-
-    /// Regression test for #367: `retry.urls[0]` must always equal the peer
-    /// actually chosen by the route's strategy (`proxy_upstream_url`), not
-    /// just the head of the unrotated candidate list. Drives round-robin
-    /// selection across several requests on a route with two healthy
-    /// targets and `retry` configured — reverting the anchoring fix (using
-    /// the unrotated `ramp.filter_candidates(...)` list directly) would make
-    /// every request's `retry.urls[0]` come back as `http://b1:4000`
-    /// regardless of which peer round-robin actually picked for that
-    /// request, since `chosen_url` alternates but the candidate list never
-    /// rotates on its own.
-    #[test]
-    fn route_to_result_retry_urls_anchored_to_chosen_peer() {
-        use crate::config::schema::{
-            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RetryConfig, RouteConfig,
-        };
-
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![
-                    ProxyTarget::Simple("http://b1:4000".to_string()),
-                    ProxyTarget::Simple("http://b2:4000".to_string()),
-                ],
-                strategy: Some(LoadBalanceStrategy::RoundRobin),
-                retry: Some(RetryConfig {
-                    attempts: 2,
-                    conditions: vec!["connection_error".to_string()],
-                    backoff_ms: Some(50),
-                    backoff_jitter: None,
-                    budget_percent: None,
-                }),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-
-        let mut saw_b1_first = false;
-        let mut saw_b2_first = false;
-        for _ in 0..4 {
-            let res = route_to_result(&route, "/api/users", &counters, &registry, None);
-            let chosen = res
-                .proxy_upstream_url
-                .clone()
-                .expect("proxy_upstream_url must be populated");
-            let retry = res.retry.expect("retry state must be populated");
-            assert_eq!(
-                retry.urls.first(),
-                Some(&chosen),
-                "retry.urls[0] must equal the peer round-robin actually chose"
-            );
-            match chosen.as_str() {
-                "http://b1:4000" => saw_b1_first = true,
-                "http://b2:4000" => saw_b2_first = true,
-                other => panic!("unexpected chosen upstream: {other}"),
+        match resolution.outcome {
+            ProxyOutcome::Upstream(pu) => {
+                assert!(
+                    pu.addr.contains("4000"),
+                    "expected first:4000, got {}",
+                    pu.addr
+                )
             }
+            other => panic!("expected Upstream outcome, got {other:?}"),
         }
-        // Round-robin must have actually alternated across 4 requests over
-        // 2 peers — otherwise this test would trivially pass even with the
-        // pre-fix bug (both would be b1 every time).
-        assert!(
-            saw_b1_first && saw_b2_first,
-            "expected round-robin to pick both peers across 4 requests"
-        );
-    }
-
-    #[test]
-    fn route_to_result_full_proxy_least_response_time() {
-        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
-        use crate::proxy::ctx::UpstreamTarget;
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![
-                    ProxyTarget::Simple("http://b1:4000".to_string()),
-                    ProxyTarget::Simple("http://b2:4001".to_string()),
-                ],
-                strategy: Some(LoadBalanceStrategy::LeastResponseTime),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        assert!(matches!(target, UpstreamTarget::Proxy { .. }));
-    }
-
-    #[test]
-    #[cfg(feature = "static")]
-    fn route_to_result_static_files() {
-        use crate::config::schema::{RouteConfig, StaticConfig};
-        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: None,
-            static_files: Some(StaticConfig::Single("./dist".to_string())),
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/", &counters, &registry, None).upstream;
-        assert!(matches!(
-            target,
-            UpstreamTarget::Local(LocalHandler::StaticFile { .. })
-        ));
-    }
-
-    #[test]
-    fn route_to_result_round_robin_invalid_url_gives_fallback() {
-        // "http://" has an empty host — url_to_proxy_upstream returns None → Fallback.
-        use crate::config::schema::{ProxyRouteTarget, RouteConfig};
-        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::RoundRobin(vec!["http://".to_string()])),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        assert!(matches!(
-            target,
-            UpstreamTarget::Local(LocalHandler::Fallback)
-        ));
-    }
-
-    #[test]
-    fn route_to_result_full_proxy_empty_targets_gives_fallback() {
-        // Empty targets list → filter_healthy returns empty → Fallback.
-        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, RouteConfig};
-        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![],
-                strategy: Some(LoadBalanceStrategy::RoundRobin),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        assert!(matches!(
-            target,
-            UpstreamTarget::Local(LocalHandler::Fallback)
-        ));
-    }
-
-    #[test]
-    fn route_to_result_full_proxy_least_conn_invalid_url_gives_fallback() {
-        // LeastConn + invalid URL (bare "http://"): the URL cannot be resolved
-        // to a host:port, so route_to_result returns Fallback.
-        use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig};
-        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![ProxyTarget::Simple("http://".to_string())],
-                strategy: Some(LoadBalanceStrategy::LeastConn),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        assert!(matches!(
-            target,
-            UpstreamTarget::Local(LocalHandler::Fallback)
-        ));
-        // Verify the connection counter was not left incremented.
-        // (LeastConn increments the counter before picking the peer; on parse
-        // failure it must decrement before returning Fallback.)
-        let conn_count = counters
-            .get("http://")
-            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
-            .unwrap_or(0);
-        assert_eq!(
-            conn_count, 0,
-            "conn counter must be zero after invalid-URL fallback"
-        );
-    }
-
-    // ── circuit breaker capacity enforcement (#156) ───────────────────────────
-
-    #[test]
-    fn route_to_result_full_proxy_capacity_exhausted_gives_overloaded_not_fallback() {
-        // Before #156, this config path had zero circuit-breaker code at all —
-        // maxConnectionsPerUpstream was silently ignored. Also asserts the
-        // 503 shape: capacity exhaustion must NOT reuse fallback_result().
-        use crate::config::schema::{
-            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig, UpstreamHealthCheck,
-        };
-        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
-
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![ProxyTarget::Simple("http://only:4000".to_string())],
-                health_check: Some(UpstreamHealthCheck {
-                    max_connections_per_upstream: Some(1),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-        registry.conn_inc("http://only:4000"); // saturate the only target
-
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        assert!(
-            matches!(target, UpstreamTarget::Local(LocalHandler::Overloaded)),
-            "capacity-exhausted routes[] route must return Overloaded (503), got {target:?}"
-        );
-    }
-
-    #[test]
-    fn route_to_result_full_proxy_circuit_tracking_sets_upstream_conn_slot() {
-        // RoundRobin (not least-conn) + a configured cap: circuit_tracking
-        // must acquire a conn_count slot so the capacity check has real data
-        // to filter on for subsequent requests.
-        use crate::config::schema::{
-            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig, UpstreamHealthCheck,
-        };
-
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![ProxyTarget::Simple("http://only:4000".to_string())],
-                health_check: Some(UpstreamHealthCheck {
-                    max_connections_per_upstream: Some(5),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-
-        let result = route_to_result(&route, "/api", &counters, &registry, None);
-        assert!(
-            result.upstream_conn_slot,
-            "round-robin with maxConnectionsPerUpstream set must acquire a conn_count slot"
-        );
-        assert_eq!(
-            registry.conn_load("http://only:4000"),
-            1,
-            "circuit_tracking must have called conn_inc"
-        );
-    }
-
-    #[test]
-    fn route_to_result_full_proxy_malformed_url_with_capacity_configured_leaks_no_slot() {
-        // LeastConn + an invalid URL + a cap also configured: the malformed-URL
-        // release path must still fire, and circuit_tracking's conn_inc must
-        // never have run (it happens only after a successful URL parse), so
-        // conn_load ends at exactly zero either way.
-        use crate::config::schema::{
-            ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RouteConfig, UpstreamHealthCheck,
-        };
-        use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
-
-        let route = RouteConfig {
-            r#match: MatchConfig::default(),
-            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
-                targets: vec![ProxyTarget::Simple("http://".to_string())],
-                strategy: Some(LoadBalanceStrategy::LeastConn),
-                health_check: Some(UpstreamHealthCheck {
-                    max_connections_per_upstream: Some(5),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }))),
-            static_files: None,
-        };
-        let counters: DashMap<String, AtomicUsize> = DashMap::new();
-        let registry = crate::proxy::health::UpstreamRegistry::new();
-
-        let target = route_to_result(&route, "/api", &counters, &registry, None).upstream;
-        assert!(matches!(
-            target,
-            UpstreamTarget::Local(LocalHandler::Fallback)
-        ));
-        assert_eq!(
-            registry.conn_load("http://"),
-            0,
-            "malformed-URL release must leave no leaked slot even with a cap configured"
-        );
     }
 
     // ── cookie_value ──────────────────────────────────────────────────────────
