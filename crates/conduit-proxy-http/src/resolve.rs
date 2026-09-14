@@ -1,25 +1,28 @@
-//! Proxy-map (`site.proxy` as a `Routes` map) target resolution (issue #143,
-//! PR A2 of a 3-PR plan) — split out of `router.rs`'s former
+//! Proxy-map (`site.proxy` as a `Routes` map) target resolution (issue
+//! #143) — split out of the root crate's `router.rs`'s former
 //! `resolve_proxy_routes_for_target` (~250 lines) into a flat orchestrator
-//! plus named helper functions, same style as PR #91/#92's
-//! `request_phase.rs`/`logging_phase.rs` split. Every helper below returns
+//! plus named helper functions in PR A2 (issue #419), same style as PR
+//! #91/#92's `request_phase.rs`/`logging_phase.rs` split, then moved into
+//! this crate in PR B (issue #143 itself). Every helper below returns
 //! [`ProxyResolution`] instead of `Option<RouteResolution>` — see
-//! `routing::outcome`'s module doc for why.
+//! `crate::outcome`'s module doc for why.
 
-use crate::config::schema::{ProxyRouteTarget, RateLimitConfig, StickyConfig};
-use crate::proxy::health::UpstreamRegistry;
-use crate::proxy::routing::groups::resolve_grouped;
-use crate::proxy::routing::options::{ProxyCtx, RouteOptions};
-use crate::proxy::routing::outcome::{self, ProxyResolution, ProxyUpstream};
-use crate::proxy::routing::peer_pick::{build_pool, pick_peer_with_retry};
-use crate::proxy::routing::state::{ProxyReqState, RouteRateLimit};
-use crate::proxy::routing::sticky;
-use crate::proxy::{router, upstream};
+use conduit_ratelimit::RateLimitConfig;
+use conduit_upstream::health::UpstreamRegistry;
+
+use crate::config::{ProxyRouteTarget, StickyConfig};
+use crate::groups::resolve_grouped;
+use crate::options::{ProxyCtx, RouteOptions};
+use crate::outcome::{self, ProxyResolution, ProxyUpstream};
+use crate::peer_pick::{build_pool, pick_peer_with_retry};
+use crate::state::{ProxyReqState, RouteRateLimit};
+use crate::sticky;
+use crate::targets;
 
 /// Match a request against the `proxy` map's routes and stamp the matched
 /// route's rate limit/priority onto the resulting resolution.
 ///
-/// The stamp is applied **after** [`resolve_target`] returns, regardless of
+/// The stamp is applied **after** the private `resolve_target` returns, regardless of
 /// which outcome it produced (`Upstream`/`Overloaded`/`Unresolved`) — a
 /// request that matches a route but resolves to an overloaded/unresolved
 /// outcome must still carry that route's rate limit (#360, #415): the
@@ -28,7 +31,7 @@ use crate::proxy::{router, upstream};
 /// evaluating `route_limits_from_target` once up front and stamping it onto
 /// whatever [`ProxyResolution`] comes back.
 ///
-/// **Issue #415 fix**: before this PR, the inner resolution function
+/// **Issue #415 fix**: before this fix, the inner resolution function
 /// returned `Option<RouteResolution>`, and a `?` on its `None` result here
 /// discarded the already-computed stamp — a proxy-map route with `rateLimit`
 /// configured whose target failed to resolve (e.g. malformed URL) fell
@@ -36,7 +39,10 @@ use crate::proxy::{router, upstream};
 /// inner function always returns a `ProxyResolution` (never a bare `None`),
 /// there is no `?` to short-circuit past — the stamp below applies
 /// unconditionally, including to `ProxyOutcome::Unresolved`.
-pub(crate) fn resolve_proxy_routes(
+///
+/// `pub` (not `pub(crate)`): called cross-crate from the root crate's
+/// `router.rs::resolve_legacy_proxy`.
+pub fn resolve_proxy_routes(
     routes: &indexmap::IndexMap<String, ProxyRouteTarget>,
     ctx: &ProxyCtx<'_>,
 ) -> Option<ProxyResolution> {
@@ -259,8 +265,8 @@ fn effective_targets(
         .get_override_targets(ctx.site_label, route_key)
     else {
         return (
-            upstream::target_urls(route_target),
-            upstream::weighted_targets(route_target),
+            targets::target_urls(route_target),
+            targets::weighted_targets(route_target),
         );
     };
     let urls = ov.iter().map(|(u, _)| u.clone()).collect();
@@ -284,9 +290,7 @@ fn resolve_backup(
     }
     let backup = backup?;
     tracing::info!(backup = %backup, "all primary upstreams unhealthy — routing to backup");
-    let resolution = match router::url_to_proxy_upstream(backup, None)
-        .and_then(outcome::upstream_target_into_proxy_upstream)
-    {
+    let resolution = match outcome::url_to_proxy_upstream(backup, None) {
         Some(upstream) => ProxyResolution::upstream(upstream, ProxyReqState::default()),
         None => ProxyResolution::unresolved(ProxyReqState::default()),
     };
@@ -303,17 +307,12 @@ fn build_proxy_upstream(
     is_least_conn: bool,
     upstream_health: &UpstreamRegistry,
 ) -> Option<ProxyUpstream> {
-    let Some(target) = router::url_to_proxy_upstream(chosen_url, strip) else {
+    let Some(base) = outcome::url_to_proxy_upstream(chosen_url, strip) else {
         if is_least_conn {
             upstream_health.conn_dec(chosen_url);
         }
         return None;
     };
-    // `url_to_proxy_upstream` only ever returns the `Proxy` variant when
-    // `Some` (see `routing::outcome`'s own doc comment) — this `expect` is
-    // documentation of that invariant, not a real failure path.
-    let base = outcome::upstream_target_into_proxy_upstream(target)
-        .expect("url_to_proxy_upstream only ever returns the Proxy variant");
     Some(ProxyUpstream {
         rewrite: opts.rewrite.map(<[_]>::to_vec),
         mirror_url: opts.mirror.map(str::to_owned),

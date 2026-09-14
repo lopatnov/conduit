@@ -1,25 +1,27 @@
-//! Two-level (grouped) upstream routing (issue #143, PR A2 of a 3-PR plan) —
-//! moved out of `router.rs`'s `resolve_proxy_routes_for_target`, updated to
-//! return [`ProxyResolution`] instead of `Option<RouteResolution>` (the
-//! `Unresolved`/`Overloaded` outcomes replace the previous bare `None`/
-//! `Some(overloaded())` returns — every one of this function's early-return
-//! paths used to propagate as a bare `None` that discarded any
-//! already-computed state; `ProxyResolution` fixes that class of bug the
-//! same way #415 fixed it for the flat-route path, see `routing::resolve`).
+//! Two-level (grouped) upstream routing (issue #143) — moved out of the root
+//! crate's `router.rs`'s `resolve_proxy_routes_for_target` in PR A2 (issue
+//! #419), updated to return [`ProxyResolution`] instead of
+//! `Option<RouteResolution>` (the `Unresolved`/`Overloaded` outcomes replace
+//! the previous bare `None`/`Some(overloaded())` returns — every one of this
+//! function's early-return paths used to propagate as a bare `None` that
+//! discarded any already-computed state; `ProxyResolution` fixes that class
+//! of bug the same way #415 fixed it for the flat-route path, see
+//! `crate::resolve`), then moved into this crate in PR B (issue #143
+//! itself).
 
 use std::sync::atomic::AtomicUsize;
 
 use dashmap::DashMap;
 
-use crate::config::schema::{LoadBalanceStrategy, RetryConfig, UpstreamGroup};
-use crate::proxy::ctx::UpstreamTarget;
-use crate::proxy::health::UpstreamRegistry;
-use crate::proxy::routing::options::{ProxyCtx, RouteOptions};
-use crate::proxy::routing::outcome::{ProxyResolution, ProxyUpstream};
-use crate::proxy::routing::retry::pick_with_retry;
-use crate::proxy::routing::state::{ProxyReqState, RetryState};
-use crate::proxy::slow_start::Ramp;
-use crate::proxy::{capacity, router, upstream};
+use conduit_upstream::health::UpstreamRegistry;
+use conduit_upstream::{LoadBalanceStrategy, ProxyTarget, UpstreamGroup};
+
+use crate::config::RetryConfig;
+use crate::options::{ProxyCtx, RouteOptions};
+use crate::outcome::{self, ProxyResolution, ProxyUpstream};
+use crate::retry::pick_with_retry;
+use crate::state::{ProxyReqState, RetryState};
+use crate::{capacity, slow_start::Ramp};
 
 /// Extra context required by hash-based and weighted strategies.
 struct HashCtx<'a> {
@@ -36,9 +38,10 @@ struct HashCtx<'a> {
 /// when the inflight counter on `upstream_health` has already been incremented
 /// so the caller knows to store the URL for later decrement.
 ///
-/// Strategy dispatch is delegated to [`crate::proxy::strategy`] — to add a new
-/// load-balancing strategy, implement [`crate::proxy::strategy::LoadBalancingStrategy`]
-/// there and map it in `strategy::from_config`. This function does not need to change.
+/// Strategy dispatch is delegated to [`conduit_upstream::strategy`] — to add
+/// a new load-balancing strategy, implement
+/// [`conduit_upstream::strategy::LoadBalancingStrategy`] there and map it in
+/// `strategy::from_config`. This function does not need to change.
 fn pick_url_by_strategy(
     urls: &[String],
     route_key: &str,
@@ -60,8 +63,9 @@ fn pick_url_by_strategy(
         return Some((url, Some(state), false));
     }
 
-    let s =
-        crate::proxy::strategy::from_config(strategy.unwrap_or(&LoadBalanceStrategy::RoundRobin));
+    let s = conduit_upstream::strategy::from_config(
+        strategy.unwrap_or(&LoadBalanceStrategy::RoundRobin),
+    );
     let (url, is_least_conn) = s.pick(
         urls,
         hash_ctx.weighted,
@@ -99,7 +103,7 @@ pub(crate) fn resolve_grouped(
     } else {
         ctx.client_ip
     };
-    let hash_val = upstream::fnv1a_hash(hash_input);
+    let hash_val = conduit_upstream::targets::fnv1a_hash(hash_input);
 
     let group_names: Vec<String> = groups.iter().map(|g| g.name.clone()).collect();
     let picked_name = {
@@ -131,16 +135,16 @@ pub(crate) fn resolve_grouped(
         .targets
         .iter()
         .map(|t| match t {
-            crate::config::schema::ProxyTarget::Simple(u) => u.clone(),
-            crate::config::schema::ProxyTarget::Weighted(w) => w.url.clone(),
+            ProxyTarget::Simple(u) => u.clone(),
+            ProxyTarget::Weighted(w) => w.url.clone(),
         })
         .collect();
     let weighted: Vec<(String, u32)> = group
         .targets
         .iter()
         .map(|t| match t {
-            crate::config::schema::ProxyTarget::Simple(u) => (u.clone(), 1u32),
-            crate::config::schema::ProxyTarget::Weighted(w) => (w.url.clone(), w.weight),
+            ProxyTarget::Simple(u) => (u.clone(), 1u32),
+            ProxyTarget::Weighted(w) => (w.url.clone(), w.weight),
         })
         .collect();
 
@@ -197,23 +201,14 @@ pub(crate) fn resolve_grouped(
     let strip = opts
         .strip_prefix
         .then(|| route_key.trim_end_matches('/').to_string());
-    let upstream: ProxyUpstream = match router::url_to_proxy_upstream(&chosen_url, strip) {
-        Some(UpstreamTarget::Proxy {
-            addr,
-            tls,
-            sni,
-            strip_prefix,
-            ..
-        }) => ProxyUpstream {
-            addr,
-            tls,
-            sni,
-            strip_prefix,
+    let upstream: ProxyUpstream = match outcome::url_to_proxy_upstream(&chosen_url, strip) {
+        Some(base) => ProxyUpstream {
             rewrite: opts.rewrite.map(<[_]>::to_vec),
             mirror_url: None, // groups don't support mirror in V1
             upstream_tls: None,
+            ..base
         },
-        _ => {
+        None => {
             if is_least_conn {
                 ctx.upstream_health.conn_dec(&chosen_url);
             }
@@ -393,7 +388,7 @@ mod tests {
         let counters = DashMap::new();
         let reg = UpstreamRegistry::new();
         let urls = vec!["http://a:4000".to_string(), "http://b:4000".to_string()];
-        let hash_val = upstream::fnv1a_hash("1.2.3.4");
+        let hash_val = conduit_upstream::targets::fnv1a_hash("1.2.3.4");
         let ctx = HashCtx {
             weighted: &[],
             hash_val,

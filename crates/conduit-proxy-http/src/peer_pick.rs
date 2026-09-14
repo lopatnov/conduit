@@ -1,17 +1,19 @@
 //! Candidate-pool building and peer selection for the `proxy` map path
-//! (issue #143, PR A2 of a 3-PR plan) — split out of `routing::resolve`'s
-//! orchestrator into their own file to keep `resolve.rs` under the
-//! 400-production-line soft limit; conceptually still part of that
-//! function's phase split, just physically separated.
+//! (issue #143) — split out of `crate::resolve`'s orchestrator into their
+//! own file in PR A2 (issue #419) to keep `resolve.rs` under the
+//! 400-production-line soft limit (conceptually still part of that
+//! function's phase split, just physically separated), then moved into this
+//! crate in PR B (issue #143 itself).
 
-use crate::config::schema::LoadBalanceStrategy;
-use crate::proxy::capacity;
-use crate::proxy::routing::options::{ProxyCtx, RouteOptions};
-use crate::proxy::routing::outcome::ProxyResolution;
-use crate::proxy::routing::retry::retry_state_for;
-use crate::proxy::routing::state::{ProxyReqState, RetryState};
-use crate::proxy::routing::sticky::{self, Sticky};
-use crate::proxy::slow_start::Ramp;
+use conduit_upstream::LoadBalanceStrategy;
+
+use crate::capacity;
+use crate::options::{ProxyCtx, RouteOptions};
+use crate::outcome::ProxyResolution;
+use crate::retry::retry_state_for;
+use crate::slow_start::Ramp;
+use crate::state::{ProxyReqState, RetryState};
+use crate::sticky::{self, Sticky};
 
 /// Health-filtered, capacity-checked candidate pool for one routing decision.
 pub(crate) struct CandidatePool {

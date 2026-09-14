@@ -8,11 +8,12 @@ use crate::config::schema::{
 };
 
 // `RetryState`/`RouteRateLimit`/`ProxyReqState` moved into
-// `src/proxy/routing/state.rs` (issue #143, PR A1 of a 3-PR plan) — a pure
-// same-crate regrouping ahead of the eventual `conduit-proxy-http` crate
-// extraction. Re-exported here so every existing `use crate::proxy::ctx::
-// {RetryState, ...}` call site keeps resolving unchanged.
-pub use crate::proxy::routing::state::{ProxyReqState, RetryState, RouteRateLimit};
+// `crates/conduit-proxy-http::state` (issue #114/#143 — PR A1, issue #418,
+// first grouped these fields same-crate; PR B, issue #143 itself, moved
+// them into the new crate). Re-exported here so every existing
+// `use crate::proxy::ctx::{RetryState, ...}` call site keeps resolving
+// unchanged.
+pub use conduit_proxy_http::state::{ProxyReqState, RetryState, RouteRateLimit};
 
 #[derive(Debug)]
 pub struct RequestCtx {

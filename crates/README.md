@@ -442,19 +442,29 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   "conduit-core dependency is opt-in, not automatic") — the Pingora
   `ProxyHttp` trait-method bodies stay in the root crate, calling into this
   crate's plain functions.
-  **Partial extraction, deliberately not everything issue #142 named**:
-  `ProxyTarget`/`WeightedTarget` moved here (`UpstreamGroup`, also in scope,
-  embeds `Vec<ProxyTarget>` directly — they had to travel together), but
-  `ProxyConfig`/`ProxyRouteTarget` and the four functions that used to
-  consume them (`target_urls`, `weighted_targets`, `target_urls_from_proxy`,
-  `strip_prefix_enabled`) **stayed in the root crate's own
-  `src/proxy/upstream.rs`**, right next to a facade re-export of everything
-  that did move — `ProxyRouteTarget::Full` embeds `ProxyRouteConfig`, a large
-  struct itself embedding `CacheConfig`/`RetryConfig`/`ConnectionPoolConfig`/
-  `RateLimitConfig`/etc., none of which are extracted yet (a later migration
-  phase, #143/#144, extracts proxy routing itself) — moving those four
-  functions here would have forced `ProxyRouteConfig` to move too, a genuine
-  circular dependency with several other not-yet-extracted crates.
+  **Partial extraction, deliberately not everything issue #142 named** (at
+  the time — see below for how #143 later resolved this): `ProxyTarget`/
+  `WeightedTarget` moved here (`UpstreamGroup`, also in scope, embeds
+  `Vec<ProxyTarget>` directly — they had to travel together), but
+  `ProxyConfig`/`ProxyRouteTarget` and three of the four functions that used
+  to consume them (`target_urls`, `weighted_targets`, `target_urls_from_proxy`
+  — the fourth, `strip_prefix_enabled`, turned out to be dead code, see
+  below) stayed in the root crate's own `src/proxy/upstream.rs` at the time,
+  right next to a facade re-export of everything that did move —
+  `ProxyRouteTarget::Full` embeds `ProxyRouteConfig`, a large struct itself
+  embedding `CacheConfig`/`RetryConfig`/`ConnectionPoolConfig`/
+  `RateLimitConfig`/etc., none of which were extracted yet at #142's time —
+  moving those functions here would have forced `ProxyRouteConfig` to move
+  too, a genuine circular dependency with several other not-yet-extracted
+  crates.
+  **Resolved by `conduit-proxy-http` (issue #114/#143, Phase 5.2)**:
+  `ProxyConfig`/`ProxyRouteTarget`/`ProxyRouteConfig` and the rest of proxy
+  routing moved into that new crate, which now also owns `target_urls`/
+  `weighted_targets`/`target_urls_from_proxy` (see its own entry below).
+  `strip_prefix_enabled` did not move with them — it had zero real
+  production call sites (only its own unit tests referenced it) and was
+  deleted outright as dead code during #143's extraction rather than
+  relocated.
   **The one real design decision, called out explicitly in issue #142's own
   text**: `health::spawn_health_checks`/`health::spawn_connection_warmup`
   used to take `&AppConfig` directly — for the same reason as the paragraph
@@ -466,3 +476,54 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   `build_watch_config` already established for its own analogous problem
   (issue #114/#140), applied here to a second function pair in the same
   extraction rather than a new design.
+
+- **`conduit-proxy-http`** (Phase 5.2, [#143](https://github.com/lopatnov/conduit/issues/143))
+  — proxy target resolution: routing (`resolve`/`groups`/`routes_resolve`),
+  candidate-pool building + peer/retry selection (`peer_pick`, `retry`),
+  sticky-session resolution + HMAC helpers (`sticky`), `routes[]` array
+  matching (`routes`), per-request state (`state`), the outcome boundary
+  types (`outcome`), and per-upstream connection-capacity admission +
+  the slow-start traffic ramp (`capacity`/`slow_start`, both private —
+  nothing outside this crate's own routing code ever called them). PR B
+  (final) of a 3-PR sequence: PR A1 (issue #418) grouped `RequestCtx`'s 14
+  proxy-specific fields into `ProxyReqState`; PR A2 (issue #419) phase-split
+  the root crate's `router.rs`/`routes.rs` and introduced the `ProxyOutcome`/
+  `ProxyResolution`/`ProxyUpstream` boundary types (replacing
+  `RouteResolution.upstream: UpstreamTarget` for the *inner* resolution
+  functions, since `UpstreamTarget::Local(LocalHandler)` must stay root-crate
+  vocabulary); this PR moved both PRs' work into the new crate.
+  Also owns 10 proxy-related config types moved out of
+  `src/config/schema.rs`: `ProxyConfig`/`ProxyRouteTarget`/`ProxyRouteConfig`/
+  `StickyConfig`/`RewriteRule`/`ProxyTimeout`/`ConnectionPoolConfig`/
+  `RetryConfig`/`RouteConfig`/`MatchConfig` (`config` module) — this is what
+  let 3 of `conduit-upstream`'s own 4 deferred functions
+  (`target_urls`/`weighted_targets`/`target_urls_from_proxy`, now in this
+  crate's `targets` module) finally move out of the root crate, resolving
+  the circular-dependency deferral #142 documented above. `strip_prefix_enabled`
+  (the fourth) turned out to be dead code — no real production call site,
+  only its own unit tests — and was deleted rather than moved.
+  **No `[features]` table** — same always-on shape as `conduit-upstream`:
+  `proxy` doesn't become an optional Cargo feature until a later phase
+  (#144), and no dependency on `lopatnov-conduit-core`/pingora either
+  (nothing here implements `RequestFilter`/`ResponseFilter` — the `ProxyHttp`
+  trait-method bodies stay in the root crate's `request_phase.rs`/
+  `response_phase.rs`, calling into this crate's plain functions).
+  **`dispatch.rs` deliberately did NOT move here**, unlike its PR-A2
+  siblings: it bundled `parse_rfc9218_priority` (pure string parsing) with
+  site/local-path dispatch helpers (`find_site_idx`, `is_health_path`,
+  `metrics_token`, `is_hot_reload_*`) that all take `&AppConfig`/
+  `Option<&SiteConfig>` directly — still root-crate-only types (a separate,
+  not-yet-started config-schema-decomposition track, issues
+  #314/#315/#316/#222). Moving it would have created the exact circular
+  dependency this crate's own `config` module exists to avoid. Relocated
+  within the root crate instead (`src/proxy/routing/dispatch.rs` →
+  `src/proxy/dispatch.rs`, content unchanged) — confirmed via grep before
+  this decision that none of the files that DID move into this crate ever
+  called any function in it.
+  **`url_to_proxy_upstream` is a deliberate small duplicate**, not a shared
+  call: this crate cannot call back into the root crate's own
+  `router::url_to_proxy_upstream` (the dependency only goes one way), so its
+  `outcome` module carries a private ~10-line copy with the same
+  URL-parsing body, returning `ProxyUpstream` directly instead of
+  `UpstreamTarget` — the two payloads are already byte-identical, so the
+  duplicate is trivial to keep in sync by inspection.

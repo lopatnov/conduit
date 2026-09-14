@@ -2930,6 +2930,7 @@ dependencies = [
  "lopatnov-conduit-metrics",
  "lopatnov-conduit-middleware",
  "lopatnov-conduit-otlp",
+ "lopatnov-conduit-proxy-http",
  "lopatnov-conduit-ratelimit",
  "lopatnov-conduit-redirects",
  "lopatnov-conduit-security-headers",
@@ -3257,6 +3258,26 @@ dependencies = [
  "tracing",
  "wasmtime",
  "wat",
+]
+
+[[package]]
+name = "lopatnov-conduit-proxy-http"
+version = "2.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "dashmap",
+ "hmac 0.13.0",
+ "http",
+ "indexmap 2.14.1",
+ "lopatnov-conduit-cache",
+ "lopatnov-conduit-ratelimit",
+ "lopatnov-conduit-static",
+ "lopatnov-conduit-upstream",
+ "regex",
+ "serde",
+ "sha2 0.11.0",
+ "subtle",
+ "tracing",
 ]
 
 [[package]]

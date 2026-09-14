@@ -1,8 +1,11 @@
-//! Sticky-session resolution + HMAC helpers (issue #143, PR A2 of a 3-PR
-//! plan) — moved verbatim out of `router.rs`.
+//! Sticky-session resolution + HMAC helpers (issue #143) — moved verbatim
+//! out of the root crate's `router.rs` in PR A2 (issue #419), then into
+//! this crate in PR B (issue #143 itself).
 
-use crate::config::schema::{LoadBalanceStrategy, StickyConfig};
-use crate::proxy::routing::options::ProxyCtx;
+use conduit_upstream::LoadBalanceStrategy;
+
+use crate::config::StickyConfig;
+use crate::options::ProxyCtx;
 
 /// Outcome of evaluating the sticky-session cookie.
 pub(crate) enum Sticky {
@@ -91,7 +94,7 @@ pub(crate) fn selection_hash_val(
     } else {
         client_ip
     };
-    crate::proxy::upstream::fnv1a_hash(hash_input)
+    conduit_upstream::targets::fnv1a_hash(hash_input)
 }
 
 /// Sticky sessions always select by consistent hash of the cookie value.
@@ -139,7 +142,7 @@ pub(crate) fn extract_cookie(headers: &http::HeaderMap, name: &str) -> Option<St
 
 /// Compute `HMAC-SHA256(upstream_url, secret)` and return it as URL-safe base64
 /// (no padding).  Used for both signing response cookies and verifying requests.
-pub(crate) fn hmac_sign_sticky(upstream_url: &str, secret: &str) -> String {
+pub fn hmac_sign_sticky(upstream_url: &str, secret: &str) -> String {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine as _;
     use hmac::{Hmac, KeyInit, Mac};
@@ -154,7 +157,7 @@ pub(crate) fn hmac_sign_sticky(upstream_url: &str, secret: &str) -> String {
 
 /// Return `true` when `cookie_value` is the valid HMAC of `upstream_url` with
 /// the given `secret`.  Uses constant-time comparison to prevent timing attacks.
-pub(crate) fn hmac_verify_sticky(upstream_url: &str, cookie_value: &str, secret: &str) -> bool {
+pub fn hmac_verify_sticky(upstream_url: &str, cookie_value: &str, secret: &str) -> bool {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine as _;
     use subtle::ConstantTimeEq as _;

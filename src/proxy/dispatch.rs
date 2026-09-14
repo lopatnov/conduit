@@ -1,10 +1,22 @@
-//! Local-path/site dispatch helpers (issue #143, PR A2 of a 3-PR plan) —
-//! moved verbatim out of `router.rs` to keep it under the 400-production-line
-//! soft limit. These decide which special local path (health/metrics/
-//! hot-reload/ACME) or which `SiteConfig` a request maps to — orthogonal to
-//! proxy-target resolution (`routing::resolve`/`routing::groups`/
-//! `routing::routes_resolve`), so they get their own file rather than being
+//! Local-path/site dispatch helpers (issue #143) — moved verbatim out of
+//! `router.rs` in PR A2 (issue #419) to keep it under the
+//! 400-production-line soft limit. These decide which special local path
+//! (health/metrics/hot-reload/ACME) or which `SiteConfig` a request maps
+//! to — orthogonal to proxy-target resolution (`conduit_proxy_http::resolve`/
+//! `groups`/`routes_resolve`), so they get their own file rather than being
 //! folded into one of those.
+//!
+//! Deliberately did NOT move into `conduit-proxy-http` in PR B (issue #143
+//! itself), unlike the rest of this file's PR-A2 siblings: every function
+//! here takes `&AppConfig`/`Option<&SiteConfig>` directly, and those are
+//! still root-crate-only types (a separate, not-yet-started
+//! config-schema-decomposition track — issues #314/#315/#316/#222). Moving
+//! this file would have created a genuine circular dependency (this
+//! function set needing types defined in the root crate, which depends on
+//! `conduit-proxy-http`). See `crates/conduit-proxy-http/src/lib.rs`'s own
+//! doc comment ("`dispatch.rs` deliberately did NOT move here") for the
+//! full reasoning — confirmed via grep before this decision that none of
+//! the files that DID move into that crate ever called any function here.
 
 use crate::config::schema::{AppConfig, SiteConfig};
 

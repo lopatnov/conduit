@@ -41,8 +41,10 @@
 //! `RequestFilter`/`ResponseFilter` (see `CONTRIBUTING.md`'s "conduit-core
 //! dependency is opt-in, not automatic"); the Pingora `ProxyHttp` trait-
 //! method bodies stay in the root crate's `request_phase.rs`/
-//! `response_phase.rs`/`router.rs`/`routes.rs`/`capacity.rs`, calling into
-//! this crate's plain functions and the [`health::UpstreamRegistry`] type.
+//! `response_phase.rs`, calling into this crate's plain functions and the
+//! [`health::UpstreamRegistry`] type (routing itself — `router.rs`/
+//! `routes.rs`/`capacity.rs` — moved into `crates/conduit-proxy-http`, issue
+//! #114/#143, which depends on this crate the same way).
 //!
 //! ## `ProxyConfig`/`ProxyRouteTarget`/`ProxyTarget`... wait, `ProxyTarget`
 //! moved here — what didn't?
@@ -50,25 +52,34 @@
 //! [`config::ProxyTarget`]/[`config::WeightedTarget`] moved here because
 //! [`config::UpstreamGroup`] (also in scope for this extraction) embeds
 //! `Vec<ProxyTarget>` directly — they had to travel together. `ProxyConfig`/
-//! `ProxyRouteTarget`/`ProxyRouteConfig` themselves are a different story:
-//! `ProxyRouteConfig` is a large struct that also embeds `CacheConfig`/
-//! `RetryConfig`/`ConnectionPoolConfig`/`RateLimitConfig`/etc. — none of
-//! which belong in an upstream-selection crate, and none of which are
-//! extracted yet (a later migration phase, #143/#144, extracts proxy routing
-//! itself). Moving `ProxyRouteTarget`/`ProxyConfig` here to satisfy the four
-//! functions that used to consume them (`target_urls`, `weighted_targets`,
-//! `target_urls_from_proxy`, `strip_prefix_enabled`) would have forced
-//! `ProxyRouteConfig` to move too — a genuine circular dependency with
-//! several other not-yet-extracted crates, not something this extraction's
-//! own scope (issue #142) asked for or should improvise around. Those four
-//! functions **stayed behind** in the root crate's own
-//! `src/proxy/upstream.rs`, right next to a facade re-export of everything
-//! that *did* move — see that file's own doc comment for the detail. This is
-//! the direct analog of `conduit-hotreload`'s `build_watch_config` taking
-//! narrower `(Option<&HotReloadConfig>, Option<&StaticConfig>)` pairs instead
-//! of `&AppConfig` (issue #114/#140): apply the same "narrower slice instead
-//! of a root-only type" fix wherever a moved function's signature would
-//! otherwise force a dependency this crate must not have.
+//! `ProxyRouteTarget`/`ProxyRouteConfig` themselves were a different story
+//! *at the time of this extraction*: `ProxyRouteConfig` is a large struct
+//! that also embeds `CacheConfig`/`RetryConfig`/`ConnectionPoolConfig`/
+//! `RateLimitConfig`/etc. — none of which belong in an upstream-selection
+//! crate, and none of which were extracted yet. Moving `ProxyRouteTarget`/
+//! `ProxyConfig` here to satisfy the four functions that used to consume
+//! them (`target_urls`, `weighted_targets`, `target_urls_from_proxy`,
+//! `strip_prefix_enabled`) would have forced `ProxyRouteConfig` to move too
+//! — a genuine circular dependency with several other not-yet-extracted
+//! crates, not something this extraction's own scope (issue #142) asked for
+//! or should improvise around. Those four functions **stayed behind** in
+//! the root crate's own `src/proxy/upstream.rs` at the time, right next to
+//! a facade re-export of everything that *did* move.
+//!
+//! **This is now resolved** — `crates/conduit-proxy-http` (issue #114/#143,
+//! Phase 5.2) moved `ProxyConfig`/`ProxyRouteTarget`/`ProxyRouteConfig`
+//! (plus `CacheConfig`/`RetryConfig`/`ConnectionPoolConfig`/`RateLimitConfig`
+//! links they need) out of the root crate, and with them 3 of the 4
+//! deferred functions (`target_urls`/`weighted_targets`/
+//! `target_urls_from_proxy`, now in that crate's own `targets` module).
+//! `strip_prefix_enabled` turned out to be dead code (no real production
+//! call site) and was deleted rather than moved. This module's doc comment
+//! is kept as a historical record of the deferral, not a current claim.
+//! This is the direct analog of `conduit-hotreload`'s `build_watch_config`
+//! taking narrower `(Option<&HotReloadConfig>, Option<&StaticConfig>)` pairs
+//! instead of `&AppConfig` (issue #114/#140): apply the same "narrower slice
+//! instead of a root-only type" fix wherever a moved function's signature
+//! would otherwise force a dependency this crate must not have.
 //!
 //! ## `AppConfig` isn't available here either
 //!

@@ -8,19 +8,25 @@
 //! selects the true minimum-load candidate anyway) incidentally respected the
 //! cap. See issue #156.
 //!
-//! [`pick_bounded`] also applies [`crate::proxy::slow_start::Ramp`] (issue
-//! #157) — a second, soft cross-cutting admission constraint alongside this
-//! module's hard `Capacity` one. Both are evaluated here, in that order
-//! (capacity first, then ramp), so that neither `router.rs`/`routes.rs` nor
-//! any `LoadBalancingStrategy` implementation needs to know either exists.
+//! [`pick_bounded`] also applies [`crate::slow_start::Ramp`] (issue #157) —
+//! a second, soft cross-cutting admission constraint alongside this module's
+//! hard `Capacity` one. Both are evaluated here, in that order (capacity
+//! first, then ramp), so that neither the root crate's `router.rs`/
+//! `routes.rs` nor any `LoadBalancingStrategy` implementation needs to know
+//! either exists.
+//!
+//! Private module (`mod capacity;`, not `pub mod`) — moved here from the
+//! root crate's `src/proxy/capacity.rs` in issue #143 PR B; nothing outside
+//! the routing/resolution code in this crate ever called it directly.
 
 use std::sync::atomic::AtomicUsize;
 
 use dashmap::DashMap;
 
-use crate::config::schema::LoadBalanceStrategy;
-use crate::proxy::health::UpstreamRegistry;
-use crate::proxy::slow_start::Ramp;
+use conduit_upstream::health::UpstreamRegistry;
+use conduit_upstream::LoadBalanceStrategy;
+
+use crate::slow_start::Ramp;
 
 /// Admission decision for one route's healthy candidate list.
 pub(crate) enum Capacity {
@@ -91,7 +97,7 @@ impl Capacity {
 /// Hash-ring pick that honors capacity without shrinking the hash domain.
 ///
 /// Starts at `hash_val % ring.len()` — the same index
-/// [`crate::proxy::upstream::pick_by_hash`] would return — and walks the ring
+/// [`conduit_upstream::targets::pick_by_hash`] would return — and walks the ring
 /// forward until an admissible peer is found. With [`Capacity::Unlimited`]
 /// this is byte-for-byte `pick_by_hash` (see the parity test below).
 ///
@@ -135,7 +141,7 @@ pub(crate) struct BoundedPick<'a> {
 }
 
 /// Capacity-aware strategy dispatch. Returns `(url, is_least_conn)` — the
-/// same shape as [`crate::proxy::strategy::LoadBalancingStrategy::pick`].
+/// same shape as [`conduit_upstream::strategy::LoadBalancingStrategy::pick`].
 ///
 /// `None` means either circuit-open ([`Capacity::Exhausted`]) or no
 /// candidate at all — both cases already behave correctly at the call site
@@ -151,7 +157,7 @@ pub(crate) struct BoundedPick<'a> {
 /// check: `input.ramp` is never consulted on that path.
 ///
 /// `weighted` is filtered to the admissible subset internally (not by the
-/// caller) specifically because [`crate::proxy::strategy::WeightedRoundRobin`]
+/// caller) specifically because [`conduit_upstream::strategy::WeightedRoundRobin`]
 /// reads `weighted`, not the plain URL candidate list — filtering only the
 /// latter would silently leave WRR still choosing from over-capacity peers.
 pub(crate) fn pick_bounded(input: &BoundedPick<'_>) -> Option<(String, bool)> {
@@ -193,7 +199,7 @@ pub(crate) fn pick_bounded(input: &BoundedPick<'_>) -> Option<(String, bool)> {
     let weighted = input.ramp.filter_weighted(weighted);
     let weighted = weighted.as_ref();
 
-    let strategy = crate::proxy::strategy::from_config(
+    let strategy = conduit_upstream::strategy::from_config(
         input.strategy.unwrap_or(&LoadBalanceStrategy::RoundRobin),
     );
     strategy.pick(
@@ -209,7 +215,7 @@ pub(crate) fn pick_bounded(input: &BoundedPick<'_>) -> Option<(String, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::upstream;
+    use conduit_upstream::targets as upstream;
 
     fn urls(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("http://u{i}:80")).collect()

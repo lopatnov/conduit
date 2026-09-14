@@ -9,13 +9,13 @@ use crate::config::schema::{AppConfig, ProxyConfig, RouteConfig, SiteConfig, Sta
 use crate::proxy::ctx::{
     LocalHandler, ProxyReqState, RequestCtx, RetryState, RouteRateLimit, UpstreamTarget,
 };
+use crate::proxy::dispatch;
 use crate::proxy::health::UpstreamRegistry;
 use crate::proxy::routes::{self, RouteMatch};
-use crate::proxy::routing::dispatch;
-use crate::proxy::routing::options::ProxyCtx;
-use crate::proxy::routing::outcome::{ProxyOutcome, ProxyUpstream};
-use crate::proxy::routing::resolve;
 use crate::proxy::upstream;
+use conduit_proxy_http::options::ProxyCtx;
+use conduit_proxy_http::outcome::{ProxyOutcome, ProxyUpstream};
+use conduit_proxy_http::resolve;
 
 /// Resolved routing result: all per-route data needed to populate `RequestCtx`.
 ///
@@ -465,9 +465,12 @@ pub fn url_to_proxy_upstream(url: &str, strip_prefix: Option<String>) -> Option<
 pub use conduit_static::roots::resolve_static_roots;
 
 /// Re-exported so `crate::proxy::router::parse_rfc9218_priority` keeps
-/// resolving for `request_phase.rs` and this crate's own doctest below,
-/// after the function itself moved to `routing::dispatch` (issue #143).
-pub use crate::proxy::routing::dispatch::parse_rfc9218_priority;
+/// resolving for `request_phase.rs` and this crate's own doctest below.
+/// `parse_rfc9218_priority` deliberately did NOT move into
+/// `conduit-proxy-http` (issue #143 PR B) along with the rest of
+/// `routing::dispatch` — see `crates/conduit-proxy-http/src/lib.rs`'s own
+/// doc comment ("`dispatch.rs` deliberately did NOT move here") for why.
+pub use crate::proxy::dispatch::parse_rfc9218_priority;
 
 #[cfg(test)]
 mod tests {
@@ -477,7 +480,7 @@ mod tests {
         SiteConfig,
     };
     use crate::proxy::health::UpstreamRegistry;
-    use crate::proxy::routing::sticky::{hmac_sign_sticky, hmac_verify_sticky};
+    use conduit_proxy_http::sticky::{hmac_sign_sticky, hmac_verify_sticky};
 
     // ── url_to_proxy_upstream ─────────────────────────────────────────────────
 
