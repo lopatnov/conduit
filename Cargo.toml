@@ -523,8 +523,11 @@ url.workspace       = true
 httpdate.workspace  = true
 http.workspace      = true
 base64.workspace    = true
-hmac.workspace      = true
-sha2.workspace      = true
+# hmac/sha2: no longer direct root-crate dependencies — their only callers
+# (sticky-session HMAC signing/verification, `router.rs`) moved into
+# `crates/conduit-proxy-http` (#114/#143), which carries its own `hmac`/
+# `sha2` edges (see that crate's `Cargo.toml`). The `[workspace.dependencies]`
+# version pins above stay — `conduit-proxy-http` still resolves through them.
 
 # --- Rhai scripting middleware (feature: rhai) ---
 # `rhai` itself moved to `crates/conduit-script-rhai` (#114/#141) and is no
