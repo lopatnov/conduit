@@ -2088,8 +2088,8 @@ pub(super) fn acquire_conn_slot(
 ///
 /// **Attempt 1+ (an actual retry) forward-probes** `retry.urls` starting at
 /// this attempt's rotation index for a peer under
-/// `retry.max_conns_per_upstream`, mirroring
-/// [`crate::proxy::capacity::hash_pick_bounded`]'s existing forward-probe
+/// `retry.max_conns_per_upstream`, mirroring the `conduit-proxy-http`
+/// crate's private `capacity::hash_pick_bounded`'s existing forward-probe
 /// pattern rather than filtering the list — filtering would renumber every
 /// subsequent attempt's rotation instead of skipping just the one saturated
 /// peer. **Fails open** (falls back to the naive rotation URL) when every

@@ -1,20 +1,26 @@
 //! Slow-start traffic ramp-up (`healthCheck.slowStartSecs`, issue #157).
 //!
-//! Companion to [`crate::proxy::capacity`]: both are per-upstream, per-request
+//! Companion to [`crate::capacity`]: both are per-upstream, per-request
 //! admission constraints, evaluated once per routing decision and applied
-//! inside [`crate::proxy::capacity::pick_bounded`] (plus the two retry-bypass
-//! call sites in `router.rs`/`routes.rs` that skip `pick_bounded` entirely),
-//! so that no [`crate::proxy::strategy::LoadBalancingStrategy`] implementation
-//! and no `router.rs`/`routes.rs` call site has to know this exists
-//! (CLAUDE.md decision #22).
+//! inside [`crate::capacity::pick_bounded`] (plus the two retry-bypass call
+//! sites in the root crate's `router.rs`/`routes.rs` that skip
+//! `pick_bounded` entirely), so that no
+//! [`conduit_upstream::strategy::LoadBalancingStrategy`] implementation and
+//! no `router.rs`/`routes.rs` call site has to know this exists (CLAUDE.md
+//! decision #22).
 //!
 //! Where capacity is a HARD filter (a peer over its cap must never be picked;
 //! all peers over cap = 503), slow-start is a SOFT, probabilistic
 //! de-prioritisation: a peer that recovered `t` seconds into a `w`-second
-//! window (see [`crate::proxy::health::slow_start_fraction`]) participates in
-//! each pick with probability `t/w`. It can never produce a 503 and can never
-//! empty an otherwise-routable candidate list (fail-open — see
-//! [`Ramp::filter_candidates`]).
+//! window (see [`conduit_upstream::health::slow_start_fraction`])
+//! participates in each pick with probability `t/w`. It can never produce a
+//! 503 and can never empty an otherwise-routable candidate list (fail-open —
+//! see [`Ramp::filter_candidates`]).
+//!
+//! Private module (`mod slow_start;`, not `pub mod`) — moved here from the
+//! root crate's `src/proxy/slow_start.rs` in issue #143 PR B; nothing
+//! outside the routing/resolution code in this crate ever called it
+//! directly.
 //!
 //! **Hash-based strategies (`ip-hash`/`consistent-hash`) and sticky sessions
 //! are deliberately exempt.** A client's hash deterministically maps to one
@@ -38,8 +44,8 @@
 
 use std::borrow::Cow;
 
-use crate::proxy::health::{self, UpstreamRegistry};
-use crate::proxy::upstream;
+use conduit_upstream::health::{self, UpstreamRegistry};
+use conduit_upstream::targets as upstream;
 
 /// Fixed-point denominator for the admission draw (0.01% granularity).
 const RAMP_DENOM: u64 = 10_000;

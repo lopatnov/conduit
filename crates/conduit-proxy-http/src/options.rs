@@ -1,24 +1,31 @@
-//! Config-extraction types feeding proxy-target resolution (issue #143, PR
-//! A2 of a 3-PR plan) — moved verbatim out of `router.rs`.
+//! Config-extraction types feeding proxy-target resolution (issue #143) —
+//! moved verbatim out of the root crate's `router.rs` in PR A2 (issue #419),
+//! then into this crate in PR B (issue #143 itself).
 
 use std::sync::atomic::AtomicUsize;
 
 use dashmap::DashMap;
 
-use crate::config::schema::{
-    CacheConfig, ConnectionPoolConfig, LoadBalanceStrategy, ProxyRouteTarget, ProxyTimeout,
-    RetryConfig, RewriteRule, StickyConfig, UpstreamTlsConfig,
+use conduit_cache::CacheConfig;
+use conduit_upstream::health::UpstreamRegistry;
+use conduit_upstream::{LoadBalanceStrategy, UpstreamTlsConfig};
+
+use crate::config::{
+    ConnectionPoolConfig, ProxyRouteTarget, ProxyTimeout, RetryConfig, RewriteRule, StickyConfig,
 };
-use crate::proxy::health::UpstreamRegistry;
 
 /// Inputs that stay constant while resolving one request's upstream.
-pub(crate) struct ProxyCtx<'a> {
-    pub(crate) path: &'a str,
-    pub(crate) client_ip: &'a str,
-    pub(crate) req_headers: &'a http::HeaderMap,
-    pub(crate) counters: &'a DashMap<String, AtomicUsize>,
-    pub(crate) upstream_health: &'a UpstreamRegistry,
-    pub(crate) site_label: &'a str,
+///
+/// `pub` (not `pub(crate)`) with `pub` fields: the root crate's `router.rs`
+/// constructs this via struct-literal syntax before calling into
+/// [`crate::resolve::resolve_proxy_routes`].
+pub struct ProxyCtx<'a> {
+    pub path: &'a str,
+    pub client_ip: &'a str,
+    pub req_headers: &'a http::HeaderMap,
+    pub counters: &'a DashMap<String, AtomicUsize>,
+    pub upstream_health: &'a UpstreamRegistry,
+    pub site_label: &'a str,
 }
 
 /// Per-route proxy settings, read once from `ProxyRouteTarget::Full`. All

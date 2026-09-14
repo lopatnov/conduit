@@ -1,25 +1,26 @@
-//! Per-request proxy-routing state (issue #143, PR A1 of a 3-PR plan).
+//! Per-request proxy-routing state (issue #143 — PR A1, issue #418, grouped
+//! the 14 proxy-specific fields that used to live directly on `RequestCtx`
+//! into [`ProxyReqState`]; PR B, issue #143 itself, moved this module here
+//! from the root crate's `src/proxy/routing/state.rs`).
 //!
-//! Groups the 14 proxy-specific fields that used to live directly on
-//! `RequestCtx` (`src/proxy/ctx.rs`) into [`ProxyReqState`], embedded there
-//! as a single `pub proxy: ProxyReqState` field. This is preparation for the
-//! eventual `conduit-proxy-http` crate extraction — this module stays in the
-//! root crate for now; it does NOT move to a new crate in this PR.
+//! `RequestCtx` (root crate, `src/proxy/ctx.rs`) embeds [`ProxyReqState`] as
+//! a single `pub proxy: ProxyReqState` field via a facade re-export.
 //!
-//! Mirrors the existing `RequestCtx` sub-struct pattern already established
-//! by `conduit_limits::LimitsReqState` (`crates/conduit-limits/src/ctx.rs`),
+//! Mirrors the `RequestCtx` sub-struct pattern already established by
+//! `conduit_limits::LimitsReqState` (`crates/conduit-limits/src/ctx.rs`),
 //! `conduit_cache::CacheReqState`, and `conduit_auth_jwt::guard::JwtReqState`
 //! — see `CLAUDE.md` architectural decision #30. Unlike those three (which
 //! are either always-on-but-crate-owned or `#[cfg(feature = "...")]`-gated),
-//! [`ProxyReqState`] is unconditional and stays in the root crate: `proxy`
-//! isn't an optional Cargo feature until a later phase (#144).
-//!
-//! This is a pure mechanical regrouping: no behavior change, only access
-//! paths change from `ctx.field` to `ctx.proxy.field`.
+//! [`ProxyReqState`] is unconditional: `proxy` isn't an optional Cargo
+//! feature until a later phase (#144), so this crate has no `[features]`
+//! table at all (same always-on shape as `conduit-upstream`).
 
 use std::time::Instant;
 
-use crate::config::schema::{CacheConfig, ConnectionPoolConfig, ProxyTimeout, RateLimitConfig};
+use conduit_cache::CacheConfig;
+use conduit_ratelimit::RateLimitConfig;
+
+use crate::config::{ConnectionPoolConfig, ProxyTimeout};
 
 /// Per-route rate limit plus the bucket-key fragment identifying the route
 /// it came from. Populated at routing time by whichever matcher matched
@@ -136,21 +137,20 @@ pub struct ProxyReqState {
     /// **Invariant (#216):** `upstream_conn_slot == true` ⟺ this request
     /// holds exactly one outstanding `conn_inc` on the URL currently in
     /// `proxy_upstream_url`. Every mutation of `proxy_upstream_url` must
-    /// therefore be preceded by [`request_phase::release_conn_slot`] (which
-    /// releases any slot held on the *old* value and clears both fields) —
-    /// never assign `proxy_upstream_url` or this field directly. Use
-    /// [`request_phase::acquire_conn_slot`] to point at a new URL
-    /// afterward. Before #216 this was violated by `upstream_peer`'s
-    /// retry-restore path, which overwrote `proxy_upstream_url` for the
-    /// next retry attempt without releasing the previous value's slot on
-    /// two of the three retry-failure paths (connect-phase and
-    /// proxy-phase-timeout — only the 5xx path, via
+    /// therefore be preceded by the root crate's `request_phase::
+    /// release_conn_slot` (which releases any slot held on the *old* value
+    /// and clears both fields) — never assign `proxy_upstream_url` or this
+    /// field directly. Use `request_phase::acquire_conn_slot` to point at a
+    /// new URL afterward (both live in the root crate's
+    /// `src/proxy/request_phase.rs`, out of this crate's reach — not an
+    /// intra-doc link for that reason). Before #216 this was violated by
+    /// `upstream_peer`'s retry-restore path, which overwrote
+    /// `proxy_upstream_url` for the next retry attempt without releasing
+    /// the previous value's slot on two of the three retry-failure paths
+    /// (connect-phase and proxy-phase-timeout — only the 5xx path, via
     /// `record_failed_upstream_for_retry`, released correctly) — a real,
     /// unbounded leak: `conn_count` would rise monotonically until the
     /// affected upstream was permanently excluded by `Capacity::evaluate`.
-    ///
-    /// [`request_phase::release_conn_slot`]: crate::proxy::request_phase::release_conn_slot
-    /// [`request_phase::acquire_conn_slot`]: crate::proxy::request_phase::acquire_conn_slot
     pub upstream_conn_slot: bool,
     /// Cache configuration for this route (`proxy.*.cache`), if caching is enabled.
     ///

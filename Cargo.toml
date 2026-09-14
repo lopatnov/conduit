@@ -52,6 +52,7 @@ lopatnov-conduit-plugin-wasm         = { path = "crates/conduit-plugin-wasm", ve
 lopatnov-conduit-middleware          = { path = "crates/conduit-middleware", version = "2.0.0" }
 lopatnov-conduit-k8s                 = { path = "crates/conduit-k8s", version = "2.0.0" }
 lopatnov-conduit-upstream            = { path = "crates/conduit-upstream", version = "2.0.0" }
+lopatnov-conduit-proxy-http          = { path = "crates/conduit-proxy-http", version = "2.0.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -420,11 +421,23 @@ lopatnov-conduit-middleware.workspace        = true
 # `UpstreamGroup`/`UpstreamHealthCheck`/`UpstreamTlsConfig`/
 # `OutlierDetectionConfig` and the real `health::UpstreamRegistry`/
 # `strategy::LoadBalancingStrategy` dispatch. `ProxyConfig`/`ProxyRouteTarget`
-# and the four functions that convert them into target-URL lists
-# (`target_urls`/`weighted_targets`/`target_urls_from_proxy`/
-# `strip_prefix_enabled`) deliberately stayed in this crate's own
-# `src/proxy/upstream.rs` — see that file's doc comment for why.
+# and 3 of the 4 functions that used to convert them into target-URL lists
+# moved into `lopatnov-conduit-proxy-http` below (issue #143) — see that
+# entry's own comment.
 lopatnov-conduit-upstream.workspace           = true
+# Mandatory, no `[features]` table at all — same always-on shape as
+# `lopatnov-conduit-upstream` above: `proxy` isn't an optional Cargo feature
+# until a later phase (#144). Owns proxy target resolution (routing,
+# load-balancing dispatch, retry, sticky sessions — issue #114/#143) plus
+# 10 proxy-related config types moved out of `src/config/schema.rs`
+# (`ProxyConfig`/`ProxyRouteTarget`/`ProxyRouteConfig`/`StickyConfig`/
+# `RewriteRule`/`ProxyTimeout`/`ConnectionPoolConfig`/`RetryConfig`/
+# `RouteConfig`/`MatchConfig`), which is what let `target_urls`/
+# `weighted_targets`/`target_urls_from_proxy` finally move out of this
+# crate's own `src/proxy/upstream.rs` too (the fourth function
+# `lopatnov-conduit-upstream`'s deferred-scope comment named,
+# `strip_prefix_enabled`, was dead code and was deleted, not moved).
+lopatnov-conduit-proxy-http.workspace         = true
 
 # --- Config & parsing ---
 serde.workspace      = true

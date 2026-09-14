@@ -1,12 +1,13 @@
-//! Retry-state construction (issue #143, PR A2 of a 3-PR plan) — moved
-//! verbatim out of `router.rs`.
+//! Retry-state construction (issue #143) — moved verbatim out of the root
+//! crate's `router.rs` in PR A2 (issue #419), then into this crate in PR B
+//! (issue #143 itself).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dashmap::DashMap;
 
-use crate::config::schema::RetryConfig;
-use crate::proxy::routing::state::RetryState;
+use crate::config::RetryConfig;
+use crate::state::RetryState;
 
 /// Pick a starting URL and build retry state, rotating the URL list so that
 /// `upstream_peer()` can walk it on each attempt.

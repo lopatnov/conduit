@@ -1,22 +1,25 @@
-//! `routes[]` array proxy-target resolution (issue #143, PR A2 of a 3-PR
-//! plan) — split out of `routes.rs`'s former `full_cfg_to_result`
-//! (~186 lines) the same way `routing::resolve` splits router.rs's
-//! equivalent function, but WITHOUT sharing helpers with it: this path has
-//! no sticky/backup/groups support, and uses the request path (not client
-//! IP) as its hash input since client IP isn't threaded through route-array
-//! matching — a real semantic difference from the `proxy`-map path, not an
-//! oversight to unify (see `resolve_full_target`'s own hash-input comment).
+//! `routes[]` array proxy-target resolution (issue #143) — split out of the
+//! root crate's `routes.rs`'s former `full_cfg_to_result` (~186 lines) the
+//! same way `crate::resolve` splits `router.rs`'s equivalent function, but
+//! WITHOUT sharing helpers with it: this path has no sticky/backup/groups
+//! support, and uses the request path (not client IP) as its hash input
+//! since client IP isn't threaded through route-array matching — a real
+//! semantic difference from the `proxy`-map path, not an oversight to unify
+//! (see `resolve_full_target`'s own hash-input comment). Split out in PR A2
+//! (issue #419), moved into this crate in PR B (issue #143 itself).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dashmap::DashMap;
 
-use crate::config::schema::{ProxyRouteConfig, ProxyRouteTarget, ProxyTarget};
-use crate::proxy::health::UpstreamRegistry;
-use crate::proxy::routing::outcome::{self, ProxyResolution, ProxyUpstream};
-use crate::proxy::routing::state::{ProxyReqState, RetryState};
-use crate::proxy::slow_start::Ramp;
-use crate::proxy::{capacity, router, upstream};
+use conduit_upstream::health::UpstreamRegistry;
+use conduit_upstream::ProxyTarget;
+
+use crate::capacity;
+use crate::config::{ProxyRouteConfig, ProxyRouteTarget};
+use crate::outcome::{self, ProxyResolution, ProxyUpstream};
+use crate::slow_start::Ramp;
+use crate::state::{ProxyReqState, RetryState};
 
 /// Convert a matched [`ProxyRouteTarget`] to a [`ProxyResolution`].
 pub(crate) fn resolve_route_target(
@@ -34,9 +37,7 @@ pub(crate) fn resolve_route_target(
 
 /// Convert a single-URL `ProxyRouteTarget::Url` to a [`ProxyResolution`].
 fn resolve_url_target(url: &str) -> ProxyResolution {
-    match router::url_to_proxy_upstream(url, None)
-        .and_then(outcome::upstream_target_into_proxy_upstream)
-    {
+    match outcome::url_to_proxy_upstream(url, None) {
         Some(upstream) => ProxyResolution::upstream(upstream, ProxyReqState::default()),
         None => ProxyResolution::unresolved(ProxyReqState::default()),
     }
@@ -50,9 +51,7 @@ fn resolve_round_robin_target(
     let key = urls.join(",");
     let counter = counters.entry(key).or_insert_with(|| AtomicUsize::new(0));
     let idx = counter.fetch_add(1, Ordering::Relaxed) % urls.len();
-    match router::url_to_proxy_upstream(&urls[idx], None)
-        .and_then(outcome::upstream_target_into_proxy_upstream)
-    {
+    match outcome::url_to_proxy_upstream(&urls[idx], None) {
         Some(upstream) => ProxyResolution::upstream(upstream, ProxyReqState::default()),
         None => ProxyResolution::unresolved(ProxyReqState::default()),
     }
@@ -61,7 +60,7 @@ fn resolve_round_robin_target(
 /// Handle the `Full` form of a proxy route target (strategy selection, health
 /// filtering, capacity, retry). No sticky/backup/groups support — see this
 /// module's own doc comment for why this doesn't share phases with
-/// `routing::resolve`'s equivalent.
+/// `crate::resolve`'s equivalent.
 fn resolve_full_target(
     cfg: &ProxyRouteConfig,
     path: &str,
@@ -116,7 +115,7 @@ fn resolve_full_target(
 
     // Use path as the hash input since client IP is not available at
     // route-match time (the routes array doesn't carry it through).
-    let hash_val = upstream::fnv1a_hash(path);
+    let hash_val = conduit_upstream::targets::fnv1a_hash(path);
     let strategy = cfg.strategy.as_ref();
 
     // Slow start (#157): ramp traffic to a recently-recovered upstream.
@@ -204,7 +203,7 @@ fn resolve_full_target(
 /// Parse `chosen_url` into a [`ProxyUpstream`], releasing the least-conn
 /// inflight slot if it's malformed — `logging()` will not run for this
 /// request. No rewrite/mirror/upstream-TLS overlay here: unlike
-/// `routing::resolve::build_proxy_upstream`, `routes[]` targets never carry
+/// `crate::resolve::build_proxy_upstream`, `routes[]` targets never carry
 /// those fields (`ProxyRouteConfig` has no `rewrite`/`mirror`/`upstreamTls`
 /// handling on this path today — preserved exactly, not a gap this PR fixes).
 fn build_target_upstream(
@@ -213,15 +212,13 @@ fn build_target_upstream(
     is_least_conn: bool,
     upstream_health: &UpstreamRegistry,
 ) -> Option<ProxyUpstream> {
-    match router::url_to_proxy_upstream(chosen_url, strip) {
-        Some(target) => outcome::upstream_target_into_proxy_upstream(target),
-        None => {
-            if is_least_conn {
-                upstream_health.conn_dec(chosen_url);
-            }
-            None
+    let Some(upstream) = outcome::url_to_proxy_upstream(chosen_url, strip) else {
+        if is_least_conn {
+            upstream_health.conn_dec(chosen_url);
         }
-    }
+        return None;
+    };
+    Some(upstream)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -292,8 +289,8 @@ fn build_retry_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::LoadBalanceStrategy;
-    use crate::proxy::routing::outcome::ProxyOutcome;
+    use crate::outcome::ProxyOutcome;
+    use conduit_upstream::LoadBalanceStrategy;
 
     fn upstream_addr(resolution: &ProxyResolution) -> String {
         match &resolution.outcome {
@@ -416,7 +413,7 @@ mod tests {
 
     #[test]
     fn resolve_route_target_full_proxy_weighted_round_robin() {
-        use crate::config::schema::WeightedTarget;
+        use conduit_upstream::WeightedTarget;
         let target = ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
             targets: vec![
                 ProxyTarget::Weighted(WeightedTarget {
@@ -452,7 +449,7 @@ mod tests {
 
     #[test]
     fn resolve_route_target_full_proxy_all_unhealthy_fails_open() {
-        use crate::proxy::health::UpstreamEntry;
+        use conduit_upstream::health::UpstreamEntry;
 
         let registry = UpstreamRegistry::new();
         // Mark the only upstream as unhealthy.
@@ -482,7 +479,7 @@ mod tests {
 
     #[test]
     fn resolve_route_target_full_proxy_with_strip_prefix_and_retry() {
-        use crate::config::schema::RetryConfig;
+        use crate::config::RetryConfig;
         let target = ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
             targets: vec![ProxyTarget::Simple("http://b1:4000".to_string())],
             strategy: Some(LoadBalanceStrategy::RoundRobin),
@@ -513,8 +510,8 @@ mod tests {
     /// this test fail, since `all_urls` still contains the unhealthy target.
     #[test]
     fn resolve_route_target_retry_urls_exclude_unhealthy_targets() {
-        use crate::config::schema::RetryConfig;
-        use crate::proxy::health::UpstreamEntry;
+        use crate::config::RetryConfig;
+        use conduit_upstream::health::UpstreamEntry;
 
         let registry = UpstreamRegistry::new();
         // Mark b2 unhealthy; b1 stays healthy (default).
@@ -566,7 +563,7 @@ mod tests {
     /// rotates on its own.
     #[test]
     fn resolve_route_target_retry_urls_anchored_to_chosen_peer() {
-        use crate::config::schema::RetryConfig;
+        use crate::config::RetryConfig;
 
         let registry = UpstreamRegistry::new();
         let target = ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
@@ -692,7 +689,7 @@ mod tests {
         // Before #156, this config path had zero circuit-breaker code at all —
         // maxConnectionsPerUpstream was silently ignored. Also asserts the
         // 503 shape: capacity exhaustion must NOT reuse the Unresolved outcome.
-        use crate::config::schema::UpstreamHealthCheck;
+        use conduit_upstream::UpstreamHealthCheck;
 
         let target = ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
             targets: vec![ProxyTarget::Simple("http://only:4000".to_string())],
@@ -719,7 +716,7 @@ mod tests {
         // RoundRobin (not least-conn) + a configured cap: circuit_tracking
         // must acquire a conn_count slot so the capacity check has real data
         // to filter on for subsequent requests.
-        use crate::config::schema::UpstreamHealthCheck;
+        use conduit_upstream::UpstreamHealthCheck;
 
         let target = ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
             targets: vec![ProxyTarget::Simple("http://only:4000".to_string())],
@@ -750,7 +747,7 @@ mod tests {
         // release path must still fire, and circuit_tracking's conn_inc must
         // never have run (it happens only after a successful URL parse), so
         // conn_load ends at exactly zero either way.
-        use crate::config::schema::UpstreamHealthCheck;
+        use conduit_upstream::UpstreamHealthCheck;
 
         let target = ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
             targets: vec![ProxyTarget::Simple("http://".to_string())],
