@@ -1,0 +1,31 @@
+[package]
+name        = "lopatnov-conduit-upstream"
+version.workspace    = true
+edition.workspace    = true
+description = "Upstream selection, health tracking, and load-balancing strategies for conduit's feature-driven workspace (issue #114/#142)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_upstream"
+path = "src/lib.rs"
+
+[dependencies]
+# No [features] table — upstream selection/health tracking is always-compiled
+# core proxy functionality (issue #142), unlike most sibling extractions:
+# there is no `--features upstream` to disable it, and every dependency here
+# is mandatory, not `optional = true`. No `lopatnov-conduit-core` dependency
+# either — nothing here implements `RequestFilter`/`ResponseFilter` (see
+# `CONTRIBUTING.md`'s "conduit-core dependency is opt-in, not automatic");
+# the Pingora `ProxyHttp` trait-method bodies stay in the root crate's
+# `request_phase.rs`/`response_phase.rs`/`router.rs`, calling into this
+# crate's plain functions and the `UpstreamRegistry` type.
+serde   = { workspace = true }
+dashmap = { workspace = true }
+tokio   = { workspace = true }
+# reqwest: connection-warmup HEAD probes (`health::warmup_url`). Already a
+# mandatory root-crate dependency (mirroring/forward-auth/JWKS) — this is a
+# second, independent edge to the same already-present crate, not new
+# footprint.
+reqwest = { workspace = true }
+tracing = { workspace = true }

@@ -64,7 +64,10 @@ pub(super) async fn upstream_response_filter(
             CachePhase::Hit | CachePhase::Stale | CachePhase::StaleUpdating
         ) {
             if let Some(req_ctx_mut) = ctx.as_mut() {
-                req_ctx_mut.cache_age_secs = Some(compute_response_age(upstream_response));
+                req_ctx_mut
+                    .cache
+                    .get_or_insert_with(Default::default)
+                    .cache_age_secs = Some(compute_response_age(upstream_response));
             }
         }
     }
@@ -89,7 +92,7 @@ pub(super) async fn upstream_response_filter(
     if status_u16 != 101 && upstream_response.status.is_informational() {
         tracing::debug!(
             status = status_u16,
-            upstream = ?req_ctx.proxy_upstream_url,
+            upstream = ?req_ctx.proxy.proxy_upstream_url,
             "skipping ResponseFilterChain for interim 1xx response"
         );
         return Ok(());
@@ -101,9 +104,9 @@ pub(super) async fn upstream_response_filter(
     // when the route explicitly declares `websocket: true`.  Otherwise the
     // upstream is violating the HTTP protocol contract and we drop the
     // connection with 502 to prevent unexpected tunnelling.
-    if status_u16 == 101 && !req_ctx.websocket_allowed {
+    if status_u16 == 101 && !req_ctx.proxy.websocket_allowed {
         tracing::warn!(
-            upstream = ?req_ctx.proxy_upstream_url,
+            upstream = ?req_ctx.proxy.proxy_upstream_url,
             "upstream returned 101 Switching Protocols but websocket is not \
              enabled for this route — rejecting upgrade"
         );
@@ -119,7 +122,7 @@ pub(super) async fn upstream_response_filter(
     // Clone sticky-cookie data before the chain runs so that subsequent
     // mutable borrows of `ctx` (in MaskBody / RetryUpstream arms) do not
     // conflict with the immutable `req_ctx` reference.
-    let sticky_cookie: Option<(String, String)> = req_ctx.sticky_set_cookie.clone();
+    let sticky_cookie: Option<(String, String)> = req_ctx.proxy.sticky_set_cookie.clone();
 
     // The response chain may execute WASM plugins whose .wasm file is
     // read from disk on first load.  Use block_in_place to signal Tokio
@@ -238,6 +241,7 @@ pub(super) async fn response_filter(
 
         // Only when the route has earlyRefreshSecs configured.
         let early_window_secs = req_ctx
+            .proxy
             .proxy_cache_cfg
             .as_ref()
             .and_then(|c| c.early_refresh_secs)
@@ -247,7 +251,7 @@ pub(super) async fn response_filter(
         }
 
         // Get the upstream URL for the background refresh task.
-        let upstream_url = match &req_ctx.proxy_upstream_url {
+        let upstream_url = match &req_ctx.proxy.proxy_upstream_url {
             Some(url) => url.clone(),
             None => return Ok(()),
         };
@@ -267,7 +271,10 @@ pub(super) async fn response_filter(
                 early_window_secs,
                 "cache TTL within early-refresh window — scheduling background refresh"
             );
-            req_ctx.early_refresh_upstream_url = Some(upstream_url);
+            req_ctx
+                .cache
+                .get_or_insert_with(Default::default)
+                .early_refresh_upstream_url = Some(upstream_url);
         }
     }
     #[cfg(not(feature = "cache"))]
@@ -287,7 +294,7 @@ pub(super) fn response_cache_filter(
 ) -> Result<RespCacheable> {
     let cacheable = ctx
         .as_ref()
-        .and_then(|c| c.proxy_cache_cfg.as_ref())
+        .and_then(|c| c.proxy.proxy_cache_cfg.as_ref())
         .map(|cfg| proxy_cache::response_cacheable(cfg, resp))
         .unwrap_or(RespCacheable::Uncacheable(NoCacheReason::Custom(
             "no-cache-cfg",

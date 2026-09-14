@@ -1,0 +1,44 @@
+[package]
+name        = "lopatnov-conduit-proxy-http"
+version.workspace    = true
+edition.workspace    = true
+description = "Proxy target resolution (routing, load-balancing dispatch, retry, sticky sessions) for conduit's feature-driven workspace (issue #114/#143)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_proxy_http"
+path = "src/lib.rs"
+
+[dependencies]
+# No [features] table — proxy routing/target-resolution is always-compiled
+# core functionality (issue #143), same shape as `conduit-upstream` (#142):
+# `proxy` doesn't become an optional Cargo feature until a later phase
+# (#144), so there is no `--features proxy-http` to disable this crate and
+# every dependency below is mandatory, not `optional = true`. No
+# `lopatnov-conduit-core` dependency either — nothing here implements
+# `RequestFilter`/`ResponseFilter` (see `CONTRIBUTING.md`'s "conduit-core
+# dependency is opt-in, not automatic"); the Pingora `ProxyHttp` trait-method
+# bodies stay in the root crate's `request_phase.rs`/`response_phase.rs`,
+# calling into this crate's plain functions.
+serde    = { workspace = true }
+indexmap = { workspace = true }
+dashmap  = { workspace = true }
+regex    = { workspace = true }
+http     = { workspace = true }
+tracing  = { workspace = true }
+# Sticky-session HMAC signing/verification (`sticky.rs`).
+hmac   = { workspace = true }
+sha2   = { workspace = true }
+base64 = { workspace = true }
+subtle = { workspace = true }
+# Upstream selection/health tracking — already a mandatory dependency
+# relationship since #142 (`UpstreamRegistry`, load-balancing strategies,
+# URL-parsing helpers, health config types).
+lopatnov-conduit-upstream = { workspace = true }
+# `ProxyRouteConfig.cache` (`CacheConfig`).
+lopatnov-conduit-cache = { workspace = true }
+# `ProxyRouteConfig.rateLimit` / `RouteRateLimit` (`RateLimitConfig`).
+lopatnov-conduit-ratelimit = { workspace = true }
+# `RouteConfig.static` (`StaticConfig`/`StaticOptions`).
+lopatnov-conduit-static = { workspace = true }

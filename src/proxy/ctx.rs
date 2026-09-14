@@ -4,9 +4,16 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::config::schema::{
-    CacheConfig, ConnectionPoolConfig, HeaderTransformConfig, ProxyTimeout, RewriteRule,
-    StaticOptions, UpstreamTlsConfig as UpstreamTlsCfg,
+    HeaderTransformConfig, RewriteRule, StaticOptions, UpstreamTlsConfig as UpstreamTlsCfg,
 };
+
+// `RetryState`/`RouteRateLimit`/`ProxyReqState` moved into
+// `crates/conduit-proxy-http::state` (issue #114/#143 — PR A1, issue #418,
+// first grouped these fields same-crate; PR B, issue #143 itself, moved
+// them into the new crate). Re-exported here so every existing
+// `use crate::proxy::ctx::{RetryState, ...}` call site keeps resolving
+// unchanged.
+pub use conduit_proxy_http::state::{ProxyReqState, RetryState, RouteRateLimit};
 
 #[derive(Debug)]
 pub struct RequestCtx {
@@ -14,46 +21,17 @@ pub struct RequestCtx {
     pub upstream: UpstreamTarget,
     pub start_time: Instant,
     pub accept_enc: AcceptEncoding,
-    /// Populated when the matched route has a `retry` configuration.
-    pub retry: Option<RetryState>,
+    /// Per-request proxy-routing state — retry, per-route timeout/pool/http2,
+    /// upstream URL + conn-slot bookkeeping, cache cfg, passive-health
+    /// thresholds, websocket/sticky/rate-limit/priority routing decisions.
+    ///
+    /// Grouped into [`ProxyReqState`] ahead of the eventual
+    /// `conduit-proxy-http` crate extraction (issue #143) — see
+    /// `src/proxy/routing/state.rs`.
+    pub proxy: ProxyReqState,
     /// CORS + security headers to inject into every response for this request.
     /// Computed once in `request_filter` and reused for all write paths.
     pub extra_headers: Vec<(String, String)>,
-    /// Per-route proxy connection timeouts (from `proxy.*.timeout`).
-    pub proxy_timeout: Option<ProxyTimeout>,
-    /// Per-route connection pool settings (from `proxy.*.pool`).
-    pub proxy_pool: Option<ConnectionPoolConfig>,
-    /// When `true`, negotiate HTTP/2 with the upstream (ALPN H2H1).
-    /// Derived from `proxy.*.http2: true` in the route config.
-    pub proxy_http2: bool,
-    /// The upstream URL that was selected for this request.
-    ///
-    /// `Some` for every proxied request (not just `least-conn`/circuit-breaker
-    /// routes) so that Peak EWMA, Outlier Detection, per-peer response stats,
-    /// and the per-upstream Prometheus gauges can attribute this request no
-    /// matter which load-balancing strategy picked it. Whether this request
-    /// also holds a `conn_count` slot that must be released is tracked
-    /// separately by [`upstream_conn_slot`](Self::upstream_conn_slot) — the
-    /// two must not be conflated, since `conn_count` is keyed by URL alone and
-    /// a phantom decrement from an attribution-only request would corrupt the
-    /// slot count for a *different* route sharing the same upstream.
-    pub proxy_upstream_url: Option<String>,
-    /// `true` when routing acquired a `conn_count` slot for
-    /// `proxy_upstream_url` (via `conn_inc` / least-conn selection) that this
-    /// request is responsible for releasing via `conn_dec`.
-    ///
-    /// `false` when `proxy_upstream_url` is populated for passive-health
-    /// attribution only (no slot was acquired) — e.g. any non-least-conn
-    /// route with no `maxConnectionsPerUpstream` configured. Reset to `false`
-    /// whenever `proxy_upstream_url` is replaced without a matching
-    /// `conn_inc` (see `record_failed_upstream_for_retry` /
-    /// `upstream_peer`'s retry-restore path).
-    pub upstream_conn_slot: bool,
-    /// Cache configuration for this route (`proxy.*.cache`), if caching is enabled.
-    ///
-    /// `None` means the route has no cache config and caching is disabled for
-    /// this request.
-    pub proxy_cache_cfg: Option<CacheConfig>,
     /// Set to `true` by `upstream_response_filter` when the upstream returns a
     /// 5xx status and the site has `maskErrors: true`.  The
     /// `upstream_response_body_filter` hook replaces the body with a generic
@@ -62,11 +40,18 @@ pub struct RequestCtx {
     /// Static header transform applied to every upstream response.
     /// Populated from `SiteConfig.response_transform`.
     pub response_transform: Option<HeaderTransformConfig>,
-    /// JWT claims extracted by `JwtGuard` — available for template substitution
-    /// in `requestTransform.setHeaders` values using `{{ jwt.<claim> }}` syntax.
+    /// JWT claims extracted after the guard chain runs — available for
+    /// template substitution in `requestTransform.setHeaders` values using
+    /// `{{ jwt.<claim> }}` syntax.
     ///
-    /// Only populated when `jwtAuth` is configured and a valid token is present.
-    pub jwt_claims: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// Only populated when `jwtAuth` is configured and a valid token is
+    /// present. `#[cfg(feature = "jwt")]`-gated like `otel_span`/
+    /// `early_refresh_upstream_url` below (`CLAUDE.md` decision #30) — use
+    /// [`RequestCtx::jwt_claims`] to read this from always-compiled call
+    /// sites (e.g. header-template expansion) without `#[cfg]`-branching at
+    /// the call site itself.
+    #[cfg(feature = "jwt")]
+    pub jwt: Option<conduit_auth_jwt::guard::JwtReqState>,
     /// Active OpenTelemetry span for this request.
     ///
     /// Created at the start of `do_request_filter` and ended in `logging()`.
@@ -84,85 +69,33 @@ pub struct RequestCtx {
     /// (default 1 MiB).  Retries are still attempted but without body replay —
     /// only safe for idempotent methods (GET/HEAD) in that case.
     pub body_too_large: bool,
-    /// Running tally of actual body bytes received so far.
-    ///
-    /// Incremented in `request_body_filter` for every chunk regardless of
-    /// whether retry buffering is active.  Used to enforce `limits.maxBodyBytes`
-    /// against clients that omit `Content-Length` or use chunked encoding.
-    pub actual_body_bytes: u64,
-    /// Timestamp recorded at the start of `upstream_request_filter` — i.e. the
-    /// moment the proxied request was forwarded to the upstream.
-    ///
-    /// Used to compute `upstream_response_time`: the duration between sending
-    /// the request and receiving the first byte of the upstream response.
-    /// `None` for local handlers (health, static, metrics, …).
-    pub upstream_start: Option<Instant>,
 
-    /// RAII guard that releases the per-IP connection slot when this context
-    /// is dropped at the end of `logging()`.  `None` when
-    /// `limits.maxConnectionsPerIp` is not configured or the request was
-    /// rejected before a slot was acquired.
-    pub ip_conn_slot: Option<crate::filter::chain::IpConnSlotGuard>,
+    /// Per-request limits state — `actual_body_bytes`, `ip_conn_slot`
+    /// (RAII per-IP connection slot, released on drop), and the slow-loris
+    /// upload-rate leaky-bucket state (`upload_excess_bytes`/
+    /// `upload_last_chunk`). Always present — unlike `jwt`/`cache` above,
+    /// `limits` is not an optional Cargo feature (`CLAUDE.md` decision #31),
+    /// so this field is never `Option`-wrapped or `#[cfg]`-gated. See
+    /// [`conduit_limits::LimitsReqState`] / `crates/conduit-limits/src/ctx.rs`.
+    pub limits: conduit_limits::LimitsReqState,
 
-    /// Passive health check: HTTP status codes that count as upstream failures.
+    /// Per-request cache state (`Age` header value, early-refresh upstream
+    /// URL) — see [`CacheReqState`](conduit_cache::CacheReqState).
     ///
-    /// Populated from `healthCheck.unhealthyStatus` during routing.
-    /// If the response status matches, `consecutive_5xx` is incremented.
-    /// Default (empty) falls back to the standard 5xx-only detection.
-    pub passive_unhealthy_status: Vec<u16>,
-
-    /// Passive health check: latency threshold in milliseconds.
-    ///
-    /// Populated from `healthCheck.unhealthyLatencyMs` during routing.
-    /// If the upstream response time exceeds this, it counts as a failure.
-    pub passive_unhealthy_latency_ms: Option<u64>,
-    /// Whether this route explicitly allows WebSocket upgrades.
-    ///
-    /// Set from `proxy.*.websocket: true` in the route config.  When `false`
-    /// (the default), any `101 Switching Protocols` response from upstream is
-    /// rejected with `502 Bad Gateway` to prevent unexpected protocol tunnelling.
-    pub websocket_allowed: bool,
-    /// Age in seconds to inject as the `Age` response header for cache hits.
-    ///
-    /// Computed in `upstream_response_filter` from the cached response's `Date`
-    /// header (RFC 7234 §5.1): `age = now − date`.  `None` for non-cached
-    /// responses or when the cache feature is disabled.
-    pub cache_age_secs: Option<u64>,
-    /// Sticky-session cookie to set on the response when HMAC signing is enabled.
-    ///
-    /// Populated during routing when `sticky.secret` is configured.
-    /// Format: `(cookie_name, hmac_signed_value)`.  The `upstream_response_filter`
-    /// injects the corresponding `Set-Cookie` header.
-    pub sticky_set_cookie: Option<(String, String)>,
-    /// Slow-loris upload defense: accumulated excess bytes for the leaky-bucket
-    /// rate checker in `request_body_filter`.
-    ///
-    /// Positive excess means the client is sending faster than `minUploadRate`
-    /// would allow; negative means the client has headroom.  Set to 0.0 on init.
-    pub upload_excess_bytes: f64,
-    /// Timestamp of the last body chunk received, used by the upload-rate checker.
-    pub upload_last_chunk: Option<std::time::Instant>,
-    /// Upstream URL to refresh in the background after this cache-hit response
-    /// is served (early refresh, #31).
-    ///
-    /// Set by `response_filter` when the cache entry's remaining TTL is within
-    /// `earlyRefreshSecs`.  `logging()` spawns a fire-and-forget GET task.
-    /// `None` when early refresh is not configured or the TTL is not yet close.
+    /// `#[cfg(feature = "cache")]`-gated like `jwt`/`otel_span` above
+    /// (`CLAUDE.md` decision #30) — use [`RequestCtx::cache_age_secs`] to
+    /// read the `Age`-header value from always-compiled call sites (the
+    /// `ResponseCtx` trait impl in `filter/response_chain.rs`) without
+    /// `#[cfg]`-branching at the call site itself.
     #[cfg(feature = "cache")]
-    pub early_refresh_upstream_url: Option<String>,
+    pub cache: Option<conduit_cache::CacheReqState>,
 }
 
 impl RequestCtx {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         site_idx: usize,
         upstream: UpstreamTarget,
-        retry: Option<RetryState>,
-        proxy_timeout: Option<ProxyTimeout>,
-        proxy_pool: Option<ConnectionPoolConfig>,
-        proxy_http2: bool,
-        proxy_upstream_url: Option<String>,
-        proxy_cache_cfg: Option<CacheConfig>,
+        proxy: ProxyReqState,
         response_transform: Option<HeaderTransformConfig>,
     ) -> Self {
         Self {
@@ -170,80 +103,70 @@ impl RequestCtx {
             upstream,
             start_time: Instant::now(),
             accept_enc: AcceptEncoding::default(),
-            retry,
+            proxy,
             extra_headers: Vec::new(),
-            proxy_timeout,
-            proxy_pool,
-            proxy_http2,
-            proxy_upstream_url,
-            upstream_conn_slot: false,
-            proxy_cache_cfg,
             mask_upstream_body: false,
             response_transform,
             body_buffer: Vec::new(),
             body_too_large: false,
-            actual_body_bytes: 0,
-            jwt_claims: None,
-            upstream_start: None,
-            ip_conn_slot: None,
-            passive_unhealthy_status: Vec::new(),
-            passive_unhealthy_latency_ms: None,
-            websocket_allowed: false,
-            cache_age_secs: None,
-            sticky_set_cookie: None,
-            upload_excess_bytes: 0.0,
-            upload_last_chunk: None,
+            #[cfg(feature = "jwt")]
+            jwt: None,
+            limits: conduit_limits::LimitsReqState::default(),
             #[cfg(feature = "cache")]
-            early_refresh_upstream_url: None,
+            cache: None,
             #[cfg(feature = "otlp")]
             otel_span: None,
         }
     }
-}
 
-/// Per-request retry state for proxy routes that have `retry` configured.
-///
-/// The URL list is rotated so that `urls[0]` is the round-robin starting
-/// target for this particular request.  Subsequent retries advance through
-/// `urls[1 % len]`, `urls[2 % len]`, etc.
-#[derive(Debug)]
-pub struct RetryState {
-    /// All target URLs for the route, rotated to start at the RR position.
-    pub urls: Vec<String>,
-    /// Number of times `upstream_peer()` has been called so far (0 = first call).
-    pub attempt: usize,
-    /// Total attempts allowed including the initial one (e.g. `attempts: 3` ⇒ 3 tries).
-    pub max_attempts: usize,
-    /// Error conditions that should trigger a retry.
-    /// Valid values: `"connection_error"` | `"5xx"` | `"timeout"`.
-    pub conditions: Vec<String>,
-    /// Optional delay between retries in milliseconds.
-    pub backoff_ms: Option<u64>,
-    /// When `true`, jitter ±50% is applied to `backoff_ms` to avoid retry storms.
-    pub backoff_jitter: bool,
-    /// Maximum percentage of in-flight requests that may be retries (0.0–100.0).
+    /// Borrow the JWT claims extracted for this request, if any.
     ///
-    /// Prevents retry storms: when many requests fail simultaneously, an
-    /// unconstrained retry budget multiplies load by `1 + attempts`.
-    /// `None` means unlimited retries are allowed (legacy behaviour).
-    pub budget_percent: Option<f64>,
-    /// Set to `true` once this request has been promoted to a retry.
-    ///
-    /// The `logging()` hook reads this flag to decrement `AppState.retry_inflight`
-    /// after the retry response is delivered.
-    pub is_retrying: bool,
-}
-
-impl RetryState {
-    /// Returns `true` when there are retries left (i.e. we have not yet exhausted
-    /// `max_attempts`).  Call this *after* `attempt` has been incremented by
-    /// `upstream_peer()`.
-    pub fn has_attempts_left(&self) -> bool {
-        self.attempt < self.max_attempts
+    /// Used by the root crate's always-compiled `{{ jwt.<claim> }}`
+    /// header-template expansion (`apply_header_transform_request_with_claims`
+    /// in `request_phase.rs`, backed by `conduit_auth_jwt::template::
+    /// expand_jwt_templates`) — that call site is unconditional (a config
+    /// can reference the template syntax regardless of whether `--features
+    /// jwt` is compiled in), so this accessor exists specifically to keep
+    /// the `#[cfg]` branching contained here instead of at every call site.
+    /// Returns a static empty reference when the `jwt` feature is off or no
+    /// claims were extracted for this request.
+    #[cfg(feature = "jwt")]
+    pub fn jwt_claims(&self) -> &Option<std::collections::HashMap<String, serde_json::Value>> {
+        const NO_CLAIMS: Option<std::collections::HashMap<String, serde_json::Value>> = None;
+        self.jwt
+            .as_ref()
+            .map(|state| &state.claims)
+            .unwrap_or(&NO_CLAIMS)
     }
 
-    pub fn has_condition(&self, cond: &str) -> bool {
-        self.conditions.iter().any(|c| c == cond)
+    /// See the `#[cfg(feature = "jwt")]` overload above — stub for builds
+    /// without the `jwt` feature, always returning `None` so
+    /// `{{ jwt.<claim> }}` templates resolve to `""` (matching the
+    /// documented always-compiled behavior of `expand_jwt_templates`).
+    #[cfg(not(feature = "jwt"))]
+    pub fn jwt_claims(&self) -> &Option<std::collections::HashMap<String, serde_json::Value>> {
+        const NO_CLAIMS: Option<std::collections::HashMap<String, serde_json::Value>> = None;
+        &NO_CLAIMS
+    }
+
+    /// Age in seconds for the `Age` response header on cache hits (RFC 7234
+    /// §5.1).
+    ///
+    /// Backed by [`cache`](Self::cache)'s `CacheReqState` when the `cache`
+    /// feature is compiled in; always `None` otherwise. Exists so the
+    /// always-compiled `ResponseCtx` trait impl (`filter/response_chain.rs`)
+    /// doesn't need `#[cfg]`-branching at its call site — matches the
+    /// `jwt_claims()` pattern above (`CLAUDE.md` decision #30).
+    #[cfg(feature = "cache")]
+    pub fn cache_age_secs(&self) -> Option<u64> {
+        self.cache.as_ref().and_then(|c| c.cache_age_secs)
+    }
+
+    /// See the `#[cfg(feature = "cache")]` overload above — stub for builds
+    /// without the `cache` feature, always returning `None`.
+    #[cfg(not(feature = "cache"))]
+    pub fn cache_age_secs(&self) -> Option<u64> {
+        None
     }
 }
 
@@ -300,150 +223,5 @@ pub enum LocalHandler {
     Overloaded,
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct AcceptEncoding {
-    pub brotli: bool,
-    pub gzip: bool,
-    pub deflate: bool,
-    pub zstd: bool,
-}
-
-impl AcceptEncoding {
-    pub fn parse(value: &str) -> Self {
-        let mut enc = Self::default();
-        for part in value.split(',') {
-            let mut segments = part.trim().split(';');
-            let token = segments.next().unwrap_or("").trim().to_ascii_lowercase();
-            // Skip encodings explicitly disabled with q=0 or q=0.0.
-            let is_zero_q = segments.any(|seg| {
-                let seg = seg.trim();
-                seg.eq_ignore_ascii_case("q=0") || seg.eq_ignore_ascii_case("q=0.0")
-            });
-            if is_zero_q {
-                continue;
-            }
-            match token.as_str() {
-                "br" => enc.brotli = true,
-                "gzip" => enc.gzip = true,
-                "deflate" => enc.deflate = true,
-                "zstd" => enc.zstd = true,
-                _ => {}
-            }
-        }
-        enc
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── AcceptEncoding::parse ─────────────────────────────────────────────────
-
-    #[test]
-    fn parse_empty_enables_nothing() {
-        let enc = AcceptEncoding::parse("");
-        assert!(!enc.brotli && !enc.gzip && !enc.deflate);
-    }
-
-    #[test]
-    fn parse_gzip_only() {
-        let enc = AcceptEncoding::parse("gzip");
-        assert!(enc.gzip);
-        assert!(!enc.brotli);
-        assert!(!enc.deflate);
-    }
-
-    #[test]
-    fn parse_br_only() {
-        let enc = AcceptEncoding::parse("br");
-        assert!(enc.brotli);
-        assert!(!enc.gzip);
-    }
-
-    #[test]
-    fn parse_multiple_encodings() {
-        let enc = AcceptEncoding::parse("br, gzip, deflate, zstd");
-        assert!(enc.brotli);
-        assert!(enc.gzip);
-        assert!(enc.deflate);
-        assert!(enc.zstd);
-    }
-
-    #[test]
-    fn parse_zstd_only() {
-        let enc = AcceptEncoding::parse("zstd");
-        assert!(enc.zstd);
-        assert!(!enc.brotli);
-        assert!(!enc.gzip);
-    }
-
-    #[test]
-    fn parse_q_zero_disables_encoding() {
-        let enc = AcceptEncoding::parse("gzip;q=0, br");
-        assert!(!enc.gzip, "gzip with q=0 must be skipped");
-        assert!(enc.brotli);
-    }
-
-    #[test]
-    fn parse_q_zero_zero_disables_encoding() {
-        let enc = AcceptEncoding::parse("gzip;q=0.0");
-        assert!(!enc.gzip);
-    }
-
-    #[test]
-    fn parse_case_insensitive() {
-        let enc = AcceptEncoding::parse("GZip, BR, Deflate");
-        assert!(enc.gzip);
-        assert!(enc.brotli);
-        assert!(enc.deflate);
-    }
-
-    #[test]
-    fn parse_unknown_token_ignored() {
-        let enc = AcceptEncoding::parse("identity, zstd, gzip");
-        assert!(enc.gzip);
-        assert!(!enc.brotli);
-    }
-
-    // ── RetryState ────────────────────────────────────────────────────────────
-
-    fn make_retry(attempt: usize, max: usize, conditions: &[&str]) -> RetryState {
-        RetryState {
-            urls: vec!["http://a:4000".to_string()],
-            attempt,
-            max_attempts: max,
-            conditions: conditions.iter().map(|s| s.to_string()).collect(),
-            backoff_ms: None,
-            backoff_jitter: false,
-            budget_percent: None,
-            is_retrying: false,
-        }
-    }
-
-    #[test]
-    fn has_attempts_left_when_under_max() {
-        assert!(make_retry(0, 3, &[]).has_attempts_left());
-        assert!(make_retry(2, 3, &[]).has_attempts_left());
-    }
-
-    #[test]
-    fn no_attempts_left_when_at_max() {
-        assert!(!make_retry(3, 3, &[]).has_attempts_left());
-        assert!(!make_retry(5, 3, &[]).has_attempts_left());
-    }
-
-    #[test]
-    fn has_condition_matches_exact_string() {
-        let rs = make_retry(0, 3, &["5xx", "connection_error"]);
-        assert!(rs.has_condition("5xx"));
-        assert!(rs.has_condition("connection_error"));
-        assert!(!rs.has_condition("timeout"));
-    }
-
-    #[test]
-    fn has_condition_empty_list_never_matches() {
-        let rs = make_retry(0, 3, &[]);
-        assert!(!rs.has_condition("5xx"));
-    }
-}
+// Layer-0 vocabulary (#114/#126).
+pub use conduit_core::util::encoding::AcceptEncoding;

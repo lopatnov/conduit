@@ -1,13 +1,12 @@
 pub mod cache;
-mod cache_common;
 pub mod cache_disk;
 #[cfg(feature = "redis")]
 pub mod cache_redis;
-pub(crate) mod capacity;
 pub mod ctx;
+mod dispatch;
 pub mod health;
 mod logging_phase;
-pub(crate) mod request_phase;
+pub(crate) mod request;
 mod response_phase;
 pub mod router;
 pub mod routes;

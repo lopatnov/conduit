@@ -1,0 +1,23 @@
+[package]
+name        = "lopatnov-conduit-redirects"
+version.workspace    = true
+edition.workspace    = true
+description = "Configured URL redirects config + guard for conduit's feature-driven workspace (issue #114/#140)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_redirects"
+path = "src/lib.rs"
+
+[dependencies]
+# No [features] table — redirects are always-on (CLAUDE.md decision #31), so
+# every dependency here (including lopatnov-conduit-core, needed by
+# guard::RedirectGuard) is mandatory, not `optional = true`. Mirrors
+# conduit-cors/conduit-ipfilter/conduit-security-headers' unconditional
+# dependency style — see src/lib.rs doc comment for why this crate is not
+# feature-gated like most of its sibling extractions.
+serde                 = { workspace = true }
+async-trait           = { workspace = true }
+pingora-core          = { workspace = true }
+lopatnov-conduit-core = { workspace = true }
