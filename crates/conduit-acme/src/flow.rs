@@ -155,7 +155,8 @@ pub async fn load_or_obtain_certificate(
     storage_dir: &Path,
     http_challenge_port: u16,
 ) -> anyhow::Result<AcmeCertPaths> {
-    std::fs::create_dir_all(storage_dir)
+    tokio::fs::create_dir_all(storage_dir)
+        .await
         .with_context(|| format!("creating ACME storage directory {storage_dir:?}"))?;
 
     let cert_path = storage_dir.join(format!("{domain}.crt.pem"));
@@ -163,7 +164,7 @@ pub async fn load_or_obtain_certificate(
 
     // Reuse the cached certificate when it is not about to expire.
     if cert_path.exists() && key_path.exists() {
-        if let Ok(pem) = std::fs::read_to_string(&cert_path) {
+        if let Ok(pem) = tokio::fs::read_to_string(&cert_path).await {
             if !cert_expires_within_days(&pem, RENEWAL_THRESHOLD_DAYS) {
                 tracing::info!(domain, "reusing cached ACME certificate");
                 return Ok(AcmeCertPaths {
@@ -180,7 +181,8 @@ pub async fn load_or_obtain_certificate(
     let (cert_pem, key_pem) =
         obtain_certificate(acme_cfg, domain, &challenges, http_challenge_port).await?;
 
-    std::fs::write(&cert_path, &cert_pem)
+    tokio::fs::write(&cert_path, &cert_pem)
+        .await
         .with_context(|| format!("writing cert to {cert_path:?}"))?;
     // Owner-only permissions: this is a private key (issue #278).
     write_secret_file(&key_path, key_pem.as_bytes())
@@ -367,7 +369,8 @@ async fn load_or_create_account(
     let creds_path = PathBuf::from(storage).join("acme_account.json");
 
     if creds_path.exists() {
-        let json = std::fs::read_to_string(&creds_path)
+        let json = tokio::fs::read_to_string(&creds_path)
+            .await
             .with_context(|| format!("reading ACME credentials from {creds_path:?}"))?;
         let creds: AccountCredentials = serde_json::from_str(&json)
             .with_context(|| format!("parsing ACME credentials in {creds_path:?}"))?;
@@ -392,7 +395,7 @@ async fn load_or_create_account(
         .await
         .context("ACME account creation failed")?;
 
-    std::fs::create_dir_all(storage)?;
+    tokio::fs::create_dir_all(storage).await?;
     let json = serde_json::to_string_pretty(&credentials)?;
     // Owner-only permissions: this file holds the ACME account's private
     // key material (issue #278).
@@ -475,7 +478,7 @@ pub fn spawn_renewal_task(
 
             let cert_path = storage_dir.join(format!("{domain}.crt.pem"));
             if cert_path.exists() {
-                match std::fs::read_to_string(&cert_path) {
+                match tokio::fs::read_to_string(&cert_path).await {
                     Ok(pem) if !cert_expires_within_days(&pem, RENEWAL_THRESHOLD_DAYS) => {
                         continue; // not expiring soon
                     }
@@ -549,6 +552,41 @@ mod tests {
             time::OffsetDateTime::now_utc() - time::Duration::days(1),
         );
         assert!(cert_expires_within_days(&pem, RENEWAL_THRESHOLD_DAYS));
+    }
+
+    /// Exercises the storage-directory creation and cached-certificate read in
+    /// `load_or_obtain_certificate`. The ACME directory points at a closed
+    /// port, so the call can only succeed by taking the "reuse the cached
+    /// certificate" branch — falling through to the ACME flow would fail.
+    #[tokio::test]
+    async fn fresh_cached_certificate_is_reused_without_contacting_the_acme_server() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let storage_dir = dir.path().join("certs");
+        std::fs::create_dir_all(&storage_dir).unwrap();
+        let cert_pem = self_signed_cert_with_not_after(
+            time::OffsetDateTime::now_utc() + time::Duration::days(365),
+        );
+        std::fs::write(storage_dir.join("example.com.crt.pem"), &cert_pem).unwrap();
+        std::fs::write(storage_dir.join("example.com.key.pem"), "placeholder key").unwrap();
+
+        let cfg = AcmeConfig {
+            email: "ops@example.com".to_string(),
+            directory: Some("http://127.0.0.1:1/directory".to_string()),
+            storage: None,
+            challenge: None,
+        };
+        let paths = load_or_obtain_certificate(
+            &cfg,
+            "example.com",
+            Arc::new(DashMap::new()),
+            &storage_dir,
+            0,
+        )
+        .await
+        .expect("a fresh cached certificate must be reused without contacting the ACME server");
+
+        assert_eq!(paths.cert, storage_dir.join("example.com.crt.pem"));
+        assert_eq!(paths.key, storage_dir.join("example.com.key.pem"));
     }
 
     // ── write_secret_file (issue #278: owner-only permissions) ────────────────
