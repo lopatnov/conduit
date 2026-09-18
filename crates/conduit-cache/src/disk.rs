@@ -201,7 +201,7 @@ impl Storage for DiskCacheStorage {
         _trace: &SpanHandle,
     ) -> PingoraResult<bool> {
         let path = self.entry_path(&Self::compact_hash(key));
-        match std::fs::remove_file(&path) {
+        match tokio::fs::remove_file(&path).await {
             Ok(_) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(e) => {
@@ -493,6 +493,38 @@ mod tests {
         assert!(
             hash.chars().all(|c| c.is_ascii_hexdigit()),
             "hash must be lowercase hex"
+        );
+    }
+
+    #[tokio::test]
+    async fn purge_removes_the_entry_and_reports_whether_it_existed() {
+        let dir = TempDir::new().unwrap();
+        // `Storage` methods take `&'static self`; leaking one small
+        // per-test storage instance is fine.
+        let storage: &'static DiskCacheStorage = Box::leak(Box::new(DiskCacheStorage::new(
+            dir.path().to_str().unwrap(),
+        )));
+        let key = CacheKey::new("host.example", "https:/purge", "");
+        let path = storage.entry_path(&DiskCacheStorage::hash(&key));
+        DiskCacheStorage::write_entry(&path, b"m0", b"m1", b"body").unwrap();
+        assert!(path.exists(), "entry must exist before the purge");
+
+        let span = pingora_cache::trace::Span::inactive();
+        let compact = key.to_compact();
+        let purged = storage
+            .purge(&compact, PurgeType::Invalidation, &span.handle())
+            .await
+            .unwrap();
+        assert!(purged, "purging an existing entry must report true");
+        assert!(!path.exists(), "purge must remove the entry file");
+
+        let purged_again = storage
+            .purge(&compact, PurgeType::Invalidation, &span.handle())
+            .await
+            .unwrap();
+        assert!(
+            !purged_again,
+            "purging a missing entry must report false, not an error"
         );
     }
 
