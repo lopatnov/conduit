@@ -233,12 +233,16 @@ for genuinely idle firings, not a guaranteed periodic pass.)
   and `real-bug` all fall into one of these two paths — the kind label
   informs the judgment, it doesn't pre-decide it):
   - **Low-risk and unambiguous** (a missing doc line, an absent test for an
-    existing code path whose correct behavior isn't in question) → fix it
-    directly. Branch off `main` (not the 2.0 migration branch — this isn't
-    #114 work), then follow the same *sequence* as Steps 4-6 (self-review,
-    get green, docs) and merge straight into `main` yourself — do **not**
-    use Step 7's destination, which is hardcoded to the migration branch and
-    only applies to #114 PRs.
+    existing code path whose correct behavior isn't in question) → fix it.
+    **While the Step 1 `main`-freeze notice is in effect, branch off the
+    migration branch instead of `main` and merge there** (still its own small
+    PR, not folded into #114 sub-issue work) — the freeze means *no* new
+    commits reach `main` this way either, not just no Dependabot merges. Once
+    the freeze lifts, this reverts to the original routing: branch off `main`
+    (not the 2.0 migration branch — this isn't #114 work), then follow the
+    same *sequence* as Steps 4-6 (self-review, get green, docs) and merge
+    straight into `main` yourself — do **not** use Step 7's destination,
+    which is hardcoded to the migration branch and only applies to #114 PRs.
   - **A real behavioral bug, or anything needing design judgment** → file a
     GitHub issue with the specifics (`scrum-master`) rather than
     stealth-fixing it inline. **Updated 2026-08-23 (user's explicit
@@ -270,9 +274,11 @@ for genuinely idle firings, not a guaranteed periodic pass.)
   section of #114's body and its "Related bug/backlog issues" table) and mix
   them into the same phase-ordered queue as #114's sub-issues — pick whichever
   is next in priority, not strictly sub-issues-first. A bug affecting `main`
-  (not migration-branch-only) still gets its own PR against `main`, same as
-  before (Step 1c's merge path) — this bullet is about *scheduling* which
-  task a firing picks up next, not about changing where the fix lands.
+  (not migration-branch-only) still gets its own PR — against `main` normally,
+  or against the migration branch instead while the Step 1 `main`-freeze
+  notice is in effect (same redirect as Step 1c's merge path just above) —
+  this bullet is about *scheduling* which task a firing picks up next, not
+  about changing where the fix lands.
 - Look at #114's open sub-issues (`mcp__github__issue_read` /
   `list_issues` filtered to sub-issues of #114). Pick the next one in
   phase order (Phase 0 → 6) unless a dependency isn't merged yet.

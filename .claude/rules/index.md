@@ -53,6 +53,46 @@ immediately — it only bites if the conductor (or another background agent) tou
 files in the shared checkout while the write-heavy agent is still running. Don't rely on "nothing
 went wrong last time" as evidence it's safe to skip.
 
+### Resuming a cut-off agent via `SendMessage` doesn't guarantee it keeps its worktree isolation
+
+> Added 2026-09-18, promoted here from a private per-user memory note so it's visible to every
+> execution context, not just a local session with access to that memory. An agent originally
+> spawned with `isolation: "worktree"` (the #144-prep `request_phase.rs`-split precursor to
+> #432) was resumed via `SendMessage` after a usage-limit 429 cutoff and ended up running
+> `git checkout -b <its-branch>` directly in the shared checkout instead — no worktree at all
+> on the resumed leg, racing the conductor's own concurrent merge-conflict resolution in the
+> same directory at the same time. Self-corrected by the agent (it noticed the collision via
+> `gh pr diff --name-only` and fixed its own branch via `git rebase --onto` + force-push,
+> producing a clean PR) — but that's luck, not something to rely on.
+
+After resuming any file-writing/git-mutating agent via `SendMessage`, check `git worktree list`
+shortly afterward — if no worktree entry appears for it, it's very likely operating in the
+shared checkout regardless of how it was originally spawned. If the conductor needs to do its
+own git work (merges, commits, checkouts) while a resumed write-heavy agent might still be
+running, treat that as an active race risk, same as the "commit or isolate before spawning" rule
+above — the trigger here is *resuming*, not the initial spawn.
+
+### "Read-only" verification agents still mutate git state via `checkout`/`pull` — the isolation rule covers them too
+
+> Added 2026-09-18, same promotion as above. `build-validator` and similar agents are called
+> "read-only" because they don't write files as their *deliverable*, but their actual
+> verification routine typically runs `git checkout <branch> && git pull` first, to make sure
+> they're testing the real target state — that's a git-state mutation on the shared checkout,
+> the same risk class this whole section covers. Two `build-validator` agents were spawned
+> back-to-back without `isolation: "worktree"` — one checking `main` (`git checkout main && git
+> pull`), one checking a fresh release branch that had *uncommitted* changes sitting in the
+> shared working directory at spawn time. Had the first agent's checkout landed while those
+> changes were still uncommitted, git would have refused it or, worse, silently carried them
+> onto `main`. Caught immediately (`git branch --show-current` right after the second spawn) and
+> mitigated by committing the pending work before either checkout could land — no damage, but a
+> real near-miss.
+
+Before spawning *any* agent whose task will run `git checkout`/`git pull` on a specific branch —
+not just ones that create commits or write new files — check `git status` in the shared checkout
+first. Uncommitted work → commit it (even a small WIP commit) or pass `isolation: "worktree"`.
+Don't reason "this agent only builds and reports, it won't touch my files" — the checkout step
+alone is enough to race, and this applies doubly when spawning two such agents in the same turn.
+
 ## `git checkout -b` is the *first* action of implementation work, not a later cleanup step
 
 > This exact near-miss — editing production code directly on `claude/cargo-workspace-
