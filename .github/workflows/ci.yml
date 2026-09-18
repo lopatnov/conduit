@@ -299,8 +299,10 @@ jobs:
       # GitHub-hosted runners land on different CPU generations from one run
       # to the next, so absolute numbers aren't comparable across PRs unless
       # you know the machine — record it next to the results. Purely
-      # informational: deliberately no `set -e`, and every lookup falls back
-      # to a placeholder, so this step can never fail the job.
+      # informational: `run:` steps default to `bash -e`, so errexit is still
+      # on here — but every fallible lookup ends in `|| true` or a `:-`
+      # placeholder, so a missing /proc field can't fail the job (the only
+      # remaining failure path is the final write to $GITHUB_OUTPUT).
       - name: Capture runner hardware
         id: hw
         run: |
@@ -445,7 +447,7 @@ jobs:
 
           head = {'rps': f('HEAD_RPS'), 'p50': f('HEAD_P50'), 'p99': f('HEAD_P99'), 'ok': f('HEAD_OK')}
           base = {'rps': f('BASE_RPS'), 'p50': f('BASE_P50'), 'p99': f('BASE_P99'), 'ok': f('BASE_OK')}
-          hw = os.environ.get('HW', '')
+          hw = ' '.join(os.environ.get('HW', '').split())
 
           def delta(k, higher_is_better):
               if base[k] is None or base[k] == 0:
