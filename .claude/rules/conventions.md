@@ -79,7 +79,11 @@ whether something is patch/minor/major.
       known-transient failures re-run via `mcp__github__actions_run_trigger` in a cloud
       firing, or `gh pr checks`/`gh run rerun --failed` directly in a local session — see
       `.claude/rules/index.md` "GitHub access differs by execution context").
-- [ ] CodeRabbit / reviewer threads addressed — see the **`coderabbit-reply`** skill
+- [ ] **Every comment READ** (issue comments, inline review comments, reviews — all
+      authors, incl. the user's and the bots' on the tracking PR #152), each finding with
+      a recorded disposition. Checks green + zero unresolved threads is NOT the same thing
+      (see `feature-workspace-cycle.md` Step 7). Then CodeRabbit / reviewer threads
+      addressed — see the **`coderabbit-reply`** skill
       (`.claude/skills/coderabbit-reply/SKILL.md`) for the reply-then-resolve mechanics
       (don't leave threads dangling; "Outside diff range" comments need a regular PR
       comment instead of an inline reply, since GitHub can't post inline on those).

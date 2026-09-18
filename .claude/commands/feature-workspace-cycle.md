@@ -37,6 +37,11 @@ Model assignment (already encoded in each agent's frontmatter — don't override
 - Skim the most recent "Реализовано в сессии" entries in `CLAUDE.md` and the
   latest summary comments on #114's sub-issues (step 9 below) — a previous
   iteration's summary may directly tell you what to do next.
+- **Read the new comments on the tracking PR #152 and on the current sub-issue
+  since the last firing** (all three comment streams — see Step 7's "Reviewed
+  means every comment has been READ"). Gitar and Sonar post new findings on #152
+  after every merge to the migration branch; they are easy to miss because
+  nothing about the sub-issue PR points at them.
 - **If this firing landed while the user was actively mid-conversation** (not
   a cold unattended firing — e.g. the user's last message is recent, or the
   conductor had just asked them something), say so plainly before proceeding:
@@ -419,7 +424,24 @@ for genuinely idle firings, not a guaranteed periodic pass.)
 
 ## Step 7 — merge (Steps 3-8 apply to #114 work only — Step 1c has its own merge path above)
 
-- Once green and reviewed, merge the PR into
+- **"Reviewed" means every comment has been READ — not that the check list is
+  green or the unresolved-thread count is 0** (added 2026-09-18, after a merge
+  that skipped this and only found two review threads by accident; the user's
+  words: "I may forget, you can't"). Before *every* merge (here and in Step 1):
+  1. Fetch and read all three streams — `gh api repos/lopatnov/conduit/issues/<n>/comments`,
+     `.../pulls/<n>/comments` (inline) and `.../pulls/<n>/reviews` — from every
+     author: CodeRabbit, Gitar, Sonar, Semgrep, Socket, and the user's own
+     comments. A `@coderabbitai review` comment *from the user* means they asked
+     for that review: wait for it and read its result before merging (CodeRabbit
+     skips non-default base branches on its own, so the user triggers it by hand).
+  2. Read each bot's **reply to your reply** before resolving a thread — CodeRabbit
+     says whether it leaves the thread open as a tracked follow-up.
+  3. Give every finding a recorded disposition: fixed, deferred **with an issue**
+     (label `fast-follow`), or rejected with the reason. "Known" is not "handled".
+  4. Read what the bots posted on the **tracking PR #152** since you last looked
+     — Gitar and Sonar re-review it after every merge to the migration branch and
+     post their findings there, not on the sub-issue PR.
+- Once green and reviewed (as defined above), merge the PR into
   `claude/cargo-workspace-features-23qxfr` (call **`release-engineer`** first
   if there's any merge-order ambiguity with other open PRs on that branch).
 - Same unconditional gate as Step 1: **`security-engineer` sign-off before
