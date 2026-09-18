@@ -6,10 +6,11 @@
 //! extracted config-always-on crate (`conduit-faults`, `conduit-otlp`, ...) —
 //! `ProxyRouteConfig.healthCheck`/`strategy`/`groups`/`upstreamTls` aren't
 //! themselves feature-gated, so a config using them must stay parseable
-//! regardless of feature selection. There is no Cargo feature to forward
-//! into here at all (unlike those sibling crates) because upstream
-//! selection/health tracking is not an optional Cargo feature in the first
-//! place — see `src/lib.rs`.
+//! regardless of feature selection. This crate does have one `proxy` Cargo
+//! feature (issue #144), but it gates only the `reqwest`-backed connection
+//! warmup in `health` — upstream selection/health tracking and every type in
+//! this module are always compiled, since `SiteConfig` embeds them — see
+//! `src/lib.rs`.
 
 use serde::{Deserialize, Serialize};
 

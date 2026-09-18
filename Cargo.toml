@@ -413,21 +413,31 @@ lopatnov-conduit-redirects.workspace         = true
 # root-crate dependency anymore, since this is the only crate that calls into
 # either.
 lopatnov-conduit-middleware.workspace        = true
-# Mandatory, no `[features]` table at all — upstream selection/health
-# tracking is always-compiled core proxy functionality (issue #114/#142),
-# not an optional Cargo feature like most sibling extractions — so there is
-# no forwarding root-crate feature to gate this behind, unlike every entry
-# above. Owns `LoadBalanceStrategy`/`ProxyTarget`/`WeightedTarget`/
+# Mandatory, like every crate above. Upstream selection/health tracking and
+# the config/URL types are always compiled (`SiteConfig` embeds them); only
+# the `reqwest`-backed connection warmup is gated, behind this crate's own
+# `proxy` feature (issue #144). **Pinned on here unconditionally for now**
+# (`features = ["proxy"]`) instead of forwarded from a root `proxy` feature:
+# this crate's root call sites (`admin/api.rs`'s warmup spawn) aren't gated
+# yet, so a root `--no-default-features` build must keep the crate's `proxy`
+# on or it would stop compiling. The pin becomes a real `proxy = [...]`
+# forward in #144's PR 4, once those call sites are gated — see the plan on
+# the issue. Owns `LoadBalanceStrategy`/`ProxyTarget`/`WeightedTarget`/
 # `UpstreamGroup`/`UpstreamHealthCheck`/`UpstreamTlsConfig`/
 # `OutlierDetectionConfig` and the real `health::UpstreamRegistry`/
 # `strategy::LoadBalancingStrategy` dispatch. `ProxyConfig`/`ProxyRouteTarget`
 # and 3 of the 4 functions that used to convert them into target-URL lists
 # moved into `lopatnov-conduit-proxy-http` below (issue #143) — see that
 # entry's own comment.
-lopatnov-conduit-upstream.workspace           = true
-# Mandatory, no `[features]` table at all — same always-on shape as
-# `lopatnov-conduit-upstream` above: `proxy` isn't an optional Cargo feature
-# until a later phase (#144). Owns proxy target resolution (routing,
+lopatnov-conduit-upstream           = { workspace = true, features = ["proxy"] }
+# Mandatory, like `lopatnov-conduit-upstream` above, with the same
+# unconditional `features = ["proxy"]` pin for the same reason (issue #144,
+# PR 1): the resolution engine is gated behind this crate's own `proxy`
+# feature, but root call sites (`router.rs`, `response_phase.rs`'s sticky
+# `Set-Cookie`) aren't gated yet. Note this crate cannot become
+# `optional = true` at all — `routes[].static` needs `RouteConfig`/
+# `MatchConfig` and the route matcher even in a build with no proxying.
+# Owns proxy target resolution (routing,
 # load-balancing dispatch, retry, sticky sessions — issue #114/#143) plus
 # 10 proxy-related config types moved out of `src/config/schema.rs`
 # (`ProxyConfig`/`ProxyRouteTarget`/`ProxyRouteConfig`/`StickyConfig`/
@@ -437,7 +447,7 @@ lopatnov-conduit-upstream.workspace           = true
 # crate's own `src/proxy/upstream.rs` too (the fourth function
 # `lopatnov-conduit-upstream`'s deferred-scope comment named,
 # `strip_prefix_enabled`, was dead code and was deleted, not moved).
-lopatnov-conduit-proxy-http.workspace         = true
+lopatnov-conduit-proxy-http         = { workspace = true, features = ["proxy"] }
 
 # --- Config & parsing ---
 serde.workspace      = true

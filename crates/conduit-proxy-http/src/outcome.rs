@@ -99,6 +99,7 @@ impl ProxyResolution {
     }
 
     /// Convenience constructor for the `Overloaded` outcome.
+    #[cfg(feature = "proxy")]
     pub(crate) fn overloaded(state: ProxyReqState) -> Self {
         Self {
             outcome: ProxyOutcome::Overloaded,
@@ -107,6 +108,7 @@ impl ProxyResolution {
     }
 
     /// Convenience constructor for the `Upstream` outcome.
+    #[cfg(feature = "proxy")]
     pub(crate) fn upstream(upstream: ProxyUpstream, state: ProxyReqState) -> Self {
         Self {
             outcome: ProxyOutcome::Upstream(upstream),
@@ -120,6 +122,7 @@ impl ProxyResolution {
 /// See this module's own doc comment ("`url_to_proxy_upstream` is a
 /// deliberate small duplicate") for why this isn't shared with the root
 /// crate's identically-shaped `router::url_to_proxy_upstream`.
+#[cfg(feature = "proxy")]
 pub(crate) fn url_to_proxy_upstream(
     url: &str,
     strip_prefix: Option<String>,
