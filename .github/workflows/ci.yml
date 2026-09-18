@@ -296,6 +296,19 @@ jobs:
           chmod +x /usr/local/bin/oha
           oha --version
 
+      # GitHub-hosted runners land on different CPU generations from one run
+      # to the next, so absolute numbers aren't comparable across PRs unless
+      # you know the machine — record it next to the results. Purely
+      # informational: deliberately no `set -e`, and every lookup falls back
+      # to a placeholder, so this step can never fail the job.
+      - name: Capture runner hardware
+        id: hw
+        run: |
+          set -uo pipefail
+          cpu=$(grep -m1 '^model name' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r\n' || true)
+          mem_gb=$(awk '/^MemTotal:/ {printf "%.0f", $2 / 1024 / 1024}' /proc/meminfo || true)
+          echo "summary=${cpu:-unknown CPU}, $(nproc) vCPU, ${mem_gb:-?} GB RAM, ${ImageOS:-linux} (${RUNNER_ARCH:-x64})" >> "$GITHUB_OUTPUT"
+
       - name: Write minimal Go echo upstream
         run: |
           set -euo pipefail
@@ -416,6 +429,7 @@ jobs:
           BASE_P50: ${{ steps.bench.outputs.base_p50 }}
           BASE_P99: ${{ steps.bench.outputs.base_p99 }}
           BASE_OK: ${{ steps.bench.outputs.base_ok }}
+          HW: ${{ steps.hw.outputs.summary }}
         run: |
           set -euo pipefail
           python3 -c "
@@ -427,6 +441,7 @@ jobs:
 
           head = {'rps': f('HEAD_RPS'), 'p50': f('HEAD_P50'), 'p99': f('HEAD_P99'), 'ok': f('HEAD_OK')}
           base = {'rps': f('BASE_RPS'), 'p50': f('BASE_P50'), 'p99': f('BASE_P99'), 'ok': f('BASE_OK')}
+          hw = os.environ.get('HW', '')
 
           def delta(k, higher_is_better):
               if base[k] is None or base[k] == 0:
@@ -454,6 +469,13 @@ jobs:
                         f\"p50 latency | {base['p50']:.2f} ms | {head['p50']:.2f} ms | {delta('p50', False)}\",
                         f\"p99 latency | {base['p99']:.2f} ms | {head['p99']:.2f} ms | {delta('p99', False)}\",
                         f\"Success rate | {base['ok']:.1f}% | {head['ok']:.1f}% | {delta('ok', True)}\"]
+
+          if hw:
+              if base['rps'] is not None:
+                  note = 'GitHub-hosted runner hardware varies between runs, so read the Δ column (base and head are measured back-to-back on this same machine) rather than comparing absolute numbers across PRs.'
+              else:
+                  note = 'GitHub-hosted runner hardware varies between runs, so absolute numbers are not comparable across PRs.'
+              lines += ['', f'**Runner:** {hw}. ' + note]
 
           with open('/tmp/comment-body.md', 'w') as fh:
               fh.write('\n'.join(lines) + '\n')
