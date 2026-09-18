@@ -237,10 +237,19 @@ async fn open_no_follow(path: &Path) -> std::io::Result<tokio::fs::File> {
     {
         // O_NOFOLLOW is 0x20000 on Linux and 0x100 on macOS — use the
         // platform constant via std's OpenOptionsExt trait.
-        let std_file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)?;
+        //
+        // The `open(2)` itself is a blocking syscall, so it runs on the
+        // blocking pool; the exact same std `OpenOptions` (and therefore the
+        // exact same `O_NOFOLLOW` open) is used, only the thread differs.
+        let path = path.to_owned();
+        let std_file = tokio::task::spawn_blocking(move || {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(path)
+        })
+        .await
+        .map_err(std::io::Error::other)??;
         Ok(tokio::fs::File::from_std(std_file))
     }
     #[cfg(not(unix))]
