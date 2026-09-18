@@ -1019,6 +1019,7 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 | Date/time (UTC) | New Dependabot PRs found/acted on | Orphan branches flagged | Notes |
 |---|---|---|---|
 | 2026-09-13 ~03:23 (`/feature-workspace-cycle` manually invoked, Step 1) | 0 open | 0 new | Clean. Gap since the prior row was filled by adjacent manual-session work (PR #398 batch, #386/#396/#397 on `main`, two migration-branch syncs). Full detail in `.claude/logs/dependabot-hygiene.md`. |
+| 2026-09-18 (ad hoc, user-directed cleanup sweep, not a `/feature-workspace-cycle` firing) | 1 open (`#422`, pingora 0.8→0.9 major — already correctly HELD from earlier this session, left untouched under the newly re-affirmed `main` freeze; no merges done at all this row, by policy) | 21 local branch refs deleted (5 squash-merged extraction/refactor branches, 6 local-only completed-review scratch refs, 2 already-`: gone` refs, `base-branch`, 2 finished docs branches, 10 `worktree-agent-*` leftovers) + 1 abandoned worktree/branch for a zero-commit cut-off #144 attempt; ~20 older remote-only branches noted but deliberately not touched (out of scope, flagged to user) | `main` re-frozen after this session's own earlier merges to it violated the 2026-09-13 freeze decision — see the 2026-09-18 session-log entry above and the new notice atop `feature-workspace-cycle.md` Step 1. `git remote prune origin` cleared 12 stale tracking refs; local `main` fast-forwarded to `origin/main`. |
 
 ## Tokio 1.52.3 — возможности (исследовано)
 
@@ -3695,3 +3696,93 @@ recurrence of this specific (now-disproven) mechanism.
   `--repo lopatnov/conduit` explicitly — running from a scratch directory outside the git
   checkout otherwise silently no-ops the edit despite `gh` exiting 0 and printing nothing
   that reads as an error).
+
+### Реализовано в сессии 2026-09-18 (main-freeze re-affirmed + audit/cleanup sweep, no new feature work)
+
+- **User flagged, correctly, that the previous stretch of this session had drifted from
+  its own already-recorded policy**: the 2026-09-13 "Released v1.5.0" entry above
+  explicitly says `main` gets frozen once v1.5.0 ships, until the migration branch
+  replaces it wholesale — but a later part of this same session merged 9 fresh Dependabot
+  PRs (plus a docs PR, #411) straight into `main` anyway, reasoning from the older
+  "interleave main and migration" policy (decision item 5, 2026-08-23) instead of the
+  newer freeze that superseded it for this specific stretch. User's instruction: stop:
+  no more `main` changes, no dependency merges, sync `main` → migration branch (never the
+  other way while frozen), audit the last several PRs for skipped `/feature-workspace-cycle`
+  steps, clean up any debris from limit-interrupted work, then find a safe stopping point
+  for `/retro` + `/handoff`.
+- **Made the freeze impossible to miss for the next automated firing**: added an explicit,
+  prominent notice at the top of `.claude/commands/feature-workspace-cycle.md`'s Step 1
+  (PR-triage step) — the exact step that was merging Dependabot PRs to `main` — stating
+  the freeze, why it was violated once already, and that only read-only triage (status
+  checks, logging) continues while merge actions pause. A prose mention buried in a session-log
+  entry evidently wasn't sticky enough on its own; a rule in the command file the daily
+  Routine actually re-reads each firing is the more durable fix.
+- **Verified Phase 5.1 (#142) instead of trusting the earlier claim that it was done**:
+  `crates/conduit-upstream/` genuinely exists and builds on the migration branch's current
+  tip (`5a39458`), and [PR #413](https://github.com/lopatnov/conduit/pull/413) (the
+  extraction) shows `mergedAt: 2026-09-13`. The code was real and complete — issue #142
+  itself had simply never been closed on GitHub, a pure bookkeeping gap (not the code gap
+  the user's message worried about). Closed with a summary comment matching how #143 got
+  closed. Phase 5 status is therefore: #142 closed, #143 closed, **#144 still genuinely
+  open** (the actual "make `proxy` optional" milestone — two prior attempts at its PR both
+  got cut off by usage-limit 429s before making any real edits, see below).
+- **Checked whether `main` needs syncing into the migration branch again — it doesn't
+  right now**: `git log origin/claude/cargo-workspace-features-23qxfr..origin/main` is
+  empty (nothing on `main` that isn't already in the migration branch — the freeze has in
+  fact held since the last sync merge, `ec08517`) and `git rev-list --count origin/main..
+  origin/claude/cargo-workspace-features-23qxfr` = 225 (the migration branch is 225 commits
+  ahead). No action needed here beyond noting the state stays correct as long as the freeze
+  holds and nothing new lands on `main`.
+- **Cleaned up debris from limit-interrupted steps**, as requested:
+  - Removed the abandoned worktree + branch (`agent-a7002b0c09daa4273` /
+    `feat/proxy-optional-feature-144`) for the second, most recent #144 attempt — it hit a
+    **weekly** usage-limit 429 (distinct from the earlier daily-limit cutoffs logged
+    elsewhere in this file) while still in its early file-reading phase, HEAD identical to
+    the branch tip with zero commits made. Confirmed via `git log`/`git worktree list`
+    before deleting — nothing was lost because nothing had been written yet.
+  - Deleted 21 stale local branch refs, all confirmed safe first (`gh pr list --search
+    "head:<branch>"` showing `MERGED`, or no associated PR at all for pure local scratch
+    refs): 5 already-squash-merged feature/refactor branches whose remotes were already
+    auto-deleted on merge (`feat/extract-conduit-k8s-249`, `feat/extract-conduit-proxy-http-143-b`,
+    `feat/extract-conduit-upstream-142`, `refactor/proxy-phase-split-143-a2`,
+    `refactor/proxy-req-state-143-a1`), 6 local-only review/scratch refs from completed
+    reviews (`pr-386-review`, `pr-393-review`, `pr-399`, `pr-399-v2`, `pr-407-review`,
+    `pr397-check` — the same "create a local ref for the diff" `security-engineer`
+    methodology already documented in the 2026-08-30 git-race incident above, this time
+    with no incident), 2 already-`: gone` refs (`fix/near-expiry-cert-severity-253`,
+    `fix/pr152-coderabbit-sweep-post-347`), `base-branch`, 2 finished docs branches
+    (`docs/backfill-release-log-v140-v150` — PR #411, confirmed merged by the user
+    themselves per their own earlier "I'll merge #411 myself" message —
+    `docs/reference-axum-k8s-middleware`), and 10 `worktree-agent-*` leftover branch refs
+    with no live worktree pointing at them any more. `git remote prune origin` cleared 12
+    already-remotely-deleted tracking refs the local checkout still listed as present.
+    Local `main` was also just a stale ref (10 commits behind) — fast-forwarded to
+    `origin/main` (`b093550`) since that's risk-free and unrelated to the freeze (freeze
+    means "don't push new commits to `main`," not "never look at it").
+  - **Not touched, flagged instead**: `git ls-remote --heads origin` shows a further ~20
+    remote branches with no open PR (`chore/branch-hygiene-log-20260817`,
+    `ci/cross-compile-matrix`, `feat/standard-feature-profile`, `feat/workspace-scaffolding-115`,
+    `phase-0.3.0`, `phase-2.5`, `phase-next`, `refactor/service-rs-phases`,
+    `security/v1.1.0-stabilize`, and others) — these predate this session significantly
+    (several look like artifacts from before the #114 migration even started) and deleting
+    a *remote* branch is a more consequential, less easily-reversed action than a stale
+    local ref. Left alone rather than unilaterally swept into this cleanup — out of scope
+    for "debris from this session's interrupted steps," and a full historical remote-branch
+    purge deserves its own explicit ask, not a rider on a stopping-point cleanup.
+- **PR #422** (pingora 0.8→0.9 major Dependabot bump) was already correctly sitting on a
+  detailed, reasoned HOLD comment from an earlier part of this session — left exactly as is,
+  which is already the right behavior under the re-affirmed freeze (no dependency merges).
+- **Audited the last several merged PRs for skipped `/feature-workspace-cycle` steps**:
+  the two most recent extraction PRs (#407 `conduit-k8s`/#249, and the earlier #421
+  `conduit-proxy-http`/#143-B) both have real `security-engineer` PASS comments recorded
+  and both closed their tracking issues with summaries — the actual mechanical/review
+  steps were followed. The gap the user was pointing at was specifically the **policy**
+  step (Step 1's `main`-freeze awareness), not the per-PR review/build/docs steps, which
+  is exactly what this entry's freeze re-affirmation above addresses — no additional
+  per-PR rework identified as missing.
+- **Not done in this firing, deliberately**: no new #114 sub-issue work (#144 itself, or
+  anything else) — the user's own priority order was verify → policy → cleanup → stopping
+  point → `/retro` → `/handoff`, and this entry covers everything through cleanup. #144
+  (make `proxy` optional) remains the next real piece of migration work for a future
+  session, starting fresh rather than resuming either of the two prior cut-off attempts
+  (both died in early investigation with no code written, so there is nothing to resume).

@@ -93,6 +93,27 @@ Model assignment (already encoded in each agent's frontmatter — don't override
 
 ## Step 1 — PR triage (Dependabot + the user's own PRs)
 
+> **`main` is frozen** — decided 2026-09-13 (see `CLAUDE.md`'s "Released v1.5.0" entry:
+> `main` and the migration branch have diverged enough that the migration is what
+> matters now, not `main`) and **re-affirmed 2026-09-18** after a firing merged 9
+> Dependabot PRs to `main` anyway, which the freeze was specifically meant to
+> prevent — don't repeat that. Do **not** merge Dependabot PRs (or any other PR)
+> into `main` while this holds — leave them open with a comment noting the freeze,
+> don't silently ignore them (see PR #422 for the pattern). Do **not** make any
+> other changes to `main` either, so the eventual tracking-PR (#152) merge back into
+> `main` stays as simple as possible. The sync direction is one-way: `main` →
+> migration branch only (see the bullet below) — never migration branch → `main`
+> while frozen, and never `main`-only work that isn't itself the tracking-PR merge.
+> This suspends (not deletes) the "interleave bug/gap fixes through `main`" policy
+> `CLAUDE.md` decision item 5 (2026-08-23) used to describe — revisit that once the
+> migration ships and `main`/the migration branch reconverge. If a fix is urgent
+> enough that it can't wait, ask the user before merging anything to `main`, don't
+> merge it as routine Step 1 triage. This paragraph is the one thing worth
+> re-reading at the start of *every* firing while it's in effect — everything below
+> it in this step still applies for read-only triage (checking status, listing
+> Dependabot PRs, keeping `.claude/logs/dependabot-hygiene.md` current) but the
+> merge actions are what's paused.
+
 - **Fast path first, added 2026-08-22 at the user's explicit request to cut
   cycle overhead**: before spawning `dependency-steward`, do a cheap direct
   check yourself (`search_pull_requests author:app/dependabot` or
