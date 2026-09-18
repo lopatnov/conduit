@@ -307,7 +307,11 @@ jobs:
           set -uo pipefail
           cpu=$(grep -m1 '^model name' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r\n' || true)
           mem_gb=$(awk '/^MemTotal:/ {printf "%.0f", $2 / 1024 / 1024}' /proc/meminfo || true)
-          echo "summary=${cpu:-unknown CPU}, $(nproc) vCPU, ${mem_gb:-?} GB RAM, ${ImageOS:-linux} (${RUNNER_ARCH:-x64})" >> "$GITHUB_OUTPUT"
+          # Lead with what this job was actually given (vCPU/RAM of the runner
+          # VM); the CPU string is the *host* chip's marketing name (e.g. a
+          # "96-Core Processor" on a 4-vCPU runner), so label it as such rather
+          # than let it read like an allocation.
+          echo "summary=$(nproc) vCPU, ${mem_gb:-?} GB RAM allocated to this job (host CPU model: ${cpu:-unknown}), ${ImageOS:-linux} (${RUNNER_ARCH:-x64})" >> "$GITHUB_OUTPUT"
 
       - name: Write minimal Go echo upstream
         run: |
