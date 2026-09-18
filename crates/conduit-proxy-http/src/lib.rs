@@ -80,18 +80,37 @@
 //! `src/proxy/dispatch.rs` (relocated within the root crate, content
 //! unchanged, `parse_rfc9218_priority` included).
 
+// ── Always compiled ──────────────────────────────────────────────────────────
+// Config types, per-request state, boundary types, `routes[]` *matching* and
+// the target-URL-list helpers must exist in every build, `proxy` or not: the
+// root crate's `SiteConfig` embeds the config types, `feature_warnings()` and
+// `validate()` walk them, and `routes[].static` needs `RouteConfig`/
+// `MatchConfig` plus the matcher (issue #144).
 pub mod config;
-mod groups;
 pub mod options;
 pub mod outcome;
-mod peer_pick;
-pub mod resolve;
-mod retry;
 pub mod routes;
-mod routes_resolve;
 pub mod state;
-pub mod sticky;
 pub mod targets;
 
+// ── Gated behind `proxy` (issue #144) ────────────────────────────────────────
+// The proxy-target *resolution* engine. With the feature off, `routes::
+// match_routes` reports a matched route that has a `proxy` action as
+// `ProxyOutcome::Unresolved` (see its own doc comment) instead of calling
+// into any of this.
+#[cfg(feature = "proxy")]
 mod capacity;
+#[cfg(feature = "proxy")]
+mod groups;
+#[cfg(feature = "proxy")]
+mod peer_pick;
+#[cfg(feature = "proxy")]
+pub mod resolve;
+#[cfg(feature = "proxy")]
+mod retry;
+#[cfg(feature = "proxy")]
+mod routes_resolve;
+#[cfg(feature = "proxy")]
 mod slow_start;
+#[cfg(feature = "proxy")]
+pub mod sticky;

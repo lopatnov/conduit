@@ -10,28 +10,37 @@ repository.workspace = true
 name = "conduit_proxy_http"
 path = "src/lib.rs"
 
+[features]
+# Proxy target *resolution* (issue #144): routing dispatch, load-balancing
+# selection, retry-state construction, sticky sessions (incl. the HMAC
+# signing below) and the capacity/slow-start admission machinery. The config
+# types (`config`), per-request state (`state`), the boundary types
+# (`outcome`) and `routes[]` *matching* (`routes`) stay always-compiled:
+# `routes[].static` needs `RouteConfig`/`MatchConfig` and the matcher even in
+# a build with no proxying at all, and `feature_warnings()` needs the config
+# types to warn on a config-without-feature mismatch (same shape as every
+# other extracted feature crate). Off by default *at this crate*; the root
+# crate's own `default` turns it on, so a plain `cargo build` is unchanged.
+proxy = ["dep:hmac", "dep:sha2", "dep:base64", "dep:subtle"]
+
 [dependencies]
-# No [features] table — proxy routing/target-resolution is always-compiled
-# core functionality (issue #143), same shape as `conduit-upstream` (#142):
-# `proxy` doesn't become an optional Cargo feature until a later phase
-# (#144), so there is no `--features proxy-http` to disable this crate and
-# every dependency below is mandatory, not `optional = true`. No
-# `lopatnov-conduit-core` dependency either — nothing here implements
+# No `lopatnov-conduit-core` dependency — nothing here implements
 # `RequestFilter`/`ResponseFilter` (see `CONTRIBUTING.md`'s "conduit-core
 # dependency is opt-in, not automatic"); the Pingora `ProxyHttp` trait-method
-# bodies stay in the root crate's `request_phase.rs`/`response_phase.rs`,
-# calling into this crate's plain functions.
+# bodies stay in the root crate's `request/*.rs`/`response_phase.rs`, calling
+# into this crate's plain functions.
 serde    = { workspace = true }
 indexmap = { workspace = true }
 dashmap  = { workspace = true }
 regex    = { workspace = true }
 http     = { workspace = true }
 tracing  = { workspace = true }
-# Sticky-session HMAC signing/verification (`sticky.rs`).
-hmac   = { workspace = true }
-sha2   = { workspace = true }
-base64 = { workspace = true }
-subtle = { workspace = true }
+# Sticky-session HMAC signing/verification (`sticky.rs`) — only reachable
+# through the gated `sticky` module, hence `optional` behind `proxy`.
+hmac   = { workspace = true, optional = true }
+sha2   = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+subtle = { workspace = true, optional = true }
 # Upstream selection/health tracking — already a mandatory dependency
 # relationship since #142 (`UpstreamRegistry`, load-balancing strategies,
 # URL-parsing helpers, health config types).

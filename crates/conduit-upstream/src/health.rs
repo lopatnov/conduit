@@ -699,6 +699,7 @@ where
 /// Takes the same `(&UpstreamHealthCheck, &[String])` iterator shape as
 /// [`spawn_health_checks`], for the same reason — see that function's doc
 /// comment.
+#[cfg(feature = "proxy")]
 pub fn spawn_connection_warmup<'a, I>(routes: I)
 where
     I: IntoIterator<Item = (&'a UpstreamHealthCheck, &'a [String])>,
@@ -717,6 +718,7 @@ where
 }
 
 /// Perform `n` sequential HEAD requests to warm up the connection pool for `url`.
+#[cfg(feature = "proxy")]
 async fn warmup_url(url: String, path: String, n: usize) {
     for i in 0..n {
         let target = format!("{url}{path}");
@@ -1502,6 +1504,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "proxy")]
     fn spawn_connection_warmup_no_routes_is_noop() {
         spawn_connection_warmup(std::iter::empty::<(&UpstreamHealthCheck, &[String])>());
     }

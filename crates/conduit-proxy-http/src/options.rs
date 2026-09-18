@@ -6,10 +6,17 @@ use std::sync::atomic::AtomicUsize;
 
 use dashmap::DashMap;
 
-use conduit_cache::CacheConfig;
 use conduit_upstream::health::UpstreamRegistry;
+
+// `RouteOptions` below (and everything it needs) is only read by the gated
+// resolution modules — see `lib.rs` (issue #144). `ProxyCtx` stays
+// always-compiled: the root crate's router builds one unconditionally.
+#[cfg(feature = "proxy")]
+use conduit_cache::CacheConfig;
+#[cfg(feature = "proxy")]
 use conduit_upstream::{LoadBalanceStrategy, UpstreamTlsConfig};
 
+#[cfg(feature = "proxy")]
 use crate::config::{
     ConnectionPoolConfig, ProxyRouteTarget, ProxyTimeout, RetryConfig, RewriteRule, StickyConfig,
 };
@@ -18,7 +25,8 @@ use crate::config::{
 ///
 /// `pub` (not `pub(crate)`) with `pub` fields: the root crate's `router.rs`
 /// constructs this via struct-literal syntax before calling into
-/// [`crate::resolve::resolve_proxy_routes`].
+/// `crate::resolve::resolve_proxy_routes` (which only exists with the
+/// `proxy` feature).
 pub struct ProxyCtx<'a> {
     pub path: &'a str,
     pub client_ip: &'a str,
@@ -31,6 +39,7 @@ pub struct ProxyCtx<'a> {
 /// Per-route proxy settings, read once from `ProxyRouteTarget::Full`. All
 /// fields borrow from the route config; shorthand targets (`Url` /
 /// `RoundRobin`) get the documented defaults.
+#[cfg(feature = "proxy")]
 pub(crate) struct RouteOptions<'a> {
     pub(crate) retry: Option<&'a RetryConfig>,
     pub(crate) timeout: Option<&'a ProxyTimeout>,
@@ -55,6 +64,7 @@ pub(crate) struct RouteOptions<'a> {
     pub(crate) strip_prefix: bool,
 }
 
+#[cfg(feature = "proxy")]
 impl<'a> RouteOptions<'a> {
     pub(crate) fn from_target(target: &'a ProxyRouteTarget) -> Self {
         let ProxyRouteTarget::Full(cfg) = target else {

@@ -11,9 +11,11 @@
 //! `conduit_cache::CacheReqState`, and `conduit_auth_jwt::guard::JwtReqState`
 //! — see `CLAUDE.md` architectural decision #30. Unlike those three (which
 //! are either always-on-but-crate-owned or `#[cfg(feature = "...")]`-gated),
-//! [`ProxyReqState`] is unconditional: `proxy` isn't an optional Cargo
-//! feature until a later phase (#144), so this crate has no `[features]`
-//! table at all (same always-on shape as `conduit-upstream`).
+//! [`ProxyReqState`] is unconditional: even though this crate now has a
+//! `proxy` Cargo feature (issue #144), the state struct stays always-compiled
+//! — the root crate's `RequestCtx` embeds it in every build, it is plain data
+//! with no third-party dependencies, and gating it would churn ~117 call
+//! sites for no footprint gain (see #144's design plan).
 
 use std::time::Instant;
 

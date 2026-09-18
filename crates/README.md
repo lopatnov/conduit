@@ -432,12 +432,15 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   `src/proxy/upstream.rs`). Also owns the LB/health config types:
   `LoadBalanceStrategy`, `ProxyTarget`/`WeightedTarget`, `UpstreamGroup`,
   `UpstreamHealthCheck`, `UpstreamTlsConfig`, `OutlierDetectionConfig`
-  (`config` module). **No `[features]` table at all** — unlike almost every
-  sibling extraction, upstream selection/health tracking is not an optional
-  Cargo feature in the first place; every dependency is mandatory, matching
-  `conduit-ipfilter`/`conduit-cors`/`conduit-metrics`'s always-on shape
-  (`CLAUDE.md` decision #31) for a reason specific to this domain rather than
-  that decision's own "light logic, no heavy dependency" rationale. No
+  (`config` module). **One `proxy` feature (#144, PR 1), gating only the
+  `reqwest`-backed connection warmup** — upstream selection/health tracking
+  itself is not an optional Cargo feature (it stays always-compiled, matching
+  `conduit-ipfilter`/`conduit-cors`/`conduit-metrics`'s always-on shape,
+  `CLAUDE.md` decision #31, for a reason specific to this domain rather than
+  that decision's own "light logic, no heavy dependency" rationale); the
+  warmup's `reqwest` dependency is the one thing worth gating. The root
+  crate pins the feature on unconditionally until its own call site
+  (`admin/api.rs`'s warmup spawn) is gated in a later #144 PR. No
   dependency on `lopatnov-conduit-core` either (see `CONTRIBUTING.md`'s
   "conduit-core dependency is opt-in, not automatic") — the Pingora
   `ProxyHttp` trait-method bodies stay in the root crate, calling into this
@@ -502,12 +505,23 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   the circular-dependency deferral #142 documented above. `strip_prefix_enabled`
   (the fourth) turned out to be dead code — no real production call site,
   only its own unit tests — and was deleted rather than moved.
-  **No `[features]` table** — same always-on shape as `conduit-upstream`:
-  `proxy` doesn't become an optional Cargo feature until a later phase
-  (#144), and no dependency on `lopatnov-conduit-core`/pingora either
-  (nothing here implements `RequestFilter`/`ResponseFilter` — the `ProxyHttp`
-  trait-method bodies stay in the root crate's `request_phase.rs`/
-  `response_phase.rs`, calling into this crate's plain functions).
+  **`proxy` feature (#144, PR 1)** — gates the resolution engine
+  (`resolve`/`groups`/`routes_resolve`/`peer_pick`/`retry`/`sticky`/
+  `capacity`/`slow_start`, plus `hmac`/`sha2`/`base64`/`subtle`); config
+  types, `state`, `outcome`, `options::ProxyCtx`, `targets` and the
+  `routes` *matcher* stay always-compiled, because `routes[].static` needs
+  `RouteConfig`/`MatchConfig` and the matcher even in a build with no
+  proxying — so this crate can **never** become `optional = true` in the
+  root crate. With the feature off, a matched `routes[]` entry that carries
+  a `proxy` action resolves to `ProxyOutcome::Unresolved` (the site
+  fallback), deliberately *not* to `NonProxy`: promoting a proxy-first
+  route's dead `static` half to a live file root would expose a directory
+  the operator never meant to serve. The root crate pins the feature on
+  unconditionally until its own call sites are gated (later #144 PRs).
+  No dependency on `lopatnov-conduit-core`/pingora (nothing here implements
+  `RequestFilter`/`ResponseFilter` — the `ProxyHttp` trait-method bodies
+  stay in the root crate's `request/*.rs`/`response_phase.rs`, calling into
+  this crate's plain functions).
   **`dispatch.rs` deliberately did NOT move here**, unlike its PR-A2
   siblings: it bundled `parse_rfc9218_priority` (pure string parsing) with
   site/local-path dispatch helpers (`find_site_idx`, `is_health_path`,

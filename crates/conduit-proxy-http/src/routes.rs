@@ -20,8 +20,11 @@ use regex::Regex;
 
 use conduit_upstream::health::UpstreamRegistry;
 
-use crate::config::{MatchConfig, RouteConfig};
+use crate::config::{MatchConfig, ProxyRouteTarget, RouteConfig};
 use crate::outcome::ProxyResolution;
+#[cfg(not(feature = "proxy"))]
+use crate::state::ProxyReqState;
+#[cfg(feature = "proxy")]
 use crate::{resolve, routes_resolve};
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -71,28 +74,66 @@ pub fn match_routes(
             let Some(target) = &route.proxy else {
                 return Some(RouteMatch::NonProxy { index: i });
             };
-            let mut resolution =
-                routes_resolve::resolve_route_target(target, path, counters, upstream_health);
-            // Stamp the matched route's rate limit/priority (#360), same as
-            // the `proxy` map path in `router.rs::resolve_legacy_proxy` —
-            // applied regardless of which of `resolve_route_target`'s
-            // internal outcomes (proxy/overloaded/unresolved) actually
-            // returned. An index-based key (`routes[{i}]`) is used rather
-            // than the match pattern itself: two `routes[]` entries can
-            // legally share a path glob and differ only by method/header,
-            // and would otherwise wrongly share a rate-limit bucket.
-            let route_key = format!("routes[{i}]");
-            let (route_rate_limit, route_priority) =
-                resolve::route_limits_from_target(target, &route_key);
-            resolution.state.route_rate_limit = route_rate_limit;
-            resolution.state.route_priority = route_priority;
             return Some(RouteMatch::Proxy {
                 index: i,
-                resolution: Box::new(resolution),
+                resolution: Box::new(resolve_proxy_action(
+                    i,
+                    target,
+                    path,
+                    counters,
+                    upstream_health,
+                )),
             });
         }
     }
     None
+}
+
+/// Resolve a matched route's `proxy` action into a [`ProxyResolution`].
+#[cfg(feature = "proxy")]
+fn resolve_proxy_action(
+    i: usize,
+    target: &ProxyRouteTarget,
+    path: &str,
+    counters: &DashMap<String, AtomicUsize>,
+    upstream_health: &UpstreamRegistry,
+) -> ProxyResolution {
+    let mut resolution =
+        routes_resolve::resolve_route_target(target, path, counters, upstream_health);
+    // Stamp the matched route's rate limit/priority (#360), same as
+    // the `proxy` map path in `router.rs::resolve_legacy_proxy` —
+    // applied regardless of which of `resolve_route_target`'s
+    // internal outcomes (proxy/overloaded/unresolved) actually
+    // returned. An index-based key (`routes[{i}]`) is used rather
+    // than the match pattern itself: two `routes[]` entries can
+    // legally share a path glob and differ only by method/header,
+    // and would otherwise wrongly share a rate-limit bucket.
+    let route_key = format!("routes[{i}]");
+    let (route_rate_limit, route_priority) = resolve::route_limits_from_target(target, &route_key);
+    resolution.state.route_rate_limit = route_rate_limit;
+    resolution.state.route_priority = route_priority;
+    resolution
+}
+
+/// Without the `proxy` feature (issue #144) a matched route's `proxy` action
+/// can never be honoured, so it resolves to [`crate::outcome::ProxyOutcome::Unresolved`] — the
+/// same terminal shape as a malformed target, which the root crate's router
+/// already maps to the site's `fallback` response.
+///
+/// Deliberately **not** treated like [`RouteMatch::NonProxy`]: a route that
+/// carries both a `proxy` and a `static` action has always been proxy-first
+/// (the `static` half is dead configuration), and silently promoting it to a
+/// live file-serving root just because the proxy engine was compiled out
+/// would expose a directory the operator never meant to serve from that path.
+#[cfg(not(feature = "proxy"))]
+fn resolve_proxy_action(
+    _i: usize,
+    _target: &ProxyRouteTarget,
+    _path: &str,
+    _counters: &DashMap<String, AtomicUsize>,
+    _upstream_health: &UpstreamRegistry,
+) -> ProxyResolution {
+    ProxyResolution::unresolved(ProxyReqState::default())
 }
 
 // ── Match evaluation ──────────────────────────────────────────────────────────
@@ -603,6 +644,106 @@ mod tests {
         assert!(result.is_none());
     }
 
+    // ── `routes[]` actions with and without the `proxy` feature (#144) ────────
+
+    /// A `routes[]` entry with no `proxy` action must still match as
+    /// `NonProxy` in EVERY build — a static-only build serves
+    /// `routes[].static` through exactly this path.
+    #[test]
+    fn match_routes_entry_without_proxy_action_is_non_proxy() {
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let registry = conduit_upstream::health::UpstreamRegistry::new();
+        let routes = vec![RouteConfig {
+            r#match: MatchConfig {
+                path: Some("/assets/**".to_string()),
+                ..Default::default()
+            },
+            proxy: None,
+            static_files: Some(conduit_static::StaticConfig::Single("./dist".to_string())),
+        }];
+        let result = match_routes(
+            &routes,
+            "/assets/app.js",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            &counters,
+            &registry,
+        );
+        assert!(matches!(result, Some(RouteMatch::NonProxy { index: 0 })));
+    }
+
+    /// Without the `proxy` feature a matched route's `proxy` action resolves
+    /// to `Unresolved` (the router maps that to the site fallback) — it never
+    /// produces an upstream.
+    #[cfg(not(feature = "proxy"))]
+    #[test]
+    fn match_routes_proxy_action_is_unresolved_without_proxy_feature() {
+        use crate::outcome::ProxyOutcome;
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let registry = conduit_upstream::health::UpstreamRegistry::new();
+        let routes = vec![RouteConfig {
+            r#match: MatchConfig {
+                path: Some("/api/**".to_string()),
+                ..Default::default()
+            },
+            proxy: Some(ProxyRouteTarget::Url("http://backend:4000".to_string())),
+            static_files: None,
+        }];
+        let route_match = match_routes(
+            &routes,
+            "/api/users",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            &counters,
+            &registry,
+        )
+        .expect("the route still matches");
+        let RouteMatch::Proxy { resolution, .. } = route_match else {
+            panic!("expected a Proxy match");
+        };
+        assert!(
+            matches!(resolution.outcome, ProxyOutcome::Unresolved),
+            "got {:?}",
+            resolution.outcome
+        );
+    }
+
+    /// A route carrying BOTH `proxy` and `static` has always been proxy-first
+    /// (the `static` half is dead configuration). Compiling the proxy engine
+    /// out must not promote that dead `static` root to a live one — it would
+    /// serve a directory the operator never meant to expose from that path.
+    #[cfg(not(feature = "proxy"))]
+    #[test]
+    fn match_routes_proxy_plus_static_never_promotes_static_without_proxy_feature() {
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let registry = conduit_upstream::health::UpstreamRegistry::new();
+        let routes = vec![RouteConfig {
+            r#match: MatchConfig {
+                path: Some("/**".to_string()),
+                ..Default::default()
+            },
+            proxy: Some(ProxyRouteTarget::Url("http://backend:4000".to_string())),
+            static_files: Some(conduit_static::StaticConfig::Single("./secret".to_string())),
+        }];
+        let route_match = match_routes(
+            &routes,
+            "/anything",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            &counters,
+            &registry,
+        )
+        .expect("the route still matches");
+        assert!(
+            matches!(route_match, RouteMatch::Proxy { .. }),
+            "a proxy+static route must stay a Proxy match, never degrade to NonProxy"
+        );
+    }
+
+    #[cfg(feature = "proxy")]
     #[test]
     fn match_routes_first_match_wins() {
         use crate::config::{ProxyRouteTarget, RouteConfig};
