@@ -460,6 +460,10 @@ curl -X DELETE "http://localhost:2019/cache/purge?url=https://api.example.com/v1
 
 `"purged": false` when no matching entry was found in the cache.
 
+> Requires the `cache` feature (part of the published `standard`/`full` builds,
+> not of a plain `cargo build`). Without it the endpoint answers
+> `501 Not Implemented` — there is no response cache to purge.
+
 > Only the in-memory cache is supported. Redis cache purge is not yet
 > implemented.
 
