@@ -292,6 +292,15 @@ mod tests {
 
     use serial_test::serial;
 
+    // `DNS_CACHE` and the sweep cooldown are process-global, and
+    // `dns_cache_store` sweeps once the map reaches `DNS_CACHE_SWEEP_THRESHOLD`.
+    // Every test that stores into the cache — directly, or through a
+    // successful hostname resolution — therefore carries
+    // `#[serial(dns_cache_sweep)]`, otherwise it can land between a sweep
+    // test's inserts and its assertions and sweep (or consume the cooldown
+    // for) the entries that test depends on (#439). Tests that only read the
+    // cache or never reach `dns_cache_store` don't need it.
+
     // ── resolve_socket_addr (#225: hostname upstreams) ──────────────────────────
 
     #[tokio::test]
@@ -307,6 +316,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(dns_cache_sweep)]
     async fn resolve_socket_addr_resolves_localhost_hostname() {
         // The exact regression case from #225: "localhost:4000" previously
         // failed SocketAddr::parse and every request to such an upstream
@@ -377,6 +387,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(dns_cache_sweep)]
     fn dns_cache_lookup_hit_returns_stored_addr_within_ttl() {
         let key = "cache-hit-test.invalid:4020";
         let addr = v4(4020);
@@ -407,6 +418,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(dns_cache_sweep)]
     fn dns_cache_round_robins_across_multiple_addrs() {
         // Foundation of the Gitar-flagged round-robin fix: a multi-address
         // cache entry must rotate through every address on successive
@@ -556,6 +568,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(dns_cache_sweep)]
     async fn resolve_socket_addr_hostname_populates_cache() {
         let key = "localhost:4022";
         let addr = resolve_socket_addr(key, None).await.unwrap();
@@ -581,6 +594,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(dns_cache_sweep)]
     async fn resolve_socket_addr_second_call_returns_cached_addr() {
         // Integration-style sanity check of the real production entry point
         // (`resolve_socket_addr`, wired to the real `TokioHostResolver`).
@@ -639,6 +653,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(dns_cache_sweep)]
     async fn resolve_socket_addr_with_cache_hit_skips_resolver_call() {
         let resolver = FakeHostResolver::new();
         let key = "fake-cache-test.invalid:5000";
