@@ -287,6 +287,18 @@ for genuinely idle firings, not a guaranteed periodic pass.)
 - Look at #114's open sub-issues (`mcp__github__issue_read` /
   `list_issues` filtered to sub-issues of #114). Pick the next one in
   phase order (Phase 0 → 6) unless a dependency isn't merged yet.
+- **Skip a sub-issue that another session has claimed.** A cloud firing cannot
+  see a local session's history (Step 0 only covers *this* session's own),
+  so before picking a sub-issue read its newest comments and its open PRs/
+  branches: if the latest comment starts with `CLAIMED:` (the local session
+  writes one when it takes a piece of work — added 2026-09-19 for #144's
+  PR 3, where a nightly firing would otherwise have started the same PR the
+  user's local session was already doing) and no later merge/summary comment
+  supersedes it, or an open PR/branch for that piece already exists, **do not
+  start it** — pick the next unclaimed item instead, or do Step 1 triage only
+  and say so in the summary. A claim older than ~48 h with no branch, PR or
+  follow-up comment is stale: mention it in the summary and ask rather than
+  silently taking the work over.
 - **Batch size scales with complexity — pick a tier before picking items**
   (generalized 2026-09-01 per the user's explicit request; supersedes and
   absorbs the narrower 2026-08-22 "batch small independent leaves" rule,
