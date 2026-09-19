@@ -7,7 +7,6 @@
 //! [`ProxyResolution`] instead of `Option<RouteResolution>` — see
 //! `crate::outcome`'s module doc for why.
 
-use conduit_ratelimit::RateLimitConfig;
 use conduit_upstream::health::UpstreamRegistry;
 
 use crate::config::{ProxyRouteTarget, StickyConfig};
@@ -15,7 +14,7 @@ use crate::groups::resolve_grouped;
 use crate::options::{ProxyCtx, RouteOptions};
 use crate::outcome::{self, ProxyResolution, ProxyUpstream};
 use crate::peer_pick::{build_pool, pick_peer_with_retry};
-use crate::state::{ProxyReqState, RouteRateLimit};
+use crate::state::{route_limits_from_target, ProxyReqState};
 use crate::sticky;
 use crate::targets;
 
@@ -53,28 +52,6 @@ pub fn resolve_proxy_routes(
     resolution.state.route_rate_limit = route_rate_limit;
     resolution.state.route_priority = route_priority;
     Some(resolution)
-}
-
-/// Extract the per-route rate limit / priority from a matched `ProxyRouteTarget`.
-///
-/// Returns `(None, None)` for the `Url`/`RoundRobin` shorthand variants —
-/// only `Full(ProxyRouteConfig)` carries `rateLimit`/`priority`. Shared
-/// between the legacy `proxy` map path (`resolve_proxy_routes` above) and the
-/// `routes[]` array path (`routes.rs::match_routes`) so both matchers stamp
-/// the resolution the exact same way (#360).
-pub(crate) fn route_limits_from_target(
-    target: &ProxyRouteTarget,
-    route_key: &str,
-) -> (Option<RouteRateLimit>, Option<u8>) {
-    let ProxyRouteTarget::Full(cfg) = target else {
-        return (None, None);
-    };
-    let rate_limit: Option<RateLimitConfig> = cfg.rate_limit.clone();
-    let rate_limit = rate_limit.map(|config| RouteRateLimit {
-        config,
-        route_key: route_key.to_owned(),
-    });
-    (rate_limit, cfg.priority)
 }
 
 /// Resolve a single `proxy` map route's `Full` target — strategy dispatch,
@@ -351,7 +328,7 @@ fn find_route<'a>(
 // shape) got the *non-selected* mechanism's rate limit applied to
 // `routes[]`-served requests. Rate limit/priority are now stamped onto the
 // `RouteResolution`/`RequestCtx` directly by whichever matcher actually
-// matched (`route_limits_from_target` above, called from both
+// matched (`crate::state::route_limits_from_target`, called from both
 // `resolve_proxy_routes` here and `routes.rs::match_routes`), so enforcement
 // reads `RequestCtx.proxy.route_rate_limit`/`route_priority` and can never disagree
 // with routing. See the deleted functions' former test coverage, now ported
