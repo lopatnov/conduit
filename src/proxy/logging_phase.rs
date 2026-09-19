@@ -72,7 +72,19 @@ fn release_proxy_upstream(proxy: &ConduitProxy, session: &Session, ctx: &Option<
     if matches!(req_ctx.upstream, UpstreamTarget::Local(_)) {
         return;
     }
+    // Unconditional -- for every proxied request AND the upload loopback
+    // upstream (both are non-`Local` above). `inflight` is incremented for all
+    // of them at request start; gating this decrement behind `proxy` would
+    // leak the counter (the same leak class as #216) in an upload-only build.
     proxy.state.inflight.fetch_sub(1, Ordering::Relaxed);
+    release_upstream_health(proxy, session, req_ctx);
+}
+
+/// The `proxy`-only half of [`release_proxy_upstream`]: the retry-budget
+/// decrement, the per-upstream connection slot (least-conn), Peak EWMA
+/// latency + passive health tracking, and outlier-detection ejection.
+#[cfg(feature = "proxy")]
+fn release_upstream_health(proxy: &ConduitProxy, session: &Session, req_ctx: &RequestCtx) {
     // Decrement retry budget counter if this request was a retry.
     if req_ctx
         .proxy
@@ -116,10 +128,18 @@ fn release_proxy_upstream(proxy: &ConduitProxy, session: &Session, ctx: &Option<
     }
 }
 
+/// No-`proxy` variant of [`release_upstream_health`]: retry state and
+/// `proxy_upstream_url` are only ever populated by the proxy routing
+/// resolvers, so there is no retry-budget slot, connection slot, or passive
+/// health record to release.
+#[cfg(not(feature = "proxy"))]
+fn release_upstream_health(_proxy: &ConduitProxy, _session: &Session, _req_ctx: &RequestCtx) {}
+
 /// Passive health check (Caddy pattern):
 /// Count the response as a failure when it matches `unhealthyStatus` or
 /// exceeds `unhealthyLatencyMs` — even if the HTTP status is 2xx.
 /// A failure is signalled to `record_request_latency` by returning 503.
+#[cfg(feature = "proxy")]
 fn passive_effective_status(req_ctx: &RequestCtx, url: &str, status: u16, elapsed_us: u64) -> u16 {
     let latency_ms = elapsed_us / 1000;
     let unhealthy_by_status = !req_ctx.proxy.passive_unhealthy_status.is_empty()
@@ -216,7 +236,9 @@ fn record_request_metrics(
 }
 
 /// Per-upstream metrics: active-connections decrement, requests_total,
-/// latency_seconds, and the per-peer response-code breakdown (#40).
+/// latency_seconds, and the per-peer response-code breakdown (#40) -- the
+/// `proxy` variant.
+#[cfg(feature = "proxy")]
 fn record_upstream_metrics(
     proxy: &ConduitProxy,
     ctx: &Option<RequestCtx>,
@@ -258,6 +280,19 @@ fn record_upstream_metrics(
             .with_label_values(&[url])
             .observe(upstream_secs);
     }
+}
+
+/// No-`proxy` variant of [`record_upstream_metrics`]: `proxy_upstream_url` is
+/// only ever set by the proxy routing resolvers, so there are no per-upstream
+/// series to record (and no gauge increment from `upstream_request_filter`
+/// to reconcile).
+#[cfg(not(feature = "proxy"))]
+fn record_upstream_metrics(
+    _proxy: &ConduitProxy,
+    _ctx: &Option<RequestCtx>,
+    _status: &str,
+    _status_u16: u16,
+) {
 }
 
 /// Cache hit / miss counters (only for proxy requests with caching enabled).

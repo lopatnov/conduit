@@ -5,7 +5,17 @@
 //!
 //! Split out of the former monolithic `request_phase.rs` (issue #144 prep,
 //! PR 1 of 2) -- pure code relocation, no behavioral change.
+//!
+//! **Feature gating (issue #144, PR 3):** the forwarding-only steps --
+//! per-upstream selection stats, path strip/rewrite, and traffic mirroring
+//! -- exist only with the root `proxy` feature (they act on
+//! `UpstreamTarget::Proxy` / `proxy_upstream_url`, which only the proxy
+//! routing resolvers produce). What every build keeps: the upstream-timing
+//! start mark, forwarded/`Via` headers, the upload loopback header, and the
+//! request header transform. Each gated step is a two-variant function, not
+//! a `#[cfg]` inside a body (see the #341/#342 lesson in `CLAUDE.md`).
 
+#[cfg(feature = "proxy")]
 use dashmap::DashMap;
 use pingora_core::Result;
 use pingora_http::RequestHeader;
@@ -26,16 +36,7 @@ pub(crate) async fn upstream_request_filter(
     // Also increment the per-upstream active-connections gauge.
     if let Some(req_ctx) = ctx.as_mut() {
         req_ctx.proxy.upstream_start = Some(std::time::Instant::now());
-        if let Some(url) = req_ctx.proxy.proxy_upstream_url.as_deref() {
-            proxy
-                .state
-                .metrics
-                .upstream_active_connections
-                .with_label_values(&[url])
-                .inc();
-            // Per-upstream selection counters (#40).
-            crate::proxy::health::record_upstream_selected(&proxy.state.upstream_health, url);
-        }
+        record_upstream_selection(proxy, req_ctx);
     }
 
     append_forwarded_headers(session, upstream_request, &proxy.state, ctx)?;
@@ -57,6 +58,42 @@ pub(crate) async fn upstream_request_filter(
     }
 
     // Traffic mirroring: fire-and-forget copy to the mirror backend.
+    maybe_fire_mirror(session, upstream_request, ctx);
+
+    Ok(())
+}
+
+/// Bump the per-upstream active-connections gauge and the selection counters
+/// (#40) for the peer this request was routed to -- the `proxy` variant.
+/// No-ops when no upstream URL is tracked (e.g. an `upload` target).
+#[cfg(feature = "proxy")]
+fn record_upstream_selection(proxy: &ConduitProxy, req_ctx: &RequestCtx) {
+    if let Some(url) = req_ctx.proxy.proxy_upstream_url.as_deref() {
+        proxy
+            .state
+            .metrics
+            .upstream_active_connections
+            .with_label_values(&[url])
+            .inc();
+        // Per-upstream selection counters (#40).
+        crate::proxy::health::record_upstream_selected(&proxy.state.upstream_health, url);
+    }
+}
+
+/// No-`proxy` variant of [`record_upstream_selection`]: `proxy_upstream_url`
+/// is only ever set by the proxy routing resolvers, so there is never an
+/// upstream to attribute the selection to.
+#[cfg(not(feature = "proxy"))]
+fn record_upstream_selection(_proxy: &ConduitProxy, _req_ctx: &RequestCtx) {}
+
+/// Fire the traffic-mirror copy when the routed target has one -- the
+/// `proxy` variant.
+#[cfg(feature = "proxy")]
+fn maybe_fire_mirror(
+    session: &Session,
+    upstream_request: &RequestHeader,
+    ctx: &Option<RequestCtx>,
+) {
     if let Some(req_ctx) = ctx.as_ref() {
         if let UpstreamTarget::Proxy {
             mirror_url: Some(ref mirror),
@@ -66,8 +103,16 @@ pub(crate) async fn upstream_request_filter(
             fire_mirror_request(mirror, session, upstream_request);
         }
     }
+}
 
-    Ok(())
+/// No-`proxy` variant of [`maybe_fire_mirror`]: mirroring is a forwarding
+/// feature, and `mirror_url` only exists on `UpstreamTarget::Proxy`.
+#[cfg(not(feature = "proxy"))]
+fn maybe_fire_mirror(
+    _session: &Session,
+    _upstream_request: &RequestHeader,
+    _ctx: &Option<RequestCtx>,
+) {
 }
 
 pub(super) fn extract_host(session: &Session) -> String {
@@ -159,13 +204,11 @@ pub(super) fn apply_upstream_path_transforms(
             rewrite,
             ..
         } => {
-            let original = upstream_request.uri.path();
-            let path = apply_path_strip(original, strip_prefix.as_deref());
-            let path = apply_path_rewrites(&path, rewrite.as_deref());
-            if path != upstream_request.uri.path() {
-                let new_uri = rebuild_uri(&upstream_request.uri, &path)?;
-                upstream_request.set_uri(new_uri);
-            }
+            apply_proxy_path_transforms(
+                upstream_request,
+                strip_prefix.as_deref(),
+                rewrite.as_deref(),
+            )?;
         }
         #[cfg(feature = "upload")]
         UpstreamTarget::Upload { .. } => {
@@ -176,7 +219,38 @@ pub(super) fn apply_upstream_path_transforms(
     Ok(())
 }
 
+/// Apply a proxy target's strip-prefix and rewrite rules to the upstream
+/// request URI -- the `proxy` variant.
+#[cfg(feature = "proxy")]
+fn apply_proxy_path_transforms(
+    upstream_request: &mut RequestHeader,
+    strip_prefix: Option<&str>,
+    rewrite: Option<&[crate::config::schema::RewriteRule]>,
+) -> Result<()> {
+    let original = upstream_request.uri.path();
+    let path = apply_path_strip(original, strip_prefix);
+    let path = apply_path_rewrites(&path, rewrite);
+    if path != upstream_request.uri.path() {
+        let new_uri = rebuild_uri(&upstream_request.uri, &path)?;
+        upstream_request.set_uri(new_uri);
+    }
+    Ok(())
+}
+
+/// No-`proxy` variant of [`apply_proxy_path_transforms`]: the strip/rewrite
+/// machinery is compiled out, and no `UpstreamTarget::Proxy` exists to carry
+/// such rules in the first place.
+#[cfg(not(feature = "proxy"))]
+fn apply_proxy_path_transforms(
+    _upstream_request: &mut RequestHeader,
+    _strip_prefix: Option<&str>,
+    _rewrite: Option<&[crate::config::schema::RewriteRule]>,
+) -> Result<()> {
+    Ok(())
+}
+
 /// Strip `prefix` from `path`, returning `"/"` when stripping leaves an empty string.
+#[cfg(feature = "proxy")]
 pub(super) fn apply_path_strip(path: &str, prefix: Option<&str>) -> String {
     let Some(pfx) = prefix else {
         return path.to_owned();
@@ -190,6 +264,7 @@ pub(super) fn apply_path_strip(path: &str, prefix: Option<&str>) -> String {
 }
 
 /// Apply the first matching rewrite rule to `path` and return the (possibly unchanged) result.
+#[cfg(feature = "proxy")]
 pub(super) fn apply_path_rewrites(
     path: &str,
     rules: Option<&[crate::config::schema::RewriteRule]>,
@@ -255,6 +330,7 @@ pub(super) fn apply_header_transform_request_with_claims(
 ///
 /// **V1 limitation:** only the method, path, query, and request headers are
 /// mirrored.  The request body is not buffered and is therefore not mirrored.
+#[cfg(feature = "proxy")]
 pub(super) fn fire_mirror_request(
     mirror_url: &str,
     session: &Session,
@@ -350,6 +426,7 @@ pub(super) fn fire_mirror_request(
 /// Rewrite patterns are plain (un-anchored) regexes so that `replacen` can
 /// match anywhere in the path.  Invalid patterns are not stored; the caller
 /// should log the error and skip the rule.
+#[cfg(feature = "proxy")]
 pub(super) fn get_rewrite_regex(pattern: &str) -> Option<regex::Regex> {
     static CACHE: std::sync::OnceLock<DashMap<String, regex::Regex>> = std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(DashMap::new);
@@ -361,6 +438,7 @@ pub(super) fn get_rewrite_regex(pattern: &str) -> Option<regex::Regex> {
     Some(re)
 }
 
+#[cfg(feature = "proxy")]
 pub(super) fn rebuild_uri(original: &http::Uri, new_path: &str) -> Result<http::Uri> {
     let pq = match original.query() {
         Some(q) => format!("{new_path}?{q}"),
@@ -395,105 +473,24 @@ mod tests {
         RequestCtx::new(0, upstream, ProxyReqState::default(), None)
     }
 
-    // ── apply_path_strip ──────────────────────────────────────────────────────
-
-    #[test]
-    fn apply_path_strip_removes_prefix() {
-        assert_eq!(apply_path_strip("/api/v1/users", Some("/api")), "/v1/users");
-    }
-
-    #[test]
-    fn apply_path_strip_no_prefix_returns_unchanged() {
-        assert_eq!(apply_path_strip("/api/v1", None), "/api/v1");
-    }
-
-    #[test]
-    fn apply_path_strip_exact_match_returns_root() {
-        // Stripping the exact path leaves an empty string → normalize to "/".
-        assert_eq!(apply_path_strip("/api", Some("/api")), "/");
-    }
-
-    #[test]
-    fn apply_path_strip_no_match_returns_root() {
-        // Prefix doesn't match → `strip_prefix` returns None → "/" returned.
-        assert_eq!(apply_path_strip("/other", Some("/api")), "/");
-    }
-
-    // ── apply_path_rewrites ───────────────────────────────────────────────────
-
-    #[test]
-    fn apply_path_rewrites_no_rules_returns_unchanged() {
-        assert_eq!(apply_path_rewrites("/v1/users", None), "/v1/users");
-    }
-
-    #[test]
-    fn apply_path_rewrites_no_match_returns_unchanged() {
-        let rules = vec![crate::config::schema::RewriteRule {
-            from: "^/api/(.*)".to_owned(),
-            to: "/v2/$1".to_owned(),
-        }];
-        assert_eq!(
-            apply_path_rewrites("/other/path", Some(&rules)),
-            "/other/path"
-        );
-    }
-
-    #[test]
-    fn apply_path_rewrites_matching_rule_transforms_path() {
-        let rules = vec![crate::config::schema::RewriteRule {
-            from: "^/v1/(.*)".to_owned(),
-            to: "/v2/$1".to_owned(),
-        }];
-        assert_eq!(apply_path_rewrites("/v1/users", Some(&rules)), "/v2/users");
-    }
-
-    #[test]
-    fn apply_path_rewrites_first_match_wins() {
-        let rules = vec![
-            crate::config::schema::RewriteRule {
-                from: "^/v1/(.*)".to_owned(),
-                to: "/first/$1".to_owned(),
-            },
-            crate::config::schema::RewriteRule {
-                from: "^/v1/(.*)".to_owned(),
-                to: "/second/$1".to_owned(),
-            },
-        ];
-        assert_eq!(
-            apply_path_rewrites("/v1/users", Some(&rules)),
-            "/first/users"
-        );
-    }
-
-    // ── get_rewrite_regex ─────────────────────────────────────────────────────
-
-    #[test]
-    fn get_rewrite_regex_compiles_valid_pattern() {
-        let re = get_rewrite_regex("^/v1/(.*)");
-        assert!(re.is_some(), "valid regex must compile");
-        let re = re.unwrap();
-        assert!(re.is_match("/v1/users"));
-        assert!(!re.is_match("/v2/users"));
-    }
-
-    #[test]
-    fn get_rewrite_regex_returns_none_for_invalid() {
-        let re = get_rewrite_regex("[invalid");
-        assert!(re.is_none(), "invalid regex must return None");
-    }
-
-    #[test]
-    fn get_rewrite_regex_caches_compiled_pattern() {
-        // Second call for the same pattern must return a cached copy.
-        let r1 = get_rewrite_regex("^/api/(.*)");
-        let r2 = get_rewrite_regex("^/api/(.*)");
-        assert!(r1.is_some() && r2.is_some(), "both calls must succeed");
-    }
-
     // ── apply_upstream_path_transforms ───────────────────────────────────────
 
     #[test]
-    fn apply_upstream_path_transforms_strips_prefix() {
+    fn apply_upstream_path_transforms_none_ctx_noop() {
+        use pingora_http::RequestHeader;
+        let mut req = RequestHeader::build("GET", b"/original", None).unwrap();
+        apply_upstream_path_transforms(&mut req, &None).unwrap();
+        assert_eq!(req.uri.path(), "/original");
+    }
+
+    /// Without `proxy` there is no `UpstreamTarget::Proxy` in practice, and the
+    /// strip/rewrite transforms are compiled out entirely. Pins that gate: the
+    /// exact input of `apply_upstream_path_transforms_strips_prefix` (which
+    /// rewrites `/api/v1/users` to `/v1/users` with `proxy` on) must leave the
+    /// path untouched here, not half-apply a transform whose code is gone.
+    #[cfg(not(feature = "proxy"))]
+    #[test]
+    fn apply_upstream_path_transforms_leaves_path_alone_without_proxy() {
         use pingora_http::RequestHeader;
         let mut req = RequestHeader::build("GET", b"/api/v1/users", None).unwrap();
         let ctx = Some(make_ctx(UpstreamTarget::Proxy {
@@ -506,32 +503,7 @@ mod tests {
             upstream_tls: None,
         }));
         apply_upstream_path_transforms(&mut req, &ctx).unwrap();
-        assert_eq!(req.uri.path(), "/v1/users");
-    }
-
-    #[test]
-    fn apply_upstream_path_transforms_no_prefix_unchanged() {
-        use pingora_http::RequestHeader;
-        let mut req = RequestHeader::build("GET", b"/api/v1/users", None).unwrap();
-        let ctx = Some(make_ctx(UpstreamTarget::Proxy {
-            addr: "backend:4000".to_owned(),
-            tls: false,
-            sni: String::new(),
-            strip_prefix: None,
-            rewrite: None,
-            mirror_url: None,
-            upstream_tls: None,
-        }));
-        apply_upstream_path_transforms(&mut req, &ctx).unwrap();
         assert_eq!(req.uri.path(), "/api/v1/users");
-    }
-
-    #[test]
-    fn apply_upstream_path_transforms_none_ctx_noop() {
-        use pingora_http::RequestHeader;
-        let mut req = RequestHeader::build("GET", b"/original", None).unwrap();
-        apply_upstream_path_transforms(&mut req, &None).unwrap();
-        assert_eq!(req.uri.path(), "/original");
     }
 
     // ── apply_header_transform_request_with_claims ────────────────────────────
@@ -589,28 +561,166 @@ mod tests {
         assert_eq!(req.headers.get("x-user").unwrap(), "alice");
     }
 
-    // ── rebuild_uri ───────────────────────────────────────────────────────────
+    // Everything below exercises path strip/rewrite/URI helpers that only
+    // exist with the root `proxy` feature.
+    #[cfg(feature = "proxy")]
+    mod proxy_only {
+        use super::*;
 
-    #[test]
-    fn rebuild_uri_replaces_path() {
-        let original: http::Uri = "/old/path".parse().unwrap();
-        let new_uri = rebuild_uri(&original, "/new/path").unwrap();
-        assert_eq!(new_uri.path(), "/new/path");
-    }
+        // ── apply_path_strip ──────────────────────────────────────────────────────
 
-    #[test]
-    fn rebuild_uri_preserves_query() {
-        let original: http::Uri = "/old/path?foo=bar".parse().unwrap();
-        let new_uri = rebuild_uri(&original, "/new/path").unwrap();
-        assert_eq!(new_uri.path(), "/new/path");
-        assert_eq!(new_uri.query(), Some("foo=bar"));
-    }
+        #[test]
+        fn apply_path_strip_removes_prefix() {
+            assert_eq!(apply_path_strip("/api/v1/users", Some("/api")), "/v1/users");
+        }
 
-    #[test]
-    fn rebuild_uri_no_query_keeps_no_query() {
-        let original: http::Uri = "/path".parse().unwrap();
-        let new_uri = rebuild_uri(&original, "/v2").unwrap();
-        assert_eq!(new_uri.path(), "/v2");
-        assert!(new_uri.query().is_none());
+        #[test]
+        fn apply_path_strip_no_prefix_returns_unchanged() {
+            assert_eq!(apply_path_strip("/api/v1", None), "/api/v1");
+        }
+
+        #[test]
+        fn apply_path_strip_exact_match_returns_root() {
+            // Stripping the exact path leaves an empty string → normalize to "/".
+            assert_eq!(apply_path_strip("/api", Some("/api")), "/");
+        }
+
+        #[test]
+        fn apply_path_strip_no_match_returns_root() {
+            // Prefix doesn't match → `strip_prefix` returns None → "/" returned.
+            assert_eq!(apply_path_strip("/other", Some("/api")), "/");
+        }
+
+        // ── apply_path_rewrites ───────────────────────────────────────────────────
+
+        #[test]
+        fn apply_path_rewrites_no_rules_returns_unchanged() {
+            assert_eq!(apply_path_rewrites("/v1/users", None), "/v1/users");
+        }
+
+        #[test]
+        fn apply_path_rewrites_no_match_returns_unchanged() {
+            let rules = vec![crate::config::schema::RewriteRule {
+                from: "^/api/(.*)".to_owned(),
+                to: "/v2/$1".to_owned(),
+            }];
+            assert_eq!(
+                apply_path_rewrites("/other/path", Some(&rules)),
+                "/other/path"
+            );
+        }
+
+        #[test]
+        fn apply_path_rewrites_matching_rule_transforms_path() {
+            let rules = vec![crate::config::schema::RewriteRule {
+                from: "^/v1/(.*)".to_owned(),
+                to: "/v2/$1".to_owned(),
+            }];
+            assert_eq!(apply_path_rewrites("/v1/users", Some(&rules)), "/v2/users");
+        }
+
+        #[test]
+        fn apply_path_rewrites_first_match_wins() {
+            let rules = vec![
+                crate::config::schema::RewriteRule {
+                    from: "^/v1/(.*)".to_owned(),
+                    to: "/first/$1".to_owned(),
+                },
+                crate::config::schema::RewriteRule {
+                    from: "^/v1/(.*)".to_owned(),
+                    to: "/second/$1".to_owned(),
+                },
+            ];
+            assert_eq!(
+                apply_path_rewrites("/v1/users", Some(&rules)),
+                "/first/users"
+            );
+        }
+
+        // ── get_rewrite_regex ─────────────────────────────────────────────────────
+
+        #[test]
+        fn get_rewrite_regex_compiles_valid_pattern() {
+            let re = get_rewrite_regex("^/v1/(.*)");
+            assert!(re.is_some(), "valid regex must compile");
+            let re = re.unwrap();
+            assert!(re.is_match("/v1/users"));
+            assert!(!re.is_match("/v2/users"));
+        }
+
+        #[test]
+        fn get_rewrite_regex_returns_none_for_invalid() {
+            let re = get_rewrite_regex("[invalid");
+            assert!(re.is_none(), "invalid regex must return None");
+        }
+
+        #[test]
+        fn get_rewrite_regex_caches_compiled_pattern() {
+            // Second call for the same pattern must return a cached copy.
+            let r1 = get_rewrite_regex("^/api/(.*)");
+            let r2 = get_rewrite_regex("^/api/(.*)");
+            assert!(r1.is_some() && r2.is_some(), "both calls must succeed");
+        }
+
+        // ── apply_upstream_path_transforms ───────────────────────────────────────
+
+        #[test]
+        fn apply_upstream_path_transforms_strips_prefix() {
+            use pingora_http::RequestHeader;
+            let mut req = RequestHeader::build("GET", b"/api/v1/users", None).unwrap();
+            let ctx = Some(make_ctx(UpstreamTarget::Proxy {
+                addr: "backend:4000".to_owned(),
+                tls: false,
+                sni: String::new(),
+                strip_prefix: Some("/api".to_owned()),
+                rewrite: None,
+                mirror_url: None,
+                upstream_tls: None,
+            }));
+            apply_upstream_path_transforms(&mut req, &ctx).unwrap();
+            assert_eq!(req.uri.path(), "/v1/users");
+        }
+
+        #[test]
+        fn apply_upstream_path_transforms_no_prefix_unchanged() {
+            use pingora_http::RequestHeader;
+            let mut req = RequestHeader::build("GET", b"/api/v1/users", None).unwrap();
+            let ctx = Some(make_ctx(UpstreamTarget::Proxy {
+                addr: "backend:4000".to_owned(),
+                tls: false,
+                sni: String::new(),
+                strip_prefix: None,
+                rewrite: None,
+                mirror_url: None,
+                upstream_tls: None,
+            }));
+            apply_upstream_path_transforms(&mut req, &ctx).unwrap();
+            assert_eq!(req.uri.path(), "/api/v1/users");
+        }
+
+        // ── rebuild_uri ───────────────────────────────────────────────────────────
+
+        #[test]
+        fn rebuild_uri_replaces_path() {
+            let original: http::Uri = "/old/path".parse().unwrap();
+            let new_uri = rebuild_uri(&original, "/new/path").unwrap();
+            assert_eq!(new_uri.path(), "/new/path");
+        }
+
+        #[test]
+        fn rebuild_uri_preserves_query() {
+            let original: http::Uri = "/old/path?foo=bar".parse().unwrap();
+            let new_uri = rebuild_uri(&original, "/new/path").unwrap();
+            assert_eq!(new_uri.path(), "/new/path");
+            assert_eq!(new_uri.query(), Some("foo=bar"));
+        }
+
+        #[test]
+        fn rebuild_uri_no_query_keeps_no_query() {
+            let original: http::Uri = "/path".parse().unwrap();
+            let new_uri = rebuild_uri(&original, "/v2").unwrap();
+            assert_eq!(new_uri.path(), "/v2");
+            assert!(new_uri.query().is_none());
+        }
     }
 }

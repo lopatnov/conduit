@@ -23,6 +23,36 @@ use crate::proxy::cache as proxy_cache;
 use crate::proxy::ctx::RequestCtx;
 use crate::proxy::service::ConduitProxy;
 
+// ── Retry-failure bookkeeping (feature-gated, issue #144 PR 3) ───────────────
+
+/// Record passive health / metrics for the upstream that just failed, before
+/// a `RetryUpstream` outcome turns into a Pingora retry -- the `proxy`
+/// variant. See `ConduitProxy::record_failed_upstream_for_retry` for the full
+/// rationale (#47).
+#[cfg(feature = "proxy")]
+fn record_retry_failure(
+    proxy: &ConduitProxy,
+    ctx: &mut Option<RequestCtx>,
+    config: &crate::config::schema::AppConfig,
+    status: u16,
+) {
+    proxy.record_failed_upstream_for_retry(ctx, config, status);
+}
+
+/// No-`proxy` variant of [`record_retry_failure`]: no upstream health is
+/// tracked without the proxy routing resolvers, so there is nothing to
+/// attribute the failure to. The `5xx_retry` error that follows the call is
+/// *not* gated -- it is what lets `should_serve_stale()` serve a stale cached
+/// response (#48) in a cache-only build.
+#[cfg(not(feature = "proxy"))]
+fn record_retry_failure(
+    _proxy: &ConduitProxy,
+    _ctx: &mut Option<RequestCtx>,
+    _config: &crate::config::schema::AppConfig,
+    _status: u16,
+) {
+}
+
 // ── Trait-method bodies (called from thin delegators in `impl ProxyHttp`) ────
 
 /// Body of [`pingora_proxy::ProxyHttp::upstream_response_filter`].
@@ -137,10 +167,12 @@ pub(super) async fn upstream_response_filter(
             // Failure propagation fix (#47): record health / metrics for the
             // failed upstream BEFORE returning the retry error — see
             // `record_failed_upstream_for_retry` for the full rationale.
-            proxy.record_failed_upstream_for_retry(ctx, &config, status);
+            record_retry_failure(proxy, ctx, &config, status);
             // Use new_up() so ErrorSource::Upstream is set — required for
             // should_serve_stale() to recognise this as an upstream error
-            // and serve a stale cached response (#48).
+            // and serve a stale cached response (#48). This return is
+            // deliberately NOT part of the feature-gated step above: stale-if-error
+            // for a cache-only build (no `proxy`) depends on it.
             return Err(
                 pingora_core::Error::new_up(pingora_core::ErrorType::Custom("5xx_retry"))
                     .more_context(format!("upstream returned HTTP {status}")),

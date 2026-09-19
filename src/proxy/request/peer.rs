@@ -4,31 +4,81 @@
 //!
 //! Split out of the former monolithic `request_phase.rs` (issue #144 prep,
 //! PR 1 of 2) -- pure code relocation, no behavioral change.
+//!
+//! **Feature gating (issue #144, PR 3):** an upstream peer is only ever
+//! selected for a proxied upstream (`proxy`) or for the internal upload
+//! loopback upstream (`upload` -- `UpstreamTarget::Upload` classifies as
+//! `HandlerKind::Proxy` and therefore reaches [`upstream_peer`] too), so the
+//! real implementation compiles when either is enabled. In a build with
+//! neither, `service.rs`'s `ProxyHttp::upstream_peer` still needs a target,
+//! so [`upstream_peer`] becomes a stub answering 404 -- the same plain
+//! degradation every other disabled feature gets, never a 502/500 from a
+//! request Pingora was told to proxy with nothing to proxy to. Retry
+//! handling inside it is `proxy`-only (retry state is only populated by the
+//! proxy routing resolvers).
 
+#[cfg(any(feature = "proxy", feature = "upload"))]
 use std::time::Duration;
+#[cfg(any(feature = "proxy", feature = "upload"))]
 use std::time::Instant;
 
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
 
+#[cfg(any(feature = "proxy", feature = "upload"))]
 use crate::config::schema::{ConnectionPoolConfig, ProxyTimeout};
-use crate::proxy::ctx::{RequestCtx, UpstreamTarget};
+use crate::proxy::ctx::RequestCtx;
+#[cfg(any(feature = "proxy", feature = "upload"))]
+use crate::proxy::ctx::UpstreamTarget;
+#[cfg(any(feature = "proxy", feature = "upload"))]
 use crate::proxy::health::UpstreamRegistry;
+#[cfg(any(feature = "proxy", feature = "upload"))]
 use crate::proxy::request::dns::resolve_socket_addr;
+#[cfg(feature = "proxy")]
 use crate::proxy::request::retry::{apply_backoff, select_retry_target};
 use crate::proxy::service::ConduitProxy;
+#[cfg(feature = "proxy")]
 use crate::proxy::upstream;
 
+/// Body of [`pingora_proxy::ProxyHttp::upstream_peer`] for a build with
+/// neither `proxy` nor `upload`: there is no upstream to select, so answer
+/// 404 (Pingora's `fail_to_proxy` turns `ErrorType::HTTPStatus(404)` into a
+/// plain 404 response). Unreachable in practice -- no routing path builds a
+/// proxied target without one of those features -- but it keeps the trait
+/// impl total instead of `#[cfg]`-ing the method away.
+#[cfg(not(any(feature = "proxy", feature = "upload")))]
+pub(crate) async fn upstream_peer(
+    _proxy: &ConduitProxy,
+    _ctx: &mut Option<RequestCtx>,
+) -> Result<Box<HttpPeer>> {
+    Err(pingora_core::Error::explain(
+        pingora_core::ErrorType::HTTPStatus(404),
+        "no upstream: neither the `proxy` nor the `upload` feature is compiled in",
+    ))
+}
+
+/// Sleep for a retry attempt's configured backoff -- the `proxy` variant.
+#[cfg(feature = "proxy")]
+async fn apply_retry_backoff(req_ctx: &RequestCtx) {
+    if let Some(ref retry) = req_ctx.proxy.retry {
+        apply_backoff(retry).await;
+    }
+}
+
+/// No-`proxy` variant: retry state is never populated without the proxy
+/// routing resolvers, so there is never a backoff to apply.
+#[cfg(all(feature = "upload", not(feature = "proxy")))]
+async fn apply_retry_backoff(_req_ctx: &RequestCtx) {}
+
 /// Body of [`pingora_proxy::ProxyHttp::upstream_peer`].
+#[cfg(any(feature = "proxy", feature = "upload"))]
 pub(crate) async fn upstream_peer(
     proxy: &ConduitProxy,
     ctx: &mut Option<RequestCtx>,
 ) -> Result<Box<HttpPeer>> {
     let req_ctx = ctx.as_mut().expect("ctx set in request_filter");
 
-    if let Some(ref retry) = req_ctx.proxy.retry {
-        apply_backoff(retry).await;
-    }
+    apply_retry_backoff(req_ctx).await;
 
     // #47/#216: resolve_peer_addr() -> select_retry_target() owns choosing
     // this attempt's URL AND all proxy_upstream_url/upstream_conn_slot
@@ -118,45 +168,73 @@ pub(crate) async fn upstream_peer(
 /// the next one (which then fails immediately) rather than silently
 /// granting it a fresh deadline. `None` (no deadline configured) passes
 /// through unchanged — there is no budget to share.
+#[cfg(any(feature = "proxy", feature = "upload"))]
 fn remaining_budget(deadline: Option<Duration>, elapsed: Duration) -> Option<Duration> {
     deadline.map(|d| d.saturating_sub(elapsed))
 }
 
+/// The `(addr, tls, sni)` triple for this attempt of a retry-configured
+/// request -- the `proxy` variant. `None` when the route has no `retry`
+/// configured at all (the first-attempt values then come from `ctx.upstream`
+/// directly, see [`resolve_peer_addr`]).
+///
+/// Delegates to [`select_retry_target`] to decide which URL this attempt
+/// targets, unifying URL selection with the request's
+/// `proxy_upstream_url`/`upstream_conn_slot` bookkeeping into one decision
+/// (#216 part 2).
+#[cfg(feature = "proxy")]
+fn retry_peer_addr(
+    req_ctx: &mut RequestCtx,
+    health: &UpstreamRegistry,
+) -> Option<pingora_core::Result<(String, bool, String)>> {
+    req_ctx.proxy.retry.as_ref()?;
+    let url = select_retry_target(req_ctx, health);
+    let Some(addr) = upstream::url_to_host_port(&url) else {
+        return Some(Err(pingora_core::Error::explain(
+            pingora_core::ErrorType::ConnectProxyFailure,
+            format!("invalid upstream address: {url}"),
+        )));
+    };
+    let tls = upstream::url_is_tls(&url);
+    let sni = if tls {
+        upstream::url_host(&url)
+    } else {
+        String::new()
+    };
+    Some(Ok((addr, tls, sni)))
+}
+
+/// No-`proxy` variant of [`retry_peer_addr`]: retry state is only ever
+/// populated by the proxy routing resolvers, so without the feature there is
+/// never a retry target to select and `ctx.upstream` is always authoritative.
+#[cfg(all(feature = "upload", not(feature = "proxy")))]
+fn retry_peer_addr(
+    _req_ctx: &mut RequestCtx,
+    _health: &UpstreamRegistry,
+) -> Option<pingora_core::Result<(String, bool, String)>> {
+    None
+}
+
 /// Resolve the upstream `(addr, tls, sni)` from the request context.
 ///
-/// For a retry-configured request, delegates to [`select_retry_target`] to
-/// decide which URL this attempt targets — unifying URL selection with the
-/// request's `proxy_upstream_url`/`upstream_conn_slot` bookkeeping into one
-/// decision (#216 part 2). On the first attempt the values come from
-/// `ctx.upstream` directly (no `retry` configured for this route at all).
+/// A retry-configured request (`proxy` only) takes its target from
+/// [`retry_peer_addr`]; otherwise the values come from `ctx.upstream`
+/// directly.
+#[cfg(any(feature = "proxy", feature = "upload"))]
 pub(super) fn resolve_peer_addr(
     req_ctx: &mut RequestCtx,
     health: &UpstreamRegistry,
 ) -> pingora_core::Result<(String, bool, String)> {
-    if req_ctx.proxy.retry.is_some() {
-        let url = select_retry_target(req_ctx, health);
-        let addr = upstream::url_to_host_port(&url).ok_or_else(|| {
-            pingora_core::Error::explain(
-                pingora_core::ErrorType::ConnectProxyFailure,
-                format!("invalid upstream address: {url}"),
-            )
-        })?;
-        let tls = upstream::url_is_tls(&url);
-        let sni = if tls {
-            upstream::url_host(&url)
-        } else {
-            String::new()
-        };
-        Ok((addr, tls, sni))
-    } else {
-        match &req_ctx.upstream {
-            UpstreamTarget::Proxy { addr, tls, sni, .. } => Ok((addr.clone(), *tls, sni.clone())),
-            UpstreamTarget::Upload { addr } => Ok((addr.to_string(), false, String::new())),
-            UpstreamTarget::Local(_) => Err(pingora_core::Error::explain(
-                pingora_core::ErrorType::InternalError,
-                "upstream_peer called for local handler",
-            )),
-        }
+    if let Some(resolved) = retry_peer_addr(req_ctx, health) {
+        return resolved;
+    }
+    match &req_ctx.upstream {
+        UpstreamTarget::Proxy { addr, tls, sni, .. } => Ok((addr.clone(), *tls, sni.clone())),
+        UpstreamTarget::Upload { addr } => Ok((addr.to_string(), false, String::new())),
+        UpstreamTarget::Local(_) => Err(pingora_core::Error::explain(
+            pingora_core::ErrorType::InternalError,
+            "upstream_peer called for local handler",
+        )),
     }
 }
 
@@ -169,6 +247,7 @@ pub(super) fn resolve_peer_addr(
 ///
 /// `limits.timeout_secs` is applied to all three timeout fields only when
 /// the corresponding per-route field is absent.
+#[cfg(any(feature = "proxy", feature = "upload"))]
 pub(super) fn apply_peer_options(
     peer: &mut HttpPeer,
     timeout: Option<&ProxyTimeout>,
@@ -209,11 +288,50 @@ pub(super) fn apply_peer_options(
     }
 }
 
-#[cfg(test)]
+/// The no-upstream stub is the only `upstream_peer` in a build with neither
+/// `proxy` nor `upload`, so it gets its own tiny module -- the main test
+/// module below only exists when a real upstream can be selected.
+#[cfg(all(test, not(any(feature = "proxy", feature = "upload"))))]
+mod stub_tests {
+    use super::*;
+
+    use crate::proxy::service::AppState;
+
+    /// Without `proxy` and `upload` there is nothing to proxy to. The stub must
+    /// answer with `ErrorType::HTTPStatus(404)` -- Pingora's `fail_to_proxy`
+    /// turns that into a plain 404, never the 500/502 an `InternalError` or a
+    /// panic would produce.
+    #[tokio::test]
+    async fn upstream_peer_without_proxy_or_upload_answers_404() {
+        let state = AppState::new(
+            crate::config::schema::AppConfig::default(),
+            std::path::PathBuf::from("."),
+            None,
+        );
+        let proxy = ConduitProxy {
+            state: std::sync::Arc::new(state),
+        };
+        // `ctx` is deliberately `None`: the stub must not depend on request
+        // state (the real implementation `expect`s it to be set).
+        let mut ctx: Option<RequestCtx> = None;
+        let err = upstream_peer(&proxy, &mut ctx)
+            .await
+            .expect_err("no upstream can be selected in this build");
+        assert!(
+            matches!(err.etype(), pingora_core::ErrorType::HTTPStatus(404)),
+            "expected HTTPStatus(404), got {:?}",
+            err.etype()
+        );
+    }
+}
+
+#[cfg(all(test, any(feature = "proxy", feature = "upload")))]
 mod tests {
     use super::*;
 
-    use crate::proxy::ctx::{LocalHandler, ProxyReqState, RetryState};
+    #[cfg(feature = "proxy")]
+    use crate::proxy::ctx::RetryState;
+    use crate::proxy::ctx::{LocalHandler, ProxyReqState};
 
     // ── resolve_peer_addr ─────────────────────────────────────────────────────
 
@@ -258,6 +376,53 @@ mod tests {
         assert_eq!(addr, "api.example.com:443");
         assert!(tls);
         assert_eq!(sni, "api.example.com");
+    }
+
+    /// `Upload` is the internal loopback upstream and must resolve in every
+    /// build that compiles this module -- in particular `--features upload`
+    /// without `proxy`, where it is the *only* target `upstream_peer` can
+    /// see. Exact tuple on purpose: a wrong `tls`/`sni` here would silently
+    /// break the upload service, not just fail a lookup.
+    #[test]
+    fn resolve_peer_addr_upload_returns_loopback_addr_without_tls() {
+        let mut ctx = make_ctx(UpstreamTarget::Upload {
+            addr: "127.0.0.1:4000".parse().unwrap(),
+        });
+        let reg = UpstreamRegistry::new();
+        let resolved = resolve_peer_addr(&mut ctx, &reg).unwrap();
+        assert_eq!(
+            resolved,
+            ("127.0.0.1:4000".to_owned(), false, String::new())
+        );
+    }
+
+    /// Without `proxy`, retry state must never be consulted: the routing
+    /// resolvers that populate it don't exist, so a stray `Some(retry)` must
+    /// not redirect the request away from `ctx.upstream` (and must not be
+    /// advanced -- `attempt` stays 0).
+    #[cfg(not(feature = "proxy"))]
+    #[test]
+    fn resolve_peer_addr_ignores_retry_state_without_proxy() {
+        use crate::proxy::ctx::RetryState;
+        let mut ctx = make_ctx(UpstreamTarget::Upload {
+            addr: "127.0.0.1:4000".parse().unwrap(),
+        });
+        ctx.proxy.retry = Some(RetryState {
+            urls: vec!["http://a:4000".to_owned(), "http://b:4000".to_owned()],
+            attempt: 0,
+            max_attempts: 3,
+            conditions: vec!["5xx".to_owned()],
+            backoff_ms: None,
+            backoff_jitter: false,
+            budget_percent: None,
+            is_retrying: false,
+            max_conns_per_upstream: None,
+            tracks_conn_slot: false,
+        });
+        let reg = UpstreamRegistry::new();
+        let resolved = resolve_peer_addr(&mut ctx, &reg).unwrap();
+        assert_eq!(resolved.0, "127.0.0.1:4000");
+        assert_eq!(ctx.proxy.retry.as_ref().unwrap().attempt, 0);
     }
 
     #[test]
@@ -402,8 +567,9 @@ mod tests {
         );
     }
 
-    // ── resolve_peer_addr ─────────────────────────────────────────────────────
+    // ── resolve_peer_addr (retry) ─────────────────────────────────────────────
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn resolve_peer_addr_with_retry_returns_first_url() {
         let retry = RetryState {

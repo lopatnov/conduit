@@ -11,14 +11,29 @@
 //! how directly `acquire_conn_slot`/`release_conn_slot` and the retry-index
 //! formula depend on each other) -- splitting them would spread one
 //! invariant across files rather than reduce complexity.
+//!
+//! **Feature gating (issue #144, PR 3):** everything here is retry machinery
+//! and only exists with the root `proxy` feature. Retry state
+//! (`RequestCtx.proxy.retry`) is only ever populated by the proxy routing
+//! resolvers, so a build without `proxy` can never have attempts left. The
+//! two Pingora trait-method bodies ([`fail_to_connect`] /
+//! [`error_while_proxy`]) still exist in every build -- `service.rs`
+//! delegates to them unconditionally -- but their retry step compiles to a
+//! no-op through a two-variant helper rather than a `#[cfg]` inside the
+//! body.
 
+#[cfg(feature = "proxy")]
 use std::sync::atomic::Ordering;
+#[cfg(feature = "proxy")]
 use std::time::Duration;
 
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_proxy::Session;
 
-use crate::proxy::ctx::{RequestCtx, RetryState};
+use crate::proxy::ctx::RequestCtx;
+#[cfg(feature = "proxy")]
+use crate::proxy::ctx::RetryState;
+#[cfg(feature = "proxy")]
 use crate::proxy::health::UpstreamRegistry;
 use crate::proxy::service::ConduitProxy;
 
@@ -28,8 +43,10 @@ use crate::proxy::service::ConduitProxy;
 /// treats anything below that as a success for `consecutive_5xx` purposes
 /// and resets the counter to zero, which would actively defeat outlier
 /// detection rather than merely fail to help it (Gitar finding on PR #371).
+#[cfg(feature = "proxy")]
 const SYNTHETIC_RETRY_FAILURE_STATUS: u16 = 503;
 
+#[cfg(feature = "proxy")]
 impl ConduitProxy {
     /// Record passive health (EWMA latency/`consecutive_5xx` via
     /// `record_request_latency`, outlier-detection ejection) and, when
@@ -334,18 +351,7 @@ pub(crate) fn fail_to_connect(
     ctx: &mut Option<RequestCtx>,
     mut e: Box<pingora_core::Error>,
 ) -> Box<pingora_core::Error> {
-    if let Some(req_ctx) = ctx.as_mut() {
-        let has_attempts_left = req_ctx
-            .proxy
-            .retry
-            .as_ref()
-            .map(RetryState::has_attempts_left)
-            .unwrap_or(false);
-        if has_attempts_left {
-            let config = proxy.state.config.load();
-            proxy.try_retry_connect_error(session, req_ctx, &mut e, &config);
-        }
-    }
+    maybe_retry_connect(proxy, session, ctx, &mut e);
     e
 }
 
@@ -358,10 +364,24 @@ pub(crate) fn error_while_proxy(
     ctx: &mut Option<RequestCtx>,
     client_reused: bool,
 ) -> Box<pingora_core::Error> {
+    // Unconditional -- this is Pingora's own reuse bookkeeping for the failed
+    // connection, unrelated to whether conduit retries.
     let mut e = e.more_context(format!("Peer: {peer}"));
     e.retry
         .decide_reuse(client_reused && !session.as_ref().retry_buffer_truncated());
 
+    maybe_retry_proxy(proxy, session, ctx, &mut e);
+    e
+}
+
+/// Retry step of [`fail_to_connect`] -- the `proxy`-feature variant.
+#[cfg(feature = "proxy")]
+fn maybe_retry_connect(
+    proxy: &ConduitProxy,
+    session: &mut Session,
+    ctx: &mut Option<RequestCtx>,
+    e: &mut Box<pingora_core::Error>,
+) {
     if let Some(req_ctx) = ctx.as_mut() {
         let has_attempts_left = req_ctx
             .proxy
@@ -371,10 +391,54 @@ pub(crate) fn error_while_proxy(
             .unwrap_or(false);
         if has_attempts_left {
             let config = proxy.state.config.load();
-            proxy.try_retry_proxy_error(session, req_ctx, &mut e, &config);
+            proxy.try_retry_connect_error(session, req_ctx, e, &config);
         }
     }
-    e
+}
+
+/// Retry step of [`fail_to_connect`] -- the no-`proxy` variant: retry state
+/// is never populated without the proxy routing resolvers, so there is
+/// nothing to retry.
+#[cfg(not(feature = "proxy"))]
+fn maybe_retry_connect(
+    _proxy: &ConduitProxy,
+    _session: &mut Session,
+    _ctx: &mut Option<RequestCtx>,
+    _e: &mut Box<pingora_core::Error>,
+) {
+}
+
+/// Retry step of [`error_while_proxy`] -- the `proxy`-feature variant.
+#[cfg(feature = "proxy")]
+fn maybe_retry_proxy(
+    proxy: &ConduitProxy,
+    session: &mut Session,
+    ctx: &mut Option<RequestCtx>,
+    e: &mut Box<pingora_core::Error>,
+) {
+    if let Some(req_ctx) = ctx.as_mut() {
+        let has_attempts_left = req_ctx
+            .proxy
+            .retry
+            .as_ref()
+            .map(RetryState::has_attempts_left)
+            .unwrap_or(false);
+        if has_attempts_left {
+            let config = proxy.state.config.load();
+            proxy.try_retry_proxy_error(session, req_ctx, e, &config);
+        }
+    }
+}
+
+/// Retry step of [`error_while_proxy`] -- the no-`proxy` variant (see
+/// [`maybe_retry_connect`]).
+#[cfg(not(feature = "proxy"))]
+fn maybe_retry_proxy(
+    _proxy: &ConduitProxy,
+    _session: &mut Session,
+    _ctx: &mut Option<RequestCtx>,
+    _e: &mut Box<pingora_core::Error>,
+) {
 }
 
 // ── request-side helpers ──────────────────────────────────────────────────────
@@ -383,6 +447,7 @@ pub(crate) fn error_while_proxy(
 ///
 /// Uses splitmix64 seeded from current nanoseconds — the same fast RNG used
 /// elsewhere in the proxy.  Returns a value in `[ms/2, ms*3/2)`.
+#[cfg(feature = "proxy")]
 pub(crate) fn jitter_backoff_ms(ms: u64) -> u64 {
     if ms == 0 {
         return 0;
@@ -406,6 +471,7 @@ pub(crate) fn jitter_backoff_ms(ms: u64) -> u64 {
 ///
 /// When `retry.backoff_jitter` is `true`, applies ±50 % randomness to spread
 /// retries in time and avoid synchronized thundering herds.
+#[cfg(feature = "proxy")]
 pub(super) async fn apply_backoff(retry: &RetryState) {
     if retry.attempt > 0 {
         if let Some(ms) = retry.backoff_ms {
@@ -431,6 +497,7 @@ pub(super) async fn apply_backoff(retry: &RetryState) {
 /// without worrying — this function is the default safety gate.
 ///
 /// Safe to retry: GET, HEAD, OPTIONS, TRACE.
+#[cfg(feature = "proxy")]
 pub(super) fn is_safe_http_method(method: &str) -> bool {
     matches!(
         method.to_ascii_uppercase().as_str(),
@@ -445,6 +512,7 @@ pub(super) fn is_safe_http_method(method: &str) -> bool {
 /// already released by `record_failed_upstream_for_retry` on the 5xx retry
 /// path). This is the only correct way to stop pointing at an upstream —
 /// see the invariant documented on [`RequestCtx::upstream_conn_slot`].
+#[cfg(feature = "proxy")]
 pub(super) fn release_conn_slot(req_ctx: &mut RequestCtx, health: &UpstreamRegistry) {
     let Some(url) = req_ctx.proxy.proxy_upstream_url.take() else {
         return;
@@ -460,6 +528,7 @@ pub(super) fn release_conn_slot(req_ctx: &mut RequestCtx, health: &UpstreamRegis
 /// Debug-asserts that no slot is currently held — callers must
 /// [`release_conn_slot`] first, never assign `proxy_upstream_url` /
 /// `upstream_conn_slot` directly.
+#[cfg(feature = "proxy")]
 pub(super) fn acquire_conn_slot(
     req_ctx: &mut RequestCtx,
     health: &UpstreamRegistry,
@@ -511,6 +580,7 @@ pub(super) fn acquire_conn_slot(
 /// request that has already spent attempts. `retry.tracks_conn_slot`
 /// mirrors `RouteResolution.upstream_conn_slot`'s own formula
 /// (`is_least_conn || circuit_tracking`) computed at routing time.
+#[cfg(feature = "proxy")]
 pub(super) fn select_retry_target(req_ctx: &mut RequestCtx, health: &UpstreamRegistry) -> String {
     // Compute this attempt's target using only a borrow of req_ctx.proxy.retry,
     // ended before release_conn_slot/acquire_conn_slot need to borrow the
@@ -547,7 +617,8 @@ pub(super) fn select_retry_target(req_ctx: &mut RequestCtx, health: &UpstreamReg
     chosen
 }
 
-#[cfg(test)]
+// Every test below exercises retry machinery that only exists with `proxy`.
+#[cfg(all(test, feature = "proxy"))]
 mod tests {
     use super::*;
 
