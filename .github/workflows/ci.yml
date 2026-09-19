@@ -173,6 +173,7 @@ jobs:
           }
 
           measure "--no-default-features" "\`--no-default-features\`"
+          measure "--no-default-features --features static" "\`--no-default-features --features static\`"
           measure "" "default"
           measure "--features standard" "\`standard\`"
           measure "--features full" "\`full\`"
@@ -562,16 +563,16 @@ jobs:
           tool: cargo-hack
 
       # `--workspace` (issue #144): a bare `cargo hack` only iterates the *root*
-      # package's features, and the root pins some member crates' own features
-      # on (e.g. `lopatnov-conduit-proxy-http/proxy` and
-      # `lopatnov-conduit-upstream/proxy`), so those crates' feature-OFF
-      # states — the whole point of giving them a feature — were never
-      # compiled by CI at all, and a gating regression in one would only
-      # surface much later. `--workspace` additionally checks every member
-      # crate with each of its own features and with none. Run locally against
-      # the tree that introduced those two features (PR #433): 76
-      # combinations, 0 errors, no warnings. Expect this job to run noticeably
-      # longer than the root-only run it replaces.
+      # package's features. Member crates' own features (e.g.
+      # `lopatnov-conduit-proxy-http/proxy` and `lopatnov-conduit-upstream/proxy`)
+      # are forwarded from the root's `proxy` feature since PR 4a -- before that
+      # the root pinned them on unconditionally, so their feature-OFF states
+      # were never compiled by CI at all -- but the crates' *own* feature-OFF
+      # states (a crate built alone, without its `proxy`) are still only
+      # reached by `--workspace`, which checks every member crate with each of
+      # its own features and with none. A gating regression in one would
+      # otherwise only surface much later. Expect this job to run noticeably
+      # longer than a root-only run.
       - name: cargo hack check --workspace --each-feature --no-dev-deps
         run: cargo hack check --workspace --each-feature --no-dev-deps
 
@@ -603,11 +604,13 @@ jobs:
       - name: Unit tests, --no-default-features
         run: cargo test -p lopatnov-conduit --lib --no-default-features
 
-      # A separate invocation on purpose: with the root package in the same
-      # `cargo test`, its `features = ["proxy"]` pin on this crate would be
-      # unified in and the crate would silently be tested WITH the feature
-      # (140 tests instead of the 58 that exist without it) — the same trap
-      # the `--workspace` flag on the `cargo hack` job above exists for.
+      # A separate invocation on purpose. Until PR 4a the root pinned this
+      # crate's `proxy` feature on unconditionally, so putting the root package
+      # in the same `cargo test` unified it in and the crate was silently tested
+      # WITH the feature (140 tests instead of the 58 that exist without it).
+      # The pin is gone (the root's `proxy` now forwards instead), but a
+      # dedicated run stays the clearest statement of what is being tested, and
+      # the dependency leak check below fails if such a pin ever comes back.
       - name: Unit tests, conduit-proxy-http alone without its `proxy` feature
         run: cargo test -p lopatnov-conduit-proxy-http --lib --no-default-features
 
@@ -625,6 +628,25 @@ jobs:
       # `--no-default-features` run above covers that one).
       - name: Unit tests, --no-default-features --features upload
         run: cargo test -p lopatnov-conduit --lib --no-default-features --features upload
+
+      # The property #144 exists for: a build without `proxy` must not carry
+      # proxy-only dependencies. Only what the forward has removed so far is
+      # asserted (`hmac`/`sha2`, the sticky-session stack); later PRs extend the
+      # list as `url`/`reqwest` become optional. Two things make a naive check
+      # pass forever: `cargo tree -i <crate>` on an ABSENT crate prints
+      # "nothing to print" and still exits 0, so the exit code proves nothing --
+      # use a positive match on the crate list; and `-e normal` is mandatory,
+      # because the dev-dependencies (reqwest, ...) are in the graph otherwise.
+      - name: Dependency leak check, --no-default-features --features static
+        run: |
+          leaked=$(cargo tree -p lopatnov-conduit --no-default-features --features static \
+                     -e normal --prefix none | sed 's/ v.*//' | sort -u \
+                   | grep -xE 'hmac|sha2' || true)
+          if [ -n "$leaked" ]; then
+            echo "proxy-only dependencies leaked into a build without the proxy feature:"
+            echo "$leaked"
+            exit 1
+          fi
 
   # ── Cross-compile smoke tests for non-native architectures ──────────────────
   # Mirrors the `use_cross: true` targets in release.yml's build matrix, but

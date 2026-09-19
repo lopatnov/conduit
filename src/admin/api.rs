@@ -49,6 +49,10 @@ fn subtle_eq(a: &[u8], b: &[u8]) -> bool {
 /// deeper extraction (sites → routes → route targets) instead of a flat
 /// per-site map, so it earns its own named helper rather than being inlined
 /// at each of the three call sites.
+///
+/// `proxy`-only (issue #144, PR 4a): its only callers are the two upstream
+/// probe spawners below, which don't exist without the feature.
+#[cfg(feature = "proxy")]
 fn health_check_routes(
     config: &crate::config::schema::AppConfig,
 ) -> Vec<(&crate::config::schema::UpstreamHealthCheck, Vec<String>)> {
@@ -70,6 +74,44 @@ fn health_check_routes(
             Some((hc, crate::proxy::upstream::target_urls(route_target)))
         })
         .collect()
+}
+
+/// Spawn the active upstream health-check tasks for every route that has
+/// `healthCheck` configured, and -- only when `warmup` is set (server start,
+/// not a reload) -- warm the connection pools of routes with
+/// `prewarmConnections`. The `proxy` variant.
+///
+/// This is the gate boundary for the admin surface (issue #144, PR 4a): it is
+/// the one place the process makes timed outbound HTTP probes to third-party
+/// hosts purely on behalf of proxying, and the only root call site of
+/// `conduit_upstream::health::spawn_connection_warmup`, which exists only
+/// with `conduit-upstream/proxy`. The registry readers (`/upstreams*`,
+/// `/__health__?full=1`) stay compiled and simply see no probe results.
+#[cfg(feature = "proxy")]
+fn spawn_upstream_probes(
+    state: &AppState,
+    config: &crate::config::schema::AppConfig,
+    warmup: bool,
+) {
+    let routes = health_check_routes(config);
+    health::spawn_health_checks(
+        state.upstream_health.clone(),
+        routes.iter().map(|(hc, urls)| (*hc, urls.as_slice())),
+    );
+    if warmup {
+        // Warm up connection pools for routes with prewarmConnections set.
+        health::spawn_connection_warmup(routes.iter().map(|(hc, urls)| (*hc, urls.as_slice())));
+    }
+}
+
+/// No-`proxy` variant of [`spawn_upstream_probes`]: nothing is proxied, so
+/// there is nothing to probe or warm.
+#[cfg(not(feature = "proxy"))]
+fn spawn_upstream_probes(
+    _state: &AppState,
+    _config: &crate::config::schema::AppConfig,
+    _warmup: bool,
+) {
 }
 
 // ── Typed error responses ─────────────────────────────────────────────────────
@@ -197,16 +239,11 @@ impl BackgroundService for AdminApiService {
             });
         }
 
-        // Spawn upstream health check tasks for every route that has healthCheck configured.
+        // Spawn upstream health check tasks for every route that has healthCheck
+        // configured, and warm connection pools for routes with prewarmConnections.
         {
             let config = self.state.config.load();
-            let routes = health_check_routes(&config);
-            health::spawn_health_checks(
-                self.state.upstream_health.clone(),
-                routes.iter().map(|(hc, urls)| (*hc, urls.as_slice())),
-            );
-            // Warm up connection pools for routes with prewarmConnections set.
-            health::spawn_connection_warmup(routes.iter().map(|(hc, urls)| (*hc, urls.as_slice())));
+            spawn_upstream_probes(&self.state, &config, true);
         }
 
         // Connect every configured Redis-backed proxy cache up front (issue
@@ -430,13 +467,7 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
     }
 
     // Spawn health-check tasks for any newly-configured routes.
-    {
-        let routes = health_check_routes(&new_config);
-        health::spawn_health_checks(
-            state.upstream_health.clone(),
-            routes.iter().map(|(hc, urls)| (*hc, urls.as_slice())),
-        );
-    }
+    spawn_upstream_probes(&state, &new_config, false);
 
     // Connect any Redis-backed proxy cache URL introduced by this reload
     // (issue #330) -- before the config swap below, so there's no window
