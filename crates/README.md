@@ -518,6 +518,16 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   route's dead `static` half to a live file root would expose a directory
   the operator never meant to serve. The root crate pins the feature on
   unconditionally until its own call sites are gated (later #144 PRs).
+  **#144, PR 2:** the root crate now has its own default-on `proxy`
+  feature that gates the *router* (`sites[].proxy` is ignored, and
+  `routes[]` proxy actions end in the site fallback, without it), plus
+  `feature_warnings()`. It deliberately does not forward into this crate's
+  feature yet, so the router calls the new always-compiled
+  `routes::match_routes_unproxied` when it is off — same matching as
+  `match_routes`, but no upstream is resolved and no counter/registry
+  state or connection slot is touched. `route_limits_from_target` moved
+  to the always-compiled `state` module so a never-proxied `routes[]`
+  entry still carries its rate-limit/priority stamp (#360, #415).
   No dependency on `lopatnov-conduit-core`/pingora (nothing here implements
   `RequestFilter`/`ResponseFilter` — the `ProxyHttp` trait-method bodies
   stay in the root crate's `request/*.rs`/`response_phase.rs`, calling into

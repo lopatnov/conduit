@@ -30,7 +30,7 @@ cargo build --release
 ```
 
 `cargo build --release` with no flags produces the **minimal build**
-(`default = ["compression", "static", "hotreload"]`) — core reverse proxy, TLS, static files, rate
+(`default = ["proxy", "compression", "static", "hotreload"]`) — core reverse proxy, TLS, static files, rate
 limiting, basic/API-key auth, compression, hot-reload, Prometheus metrics,
 health checks, and the Admin API. See [Optional features](#optional-features)
 below for the `standard` bundle that matches the published binaries and
@@ -40,7 +40,7 @@ Docker images.
 
 ## Optional features
 
-The default build (`default = ["compression", "static", "hotreload"]`) is the minimal embed-friendly
+The default build (`default = ["proxy", "compression", "static", "hotreload"]`) is the minimal embed-friendly
 proxy. Add features with `--features`:
 
 | Feature         | What it enables                                                            |
@@ -61,6 +61,15 @@ proxy. Add features with `--features`:
 | `kubernetes`    | Kubernetes CRD config provider (`--kubernetes-namespace`)                  |
 | `standard`      | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` — typical self-hosted reverse-proxy / API-gateway set |
 | `full`          | All of the above                                                           |
+
+`proxy`, `compression`, `static` and `hotreload` are on by default and are not
+listed above because there is nothing to add — `--no-default-features` turns
+them off. **Without `proxy`, reverse proxying is disabled**: `proxy` and
+`routes[].proxy` are ignored (a `routes[]` entry with a `proxy` action ends in
+the site's `fallback` response), and Conduit logs a startup warning naming each
+ignored entry. Today this only removes the routing; the proxy dependencies
+themselves (`reqwest`, …) are dropped in a later step of the same work
+([#144](https://github.com/lopatnov/conduit/issues/144)).
 
 ```bash
 # Typical self-hosted reverse-proxy / API gateway (auth stack + caching +
@@ -170,7 +179,7 @@ cargo bench
 Build locally using the production Dockerfile (multi-stage musl + `FROM scratch`):
 
 ```bash
-# Minimal image (default = ["compression", "static", "hotreload"])
+# Minimal image (default = ["proxy", "compression", "static", "hotreload"])
 docker build -f contrib/Dockerfile -t conduit:local .
 
 # Standard image (matches the published default tag)

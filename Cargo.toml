@@ -595,15 +595,33 @@ opentelemetry = { workspace = true, optional = true }
 # Prometheus metrics + hot reload + Admin API + redirects.
 #
 # No heavyweight optional features compiled in by default — except
-# `compression` (issue #114/#138), `static` (issue #114/#139), and
-# `hotreload` (issue #114/#140), the three deliberate exceptions: response
-# compression, static-file/fallback serving, and browser hot-reload are
-# baseline expectations for a reverse proxy/static-file server, so a plain
-# `cargo build` must keep behaving exactly like it did before those
-# extractions. Enable other individual features or use `full` for a
-# batteries-included build; pass `--no-default-features` for a build with
-# none of compression, static-file/fallback serving, or hot-reload.
-default = ["compression", "static", "hotreload"]
+# `proxy` (issue #144), `compression` (issue #114/#138), `static` (issue
+# #114/#139), and `hotreload` (issue #114/#140), the four deliberate
+# exceptions: reverse proxying, response compression, static-file/fallback
+# serving, and browser hot-reload are baseline expectations for a reverse
+# proxy/static-file server, so a plain `cargo build` must keep behaving
+# exactly like it did before those extractions. Enable other individual
+# features or use `full` for a batteries-included build; pass
+# `--no-default-features` for a build with none of proxying, compression,
+# static-file/fallback serving, or hot-reload.
+default = ["proxy", "compression", "static", "hotreload"]
+
+# ── Proxy ────────────────────────────────────────────────────────────────────
+# Reverse proxying: `sites[].proxy`, `sites[].routes[].proxy`, `groups`.
+# Without it the router never routes to an upstream — a `sites[].proxy` map is
+# ignored and a `routes[]` entry with a `proxy` action ends in the site's
+# fallback response (never in its `static` half, which is dead configuration
+# next to a `proxy`), and `feature_warnings()` says so. Default-on — see
+# `default` above.
+#
+# **Root-code gate only for now** (issue #144, PR 2): it does not yet forward
+# into `lopatnov-conduit-proxy-http`/`-upstream`'s own `proxy` features, which
+# stay pinned on in [dependencies] until every root call site of their gated
+# items is itself gated (the request path, admin/CLI surface). The pin becomes
+# a real `proxy = ["lopatnov-conduit-proxy-http/proxy",
+# "lopatnov-conduit-upstream/proxy"]` forward in the last gating PR, which is
+# when a `--no-default-features` build actually drops the proxy dependencies.
+proxy = []
 
 # ── Compression ──────────────────────────────────────────────────────────────
 # Response/static-file compression negotiation (br/gzip/deflate/zstd).
@@ -815,10 +833,11 @@ standard = [
     "forward-auth",  # Delegate auth to an external service
     "cache",         # HTTP response caching
     "acme",          # Auto-TLS via Let's Encrypt (Caddy-style)
-    # `compression`, `static`, and `hotreload` are already default-on (see
-    # `default` above) — listed here too so `--no-default-features
+    # `proxy`, `compression`, `static`, and `hotreload` are already default-on
+    # (see `default` above) — listed here too so `--no-default-features
     # --features standard` still gets them, matching "standard" being a
     # superset of the default feature set.
+    "proxy",
     "compression",
     "static",
     "hotreload",

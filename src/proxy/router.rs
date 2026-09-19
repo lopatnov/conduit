@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
-use crate::config::schema::{AppConfig, ProxyConfig, RouteConfig, SiteConfig, StaticOptions};
+#[cfg(feature = "proxy")]
+use crate::config::schema::ProxyConfig;
+use crate::config::schema::{AppConfig, RouteConfig, SiteConfig, StaticOptions};
 use crate::proxy::ctx::{
     LocalHandler, ProxyReqState, RequestCtx, RetryState, RouteRateLimit, UpstreamTarget,
 };
@@ -13,8 +15,10 @@ use crate::proxy::dispatch;
 use crate::proxy::health::UpstreamRegistry;
 use crate::proxy::routes::{self, RouteMatch};
 use crate::proxy::upstream;
+#[cfg(feature = "proxy")]
 use conduit_proxy_http::options::ProxyCtx;
 use conduit_proxy_http::outcome::{ProxyOutcome, ProxyUpstream};
+#[cfg(feature = "proxy")]
 use conduit_proxy_http::resolve;
 
 /// Resolved routing result: all per-route data needed to populate `RequestCtx`.
@@ -192,8 +196,6 @@ fn route_site(
     upstream_health: &UpstreamRegistry,
     #[cfg_attr(not(feature = "upload"), allow(unused_variables))] upload_addr: Option<SocketAddr>,
 ) -> RouteResult {
-    let site_label = crate::proxy::health::site_label(&site.host, site.port);
-
     #[cfg(feature = "upload")]
     if let Some(result) = match_upload_route(site, path, upload_addr) {
         return result;
@@ -211,20 +213,65 @@ fn route_site(
         return result;
     }
 
-    if let Some(proxy_cfg) = &site.proxy {
-        let proxy_ctx = ProxyCtx {
-            path,
-            client_ip,
-            req_headers,
-            counters,
-            upstream_health,
-            site_label: &site_label,
-        };
-        if let Some(result) = resolve_legacy_proxy(proxy_cfg, &proxy_ctx, site, path) {
-            return result;
-        }
+    if let Some(result) = resolve_site_proxy(
+        site,
+        path,
+        client_ip,
+        req_headers,
+        counters,
+        upstream_health,
+    ) {
+        return result;
     }
     match_static_or_fallback(site, path)
+}
+
+/// Resolve `site.proxy` (the legacy shorthand/map format) into a routing
+/// result, or `None` when it doesn't apply — no `proxy` configured, or
+/// nothing in it matched this request.
+///
+/// A *function* gated on the `proxy` feature (rather than a `#[cfg]` on one
+/// arm of `route_site`'s fall-through chain) so both builds keep one
+/// unconditional call site — the shape #341/#342 settled on for every
+/// feature-gated routing step.
+#[cfg(feature = "proxy")]
+fn resolve_site_proxy(
+    site: &SiteConfig,
+    path: &str,
+    client_ip: &str,
+    req_headers: &http::HeaderMap,
+    counters: &DashMap<String, AtomicUsize>,
+    upstream_health: &UpstreamRegistry,
+) -> Option<RouteResult> {
+    let proxy_cfg = site.proxy.as_ref()?;
+    let site_label = crate::proxy::health::site_label(&site.host, site.port);
+    let proxy_ctx = ProxyCtx {
+        path,
+        client_ip,
+        req_headers,
+        counters,
+        upstream_health,
+        site_label: &site_label,
+    };
+    resolve_legacy_proxy(proxy_cfg, &proxy_ctx, site, path)
+}
+
+/// Without the `proxy` feature `sites[].proxy` is ignored entirely: the
+/// request falls through to `sites[].static`/`fallback`, exactly like a
+/// `proxy` map that matched nothing. `feature_warnings()` tells the operator
+/// (see `validate::check_site_proxy_feature_warnings`); the alternative — a
+/// hard error — would make a `--no-default-features` build unable to load a
+/// config that also serves static files.
+#[cfg(not(feature = "proxy"))]
+fn resolve_site_proxy(
+    _site: &SiteConfig,
+    _path: &str,
+    _client_ip: &str,
+    _req_headers: &http::HeaderMap,
+    _counters: &DashMap<String, AtomicUsize>,
+    _upstream_health: &UpstreamRegistry,
+) -> Option<RouteResult> {
+    None
 }
 
 /// Check whether the request targets the configured upload prefix.
@@ -259,10 +306,14 @@ fn resolve_routes_array(
     method: &str,
     req_headers: &http::HeaderMap,
     query: Option<&str>,
-    counters: &DashMap<String, AtomicUsize>,
-    upstream_health: &UpstreamRegistry,
+    #[cfg_attr(not(feature = "proxy"), allow(unused_variables))] counters: &DashMap<
+        String,
+        AtomicUsize,
+    >,
+    #[cfg_attr(not(feature = "proxy"), allow(unused_variables))] upstream_health: &UpstreamRegistry,
 ) -> Option<RouteResult> {
     let routes_cfg = site.routes.as_ref()?;
+    #[cfg(feature = "proxy")]
     let route_match = routes::match_routes(
         routes_cfg,
         path,
@@ -272,6 +323,12 @@ fn resolve_routes_array(
         counters,
         upstream_health,
     )?;
+    // Without `proxy`, matching is unchanged but a `proxy` action is never
+    // resolved: the entry comes back as a terminal `Unresolved` (-> the
+    // fallback below) that still carries the route's rate-limit/priority
+    // stamp (#144 F1), and no counter/registry state is touched.
+    #[cfg(not(feature = "proxy"))]
+    let route_match = routes::match_routes_unproxied(routes_cfg, path, method, req_headers, query)?;
     Some(match route_match {
         RouteMatch::Proxy { resolution, .. } => match resolution.outcome {
             ProxyOutcome::Upstream(pu) => proxy_route_result(pu, resolution.state),
@@ -333,6 +390,7 @@ fn resolve_non_proxy_route(
 /// function performs the fallthrough itself rather than handing an
 /// ambiguous `None` back up to a caller that can't distinguish "no match"
 /// from "matched but carries state to preserve."
+#[cfg(feature = "proxy")]
 fn resolve_legacy_proxy(
     config: &ProxyConfig,
     ctx: &ProxyCtx<'_>,
@@ -475,11 +533,11 @@ pub use crate::proxy::dispatch::parse_rfc9218_priority;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{
-        AppConfig, HealthCheckConfig, LoadBalanceStrategy, ProxyRouteTarget, RetryConfig,
-        SiteConfig,
-    };
+    use crate::config::schema::{AppConfig, HealthCheckConfig, ProxyRouteTarget, SiteConfig};
+    #[cfg(feature = "proxy")]
+    use crate::config::schema::{LoadBalanceStrategy, RetryConfig};
     use crate::proxy::health::UpstreamRegistry;
+    #[cfg(feature = "proxy")]
     use conduit_proxy_http::sticky::{hmac_sign_sticky, hmac_verify_sticky};
 
     // ── url_to_proxy_upstream ─────────────────────────────────────────────────
@@ -593,6 +651,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn route_request_proxy_single() {
         use crate::config::schema::ProxyConfig;
@@ -619,6 +678,159 @@ mod tests {
             None,
         );
         assert!(matches!(ctx.upstream, UpstreamTarget::Proxy { .. }));
+    }
+
+    // ── routing with the `proxy` feature off (#144 PR 2) ─────────────────────
+    //
+    // One fixture exercises every proxy branch of `route_site`: a `routes[]`
+    // entry carrying BOTH a `proxy` and a `static` action (proxy-first — the
+    // `static` half is dead configuration), and a legacy `proxy` shorthand for
+    // everything else. The `cfg(not)` tests pin what a build without `proxy`
+    // does; the `cfg(proxy)` twin proves the very same config really proxies
+    // when the feature is on, so the negative tests cannot pass by accident.
+
+    fn proxy_and_static_site() -> AppConfig {
+        use crate::config::schema::{MatchConfig, ProxyConfig};
+        AppConfig {
+            sites: vec![SiteConfig {
+                routes: Some(vec![RouteConfig {
+                    r#match: MatchConfig {
+                        path: Some("/routed/**".to_string()),
+                        ..Default::default()
+                    },
+                    proxy: Some(ProxyRouteTarget::Url("http://backend:4000".to_string())),
+                    static_files: Some(conduit_static::StaticConfig::Single(
+                        "./secret".to_string(),
+                    )),
+                }]),
+                proxy: Some(ProxyConfig::Single("http://legacy:4000".to_string())),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn route_path(config: &AppConfig, path: &str) -> RequestCtx {
+        route_request(
+            config,
+            "localhost",
+            path,
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            "127.0.0.1",
+            80,
+            &DashMap::new(),
+            &UpstreamRegistry::new(),
+            None,
+        )
+    }
+
+    /// F2 (#144): a matched `routes[]` entry with `proxy` + `static` must stay
+    /// TERMINAL when proxying is compiled out — `Fallback`, never `StaticFile`
+    /// (which would expose `./secret`, a directory the operator only ever
+    /// configured next to a `proxy` action) and never a fall-through to the
+    /// site's own `static`/legacy `proxy`. With the `static` feature off a
+    /// `StaticFile` can't be produced at all, so this is only decisive in
+    /// `--no-default-features --features static` (the `static-server` shape).
+    #[cfg(not(feature = "proxy"))]
+    #[test]
+    fn routes_entry_with_proxy_and_static_stays_terminal_without_proxy_feature() {
+        let ctx = route_path(&proxy_and_static_site(), "/routed/app.js");
+        assert!(
+            matches!(ctx.upstream, UpstreamTarget::Local(LocalHandler::Fallback)),
+            "a proxy+static routes[] entry must end in Fallback without `proxy`, got {:?}",
+            ctx.upstream
+        );
+    }
+
+    /// `sites[].proxy` is ignored without the feature — it must neither
+    /// proxy nor error; the request falls through to static/fallback like a
+    /// `proxy` map that matched nothing.
+    #[cfg(not(feature = "proxy"))]
+    #[test]
+    fn legacy_proxy_is_ignored_without_proxy_feature() {
+        let ctx = route_path(&proxy_and_static_site(), "/legacy/x");
+        assert!(
+            matches!(ctx.upstream, UpstreamTarget::Local(_)),
+            "sites[].proxy must not proxy without the feature, got {:?}",
+            ctx.upstream
+        );
+        assert!(
+            ctx.proxy.proxy_upstream_url.is_none(),
+            "nothing may claim a proxied upstream"
+        );
+    }
+
+    /// F1 at router level: the terminal fallback of a never-proxied
+    /// `routes[]` entry still carries the route's rate limit and priority
+    /// (#360, #415), so per-route limiting/shedding does not depend on the
+    /// feature flag.
+    #[cfg(not(feature = "proxy"))]
+    #[test]
+    fn routes_entry_keeps_its_rate_limit_stamp_without_proxy_feature() {
+        use crate::config::schema::{MatchConfig, ProxyRouteConfig};
+        use conduit_ratelimit::RateLimitConfig;
+        use conduit_upstream::ProxyTarget;
+
+        let config = AppConfig {
+            sites: vec![SiteConfig {
+                routes: Some(vec![RouteConfig {
+                    r#match: MatchConfig {
+                        path: Some("/limited/**".to_string()),
+                        ..Default::default()
+                    },
+                    proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                        targets: vec![ProxyTarget::Simple("http://backend:4000".to_string())],
+                        rate_limit: Some(RateLimitConfig {
+                            window_secs: 60,
+                            limit: 7,
+                            burst: None,
+                            algorithm: None,
+                            key_by: None,
+                            skip_paths: None,
+                            store: None,
+                            dry_run: None,
+                        }),
+                        priority: Some(80),
+                        ..Default::default()
+                    }))),
+                    static_files: None,
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ctx = route_path(&config, "/limited/x");
+        assert!(matches!(
+            ctx.upstream,
+            UpstreamTarget::Local(LocalHandler::Fallback)
+        ));
+        assert_eq!(ctx.proxy.route_priority, Some(80));
+        assert_eq!(
+            ctx.proxy
+                .route_rate_limit
+                .as_ref()
+                .map(|l| (l.route_key.as_str(), l.config.limit)),
+            Some(("routes[0]", 7))
+        );
+    }
+
+    /// The twin of the three tests above: the identical config really does
+    /// proxy when the feature is on — both the `routes[]` entry and the
+    /// legacy shorthand.
+    #[cfg(feature = "proxy")]
+    #[test]
+    fn proxy_and_static_site_fixture_proxies_when_the_feature_is_on() {
+        let config = proxy_and_static_site();
+        for path in ["/routed/app.js", "/legacy/x"] {
+            let ctx = route_path(&config, path);
+            assert!(
+                matches!(ctx.upstream, UpstreamTarget::Proxy { .. }),
+                "{path} must proxy with the feature on, got {:?}",
+                ctx.upstream
+            );
+        }
     }
 
     #[test]
@@ -679,6 +891,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn hash_falls_back_to_path_when_client_ip_empty() {
         // When client_ip is empty the hash must be computed from path so that
@@ -752,6 +965,7 @@ mod tests {
 
     // ── runtime override integration ──────────────────────────────────────────
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn override_replaces_config_targets() {
         use crate::config::schema::ProxyConfig;
@@ -877,6 +1091,7 @@ mod tests {
         .route_priority
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn route_priority_returns_configured_value() {
         let site = make_priority_site("/api", 80);
@@ -906,6 +1121,7 @@ mod tests {
         assert!(route_priority_for(site, "/other").is_none());
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn route_priority_low_priority_is_zero() {
         let site = make_priority_site("/batch", 0);
@@ -998,6 +1214,7 @@ mod tests {
         assert!(route_rate_limit_for(site, "/api").is_none());
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn route_rate_limit_returns_rl_when_configured() {
         use crate::config::schema::{
@@ -1102,6 +1319,7 @@ mod tests {
     /// upstream is down (a DoS regression). Proves the stamp is applied by
     /// `resolve_proxy_routes`'s wrapper around every return path, not just
     /// inline in the success branch.
+    #[cfg(feature = "proxy")]
     #[test]
     fn route_rate_limit_stamped_even_when_overloaded() {
         use crate::config::schema::{
@@ -1178,6 +1396,7 @@ mod tests {
     /// verified this actually reproduces pre-fix by temporarily reverting the
     /// stamping in `resolve_proxy_routes` and confirming this test fails with
     /// the predicted symptom (see this PR's description).
+    #[cfg(feature = "proxy")]
     #[test]
     fn malformed_target_still_stamps_rate_limit_issue_415() {
         use crate::config::schema::{
@@ -1314,6 +1533,7 @@ mod tests {
 
     // ── grouped upstream routing ──────────────────────────────────────────────
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn route_with_upstream_groups() {
         use crate::config::schema::{
@@ -1378,6 +1598,7 @@ mod tests {
 
     // ── circuit breaker: all upstreams at max connections ────────────────────
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn circuit_breaker_returns_overloaded_when_all_at_max() {
         use crate::config::schema::{
@@ -1433,6 +1654,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn circuit_breaker_round_robin_skips_at_capacity_peer() {
         // #156: before the fix, RoundRobin never checked conn_load, so a
@@ -1480,6 +1702,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn circuit_breaker_hash_strategy_preserves_affinity_while_one_peer_capped() {
         // #156: naive filtering before a hash pick would remap most clients
@@ -1562,6 +1785,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn circuit_breaker_grouped_route_returns_overloaded_when_selected_group_saturated() {
         use crate::config::schema::{
@@ -1624,6 +1848,7 @@ mod tests {
 
     // ── failover to backup upstream ───────────────────────────────────────────
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn route_to_backup_when_all_primary_unhealthy() {
         use crate::config::schema::{ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget};
@@ -1749,6 +1974,7 @@ mod tests {
     /// Build an n-peer sticky route (`http://a:4000` .. ), optionally with
     /// `retry` / `strict`, and route one request carrying a cookie signed
     /// for `pin_idx`.
+    #[cfg(feature = "proxy")]
     fn sticky_route_request(
         n: usize,
         pin_idx: usize,
@@ -1805,6 +2031,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "proxy")]
     fn chosen_addr(ctx: &RequestCtx) -> String {
         match &ctx.upstream {
             UpstreamTarget::Proxy { addr, .. } => addr.clone(),
@@ -1824,6 +2051,7 @@ mod tests {
     /// any implementation that routes by hashing the pin's URL instead of
     /// honoring it directly fails this at n=3 and fails it four times over
     /// at n=4.
+    #[cfg(feature = "proxy")]
     #[test]
     fn sticky_hmac_routes_to_pinned_upstream() {
         for n in 2..=5usize {
@@ -1846,6 +2074,7 @@ mod tests {
     /// not merely mis-mapped there (#220) but absent outright. The pin must
     /// be honored on retry-configured routes too, and must be attempt 0 of
     /// the retry rotation (the invariant `select_retry_target` relies on).
+    #[cfg(feature = "proxy")]
     #[test]
     fn sticky_pin_is_honored_and_anchored_on_a_retry_configured_route() {
         use crate::config::schema::RetryConfig;
@@ -1884,6 +2113,7 @@ mod tests {
     /// `strict: true` guards the health of the peer that actually serves the
     /// request. Before #220 it checked the pin's health while hashing routed
     /// elsewhere — guarding one peer and serving another.
+    #[cfg(feature = "proxy")]
     #[test]
     fn sticky_strict_serves_the_peer_whose_health_it_guards() {
         for n in 2..=5usize {
@@ -1901,6 +2131,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn sticky_capacity_relocation_does_not_re_pin_and_self_heals() {
         // #156 review finding (Gitar): re-signing the sticky cookie to a
@@ -2017,6 +2248,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn sticky_total_outage_with_saturated_pin_re_signs_cookie_not_self_heal() {
         // #374: during a total-pool outage (every peer marked unhealthy,
@@ -2098,6 +2330,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn slow_start_exemption_covers_the_retry_candidate_list_on_hash_routes() {
         // #375: slow_start.rs's own module doc claims the hash/sticky
@@ -2203,6 +2436,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn sticky_strict_mode_returns_503_when_pinned_upstream_unhealthy() {
         use crate::config::schema::{
@@ -2270,6 +2504,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn sticky_forged_cookie_ignored_falls_back_to_load_balancing() {
         use crate::config::schema::{
@@ -2361,6 +2596,7 @@ mod tests {
     // ── proxy_upstream_url / upstream_conn_slot (#155) ────────────────────────
 
     /// Build a single-route AppConfig with the given targets/strategy/healthCheck.
+    #[cfg(feature = "proxy")]
     fn single_route_config(
         targets: Vec<&str>,
         strategy: Option<LoadBalanceStrategy>,
@@ -2396,6 +2632,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn round_robin_populates_url_without_conn_slot() {
         // Default strategy, no maxConnectionsPerUpstream: proxy_upstream_url
@@ -2427,6 +2664,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn least_conn_populates_url_with_conn_slot() {
         let config = single_route_config(
@@ -2456,6 +2694,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn round_robin_with_max_conns_populates_url_with_conn_slot() {
         // Default strategy but maxConnectionsPerUpstream set: circuit_tracking
@@ -2483,6 +2722,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn attribution_only_route_does_not_corrupt_shared_conn_count() {
         // Two routes share the same target X: /lc is least-conn (acquires a

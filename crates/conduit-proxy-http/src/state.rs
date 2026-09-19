@@ -22,7 +22,7 @@ use std::time::Instant;
 use conduit_cache::CacheConfig;
 use conduit_ratelimit::RateLimitConfig;
 
-use crate::config::{ConnectionPoolConfig, ProxyTimeout};
+use crate::config::{ConnectionPoolConfig, ProxyRouteTarget, ProxyTimeout};
 
 /// Per-route rate limit plus the bucket-key fragment identifying the route
 /// it came from. Populated at routing time by whichever matcher matched
@@ -37,6 +37,33 @@ pub struct RouteRateLimit {
     pub config: RateLimitConfig,
     /// `proxy` map key (e.g. `/api`) or `routes[{i}]`.
     pub route_key: String,
+}
+
+/// Extract the per-route rate limit / priority from a matched `ProxyRouteTarget`.
+///
+/// Returns `(None, None)` for the `Url`/`RoundRobin` shorthand variants —
+/// only `Full(ProxyRouteConfig)` carries `rateLimit`/`priority`. Shared
+/// between the legacy `proxy` map path (`resolve::resolve_proxy_routes`) and
+/// the `routes[]` array path (`routes::match_routes`) so both matchers stamp
+/// the resolution the exact same way (#360).
+///
+/// Lives here rather than in `resolve` because it must stay compiled when the
+/// crate's `proxy` feature is off (#144): a `routes[]` entry whose `proxy`
+/// action is not honoured still has to carry its route's rate limit and
+/// priority (#360, #415), so `routes::match_routes` needs it in every build.
+pub(crate) fn route_limits_from_target(
+    target: &ProxyRouteTarget,
+    route_key: &str,
+) -> (Option<RouteRateLimit>, Option<u8>) {
+    let ProxyRouteTarget::Full(cfg) = target else {
+        return (None, None);
+    };
+    let rate_limit: Option<RateLimitConfig> = cfg.rate_limit.clone();
+    let rate_limit = rate_limit.map(|config| RouteRateLimit {
+        config,
+        route_key: route_key.to_owned(),
+    });
+    (rate_limit, cfg.priority)
 }
 
 /// Per-request retry state for proxy routes that have `retry` configured.

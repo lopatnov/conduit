@@ -22,10 +22,9 @@ use conduit_upstream::health::UpstreamRegistry;
 
 use crate::config::{MatchConfig, ProxyRouteTarget, RouteConfig};
 use crate::outcome::ProxyResolution;
-#[cfg(not(feature = "proxy"))]
-use crate::state::ProxyReqState;
 #[cfg(feature = "proxy")]
-use crate::{resolve, routes_resolve};
+use crate::routes_resolve;
+use crate::state::{route_limits_from_target, ProxyReqState};
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -69,6 +68,54 @@ pub fn match_routes(
     counters: &DashMap<String, AtomicUsize>,
     upstream_health: &UpstreamRegistry,
 ) -> Option<RouteMatch> {
+    match_routes_with(routes, path, method, req_headers, query, |i, target| {
+        resolve_proxy_action(i, target, path, counters, upstream_health)
+    })
+}
+
+/// Same matching as [`match_routes`], but a matched `proxy` action is **never
+/// resolved into an upstream**: the entry still comes back as
+/// [`RouteMatch::Proxy`], carrying the terminal
+/// [`crate::outcome::ProxyOutcome::Unresolved`] outcome — plus the route's own
+/// rate-limit/priority stamp (#360, #415) — that a build without this crate's
+/// `proxy` feature produces.
+///
+/// The root crate calls this when *its own* `proxy` feature is off (#144). It
+/// takes no round-robin counters or upstream registry on purpose: resolving a
+/// target would touch them (and can acquire a connection-count slot that no
+/// caller would ever release), and a route the operator configured for
+/// proxying must not do any of that when proxying is compiled out.
+///
+/// `pub` (not `pub(crate)`): called cross-crate from the root crate's
+/// `router.rs::resolve_routes_array`.
+pub fn match_routes_unproxied(
+    routes: &[RouteConfig],
+    path: &str,
+    method: &str,
+    req_headers: &http::HeaderMap,
+    query: Option<&str>,
+) -> Option<RouteMatch> {
+    match_routes_with(
+        routes,
+        path,
+        method,
+        req_headers,
+        query,
+        unresolved_proxy_action,
+    )
+}
+
+/// Shared matching loop: first matching entry wins; a `proxy` action is
+/// turned into a [`ProxyResolution`] by `resolve_proxy`, everything else is
+/// [`RouteMatch::NonProxy`].
+fn match_routes_with(
+    routes: &[RouteConfig],
+    path: &str,
+    method: &str,
+    req_headers: &http::HeaderMap,
+    query: Option<&str>,
+    resolve_proxy: impl FnOnce(usize, &ProxyRouteTarget) -> ProxyResolution,
+) -> Option<RouteMatch> {
     for (i, route) in routes.iter().enumerate() {
         if route_matches(&route.r#match, path, method, req_headers, query) {
             let Some(target) = &route.proxy else {
@@ -76,13 +123,7 @@ pub fn match_routes(
             };
             return Some(RouteMatch::Proxy {
                 index: i,
-                resolution: Box::new(resolve_proxy_action(
-                    i,
-                    target,
-                    path,
-                    counters,
-                    upstream_health,
-                )),
+                resolution: Box::new(resolve_proxy(i, target)),
             });
         }
     }
@@ -100,25 +141,18 @@ fn resolve_proxy_action(
 ) -> ProxyResolution {
     let mut resolution =
         routes_resolve::resolve_route_target(target, path, counters, upstream_health);
-    // Stamp the matched route's rate limit/priority (#360), same as
-    // the `proxy` map path in `router.rs::resolve_legacy_proxy` —
-    // applied regardless of which of `resolve_route_target`'s
-    // internal outcomes (proxy/overloaded/unresolved) actually
-    // returned. An index-based key (`routes[{i}]`) is used rather
-    // than the match pattern itself: two `routes[]` entries can
-    // legally share a path glob and differ only by method/header,
-    // and would otherwise wrongly share a rate-limit bucket.
-    let route_key = format!("routes[{i}]");
-    let (route_rate_limit, route_priority) = resolve::route_limits_from_target(target, &route_key);
-    resolution.state.route_rate_limit = route_rate_limit;
-    resolution.state.route_priority = route_priority;
+    // Applied regardless of which of `resolve_route_target`'s internal
+    // outcomes (proxy/overloaded/unresolved) actually returned.
+    stamp_route_limits(&mut resolution, i, target);
     resolution
 }
 
 /// Without the `proxy` feature (issue #144) a matched route's `proxy` action
 /// can never be honoured, so it resolves to [`crate::outcome::ProxyOutcome::Unresolved`] — the
-/// same terminal shape as a malformed target, which the root crate's router
-/// already maps to the site's `fallback` response.
+/// same terminal outcome as a malformed target, which the root crate's router
+/// already maps to the site's `fallback` response — while still carrying the
+/// route's own rate-limit/priority stamp, exactly like every outcome of the
+/// proxy-enabled variant (#360, #415).
 ///
 /// Deliberately **not** treated like [`RouteMatch::NonProxy`]: a route that
 /// carries both a `proxy` and a `static` action has always been proxy-first
@@ -127,13 +161,36 @@ fn resolve_proxy_action(
 /// would expose a directory the operator never meant to serve from that path.
 #[cfg(not(feature = "proxy"))]
 fn resolve_proxy_action(
-    _i: usize,
-    _target: &ProxyRouteTarget,
+    i: usize,
+    target: &ProxyRouteTarget,
     _path: &str,
     _counters: &DashMap<String, AtomicUsize>,
     _upstream_health: &UpstreamRegistry,
 ) -> ProxyResolution {
-    ProxyResolution::unresolved(ProxyReqState::default())
+    unresolved_proxy_action(i, target)
+}
+
+/// The terminal, never-proxied resolution for `routes[i]`: no upstream, but
+/// the route's rate limit/priority stamp is preserved. Shared by the
+/// proxy-off [`resolve_proxy_action`] and [`match_routes_unproxied`].
+fn unresolved_proxy_action(i: usize, target: &ProxyRouteTarget) -> ProxyResolution {
+    let mut resolution = ProxyResolution::unresolved(ProxyReqState::default());
+    stamp_route_limits(&mut resolution, i, target);
+    resolution
+}
+
+/// Stamp the matched route's rate limit/priority onto `resolution` (#360),
+/// same as the `proxy` map path in `router.rs::resolve_legacy_proxy`.
+///
+/// An index-based key (`routes[{i}]`) is used rather than the match pattern
+/// itself: two `routes[]` entries can legally share a path glob and differ
+/// only by method/header, and would otherwise wrongly share a rate-limit
+/// bucket.
+fn stamp_route_limits(resolution: &mut ProxyResolution, i: usize, target: &ProxyRouteTarget) {
+    let route_key = format!("routes[{i}]");
+    let (route_rate_limit, route_priority) = route_limits_from_target(target, &route_key);
+    resolution.state.route_rate_limit = route_rate_limit;
+    resolution.state.route_priority = route_priority;
 }
 
 // ── Match evaluation ──────────────────────────────────────────────────────────
@@ -740,6 +797,161 @@ mod tests {
         assert!(
             matches!(route_match, RouteMatch::Proxy { .. }),
             "a proxy+static route must stay a Proxy match, never degrade to NonProxy"
+        );
+    }
+
+    // ── never-proxied resolution keeps the route's own stamp (#144 F1) ──────
+
+    fn stamped_route(path: &str) -> RouteConfig {
+        use crate::config::ProxyRouteConfig;
+        use conduit_ratelimit::RateLimitConfig;
+        use conduit_upstream::ProxyTarget;
+
+        RouteConfig {
+            r#match: MatchConfig {
+                path: Some(path.to_string()),
+                ..Default::default()
+            },
+            proxy: Some(ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://backend:4000".to_string())],
+                rate_limit: Some(RateLimitConfig {
+                    window_secs: 60,
+                    limit: 7,
+                    burst: None,
+                    algorithm: None,
+                    key_by: None,
+                    skip_paths: None,
+                    store: None,
+                    dry_run: None,
+                }),
+                priority: Some(80),
+                ..Default::default()
+            }))),
+            static_files: None,
+        }
+    }
+
+    /// `match_routes_unproxied` (what the root crate calls when its own
+    /// `proxy` feature is off) must never resolve an upstream, but a route
+    /// that carries `rateLimit`/`priority` must still hand them on: #360/#415
+    /// require the stamp to survive EVERY outcome, including the terminal
+    /// fallback. The second entry is the one matched, so the key also proves
+    /// the index-based `routes[{i}]` naming (not the first entry's, not the
+    /// glob).
+    #[test]
+    fn match_routes_unproxied_never_resolves_but_keeps_the_route_stamp() {
+        use crate::outcome::ProxyOutcome;
+        let routes = vec![
+            RouteConfig {
+                r#match: MatchConfig {
+                    path: Some("/plain/**".to_string()),
+                    ..Default::default()
+                },
+                proxy: Some(ProxyRouteTarget::Url("http://plain:4000".to_string())),
+                static_files: None,
+            },
+            stamped_route("/limited/**"),
+        ];
+
+        let route_match =
+            match_routes_unproxied(&routes, "/limited/x", "GET", &http::HeaderMap::new(), None)
+                .expect("the route still matches");
+        let RouteMatch::Proxy { index, resolution } = route_match else {
+            panic!("a route with a `proxy` action must stay a Proxy match");
+        };
+        assert_eq!(index, 1);
+        assert!(
+            matches!(resolution.outcome, ProxyOutcome::Unresolved),
+            "never-proxied resolution must be terminal, got {:?}",
+            resolution.outcome
+        );
+        assert_eq!(resolution.state.route_priority, Some(80));
+        let limit = resolution
+            .state
+            .route_rate_limit
+            .as_ref()
+            .expect("the route's rate limit must survive the terminal outcome");
+        assert_eq!(limit.route_key, "routes[1]");
+        assert_eq!(limit.config.limit, 7);
+        // No upstream was chosen, so nothing may claim a connection slot.
+        assert!(resolution.state.proxy_upstream_url.is_none());
+        assert!(!resolution.state.upstream_conn_slot);
+    }
+
+    /// A shorthand target (`Url`/`RoundRobin`) carries no `rateLimit`/
+    /// `priority` at all, so the never-proxied outcome must not invent one.
+    #[test]
+    fn match_routes_unproxied_shorthand_target_has_no_stamp() {
+        let routes = vec![RouteConfig {
+            r#match: MatchConfig {
+                path: Some("/plain/**".to_string()),
+                ..Default::default()
+            },
+            proxy: Some(ProxyRouteTarget::Url("http://plain:4000".to_string())),
+            static_files: None,
+        }];
+        let route_match =
+            match_routes_unproxied(&routes, "/plain/a", "GET", &http::HeaderMap::new(), None)
+                .expect("the route still matches");
+        let RouteMatch::Proxy { resolution, .. } = route_match else {
+            panic!("expected a Proxy match");
+        };
+        assert!(resolution.state.route_rate_limit.is_none());
+        assert!(resolution.state.route_priority.is_none());
+    }
+
+    /// `match_routes_unproxied` must leave a `routes[]` entry with no `proxy`
+    /// action as `NonProxy` — a static-only build serves `routes[].static`
+    /// through exactly this path.
+    #[test]
+    fn match_routes_unproxied_still_routes_non_proxy_entries() {
+        let routes = vec![RouteConfig {
+            r#match: MatchConfig {
+                path: Some("/assets/**".to_string()),
+                ..Default::default()
+            },
+            proxy: None,
+            static_files: Some(conduit_static::StaticConfig::Single("./dist".to_string())),
+        }];
+        let result = match_routes_unproxied(
+            &routes,
+            "/assets/app.js",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+        );
+        assert!(matches!(result, Some(RouteMatch::NonProxy { index: 0 })));
+    }
+
+    /// The same stamp contract through the crate's own `match_routes` when the
+    /// `proxy` feature is compiled out (the build `#144`'s milestone ships).
+    #[cfg(not(feature = "proxy"))]
+    #[test]
+    fn match_routes_without_proxy_feature_keeps_the_route_stamp() {
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let registry = conduit_upstream::health::UpstreamRegistry::new();
+        let routes = vec![stamped_route("/limited/**")];
+        let route_match = match_routes(
+            &routes,
+            "/limited/x",
+            "GET",
+            &http::HeaderMap::new(),
+            None,
+            &counters,
+            &registry,
+        )
+        .expect("the route still matches");
+        let RouteMatch::Proxy { resolution, .. } = route_match else {
+            panic!("expected a Proxy match");
+        };
+        assert_eq!(resolution.state.route_priority, Some(80));
+        assert_eq!(
+            resolution
+                .state
+                .route_rate_limit
+                .as_ref()
+                .map(|l| l.route_key.as_str()),
+            Some("routes[0]")
         );
     }
 
