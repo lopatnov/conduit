@@ -655,7 +655,10 @@ jobs:
             echo "cargo tree produced no usable crate list; refusing to pass vacuously"
             exit 1
           fi
-          leaked=$(printf '%s\n' "$crates" | grep -xE 'hmac|sha2|reqwest|tower-http|url|idna|icu_.*' || true)
+          # grep exits 1 for "no match" (the good case) but 2 for an error such as a
+          # broken pattern -- `|| true` would treat both as "clean", so only exit 1
+          # is tolerated here.
+          leaked=$(printf '%s\n' "$crates" | grep -xE 'hmac|sha2|reqwest|tower-http|url|idna|icu_.*' || [ "$?" -eq 1 ])
           if [ -n "$leaked" ]; then
             echo "proxy-only dependencies leaked into a build without the proxy feature:"
             echo "$leaked"

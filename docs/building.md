@@ -78,15 +78,18 @@ working.
 and `full` all include `proxy`; their dependency sets and behavior are
 unchanged.
 
-**Two config shapes change meaning** without `proxy` — check for them before
+**Three config shapes change meaning** without `proxy` — check for them before
 switching:
 
-1. A legacy top-level `proxy` shorthand next to a site-level `static`. With
-   `proxy`, the proxy wins and the `static` root is shadowed — it is never
-   served. Without `proxy` the shadow disappears and **the previously dead
-   `static` root becomes live**, so a directory that was never reachable is now
-   served.
-2. A `routes[]` entry with a `proxy` action. It ends in the site's `fallback`
+1. A legacy top-level `proxy` shorthand (`proxy: "http://…"`) next to a
+   site-level `static`. With `proxy`, the proxy wins and the `static` root is
+   shadowed — it is never served. Without `proxy` the shadow disappears and
+   **the previously dead `static` root becomes live**, so a directory that was
+   never reachable is now served.
+2. A legacy `proxy` map (`proxy: { "/api": "http://…" }`) next to a site-level
+   `static`. Requests under the proxied prefixes used to go to an upstream; they
+   now fall through to `static`, then to `fallback`.
+3. A `routes[]` entry with a `proxy` action. It ends in the site's `fallback`
    response — not in that entry's own `static` half, which stays dead
    configuration.
 
@@ -96,8 +99,11 @@ slow-start and sticky sessions, retry, traffic mirroring, active health
 checks), the sticky-session crypto (`hmac`, `sha2`), the HTTP client used for
 traffic mirroring and cache early-refresh (`reqwest` with its
 `hyper-rustls`/`tower-http` layers) and the URL parser (`url` with its
-`idna`/`icu_*` tree). Features that need them bring them back: `reqwest` comes
-with `proxy` or `cache`, `url` with `proxy`, `cache` or `forward-auth`.
+`idna`/`icu_*` tree). Features that need them bring them back: `proxy` brings
+back all of it, while `cache`, `forward-auth` and `jwt` each bring back
+`reqwest`, `url` and `tower-http` through their own crates (`jwt` also
+`hmac`/`sha2`) — so a build that enables any of those is larger than the figures
+above.
 
 **What stays:** the Admin API (axum) and Pingora still need the
 `hyper`/`tower`/`h2` stack, plus `base64`, `subtle`, `regex`, `dashmap`, `notify`

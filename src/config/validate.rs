@@ -3309,6 +3309,20 @@ mod tests {
         );
     }
 
+    /// Without `forward-auth` the whole `forwardAuth` block is ignored (and
+    /// `feature_warnings()` says so), so the Admin-API-target rule has nothing
+    /// to guard: it is scoped to builds that enforce forwardAuth, together with
+    /// the `url` parsing it needs. Pinned so the scoping cannot drift silently.
+    #[cfg(not(feature = "forward-auth"))]
+    #[test]
+    fn forward_auth_to_admin_api_port_is_not_an_error_without_the_feature() {
+        let e = errs(r#"{ "port": 8080, "forwardAuth": { "url": "http://127.0.0.1:2019/auth" } }"#);
+        assert!(
+            e.iter().all(|err| !err.message.contains("Admin API")),
+            "the Admin-API rule is scoped to builds that enforce forwardAuth: {e:?}"
+        );
+    }
+
     #[test]
     fn forward_auth_to_normal_service_ok() {
         assert!(
