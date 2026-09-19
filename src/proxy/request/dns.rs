@@ -294,12 +294,14 @@ mod tests {
 
     // `DNS_CACHE` and the sweep cooldown are process-global, and
     // `dns_cache_store` sweeps once the map reaches `DNS_CACHE_SWEEP_THRESHOLD`.
-    // Every test that stores into the cache — directly, or through a
-    // successful hostname resolution — therefore carries
-    // `#[serial(dns_cache_sweep)]`, otherwise it can land between a sweep
-    // test's inserts and its assertions and sweep (or consume the cooldown
-    // for) the entries that test depends on (#439). Tests that only read the
-    // cache or never reach `dns_cache_store` don't need it.
+    // Every test that writes to the cache — through `dns_cache_store` (directly
+    // or via a successful hostname resolution) or a direct `dns_cache().insert`
+    // — therefore carries `#[serial(dns_cache_sweep)]`: a `dns_cache_store`
+    // caller can land between a sweep test's inserts and its assertions and
+    // sweep (or consume the cooldown for) the entries that test depends on,
+    // and a direct insert changes the map length a sweep test asserts on
+    // (#439). Tests that only read the cache, or return before touching it,
+    // don't need it.
 
     // ── resolve_socket_addr (#225: hostname upstreams) ──────────────────────────
 
@@ -396,6 +398,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(dns_cache_sweep)]
     fn dns_cache_lookup_expired_entry_returns_none() {
         // Constructs an entry directly (bypassing `dns_cache_store`, which
         // always stamps `Instant::now()`) to simulate one that was resolved
