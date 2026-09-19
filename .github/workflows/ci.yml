@@ -610,7 +610,10 @@ jobs:
       # WITH the feature (140 tests instead of the 58 that exist without it).
       # The pin is gone (the root's `proxy` now forwards instead), but a
       # dedicated run stays the clearest statement of what is being tested, and
-      # the dependency leak check below fails if such a pin ever comes back.
+      # the dependency leak check below fails if such a pin ever comes back on
+      # `lopatnov-conduit-proxy-http` (one on `lopatnov-conduit-upstream` only
+      # pulls `reqwest`, which the check starts asserting once it becomes
+      # optional).
       - name: Unit tests, conduit-proxy-http alone without its `proxy` feature
         run: cargo test -p lopatnov-conduit-proxy-http --lib --no-default-features
 
@@ -635,13 +638,21 @@ jobs:
       # list as `url`/`reqwest` become optional. Two things make a naive check
       # pass forever: `cargo tree -i <crate>` on an ABSENT crate prints
       # "nothing to print" and still exits 0, so the exit code proves nothing --
-      # use a positive match on the crate list; and `-e normal` is mandatory,
-      # because the dev-dependencies (reqwest, ...) are in the graph otherwise.
+      # use a positive match on the crate list; `-e normal` is mandatory,
+      # because the dev-dependencies (reqwest, ...) are in the graph otherwise;
+      # and the list itself must be proven non-empty first, because a
+      # failing `cargo tree` (bad feature name, resolution error) would
+      # otherwise yield an empty list that trivially "contains no leaks".
       - name: Dependency leak check, --no-default-features --features static
         run: |
-          leaked=$(cargo tree -p lopatnov-conduit --no-default-features --features static \
-                     -e normal --prefix none | sed 's/ v.*//' | sort -u \
-                   | grep -xE 'hmac|sha2' || true)
+          set -euo pipefail
+          crates=$(cargo tree -p lopatnov-conduit --no-default-features --features static \
+                     -e normal --prefix none | sed 's/ v.*//' | sort -u)
+          if ! printf '%s\n' "$crates" | grep -qx 'lopatnov-conduit'; then
+            echo "cargo tree produced no usable crate list; refusing to pass vacuously"
+            exit 1
+          fi
+          leaked=$(printf '%s\n' "$crates" | grep -xE 'hmac|sha2' || true)
           if [ -n "$leaked" ]; then
             echo "proxy-only dependencies leaked into a build without the proxy feature:"
             echo "$leaked"
