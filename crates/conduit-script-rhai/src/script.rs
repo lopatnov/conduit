@@ -1,0 +1,926 @@
+//! Rhai scripting middleware implementation (feature = "rhai").
+//!
+//! See the crate root doc comment (`src/lib.rs`) for the full script API
+//! reference.
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use dashmap::DashMap;
+use rhai::{Engine, Scope, AST};
+
+// ── Custom Rhai types ─────────────────────────────────────────────────────────
+
+/// Read-only view of the HTTP request, exposed to Rhai scripts as `request`.
+#[derive(Debug, Clone)]
+pub(crate) struct ScriptRequest {
+    pub path: String,
+    pub method: String,
+    pub query: String,
+    /// Header map — keys are stored lower-cased for case-insensitive look-up.
+    pub headers: HashMap<String, String>,
+}
+
+impl ScriptRequest {
+    /// Return the value of request header `name`, or an empty string if absent.
+    ///
+    /// Look-up is case-insensitive.
+    pub fn header(&mut self, name: &str) -> String {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+/// Mutable response builder, exposed to Rhai scripts as `response`.
+///
+/// Scripts set `status`, `body`, and/or call `header()` before returning
+/// `false` to abort the pipeline.
+#[derive(Debug, Clone)]
+pub(crate) struct ScriptResponse {
+    pub status: i64,
+    pub body: String,
+    pub extra_headers: Vec<(String, String)>,
+}
+
+impl Default for ScriptResponse {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ScriptResponse {
+    pub fn new() -> Self {
+        Self {
+            status: 200,
+            body: String::new(),
+            extra_headers: Vec::new(),
+        }
+    }
+
+    /// Append a response header.
+    pub fn header(&mut self, name: &str, value: &str) {
+        self.extra_headers.push((name.to_owned(), value.to_owned()));
+    }
+}
+
+// ── Script engine singleton ───────────────────────────────────────────────────
+
+/// Rhai engine initialised once per process with the Conduit API registered.
+static ENGINE: OnceLock<Engine> = OnceLock::new();
+
+/// Compiled AST cache — keyed by script path string.
+///
+/// Scripts are compiled once and cached indefinitely.  If the path changes
+/// between config reloads the new path will get a fresh compilation entry.
+static AST_CACHE: OnceLock<DashMap<String, AST>> = OnceLock::new();
+
+fn ast_cache() -> &'static DashMap<String, AST> {
+    AST_CACHE.get_or_init(DashMap::new)
+}
+
+/// Return a reference to the shared Rhai engine with the Conduit API
+/// registered.  The engine is constructed at most once per process.
+/// Maximum Rhai operations per script execution.
+///
+/// Prevents infinite loops in malicious or buggy scripts from hanging a
+/// worker thread indefinitely.  At ~10 ns per operation this allows scripts
+/// up to ~5 ms — plenty for access-control logic.
+const MAX_SCRIPT_OPERATIONS: u64 = 500_000;
+
+/// Maximum string length a Rhai script may produce (bytes).
+///
+/// Prevents memory exhaustion via string concatenation loops.
+const MAX_SCRIPT_STRING_SIZE: usize = 1_048_576; // 1 MiB
+
+/// Maximum number of elements in any Rhai array or map.
+const MAX_SCRIPT_ARRAY_SIZE: usize = 65_536;
+
+fn engine() -> &'static Engine {
+    ENGINE.get_or_init(|| {
+        let mut eng = Engine::new();
+
+        // ── Resource limits (DoS protection) ──────────────────────────────
+        // Prevents runaway scripts from exhausting CPU or memory.
+        eng.set_max_operations(MAX_SCRIPT_OPERATIONS);
+        eng.set_max_string_size(MAX_SCRIPT_STRING_SIZE);
+        eng.set_max_array_size(MAX_SCRIPT_ARRAY_SIZE);
+        eng.set_max_map_size(MAX_SCRIPT_ARRAY_SIZE);
+
+        // Register ScriptRequest ────────────────────────────────────────
+        eng.register_type_with_name::<ScriptRequest>("Request");
+        eng.register_fn("header", ScriptRequest::header);
+        eng.register_get("path", |r: &mut ScriptRequest| r.path.clone());
+        eng.register_get("method", |r: &mut ScriptRequest| r.method.clone());
+        eng.register_get("query", |r: &mut ScriptRequest| r.query.clone());
+
+        // Register ScriptResponse ───────────────────────────────────────
+        eng.register_type_with_name::<ScriptResponse>("Response");
+        eng.register_get_set(
+            "status",
+            |r: &mut ScriptResponse| r.status,
+            |r: &mut ScriptResponse, s: i64| r.status = s,
+        );
+        eng.register_get_set(
+            "body",
+            |r: &mut ScriptResponse| r.body.clone(),
+            |r: &mut ScriptResponse, b: String| r.body = b,
+        );
+        eng.register_fn("header", ScriptResponse::header);
+
+        eng
+    })
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/// Outcome of executing a Rhai script against the current request.
+#[derive(Debug)]
+pub enum ScriptOutcome {
+    /// Pipeline continues — the script returned `true` (or a truthy value).
+    Continue,
+    /// Pipeline aborted — the script returned `false`.
+    ///
+    /// The caller should send `status` with `body` and `extra_headers` back
+    /// to the client.
+    Abort {
+        status: u16,
+        body: String,
+        extra_headers: Vec<(String, String)>,
+    },
+}
+
+/// Convert a `serde_json::Value` into a Rhai `Dynamic` value so that plugin
+/// config objects can be used directly in scripts:
+///
+/// ```rhai
+/// if config.allowed_key == request.header("x-api-key") { ... }
+/// ```
+fn json_to_dynamic(v: &serde_json::Value) -> rhai::Dynamic {
+    match v {
+        serde_json::Value::Null => rhai::Dynamic::UNIT,
+        serde_json::Value::Bool(b) => rhai::Dynamic::from(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                rhai::Dynamic::from(i)
+            } else {
+                rhai::Dynamic::from(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => rhai::Dynamic::from(s.clone()),
+        serde_json::Value::Array(arr) => {
+            rhai::Dynamic::from(arr.iter().map(json_to_dynamic).collect::<Vec<_>>())
+        }
+        serde_json::Value::Object(obj) => {
+            let mut map = rhai::Map::new();
+            for (k, v) in obj {
+                map.insert(k.as_str().into(), json_to_dynamic(v));
+            }
+            rhai::Dynamic::from_map(map)
+        }
+    }
+}
+
+/// Execute the Rhai script at `script_path` against `req`.
+///
+/// - Compiles the script on first call and caches the AST.
+/// - Returns [`ScriptOutcome::Continue`] when the script returns any truthy
+///   value or completes without an explicit `return false`.
+/// - Returns [`ScriptOutcome::Abort`] when the script returns `false`.
+/// - On engine or I/O errors, logs a warning and returns `Continue` so that
+///   a broken script does not take down the server.
+///
+/// The optional `plugin_config` is exposed as `config` in the script scope.
+/// It is derived from the `config` field of the `middleware[]` entry.
+pub fn run_script(
+    script_path: &str,
+    path: &str,
+    method: &str,
+    query: &str,
+    headers: HashMap<String, String>,
+    plugin_config: Option<&serde_json::Value>,
+) -> ScriptOutcome {
+    let ast = match get_or_compile(script_path) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!(script = script_path, "Rhai compile error: {e}");
+            return ScriptOutcome::Continue;
+        }
+    };
+
+    let eng = engine();
+    let mut scope = Scope::new();
+
+    let req = ScriptRequest {
+        path: path.to_owned(),
+        method: method.to_owned(),
+        query: query.to_owned(),
+        headers,
+    };
+    let resp = ScriptResponse::new();
+
+    scope.push("request", req);
+    scope.push("response", resp);
+
+    // Expose plugin config as `config` — a Dynamic map/value derived from
+    // the `middleware[].config` JSON object.  Absent when not configured.
+    let config_dynamic = plugin_config
+        .map(json_to_dynamic)
+        .unwrap_or(rhai::Dynamic::UNIT);
+    scope.push("config", config_dynamic);
+
+    let result = eng.eval_ast_with_scope::<rhai::Dynamic>(&mut scope, &ast);
+    match result {
+        Err(e) => {
+            tracing::warn!(script = script_path, "Rhai runtime error: {e}");
+            ScriptOutcome::Continue
+        }
+        Ok(val) => {
+            // Extract the (possibly mutated) response object from scope.
+            let resp: ScriptResponse = scope
+                .get_value::<ScriptResponse>("response")
+                .unwrap_or_default();
+
+            if val.is_bool() && !val.cast::<bool>() {
+                ScriptOutcome::Abort {
+                    status: resp.status.clamp(100, 999) as u16,
+                    body: resp.body,
+                    extra_headers: resp.extra_headers,
+                }
+            } else {
+                ScriptOutcome::Continue
+            }
+        }
+    }
+}
+
+// ── Response phase ────────────────────────────────────────────────────────────
+
+/// Outcome of running a Rhai script during the response phase.
+#[derive(Debug)]
+pub struct ScriptResponseOutcome {
+    /// Headers to add/overwrite on the client response.
+    pub added_headers: Vec<(String, String)>,
+    /// Headers to remove from the client response.
+    pub removed_headers: Vec<String>,
+}
+
+/// Mutable response builder used by response-phase scripts.
+///
+/// Scripts can call `response.set_header("Name", "Value")` to add headers,
+/// `response.remove_header("Name")` to delete headers, and read the upstream
+/// status with `response.status`.
+#[derive(Debug, Clone)]
+pub(crate) struct ScriptResponseBuilder {
+    /// Upstream HTTP status code (read-only to the script).
+    pub status: i64,
+    pub added_headers: Vec<(String, String)>,
+    pub removed_headers: Vec<String>,
+}
+
+impl ScriptResponseBuilder {
+    fn new(status: u16) -> Self {
+        Self {
+            status: status as i64,
+            added_headers: Vec::new(),
+            removed_headers: Vec::new(),
+        }
+    }
+
+    /// Add or overwrite a response header.
+    pub fn set_header(&mut self, name: &str, value: &str) {
+        self.added_headers.push((name.to_owned(), value.to_owned()));
+    }
+
+    /// Remove a response header.
+    pub fn remove_header(&mut self, name: &str) {
+        self.removed_headers.push(name.to_owned());
+    }
+}
+
+/// Execute a Rhai script during the **response** phase.
+///
+/// The script receives:
+/// - `response` — a mutable builder: `response.status` (read), `response.set_header()`,
+///   `response.remove_header()`
+/// - `upstream` — read-only view: `upstream.status`, `upstream.header("Name")`
+/// - `config` — same as request phase
+///
+/// Return value is ignored for response scripts (always continues).
+/// On compile / runtime errors the script is skipped (fail-open).
+pub fn run_script_response(
+    script_path: &str,
+    status: u16,
+    headers: HashMap<String, String>,
+    plugin_config: Option<&serde_json::Value>,
+) -> ScriptResponseOutcome {
+    let ast = match get_or_compile(script_path) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!(script = script_path, "Rhai response compile error: {e}");
+            return ScriptResponseOutcome {
+                added_headers: Vec::new(),
+                removed_headers: Vec::new(),
+            };
+        }
+    };
+
+    let eng = engine_response();
+    let mut scope = rhai::Scope::new();
+
+    scope.push("response", ScriptResponseBuilder::new(status));
+
+    // Expose upstream headers as a read-only map via a simple wrapper.
+    // Scripts access: upstream.header("Name")
+    scope.push(
+        "upstream",
+        ScriptUpstreamView {
+            status: status as i64,
+            headers,
+        },
+    );
+
+    let config_dynamic = plugin_config
+        .map(json_to_dynamic)
+        .unwrap_or(rhai::Dynamic::UNIT);
+    scope.push("config", config_dynamic);
+
+    if let Err(e) = eng.eval_ast_with_scope::<rhai::Dynamic>(&mut scope, &ast) {
+        tracing::warn!(script = script_path, "Rhai response runtime error: {e}");
+    }
+
+    let builder: ScriptResponseBuilder = scope
+        .get_value::<ScriptResponseBuilder>("response")
+        .unwrap_or_else(|| ScriptResponseBuilder::new(status));
+
+    ScriptResponseOutcome {
+        added_headers: builder.added_headers,
+        removed_headers: builder.removed_headers,
+    }
+}
+
+/// Read-only upstream response view exposed as `upstream` in response scripts.
+#[derive(Debug, Clone)]
+pub(crate) struct ScriptUpstreamView {
+    pub status: i64,
+    pub headers: HashMap<String, String>,
+}
+
+impl ScriptUpstreamView {
+    pub fn header(&mut self, name: &str) -> String {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+/// Rhai engine for the response phase — registers the response-specific types.
+fn engine_response() -> &'static rhai::Engine {
+    static RESP_ENGINE: std::sync::OnceLock<rhai::Engine> = std::sync::OnceLock::new();
+    RESP_ENGINE.get_or_init(|| {
+        let mut eng = rhai::Engine::new();
+
+        // ── Same resource limits as the request engine ─────────────────────
+        eng.set_max_operations(MAX_SCRIPT_OPERATIONS);
+        eng.set_max_string_size(MAX_SCRIPT_STRING_SIZE);
+        eng.set_max_array_size(MAX_SCRIPT_ARRAY_SIZE);
+        eng.set_max_map_size(MAX_SCRIPT_ARRAY_SIZE);
+
+        eng.register_type_with_name::<ScriptResponseBuilder>("ResponseBuilder");
+        eng.register_get("status", |r: &mut ScriptResponseBuilder| r.status);
+        eng.register_fn("set_header", ScriptResponseBuilder::set_header);
+        eng.register_fn("remove_header", ScriptResponseBuilder::remove_header);
+
+        eng.register_type_with_name::<ScriptUpstreamView>("UpstreamView");
+        eng.register_get("status", |u: &mut ScriptUpstreamView| u.status);
+        eng.register_fn("header", ScriptUpstreamView::header);
+
+        eng
+    })
+}
+
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+/// Return the compiled AST for `path`, compiling it on first access.
+fn get_or_compile(path: &str) -> Result<AST, Box<rhai::EvalAltResult>> {
+    let cache = ast_cache();
+    if let Some(ast) = cache.get(path) {
+        return Ok(ast.clone());
+    }
+    // Compile and insert.  If two threads race here the second write wins
+    // (idempotent — both produce the same AST for the same file).
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            return Err(Box::new(rhai::EvalAltResult::ErrorSystem(
+                "I/O".into(),
+                Box::new(e),
+            )))
+        }
+    };
+    let ast = engine().compile(&source)?;
+    cache.insert(path.to_owned(), ast.clone());
+    Ok(ast)
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_ascii_lowercase(), v.to_string()))
+            .collect()
+    }
+
+    fn run(script: &str, hdrs: HashMap<String, String>) -> ScriptOutcome {
+        // Write script to a temp file then call run_script.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("test.rhai");
+        std::fs::write(&p, script).unwrap();
+        let path = p.to_str().unwrap().to_owned();
+        // Clear the cache entry so this test always re-compiles.
+        ast_cache().remove(&path);
+        run_script(&path, "/test", "GET", "", hdrs, None)
+    }
+
+    #[test]
+    fn script_returning_true_continues() {
+        assert!(matches!(run("true", headers(&[])), ScriptOutcome::Continue));
+    }
+
+    #[test]
+    fn script_returning_false_aborts() {
+        assert!(matches!(
+            run("false", headers(&[])),
+            ScriptOutcome::Abort { .. }
+        ));
+    }
+
+    #[test]
+    fn script_sets_status_on_abort() {
+        let script = "response.status = 401; false";
+        match run(script, headers(&[])) {
+            ScriptOutcome::Abort { status, .. } => assert_eq!(status, 401),
+            other => panic!("expected Abort, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn script_sets_body_on_abort() {
+        let script = r#"response.body = "Forbidden"; false"#;
+        match run(script, headers(&[])) {
+            ScriptOutcome::Abort { body, .. } => assert_eq!(body, "Forbidden"),
+            other => panic!("expected Abort, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn script_sets_response_header_on_abort() {
+        let script = r#"response.header("WWW-Authenticate", "Bearer"); false"#;
+        match run(script, headers(&[])) {
+            ScriptOutcome::Abort { extra_headers, .. } => {
+                assert!(extra_headers
+                    .iter()
+                    .any(|(k, v)| k == "WWW-Authenticate" && v == "Bearer"));
+            }
+            other => panic!("expected Abort, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn script_reads_request_header() {
+        let script = r#"
+            let t = request.header("Authorization");
+            if t == "" { response.status = 401; return false; }
+            true
+        "#;
+        // Without header → abort 401.
+        assert!(matches!(
+            run(script, headers(&[])),
+            ScriptOutcome::Abort { status: 401, .. }
+        ));
+        // With header → continue.
+        assert!(matches!(
+            run(script, headers(&[("authorization", "Bearer tok")])),
+            ScriptOutcome::Continue
+        ));
+    }
+
+    #[test]
+    fn script_reads_request_path() {
+        let script = r#"
+            if request.path == "/secret" { return false; }
+            true
+        "#;
+        assert!(matches!(run(script, headers(&[])), ScriptOutcome::Continue));
+    }
+
+    #[test]
+    fn broken_script_continues_gracefully() {
+        // A script that won't compile should not panic.
+        assert!(matches!(
+            run("let x = ;", headers(&[])),
+            ScriptOutcome::Continue
+        ));
+    }
+
+    #[test]
+    fn script_without_explicit_return_truthy_continues() {
+        // Last expression is truthy integer — treat as continue.
+        assert!(matches!(run("42", headers(&[])), ScriptOutcome::Continue));
+    }
+
+    #[test]
+    fn missing_script_file_continues_gracefully() {
+        // A non-existent script path should not panic.
+        let outcome = run_script(
+            "/nonexistent/path/script.rhai",
+            "/",
+            "GET",
+            "",
+            HashMap::new(),
+            None,
+        );
+        assert!(matches!(outcome, ScriptOutcome::Continue));
+    }
+
+    #[test]
+    fn script_reads_request_method() {
+        let script = r#"
+            if request.method == "DELETE" { return false; }
+            true
+        "#;
+        assert!(matches!(run(script, headers(&[])), ScriptOutcome::Continue));
+    }
+
+    #[test]
+    fn script_reads_request_query() {
+        let script = r#"
+            if request.query == "admin=1" { return false; }
+            true
+        "#;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("query.rhai");
+        std::fs::write(&p, script).unwrap();
+        let path = p.to_str().unwrap().to_owned();
+        ast_cache().remove(&path);
+
+        // Without matching query → continue.
+        let ok = run_script(&path, "/test", "GET", "user=1", HashMap::new(), None);
+        assert!(matches!(ok, ScriptOutcome::Continue));
+
+        // With matching query → abort.
+        ast_cache().remove(&path);
+        let blocked = run_script(&path, "/test", "GET", "admin=1", HashMap::new(), None);
+        assert!(matches!(blocked, ScriptOutcome::Abort { .. }));
+    }
+
+    #[test]
+    fn script_abort_default_status_is_200() {
+        // Return false without setting status → status stays at default 200.
+        match run("false", headers(&[])) {
+            ScriptOutcome::Abort { status, .. } => assert_eq!(status, 200),
+            other => panic!("expected Abort, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn script_abort_clamps_out_of_range_status() {
+        // Status must be clamped to [100, 999].
+        let script = "response.status = 9999; false";
+        match run(script, headers(&[])) {
+            ScriptOutcome::Abort { status, .. } => assert_eq!(status, 999),
+            other => panic!("expected Abort, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn script_response_default_is_empty() {
+        let r = ScriptResponse::new();
+        assert_eq!(r.status, 200);
+        assert!(r.body.is_empty());
+        assert!(r.extra_headers.is_empty());
+    }
+
+    #[test]
+    fn script_request_header_case_insensitive() {
+        let mut req = ScriptRequest {
+            path: "/".to_string(),
+            method: "GET".to_string(),
+            query: "".to_string(),
+            headers: {
+                let mut m = HashMap::new();
+                m.insert("x-api-key".to_string(), "secret".to_string());
+                m
+            },
+        };
+        assert_eq!(req.header("X-API-KEY"), "secret");
+        assert_eq!(req.header("x-api-key"), "secret");
+        assert_eq!(req.header("X-Missing"), "");
+    }
+
+    #[test]
+    fn script_cached_ast_returns_same_result() {
+        // Run the same script twice; the second call uses the cached AST.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("cached.rhai");
+        std::fs::write(&p, "true").unwrap();
+        let path = p.to_str().unwrap().to_owned();
+        ast_cache().remove(&path);
+
+        let r1 = run_script(&path, "/", "GET", "", HashMap::new(), None);
+        let r2 = run_script(&path, "/", "GET", "", HashMap::new(), None);
+        assert!(matches!(r1, ScriptOutcome::Continue));
+        assert!(matches!(r2, ScriptOutcome::Continue));
+    }
+
+    #[test]
+    fn script_runtime_error_continues_gracefully() {
+        // A script that throws a runtime error should not panic.
+        let script = r#"throw "intentional error"; true"#;
+        assert!(matches!(run(script, headers(&[])), ScriptOutcome::Continue));
+    }
+
+    #[test]
+    fn script_response_default_trait_same_as_new() {
+        // Exercises the Default implementation for ScriptResponse.
+        let d = ScriptResponse::default();
+        let n = ScriptResponse::new();
+        assert_eq!(d.status, n.status);
+        assert_eq!(d.body, n.body);
+        assert!(d.extra_headers.is_empty());
+    }
+
+    #[test]
+    fn script_response_body_getter_accessible_via_rhai() {
+        // A script that reads response.body exercises the getter closure.
+        let script = r#"
+            let b = response.body;
+            if b == "" { response.status = 200; }
+            false
+        "#;
+        match run(script, headers(&[])) {
+            ScriptOutcome::Abort { status, .. } => assert_eq!(status, 200),
+            other => panic!("expected Abort, got {other:?}"),
+        }
+    }
+
+    // ── plugin config ─────────────────────────────────────────────────────────
+
+    fn run_with_config(script: &str, cfg: serde_json::Value) -> ScriptOutcome {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("test.rhai");
+        std::fs::write(&p, script).unwrap();
+        let path = p.to_str().unwrap().to_owned();
+        ast_cache().remove(&path);
+        run_script(&path, "/test", "GET", "", headers(&[]), Some(&cfg))
+    }
+
+    #[test]
+    fn config_string_field_accessible_in_script() {
+        let cfg = serde_json::json!({ "allowed_key": "secret-123" });
+        let script = r#"
+            if config.allowed_key == request.header("x-api-key") { return true; }
+            response.status = 403;
+            false
+        "#;
+        // Correct key → continue.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("cfg.rhai");
+        std::fs::write(&p, script).unwrap();
+        let path = p.to_str().unwrap().to_owned();
+        ast_cache().remove(&path);
+        let ok = run_script(
+            &path,
+            "/",
+            "GET",
+            "",
+            headers(&[("x-api-key", "secret-123")]),
+            Some(&cfg),
+        );
+        assert!(matches!(ok, ScriptOutcome::Continue));
+        // Wrong key → abort 403.
+        ast_cache().remove(&path);
+        let denied = run_script(
+            &path,
+            "/",
+            "GET",
+            "",
+            headers(&[("x-api-key", "wrong")]),
+            Some(&cfg),
+        );
+        assert!(matches!(denied, ScriptOutcome::Abort { status: 403, .. }));
+    }
+
+    #[test]
+    fn config_absent_gives_unit_value() {
+        // Scripts must handle absent config gracefully.
+        let script = "true";
+        assert!(matches!(run(script, headers(&[])), ScriptOutcome::Continue));
+    }
+
+    #[test]
+    fn config_number_field_accessible() {
+        let cfg = serde_json::json!({ "max_len": 10 });
+        let script = r#"
+            if config.max_len > 5 { return true; }
+            false
+        "#;
+        assert!(matches!(
+            run_with_config(script, cfg),
+            ScriptOutcome::Continue
+        ));
+    }
+
+    #[test]
+    fn config_array_field_accessible() {
+        let cfg = serde_json::json!({ "allowed": ["GET", "POST"] });
+        let script = r#"
+            if config.allowed.contains(request.method) { return true; }
+            response.status = 405;
+            false
+        "#;
+        assert!(matches!(
+            run_with_config(script, cfg),
+            ScriptOutcome::Continue
+        ));
+    }
+
+    // ── json_to_dynamic ────────────────────────────────────────────────────────
+
+    #[test]
+    fn json_null_becomes_unit() {
+        let d = json_to_dynamic(&serde_json::Value::Null);
+        assert!(d.is_unit(), "JSON null must become Dynamic::UNIT");
+    }
+
+    #[test]
+    fn json_bool_true_becomes_dynamic_bool() {
+        let d = json_to_dynamic(&serde_json::json!(true));
+        assert!(d.as_bool().unwrap());
+    }
+
+    #[test]
+    fn json_bool_false_becomes_dynamic_bool() {
+        let d = json_to_dynamic(&serde_json::json!(false));
+        assert!(!d.as_bool().unwrap());
+    }
+
+    #[test]
+    fn json_integer_becomes_dynamic_i64() {
+        let d = json_to_dynamic(&serde_json::json!(42i64));
+        assert_eq!(d.as_int().unwrap(), 42);
+    }
+
+    #[test]
+    fn json_float_becomes_dynamic_float() {
+        let d = json_to_dynamic(&serde_json::json!(3.25f64));
+        // Rhai's Dynamic::as_float returns f64.
+        let f = d.as_float().unwrap();
+        assert!((f - 3.25).abs() < 0.001, "expected 3.25, got {f}");
+    }
+
+    #[test]
+    fn json_string_becomes_dynamic_string() {
+        let d = json_to_dynamic(&serde_json::json!("hello"));
+        assert_eq!(d.into_string().unwrap(), "hello");
+    }
+
+    #[test]
+    fn json_array_becomes_dynamic_array() {
+        let d = json_to_dynamic(&serde_json::json!([1, 2, 3]));
+        let arr = d.into_array().expect("must be array");
+        assert_eq!(arr.len(), 3);
+    }
+
+    #[test]
+    fn json_object_becomes_dynamic_map() {
+        let d = json_to_dynamic(&serde_json::json!({ "key": "value" }));
+        let map = d.try_cast::<rhai::Map>().expect("must be map");
+        assert!(map.contains_key("key"));
+    }
+
+    // ── run_script_response ───────────────────────────────────────────────────
+
+    fn run_resp(script: &str, status: u16) -> ScriptResponseOutcome {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("resp.rhai");
+        std::fs::write(&p, script).unwrap();
+        let path = p.to_str().unwrap().to_owned();
+        ast_cache().remove(&path);
+        run_script_response(&path, status, HashMap::new(), None)
+    }
+
+    #[test]
+    fn response_script_adds_header() {
+        let outcome = run_resp(r#"response.set_header("x-processed", "yes")"#, 200);
+        assert!(
+            outcome
+                .added_headers
+                .iter()
+                .any(|(k, v)| k == "x-processed" && v == "yes"),
+            "response script must add header: {:?}",
+            outcome.added_headers
+        );
+    }
+
+    #[test]
+    fn response_script_removes_header() {
+        let outcome = run_resp(r#"response.remove_header("x-server")"#, 200);
+        assert!(
+            outcome.removed_headers.iter().any(|k| k == "x-server"),
+            "response script must queue header removal"
+        );
+    }
+
+    #[test]
+    fn response_script_can_read_status() {
+        // Scripts can access upstream.status.
+        let outcome = run_resp(
+            r#"
+            if upstream.status == 200 {
+                response.set_header("x-ok", "true");
+            }
+        "#,
+            200,
+        );
+        assert!(outcome
+            .added_headers
+            .iter()
+            .any(|(k, v)| k == "x-ok" && v == "true"));
+    }
+
+    #[test]
+    fn response_script_error_returns_empty_outcome() {
+        // A runtime error in a response script must be handled gracefully
+        // and return an empty outcome (fail-open).
+        let outcome = run_resp(r#"throw "response error""#, 200);
+        assert!(outcome.added_headers.is_empty());
+        assert!(outcome.removed_headers.is_empty());
+    }
+
+    #[test]
+    fn response_script_compile_error_returns_empty_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bad_resp.rhai");
+        std::fs::write(&p, r#"let x = {"#).unwrap(); // incomplete expression
+        let path = p.to_str().unwrap().to_owned();
+        ast_cache().remove(&path);
+        let outcome = run_script_response(&path, 200, HashMap::new(), None);
+        assert!(
+            outcome.added_headers.is_empty(),
+            "compile error must be fail-open"
+        );
+    }
+
+    // ── ScriptResponseBuilder ─────────────────────────────────────────────────
+
+    #[test]
+    fn script_response_builder_new_has_correct_status() {
+        let builder = ScriptResponseBuilder::new(404);
+        assert_eq!(builder.status, 404);
+        assert!(builder.added_headers.is_empty());
+        assert!(builder.removed_headers.is_empty());
+    }
+
+    #[test]
+    fn script_response_builder_set_header_queues_header() {
+        let mut builder = ScriptResponseBuilder::new(200);
+        builder.set_header("x-custom", "value1");
+        assert_eq!(
+            builder.added_headers,
+            vec![("x-custom".to_owned(), "value1".to_owned())]
+        );
+    }
+
+    #[test]
+    fn script_response_builder_remove_header_queues_removal() {
+        let mut builder = ScriptResponseBuilder::new(200);
+        builder.remove_header("x-server");
+        assert_eq!(builder.removed_headers, vec!["x-server".to_owned()]);
+    }
+
+    // ── ScriptUpstreamView ────────────────────────────────────────────────────
+
+    #[test]
+    fn script_upstream_view_header_case_insensitive() {
+        let mut view = ScriptUpstreamView {
+            status: 200,
+            headers: {
+                let mut m = HashMap::new();
+                m.insert("content-type".to_owned(), "application/json".to_owned());
+                m
+            },
+        };
+        // Case-insensitive lookup.
+        assert_eq!(view.header("Content-Type"), "application/json");
+        assert_eq!(view.header("content-type"), "application/json");
+        assert_eq!(view.header("missing"), "");
+    }
+}

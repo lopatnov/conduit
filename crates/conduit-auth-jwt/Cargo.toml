@@ -1,0 +1,61 @@
+[package]
+name        = "lopatnov-conduit-auth-jwt"
+version.workspace    = true
+edition.workspace    = true
+description = "JWT bearer-token auth config + guard for conduit's feature-driven workspace (issue #114/#133)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_auth_jwt"
+path = "src/lib.rs"
+
+[dependencies]
+# JwtAuthConfig and the always-compiled `{{ jwt.<claim> }}` template
+# expansion (`template` module) are always compiled — see src/lib.rs doc
+# comment. `template` needs `regex`/`serde_json` regardless of the `jwt`
+# feature, since `requestTransform.setHeaders` template expansion is itself
+# an always-compiled call site in the root crate.
+serde      = { workspace = true }
+serde_json = { workspace = true }
+regex      = { workspace = true }
+
+# Everything below is only needed by the real JWT validation/guard code
+# (`jwt`, `guard`), gated behind this crate's own `jwt` feature (mirrors the
+# pre-extraction `#![cfg(feature = "jwt")]` file-level gate on
+# src/filter/jwt.rs). The root crate's `jwt` feature forwards into this one
+# via `lopatnov-conduit-auth-jwt/jwt`.
+jsonwebtoken          = { workspace = true, optional = true }
+reqwest               = { workspace = true, optional = true }
+tokio                 = { workspace = true, optional = true }
+tracing               = { workspace = true, optional = true }
+anyhow                = { workspace = true, optional = true }
+async-trait           = { workspace = true, optional = true }
+pingora-core          = { workspace = true, optional = true }
+pingora-proxy         = { workspace = true, optional = true }
+lopatnov-conduit-core = { workspace = true, optional = true }
+
+[dev-dependencies]
+# jsonwebtoken test-token generation (`use_pem` needed for RS256/ES256 JWKS
+# coverage, issue #164) + base64/rsa/p256/rand_core for the JWKS test key
+# material — same set/rationale as the root crate's own dev-dependencies
+# before this extraction (see Cargo.toml `[workspace.dependencies]`
+# comments). Only referenced from `src/jwt/tests/`.
+jsonwebtoken = { workspace = true, features = ["use_pem"] }
+base64       = { workspace = true }
+rsa          = { workspace = true }
+p256         = { workspace = true }
+rand_core    = { workspace = true }
+
+[features]
+jwt = [
+    "dep:jsonwebtoken",
+    "dep:reqwest",
+    "dep:tokio",
+    "dep:tracing",
+    "dep:anyhow",
+    "dep:async-trait",
+    "dep:pingora-core",
+    "dep:pingora-proxy",
+    "dep:lopatnov-conduit-core",
+]

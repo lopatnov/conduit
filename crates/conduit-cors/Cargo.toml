@@ -1,0 +1,25 @@
+[package]
+name        = "lopatnov-conduit-cors"
+version.workspace    = true
+edition.workspace    = true
+description = "CORS config + guard for conduit's feature-driven workspace (issue #114/#136)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_cors"
+path = "src/lib.rs"
+
+[dependencies]
+# No [features] table — CORS is always-on (CLAUDE.md decision #31), so every
+# dependency here (including lopatnov-conduit-core, needed by
+# guard::CorsPreflight) is mandatory, not `optional = true`. See src/lib.rs
+# doc comment for why this crate is not feature-gated like its sibling
+# extractions.
+serde                 = { workspace = true }
+async-trait           = { workspace = true }
+bytes                 = { workspace = true }
+pingora-core          = { workspace = true }
+pingora-proxy         = { workspace = true }
+pingora-http          = { workspace = true }
+lopatnov-conduit-core = { workspace = true }

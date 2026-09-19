@@ -1,0 +1,41 @@
+[package]
+name        = "lopatnov-conduit-compression"
+version.workspace    = true
+edition.workspace    = true
+description = "Response/static-file compression config + negotiation logic for conduit's feature-driven workspace (issue #114/#138)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_compression"
+path = "src/lib.rs"
+
+[dependencies]
+# CompressionConfig/CompressionOptions themselves are always compiled — see
+# src/lib.rs doc comment.
+serde = { workspace = true }
+
+# Everything below is only needed by the real negotiation/encoding logic
+# (`logic` module), gated behind this crate's own `compression` feature
+# (mirrors the pre-extraction unconditional async-compression usage in
+# src/filter/compression.rs). The root crate's `compression` feature forwards
+# into this one via `lopatnov-conduit-compression/compression`. Unlike every
+# other extracted optional feature so far, `compression` stays **default-on**
+# at the root crate (issue #114/#138) — see that crate's `[features]` comment.
+async-compression     = { workspace = true, optional = true }
+bytes                 = { workspace = true, optional = true }
+tokio                 = { workspace = true, optional = true }
+# Only needed for `logic::CompressOptions::best_encoding`'s `AcceptEncoding`
+# parameter type — a Layer-0 primitive struct with no chain-trait/pingora
+# `Session` usage of its own (`CONTRIBUTING.md`'s "conduit-core dependency is
+# opt-in" rule: this crate has no request-lifecycle behavior, but it does
+# need this one shared primitive type).
+lopatnov-conduit-core = { workspace = true, optional = true }
+
+[features]
+compression = [
+    "dep:async-compression",
+    "dep:bytes",
+    "dep:tokio",
+    "dep:lopatnov-conduit-core",
+]

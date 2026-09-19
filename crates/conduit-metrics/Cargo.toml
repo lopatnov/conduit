@@ -1,0 +1,47 @@
+[package]
+name        = "lopatnov-conduit-metrics"
+version.workspace    = true
+edition.workspace    = true
+description = "Prometheus /metrics endpoint config + handler for conduit's feature-driven workspace (issue #114/#140)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_metrics"
+path = "src/lib.rs"
+
+[dependencies]
+# No [features] table for the core gate — `metrics` stays always-on
+# (CLAUDE.md decision #31), so every dependency below is mandatory, not
+# `optional = true`, mirroring conduit-cors/conduit-ipfilter/
+# conduit-security-headers' unconditional dependency style. Only the
+# `compression` sub-feature below is genuinely optional (mirrors
+# conduit-static's own independent `compression` sub-feature, #114/#139).
+serde                 = { workspace = true }
+async-trait           = { workspace = true }
+bytes                 = { workspace = true }
+pingora-core          = { workspace = true }
+pingora-http          = { workspace = true }
+pingora-proxy         = { workspace = true }
+# `prometheus::gather()`/`TextEncoder` read the process-wide default
+# registry directly — this crate has no dependency on `ConduitMetrics` (the
+# metric-*registration* struct, which stays in the root crate per issue
+# #140's own scope note, destined for the future conduit-runtime).
+prometheus            = { workspace = true }
+# Constant-time comparison for the optional bearer-token check
+# (`metrics.token`) — same reasoning as the Admin API token check.
+subtle                = { workspace = true }
+lopatnov-conduit-core = { workspace = true }
+
+# On-the-fly whole-body compression of the Prometheus text-exposition
+# response (issue #338, `logic::compress_small_body` — no streaming, so
+# unlike conduit-static this crate never needs `async-compression` directly).
+# Gated behind this crate's own `compression` feature, forwarded from the
+# root crate's own (default-on) `compression` feature.
+lopatnov-conduit-compression = { workspace = true, optional = true }
+
+[features]
+compression = [
+    "dep:lopatnov-conduit-compression",
+    "lopatnov-conduit-compression/compression",
+]

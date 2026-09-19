@@ -1,0 +1,23 @@
+[package]
+name        = "lopatnov-conduit-security-headers"
+version.workspace    = true
+edition.workspace    = true
+description = "Security-headers config + AllowedHosts guard for conduit's feature-driven workspace (issue #114/#136)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_security_headers"
+path = "src/lib.rs"
+
+[dependencies]
+# No [features] table — securityHeaders is always-on (CLAUDE.md decision
+# #31), so every dependency here (including lopatnov-conduit-core, needed by
+# guard::AllowedHostsGuard) is mandatory, not `optional = true`. See
+# src/lib.rs doc comment for why this crate is not feature-gated like its
+# sibling extractions.
+serde                 = { workspace = true }
+async-trait           = { workspace = true }
+bytes                 = { workspace = true }
+pingora-core          = { workspace = true }
+lopatnov-conduit-core = { workspace = true }

@@ -1,0 +1,34 @@
+[package]
+name        = "lopatnov-conduit-k8s"
+version.workspace    = true
+edition.workspace    = true
+description = "Kubernetes ConduitSite CRD watching for conduit's feature-driven workspace (issue #114/#249) — generic over the config payload type, zero schema knowledge"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_k8s"
+path = "src/lib.rs"
+
+[dependencies]
+# The whole crate is gated by the root's own optional `kubernetes` feature
+# (`dep:lopatnov-conduit-k8s`) — unlike most other extracted crates, there is
+# no internal Cargo feature here: every dependency below is a plain,
+# non-optional dependency of this crate, since the crate's own presence in
+# the dependency graph *is* the gating mechanism.
+kube        = { workspace = true }
+k8s-openapi = { workspace = true, features = ["v1_32"] }
+schemars    = { workspace = true }
+futures     = { workspace = true }
+tokio       = { workspace = true }
+async-trait = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+anyhow      = { workspace = true }
+tracing     = { workspace = true }
+
+# `KubernetesProvider<B>` implements `conduit_config_core::provider::Provider`
+# generically; the root crate binds `B = ConduitSchema` and `B::Config =
+# AppConfig` (see `CONTRIBUTING.md`'s crate-extraction recipe, rule 2:
+# "generic-in-crate, bound-by-type-alias-in-root").
+lopatnov-conduit-config-core = { workspace = true }

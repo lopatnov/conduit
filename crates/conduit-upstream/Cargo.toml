@@ -1,0 +1,39 @@
+[package]
+name        = "lopatnov-conduit-upstream"
+version.workspace    = true
+edition.workspace    = true
+description = "Upstream selection, health tracking, and load-balancing strategies for conduit's feature-driven workspace (issue #114/#142)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_upstream"
+path = "src/lib.rs"
+
+[features]
+# The one piece of this crate that is *only* useful when the binary proxies
+# (issue #144): the connection-warmup HEAD probes (`health::
+# spawn_connection_warmup`), which are the crate's sole `reqwest` user.
+# Upstream selection, health tracking and the config/URL types stay
+# always-compiled — the root crate's `SiteConfig` embeds them and
+# `validate()`/`feature_warnings()` walk them in every build. Off by default
+# *at this crate*; the root crate's own `default` turns it on, so a plain
+# `cargo build` is unchanged.
+proxy = ["dep:reqwest"]
+
+[dependencies]
+# No `lopatnov-conduit-core` dependency — nothing here implements
+# `RequestFilter`/`ResponseFilter` (see `CONTRIBUTING.md`'s "conduit-core
+# dependency is opt-in, not automatic"); the Pingora `ProxyHttp` trait-method
+# bodies stay in the root crate's `request/*.rs`/`response_phase.rs`/
+# `router.rs`, calling into this crate's plain functions and the
+# `UpstreamRegistry` type.
+serde   = { workspace = true }
+dashmap = { workspace = true }
+tokio   = { workspace = true }
+# reqwest: connection-warmup HEAD probes (`health::warmup_url`), gated behind
+# this crate's `proxy` feature (see above). The root crate keeps its own
+# separate `reqwest` edge for mirroring/forward-auth/JWKS, so this is still
+# not a footprint saving by itself until those are gated too (#144, PR 3+).
+reqwest = { workspace = true, optional = true }
+tracing = { workspace = true }
