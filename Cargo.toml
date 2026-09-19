@@ -547,8 +547,11 @@ base64.workspace    = true
 
 # --- HTTP client (feature: jwt for JWKS via crates/conduit-auth-jwt,
 # forward-auth, mirroring) ---
-# reqwest is NOT optional because traffic mirroring (basic feature) uses it.
-# When jwt/forward-auth are disabled, reqwest is still used for mirroring.
+# reqwest is NOT optional yet: it is still a root dependency for traffic
+# mirroring (`proxy`) and, until the `cache` -> `proxy` implication lands
+# (issue #144 PR 5), for the cache's early-refresh fetch. The root-crate
+# mirroring call site (`fire_mirror_request`) is already gated on `proxy`
+# (#144 PR 3); making the dependency itself optional is #144 PR 4/5.
 # `jsonwebtoken` itself moved to `crates/conduit-auth-jwt` (#114/#133) and is
 # no longer a direct root-crate [dependencies] entry — only a
 # [dev-dependencies] one below (tests/auth.rs generates test tokens).

@@ -618,6 +618,14 @@ jobs:
       - name: Unit tests, --no-default-features --features static
         run: cargo test -p lopatnov-conduit --lib --no-default-features --features static
 
+      # `upload` is served through `upstream_peer` (an `UpstreamTarget::Upload`
+      # classifies as `HandlerKind::Proxy`), so the real `upstream_peer` /
+      # `resolve_peer_addr` must still compile and work WITHOUT `proxy`. With
+      # neither feature on, `upstream_peer` is a 404 stub (the plain
+      # `--no-default-features` run above covers that one).
+      - name: Unit tests, --no-default-features --features upload
+        run: cargo test -p lopatnov-conduit --lib --no-default-features --features upload
+
   # ── Cross-compile smoke tests for non-native architectures ──────────────────
   # Mirrors the `use_cross: true` targets in release.yml's build matrix, but
   # only exercises a release build (no test run / no artifact upload) — just

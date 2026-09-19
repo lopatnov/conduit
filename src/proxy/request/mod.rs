@@ -28,6 +28,10 @@
 
 mod body;
 mod cache;
+// The hostname-resolution cache is only reachable from `peer.rs`'s upstream-peer path,
+// which exists whenever a proxied upstream (`proxy`) or the internal upload loopback
+// upstream (`upload`) can be selected (issue #144).
+#[cfg(any(feature = "proxy", feature = "upload"))]
 mod dns;
 mod filter;
 mod handlers;
@@ -123,8 +127,14 @@ pub(crate) fn handler_kind_of(upstream: &UpstreamTarget) -> HandlerKind {
         UpstreamTarget::Local(LocalHandler::HotReloadSse) => HandlerKind::HotReloadSse,
         UpstreamTarget::Local(LocalHandler::HotReloadJs) => HandlerKind::HotReloadJs,
         UpstreamTarget::Local(LocalHandler::Overloaded) => HandlerKind::Overloaded,
-        UpstreamTarget::Local(_) => HandlerKind::Fallback,
-        _ => HandlerKind::Proxy,
+        UpstreamTarget::Local(LocalHandler::Fallback) => HandlerKind::Fallback,
+        // Deliberately exhaustive — no `_ =>` catch-all (issue #144). A catch-all here
+        // silently routed any *new* `LocalHandler`/`UpstreamTarget` variant to Pingora's
+        // `upstream_peer`, which is exactly the "falls through to a 502" bug class of
+        // #341/#342. `Upload` is proxied too: the upload service is an internal loopback
+        // upstream reached through `upstream_peer`, so it stays `HandlerKind::Proxy` even
+        // in a build without the `proxy` feature.
+        UpstreamTarget::Proxy { .. } | UpstreamTarget::Upload { .. } => HandlerKind::Proxy,
     }
 }
 
@@ -159,6 +169,19 @@ mod tests {
             rewrite: None,
             mirror_url: None,
             upstream_tls: None,
+        };
+        assert!(matches!(handler_kind_of(&upstream), HandlerKind::Proxy));
+    }
+
+    /// `Upload` is a proxied upstream (the upload service is an internal loopback
+    /// upstream reached through `upstream_peer`), so it must classify as
+    /// `HandlerKind::Proxy` in every build — including one without the `proxy` feature.
+    /// If this ever regresses to `Fallback`, `--features upload` without `proxy` would
+    /// answer every upload request with a 404 instead of reaching the upload service.
+    #[test]
+    fn handler_kind_upload_is_proxied() {
+        let upstream = UpstreamTarget::Upload {
+            addr: "127.0.0.1:4000".parse().unwrap(),
         };
         assert!(matches!(handler_kind_of(&upstream), HandlerKind::Proxy));
     }
