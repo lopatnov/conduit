@@ -575,6 +575,49 @@ jobs:
       - name: cargo hack check --workspace --each-feature --no-dev-deps
         run: cargo hack check --workspace --each-feature --no-dev-deps
 
+  # ── Feature-OFF unit tests (issue #144) ─────────────────────────────────────
+  # `cargo hack --no-dev-deps` above only *compiles* each feature state — it
+  # never runs a test — so what a build WITHOUT `proxy` actually does (the
+  # router ignoring `sites[].proxy`, a `routes[]` proxy action ending in the
+  # fallback and never in its dead `static` half, `feature_warnings()`) was
+  # untested. Library unit tests only: the integration tests under `tests/`
+  # proxy real traffic and get their own `required-features` in a later #144 PR.
+  ci-no-proxy:
+    name: Unit tests without the `proxy` feature
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: no-proxy-unit
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: Unit tests, --no-default-features
+        run: cargo test -p lopatnov-conduit --lib --no-default-features
+
+      # A separate invocation on purpose: with the root package in the same
+      # `cargo test`, its `features = ["proxy"]` pin on this crate would be
+      # unified in and the crate would silently be tested WITH the feature
+      # (140 tests instead of the 58 that exist without it) — the same trap
+      # the `--workspace` flag on the `cargo hack` job above exists for.
+      - name: Unit tests, conduit-proxy-http alone without its `proxy` feature
+        run: cargo test -p lopatnov-conduit-proxy-http --lib --no-default-features
+
+      # With `static` back on, a proxy+static `routes[]` entry COULD be served
+      # as a file root if the router got this wrong, so this is the run where
+      # the terminal-Fallback test is decisive (with `static` off a StaticFile
+      # can't be produced at all).
+      - name: Unit tests, --no-default-features --features static
+        run: cargo test -p lopatnov-conduit --lib --no-default-features --features static
+
   # ── Cross-compile smoke tests for non-native architectures ──────────────────
   # Mirrors the `use_cross: true` targets in release.yml's build matrix, but
   # only exercises a release build (no test run / no artifact upload) — just
