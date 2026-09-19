@@ -246,9 +246,18 @@ fn build_retry_state(
         // route with `retry` configured would keep ignoring `slowStartSecs`
         // for its fallback rotation, mirroring the same gap fixed in
         // router.rs's `resolve_proxy_routes` retry-bypass branch.
-        let mut retry_urls: Vec<String> = ramp
-            .filter_candidates(capacity.candidates(urls).unwrap_or(urls))
-            .into_owned();
+        //
+        // Hash-based strategies are exempt (#375, #436): a mid-ramp peer is
+        // fully eligible for their primary pick, so it must stay in the retry
+        // list too. This path has no sticky support, so the configured
+        // strategy is the effective one (unlike `peer_pick`, which forces
+        // sticky routes onto consistent-hash first).
+        let mut retry_urls: Vec<String> = capacity::ramp_filter_retry_candidates(
+            cfg.strategy.as_ref(),
+            ramp,
+            capacity.candidates(urls).unwrap_or(urls),
+        )
+        .into_owned();
         // Anchor attempt 1 to the peer actually chosen above (#367) — this
         // list used to be the unrotated candidate list, so attempt 1 always
         // connected to `retry_urls[0]` regardless of which peer `chosen_url`
@@ -767,6 +776,124 @@ mod tests {
             registry.conn_load("http://"),
             0,
             "malformed-URL release must leave no leaked slot even with a cap configured"
+        );
+    }
+
+    // ── #436: slow-start ramp vs. the retry list on the routes[] path ────────
+    //
+    // Two peers: "a" has just recovered (mid-ramp, fraction 0.0 over a 1h
+    // window) and "b" is fully ramped -- so the ramp filter can never fail
+    // open, and exactly "a" goes missing from a ramp-filtered list.
+
+    const RAMP_A: &str = "http://a:4000";
+    const RAMP_B: &str = "http://b:4000";
+
+    fn ramp_retry_target(strategy: LoadBalanceStrategy) -> ProxyRouteTarget {
+        use crate::config::RetryConfig;
+        use conduit_upstream::UpstreamHealthCheck;
+
+        ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+            targets: vec![
+                ProxyTarget::Simple(RAMP_A.to_string()),
+                ProxyTarget::Simple(RAMP_B.to_string()),
+            ],
+            strategy: Some(strategy),
+            health_check: Some(UpstreamHealthCheck {
+                slow_start_secs: Some(3600),
+                ..Default::default()
+            }),
+            retry: Some(RetryConfig {
+                attempts: 3,
+                conditions: vec!["5xx".to_string()],
+                backoff_ms: None,
+                backoff_jitter: None,
+                budget_percent: None,
+            }),
+            ..Default::default()
+        }))
+    }
+
+    fn registry_with_a_mid_ramp() -> UpstreamRegistry {
+        let registry = UpstreamRegistry::new();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        registry
+            .statuses
+            .entry(RAMP_A.to_string())
+            .or_default()
+            .recovery_time_secs = Some(now);
+        registry
+    }
+
+    /// A route path whose hash lands on index 1 ("b") of the two-peer ring.
+    /// Deliberate: `build_retry_state` re-inserts `chosen_url` at the front of
+    /// the retry list whenever the ramp-filtered candidates lack it, so if the
+    /// primary pick were "a" itself, "a" would appear in `retry.urls`
+    /// regardless of whether the exemption ran. With "b" as the primary pick,
+    /// "a" can only be there because the exemption kept it.
+    fn path_hashing_to_b() -> String {
+        (0..256)
+            .map(|i| format!("/p{i}"))
+            .find(|p| conduit_upstream::targets::fnv1a_hash(p) % 2 == 1)
+            .expect("some path in 0..256 hashes to index 1 of a 2-peer ring")
+    }
+
+    #[test]
+    fn hash_strategy_retry_list_keeps_a_mid_ramp_peer() {
+        // Before #436 the routes[] retry list was ramp-filtered
+        // unconditionally: a mid-ramp peer was fully eligible for the
+        // *primary* pick under a hash strategy (pick_bounded exempts it) but
+        // was silently dropped from retry attempts 1+ -- the exact
+        // inconsistency #375 closed for the `proxy`-map path.
+        let path = path_hashing_to_b();
+        for strategy in [
+            LoadBalanceStrategy::IpHash,
+            LoadBalanceStrategy::ConsistentHash,
+        ] {
+            let target = ramp_retry_target(strategy.clone());
+            let counters: DashMap<String, AtomicUsize> = DashMap::new();
+            let registry = registry_with_a_mid_ramp();
+
+            let resolution = resolve_route_target(&target, &path, &counters, &registry);
+            let retry = resolution
+                .state
+                .retry
+                .unwrap_or_else(|| panic!("{strategy:?}: retry must be configured"));
+            assert_eq!(
+                retry.urls.first().map(String::as_str),
+                Some(RAMP_B),
+                "{strategy:?}: sanity check -- the primary pick must be \"b\", not \
+                 \"a\", or this test cannot discriminate the bug it guards"
+            );
+            assert_eq!(
+                retry.urls,
+                vec![RAMP_B.to_string(), RAMP_A.to_string()],
+                "{strategy:?}: the mid-ramp peer must stay in the retry list"
+            );
+        }
+    }
+
+    #[test]
+    fn non_hash_strategy_retry_list_still_drops_a_mid_ramp_peer() {
+        // Control for the test above: the exemption must be exactly "hash
+        // strategies", not "any route". Round-robin keeps ramp-filtering the
+        // retry list (#157), so an over-broad fix that stopped filtering
+        // everywhere would pass the hash test but fail here.
+        let target = ramp_retry_target(LoadBalanceStrategy::RoundRobin);
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let registry = registry_with_a_mid_ramp();
+
+        let resolution = resolve_route_target(&target, "/anything", &counters, &registry);
+        let retry = resolution
+            .state
+            .retry
+            .expect("retry must be configured for this route");
+        assert_eq!(
+            retry.urls,
+            vec![RAMP_B.to_string()],
+            "a ramp-filtered retry list must exclude the mid-ramp peer"
         );
     }
 }

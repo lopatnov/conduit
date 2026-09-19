@@ -5,8 +5,6 @@
 //! function's phase split, just physically separated), then moved into this
 //! crate in PR B (issue #143 itself).
 
-use conduit_upstream::LoadBalanceStrategy;
-
 use crate::capacity;
 use crate::options::{ProxyCtx, RouteOptions};
 use crate::outcome::ProxyResolution;
@@ -200,15 +198,10 @@ pub(crate) fn pick_peer_with_retry(
         // with `retry` configured could have a mid-ramp peer silently
         // excluded from retry attempts 1+ -- `slow_start.rs`'s own
         // "structural, needs zero code" claim only ever covered the
-        // primary pick, not this separate retry-list filter.
-        let candidates: std::borrow::Cow<'_, [String]> = if matches!(
-            strategy,
-            Some(LoadBalanceStrategy::IpHash | LoadBalanceStrategy::ConsistentHash)
-        ) {
-            std::borrow::Cow::Borrowed(candidates)
-        } else {
-            ramp.filter_candidates(candidates)
-        };
+        // primary pick, not this separate retry-list filter. The exemption
+        // itself lives in `capacity::ramp_filter_retry_candidates`, shared
+        // with the `routes[]` path (#436).
+        let candidates = capacity::ramp_filter_retry_candidates(strategy, &ramp, candidates);
         retry_state_for(
             &candidates,
             &chosen_url,

@@ -19,6 +19,7 @@
 //! root crate's `src/proxy/capacity.rs` in issue #143 PR B; nothing outside
 //! the routing/resolution code in this crate ever called it directly.
 
+use std::borrow::Cow;
 use std::sync::atomic::AtomicUsize;
 
 use dashmap::DashMap;
@@ -140,6 +141,46 @@ pub(crate) struct BoundedPick<'a> {
     pub ramp: &'a Ramp<'a>,
 }
 
+/// Whether `strategy` maps each client/route key onto a fixed peer
+/// (`ip-hash` / `consistent-hash`; sticky routes reach this as
+/// `consistent-hash` via `sticky::effective_strategy`).
+///
+/// These strategies are exempt from slow start (#157): a client must keep
+/// hashing to the same peer, so the ramp must never be consulted for them —
+/// not for the primary pick ([`pick_bounded`] returns before it) and not for
+/// a retry candidate list ([`ramp_filter_retry_candidates`]). Keeping the
+/// predicate in this one module is deliberate: it was duplicated inline at
+/// each site, and the retry-list copy went missing on the `routes[]` path
+/// (#436) after being added on the `proxy`-map path (#375).
+pub(crate) fn is_hash_strategy(strategy: Option<&LoadBalanceStrategy>) -> bool {
+    matches!(
+        strategy,
+        Some(LoadBalanceStrategy::IpHash | LoadBalanceStrategy::ConsistentHash)
+    )
+}
+
+/// Slow-start (#157) filter for a *retry* candidate list, which is its own
+/// routing decision that never goes through [`pick_bounded`].
+///
+/// Hash-based strategies get the list back untouched (see
+/// [`is_hash_strategy`]): a mid-ramp peer is fully eligible for the primary
+/// pick under those strategies, so silently dropping it from retry attempts
+/// 1+ would make the two disagree (#375, #436). Every other strategy is
+/// ramp-filtered, and [`Ramp::filter_candidates`] itself never empties the
+/// list. Both retry-list builders (`peer_pick` and `routes_resolve`) must go
+/// through here rather than call the ramp directly.
+pub(crate) fn ramp_filter_retry_candidates<'c>(
+    strategy: Option<&LoadBalanceStrategy>,
+    ramp: &Ramp<'_>,
+    candidates: &'c [String],
+) -> Cow<'c, [String]> {
+    if is_hash_strategy(strategy) {
+        Cow::Borrowed(candidates)
+    } else {
+        ramp.filter_candidates(candidates)
+    }
+}
+
 /// Capacity-aware strategy dispatch. Returns `(url, is_least_conn)` — the
 /// same shape as [`conduit_upstream::strategy::LoadBalancingStrategy::pick`].
 ///
@@ -163,10 +204,7 @@ pub(crate) struct BoundedPick<'a> {
 pub(crate) fn pick_bounded(input: &BoundedPick<'_>) -> Option<(String, bool)> {
     let candidates = input.capacity.candidates(input.healthy)?;
 
-    if matches!(
-        input.strategy,
-        Some(LoadBalanceStrategy::IpHash | LoadBalanceStrategy::ConsistentHash)
-    ) {
+    if is_hash_strategy(input.strategy) {
         return hash_pick_bounded(input.healthy, input.hash_val, input.capacity)
             .map(|u| (u, false));
     }
@@ -598,5 +636,64 @@ mod tests {
         };
         let (url, _) = pick_bounded(&input).expect("must fail open, not return None");
         assert_eq!(url, healthy[0]);
+    }
+
+    // ── retry-list ramp exemption (#375, #436) ───────────────────────────────
+
+    #[test]
+    fn is_hash_strategy_is_true_only_for_the_two_hash_strategies() {
+        assert!(is_hash_strategy(Some(&LoadBalanceStrategy::IpHash)));
+        assert!(is_hash_strategy(Some(&LoadBalanceStrategy::ConsistentHash)));
+        // `None` means "default strategy" (round-robin), never hash.
+        assert!(!is_hash_strategy(None));
+        assert!(!is_hash_strategy(Some(&LoadBalanceStrategy::RoundRobin)));
+        assert!(!is_hash_strategy(Some(&LoadBalanceStrategy::LeastConn)));
+        assert!(!is_hash_strategy(Some(
+            &LoadBalanceStrategy::WeightedRoundRobin
+        )));
+    }
+
+    #[test]
+    fn ramp_filter_retry_candidates_keeps_a_mid_ramp_peer_only_for_hash_strategies() {
+        // peer 0 just recovered (fraction 0.0 over a 1h window -- excluded by
+        // the ramp filter with probability 1 for all practical purposes);
+        // peer 1 is fully ramped, so the filter can't fail open and both
+        // outcomes below are deterministic.
+        let reg = UpstreamRegistry::new();
+        let list = urls(2);
+        mark_just_recovered(&reg, &list[0]);
+        let ramp = Ramp::new(Some(3600), &reg);
+
+        for hash in [
+            LoadBalanceStrategy::IpHash,
+            LoadBalanceStrategy::ConsistentHash,
+        ] {
+            let kept = ramp_filter_retry_candidates(Some(&hash), &ramp, &list);
+            assert_eq!(
+                kept.as_ref(),
+                list.as_slice(),
+                "{hash:?} is ramp-exempt: the retry list must be returned untouched"
+            );
+            assert!(
+                matches!(kept, Cow::Borrowed(_)),
+                "exempt path allocates nothing"
+            );
+        }
+
+        // Control: every non-hash strategy (and the `None` default) is still
+        // ramp-filtered. Without this, an over-broad exemption -- e.g. always
+        // returning the list untouched -- would pass the loop above.
+        for other in [
+            None,
+            Some(LoadBalanceStrategy::RoundRobin),
+            Some(LoadBalanceStrategy::LeastConn),
+        ] {
+            let kept = ramp_filter_retry_candidates(other.as_ref(), &ramp, &list);
+            assert_eq!(
+                kept.as_ref(),
+                &list[1..],
+                "{other:?} must still drop the mid-ramp peer from the retry list"
+            );
+        }
     }
 }
