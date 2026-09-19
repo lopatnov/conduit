@@ -90,7 +90,8 @@
 //! reason described above, so both functions now take an iterator of
 //! already-resolved `(&config::UpstreamHealthCheck, &[String])` pairs
 //! instead. The root crate's own call site
-//! (`admin/api.rs::health_check_routes`) resolves `AppConfig` down to that
+//! (`admin/api.rs::spawn_upstream_probes`, which builds the slice with
+//! `health_check_routes`) resolves `AppConfig` down to that
 //! shape before calling in — the exact same pattern `conduit-hotreload`'s
 //! `build_watch_config` uses for its own analogous problem (issue
 //! #114/#140), applied here to a second function pair in the same

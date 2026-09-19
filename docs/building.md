@@ -67,9 +67,11 @@ listed above because there is nothing to add — `--no-default-features` turns
 them off. **Without `proxy`, reverse proxying is disabled**: `proxy` and
 `routes[].proxy` are ignored (a `routes[]` entry with a `proxy` action ends in
 the site's `fallback` response), and Conduit logs a startup warning naming each
-ignored entry. Today this only removes the routing; the proxy dependencies
-themselves (`reqwest`, …) are dropped in a later step of the same work
-([#144](https://github.com/lopatnov/conduit/issues/144)).
+ignored entry. The proxy-only code and the sticky-session crypto stack (`hmac`,
+`sha2`, …) are no longer compiled in either; the remaining proxy-only
+dependencies (`reqwest`, `url`) are dropped in a later step of the same work
+([#144](https://github.com/lopatnov/conduit/issues/144)). `default`, `standard`
+and `full` are unaffected — they all include `proxy`.
 
 ```bash
 # Typical self-hosted reverse-proxy / API gateway (auth stack + caching +

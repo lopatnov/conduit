@@ -640,6 +640,7 @@ pub(crate) fn apply_probe_result(
 /// `AppConfig`/`ProxyConfig`/`ProxyRouteTarget` — those are still root-crate-
 /// only types (a later migration phase, #143/#144, extracts proxy routing
 /// itself). The root crate's own call site (`admin/api.rs`'s
+/// `spawn_upstream_probes()`, which builds the slice with
 /// `health_check_routes()`) resolves `AppConfig` down to this shape before
 /// calling in — the same pattern `conduit-hotreload`'s `build_watch_config`
 /// uses for its own analogous `AppConfig`-dependency problem (issue
