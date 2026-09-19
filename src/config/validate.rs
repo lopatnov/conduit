@@ -269,8 +269,42 @@ fn check_per_site_feature_warnings(config: &AppConfig, warnings: &mut Vec<String
     for (i, site) in config.sites.iter().enumerate() {
         check_site_middleware_feature_warnings(i, site, warnings);
         check_site_simple_feature_warnings(i, site, warnings);
+        check_site_proxy_feature_warnings(i, site, warnings);
     }
 }
+
+/// Warn about `proxy` configuration a build without the `proxy` feature cannot
+/// honour (issue #144): the router ignores `sites[].proxy` entirely and ends a
+/// `routes[]` entry with a `proxy` action in the site's fallback response, so
+/// without this the operator would just see 404s and no explanation.
+///
+/// Two cfg'd variants rather than a `#[cfg]` inside one body, so the
+/// proxy-enabled build carries no unused-variable noise (same shape as
+/// `resolve_site_proxy` in `router.rs`).
+#[cfg(not(feature = "proxy"))]
+fn check_site_proxy_feature_warnings(i: usize, site: &SiteConfig, warnings: &mut Vec<String>) {
+    if site.proxy.is_some() {
+        warnings.push(format!(
+            "sites[{i}].proxy is configured but Conduit was compiled without the `proxy` \
+             feature — reverse proxying is disabled and this configuration will be ignored \
+             (requests fall through to `static`/`fallback`). \
+             Recompile with `--features proxy` to enable."
+        ));
+    }
+    for (j, route) in site.routes.iter().flatten().enumerate() {
+        if route.proxy.is_some() {
+            warnings.push(format!(
+                "sites[{i}].routes[{j}].proxy is configured but Conduit was compiled without \
+                 the `proxy` feature — requests matching this route are answered by the \
+                 site's `fallback` response (its `static` action, if any, is not served \
+                 either). Recompile with `--features proxy` to enable."
+            ));
+        }
+    }
+}
+
+#[cfg(feature = "proxy")]
+fn check_site_proxy_feature_warnings(_i: usize, _site: &SiteConfig, _warnings: &mut Vec<String>) {}
 
 /// Check middleware-level feature warnings (wasm, rhai) for a single site.
 fn check_site_middleware_feature_warnings(i: usize, site: &SiteConfig, warnings: &mut Vec<String>) {
@@ -1875,6 +1909,69 @@ mod tests {
         assert!(errs(r#"{ "port": 8080 }"#).is_empty());
     }
 
+    // ── `proxy` feature warnings (#144 PR 2) ─────────────────────────────────
+
+    /// One config with both a legacy `proxy` and a `routes[]` proxy action.
+    const PROXY_CONFIG: &str = r#"{
+        "port": 8080,
+        "proxy": "http://backend:4000",
+        "routes": [
+            { "match": { "path": "/a/**" }, "static": "./dist" },
+            { "match": { "path": "/b/**" }, "proxy": "http://other:4000" }
+        ]
+    }"#;
+
+    /// Without `proxy` the operator must be told BOTH shapes are inert —
+    /// pointing at the exact `routes[1]`, not the static-only `routes[0]`.
+    #[cfg(not(feature = "proxy"))]
+    #[test]
+    fn proxy_config_without_feature_generates_warnings() {
+        let warnings = feature_warnings(&parse(PROXY_CONFIG));
+        let proxy_warnings: Vec<&String> = warnings
+            .iter()
+            .filter(|w| w.contains("`proxy` feature"))
+            .collect();
+        assert_eq!(proxy_warnings.len(), 2, "got: {warnings:?}");
+        assert!(
+            proxy_warnings
+                .iter()
+                .any(|w| w.starts_with("sites[0].proxy ")),
+            "missing the legacy `proxy` warning: {warnings:?}"
+        );
+        assert!(
+            proxy_warnings
+                .iter()
+                .any(|w| w.starts_with("sites[0].routes[1].proxy ")),
+            "must name the routes[] entry that carries the proxy action: {warnings:?}"
+        );
+    }
+
+    /// A config with no proxying at all stays silent even without the feature
+    /// — the warning is about configuration that can't be honoured, not about
+    /// the build.
+    #[cfg(not(feature = "proxy"))]
+    #[test]
+    fn static_only_config_without_proxy_feature_is_silent() {
+        let warnings = feature_warnings(&parse(
+            r#"{ "port": 8080, "routes": [{ "match": { "path": "/a/**" }, "static": "./dist" }] }"#,
+        ));
+        assert!(
+            !warnings.iter().any(|w| w.contains("`proxy` feature")),
+            "got: {warnings:?}"
+        );
+    }
+
+    /// With the feature on, the same config produces no `proxy` warning.
+    #[cfg(feature = "proxy")]
+    #[test]
+    fn proxy_config_with_feature_generates_no_proxy_warning() {
+        let warnings = feature_warnings(&parse(PROXY_CONFIG));
+        assert!(
+            !warnings.iter().any(|w| w.contains("`proxy` feature")),
+            "got: {warnings:?}"
+        );
+    }
+
     #[test]
     fn duplicate_host_port_detected() {
         let e = errs(r#"[{ "port": 8080 }, { "port": 8080 }]"#);
@@ -2905,7 +3002,15 @@ mod tests {
 
     #[test]
     fn no_warnings_for_plain_config() {
-        // A config with no feature-gated options produces no warnings.
+        // A config with no feature-gated options produces no warnings. `proxy`
+        // is itself feature-gated now (#144), so it is not part of the "plain"
+        // config — see the `cfg(proxy)` sibling below for the old coverage.
+        assert!(warns(r#"{ "port": 8080 }"#).is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "proxy")]
+    fn no_warnings_for_a_proxy_config_when_proxy_is_compiled_in() {
         assert!(warns(r#"{ "port": 8080, "proxy": "http://up:4000" }"#).is_empty());
     }
 
