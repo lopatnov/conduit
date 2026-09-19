@@ -519,7 +519,13 @@ subtle.workspace    = true
 # (`handler/static_files.rs`'s O_NOFOLLOW open) moved into
 # `crates/conduit-static` (#114/#139), which carries its own gated `libc`
 # edge. See the [dependencies] comment on `lopatnov-conduit-static` above.
-url.workspace       = true
+# url: optional (issue #144, PR 4b) -- only three root call sites parse URLs:
+# the proxy-loop warning (`proxy`), the forwardAuth-targets-the-Admin-API
+# check (`forward-auth`) and `/cache/purge` (`cache`). Each of those features
+# enables `dep:url`, so `url` and its whole `idna`/`icu_*` tree (~23 crates)
+# leave a build that has none of them. The validation rules themselves are
+# unchanged wherever the thing they guard can exist.
+url = { workspace = true, optional = true }
 # httpdate stays unconditional here — logging.rs (access-log CLF dates) and
 # response_phase.rs (stale-while-revalidate date handling) both use it
 # directly and are unrelated to #114/#139's scope. crates/conduit-static
@@ -542,15 +548,18 @@ base64.workspace    = true
 
 # --- HTTP client (feature: jwt for JWKS via crates/conduit-auth-jwt,
 # forward-auth, mirroring) ---
-# reqwest is NOT optional yet: it is still a root dependency for traffic
-# mirroring (`proxy`) and, until the `cache` -> `proxy` implication lands
-# (issue #144 PR 5), for the cache's early-refresh fetch. The root-crate
-# mirroring call site (`fire_mirror_request`) is already gated on `proxy`
-# (#144 PR 3); making the dependency itself optional is #144 PR 4/5.
+# reqwest is optional (issue #144, PR 4b): the only two root call sites are
+# traffic mirroring (`fire_mirror_request`, gated on `proxy` since PR 3) and
+# the cache's early-refresh fetch (`fire_early_refresh`, gated on `cache`), so
+# `proxy` and `cache` each enable `dep:reqwest`. (Both features keep their own
+# enabling line while `cache` does not yet imply `proxy` -- that implication is
+# #144 PR 5's decision D1.) The forwardAuth and JWKS clients live in
+# `crates/conduit-auth-forward` / `crates/conduit-auth-jwt` with their own
+# `reqwest` edge and are unaffected.
 # `jsonwebtoken` itself moved to `crates/conduit-auth-jwt` (#114/#133) and is
 # no longer a direct root-crate [dependencies] entry — only a
 # [dev-dependencies] one below (tests/auth.rs generates test tokens).
-reqwest.workspace = true
+reqwest = { workspace = true, optional = true }
 
 # Redis-backed rate limiting AND caching both live entirely in their owning
 # crates as of #114/#137 slice 2 (rate limiting) / #114/#135 (caching) — the
@@ -615,14 +624,18 @@ default = ["proxy", "compression", "static", "hotreload"]
 # Forwards into `lopatnov-conduit-proxy-http`/`-upstream`'s own `proxy`
 # features (issue #144, PR 4a), so a `--no-default-features` build really
 # drops their proxy-only code and the `hmac`/`sha2` sticky-session stack. (Until
-# this PR the root pinned those two features on unconditionally, because
+# PR 4a the root pinned those two features on unconditionally, because
 # `admin/api.rs`'s connection-warmup spawn was not gated yet.) Each crate's
 # `proxy` feature is independent -- `conduit-proxy-http`'s gated code never
 # calls into `conduit-upstream`'s -- so both are forwarded separately here.
-# `reqwest` and `url` become optional behind this feature in PR 4b.
+# It also enables the two root dependencies that only proxying needs (PR 4b):
+# `reqwest` (traffic mirroring) and `url` (the proxy-loop warning's loopback
+# parsing).
 proxy = [
     "lopatnov-conduit-proxy-http/proxy",
     "lopatnov-conduit-upstream/proxy",
+    "dep:reqwest",
+    "dep:url",
 ]
 
 # ── Compression ──────────────────────────────────────────────────────────────
@@ -730,7 +743,7 @@ consumers = ["lopatnov-conduit-auth-consumers/consumers"]
 # is always a dependency (see the [dependencies] comment above); this only
 # forwards into that crate's own `forward-auth` feature, which gates the
 # real `guard::ForwardAuthGuard`.
-forward-auth = ["lopatnov-conduit-auth-forward/forward-auth"]
+forward-auth = ["lopatnov-conduit-auth-forward/forward-auth", "dep:url"]
 
 # ── Scripting & plugins ────────────────────────────────────────────────────────
 # Rhai scripting middleware (type: "script" in middleware[]). `MiddlewareEntry`
@@ -783,7 +796,7 @@ redis = ["lopatnov-conduit-cache/redis", "lopatnov-conduit-ratelimit/redis"]
 # [dependencies] comment above); this forwards into that crate's own `cache`
 # feature (a marker feature there too, matching pre-extraction — see that
 # crate's `src/lib.rs` doc comment).
-cache = ["lopatnov-conduit-cache/cache"]
+cache = ["lopatnov-conduit-cache/cache", "dep:reqwest", "dep:url"]
 # Disk cache backend (cache.store: "disk:/path"). Forwards into
 # `crates/conduit-cache`'s own `disk-cache` feature (also a marker feature —
 # the `disk` module itself has no feature gate, matching pre-extraction).
