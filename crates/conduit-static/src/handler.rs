@@ -849,6 +849,33 @@ mod tests {
         );
     }
 
+    /// `open_no_follow` is the last line of defence against a symlink swapped in
+    /// between `stat_no_symlink` and the actual open (TOCTOU), so it must itself
+    /// refuse to follow one — `O_NOFOLLOW` makes `open(2)` fail with `ELOOP`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_no_follow_refuses_a_symlink_but_opens_a_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_file = dir.path().join("real.txt");
+        std::fs::write(&real_file, b"hello").unwrap();
+        let link_path = dir.path().join("link.txt");
+        std::os::unix::fs::symlink(&real_file, &link_path).unwrap();
+
+        let err = open_no_follow(&link_path)
+            .await
+            .expect_err("a symlink must not be opened");
+        assert_eq!(
+            err.raw_os_error(),
+            Some(libc::ELOOP),
+            "expected ELOOP from O_NOFOLLOW, got: {err}"
+        );
+
+        assert!(
+            open_no_follow(&real_file).await.is_ok(),
+            "a regular file must still open"
+        );
+    }
+
     // ── resolve_pre_compressed ────────────────────────────────────────────────
 
     #[tokio::test]
