@@ -64,14 +64,56 @@ proxy. Add features with `--features`:
 
 `proxy`, `compression`, `static` and `hotreload` are on by default and are not
 listed above because there is nothing to add — `--no-default-features` turns
-them off. **Without `proxy`, reverse proxying is disabled**: `proxy` and
-`routes[].proxy` are ignored (a `routes[]` entry with a `proxy` action ends in
-the site's `fallback` response), and Conduit logs a startup warning naming each
-ignored entry. The proxy-only code and the sticky-session crypto stack (`hmac`,
-`sha2`, …) are no longer compiled in either; the remaining proxy-only
-dependencies (`reqwest`, `url`) are dropped in a later step of the same work
-([#144](https://github.com/lopatnov/conduit/issues/144)). `default`, `standard`
-and `full` are unaffected — they all include `proxy`.
+them off.
+
+### Building without `proxy`
+
+**Without `proxy`, reverse proxying is compiled out.** `proxy` and
+`routes[].proxy` are ignored, and Conduit logs a startup warning naming each
+ignored entry (also returned in the `warnings` array of `POST /reload`). Static
+files, `upload`, `tcp` sites, the Admin API, `/metrics` and hot-reload keep
+working.
+
+**Who is affected:** only `--no-default-features` builds. `default`, `standard`
+and `full` all include `proxy`; their dependency sets and behavior are
+unchanged.
+
+**Three config shapes change meaning** without `proxy` — check for them before
+switching:
+
+1. A legacy top-level `proxy` shorthand (`proxy: "http://…"`) next to a
+   site-level `static`. With `proxy`, the proxy wins and the `static` root is
+   shadowed — it is never served. Without `proxy` the shadow disappears and
+   **the previously dead `static` root becomes live**, so a directory that was
+   never reachable is now served.
+2. A legacy `proxy` map (`proxy: { "/api": "http://…" }`) next to a site-level
+   `static`. Requests under the proxied prefixes used to go to an upstream; they
+   now fall through to `static`, then to `fallback`.
+3. A `routes[]` entry with a `proxy` action. It ends in the site's `fallback`
+   response — not in that entry's own `static` half, which stays dead
+   configuration.
+
+**What leaves the binary** (`--no-default-features --features static`: 302 → 265
+crates): the proxy-only code (upstream selection with capacity limits,
+slow-start and sticky sessions, retry, traffic mirroring, active health
+checks), the sticky-session crypto (`hmac`, `sha2`), the HTTP client used for
+traffic mirroring and cache early-refresh (`reqwest` with its
+`hyper-rustls`/`tower-http` layers) and the URL parser (`url` with its
+`idna`/`icu_*` tree). Features that need them bring them back: `proxy` brings
+back all of it, while `cache`, `forward-auth` and `jwt` each bring back
+`reqwest`, `url` and `tower-http` through their own crates (`jwt` also
+`hmac`/`sha2`) — so a build that enables any of those is larger than the figures
+above.
+
+**What stays:** the Admin API (axum) and Pingora still need the
+`hyper`/`tower`/`h2` stack, plus `base64`, `subtle`, `regex`, `dashmap`, `notify`
+and `prometheus`, so this is not a "no HTTP stack" build. The `/upstreams*` admin
+endpoints and the `conduit upstreams …` / `status --upstream` commands stay
+available — they are plain HTTP clients of an admin API, which may belong to
+another instance — but no active health checks run, so the upstream registry
+holds no probe results. `DELETE /cache/purge` answers `501` without `cache`.
+
+Tracking: [#144](https://github.com/lopatnov/conduit/issues/144).
 
 ```bash
 # Typical self-hosted reverse-proxy / API gateway (auth stack + caching +

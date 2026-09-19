@@ -134,6 +134,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`--no-default-features` builds no longer contain any reverse-proxy code or
+  its dependencies** (issue #144). `proxy` is now a real Cargo feature: with it
+  off, upstream selection (capacity limits, slow-start, sticky sessions), retry,
+  traffic mirroring and the active health checks are compiled out, together with
+  `reqwest`, `url` (and its `idna`/`icu_*` tree) and `hmac`/`sha2` — 302 → 265
+  crates for `--no-default-features --features static`. `default`, `standard`
+  and `full` include `proxy` and are unchanged. Three config shapes change
+  meaning in a build without it: a legacy top-level `proxy` shorthand next to a
+  site-level `static` (the previously shadowed `static` root becomes live), a
+  legacy `proxy` map next to `static` (requests under the proxied prefixes fall
+  through to `static`/`fallback` instead of an upstream), and a `routes[]` entry
+  with a `proxy` action (it ends in the site's `fallback`, never in its own
+  `static` half). Each logs a startup warning naming the exact index. See
+  `docs/building.md`.
+- **The "`forwardAuth.url` points at the Admin API (`127.0.0.1:2019`)" validation
+  error now applies only to builds that enforce forwardAuth** (`--features
+  forward-auth`, part of `standard`/`full`). Without the feature the whole
+  `forwardAuth` block is ignored (and already warned about), so such a config
+  loads with that warning instead of an error; the rule itself is unchanged
+  wherever forwardAuth runs.
+- **`DELETE /cache/purge` answers `501 Not Implemented` in builds without the
+  `cache` feature.** It used to answer `{"status":"ok","purged":false}` — for a
+  cache such a build does not have. `cache` is not part of `default`, so a plain
+  `cargo build` is affected; the published `standard`/`full` binaries and
+  images are not.
 - `RateLimitConfig` moved to its own crate (`conduit-ratelimit`, issue
   #114/#137 slice 1) — no config shape or behavior change, this closes a
   code-duplication finding between the root crate and

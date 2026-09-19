@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
+// `url` is optional (issue #144, PR 4b): only the proxy-loop warning (`proxy`) and the
+// forwardAuth-targets-the-Admin-API check (`forward-auth`) parse URLs.
+#[cfg(any(feature = "proxy", feature = "forward-auth"))]
 use url::Url as ParsedUrl;
 
 pub use conduit_config_core::validation::{partition_by_severity, Severity, ValidationError};
@@ -567,7 +570,9 @@ fn site_uses_redis_store(site: &SiteConfig) -> bool {
         .any(is_redis_store)
 }
 
-/// Warn when a proxy target points back to a port Conduit itself is listening on.
+/// Warn when a proxy target points back to a port Conduit itself is listening on
+/// -- the `proxy` variant.
+#[cfg(feature = "proxy")]
 fn check_proxy_loop_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
     let listening_ports: Vec<u16> = config.sites.iter().map(effective_port).collect();
     for (i, site) in config.sites.iter().enumerate() {
@@ -586,6 +591,13 @@ fn check_proxy_loop_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
         }
     }
 }
+
+/// No-`proxy` variant of [`check_proxy_loop_warnings`]: nothing is proxied
+/// without the feature (`check_site_proxy_feature_warnings` already says every
+/// `proxy` entry is ignored), so there is no loop to warn about -- and the
+/// loopback parsing that needs the `url` crate is compiled out with it.
+#[cfg(not(feature = "proxy"))]
+fn check_proxy_loop_warnings(_config: &AppConfig, _warnings: &mut Vec<String>) {}
 
 /// Warn when JWT HMAC secrets are shorter than the 32-byte minimum.
 fn check_jwt_secret_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
@@ -644,6 +656,7 @@ fn check_metrics_auth_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
 // ── Proxy-loop helpers ─────────────────────────────────────────────────────
 
 /// Extract all URLs from a single `ProxyRouteTarget` into `out`.
+#[cfg(feature = "proxy")]
 fn collect_route_target_urls(target: &ProxyRouteTarget, out: &mut Vec<String>) {
     match target {
         ProxyRouteTarget::Url(u) => out.push(u.clone()),
@@ -661,6 +674,7 @@ fn collect_route_target_urls(target: &ProxyRouteTarget, out: &mut Vec<String>) {
 }
 
 /// Collect every proxy upstream URL configured for a site (from all proxy modes).
+#[cfg(feature = "proxy")]
 fn collect_proxy_targets(site: &SiteConfig) -> Vec<String> {
     use crate::config::schema::ProxyConfig;
     let mut out = Vec::new();
@@ -688,6 +702,7 @@ fn collect_proxy_targets(site: &SiteConfig) -> Vec<String> {
 }
 
 /// If `url` has a loopback host (127.x.x.x, ::1, localhost), return its port.
+#[cfg(feature = "proxy")]
 fn loopback_port(url: &str) -> Option<u16> {
     let parsed = ParsedUrl::parse(url).ok()?;
     let host = parsed.host_str()?;
@@ -1114,6 +1129,48 @@ fn validate_consumer_jwt(
     }
 }
 
+/// Reject a forwardAuth URL that targets the Conduit Admin API (default
+/// 127.0.0.1:2019) -- the `forward-auth` variant.
+///
+/// A misconfigured forwardAuth pointing to the admin API would allow an
+/// attacker to exploit the proxy's own admin endpoint as the auth server.
+/// Compiled only with `forward-auth` (issue #144, PR 4b): without it no
+/// forwardAuth subrequest is ever made -- `feature_warnings()` says the whole
+/// block is ignored -- so there is nothing for the rule to guard, and the
+/// rule itself is unchanged wherever the guard it protects can exist.
+#[cfg(feature = "forward-auth")]
+fn check_forward_auth_admin_target(
+    cfg: &crate::config::schema::ForwardAuthConfig,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let Ok(parsed) = ParsedUrl::parse(&cfg.url) {
+        let host = parsed.host_str().unwrap_or("");
+        let port = parsed.port().unwrap_or(80);
+        let is_loopback =
+            host == "localhost" || host == "127.0.0.1" || host == "::1" || host.starts_with("127.");
+        if is_loopback && port == 2019 {
+            errors.push(ValidationError::new(
+                format!("{prefix}.url"),
+                "forwardAuth.url points to 127.0.0.1:2019 — this is the Conduit Admin API. \
+                 Routing external auth requests through the admin API is a security risk. \
+                 Use a dedicated auth service instead.",
+            ));
+        }
+    }
+}
+
+/// No-`forward-auth` variant of [`check_forward_auth_admin_target`]: the
+/// forwardAuth block is ignored in such a build, so no admin-API target can
+/// be exploited (and the URL parsing that needs the `url` crate is compiled out).
+#[cfg(not(feature = "forward-auth"))]
+fn check_forward_auth_admin_target(
+    _cfg: &crate::config::schema::ForwardAuthConfig,
+    _prefix: &str,
+    _errors: &mut Vec<ValidationError>,
+) {
+}
+
 fn validate_forward_auth(
     cfg: &crate::config::schema::ForwardAuthConfig,
     prefix: &str,
@@ -1133,23 +1190,7 @@ fn validate_forward_auth(
         return;
     }
 
-    // Warn if the URL targets the Conduit Admin API (default 127.0.0.1:2019).
-    // A misconfigured forwardAuth pointing to the admin API would allow an
-    // attacker to exploit the proxy's own admin endpoint as the auth server.
-    if let Ok(parsed) = ParsedUrl::parse(&cfg.url) {
-        let host = parsed.host_str().unwrap_or("");
-        let port = parsed.port().unwrap_or(80);
-        let is_loopback =
-            host == "localhost" || host == "127.0.0.1" || host == "::1" || host.starts_with("127.");
-        if is_loopback && port == 2019 {
-            errors.push(ValidationError::new(
-                format!("{prefix}.url"),
-                "forwardAuth.url points to 127.0.0.1:2019 — this is the Conduit Admin API. \
-                 Routing external auth requests through the admin API is a security risk. \
-                 Use a dedicated auth service instead.",
-            ));
-        }
-    }
+    check_forward_auth_admin_target(cfg, prefix, errors);
     if let Some(0) = cfg.timeout_ms {
         errors.push(ValidationError::new(
             format!("{prefix}.timeoutMs"),
@@ -3155,6 +3196,7 @@ mod tests {
 
     // ── proxy loop detection ──────────────────────────────────────────────────
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn proxy_loop_on_own_port_warns() {
         // Port 8080 listens AND is the proxy target → loop.
@@ -3166,6 +3208,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn proxy_to_different_port_no_warn() {
         let w = warns(r#"{ "port": 8080, "proxy": "http://127.0.0.1:4000" }"#);
@@ -3175,6 +3218,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn proxy_to_external_host_no_warn() {
         let w = warns(r#"{ "port": 8080, "proxy": "http://api.example.com:8080" }"#);
@@ -3255,12 +3299,27 @@ mod tests {
 
     // ── forwardAuth SSRF to admin API ─────────────────────────────────────────
 
+    #[cfg(feature = "forward-auth")]
     #[test]
     fn forward_auth_to_admin_api_port_is_error() {
         let e = errs(r#"{ "port": 8080, "forwardAuth": { "url": "http://127.0.0.1:2019/auth" } }"#);
         assert!(
             e.iter().any(|err| err.message.contains("Admin API")),
             "forwardAuth pointing to admin port must be an error: {e:?}"
+        );
+    }
+
+    /// Without `forward-auth` the whole `forwardAuth` block is ignored (and
+    /// `feature_warnings()` says so), so the Admin-API-target rule has nothing
+    /// to guard: it is scoped to builds that enforce forwardAuth, together with
+    /// the `url` parsing it needs. Pinned so the scoping cannot drift silently.
+    #[cfg(not(feature = "forward-auth"))]
+    #[test]
+    fn forward_auth_to_admin_api_port_is_not_an_error_without_the_feature() {
+        let e = errs(r#"{ "port": 8080, "forwardAuth": { "url": "http://127.0.0.1:2019/auth" } }"#);
+        assert!(
+            e.iter().all(|err| !err.message.contains("Admin API")),
+            "the Admin-API rule is scoped to builds that enforce forwardAuth: {e:?}"
         );
     }
 
@@ -3320,6 +3379,7 @@ mod tests {
 
     // ── loopback_port helper ─────────────────────────────────────────────────
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn loopback_localhost_explicit_port_detected() {
         // localhost with an explicit port should trigger loop detection.
@@ -3330,6 +3390,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn loopback_localhost_default_http_port() {
         // localhost without explicit port → defaults to 80 for http.
@@ -3340,6 +3401,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn loopback_localhost_https_default_port() {
         // https://localhost without port → defaults to 443.
@@ -3353,6 +3415,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn loopback_127_x_subnet_detected() {
         // 127.0.0.2 is still loopback.
@@ -3363,6 +3426,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn non_loopback_host_no_loop_warn() {
         let w = warns(r#"{ "port": 8080, "proxy": "http://10.0.0.1:8080" }"#);
@@ -3880,6 +3944,7 @@ mod tests {
 
     // ── loopback_port with IPv6 ───────────────────────────────────────────────
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn loopback_ipv6_loop_detected() {
         let w = warns(r#"{ "port": 8080, "proxy": "http://[::1]:8080" }"#);
@@ -4017,6 +4082,7 @@ mod tests {
 
     // ── proxy loop detection via routes[] array ───────────────────────────────
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn proxy_loop_detection_via_routes_array() {
         let w = warns(
@@ -4028,6 +4094,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn proxy_loop_detection_routes_array_external_no_warn() {
         let w = warns(

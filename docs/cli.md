@@ -560,6 +560,10 @@ that: `jwt` + `consumers` + `forward-auth` + `cache` + `acme`, the auth/cache/
 auto-TLS stack most self-hosted reverse-proxy / API-gateway deployments need.
 Reproduce it from source with `--features standard`.
 
+`--no-default-features` goes the other way and compiles reverse proxying itself
+out — see [Building without `proxy`](building.md#building-without-proxy) for the
+exact effect, including which config shapes change meaning.
+
 ```bash
 # Minimal build (default = ["proxy", "compression", "static", "hotreload"]) — embed-friendly, smallest footprint
 cargo build --release

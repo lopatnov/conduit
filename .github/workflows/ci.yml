@@ -611,9 +611,8 @@ jobs:
       # The pin is gone (the root's `proxy` now forwards instead), but a
       # dedicated run stays the clearest statement of what is being tested, and
       # the dependency leak check below fails if such a pin ever comes back on
-      # `lopatnov-conduit-proxy-http` (one on `lopatnov-conduit-upstream` only
-      # pulls `reqwest`, which the check starts asserting once it becomes
-      # optional).
+      # either crate (`hmac`/`sha2` for `lopatnov-conduit-proxy-http`, `reqwest`
+      # for `lopatnov-conduit-upstream`).
       - name: Unit tests, conduit-proxy-http alone without its `proxy` feature
         run: cargo test -p lopatnov-conduit-proxy-http --lib --no-default-features
 
@@ -633,9 +632,10 @@ jobs:
         run: cargo test -p lopatnov-conduit --lib --no-default-features --features upload
 
       # The property #144 exists for: a build without `proxy` must not carry
-      # proxy-only dependencies. Only what the forward has removed so far is
-      # asserted (`hmac`/`sha2`, the sticky-session stack); later PRs extend the
-      # list as `url`/`reqwest` become optional. Two things make a naive check
+      # proxy-only dependencies: the sticky-session stack (`hmac`, `sha2`), the
+      # HTTP client used for mirroring/early refresh (`reqwest`, `tower-http`) and
+      # the URL parser (`url`, `idna`, `icu_*`) -- the last two only come back
+      # with `proxy`, `forward-auth` or `cache`. Things that make a naive check
       # pass forever: `cargo tree -i <crate>` on an ABSENT crate prints
       # "nothing to print" and still exits 0, so the exit code proves nothing --
       # use a positive match on the crate list; `-e normal` is mandatory,
@@ -648,11 +648,17 @@ jobs:
           set -euo pipefail
           crates=$(cargo tree -p lopatnov-conduit --no-default-features --features static \
                      -e normal --prefix none | sed 's/ v.*//' | sort -u)
-          if ! printf '%s\n' "$crates" | grep -qx 'lopatnov-conduit'; then
+          # No `-q`: `grep -q` exits at the first match and, under `pipefail`, a
+          # still-writing `printf` could die of SIGPIPE on a longer list and turn a
+          # good list into a spurious failure. Draining the pipe avoids that.
+          if ! printf '%s\n' "$crates" | grep -x 'lopatnov-conduit' > /dev/null; then
             echo "cargo tree produced no usable crate list; refusing to pass vacuously"
             exit 1
           fi
-          leaked=$(printf '%s\n' "$crates" | grep -xE 'hmac|sha2' || true)
+          # grep exits 1 for "no match" (the good case) but 2 for an error such as a
+          # broken pattern -- `|| true` would treat both as "clean", so only exit 1
+          # is tolerated here.
+          leaked=$(printf '%s\n' "$crates" | grep -xE 'hmac|sha2|reqwest|tower-http|url|idna|icu_.*' || [ "$?" -eq 1 ])
           if [ -n "$leaked" ]; then
             echo "proxy-only dependencies leaked into a build without the proxy feature:"
             echo "$leaked"

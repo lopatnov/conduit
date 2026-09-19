@@ -133,6 +133,11 @@ pub enum AdminError {
         message: String,
         fields: Vec<String>,
     },
+    /// 501 Not Implemented -- the endpoint exists but this build does not
+    /// include the feature behind it (e.g. `/cache/purge` without `cache`,
+    /// issue #144 PR 4b). Only constructed in such builds.
+    #[cfg_attr(feature = "cache", allow(dead_code))]
+    NotImplemented(String),
 }
 
 impl IntoResponse for AdminError {
@@ -145,6 +150,11 @@ impl IntoResponse for AdminError {
                 .into_response(),
             AdminError::ServerError(m) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "status": "error", "message": m })),
+            )
+                .into_response(),
+            AdminError::NotImplemented(m) => (
+                StatusCode::NOT_IMPLEMENTED,
                 Json(json!({ "status": "error", "message": m })),
             )
                 .into_response(),
@@ -956,6 +966,7 @@ async fn upstreams_weight_handler(
 #[derive(Deserialize)]
 struct CachePurgeParams {
     /// Full URL to purge, e.g. `https://example.com/api/data?page=1`
+    #[cfg_attr(not(feature = "cache"), allow(dead_code))]
     url: String,
 }
 
@@ -967,6 +978,12 @@ struct CachePurgeParams {
 /// Returns `{"status":"ok","purged":true}` when an entry was found and removed,
 /// `{"status":"ok","purged":false}` when no matching entry existed, or an error
 /// JSON on bad input.
+///
+/// The `cache` variant. Without the feature there is no response cache to
+/// purge -- and the `url` crate this handler parses with is not compiled in
+/// (issue #144, PR 4b) -- so the route stays registered but answers 501, see
+/// the no-`cache` variant below.
+#[cfg(feature = "cache")]
 async fn cache_purge_handler(Query(params): Query<CachePurgeParams>) -> AdminResult<Json<Value>> {
     use pingora_cache::storage::{PurgeType, Storage};
     use pingora_cache::trace::Span;
@@ -1009,6 +1026,19 @@ async fn cache_purge_handler(Query(params): Query<CachePurgeParams>) -> AdminRes
 
     Ok(Json(
         json!({ "status": "ok", "purged": purged, "url": raw }),
+    ))
+}
+
+/// No-`cache` variant of [`cache_purge_handler`]: a build without the `cache`
+/// feature has no response cache, so answering `{"purged":false}` (what the
+/// real handler would say for an entry that never existed) would be a silent
+/// lie about a store nothing writes to. 501 says what is actually true.
+#[cfg(not(feature = "cache"))]
+async fn cache_purge_handler(Query(_params): Query<CachePurgeParams>) -> AdminResult<Json<Value>> {
+    Err(AdminError::NotImplemented(
+        "cache purge is unavailable: this Conduit was built without the `cache` feature, \
+         so there is no response cache to purge"
+            .to_owned(),
     ))
 }
 
@@ -1200,6 +1230,63 @@ fn log_file_path(cfg: &Option<LoggingConfig>) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::config::from_str as parse_config;
+
+    // ── cache purge (issue #144, PR 4b) ──────────────────────────────────────
+
+    /// `NotImplemented` is a 501 with the usual `{"status":"error","message":…}`
+    /// body -- unconditional, so it is exercised in every build.
+    #[tokio::test]
+    async fn not_implemented_is_501_with_error_body() {
+        let resp = AdminError::NotImplemented("nope".to_owned()).into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["message"], "nope");
+    }
+
+    /// Without the `cache` feature the route stays registered but must answer
+    /// 501 -- not `{"purged":false}`, which would claim there was a store to
+    /// purge and that the entry simply did not exist.
+    #[cfg(not(feature = "cache"))]
+    #[tokio::test]
+    async fn cache_purge_without_cache_feature_answers_501() {
+        let err = cache_purge_handler(Query(CachePurgeParams {
+            url: "http://example.com/x".to_owned(),
+        }))
+        .await
+        .expect_err("there is no response cache to purge in this build");
+        assert_eq!(err.into_response().status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    /// With the feature, purging an URL that was never cached is an ordinary
+    /// success that reports `purged: false`.
+    #[cfg(feature = "cache")]
+    #[tokio::test]
+    async fn cache_purge_with_cache_feature_reports_not_purged_for_unknown_url() {
+        let Json(v) = cache_purge_handler(Query(CachePurgeParams {
+            url: "http://example.com/never-cached".to_owned(),
+        }))
+        .await
+        .expect("a well-formed http URL is accepted");
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["purged"], false);
+    }
+
+    /// With the feature, a non-http(s) scheme is rejected as a bad request
+    /// before the cache is touched.
+    #[cfg(feature = "cache")]
+    #[tokio::test]
+    async fn cache_purge_with_cache_feature_rejects_non_http_scheme() {
+        let err = cache_purge_handler(Query(CachePurgeParams {
+            url: "ftp://example.com/x".to_owned(),
+        }))
+        .await
+        .expect_err("ftp is not a cacheable scheme");
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
 
     // ── validate_cidr ────────────────────────────────────────────────────────
 
