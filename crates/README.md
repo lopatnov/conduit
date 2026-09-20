@@ -438,9 +438,10 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   `conduit-ipfilter`/`conduit-cors`/`conduit-metrics`'s always-on shape,
   `CLAUDE.md` decision #31, for a reason specific to this domain rather than
   that decision's own "light logic, no heavy dependency" rationale); the
-  warmup's `reqwest` dependency is the one thing worth gating. The root
-  crate pins the feature on unconditionally until its own call site
-  (`admin/api.rs`'s warmup spawn) is gated in a later #144 PR. No
+  warmup's `reqwest` dependency is the one thing worth gating. Since #144
+  PR 4a the root crate's own `proxy` feature forwards into this one (the
+  unconditional pin is gone) and `admin/api.rs`'s warmup spawn is a
+  two-variant function on that feature. No
   dependency on `lopatnov-conduit-core` either (see `CONTRIBUTING.md`'s
   "conduit-core dependency is opt-in, not automatic") — the Pingora
   `ProxyHttp` trait-method bodies stay in the root crate, calling into this
@@ -516,16 +517,18 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   a `proxy` action resolves to `ProxyOutcome::Unresolved` (the site
   fallback), deliberately *not* to `NonProxy`: promoting a proxy-first
   route's dead `static` half to a live file root would expose a directory
-  the operator never meant to serve. The root crate pins the feature on
-  unconditionally until its own call sites are gated (later #144 PRs).
-  **#144, PR 2:** the root crate now has its own default-on `proxy`
-  feature that gates the *router* (`sites[].proxy` is ignored, and
-  `routes[]` proxy actions end in the site fallback, without it), plus
-  `feature_warnings()`. It deliberately does not forward into this crate's
-  feature yet, so the router calls the new always-compiled
-  `routes::match_routes_unproxied` when it is off — same matching as
-  `match_routes`, but no upstream is resolved and no counter/registry
-  state or connection slot is touched. `route_limits_from_target` moved
+  the operator never meant to serve. Since #144 PR 4a the root crate's
+  own `proxy` feature forwards into this one (the unconditional pin is
+  gone), so a root build without `proxy` really does not compile the
+  resolution engine.
+  **#144, PR 2:** the root crate got its own default-on `proxy` feature
+  that gates the *router* (`sites[].proxy` is ignored, and `routes[]`
+  proxy actions end in the site fallback, without it), plus
+  `feature_warnings()`. In that build the router calls the always-compiled
+  `routes::match_routes_unproxied` — same matching as `match_routes`, but
+  no upstream is resolved and no counter/registry state or connection
+  slot is touched (and, since PR 4a, the resolution engine itself is not
+  compiled in that build). `route_limits_from_target` moved
   to the always-compiled `state` module so a never-proxied `routes[]`
   entry still carries its rate-limit/priority stamp (#360, #415).
   No dependency on `lopatnov-conduit-core`/pingora (nothing here implements

@@ -184,13 +184,20 @@ cargo install lopatnov-conduit --features full   # all features
 | `tcp`           | Raw TCP proxy mode (`type: "tcp"` site)                                    |
 | `upload`        | Multipart file upload handler (`upload:` site config)                      |
 | `redis`         | Redis-backed rate limiting and caching                                     |
-| `cache`         | Response caching (`proxy.*.cache`)                                         |
+| `cache`         | Response caching (`proxy.*.cache`); implies `proxy`                        |
 | `disk-cache`    | Disk-backed cache store (`cache.store: "disk:/path"`)                      |
 | `acme`          | Auto-TLS via Let's Encrypt (`tls.acme`)                                    |
 | `fault-injection` | Fault injection for chaos testing                                        |
 | `otlp`          | OpenTelemetry OTLP distributed tracing (`global.otlp`)                     |
 | `kubernetes`    | Kubernetes CRD config provider (`--kubernetes-namespace`)                  |
-| `full`          | All of the above                                                           |
+| `static-server` | Bundle for `--no-default-features`: `static` + `compression` + `hotreload` — the default set minus `proxy` |
+| `gateway`       | Bundle for `--no-default-features`: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `acme` + `compression` |
+| `full`          | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) |
+
+`proxy` (reverse proxying) is on by default and can be turned off with
+`--no-default-features`; `static-server` and `gateway` are the two useful sets to
+switch back on afterwards. See
+[Building without `proxy`](docs/building.md#building-without-proxy).
 
 For build instructions, cross-compilation, and troubleshooting see **[docs/building.md](docs/building.md)**.
 

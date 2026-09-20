@@ -43,7 +43,10 @@ fn record_retry_failure(
 /// tracked without the proxy routing resolvers, so there is nothing to
 /// attribute the failure to. The `5xx_retry` error that follows the call is
 /// *not* gated -- it is what lets `should_serve_stale()` serve a stale cached
-/// response (#48) in a cache-only build.
+/// response (#48). Since D1 (`cache` implies `proxy`) a cache build always has
+/// the proxy, so this variant never runs alongside the cache; the error stays
+/// ungated anyway because it belongs to the cache/stale machinery, not to the
+/// proxy's retry bookkeeping, and gating it would buy nothing.
 #[cfg(not(feature = "proxy"))]
 fn record_retry_failure(
     _proxy: &ConduitProxy,
@@ -172,7 +175,7 @@ pub(super) async fn upstream_response_filter(
             // should_serve_stale() to recognise this as an upstream error
             // and serve a stale cached response (#48). This return is
             // deliberately NOT part of the feature-gated step above: stale-if-error
-            // for a cache-only build (no `proxy`) depends on it.
+            // belongs to the cache machinery, not to the proxy's retry bookkeeping.
             return Err(
                 pingora_core::Error::new_up(pingora_core::ErrorType::Custom("5xx_retry"))
                     .more_context(format!("upstream returned HTTP {status}")),

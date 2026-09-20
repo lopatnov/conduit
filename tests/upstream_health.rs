@@ -1,3 +1,8 @@
+// The tests that proxy real traffic are compiled out without the `proxy`
+// feature (`#[cfg(feature = "proxy")]` on each), which leaves their
+// mock-upstream helpers unused in that build.
+#![cfg_attr(not(feature = "proxy"), allow(dead_code))]
+
 mod common;
 
 use std::io::{Read, Write};
@@ -55,6 +60,7 @@ impl MockUpstream {
 
 // ── Strategy: random ─────────────────────────────────────────────────────────
 
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn strategy_random_distributes_to_upstreams() {
@@ -101,6 +107,7 @@ fn strategy_random_distributes_to_upstreams() {
 
 // ── Strategy: least-conn ──────────────────────────────────────────────────────
 
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn strategy_least_conn_returns_200() {
@@ -241,6 +248,7 @@ fn admin_upstreams_initially_empty() {
     );
 }
 
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn admin_upstreams_populated_after_health_check() {
@@ -291,6 +299,7 @@ fn admin_upstreams_populated_after_health_check() {
     );
 }
 
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn upstream_marked_unhealthy_after_threshold_failures() {
@@ -381,6 +390,7 @@ impl SlowUpstream {
     }
 }
 
+#[cfg(feature = "proxy")]
 #[test]
 fn circuit_breaker_limits_connections() {
     // Upstream holds each connection for 3 seconds.
@@ -433,6 +443,7 @@ fn circuit_breaker_limits_connections() {
     );
 }
 
+#[cfg(feature = "proxy")]
 #[test]
 fn circuit_breaker_allows_when_under_limit() {
     // Upstream responds immediately.
@@ -474,6 +485,7 @@ fn circuit_breaker_allows_when_under_limit() {
 
 // ── Passive health tracking without least-conn / maxConnectionsPerUpstream (#155) ─
 
+#[cfg(feature = "proxy")]
 #[test]
 fn passive_stats_tracked_for_round_robin_without_conn_cap() {
     // Default strategy (RoundRobin), no healthCheck, no maxConnectionsPerUpstream.
@@ -531,6 +543,7 @@ fn passive_stats_tracked_for_round_robin_without_conn_cap() {
     );
 }
 
+#[cfg(feature = "proxy")]
 #[test]
 fn outlier_detection_ejects_with_round_robin() {
     // RoundRobin (default) + outlierDetection, no maxConnectionsPerUpstream.
@@ -605,6 +618,7 @@ fn outlier_detection_ejects_with_round_robin() {
     );
 }
 
+#[cfg(feature = "proxy")]
 #[test]
 fn per_peer_response_breakdown_for_random_strategy() {
     // strategy: "random", no maxConnectionsPerUpstream — another non-least-conn
@@ -664,6 +678,7 @@ fn per_peer_response_breakdown_for_random_strategy() {
 
 // ── Circuit breaker capacity enforcement across strategies (#156) ─────────────
 
+#[cfg(feature = "proxy")]
 #[test]
 fn circuit_breaker_round_robin_skips_saturated_upstream_with_multiple_targets() {
     // Before #156, RoundRobin never checked conn_load when choosing among
@@ -728,6 +743,7 @@ fn circuit_breaker_round_robin_skips_saturated_upstream_with_multiple_targets() 
     );
 }
 
+#[cfg(feature = "proxy")]
 #[test]
 fn routes_array_honors_max_connections_per_upstream() {
     // Before #156, `src/proxy/routes.rs` had zero circuit-breaker code —

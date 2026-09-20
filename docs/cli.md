@@ -595,14 +595,16 @@ cargo build --release --features "jwt,rhai,redis"
 | `tcp`             | TCP passthrough proxy (`type: "tcp"` site)          | —                       |
 | `upload`          | File upload handler (`upload:` site config)         | `multer`                |
 | `redis`           | Redis-backed rate limiting & caching                | `redis`                 |
-| `cache`           | Response caching (`proxy.*.cache`)                  | —                       |
+| `cache`           | Response caching (`proxy.*.cache`); implies `proxy` | —                       |
 | `disk-cache`      | Disk-backed cache store (`cache.store: "disk:/…"`)  | —                       |
 | `acme`            | Auto-TLS / Let's Encrypt (`tls.acme`)               | `instant-acme`, `rcgen` |
 | `fault-injection` | Fault injection for chaos testing                   | —                       |
 | `otlp`            | OpenTelemetry OTLP tracing                          | `opentelemetry` stack   |
 | `kubernetes`      | Kubernetes CRD config provider                      | `kube`, `k8s-openapi`   |
 | `standard`        | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` (typical self-hosted reverse-proxy / API-gateway set) — used by the published "standard" binaries/images | bundle, no extra deps of its own |
-| `full`            | All of the above                                    | all of the above        |
+| `static-server`   | Bundle for `--no-default-features` builds: `static` + `compression` + `hotreload` (the default set minus `proxy`) | bundle, no extra deps of its own |
+| `gateway`         | Bundle for `--no-default-features` builds: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `acme` + `compression` (the `standard` set without static files and hot-reload) | bundle, no extra deps of its own |
+| `full`            | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) | all of the above        |
 
 When a feature is off but its config field is set, Conduit logs a warning at
 startup and continues with that feature disabled (fail-open, no crash).

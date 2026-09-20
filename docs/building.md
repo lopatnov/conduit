@@ -53,18 +53,30 @@ proxy. Add features with `--features`:
 | `tcp`           | Raw TCP proxy mode (`type: "tcp"` site)                                    |
 | `upload`        | Multipart file upload handler (`upload:` site config)                      |
 | `redis`         | Redis-backed rate limiting and caching                                     |
-| `cache`         | Response caching (`proxy.*.cache`)                                         |
+| `cache`         | Response caching (`proxy.*.cache`); implies `proxy`                        |
 | `disk-cache`    | Disk-backed cache store (`cache.store: "disk:/path"`)                      |
 | `acme`          | Auto-TLS via Let's Encrypt (`tls.acme`)                                    |
 | `fault-injection` | Fault injection for chaos testing (`faultInjection`)                     |
 | `otlp`          | OpenTelemetry OTLP distributed tracing (`global.otlp`)                     |
 | `kubernetes`    | Kubernetes CRD config provider (`--kubernetes-namespace`)                  |
 | `standard`      | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` — typical self-hosted reverse-proxy / API-gateway set |
-| `full`          | All of the above                                                           |
+| `static-server` | Bundle for `--no-default-features`: `static` + `compression` + `hotreload` — the default set minus `proxy` |
+| `gateway`       | Bundle for `--no-default-features`: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `acme` + `compression` — the `standard` set without static files and hot-reload |
+| `full`          | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) |
 
 `proxy`, `compression`, `static` and `hotreload` are on by default and are not
 listed above because there is nothing to add — `--no-default-features` turns
-them off.
+them off. `static-server` and `gateway` are shorthands for the two useful
+things to switch back on afterwards; they add nothing to a default build.
+
+```bash
+# A static-file server: no reverse proxy and none of its dependencies
+# (reqwest, url, hmac, sha2); the Admin API and its /upstreams* endpoints stay
+cargo build --release --no-default-features --features static-server
+
+# An API gateway: reverse proxy + auth + cache + auto-TLS, but no static files
+cargo build --release --no-default-features --features gateway
+```
 
 ### Building without `proxy`
 
@@ -100,10 +112,13 @@ checks), the sticky-session crypto (`hmac`, `sha2`), the HTTP client used for
 traffic mirroring and cache early-refresh (`reqwest` with its
 `hyper-rustls`/`tower-http` layers) and the URL parser (`url` with its
 `idna`/`icu_*` tree). Features that need them bring them back: `proxy` brings
-back all of it, while `cache`, `forward-auth` and `jwt` each bring back
-`reqwest`, `url` and `tower-http` through their own crates (`jwt` also
-`hmac`/`sha2`) — so a build that enables any of those is larger than the figures
-above.
+back all of it, and so does `cache` (it implies `proxy`), while `forward-auth`
+and `jwt` each bring back `reqwest`, `url` and `tower-http` through their own
+crates (`jwt` also `hmac`/`sha2`) — so a build that enables any of those is
+larger than the figures above. `--no-default-features --features static-server`
+is the shortest way to get the default set minus `proxy`; it counts a few more
+crates than the `static`-only figures above because it also keeps `compression`
+and `hotreload`.
 
 **What stays:** the Admin API (axum) and Pingora still need the
 `hyper`/`tower`/`h2` stack, plus `base64`, `subtle`, `regex`, `dashmap`, `notify`

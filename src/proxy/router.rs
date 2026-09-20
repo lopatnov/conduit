@@ -762,6 +762,81 @@ mod tests {
         );
     }
 
+    // ── the legacy `proxy` MAP form (`proxy: { "/api": … }`) ─────────────────
+    //
+    // The tests above use the `Single` shorthand (`proxy: "http://…"`). The
+    // docs (`docs/building.md`, "Building without `proxy`") list the MAP form as
+    // a separate shape that changes meaning: a map is matched by prefix (the
+    // shorthand is a catch-all) and goes through its own resolver when `proxy`
+    // is on, so a build without the feature must be shown to ignore it as well.
+    // Both tests need `static`: it is the root the request falls through to.
+
+    #[cfg(feature = "static")]
+    fn proxy_map_and_static_site() -> AppConfig {
+        use crate::config::schema::{ProxyConfig, StaticConfig};
+        use indexmap::IndexMap;
+
+        let mut map = IndexMap::new();
+        map.insert(
+            "/api".to_string(),
+            ProxyRouteTarget::Url("http://backend:4000".to_string()),
+        );
+        AppConfig {
+            sites: vec![SiteConfig {
+                proxy: Some(ProxyConfig::Routes(map)),
+                static_files: Some(StaticConfig::Single("./public".to_string())),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// Without `proxy`, requests under a legacy `proxy` map's prefix fall
+    /// through to the site's `static` root instead of an upstream — the second
+    /// of the three shapes the docs warn about.
+    #[cfg(all(not(feature = "proxy"), feature = "static"))]
+    #[test]
+    fn legacy_proxy_map_falls_through_to_static_without_proxy_feature() {
+        let ctx = route_path(&proxy_map_and_static_site(), "/api/users");
+        assert!(
+            matches!(
+                ctx.upstream,
+                UpstreamTarget::Local(LocalHandler::StaticFile { .. })
+            ),
+            "a proxy map must be ignored without the feature and fall through to `static`, got {:?}",
+            ctx.upstream
+        );
+        assert!(
+            ctx.proxy.proxy_upstream_url.is_none(),
+            "nothing may claim a proxied upstream"
+        );
+    }
+
+    /// The twin that keeps the test above honest: the very same config really
+    /// proxies `/api/*` when the feature is on (and serves everything else from
+    /// `static`), so the negative test cannot pass because the fixture never
+    /// proxied in the first place.
+    #[cfg(all(feature = "proxy", feature = "static"))]
+    #[test]
+    fn proxy_map_and_static_site_fixture_proxies_when_the_feature_is_on() {
+        let config = proxy_map_and_static_site();
+        let proxied = route_path(&config, "/api/users");
+        assert!(
+            matches!(proxied.upstream, UpstreamTarget::Proxy { .. }),
+            "the fixture's proxy map must proxy `/api/users` with the feature on, got {:?}",
+            proxied.upstream
+        );
+        let served = route_path(&config, "/index.html");
+        assert!(
+            matches!(
+                served.upstream,
+                UpstreamTarget::Local(LocalHandler::StaticFile { .. })
+            ),
+            "a path outside the proxied prefix is the site's static root, got {:?}",
+            served.upstream
+        );
+    }
+
     /// F1 at router level: the terminal fallback of a never-proxied
     /// `routes[]` entry still carries the route's rate limit and priority
     /// (#360, #415), so per-route limiting/shedding does not depend on the
