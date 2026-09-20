@@ -30,7 +30,7 @@ additional feature flag (or `--features full`):
 | `tcp`             | `--features tcp`                   | [`type: "tcp"` site](#tcp-proxy)                           |
 | `upload`          | `--features upload`                | [`upload`](#upload)                                         |
 | `redis`           | `--features redis`                 | `rateLimit.store: "redis://..."`, `cache.store: "redis://..."` |
-| `cache`           | `--features cache`                 | [`proxy.*.cache`](#proxy-cache)                             |
+| `cache`           | `--features cache`                 | [`proxy.*.cache`](#proxy-cache) (implies `proxy`)           |
 | `disk-cache`      | `--features disk-cache`            | `cache.store: "disk:/path"`                                 |
 | `acme`            | `--features acme`                  | [`tls.acme`](#auto-tls-via-lets-encrypt)                    |
 | `fault-injection` | `--features fault-injection`       | [`faultInjection`](#fault-injection)                        |
@@ -38,6 +38,8 @@ additional feature flag (or `--features full`):
 | `tokio-metrics`   | `--features tokio-metrics`         | `conduit_eventloop_lag_ms` Prometheus gauge (no config key) |
 | `kubernetes`      | `--features kubernetes`            | `--kubernetes-namespace` CLI flag (not a config field)      |
 | `standard`        | `--features standard`              | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` |
+| `static-server`   | `--no-default-features --features static-server` | Bundle: `static` + `compression` + `hotreload` (the default set minus `proxy`) |
+| `gateway`         | `--no-default-features --features gateway`       | Bundle: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `acme` + `compression` |
 | `full`            | `--features full`                  | All of the above                                            |
 
 Download a `-full` binary from [GitHub Releases](https://github.com/lopatnov/conduit/releases)

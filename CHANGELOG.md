@@ -159,6 +159,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cache such a build does not have. `cache` is not part of `default`, so a plain
   `cargo build` is affected; the published `standard`/`full` binaries and
   images are not.
+- **The `cache` feature now implies `proxy`** (issue #144). The cache stores
+  proxied responses only, so a cache build without its proxy was never
+  meaningful, and its call sites (`cache.earlyRefreshSecs`, `/cache/purge`) need
+  the HTTP client and URL parser that `proxy` brings in. `--features cache`
+  therefore also compiles `proxy`; `default`, `standard` and `full` are
+  unaffected (they already include both).
+- **Two bundles for `--no-default-features` builds** (issue #144):
+  `static-server` (`static` + `compression` + `hotreload` — the default set
+  minus `proxy`) and `gateway` (`proxy` + `jwt` + `consumers` + `forward-auth` +
+  `cache` + `acme` + `compression` — the `standard` set without static files
+  and hot-reload). They add nothing to a default build.
+- The integration tests that proxy real traffic (`proxy`, `lb_strategies`,
+  `rewrite`, `upstream_groups`, `websocket`, and the proxy-dependent tests inside
+  `dynamic_upstreams`, `routes`, `security`, `upstream_health`) now require the
+  `proxy` feature, so `cargo test --no-default-features --features
+  static-server` runs cleanly. A build with `proxy` runs exactly the same tests
+  as before.
 - `RateLimitConfig` moved to its own crate (`conduit-ratelimit`, issue
   #114/#137 slice 1) — no config shape or behavior change, this closes a
   code-duplication finding between the root crate and

@@ -576,15 +576,16 @@ jobs:
       - name: cargo hack check --workspace --each-feature --no-dev-deps
         run: cargo hack check --workspace --each-feature --no-dev-deps
 
-  # ── Feature-OFF unit tests (issue #144) ─────────────────────────────────────
+  # ── Feature-OFF tests (issue #144) ──────────────────────────────────────────
   # `cargo hack --no-dev-deps` above only *compiles* each feature state — it
   # never runs a test — so what a build WITHOUT `proxy` actually does (the
   # router ignoring `sites[].proxy`, a `routes[]` proxy action ending in the
   # fallback and never in its dead `static` half, `feature_warnings()`) was
-  # untested. Library unit tests only: the integration tests under `tests/`
-  # proxy real traffic and get their own `required-features` in a later #144 PR.
+  # untested. Unit tests first; the integration tests under `tests/` run last, in
+  # the `static-server` shape (the default set minus `proxy`), where the ones
+  # that proxy real traffic are compiled out by their `required-features`/`cfg`.
   ci-no-proxy:
-    name: Unit tests without the `proxy` feature
+    name: Tests without the `proxy` feature
     runs-on: ubuntu-latest
 
     steps:
@@ -631,6 +632,18 @@ jobs:
       - name: Unit tests, --no-default-features --features upload
         run: cargo test -p lopatnov-conduit --lib --no-default-features --features upload
 
+      # The integration tests spawn the real `conduit` binary, so this is also
+      # the only place a build without `proxy` is exercised end to end. The
+      # tests that proxy real traffic are compiled out (a file-level
+      # `required-features = ["proxy"]` in Cargo.toml, or a per-test
+      # `#[cfg(feature = "proxy")]` where a file also holds tests that are
+      # meaningful without it); everything that remains must pass. `static-server`
+      # (rather than a bare `--no-default-features`) because the static-file,
+      # compression and hot-reload tests need their own features -- it is the
+      # default set minus `proxy`, so it isolates exactly what `proxy` gates.
+      - name: Integration tests, --no-default-features --features static-server
+        run: cargo test -p lopatnov-conduit --no-default-features --features static-server --tests
+
       # The property #144 exists for: a build without `proxy` must not carry
       # proxy-only dependencies: the sticky-session stack (`hmac`, `sha2`), the
       # HTTP client used for mirroring/early refresh (`reqwest`, `tower-http`) and
@@ -643,27 +656,37 @@ jobs:
       # and the list itself must be proven non-empty first, because a
       # failing `cargo tree` (bad feature name, resolution error) would
       # otherwise yield an empty list that trivially "contains no leaks".
-      - name: Dependency leak check, --no-default-features --features static
+      #
+      # Checked for every feature set that must stay free of them: `static` and
+      # `static-server` (the two ways to keep serving files without `proxy`) and
+      # `upload` and `tcp` (features that are served or used without a reverse
+      # proxy and must not drag the proxy stack back in). `jwt`, `forward-auth`
+      # and `cache` are deliberately absent: they legitimately bring `reqwest`,
+      # `url` and `tower-http` back (and `cache` implies `proxy`).
+      - name: Dependency leak check, --no-default-features with static / static-server / upload / tcp
         run: |
           set -euo pipefail
-          crates=$(cargo tree -p lopatnov-conduit --no-default-features --features static \
-                     -e normal --prefix none | sed 's/ v.*//' | sort -u)
-          # No `-q`: `grep -q` exits at the first match and, under `pipefail`, a
-          # still-writing `printf` could die of SIGPIPE on a longer list and turn a
-          # good list into a spurious failure. Draining the pipe avoids that.
-          if ! printf '%s\n' "$crates" | grep -x 'lopatnov-conduit' > /dev/null; then
-            echo "cargo tree produced no usable crate list; refusing to pass vacuously"
-            exit 1
-          fi
-          # grep exits 1 for "no match" (the good case) but 2 for an error such as a
-          # broken pattern -- `|| true` would treat both as "clean", so only exit 1
-          # is tolerated here.
-          leaked=$(printf '%s\n' "$crates" | grep -xE 'hmac|sha2|reqwest|tower-http|url|idna|icu_.*' || [ "$?" -eq 1 ])
-          if [ -n "$leaked" ]; then
-            echo "proxy-only dependencies leaked into a build without the proxy feature:"
-            echo "$leaked"
-            exit 1
-          fi
+          for features in static static-server upload tcp; do
+            echo "== --no-default-features --features $features"
+            crates=$(cargo tree -p lopatnov-conduit --no-default-features --features "$features" \
+                       -e normal --prefix none | sed 's/ v.*//' | sort -u)
+            # No `-q`: `grep -q` exits at the first match and, under `pipefail`, a
+            # still-writing `printf` could die of SIGPIPE on a longer list and turn a
+            # good list into a spurious failure. Draining the pipe avoids that.
+            if ! printf '%s\n' "$crates" | grep -x 'lopatnov-conduit' > /dev/null; then
+              echo "cargo tree produced no usable crate list; refusing to pass vacuously"
+              exit 1
+            fi
+            # grep exits 1 for "no match" (the good case) but 2 for an error such as a
+            # broken pattern -- `|| true` would treat both as "clean", so only exit 1
+            # is tolerated here.
+            leaked=$(printf '%s\n' "$crates" | grep -xE 'hmac|sha2|reqwest|tower-http|url|idna|icu_.*' || [ "$?" -eq 1 ])
+            if [ -n "$leaked" ]; then
+              echo "proxy-only dependencies leaked into a build without the proxy feature:"
+              echo "$leaked"
+              exit 1
+            fi
+          done
 
   # ── Cross-compile smoke tests for non-native architectures ──────────────────
   # Mirrors the `use_cross: true` targets in release.yml's build matrix, but
