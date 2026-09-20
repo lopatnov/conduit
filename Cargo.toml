@@ -973,6 +973,33 @@ required-features = ["static"]
 name = "upload"
 required-features = ["upload"]
 
+# ── Tests that proxy real traffic (issue #144) ───────────────────────────────
+# Every test in these files sends requests through Conduit to a mock upstream,
+# so without `proxy` there is nothing to test (and they would only fail). They
+# are skipped in a build without the feature; with it — `default`, `standard`
+# and `full` — they run exactly as before. Files that ALSO hold tests meaningful
+# without `proxy` (`dynamic_upstreams`, `routes`, `security`, `upstream_health`)
+# are gated per test with `#[cfg(feature = "proxy")]` instead.
+[[test]]
+name = "proxy"
+required-features = ["proxy"]
+
+[[test]]
+name = "lb_strategies"
+required-features = ["proxy"]
+
+[[test]]
+name = "rewrite"
+required-features = ["proxy"]
+
+[[test]]
+name = "upstream_groups"
+required-features = ["proxy"]
+
+[[test]]
+name = "websocket"
+required-features = ["proxy"]
+
 [[bench]]
 name = "logging_phase_labels"
 harness = false

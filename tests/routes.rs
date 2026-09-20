@@ -5,6 +5,7 @@ use serial_test::serial;
 // ── Path glob routing ─────────────────────────────────────────────────────────
 
 /// A route with `match.path` glob routes to the correct upstream.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn routes_path_glob_matches() {
@@ -61,6 +62,7 @@ fn routes_path_glob_matches() {
 /// including `localhost`, exactly as shipped in `examples/minimal.yaml` —
 /// failed every single request with a connect error. No other test in this
 /// suite exercises a non-IP-literal target end-to-end.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn routes_hostname_upstream_resolves_and_proxies() {
@@ -114,6 +116,7 @@ fn routes_hostname_upstream_resolves_and_proxies() {
 }
 
 /// First matching route wins — ordering is respected.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn routes_first_match_wins() {
@@ -180,6 +183,7 @@ fn routes_first_match_wins() {
 // ── Method filter ─────────────────────────────────────────────────────────────
 
 /// A route with `match.method` only handles matching HTTP methods.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn routes_method_filter() {
@@ -232,6 +236,7 @@ fn routes_method_filter() {
 // ── Header predicate ──────────────────────────────────────────────────────────
 
 /// A route with `match.headers` only applies when the header regex matches.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn routes_header_predicate() {
@@ -308,6 +313,7 @@ fn routes_header_predicate() {
 // ── Query predicate ───────────────────────────────────────────────────────────
 
 /// A route with `match.query` only applies when the query param regex matches.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn routes_query_predicate() {
@@ -448,6 +454,7 @@ fn routes_no_match_returns_404() {
 // ── No-match criterion falls through ─────────────────────────────────────────
 
 /// A route with no match criteria matches every request.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn routes_empty_match_catches_all() {
