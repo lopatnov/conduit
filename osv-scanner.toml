@@ -4,7 +4,7 @@
 #
 # Real CVEs (rsa@0.9.10 / CVE-2023-49092, protobuf@2.28.0 / CVE-2025-53605)
 # are intentionally NOT listed here — left open in the Security tab until an
-# upstream fix is available. See CLAUDE.md session log for the risk analysis.
+# upstream fix is available. See .claude/logs/session-log.md (2026-06-12 entry) for the risk analysis.
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2025-0069"

@@ -265,7 +265,7 @@ separate access path from `WebFetch`/browser access to `sonarcloud.io` — works
 lookup, quality-gate status, issue/hotspot search, and even write actions
 (`change_sonar_issue_status`, `change_security_hotspot_status`) all succeeded, and were used to
 find and correctly resolve PR #152's long-standing "E Security Rating" gate failure (see the
-"Реализовано в сессии 2026-09-05" entry for the story — it also retired a theory this file's
+"Реализовано в сессии 2026-09-05" entry in `.claude/logs/session-log.md` for the story — it also retired a theory this file's
 prose used to treat as settled fact). **Before assuming SonarCloud is unreachable, check
 `ToolSearch select:mcp__sonarqube__search_my_sonarqube_projects` first** — if it returns a real
 tool schema and a project search actually resolves, the connector is live in this session, same
@@ -423,7 +423,7 @@ don't stage, delete, or read into them without being asked.
   repos" as debris, `.reference/` is the explicit exception.
 - When a clone genuinely goes stale (conduit bumps the pinned version), it's fine to
   `git fetch`+`checkout` the new tag in place rather than re-cloning — same convention
-  already used for the Pingora 0.9.0 check (2026-09-12 session log entry in `CLAUDE.md`).
+  already used for the Pingora 0.9.0 check (2026-09-12 entry in `.claude/logs/session-log.md`).
 
 ## Build discipline
 
@@ -570,7 +570,8 @@ what doesn't.
   starts (catches duplicates, conflicts with "не пересматривать без обсуждения" rules, and
   stale `[🚫 BLOCKED]` items whose reasons may no longer hold).
 - `scrum-master` (sonnet) — manages conduit's backlog *as it actually exists*: `CLAUDE.md`
-  checkboxes + dated "Реализовано в сессии" log + GitHub Issues (no separate `.claude/backlog/`
+  checkboxes + the "Журнал сессий" log (newest two entries inline, the rest in
+  `.claude/logs/session-log.md`) + GitHub Issues (no separate `.claude/backlog/`
   here — don't invent one). Marks things done, decomposes large asks, tracks multi-PR efforts
   to completion.
 - `lawyer` (haiku) — license-compatibility check when a `Cargo.toml` change adds a dependency

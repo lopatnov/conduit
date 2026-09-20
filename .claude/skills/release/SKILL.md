@@ -76,7 +76,8 @@ name, missing `v` prefix on the Trivy version pin — all three real regressions
 
 ## Step 5 — close the loop
 
-- `scrum-master`: append a "Реализовано в сессии <date>" entry to `CLAUDE.md` if the release
+- `scrum-master`: append a "Реализовано в сессии <date>" entry to `CLAUDE.md`'s "Журнал сессий"
+  section (rotating the oldest to `.claude/logs/session-log.md`, per `scrum-master.md`) if the release
   itself is worth logging (usually the *features* in it are logged when they land, not the
   release act — but note the version bump).
 - Close/comment any GitHub issues this release resolves.

@@ -34,7 +34,8 @@ Model assignment (already encoded in each agent's frontmatter — don't override
 - Check this session's own recent history first: is there an open PR from a
   prior firing still awaiting CI/review? A branch with uncommitted or
   unpushed work? Resume that before looking for new work.
-- Skim the most recent "Реализовано в сессии" entries in `CLAUDE.md` and the
+- Skim the most recent "Реализовано в сессии" entries in `CLAUDE.md`'s "Журнал сессий"
+  section (it keeps the newest two; older ones are in `.claude/logs/session-log.md`) and the
   latest summary comments on #114's sub-issues (step 9 below) — a previous
   iteration's summary may directly tell you what to do next.
 - **Read the new comments on the tracking PR #152 and on the current sub-issue
