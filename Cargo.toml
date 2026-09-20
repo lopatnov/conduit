@@ -521,10 +521,11 @@ subtle.workspace    = true
 # edge. See the [dependencies] comment on `lopatnov-conduit-static` above.
 # url: optional (issue #144, PR 4b) -- only three root call sites parse URLs:
 # the proxy-loop warning (`proxy`), the forwardAuth-targets-the-Admin-API
-# check (`forward-auth`) and `/cache/purge` (`cache`). Each of those features
-# enables `dep:url`, so `url` and its whole `idna`/`icu_*` tree (~23 crates)
-# leave a build that has none of them. The validation rules themselves are
-# unchanged wherever the thing they guard can exist.
+# check (`forward-auth`) and `/cache/purge` (`cache`, which implies `proxy`
+# since D1). `proxy` and `forward-auth` enable `dep:url`, so `url` and its
+# whole `idna`/`icu_*` tree (~23 crates) leave a build that has neither. The
+# validation rules themselves are unchanged wherever the thing they guard can
+# exist.
 url = { workspace = true, optional = true }
 # httpdate stays unconditional here — logging.rs (access-log CLF dates) and
 # response_phase.rs (stale-while-revalidate date handling) both use it
@@ -550,10 +551,9 @@ base64.workspace    = true
 # forward-auth, mirroring) ---
 # reqwest is optional (issue #144, PR 4b): the only two root call sites are
 # traffic mirroring (`fire_mirror_request`, gated on `proxy` since PR 3) and
-# the cache's early-refresh fetch (`fire_early_refresh`, gated on `cache`), so
-# `proxy` and `cache` each enable `dep:reqwest`. (Both features keep their own
-# enabling line while `cache` does not yet imply `proxy` -- that implication is
-# #144 PR 5's decision D1.) The forwardAuth and JWKS clients live in
+# the cache's early-refresh fetch (`fire_early_refresh`, gated on `cache`).
+# `cache` implies `proxy` (D1), so `proxy` is the single feature that enables
+# `dep:reqwest`. The forwardAuth and JWKS clients live in
 # `crates/conduit-auth-forward` / `crates/conduit-auth-jwt` with their own
 # `reqwest` edge and are unaffected.
 # `jsonwebtoken` itself moved to `crates/conduit-auth-jwt` (#114/#133) and is
@@ -796,7 +796,13 @@ redis = ["lopatnov-conduit-cache/redis", "lopatnov-conduit-ratelimit/redis"]
 # [dependencies] comment above); this forwards into that crate's own `cache`
 # feature (a marker feature there too, matching pre-extraction — see that
 # crate's `src/lib.rs` doc comment).
-cache = ["lopatnov-conduit-cache/cache", "dep:reqwest", "dep:url"]
+#
+# Implies `proxy` (issue #144, owner decision D1): the cache stores *proxied*
+# responses only (architectural decision #9), so a cache build without the
+# proxy it caches for is meaningless — and its root call sites
+# (`fire_early_refresh`, `/cache/purge`) need the `reqwest`/`url` dependencies
+# that `proxy` enables, so `cache` no longer lists them itself.
+cache = ["proxy", "lopatnov-conduit-cache/cache"]
 # Disk cache backend (cache.store: "disk:/path"). Forwards into
 # `crates/conduit-cache`'s own `disk-cache` feature (also a marker feature —
 # the `disk` module itself has no feature gate, matching pre-extraction).
@@ -837,11 +843,20 @@ kubernetes = ["dep:lopatnov-conduit-k8s"]
 # auto-TLS — without niche or heavyweight extras (scripting, WASM, TCP mode,
 # upload, storage backends, chaos testing, tracing, orchestration).
 #
-# | Profile      | Use case                                              |
-# |--------------|-------------------------------------------------------|
-# | _(default)_  | Minimal reverse proxy, embed in a larger system       |
-# | `standard`   | Self-hosted reverse proxy + API gateway               |
-# | `full`       | Every feature — CI / feature exploration              |
+# | Profile          | Use case                                          |
+# |------------------|---------------------------------------------------|
+# | _(default)_      | Minimal reverse proxy, embed in a larger system   |
+# | `static-server`  | Static files only — with `--no-default-features`  |
+# | `gateway`        | API gateway — proxy + auth + cache + auto-TLS     |
+# | `standard`       | Self-hosted reverse proxy + API gateway           |
+# | `full`           | Every feature — CI / feature exploration          |
+#
+# `static-server` and `gateway` are meant for `--no-default-features` builds
+# (issue #144): they name the two ends of what the `proxy` feature splits. Note
+# that a static-only build still links Pingora, `regex`, `dashmap` and
+# `prometheus` — static serving is itself a `ProxyHttp` implementation — so
+# "no reverse-proxy code" holds for conduit's own code, not the dependency
+# floor.
 standard = [
     "jwt",           # JWT validation (HS256, RS256/ES256, JWKS)
     "consumers",     # Consumer model — per-consumer auth + rate limit
@@ -856,6 +871,26 @@ standard = [
     "compression",
     "static",
     "hotreload",
+]
+
+# Static-file server: no reverse proxying at all (`--no-default-features
+# --features static-server`). Static/fallback serving, response compression and
+# browser hot-reload — i.e. exactly `default` minus `proxy`. `sites[].proxy` and
+# `routes[].proxy` are ignored with a startup warning; see `docs/building.md`.
+static-server = ["static", "compression", "hotreload"]
+
+# API gateway: reverse proxying plus the auth stack, response caching and
+# auto-TLS, without static-file serving or hot-reload (`--no-default-features
+# --features gateway`). `cache` already implies `proxy`; it is listed for
+# clarity, as is `compression` (responses are negotiated, not just files).
+gateway = [
+    "proxy",
+    "jwt",
+    "consumers",
+    "forward-auth",
+    "cache",
+    "acme",
+    "compression",
 ]
 
 # Full build: every optional feature enabled.
