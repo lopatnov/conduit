@@ -40,7 +40,7 @@ additional feature flag (or `--features full`):
 | `standard`        | `--features standard`              | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` |
 | `static-server`   | `--no-default-features --features static-server` | Bundle: `static` + `compression` + `hotreload` (the default set minus `proxy`) |
 | `gateway`         | `--no-default-features --features gateway`       | Bundle: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `acme` + `compression` |
-| `full`            | `--features full`                  | All of the above                                            |
+| `full`            | `--features full`                  | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) |
 
 Download a `-full` binary from [GitHub Releases](https://github.com/lopatnov/conduit/releases)
 or build from source: `cargo build --release --features full`.

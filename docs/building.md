@@ -62,7 +62,7 @@ proxy. Add features with `--features`:
 | `standard`      | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` — typical self-hosted reverse-proxy / API-gateway set |
 | `static-server` | Bundle for `--no-default-features`: `static` + `compression` + `hotreload` — the default set minus `proxy` |
 | `gateway`       | Bundle for `--no-default-features`: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `acme` + `compression` — the `standard` set without static files and hot-reload |
-| `full`          | All of the above                                                           |
+| `full`          | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) |
 
 `proxy`, `compression`, `static` and `hotreload` are on by default and are not
 listed above because there is nothing to add — `--no-default-features` turns

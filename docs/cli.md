@@ -604,7 +604,7 @@ cargo build --release --features "jwt,rhai,redis"
 | `standard`        | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` (typical self-hosted reverse-proxy / API-gateway set) — used by the published "standard" binaries/images | bundle, no extra deps of its own |
 | `static-server`   | Bundle for `--no-default-features` builds: `static` + `compression` + `hotreload` (the default set minus `proxy`) | bundle, no extra deps of its own |
 | `gateway`         | Bundle for `--no-default-features` builds: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `acme` + `compression` (the `standard` set without static files and hot-reload) | bundle, no extra deps of its own |
-| `full`            | All of the above                                    | all of the above        |
+| `full`            | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) | all of the above        |
 
 When a feature is off but its config field is set, Conduit logs a warning at
 startup and continues with that feature disabled (fail-open, no crash).
