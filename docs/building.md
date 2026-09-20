@@ -70,7 +70,8 @@ them off. `static-server` and `gateway` are shorthands for the two useful
 things to switch back on afterwards; they add nothing to a default build.
 
 ```bash
-# A static-file server: no reverse proxy, no upstream code, no HTTP client
+# A static-file server: no reverse proxy and none of its dependencies
+# (reqwest, url, hmac, sha2); the Admin API and its /upstreams* endpoints stay
 cargo build --release --no-default-features --features static-server
 
 # An API gateway: reverse proxy + auth + cache + auto-TLS, but no static files
