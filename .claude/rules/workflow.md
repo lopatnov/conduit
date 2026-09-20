@@ -23,6 +23,7 @@ chains are expensive and lose context — avoid them.
 | PR readiness, CI failure triage, merge-order across PRs, cutting a release (`v<x.y.z>` tag) | `release-engineer` |
 | A file crosses the 400-line soft limit (or sits at/near the 1000-line hard limit), or a bigger architecture/design question needs a concrete decomposition plan | `architect` (opus, advisory only — see note below) |
 | Need to find candidate code duplication in one or more files before deciding what (if anything) to extract | `duplication-scanner` (haiku, read-only — several files can be scanned in parallel calls) |
+| A small unrelated request lands while the main thread is blocked on a wait, and it meets **all three** conditions in "Delegating a side task" below | `general-purpose` agent, `isolation: "worktree"` |
 
 ## Security review is unconditional, not a judgment call
 
@@ -92,6 +93,29 @@ Concretely:
 - Call a specialist only for (a) genuine domain expertise, (b) isolating noisy output
   (compiler dumps, long logs), or (c) a bounded autonomous sub-task.
 - Don't chain agent→agent. Return to the conductor; it decides the next step.
+
+## Delegating a side task mid-flow (accepted by the user 2026-09-20)
+
+> Origin: on 2026-09-18, mid-way through a PR, the user asked for a small unrelated CI tweak,
+> the conductor did it inline (~15 tool calls) and the user said such tasks can go to agents.
+> The 2026-09-20 retro turned that into a rule; this is the user's explicit go-ahead for agent
+> use in exactly this case, and it does not widen the default above.
+
+A small, unrelated request that lands while the main thread is busy goes to an agent instead
+of being done inline **only when all three hold**:
+
+1. it touches files or a branch independent of the main thread's;
+2. it will take more than ~8 tool calls;
+3. the main thread is already blocked on a wait (a background validator, a security review,
+   CI on a pushed PR).
+
+How: a `general-purpose` agent with `isolation: "worktree"` and a self-contained brief (the
+files, the acceptance criteria, "commit on branch X, do not push, report the SHA"). Agents
+have no `gh`/GitHub tools, so the conductor opens the PR, and the result still goes through
+the unconditional `security-engineer` gate before it merges. After resuming such an agent via
+`SendMessage`, check `git worktree list` (see "Background agents that write files need
+`isolation: "worktree"`" in `index.md`). If fewer than all three hold, do it inline — the
+economy rules above are unchanged.
 
 ## Example walk-throughs
 
