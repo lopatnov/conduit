@@ -36,6 +36,10 @@ row is older than that (or the log is still empty):
   action.
 - Log the result — even "nothing new" — as a new row in `.claude/logs/dependabot-hygiene.md`,
   so the next session (or the next daily firing) can see it was already checked and skip.
+  **Write the full log file first**; `CLAUDE.md`'s inline table only mirrors its newest 1-2
+  rows. On 2026-09-18 a row went only into the inline table, so the file's newest row stayed
+  2026-09-13 and this very ~24h gate read the log as a week stale (found by the 2026-09-20
+  `/retro`, backfilled the same day).
 
 This is a *cheap* reflex check (a couple of list calls), not a deep audit — skip it
 outright if the log shows it ran within the last ~24h. A `/feature-workspace-cycle`

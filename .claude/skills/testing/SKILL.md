@@ -177,6 +177,37 @@ result: `git diff` the working tree and *read* the change, don't just look at th
 For anything beyond a single unambiguous line, editing by hand (or with enough surrounding
 context to guarantee a unique match) is safer than a scripted regex pass.
 
+## Gating tests on a Cargo feature (feature-off suites)
+
+Recipe from #144 ("make `proxy` optional", PRs #433-#448); reuse it for the next "feature X
+off" job. Measure, don't guess:
+
+1. **Measure.** Run the whole suite with the feature off and *the shipped profile minus X*
+   on (`--no-default-features --features static-server`, not a bare `--no-default-features`,
+   whose failures mix in a second, unrelated missing feature). #144: 774 pass / 65 fail.
+2. **Classify by the actual failures.** A file whose every test needs X gets
+   `[[test]] required-features = ["X"]` in `Cargo.toml`. A mixed file gets
+   `#[cfg(feature = "X")]` per test, plus a file-level
+   `#![cfg_attr(not(feature = "X"), allow(dead_code))]` when mock-upstream helpers are then
+   used only by gated tests.
+3. **Audit the *passing* tests that mention X for vacuity.** Passing is not relevant: a test
+   whose assertion is an absence ("no header contains CRLF", "upstream never echoed …")
+   passes on a plain 404 too. #144 found 2 of 40 that way; gate those as well.
+4. **Prove the feature-ON build is unchanged.** `cargo test --features <profile> -- --list`
+   before and after the gating commit, for every shipped profile, compared with `cmp` or a
+   hash: a mistyped feature name in a `cfg` silently drops tests, and only this catches it.
+   Capture with `2>&1` (the `Running <binary>` lines go to stderr, the names to stdout —
+   without it the binary count comes out 0), put `< /dev/null` on every cargo call inside a
+   `while read` loop (cargo eats the rest of the heredoc otherwise), and remember `TaskStop`
+   does not kill a script's cargo child — check `Get-CimInstance` before restarting.
+5. **A crate's own feature-off tests need their own `cargo test -p <crate>` call** whenever
+   the root's dependency on it turns the feature back on (as the pins did until #144 PR 4):
+   in a single combined command Cargo unifies it on again — 140 tests instead of 58.
+6. **Negative-control every new test** (previous section). For a dependency-leak check in CI,
+   also prove it can fail — put a feature that legitimately pulls the crate in the list and
+   confirm exit 1 — and close the three ways it passes forever: an empty crate list, SIGPIPE
+   from `grep -q` under `pipefail`, and `|| true` swallowing grep's exit code 2.
+
 ## Where to look for canonical examples
 
 - Guard chain / auth: `tests/middleware.rs`, `tests/jwt*.rs`, `tests/consumers*.rs`,

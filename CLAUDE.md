@@ -1,6 +1,6 @@
 # Conduit — Claude's reference
 
-> Высокопроизводительный реверс-прокси на Rust · Cloudflare Pingora · v1.1.0
+> Высокопроизводительный реверс-прокси на Rust · Cloudflare Pingora · `main` = v1.5.0 · ветка миграции Conduit 2.0 (#114) = `2.0.0`
 > Проект: `<projects-root>\conduit`
 
 ---
@@ -1018,8 +1018,8 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 
 | Date/time (UTC) | New Dependabot PRs found/acted on | Orphan branches flagged | Notes |
 |---|---|---|---|
-| 2026-09-13 ~03:23 (`/feature-workspace-cycle` manually invoked, Step 1) | 0 open | 0 new | Clean. Gap since the prior row was filled by adjacent manual-session work (PR #398 batch, #386/#396/#397 on `main`, two migration-branch syncs). Full detail in `.claude/logs/dependabot-hygiene.md`. |
 | 2026-09-18 (ad hoc, user-directed cleanup sweep, not a `/feature-workspace-cycle` firing) | 1 open (`#422`, pingora 0.8→0.9 major — already correctly HELD from earlier this session, left untouched under the newly re-affirmed `main` freeze; no merges done at all this row, by policy) | 21 local branch refs deleted (5 squash-merged extraction/refactor branches, 6 local-only completed-review scratch refs, 2 already-`: gone` refs, `base-branch`, 2 finished docs branches, 10 `worktree-agent-*` leftovers) + 1 abandoned worktree/branch for a zero-commit cut-off #144 attempt; ~20 older remote-only branches noted but deliberately not touched (out of scope, flagged to user) | `main` re-frozen after this session's own earlier merges to it violated the 2026-09-13 freeze decision — see the 2026-09-18 session-log entry above and the new notice atop `feature-workspace-cycle.md` Step 1. `git remote prune origin` cleared 12 stale tracking refs; local `main` fast-forwarded to `origin/main`. |
+| 2026-09-20 ~17:10 (ad hoc, run by `/retro`; `main` still frozen) | 1 open: #422 (pingora major) — HELD, not merged | 0 new (24 remote heads; the ~21 old remote-only branches flagged 2026-09-18 untouched) | The full log was stale by its own newest row (2026-09-13) because the 09-18 row had been written only here — backfilled; `dependabot-hygiene.md` now says to write the full log first. Full detail in `.claude/logs/dependabot-hygiene.md`. |
 
 ## Tokio 1.52.3 — возможности (исследовано)
 
