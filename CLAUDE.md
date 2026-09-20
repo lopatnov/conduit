@@ -19,7 +19,7 @@
 > **`/cleanup` не должен трогать `.reference/`** — это не разовый scratch для одной
 > проверки, а накопительный кэш источников, которым сессии пользуются повторно; см. также
 > `.claude/rules/index.md`. По состоянию на 2026-09-13 уже склонированы: `pingora` (tag
-> `0.9.0` — при апгрейде с текущего запиненного 0.8.1, см. `.claude/logs/session-log.md`), `tokio`
+> `0.9.0` — совпадает с `Cargo.lock` после апгрейда с 0.8.1 на ветке миграции 2026-09-20), `tokio`
 > (tag `tokio-1.53.1`, совпадает с `Cargo.lock`), `dashmap` (tag `v6.2.1`), `axum` (tag
 > `axum-v0.8.9`), `kube` (tag `4.2.0`), `k8s-openapi` (tag `v0.28.0`), `rhai` (tag `v1.26.0`),
 > `wasmtime` (tag `v48.0.1`, без submodules — `--no-recurse-submodules`, ~118 MB даже так,
@@ -31,7 +31,7 @@
 ### Rust (прямо применимо к Conduit)
 | `.reference/<name>` | Что даёт |
 |------|---------|
-| `pingora` | КРИТИЧНО. ProxyHttp, TlsSettings, CachePhase, все хуки. Conduit запинен на 0.8.1 (`Cargo.toml`); 0.9.0 вышел 2026-09-09 — см. `.claude/logs/session-log.md` (записи 2026-09-12) за находки по факту чтения исходника (не changelog), включая реально unblocked backlog-пункты |
+| `pingora` | КРИТИЧНО. ProxyHttp, TlsSettings, CachePhase, все хуки. Conduit запинен на 0.9 (`Cargo.toml`, `Cargo.lock` = 0.9.0; апгрейд с 0.8.1 сделан на ветке миграции 2026-09-20) — см. `.claude/logs/session-log.md` (записи 2026-09-12 и 2026-09-20) за находки по факту чтения исходника (не changelog), включая реально unblocked backlog-пункты, которые ещё не подключены |
 | `tokio` | Async runtime, spawn, channels |
 | `dashmap` | Concurrent hashmap (`DashMap<String, TokenBucket>` в rate limiter, `UpstreamRegistry` в health.rs, connection tracking). Запинен на `"6"`, реально `6.2.1` |
 | `axum` | Admin API (порт 2019), upload loopback-сервис, hot-reload SSE-эндпоинт. Запинен на `"0.8"` (`Cargo.toml`) — актуально для `{param}` vs `:param` route-синтаксиса (0.7→0.8 breaking change, см. issue #352's ACME-сервер баг) |
@@ -1045,8 +1045,9 @@ Tokio "full" features уже включены. Ключевые находки �
 
 ## Правила
 
-- `pingora-cache = "0.8"` — кастомный cache key обязателен (CVE-2026-2836)
-- Pingora `"0.8"` — только 0.8+, 3 CVE исправлено
+- `pingora-cache = "0.9"` — кастомный cache key обязателен (CVE-2026-2836). С 0.9 у `CacheKey::new` нет `namespace`: хост вшивается в primary через `\0` (`build_cache_key` в `crates/conduit-cache/src/cache.rs`), хэши отличаются от 0.8 — персистентный кэш (disk/redis) после апгрейда холодный
+- Pingora `"0.9"` — только 0.8+ (3 CVE исправлено в 0.8; в 0.9 ушли `protobuf 2.28.0` и `daemonize`)
+- Pingora 0.9: `RequestHeader`/`ResponseHeader` без `DerefMut` — заголовки менять только через `insert_header`/`append_header`/`remove_header`, не через `.headers.*`
 - `schema/conduit.schema.json` — вручную синхронизировать со `schema.rs`. Обновлён 2026-05-31 со всеми Phase 4 полями. Валидировать: `node -e "JSON.parse(fs.readFileSync('schema/conduit.schema.json','utf8'))"`
 - HTTP/3 (Phase 5) — ждём Pingora Issue #95, ~август 2026
 - `src/main.rs` тонкий: CLI → `dispatch_command()` → command struct → `execute()`

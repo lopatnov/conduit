@@ -691,9 +691,11 @@ where
 /// in the struct's `impl` blocks, and the `ProxyHttp` trait Conduit
 /// implements never receives a reference to it in any hook. There is no
 /// public API in Pingora 0.8 to reach, share, or pre-populate that specific
-/// pool from outside the crate — the same class of gap as this repo's other
-/// `[🚫 BLOCKED]` items (OCSP stapling, request queue + backpressure), waiting
-/// on Pingora 0.9+. Left in place because it's otherwise harmless (a handful
+/// pool from outside the crate (re-checked against 0.9.0 when Conduit moved
+/// to it: the field is still private, still no accessor) — the same class of
+/// gap as this repo's other `[🚫 BLOCKED]` items (OCSP stapling, request
+/// queue + backpressure), waiting on a future Pingora release. Left in place
+/// because it's otherwise harmless (a handful
 /// of HEAD requests at startup); does not deliver the latency benefit its
 /// name implies, and cannot until Pingora exposes the real pool.
 ///

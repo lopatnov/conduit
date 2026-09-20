@@ -9,6 +9,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **The vulnerable `protobuf 2.28.0` (RUSTSEC-2024-0437 / CVE-2025-53605) is
+  gone from the dependency tree.** It was pulled in unconditionally by
+  `pingora-core 0.8` through `prometheus 0.13`; Pingora 0.9 no longer depends
+  on `prometheus` from `pingora-core`, so only Conduit's own `prometheus 0.14`
+  (with `protobuf 3.7.2`) remains and the `cargo-audit` ignore for it is
+  removed. The unmaintained `daemonize` crate (RUSTSEC-2025-0069) is replaced
+  by `daemonix` in the same upgrade, so its OSV ignore is removed as well.
+- **Pingora 0.9 hardening applies to every proxied request** — stricter
+  request-target and authority validation, hop-by-hop upstream header
+  sanitisation (see *Changed*), and bounded default HTTP/2 server limits.
 - **Per-route and per-consumer rate limiting no longer bypass the shared
   memory-exhaustion cap.** `rateLimit` at the site level has always refused
   to create more than 100,000 distinct token buckets, to stop an attacker
@@ -134,6 +144,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Pingora upgraded from 0.8.1 to 0.9.0.** Two behaviour changes are visible
+  to operators:
+  - *Response-cache keys hash differently.* Pingora 0.9 removed the separate
+    `namespace` argument of `CacheKey`, so Conduit now joins the host and the
+    rest of the key with an explicit `\0` boundary instead of relying on the
+    old, ambiguous concatenation. A persistent `cache.store` (`disk:` /
+    `redis://`) starts cold once after the upgrade. Redis entries expire on
+    their TTL; old `disk:` files are never read again and are **not** removed
+    automatically — delete the cache directory to reclaim the space.
+  - *Hop-by-hop request headers are no longer forwarded to the upstream.*
+    Pingora's standard policy now drops `Keep-Alive`, `Proxy-Connection`,
+    `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`,
+    `Transfer-Encoding` (re-framed by Pingora), `Connection`, `HTTP2-Settings`,
+    any header named in the client's `Connection` header, and `Upgrade` unless
+    the request is a valid WebSocket handshake (which is normalised and still
+    forwarded). A request whose `Connection` header nominates `Host`,
+    `X-Forwarded-For`, `X-Forwarded-Host` or `X-Forwarded-Proto` is rejected.
+    An HTTP/2 client talking to an HTTP/2 upstream (e.g. gRPC) is not
+    rewritten.
+
+  The purge admin endpoint (`DELETE /cache/purge`) keeps its response shape.
+  Internally the `Storage::purge` implementations of the disk and Redis cache
+  backends follow Pingora 0.9's `PurgeTarget`/`PurgeOutcome` API, and Conduit's
+  own header edits use `remove_header`/`append_header` (Pingora 0.9 no longer
+  lets `RequestHeader`/`ResponseHeader` be mutated through `DerefMut`).
 - **`--no-default-features` builds no longer contain any reverse-proxy code or
   its dependencies** (issue #144). `proxy` is now a real Cargo feature: with it
   off, upstream selection (capacity limits, slow-start, sticky sessions), retry,
