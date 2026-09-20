@@ -985,7 +985,7 @@ struct CachePurgeParams {
 /// the no-`cache` variant below.
 #[cfg(feature = "cache")]
 async fn cache_purge_handler(Query(params): Query<CachePurgeParams>) -> AdminResult<Json<Value>> {
-    use pingora_cache::storage::{PurgeType, Storage};
+    use pingora_cache::storage::{PurgeOutcome, PurgeTarget, PurgeType, Storage};
     use pingora_cache::trace::Span;
 
     let raw = params.url.trim();
@@ -1019,10 +1019,15 @@ async fn cache_purge_handler(Query(params): Query<CachePurgeParams>) -> AdminRes
     let storage = crate::proxy::cache::cache_storage();
 
     let span = Span::inactive().handle();
-    let purged = storage
-        .purge(&compact, PurgeType::Invalidation, &span)
+    let outcome = storage
+        .purge(
+            PurgeTarget::Active(&compact),
+            PurgeType::Invalidation,
+            &span,
+        )
         .await
         .map_err(|e| AdminError::ServerError(format!("cache purge failed: {e}")))?;
+    let purged = matches!(outcome, PurgeOutcome::Purged(_));
 
     Ok(Json(
         json!({ "status": "ok", "purged": purged, "url": raw }),

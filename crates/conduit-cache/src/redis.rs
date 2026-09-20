@@ -44,7 +44,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use pingora_cache::{
-    storage::{HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeType, Storage},
+    storage::{
+        HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeOutcome, PurgeTarget, PurgeType,
+        Storage,
+    },
     trace::SpanHandle,
     CacheKey, CacheMeta,
 };
@@ -53,7 +56,7 @@ use pingora_core::{Error, ErrorType};
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 
-use crate::common::{bytes_to_hex, SimpleHitHandler};
+use crate::common::{bytes_to_hex, purge_target_key, SimpleHitHandler};
 
 // ── Registry of per-URL storage instances ────────────────────────────────────
 
@@ -246,14 +249,21 @@ impl Storage for RedisCacheStorage {
 
     async fn purge(
         &'static self,
-        key: &pingora_cache::key::CompactCacheKey,
+        target: PurgeTarget<'_>,
         _purge_type: PurgeType,
         _trace: &SpanHandle,
-    ) -> PingoraResult<bool> {
+    ) -> PingoraResult<PurgeOutcome> {
+        let Some(key) = purge_target_key(target) else {
+            return Ok(PurgeOutcome::NotFound);
+        };
         let redis_key = Self::compact_redis_key(key);
         let mut conn = self.conn.clone();
         let removed: u64 = conn.del(&redis_key).await.unwrap_or(0);
-        Ok(removed > 0)
+        Ok(if removed > 0 {
+            PurgeOutcome::Purged(None)
+        } else {
+            PurgeOutcome::NotFound
+        })
     }
 
     async fn update_meta(
@@ -348,14 +358,14 @@ mod tests {
 
     #[test]
     fn redis_key_format() {
-        let key = CacheKey::new("example.com", "http:/foo", "");
+        let key = CacheKey::new("example.com\0http:/foo", "");
         let rk = RedisCacheStorage::redis_key(&key);
         assert!(rk.starts_with("conduit:pcache:"), "key: {rk}");
     }
 
     #[test]
     fn redis_key_is_32_hex_chars_after_prefix() {
-        let key = CacheKey::new("host.example", "https:/path", "");
+        let key = CacheKey::new("host.example\0https:/path", "");
         let rk = RedisCacheStorage::redis_key(&key);
         let hex_part = rk.strip_prefix("conduit:pcache:").unwrap();
         assert_eq!(
@@ -371,8 +381,8 @@ mod tests {
 
     #[test]
     fn two_different_keys_produce_different_redis_keys() {
-        let k1 = CacheKey::new("host1.example", "https:/path1", "");
-        let k2 = CacheKey::new("host2.example", "https:/path2", "");
+        let k1 = CacheKey::new("host1.example\0https:/path1", "");
+        let k2 = CacheKey::new("host2.example\0https:/path2", "");
         let rk1 = RedisCacheStorage::redis_key(&k1);
         let rk2 = RedisCacheStorage::redis_key(&k2);
         assert_ne!(rk1, rk2, "different cache keys must not collide");

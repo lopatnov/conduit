@@ -196,7 +196,7 @@ impl ResponseFilter for CrlfProtectionFilter {
             })
             .collect();
         for name in bad {
-            resp.headers.remove(&name);
+            resp.remove_header(&name);
         }
 
         if !self.allow_duplicate_chunked {
@@ -261,7 +261,7 @@ fn dedup_chunked_transfer_encoding(resp: &mut ResponseHeader) {
         .map(str::trim)
         .filter(|s| !s.eq_ignore_ascii_case("chunked"))
         .collect();
-    resp.headers.remove("transfer-encoding");
+    resp.remove_header("transfer-encoding");
     let new_val = if other_directives.is_empty() {
         "chunked".to_owned()
     } else {
@@ -305,7 +305,7 @@ impl ResponseFilter for InjectExtraHeadersFilter {
         // inserting the freshly computed one — prevents double-counting when
         // a cached response already has an `Age` header from a prior hop.
         if let Some(age_secs) = req_ctx.cache_age_secs() {
-            resp.headers.remove("age");
+            resp.remove_header("age");
             resp.insert_header("age", age_secs.to_string())?;
         }
 
@@ -329,7 +329,7 @@ impl ResponseFilter for ResponseTransformFilter {
     ) -> Result<ResponseFilterOutcome> {
         if let Some(remove) = &self.transform.remove_headers {
             for name in remove {
-                resp.headers.remove(name.as_str());
+                resp.remove_header(name.as_str());
             }
         }
         if let Some(set) = &self.transform.set_headers {
@@ -1230,14 +1230,16 @@ mod tests {
     fn dedup_te_removes_duplicate_chunked_headers() {
         let mut resp = make_resp(200);
         // Append two separate Transfer-Encoding: chunked headers.
-        resp.headers.append(
+        resp.append_header(
             "transfer-encoding",
             http::header::HeaderValue::from_static("chunked"),
-        );
-        resp.headers.append(
+        )
+        .unwrap();
+        resp.append_header(
             "transfer-encoding",
             http::header::HeaderValue::from_static("chunked"),
-        );
+        )
+        .unwrap();
         dedup_chunked_transfer_encoding(&mut resp);
         let vals: Vec<_> = resp
             .headers

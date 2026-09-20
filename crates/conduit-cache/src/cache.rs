@@ -55,9 +55,17 @@ pub fn cache_lock() -> &'static CacheKeyLockImpl {
 
 /// Build a deterministic [`CacheKey`] from the request coordinates.
 ///
-/// The `namespace` is the `host` value so that different virtual-hosts with
-/// the same path are stored independently.  The `primary` key is
+/// The `host` is part of the key so that different virtual-hosts with the
+/// same path are stored independently.  The rest of the key is
 /// `scheme:path` (with `?query` appended when present).
+///
+/// Pingora 0.9 hashes only the bytes handed to [`CacheKey::new`] and leaves
+/// the framing of components to the caller (0.8 had a separate `namespace`
+/// argument, concatenated with the primary key without a delimiter).  The
+/// host and the rest are therefore joined with `\0` — it cannot occur in an
+/// HTTP header value, so the boundary is unambiguous, and it is the same
+/// delimiter the `Vary` parts below already use.  The hash differs from the
+/// 0.8 one, so a persistent (disk/Redis) cache starts cold after the upgrade.
 ///
 /// When `vary_headers` is provided, each header name is looked up in
 /// `request_headers` and the `name=value` pairs are appended to the primary
@@ -97,7 +105,7 @@ pub fn build_cache_key(
         _ => base,
     };
 
-    CacheKey::new(host, primary, "")
+    CacheKey::new(format!("{host}\0{primary}"), "")
 }
 
 // ── Request-side policy ───────────────────────────────────────────────────────
@@ -353,6 +361,20 @@ mod tests {
             None,
             None,
         );
+    }
+
+    #[test]
+    fn cache_key_frames_host_apart_from_the_rest() {
+        // Real inputs cannot produce this collision (the scheme is always
+        // `http`/`https`), so the fixture forces it with a synthetic scheme:
+        // both calls concatenate to "abhttps:/x".  Without an explicit
+        // boundary between host and primary key — which Pingora 0.9 no longer
+        // provides — they would hash identically and two virtual-hosts would
+        // share a cache entry.
+        let k1 = build_cache_key("a", "bhttps", "/x", None, None, None);
+        let k2 = build_cache_key("ab", "https", "/x", None, None, None);
+        assert_ne!(k1.to_compact().primary, k2.to_compact().primary);
+        assert_eq!(k2.primary_key(), b"ab\0https:/x");
     }
 
     #[test]

@@ -6,7 +6,8 @@ use std::any::Any;
 use async_trait::async_trait;
 use bytes::Bytes;
 use pingora_cache::{
-    storage::{HandleHit, Storage},
+    key::CompactCacheKey,
+    storage::{HandleHit, PurgeTarget, Storage},
     trace::SpanHandle,
     CacheKey,
 };
@@ -15,6 +16,22 @@ use pingora_core::Result as PingoraResult;
 /// Encode a 16-byte hash as a 32-character lowercase hex string.
 pub(crate) fn bytes_to_hex(b: &[u8; 16]) -> String {
     b.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The logical cache key a purge should remove, or `None` when the target
+/// cannot refer to anything these backends hold.
+///
+/// Both backends store one entry per logical key and hand out no
+/// [`CacheEntryId`](pingora_cache::eviction::CacheEntryId) (the default
+/// `HandleHit::entry_id`/`HandleMiss::entry_id` return `None`).  An
+/// [`PurgeTarget::Exact`] target that names an id therefore identifies an entry
+/// generation this storage never issued; deleting "whatever is under that key"
+/// for it could remove a newer, unrelated entry, so it is treated as not found.
+pub(crate) fn purge_target_key(target: PurgeTarget<'_>) -> Option<&CompactCacheKey> {
+    match target {
+        PurgeTarget::Active(key) => Some(key),
+        PurgeTarget::Exact(entry) => entry.entry_id().is_none().then(|| entry.key()),
+    }
 }
 
 /// A cache-hit handler that serves a single pre-loaded response body.
@@ -59,6 +76,7 @@ impl HandleHit for SimpleHitHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pingora_cache::eviction::{CacheEntryId, CacheEntryKey};
 
     #[test]
     fn bytes_to_hex_all_zeros() {
@@ -96,9 +114,31 @@ mod tests {
         let handler: Box<SimpleHitHandler> =
             Box::new(SimpleHitHandler::new(Bytes::from_static(b"x")));
         let storage = crate::cache::cache_storage() as &'static (dyn Storage + Sync);
-        let key = CacheKey::new("host.example", "https:/path", "");
+        let key = CacheKey::new("host.example\0https:/path", "");
         let span = pingora_cache::trace::Span::inactive();
         assert!(handler.finish(storage, &key, &span.handle()).await.is_ok());
+    }
+
+    #[test]
+    fn purge_target_key_resolves_active_and_unidentified_exact_targets() {
+        let key = CacheKey::new("host.example\0https:/path", "").to_compact();
+        assert_eq!(
+            purge_target_key(PurgeTarget::Active(&key)).map(|k| k.primary),
+            Some(key.primary)
+        );
+
+        let unidentified = CacheEntryKey::key_only(key.clone());
+        assert_eq!(
+            purge_target_key(PurgeTarget::Exact(&unidentified)).map(|k| k.primary),
+            Some(key.primary)
+        );
+    }
+
+    #[test]
+    fn purge_target_key_refuses_an_exact_target_with_an_id_it_never_issued() {
+        let key = CacheKey::new("host.example\0https:/path", "").to_compact();
+        let identified = CacheEntryKey::identified(key, CacheEntryId::new(7));
+        assert!(purge_target_key(PurgeTarget::Exact(&identified)).is_none());
     }
 
     #[test]
