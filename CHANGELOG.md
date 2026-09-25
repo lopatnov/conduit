@@ -152,7 +152,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     old, ambiguous concatenation. A persistent `cache.store` (`disk:` /
     `redis://`) starts cold once after the upgrade. Redis entries expire on
     their TTL; old `disk:` files are never read again and are **not** removed
-    automatically — delete the cache directory to reclaim the space.
+    automatically — delete the cache directory to reclaim the space. Nodes that
+    share one Redis store see disjoint keys across the upgrade: during a rolling
+    upgrade old and new nodes cache separately (no collision, no corruption),
+    and a `DELETE /cache/purge` on one version does not remove the entry the
+    other version wrote.
   - *Hop-by-hop request headers are no longer forwarded to the upstream.*
     Pingora's standard policy now drops `Keep-Alive`, `Proxy-Connection`,
     `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`,

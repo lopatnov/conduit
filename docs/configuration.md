@@ -345,9 +345,9 @@ tls:
 > The fields still parse, but the way Conduit builds its TLS listeners (through
 > Pingora's `TlsSettings`) gives no way to restrict protocol versions or cipher
 > suites — TLS 1.2 and 1.3 are always both enabled with the default rustls
-> cipher suite set, regardless of config. (Pingora 0.9 can accept a hand-built
-> rustls `ServerConfig`, which would allow it; Conduit does not use that yet.)
-> Setting either field is a hard validation
+> cipher suite set, regardless of config. (Pingora 0.9 still exposes no way to
+> set versions or ciphers on a listener: `TlsSettings::build()` hard-codes
+> TLS 1.2 and 1.3.) Setting either field is a hard validation
 > error (fails startup with an explanation) rather than a silent no-op, so a
 > misconfigured expectation of TLS restriction can't go unnoticed.
 | `acme.challenge`   | string   | —       | `"http-01"` or `"dns-01"`                                                                                                                     |

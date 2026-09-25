@@ -1142,9 +1142,11 @@ struct CertReloadRequest {
 ///
 /// # Notes on zero-downtime rotation
 ///
-/// Pingora 0.8's rustls backend does not expose a runtime cert-swap API.
-/// True zero-downtime rotation (hot-swap without restarting the listener)
-/// requires a process upgrade: start the new process with `--upgrade` so it
+/// Conduit installs the certificate once, when it builds the listener's rustls
+/// config, and does not yet register a certificate resolver that could swap it
+/// at runtime (Pingora 0.9 exposes `TlsSettings::set_cert_resolver` for that).
+/// Until it does, zero-downtime rotation (hot-swap without restarting the
+/// listener) requires a process upgrade: start the new process with `--upgrade` so it
 /// inherits the listening socket FDs from the old process, then send SIGQUIT
 /// to the old process.  On systems managed by systemd this is done via
 /// `systemctl reload conduit`.

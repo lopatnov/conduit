@@ -105,6 +105,9 @@ pub fn build_cache_key(
         _ => base,
     };
 
+    // The second argument is Pingora's `user_tag` (identifies a user for
+    // per-user storage quotas; it is not part of the hash). Conduit has no
+    // per-user cache quota, so it stays empty.
     CacheKey::new(format!("{host}\0{primary}"), "")
 }
 
@@ -343,17 +346,20 @@ mod tests {
 
     #[test]
     fn cache_key_without_query() {
-        let _ = build_cache_key("example.com", "https", "/api/data", None, None, None);
+        let k = build_cache_key("example.com", "https", "/api/data", None, None, None);
+        assert_eq!(k.primary_key(), b"example.com\0https:/api/data");
     }
 
     #[test]
     fn cache_key_with_empty_query() {
-        let _ = build_cache_key("example.com", "https", "/api/data", Some(""), None, None);
+        // An empty query string is treated as no query at all.
+        let k = build_cache_key("example.com", "https", "/api/data", Some(""), None, None);
+        assert_eq!(k.primary_key(), b"example.com\0https:/api/data");
     }
 
     #[test]
     fn cache_key_with_query() {
-        let _ = build_cache_key(
+        let k = build_cache_key(
             "example.com",
             "https",
             "/search",
@@ -361,6 +367,7 @@ mod tests {
             None,
             None,
         );
+        assert_eq!(k.primary_key(), b"example.com\0https:/search?q=hello");
     }
 
     #[test]
