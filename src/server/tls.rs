@@ -10,19 +10,22 @@ use crate::config::schema::TlsClientAuth;
 // ── SNI note ──────────────────────────────────────────────────────────────────
 //
 // Multi-certificate SNI (serving a different cert per hostname on the same port)
-// is not currently supported.  Pingora's rustls `TlsSettings` calls
-// `ServerConfig::with_single_cert` internally, and the rustls feature flag
-// explicitly disables `with_callbacks()` with the message "Certificate callbacks
-// are not supported with feature 'rustls'."
+// is not currently supported by Conduit.  Every listener is built from a single
+// cert/key pair (`TlsSettings::intermediate`), which Pingora turns into a
+// single-certificate rustls `ServerConfig`.  (Pingora 0.8 explicitly disabled
+// certificate callbacks for its rustls backend; 0.9 offers
+// `TlsSettings::set_cert_resolver` for dynamic SNI-based selection, but Conduit
+// does not install a resolver yet.)
 //
 // Consequence: when multiple HTTPS sites share a port, only the first
 // `tls.cert` / `tls.key` pair registered for that port is used.  All sites on
 // the port receive the same certificate regardless of the SNI hostname the
 // client sends.
 //
-// Future path: use Pingora's boringssl/openssl backend (build feature
-// `openssl_derived`) which does support `TlsAcceptCallbacks`, or wait for
-// Pingora to expose a `ResolvesServerCert` API for its rustls backend.
+// Future path: register a `ResolvesServerCert` through
+// `TlsSettings::set_cert_resolver` (Pingora 0.9+ rustls backend — the same hook
+// that would allow a live certificate swap), or use Pingora's boringssl/openssl
+// backend (build feature `openssl_derived`), which supports `TlsAcceptCallbacks`.
 
 /// Build a Pingora [`TlsSettings`] from explicit certificate and key file paths.
 ///

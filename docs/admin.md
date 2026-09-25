@@ -582,11 +582,12 @@ endpoint only rewrites file *content* at the existing paths, so `/reload`'s
 cold-field detection (which compares config *values*) never sees a change
 and reports success without the new certificate ever being loaded.
 
-> **Why a restart?** Pingora 0.8's rustls backend builds an immutable
-> `ServerConfig` at startup and has no runtime cert-swap API. Writing the
-> files here is the safe atomic step; applying them without downtime will be
-> possible once Pingora exposes a `ResolvesServerCert` hook (planned for 0.9+).
-> For Let's Encrypt, use `tls.acme` instead — renewals are fully automatic.
+> **Why a restart?** Conduit loads the certificate once, when it builds the
+> listener's rustls `ServerConfig` at startup, and does not yet install a
+> certificate resolver that could swap it at runtime (Pingora 0.9 exposes the
+> `ResolvesServerCert` hook this needs; wiring it in is a planned follow-up).
+> Writing the files here is the safe atomic step; until then a restart applies
+> them. For Let's Encrypt, use `tls.acme` instead — renewals are fully automatic.
 
 **Request body:**
 

@@ -310,7 +310,7 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`
 
 | Crate                                                           | Role                       |
 | --------------------------------------------------------------- | -------------------------- |
-| [Cloudflare Pingora 0.8](https://github.com/cloudflare/pingora) | Async HTTP proxy framework |
+| [Cloudflare Pingora 0.9](https://github.com/cloudflare/pingora) | Async HTTP proxy framework |
 | [Tokio](https://tokio.rs)                                       | Async runtime              |
 | [Axum 0.8](https://github.com/tokio-rs/axum)                    | Admin API HTTP server      |
 
