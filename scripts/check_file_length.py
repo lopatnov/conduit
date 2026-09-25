@@ -25,8 +25,9 @@ Known limits (all err in a way that is reported or conservative):
     recognised, so that code is counted (an over-count).
   * `--base` marks the files the branch touched and shows before -> after for them; a rename found by git
     (`-M`) is compared with the file's OLD path.
-  * It is a simple scanner, not a Rust parser. It is linear in the input (measured: 2 MB in 0.4 s, 8 MB /
-    221 000 lines in 1.6 s), including on malformed input: an attribute is joined over at most 50 lines, so a
+  * It is a simple scanner, not a Rust parser. It is linear in the input (measured on one developer machine:
+    2 MB in 0.4 s, 8 MB / 221 000 lines in 1.6 s; other hardware differs), including on malformed input: a
+    wrapped attribute is joined over at most MAX_ATTR_LINES + 1 = 51 lines (its first line plus 50 more), so a
     stray unclosed `#[` cannot make it slower (a test pins this).
 
 Scope: `src/**/*.rs` and `crates/*/src/**/*.rs`. An unreadable file is skipped with a warning; bytes that are
@@ -46,7 +47,7 @@ import sys
 
 SOFT_LIMIT = 400
 HARD_LIMIT = 1000
-MAX_ATTR_LINES = 50      # longest attribute (in lines) that is joined and classified
+MAX_ATTR_LINES = 50      # lines joined after an attribute's first (so it spans up to MAX_ATTR_LINES + 1 in all)
 MARKER = "<!-- code-length-report -->"
 
 _CHAR_LIT = re.compile(r"'(?:\\u\{[0-9a-fA-F_]+\}|\\x[0-9a-fA-F]{2}|\\.|[^\\'])'")
