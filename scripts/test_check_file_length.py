@@ -234,6 +234,13 @@ class Reporting(unittest.TestCase):
                 for bold in parts[1::2]:
                     self.assertTrue(bold and bold == bold.strip(), f"bad bold span {bold!r} in {line!r}")
 
+    def test_markdown_names_the_largest_touched_file(self):
+        counts = {"a.rs": 10, "b.rs": 120, "c.rs": 900}
+        md = cfl.render_markdown(counts, {"a.rs", "b.rs", "tests_only.rs"}, {})
+        # tests_only.rs is not in `counts` (a test file), so only two touched files are counted
+        self.assertIn("2 Rust files touched by this PR (tests excluded); the largest is `b.rs` at **120**", md)
+        self.assertNotIn("touched by this PR;", cfl.render_markdown(counts, set(), {}))
+
     def test_markdown_all_clear(self):
         md = cfl.render_markdown({"a.rs": 10}, set(), {})
         self.assertIn("No file exceeds the soft limit", md)

@@ -283,6 +283,11 @@ def render_markdown(counts, touched, before):
         else:
             worse = f" — **{len(grew)} of them grew**" if grew else ""
             out += [f"**Touched by this PR and over a limit: {len(touched_over)}**{worse}", ""]
+        present = [(counts[p], p) for p in touched if p in counts]
+        if present:
+            top_n, top_p = max(present)
+            out += [f"{len(present)} Rust files touched by this PR (tests excluded); the largest is "
+                    f"`{top_p}` at **{top_n}** code lines.", ""]
     if over:
         out += ["| File | Code lines | Limit | This PR |", "|---|---:|---|---|"]
         for n, p in over:
