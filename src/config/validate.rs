@@ -1576,7 +1576,8 @@ fn validate_tls(tls: &TlsConfig, prefix: &str, errors: &mut Vec<ValidationError>
     // protocol-version or cipher-suite selection — `TlsSettings::build()`
     // hardcodes `ServerConfig::builder_with_protocol_versions(&[TLS12, TLS13])`
     // with the default rustls cipher suite set, all fields are private, and
-    // the only constructor (`intermediate()`) takes just a cert/key path pair
+    // the constructors (`intermediate()`, and `with_callbacks()` in 0.9) take no
+    // version or cipher parameter
     // (confirmed against vendored `pingora-core-0.8.1/src/listeners/tls/
     // rustls/mod.rs`, and again against 0.9.0: `Acceptor::from_server_config`
     // exists there, but a listener only accepts `TlsSettings`, so it cannot be

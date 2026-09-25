@@ -48,8 +48,37 @@ the key itself (the host, a NUL byte, then `scheme:path?query`).
 
 ## Known Unfixable Transitive Vulnerabilities
 
-None at present. Advisories that Conduit cannot fix itself because an upstream project has to
-update first are listed here, each with why it cannot be fixed and what the actual risk is.
+These advisories affect transitive dependencies that Conduit cannot upgrade without waiting for
+an upstream project to update first. Each entry explains why it cannot be fixed and what the
+actual risk is. Nothing is suppressed in `.cargo/audit.toml` or `osv-scanner.toml`: an open
+advisory stays visible in the GitHub Security tab until it is really fixed.
+
+### RUSTSEC-2023-0071 — rsa 0.9.10: Marvin Attack (CVE-2023-49092)
+
+| Field | Value |
+|---|---|
+| Advisory | [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071) |
+| Affected crate | `rsa 0.9.10` (the latest stable release; `0.10` is still a pre-release) |
+| Fix requires | No patched release exists |
+| Status | **Acknowledged — no fix available upstream; left open, not suppressed** |
+
+**Root cause chain:**
+
+```text
+conduit → jsonwebtoken 11 (rust_crypto backend) → rsa 0.9.10
+```
+
+Only builds with the `jwt` feature contain it (that feature is part of `standard` and `full`,
+not of `default`).
+
+**Why Conduit is not at risk:**
+
+The Marvin attack is a timing side channel on RSA *private-key* operations. Conduit only
+**verifies** RS256/RS384/RS512 token signatures, using public keys taken from a JWKS endpoint. It
+holds no RSA private key and never signs or decrypts with RSA in production code (the only
+signing calls are in tests).
+
+**Blocked by:** `rsa 0.10` becoming stable and `jsonwebtoken` moving to it.
 
 ### Resolved: RUSTSEC-2024-0437 — protobuf 2.28.0: Uncontrolled Recursion / Crash
 

@@ -354,9 +354,11 @@ tls:
 | `acme.directory`   | string   | —       | Custom ACME directory URL. Use `"https://acme-staging-v02.api.letsencrypt.org/directory"` for Let's Encrypt staging (rate-limit-free testing) |
 | `clientAuth`       | object   | —       | [mTLS client cert verification](#mtls--client-certificate-authentication)                                                                     |
 
-> **Note — single cert per port:** rustls does not support per-SNI certificate
-> selection. When multiple HTTPS sites share the same port, the first registered
-> cert is used for all. Use separate ports for different certificates.
+> **Note — single cert per port:** Conduit does not support per-SNI certificate
+> selection yet. When multiple HTTPS sites share the same port, the first
+> registered cert is used for all. Use separate ports for different
+> certificates. (Pingora 0.9's rustls backend can pick a certificate per SNI
+> hostname through a custom resolver; Conduit does not install one yet.)
 
 ---
 
