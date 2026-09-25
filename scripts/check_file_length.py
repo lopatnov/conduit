@@ -26,7 +26,8 @@ Known limits (all err in a way that is reported or conservative):
   * `--base` marks the files the branch touched and shows before -> after for them; a rename found by git
     (`-M`) is compared with the file's OLD path.
   * It is a simple scanner, not a Rust parser. It is linear in the input (measured: 2 MB in 0.4 s, 8 MB /
-    221 000 lines in 1.6 s).
+    221 000 lines in 1.6 s), including on malformed input: an attribute is joined over at most 50 lines, so a
+    stray unclosed `#[` cannot make it slower (a test pins this).
 
 Scope: `src/**/*.rs` and `crates/*/src/**/*.rs`. An unreadable file is skipped with a warning; bytes that are
 not UTF-8 are replaced, not fatal.
@@ -45,6 +46,7 @@ import sys
 
 SOFT_LIMIT = 400
 HARD_LIMIT = 1000
+MAX_ATTR_LINES = 50      # longest attribute (in lines) that is joined and classified
 MARKER = "<!-- code-length-report -->"
 
 _CHAR_LIT = re.compile(r"'(?:\\u\{[0-9a-fA-F_]+\}|\\x[0-9a-fA-F]{2}|\\.|[^\\'])'")
@@ -55,7 +57,7 @@ _CFG_ATTR = re.compile(r"^\s*#\[cfg\((.*)\)\]\s*$")
 _ATTR_START = re.compile(r"^\s*#\[")
 _ITEM_START = re.compile(
     r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:default\s+)?(?:async\s+)?(?:unsafe\s+)?"
-    r"(?:mod|fn|use|impl|struct|enum|const|static|type|trait|extern|macro_rules!)\b"
+    r"(?:(?:mod|fn|use|impl|struct|enum|const|static|type|trait|extern)\b|macro_rules!)"
 )
 
 
@@ -174,14 +176,18 @@ def _attribute_spans(mask_lines):
     so an attribute is joined until its brackets balance. An attribute followed by its item on the same
     line (`#[derive(Debug)] struct S;`) is not a span: that line is ordinary code.
     """
+    # bracket balance of every line, computed once (linear), so joining never re-counts a growing buffer
+    delta = [ln.count("[") - ln.count("]") for ln in mask_lines]
     spans, i = {}, 0
     while i < len(mask_lines):
         if _ATTR_START.match(mask_lines[i]):
-            j, buf = i, mask_lines[i]
-            while buf.count("[") != buf.count("]") and j + 1 < len(mask_lines):
+            j, balance = i, delta[i]
+            # An attribute that has not closed within MAX_ATTR_LINES lines is not treated as one (unparseable
+            # input such as a stray `#[` must not make the scan super-linear); its lines are counted as code.
+            while balance > 0 and j + 1 < len(mask_lines) and j - i < MAX_ATTR_LINES:
                 j += 1
-                buf += " " + mask_lines[j].strip()
-            if buf.count("[") == buf.count("]") and buf.rstrip().endswith("]"):
+                balance += delta[j]
+            if balance == 0 and mask_lines[j].rstrip().endswith("]"):
                 for k in range(i, j + 1):
                     spans[k] = (i, j)
                 i = j + 1
@@ -268,7 +274,11 @@ def source_files(root):
 
 
 def git(root, *args):
-    return subprocess.run(["git", "-C", root, *args], capture_output=True, text=True)
+    """Run git in `root` (argv list, no shell). Output is decoded as UTF-8 (never the locale encoding) and the
+    GIT_* environment is dropped, so a stray GIT_DIR/GIT_WORK_TREE cannot redirect it to another repository."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return subprocess.run(["git", "-C", root, *args], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", env=env)
 
 
 def valid_ref(ref):
@@ -290,21 +300,24 @@ def changed_files(root, base):
     """
     if not valid_ref(base):
         return None
-    args = ("diff", "--name-status", "-M", "--diff-filter=AMR")
+    # -z: NUL-separated and never C-quoted, so a path with non-ASCII characters, a tab or a quote is exact.
+    args = ("diff", "-z", "--name-status", "-M", "--diff-filter=AMR")
     r = git(root, *args, f"{base}...HEAD")
     if r.returncode != 0:
         r = git(root, *args, base, "HEAD")
     if r.returncode != 0:
         return None
     changed = {}
-    for line in r.stdout.splitlines():
-        parts = line.split("\t")
-        status = parts[0][:1]
-        if status == "R" and len(parts) >= 3:
-            old, new = parts[1], parts[2]
-        elif status in ("A", "M") and len(parts) >= 2:
-            old, new = (None if status == "A" else parts[1]), parts[1]
+    tokens = r.stdout.split("\0")
+    i = 0
+    while i < len(tokens):
+        status = tokens[i][:1]
+        if status in ("R", "C") and i + 2 < len(tokens):        # R100 <NUL> old <NUL> new
+            old, new, i = tokens[i + 1], tokens[i + 2], i + 3
+        elif status in ("A", "M") and i + 1 < len(tokens):      # M <NUL> path
+            old, new, i = (None if status == "A" else tokens[i + 1]), tokens[i + 1], i + 2
         else:
+            i += 1
             continue
         if new.endswith(".rs"):
             changed[new] = old

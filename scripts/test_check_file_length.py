@@ -390,6 +390,33 @@ class MultiLineAttributes(unittest.TestCase):
     def test_attribute_with_its_item_on_the_same_line_is_code(self):
         self.assertEqual(n("#[derive(Debug)] struct S;\n#[cfg(test)]\nmod t {}\n"), 1)
 
+    def test_unclosed_attribute_openers_stay_linear(self):
+        """A `#[` that never closes used to be re-joined with every following line — cubic on a file of them.
+        Both shapes must finish in well under a second; the bound is generous so a slow CI runner cannot flake it."""
+        import time
+        many = "#[a\n" * 10_000                       # each opener would rescan to the end of the file if unbounded
+        one_open = "#[cfg(test)\n" + "fn x() {}\n" * 100_000                    # ~1 MB, one opener, never closed
+        for label, src in (("10000 openers", many), ("1 MB, one opener", one_open)):
+            t0 = time.perf_counter()
+            cfl.count_source(src)
+            self.assertLess(time.perf_counter() - t0, 3.0, label)
+
+    def test_an_attribute_longer_than_the_join_window_is_not_treated_as_one(self):
+        """Past MAX_ATTR_LINES the join gives up: the `cfg(all(test, ..))` below is not recognised as a test
+        attribute, so its module is counted as ordinary code instead of being excluded."""
+        pad = cfl.MAX_ATTR_LINES + 5
+        src = "#[cfg(all(\n    test,\n" + "    unix,\n" * pad + "))]\nmod t {\n    fn a() {}\n}\nfn after() {}\n"
+        self.assertEqual(n(src), 2 + pad + 1 + 3 + 1)
+        short = "#[cfg(all(\n    test,\n" + "    unix,\n" * 3 + "))]\nmod t {\n    fn a() {}\n}\nfn after() {}\n"
+        self.assertEqual(n(short), 1)                                          # within the window: excluded
+
+    def test_macro_rules_after_a_test_attribute_is_an_item(self):
+        seen = []
+        got = cfl.count_source("#[cfg(test)]\nmacro_rules! m {\n    () => {};\n}\nfn after() {}\n",
+                               lambda ln, msg: seen.append(ln))
+        self.assertEqual(got, 1)
+        self.assertEqual(seen, [])                                             # not reported as "no item"
+
     def test_wrapped_test_attribute_on_a_non_item_still_warns(self):
         seen = []
         cfl.count_source("struct S {\n    #[cfg(all(\n        test,\n        unix\n    ))]\n    f: u8,\n}\n",
@@ -397,10 +424,22 @@ class MultiLineAttributes(unittest.TestCase):
         self.assertEqual(seen, [2])
 
 
+def _clean_env():
+    """The environment for a throwaway repository: no inherited GIT_* (a hook or a developer's shell can export
+    GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE, which would point these commands at the real checkout), and no user or
+    system git configuration (signing, hooks, autocrlf)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    return env
+
+
 def _git(cwd, *args):
     import subprocess
-    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", cwd, *args],
-                   check=True, capture_output=True, text=True)
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+         "-c", f"core.hooksPath={os.devnull}", "-c", "core.quotepath=true", "-C", cwd, *args],
+        check=True, capture_output=True, text=True, encoding="utf-8", env=_clean_env())
 
 
 class BaseComparison(unittest.TestCase):
@@ -417,10 +456,9 @@ class BaseComparison(unittest.TestCase):
         return body
 
     def test_rename_added_and_modified_files(self):
-        import subprocess
         with tempfile.TemporaryDirectory() as d:
             body = self._repo(d)
-            base = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+            base = _git(d, "rev-parse", "HEAD").stdout.strip()
             os.rename(os.path.join(d, "src", "old_name.rs"), os.path.join(d, "src", "new_name.rs"))
             write(os.path.join(d, "src", "new_name.rs"), body + "fn extra() {}\n")     # renamed AND grown by 1
             write(os.path.join(d, "src", "added.rs"), "fn a() {}\n")
@@ -439,6 +477,49 @@ class BaseComparison(unittest.TestCase):
             self.assertEqual(counts["src/new_name.rs"], 51)
             self.assertIsNone(before["src/added.rs"])               # a genuinely new file
             self.assertEqual(before["src/keep.rs"], 1)
+
+    def test_non_ascii_and_odd_paths_survive_the_diff(self):
+        """`git diff` C-quotes such paths ("caf\\303\\251.rs") unless asked for NUL-separated output; a quoted
+        name no longer exists on disk, so the file would silently drop out of the report."""
+        with tempfile.TemporaryDirectory() as d:
+            _git(d, "init", "-q")
+            os.makedirs(os.path.join(d, "src"))
+            body = "".join(f"fn f{i}() {{}}\n" for i in range(30))
+            write(os.path.join(d, "src", "café.rs"), body)
+            write(os.path.join(d, "src", "with space.rs"), "fn s() {}\n")
+            _git(d, "add", "-A")
+            _git(d, "commit", "-q", "-m", "base")
+            base = _git(d, "rev-parse", "HEAD").stdout.strip()
+            os.rename(os.path.join(d, "src", "café.rs"), os.path.join(d, "src", "naïve.rs"))
+            write(os.path.join(d, "src", "with space.rs"), "fn s() {}\nfn t() {}\n")
+            write(os.path.join(d, "src", "日本語.rs"), "fn j() {}\n")
+            _git(d, "add", "-A")
+            _git(d, "commit", "-q", "-m", "work")
+
+            self.assertEqual(cfl.changed_files(d, base),
+                             {"src/naïve.rs": "src/café.rs", "src/with space.rs": "src/with space.rs",
+                              "src/日本語.rs": None})
+            counts, touched, before, note = cfl.build_report(d, base)
+            self.assertEqual(before["src/naïve.rs"], 30)            # found under its OLD, non-ASCII name
+            self.assertEqual(counts["src/naïve.rs"], 30)
+
+    def test_inherited_git_environment_does_not_redirect_the_helper(self):
+        """A GIT_DIR/GIT_WORK_TREE exported into the process must not send `git()` to another repository."""
+        with tempfile.TemporaryDirectory() as real, tempfile.TemporaryDirectory() as decoy:
+            self._repo(real)
+            _git(decoy, "init", "-q")
+            saved = {k: os.environ.get(k) for k in ("GIT_DIR", "GIT_WORK_TREE")}
+            os.environ["GIT_DIR"] = os.path.join(decoy, ".git")
+            os.environ["GIT_WORK_TREE"] = decoy
+            try:
+                head = cfl.git(real, "rev-parse", "--show-toplevel").stdout.strip()
+            finally:
+                for k, v in saved.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+            self.assertEqual(os.path.realpath(head), os.path.realpath(real))
 
     def test_count_at_reports_a_failed_git_show_on_stderr(self):
         import contextlib
@@ -461,7 +542,9 @@ class WorkspaceLayout(unittest.TestCase):
             text = f.read()
         section = re.search(r"^\[workspace\]\s*$(.*?)(?=^\[)", text, re.S | re.M)
         self.assertIsNotNone(section, "no [workspace] section found in Cargo.toml")
-        members = re.search(r"members\s*=\s*\[(.*?)\]", section.group(1), re.S)
+        # TOML comments may contain `]` or quoted names; strip them before looking for the array
+        body = re.sub(r"(?m)#.*$", "", section.group(1))
+        members = re.search(r"members\s*=\s*\[(.*?)\]", body, re.S)
         self.assertIsNotNone(members, "no `members` in [workspace]")
         entries = re.findall(r'"([^"]+)"', members.group(1))
         self.assertTrue(entries)

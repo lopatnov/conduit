@@ -549,8 +549,8 @@ jobs:
   # limit until #315), only a broken counter does — its own unit tests run
   # first. Posting uses the same plain `curl` + GITHUB_TOKEN mechanism, and the
   # same PR lookup for `push`-triggered migration-branch PRs, as the footprint
-  # job above; on a run whose token is read-only (forks, Dependabot) the POST is
-  # simply rejected and the report stays in the job log.
+  # job above; on a fork `pull_request` run GitHub forces the token read-only, so
+  # the POST is simply rejected and the report stays in the job log.
   code-length:
     name: Code length report
     runs-on: ubuntu-latest
@@ -648,14 +648,16 @@ jobs:
               print(json.dumps({'body': f.read()}))
           ")
 
-          # The report is informational, so a failed POST/PATCH (read-only token on a fork or Dependabot run,
-          # rate limit) must not fail the job — but it must not be invisible either.
+          # The report is informational, so a failed POST/PATCH (the read-only token GitHub forces on a fork
+          # run, a rate limit) must not fail the job — but it must not be invisible either. `|| code=000` sits
+          # outside the substitution: `-w` has already printed a code by the time curl can exit non-zero, and
+          # an `|| echo 000` inside would glue a second one onto it. curl's own error text (`-S`) stays in the log.
           if [ -n "$existing_id" ]; then
             code=$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/issues/comments/$existing_id" -d "$payload" || echo 000)
+              "https://api.github.com/repos/$REPO/issues/comments/$existing_id" -d "$payload") || code=000
           else
             code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" -d "$payload" || echo 000)
+              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" -d "$payload") || code=000
           fi
           case "$code" in
             2??) ;;
