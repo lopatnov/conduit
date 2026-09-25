@@ -261,5 +261,213 @@ class Reporting(unittest.TestCase):
             self.assertEqual(cfl.main(["--root", d, "--fail-on-hard"]), 0)
 
 
+class Hardening(unittest.TestCase):
+    """Cases found by the security review of the script (PR #460)."""
+
+    def test_valid_ref_rejects_option_lookalikes_and_control_characters(self):
+        for bad in ("", "-x", "--output=/tmp/x", "--output=PATH", "a\nb", "a\rb", "a\0b"):
+            self.assertFalse(cfl.valid_ref(bad), repr(bad))
+        for good in ("origin/main", "abc1234", "HEAD~3", "feature/x-y", "0456654d7b0b"):
+            self.assertTrue(cfl.valid_ref(good), good)
+
+    def test_base_that_looks_like_a_git_option_is_refused(self):
+        # `--base=--output=PATH` is one argv element for argparse, and git would read it as an option.
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "src"))
+            with self.assertRaises(SystemExit) as cm:
+                cfl.main(["--root", d, "--base=--output=" + os.path.join(d, "PWNED")])
+            self.assertEqual(cm.exception.code, 2)
+            self.assertFalse(os.path.exists(os.path.join(d, "PWNED")))
+            self.assertIsNone(cfl.changed_files(d, "--output=" + os.path.join(d, "PWNED")))
+
+    def test_changed_files_is_none_when_git_cannot_diff(self):
+        with tempfile.TemporaryDirectory() as d:          # not a git repository
+            self.assertIsNone(cfl.changed_files(d, "origin/main"))
+
+    def test_report_says_so_when_touched_files_cannot_be_determined(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "src"))
+            write(os.path.join(d, "src", "a.rs"), "let x = 1;\n")
+            out = os.path.join(d, "report.md")
+            self.assertEqual(cfl.main(["--root", d, "--base", "origin/main", "--markdown", out]), 0)
+            with open(out, encoding="utf-8") as f:
+                md = f.read()
+        self.assertIn("could not be determined", md)
+        self.assertIn("could not diff against `origin/main`", md)
+
+    def test_non_utf8_source_does_not_crash(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "src"))
+            with open(os.path.join(d, "src", "bad.rs"), "wb") as f:
+                f.write(b"let a = 1;\n\xff\xfe let b = 2;\n")
+            self.assertEqual(cfl.main(["--root", d]), 0)
+
+    def test_unreadable_file_is_skipped_with_a_warning(self):
+        import builtins
+        from unittest import mock
+        real_open = builtins.open
+
+        def fake_open(path, *a, **kw):
+            if str(path).endswith("unreadable.rs"):
+                raise PermissionError("denied")
+            return real_open(path, *a, **kw)
+
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "src"))
+            write(os.path.join(d, "src", "ok.rs"), "let a = 1;\n")
+            write(os.path.join(d, "src", "unreadable.rs"), "let b = 2;\n")
+            with mock.patch("builtins.open", fake_open):
+                counts, _, _, _ = cfl.build_report(d)
+        self.assertEqual(list(counts), ["src/ok.rs"])
+
+    def test_absurdly_nested_cfg_does_not_raise(self):
+        line = "#[cfg(" + "all(" * 5000 + "test" + ")" * 5000 + ")]"
+        self.assertFalse(cfl.is_test_attr(line))
+
+    def test_warning_for_a_test_attribute_on_a_non_item(self):
+        seen = []
+        cfl.count_source("struct S {\n    #[cfg(test)]\n    field: u8,\n    other: u8,\n}\n",
+                         lambda ln, msg: seen.append(ln))
+        self.assertEqual(seen, [2])
+
+    def test_no_warning_for_a_test_attribute_on_an_item(self):
+        seen = []
+        src = ("#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n"
+               "#[cfg(test)]\nuse a::b;\n"
+               "#[cfg(all(test, feature = \"x\"))]\npub(crate) async fn f() {}\n"
+               "#[test]\n#[should_panic]\nfn t2() {}\n")
+        cfl.count_source(src, lambda ln, msg: seen.append((ln, msg)))
+        self.assertEqual(seen, [])
+
+    def test_paths_are_inert_in_the_markdown_comment(self):
+        self.assertEqual(cfl.md_path("src/a`b|c\nd.rs"), "src/a_b_c_d.rs")
+        md = cfl.render_markdown({"src/we`ird|name.rs": 500}, {"src/we`ird|name.rs"}, {})
+        self.assertNotIn("we`ird", md)
+        self.assertNotIn("we|ird", md)
+        self.assertIn("`src/we_ird_name.rs`", md)
+
+
+class MultiLineAttributes(unittest.TestCase):
+    """rustfmt wraps long attributes; the repo already has 12 multi-line ones (none about `test` yet)."""
+
+    def test_wrapped_cfg_all_test_module_is_excluded(self):
+        src = (
+            "fn prod() {}\n"
+            "#[cfg(all(\n"
+            "    test,\n"
+            '    feature = "proxy"\n'
+            "))]\n"
+            "mod tests {\n"
+            "    fn helper() {}\n"
+            "}\n"
+            "fn after() {}\n"
+        )
+        self.assertEqual(n(src), 2)
+
+    def test_wrapped_cfg_any_test_is_production_code(self):
+        src = '#[cfg(any(\n    test,\n    feature = "testing"\n))]\nfn p() {\n    x();\n}\n'
+        self.assertEqual(n(src), 7)
+
+    def test_wrapped_test_attribute_on_a_fn(self):
+        src = 'fn prod() {}\n#[tokio::test(\n    flavor = "multi_thread"\n)]\nasync fn t() {\n    x();\n}\nfn after() {}\n'
+        self.assertEqual(n(src), 2)
+
+    def test_stacked_wrapped_attributes_above_the_test_attribute_go_with_it(self):
+        src = (
+            "fn prod() {}\n"
+            "#[serial(\n    db\n)]\n"
+            "#[cfg(all(\n    test,\n    unix\n))]\n"
+            "#[allow(dead_code)]\n"
+            "fn t() {\n    x();\n}\n"
+            "fn after() {}\n"
+        )
+        self.assertEqual(n(src), 2)
+
+    def test_a_wrapped_non_test_attribute_is_counted_as_code(self):
+        src = '#[serde(\n    rename = "x",\n    skip_serializing_if = "Option::is_none"\n)]\npub field: Option<u8>,\n'
+        self.assertEqual(n(src), 5)
+
+    def test_attribute_with_its_item_on_the_same_line_is_code(self):
+        self.assertEqual(n("#[derive(Debug)] struct S;\n#[cfg(test)]\nmod t {}\n"), 1)
+
+    def test_wrapped_test_attribute_on_a_non_item_still_warns(self):
+        seen = []
+        cfl.count_source("struct S {\n    #[cfg(all(\n        test,\n        unix\n    ))]\n    f: u8,\n}\n",
+                         lambda ln, msg: seen.append(ln))
+        self.assertEqual(seen, [2])
+
+
+def _git(cwd, *args):
+    import subprocess
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", cwd, *args],
+                   check=True, capture_output=True, text=True)
+
+
+class BaseComparison(unittest.TestCase):
+    """`--base`: which files a branch touched and what they were before, on a real temporary repository."""
+
+    def _repo(self, d):
+        _git(d, "init", "-q")
+        os.makedirs(os.path.join(d, "src"))
+        body = "".join(f"fn f{i}() {{ let x = {i}; }}\n" for i in range(50))
+        write(os.path.join(d, "src", "old_name.rs"), body)
+        write(os.path.join(d, "src", "keep.rs"), "fn k() {}\n")
+        _git(d, "add", "-A")
+        _git(d, "commit", "-q", "-m", "base")
+        return body
+
+    def test_rename_added_and_modified_files(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            body = self._repo(d)
+            base = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+            os.rename(os.path.join(d, "src", "old_name.rs"), os.path.join(d, "src", "new_name.rs"))
+            write(os.path.join(d, "src", "new_name.rs"), body + "fn extra() {}\n")     # renamed AND grown by 1
+            write(os.path.join(d, "src", "added.rs"), "fn a() {}\n")
+            write(os.path.join(d, "src", "keep.rs"), "fn k() {}\nfn k2() {}\n")
+            _git(d, "add", "-A")
+            _git(d, "commit", "-q", "-m", "work")
+
+            changed = cfl.changed_files(d, base)
+            self.assertEqual(changed, {"src/new_name.rs": "src/old_name.rs", "src/added.rs": None,
+                                       "src/keep.rs": "src/keep.rs"})
+
+            counts, touched, before, note = cfl.build_report(d, base)
+            self.assertIsNone(note)
+            self.assertEqual(touched, {"src/new_name.rs", "src/added.rs", "src/keep.rs"})
+            self.assertEqual(before["src/new_name.rs"], 50)         # what the file was under its OLD name
+            self.assertEqual(counts["src/new_name.rs"], 51)
+            self.assertIsNone(before["src/added.rs"])               # a genuinely new file
+            self.assertEqual(before["src/keep.rs"], 1)
+
+    def test_count_at_reports_a_failed_git_show_on_stderr(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as d:
+            self._repo(d)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(cfl.count_at(d, "HEAD", "src/does_not_exist.rs"))
+        self.assertIn("git show HEAD:src/does_not_exist.rs failed", err.getvalue())
+
+
+class WorkspaceLayout(unittest.TestCase):
+    def test_every_workspace_member_lives_where_the_script_looks(self):
+        """The script scans `src/` and `crates/*/src/`. A workspace member anywhere else would be invisible to
+        the report, so adding one must fail here until `source_files` learns about it."""
+        import re
+        cargo = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Cargo.toml")
+        with open(cargo, encoding="utf-8") as f:
+            text = f.read()
+        section = re.search(r"^\[workspace\]\s*$(.*?)(?=^\[)", text, re.S | re.M)
+        self.assertIsNotNone(section, "no [workspace] section found in Cargo.toml")
+        members = re.search(r"members\s*=\s*\[(.*?)\]", section.group(1), re.S)
+        self.assertIsNotNone(members, "no `members` in [workspace]")
+        entries = re.findall(r'"([^"]+)"', members.group(1))
+        self.assertTrue(entries)
+        for e in entries:
+            self.assertEqual(e, "crates/*", f"workspace member {e!r} is outside the layout check_file_length.py scans")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

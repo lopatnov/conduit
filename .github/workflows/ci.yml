@@ -609,17 +609,38 @@ jobs:
           MARKER: "<!-- code-length-report -->"
         run: |
           set -euo pipefail
-          existing_id=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
-            | python3 -c "
-          import json, os, sys
-          data = json.load(sys.stdin)
+
+          # Find OUR earlier comment: scan up to 5 pages of 100 (a long-lived tracking PR has many comments),
+          # and accept only a comment authored by github-actions[bot] that carries the marker — so a user
+          # comment that merely contains the marker string is never picked up (and never PATCHed).
+          # An API error body (rate limit, 5xx) is treated as "no page", not as a crash.
+          existing_id=""
+          for page in 1 2 3 4 5; do
+            curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments?per_page=100&page=$page" \
+              > /tmp/comments-page.json || echo '[]' > /tmp/comments-page.json
+            result=$(python3 -c "
+          import json, os
+          try:
+              with open('/tmp/comments-page.json', encoding='utf-8') as f:
+                  data = json.load(f)
+          except ValueError:
+              data = None
           marker = os.environ['MARKER']
-          for c in data:
-              if marker in c['body']:
-                  print(c['id'])
-                  break
+          found = ''
+          if isinstance(data, list):
+              for c in data:
+                  if marker in (c.get('body') or '') and (c.get('user') or {}).get('login') == 'github-actions[bot]':
+                      found = str(c['id'])
+                      break
+          full_page = 1 if isinstance(data, list) and len(data) == 100 else 0
+          print(found + '|' + str(full_page))
           ")
+            existing_id=${result%%|*}
+            if [ -n "$existing_id" ] || [ "${result##*|}" != "1" ]; then
+              break
+            fi
+          done
 
           payload=$(python3 -c "
           import json
@@ -627,13 +648,19 @@ jobs:
               print(json.dumps({'body': f.read()}))
           ")
 
+          # The report is informational, so a failed POST/PATCH (read-only token on a fork or Dependabot run,
+          # rate limit) must not fail the job — but it must not be invisible either.
           if [ -n "$existing_id" ]; then
-            curl -sS -X PATCH -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/issues/comments/$existing_id" -d "$payload" > /dev/null
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/issues/comments/$existing_id" -d "$payload" || echo 000)
           else
-            curl -sS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" -d "$payload" > /dev/null
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" -d "$payload" || echo 000)
           fi
+          case "$code" in
+            2??) ;;
+            *) echo "::warning::The code-length report comment was not posted (HTTP $code); the report is in the log of the 'Measure code lines' step." ;;
+          esac
 
   ci-hack:
     name: Feature isolation (cargo-hack)

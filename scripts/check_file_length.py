@@ -17,7 +17,19 @@ The scanner is string-aware: `//` inside a string literal is not a comment, raw 
 byte strings, char literals such as `'"'` and lifetimes (`'a`) are handled, and braces inside
 literals do not confuse the brace matching. Text inside a multi-line string literal counts as code.
 
-Scope: `src/**/*.rs` and `crates/*/src/**/*.rs`.
+Known limits (all err in a way that is reported or conservative):
+  * A test attribute is recognised when it stands on its own line(s) — rustfmt-wrapped multi-line attributes
+    are joined — and applies to an item (`mod`, `fn`, `use`, `impl`, ...). One on a struct field, enum variant
+    or match arm would drop the lines that follow it up to the next `;` or matching `}` — the script prints a
+    warning to stderr for that case. An attribute on the same line as its item, or `#![cfg(test)]`, is not
+    recognised, so that code is counted (an over-count).
+  * `--base` marks the files the branch touched and shows before -> after for them; a rename found by git
+    (`-M`) is compared with the file's OLD path.
+  * It is a simple scanner, not a Rust parser. It is linear in the input (measured: 2 MB in 0.4 s, 8 MB /
+    221 000 lines in 1.6 s).
+
+Scope: `src/**/*.rs` and `crates/*/src/**/*.rs`. An unreadable file is skipped with a warning; bytes that are
+not UTF-8 are replaced, not fatal.
 
 Usage:
   python scripts/check_file_length.py                       # text report, exit 0
@@ -40,7 +52,11 @@ _RAW_START = re.compile(r'(b|c)?r(#*)"')
 _IDENT_CHAR = re.compile(r"[A-Za-z0-9_]")
 _TEST_FN_ATTR = re.compile(r"^\s*#\[(?:test|tokio::test(?:\(.*\))?|async_std::test)\]\s*$")
 _CFG_ATTR = re.compile(r"^\s*#\[cfg\((.*)\)\]\s*$")
-_ANY_ATTR = re.compile(r"^\s*#\[.*\]\s*$")
+_ATTR_START = re.compile(r"^\s*#\[")
+_ITEM_START = re.compile(
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:default\s+)?(?:async\s+)?(?:unsafe\s+)?"
+    r"(?:mod|fn|use|impl|struct|enum|const|static|type|trait|extern|macro_rules!)\b"
+)
 
 
 def _split_args(s):
@@ -81,7 +97,12 @@ def is_test_attr(line):
     if _TEST_FN_ATTR.match(line):
         return True
     m = _CFG_ATTR.match(line)
-    return bool(m) and cfg_requires_test(m.group(1))
+    if not m:
+        return False
+    try:
+        return cfg_requires_test(m.group(1))
+    except RecursionError:        # an absurdly nested predicate: not one we can reason about
+        return False
 
 
 def scan(src):
@@ -146,39 +167,80 @@ def scan(src):
     return "".join(code), "".join(mask)
 
 
-def _find_item_end(mask_lines, start):
-    """Line index of the last line of the item whose (first) attribute is at `start`."""
+def _attribute_spans(mask_lines):
+    """Map every line that belongs to an attribute `#[...]` to its (first, last) line.
+
+    rustfmt wraps long attributes over several lines, e.g. `#[cfg(all(\\n    test,\\n    feature = "x"\\n))]`,
+    so an attribute is joined until its brackets balance. An attribute followed by its item on the same
+    line (`#[derive(Debug)] struct S;`) is not a span: that line is ordinary code.
+    """
+    spans, i = {}, 0
+    while i < len(mask_lines):
+        if _ATTR_START.match(mask_lines[i]):
+            j, buf = i, mask_lines[i]
+            while buf.count("[") != buf.count("]") and j + 1 < len(mask_lines):
+                j += 1
+                buf += " " + mask_lines[j].strip()
+            if buf.count("[") == buf.count("]") and buf.rstrip().endswith("]"):
+                for k in range(i, j + 1):
+                    spans[k] = (i, j)
+                i = j + 1
+                continue
+        i += 1
+    return spans
+
+
+def _find_item_end(mask_lines, start, attr_lines):
+    """Line index of the last line of the item whose attribute (block) starts at `start`."""
     depth, seen_brace = 0, False
     for k in range(start, len(mask_lines)):
+        if k in attr_lines:
+            continue
         line = mask_lines[k]
-        if k > start or not _ANY_ATTR.match(line):
-            depth += line.count("{") - line.count("}")
-            if "{" in line:
-                seen_brace = True
-            if seen_brace and depth <= 0:
-                return k
-            if not seen_brace and line.rstrip().endswith(";"):
-                return k
+        depth += line.count("{") - line.count("}")
+        if "{" in line:
+            seen_brace = True
+        if seen_brace and depth <= 0:
+            return k
+        if not seen_brace and line.rstrip().endswith(";"):
+            return k
     return len(mask_lines) - 1
 
 
-def count_source(src):
-    """Number of code lines in Rust source `src` (no comments, no blank lines, no tests)."""
+def count_source(src, warn=None):
+    """Number of code lines in Rust source `src` (no comments, no blank lines, no tests).
+
+    `warn(line_number, message)` is called for a test attribute that is not followed by an item.
+    """
     code_view, mask_view = scan(src)
     code_lines = code_view.split("\n")
     mask_lines = mask_view.split("\n")
+    spans = _attribute_spans(mask_lines)
     drop = set()
     k = 0
     while k < len(mask_lines):
-        if is_test_attr(mask_lines[k]) and k not in drop:
-            first = k
-            while first > 0 and _ANY_ATTR.match(mask_lines[first - 1]):   # stacked attributes above
-                first -= 1
-            last = _find_item_end(mask_lines, k)
-            drop.update(range(first, last + 1))
-            k = last + 1
-        else:
+        span = spans.get(k)
+        if not span or span[0] != k or k in drop:
             k += 1
+            continue
+        attr_first, attr_last = span
+        text = re.sub(r"\s+", " ", " ".join(mask_lines[i].strip() for i in range(attr_first, attr_last + 1)))
+        if not is_test_attr(text):
+            k = attr_last + 1
+            continue
+        if warn is not None:
+            j = attr_last + 1
+            while j < len(mask_lines) and (not mask_lines[j].strip() or j in spans):
+                j += 1
+            if j < len(mask_lines) and not _ITEM_START.match(mask_lines[j]):
+                warn(attr_first + 1, "test attribute is not followed by an item; the lines after it up to the "
+                                     "next `;` or matching `}` are excluded from the count")
+        first = attr_first
+        while first > 0 and (first - 1) in spans:            # stacked attributes above
+            first = spans[first - 1][0]
+        last = _find_item_end(mask_lines, attr_last, spans)
+        drop.update(range(first, last + 1))
+        k = last + 1
     return sum(1 for idx, ln in enumerate(code_lines) if idx not in drop and ln.strip())
 
 
@@ -209,17 +271,53 @@ def git(root, *args):
     return subprocess.run(["git", "-C", root, *args], capture_output=True, text=True)
 
 
+def valid_ref(ref):
+    """A git ref/SHA that cannot be mistaken for an option (`--output=...`) or carry control characters."""
+    return bool(ref) and not ref.startswith("-") and not any(c in ref for c in "\r\n\0")
+
+
+def md_path(p):
+    """Keep a repo path inert inside a markdown code span or table cell."""
+    return re.sub(r"[`|\r\n]", "_", p)
+
+
 def changed_files(root, base):
-    """Paths added/modified between `base` and HEAD (three-dot: since the merge base)."""
-    r = git(root, "diff", "--name-only", "--diff-filter=AMR", f"{base}...HEAD")
+    """`{path: path at base}` for the `.rs` files added/modified/renamed between `base` and HEAD.
+
+    Uses the three-dot form (changes since the merge base). The value is None for an added file, the same path
+    for a modified one and the OLD path for a rename, so a renamed file can be compared with what it was.
+    Returns None when git cannot produce the diff (bad ref, not a repository, base commit missing).
+    """
+    if not valid_ref(base):
+        return None
+    args = ("diff", "--name-status", "-M", "--diff-filter=AMR")
+    r = git(root, *args, f"{base}...HEAD")
     if r.returncode != 0:
-        r = git(root, "diff", "--name-only", "--diff-filter=AMR", base, "HEAD")
-    return {p.strip() for p in r.stdout.splitlines() if p.strip().endswith(".rs")}
+        r = git(root, *args, base, "HEAD")
+    if r.returncode != 0:
+        return None
+    changed = {}
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        status = parts[0][:1]
+        if status == "R" and len(parts) >= 3:
+            old, new = parts[1], parts[2]
+        elif status in ("A", "M") and len(parts) >= 2:
+            old, new = (None if status == "A" else parts[1]), parts[1]
+        else:
+            continue
+        if new.endswith(".rs"):
+            changed[new] = old
+    return changed
 
 
 def count_at(root, ref, path):
+    """Code lines of `path` as of `ref`, or None (with a warning on stderr) when git cannot show it."""
     r = git(root, "show", f"{ref}:{path}")
-    return count_source(r.stdout) if r.returncode == 0 else None
+    if r.returncode != 0:
+        print(f"warning: git show {ref}:{path} failed: {r.stderr.strip()}", file=sys.stderr)
+        return None
+    return count_source(r.stdout)
 
 
 def classify(n):
@@ -233,11 +331,26 @@ def classify(n):
 def build_report(root, base=None):
     counts = {}
     for p in source_files(root):
-        with open(os.path.join(root, p), encoding="utf-8") as f:
-            counts[p] = count_source(f.read())
-    touched = changed_files(root, base) if base else set()
-    before = {p: count_at(root, base, p) for p in touched if p in counts} if base else {}
-    return counts, touched, before
+        try:
+            with open(os.path.join(root, p), encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError as e:          # e.g. a dangling symlink named *.rs
+            print(f"warning: skipping {p}: {e}", file=sys.stderr)
+            continue
+        counts[p] = count_source(
+            text, lambda ln, msg, p=p: print(f"warning: {p}:{ln}: {msg}", file=sys.stderr))
+    touched, before, note = set(), {}, None
+    if base:
+        changed = changed_files(root, base)
+        if changed is None:
+            note = f"could not diff against `{md_path(base)}`"
+            print(f"warning: {note}; touched files are not marked", file=sys.stderr)
+        else:
+            touched = set(changed)
+            for p, old in changed.items():
+                if p in counts:
+                    before[p] = count_at(root, base, old) if old else None    # None = a new file
+    return counts, touched, before, note
 
 
 def render_text(counts, touched, before):
@@ -255,7 +368,7 @@ def render_text(counts, touched, before):
     return "\n".join(lines)
 
 
-def render_markdown(counts, touched, before):
+def render_markdown(counts, touched, before, note=None):
     over = sorted(((n, p) for p, n in counts.items() if n > SOFT_LIMIT), reverse=True)
     hard = [x for x in over if x[0] > HARD_LIMIT]
     soft = [x for x in over if x[0] <= HARD_LIMIT]
@@ -277,6 +390,8 @@ def render_markdown(counts, touched, before):
            f"`.claude/rules/conventions.md`: soft **{SOFT_LIMIT}**, hard **{HARD_LIMIT}**. "
            "Informational — not a merge gate.", "",
            status, ""]
+    if note:
+        out += [f"⚠️ Which files this PR touched could not be determined ({note}), so none are marked below.", ""]
     if touched:
         if not touched_over:
             out += ["✅ No file touched by this PR is over a limit.", ""]
@@ -287,7 +402,7 @@ def render_markdown(counts, touched, before):
         if present:
             top_n, top_p = max(present)
             out += [f"{len(present)} Rust files touched by this PR (tests excluded); the largest is "
-                    f"`{top_p}` at **{top_n}** code lines.", ""]
+                    f"`{md_path(top_p)}` at **{top_n}** code lines.", ""]
     if over:
         out += ["| File | Code lines | Limit | This PR |", "|---|---:|---|---|"]
         for n, p in over:
@@ -297,7 +412,7 @@ def render_markdown(counts, touched, before):
                 this = "new file" if b is None else (f"{b} → {n} ({n - b:+d})" if n != b else f"{n} (unchanged)")
             else:
                 this = "—"
-            out.append(f"| `{p}` | {n} | {lim} | {this} |")
+            out.append(f"| `{md_path(p)}` | {n} | {lim} | {this} |")
         out.append("")
     out += ["<sub>Crossing 400 is the signal to split a file (see the `architect` role in "
             "`.claude/rules/workflow.md`); production code must never reach 1000. "
@@ -312,13 +427,15 @@ def main(argv=None):
     ap.add_argument("--markdown", metavar="FILE", help="write the PR-comment body to FILE")
     ap.add_argument("--fail-on-hard", action="store_true", help="exit 1 if any file exceeds the hard limit")
     a = ap.parse_args(argv)
+    if a.base is not None and not valid_ref(a.base):
+        ap.error("--base must be a git ref or SHA (not empty, not starting with '-')")
     root = os.path.abspath(a.root)
 
-    counts, touched, before = build_report(root, a.base)
+    counts, touched, before, note = build_report(root, a.base)
     print(render_text(counts, touched, before))
     if a.markdown:
         with open(a.markdown, "w", encoding="utf-8", newline="\n") as f:
-            f.write(render_markdown(counts, touched, before))
+            f.write(render_markdown(counts, touched, before, note))
     if a.fail_on_hard and any(n > HARD_LIMIT for n in counts.values()):
         return 1
     return 0
