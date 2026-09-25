@@ -259,7 +259,7 @@ fn resolve_site_proxy(
 /// Without the `proxy` feature `sites[].proxy` is ignored entirely: the
 /// request falls through to `sites[].static`/`fallback`, exactly like a
 /// `proxy` map that matched nothing. `feature_warnings()` tells the operator
-/// (see `validate::check_site_proxy_feature_warnings`); the alternative — a
+/// (see `validate::warnings::check_site_proxy_feature_warnings`); the alternative — a
 /// hard error — would make a `--no-default-features` build unable to load a
 /// config that also serves static files.
 #[cfg(not(feature = "proxy"))]

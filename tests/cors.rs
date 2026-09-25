@@ -284,10 +284,10 @@ fn credentials_true_sets_acac_on_regular_response() {
 // `Access-Control-Allow-Credentials: true` — a real CSRF/data-exfiltration
 // vector (CWE-942): any website could make credentialed cross-origin
 // requests and read the response. Config-time rejection was added in
-// `src/config/validate.rs::validate_cors` (found during a review of the
+// `src/config/validate/net.rs::validate_cors` (found during a review of the
 // Conduit 2.0 migration's accumulated CodeRabbit findings); a config like
 // this now fails to parse/start, so this scenario can no longer be
-// exercised as a *running server's* HTTP behavior — see `validate.rs`'s own
+// exercised as a *running server's* HTTP behavior — see `validate/tests.rs`'s own
 // `cors_credentials_without_origins_invalid` unit test for the rejection
 // coverage instead.
 

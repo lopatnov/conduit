@@ -605,7 +605,7 @@ fn redis_without_feature_generates_warning() {
 /// Same as `redis_without_feature_generates_warning`, but the Redis store is
 /// configured only on a per-route `rateLimit`, not the site level (issue
 /// #322 gave route-level Redis real effect, so the feature-warning scan must
-/// cover it too — see `src/config/validate.rs::site_uses_redis_store`).
+/// cover it too — see `src/config/validate/warnings.rs::site_uses_redis_store`).
 #[test]
 #[cfg(not(feature = "redis"))]
 fn redis_without_feature_generates_warning_for_route_level_store() {
