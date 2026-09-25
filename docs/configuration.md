@@ -342,19 +342,23 @@ tls:
 | `acme.storage`     | path     | —       | Directory for certificate persistence                                                                                                         |
 
 > **`versions`/`ciphers` are not currently enforced** ([issue #189](https://github.com/lopatnov/conduit/issues/189)).
-> The fields still parse, but Conduit's TLS backend (Pingora 0.8's rustls
-> integration) gives no API to restrict protocol versions or cipher suites —
-> TLS 1.2 and 1.3 are always both enabled with the default rustls cipher
-> suite set, regardless of config. Setting either field is a hard validation
+> The fields still parse, but the way Conduit builds its TLS listeners (through
+> Pingora's `TlsSettings`) gives no way to restrict protocol versions or cipher
+> suites — TLS 1.2 and 1.3 are always both enabled with the default rustls
+> cipher suite set, regardless of config. (Pingora 0.9 still exposes no way to
+> set versions or ciphers on a listener: `TlsSettings::build()` hard-codes
+> TLS 1.2 and 1.3.) Setting either field is a hard validation
 > error (fails startup with an explanation) rather than a silent no-op, so a
 > misconfigured expectation of TLS restriction can't go unnoticed.
 | `acme.challenge`   | string   | —       | `"http-01"` or `"dns-01"`                                                                                                                     |
 | `acme.directory`   | string   | —       | Custom ACME directory URL. Use `"https://acme-staging-v02.api.letsencrypt.org/directory"` for Let's Encrypt staging (rate-limit-free testing) |
 | `clientAuth`       | object   | —       | [mTLS client cert verification](#mtls--client-certificate-authentication)                                                                     |
 
-> **Note — single cert per port:** rustls does not support per-SNI certificate
-> selection. When multiple HTTPS sites share the same port, the first registered
-> cert is used for all. Use separate ports for different certificates.
+> **Note — single cert per port:** Conduit does not support per-SNI certificate
+> selection yet. When multiple HTTPS sites share the same port, the first
+> registered cert is used for all. Use separate ports for different
+> certificates. (Pingora 0.9's rustls backend can pick a certificate per SNI
+> hostname through a custom resolver; Conduit does not install one yet.)
 
 ---
 
@@ -1379,7 +1383,7 @@ healthCheck:
 | `unhealthyLatencyMs`        | number   | —             | Health-check probe responses slower than this (ms) count as failures, even if the status code is 2xx                                                 |
 | `slowStartSecs`             | number   | `0`           | [Traffic ramp-up period](#slow-start) after recovery. Ignored for `ipHash`/`consistentHash` and sticky routes.                     |
 | `maxConnectionsPerUpstream` | number   | —             | [Circuit breaker](#circuit-breaker) threshold                                                                                                        |
-| `prewarmConnections`        | number   | `0`           | Pre-establish N keepalive connections at startup (max 8). 🚫 Blocked — warms a throwaway client, not Conduit's real upstream pool (Pingora 0.8 has no public API for it) — see note below.  |
+| `prewarmConnections`        | number   | `0`           | Pre-establish N keepalive connections at startup (max 8). 🚫 Blocked — warms a throwaway client, not Conduit's real upstream pool (Pingora 0.9 has no public API for it) — see note below.  |
 | `includeUpstreams`          | bool     | `false`       | Include upstream health in `/__health__` response                                                                                                    |
 
 ---
@@ -1427,10 +1431,11 @@ load-balance strategy, across all three config shapes (`proxy: {}` map,
 > see the repo's issue tracker for current status:
 > - **`prewarmConnections` is blocked, not just unimplemented.** It warms a
 >   short-lived, throwaway HTTP client rather than Conduit's real upstream
->   connection pool — Pingora 0.8 has no public API to reach or pre-populate
+>   connection pool — Pingora 0.9 has no public API to reach or pre-populate
 >   the pool `upstream_peer()` actually uses for real traffic (`HttpProxy`'s
 >   `client_upstream` field is private with no accessor). Same class of gap
->   as OCSP stapling / the request-queue item below — waiting on Pingora 0.9+.
+>   as OCSP stapling / the request-queue item below — waiting on a future
+>   Pingora release.
 
 ```yaml
 # YAML
@@ -1859,6 +1864,13 @@ proxy:
 part of the key, so POST responses are not cached by default (add `"POST"` to
 `methods` only for idempotent endpoints). Use `varyHeaders` to differentiate
 responses by `Accept-Language` or `Accept-Encoding`.
+
+> **Upgrading from a Pingora 0.8 based release:** the key is now built with an
+> explicit boundary between the host and the rest, so every key hashes
+> differently. A persistent store (`disk:` or `redis://`) starts cold once;
+> Redis entries expire on their own TTL, but the old `disk:` files are never
+> read again and are not removed automatically — delete the cache directory to
+> reclaim the space.
 
 **`Age` header** (RFC 7234 §5.1): Conduit automatically injects an `Age:
 <seconds>` header on every cache hit, computed as `now − Date` from the stored

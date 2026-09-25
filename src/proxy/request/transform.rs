@@ -306,7 +306,7 @@ pub(super) fn apply_header_transform_request_with_claims(
 ) -> pingora_core::Result<()> {
     if let Some(remove) = &transform.remove_headers {
         for name in remove {
-            req.headers.remove(name.as_str());
+            req.remove_header(name.as_str());
         }
     }
     if let Some(set) = &transform.set_headers {

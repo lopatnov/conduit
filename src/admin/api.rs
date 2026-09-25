@@ -985,7 +985,7 @@ struct CachePurgeParams {
 /// the no-`cache` variant below.
 #[cfg(feature = "cache")]
 async fn cache_purge_handler(Query(params): Query<CachePurgeParams>) -> AdminResult<Json<Value>> {
-    use pingora_cache::storage::{PurgeType, Storage};
+    use pingora_cache::storage::{PurgeOutcome, PurgeTarget, PurgeType, Storage};
     use pingora_cache::trace::Span;
 
     let raw = params.url.trim();
@@ -1019,10 +1019,15 @@ async fn cache_purge_handler(Query(params): Query<CachePurgeParams>) -> AdminRes
     let storage = crate::proxy::cache::cache_storage();
 
     let span = Span::inactive().handle();
-    let purged = storage
-        .purge(&compact, PurgeType::Invalidation, &span)
+    let outcome = storage
+        .purge(
+            PurgeTarget::Active(&compact),
+            PurgeType::Invalidation,
+            &span,
+        )
         .await
         .map_err(|e| AdminError::ServerError(format!("cache purge failed: {e}")))?;
+    let purged = matches!(outcome, PurgeOutcome::Purged(_));
 
     Ok(Json(
         json!({ "status": "ok", "purged": purged, "url": raw }),
@@ -1137,9 +1142,11 @@ struct CertReloadRequest {
 ///
 /// # Notes on zero-downtime rotation
 ///
-/// Pingora 0.8's rustls backend does not expose a runtime cert-swap API.
-/// True zero-downtime rotation (hot-swap without restarting the listener)
-/// requires a process upgrade: start the new process with `--upgrade` so it
+/// Conduit installs the certificate once, when it builds the listener's rustls
+/// config, and does not yet register a certificate resolver that could swap it
+/// at runtime (Pingora 0.9 exposes `TlsSettings::set_cert_resolver` for that).
+/// Until it does, zero-downtime rotation (hot-swap without restarting the
+/// listener) requires a process upgrade: start the new process with `--upgrade` so it
 /// inherits the listening socket FDs from the old process, then send SIGQUIT
 /// to the old process.  On systems managed by systemd this is done via
 /// `systemctl reload conduit`.

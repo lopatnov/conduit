@@ -40,47 +40,56 @@ You will receive a confirmation within **48 hours** and a resolution timeline wi
 | CVE-2026-2835 | Pingora 0.8 | Connection pool race |
 | CVE-2026-2836 | Conduit (all) | Custom cache key required (Pingora default removed) |
 
-Conduit ships Pingora **0.8** which contains all three fixes above.
+Conduit ships Pingora **0.9**, which carries all three fixes above (they landed in 0.8).
 The custom `ConduitCacheKey` (host + scheme + path + query) is required by design —
-Pingora 0.8 removed the default cache key implementation to force explicit opt-in.
+Pingora 0.8 removed the default cache key implementation to force explicit opt-in, and 0.9
+also dropped the separate `namespace` argument of `CacheKey`, so Conduit frames the host into
+the key itself (the host, a NUL byte, then `scheme:path?query`).
 
 ## Known Unfixable Transitive Vulnerabilities
 
 These advisories affect transitive dependencies that Conduit cannot upgrade without waiting for
 an upstream project to update first. Each entry explains why it cannot be fixed and what the
-actual risk is.
+actual risk is. Nothing is suppressed in `.cargo/audit.toml` or `osv-scanner.toml`.
 
-### RUSTSEC-2024-0437 — protobuf 2.28.0: Uncontrolled Recursion / Crash
+### RUSTSEC-2023-0071 — rsa 0.9.10: Marvin Attack (CVE-2023-49092)
 
 | Field | Value |
 |---|---|
-| Advisory | [RUSTSEC-2024-0437](https://rustsec.org/advisories/RUSTSEC-2024-0437) |
-| Affected crate | `protobuf 2.28.0` |
-| Fix requires | `protobuf ≥ 3.7.2` |
-| Status | **Acknowledged — cannot fix without upstream change** |
-| Tracked in | `.cargo/audit.toml` (`ignore = ["RUSTSEC-2024-0437"]`) |
+| Advisory | [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071) |
+| Affected crate | `rsa 0.9.10` (latest stable release as of 2026-09; the `0.10` release candidates are affected too) |
+| Fix requires | No patched release exists |
+| Status | **Acknowledged — no fix available upstream; left open, not suppressed** |
 
 **Root cause chain:**
 
 ```text
-conduit → pingora-core 0.8.0 → prometheus 0.13.4 → protobuf ^2 (uses 2.x API)
+conduit → jsonwebtoken 11 (rust_crypto backend) → rsa 0.9.10
 ```
 
-`prometheus 0.13.x` uses the `protobuf 2.x` API exclusively and is incompatible with
-`protobuf 3.x`. Upgrading `protobuf` to ≥ 3.7.2 would require Pingora to upgrade their
-`prometheus` dependency to `0.14.x`, which is an upstream decision.
+Only builds with the `jwt` feature contain it (that feature is part of `standard` and `full`,
+not of `default`).
 
 **Why Conduit is not at risk:**
 
-The vulnerability allows a crash via uncontrolled recursion when **parsing crafted protobuf
-binary data**. Conduit never parses protobuf data from untrusted sources — `prometheus` is
-used exclusively as a write-only metrics output library. Prometheus text-format scraping
-does not involve protobuf parsing.
+The Marvin attack is a timing side channel on RSA *private-key* operations. The `rsa` crate is
+linked only for JWT verification: Conduit **verifies** RS256/RS384/RS512 token signatures with
+public keys taken from a JWKS endpoint. TLS private keys, RSA ones included, are handled by
+rustls's crypto provider, not by the `rsa` crate. The only signing calls that use the `rsa`
+crate are in tests.
 
-**Our own direct `prometheus 0.14` dependency already uses `protobuf 3.7.2`** (not vulnerable).
-The vulnerable `protobuf 2.28.0` is only reachable through Pingora's own metrics code path.
+**Blocked by:** no fixed `rsa` release exists (per the advisory, the `0.10` release candidates
+are affected too). Avoiding the `rsa` crate altogether, for example through a `jsonwebtoken`
+backend that does not use it, has not been evaluated.
 
-**Blocked by:** Pingora upstream upgrading `prometheus 0.13.4` → `0.14.x`.
+### Resolved: RUSTSEC-2024-0437 — protobuf 2.28.0: Uncontrolled Recursion / Crash
+
+Resolved by the Pingora 0.9 upgrade (PR #450). `pingora-core 0.8` depended on
+`prometheus 0.13.4`, which requires `protobuf ^2`, so the vulnerable `protobuf 2.28.0` was in
+the dependency tree. It was only reachable through Pingora's own metrics code, never through
+untrusted input. Pingora 0.9 no longer depends on `prometheus` from `pingora-core`; the only
+`protobuf` left is `3.7.2` (through Conduit's own `prometheus 0.14`), which is not affected.
+The matching `cargo-audit` ignore in `.cargo/audit.toml` has been removed.
 
 ## Security Design Decisions
 

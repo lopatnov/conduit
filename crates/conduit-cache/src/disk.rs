@@ -35,14 +35,17 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use pingora_cache::{
-    storage::{HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeType, Storage},
+    storage::{
+        HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeOutcome, PurgeTarget, PurgeType,
+        Storage,
+    },
     trace::SpanHandle,
     CacheKey, CacheMeta,
 };
 use pingora_core::Result as PingoraResult;
 use pingora_core::{Error, ErrorType};
 
-use crate::common::{bytes_to_hex, SimpleHitHandler};
+use crate::common::{bytes_to_hex, purge_target_key, SimpleHitHandler};
 
 // ── Registry of per-path storage instances ───────────────────────────────────
 
@@ -196,17 +199,20 @@ impl Storage for DiskCacheStorage {
 
     async fn purge(
         &'static self,
-        key: &pingora_cache::key::CompactCacheKey,
+        target: PurgeTarget<'_>,
         _purge_type: PurgeType,
         _trace: &SpanHandle,
-    ) -> PingoraResult<bool> {
+    ) -> PingoraResult<PurgeOutcome> {
+        let Some(key) = purge_target_key(target) else {
+            return Ok(PurgeOutcome::NotFound);
+        };
         let path = self.entry_path(&Self::compact_hash(key));
         match tokio::fs::remove_file(&path).await {
-            Ok(_) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Ok(_) => Ok(PurgeOutcome::Purged(None)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(PurgeOutcome::NotFound),
             Err(e) => {
                 tracing::warn!(path = %path.display(), "Disk cache purge error: {e}");
-                Ok(false)
+                Ok(PurgeOutcome::NotFound)
             }
         }
     }
@@ -485,7 +491,7 @@ mod tests {
 
     #[test]
     fn hash_produces_32_hex_chars() {
-        let key = CacheKey::new("host.example", "https:/path", "");
+        let key = CacheKey::new("host.example\0https:/path", "");
         let dir = TempDir::new().unwrap();
         let _storage = DiskCacheStorage::new(dir.path().to_str().unwrap());
         let hash = DiskCacheStorage::hash(&key);
@@ -504,7 +510,7 @@ mod tests {
         let storage: &'static DiskCacheStorage = Box::leak(Box::new(DiskCacheStorage::new(
             dir.path().to_str().unwrap(),
         )));
-        let key = CacheKey::new("host.example", "https:/purge", "");
+        let key = CacheKey::new("host.example\0https:/purge", "");
         let path = storage.entry_path(&DiskCacheStorage::hash(&key));
         DiskCacheStorage::write_entry(&path, b"m0", b"m1", b"body").unwrap();
         assert!(path.exists(), "entry must exist before the purge");
@@ -512,26 +518,69 @@ mod tests {
         let span = pingora_cache::trace::Span::inactive();
         let compact = key.to_compact();
         let purged = storage
-            .purge(&compact, PurgeType::Invalidation, &span.handle())
-            .await
-            .unwrap();
-        assert!(purged, "purging an existing entry must report true");
-        assert!(!path.exists(), "purge must remove the entry file");
-
-        let purged_again = storage
-            .purge(&compact, PurgeType::Invalidation, &span.handle())
+            .purge(
+                PurgeTarget::Active(&compact),
+                PurgeType::Invalidation,
+                &span.handle(),
+            )
             .await
             .unwrap();
         assert!(
-            !purged_again,
-            "purging a missing entry must report false, not an error"
+            matches!(purged, PurgeOutcome::Purged(_)),
+            "purging an existing entry must report it was removed, got {purged:?}"
+        );
+        assert!(!path.exists(), "purge must remove the entry file");
+
+        let purged_again = storage
+            .purge(
+                PurgeTarget::Active(&compact),
+                PurgeType::Invalidation,
+                &span.handle(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            purged_again,
+            PurgeOutcome::NotFound,
+            "purging a missing entry must report NotFound, not an error"
+        );
+    }
+
+    #[tokio::test]
+    async fn purge_ignores_an_exact_target_naming_an_id_this_storage_never_issued() {
+        let dir = TempDir::new().unwrap();
+        let storage: &'static DiskCacheStorage = Box::leak(Box::new(DiskCacheStorage::new(
+            dir.path().to_str().unwrap(),
+        )));
+        let key = CacheKey::new("host.example\0https:/exact", "");
+        let path = storage.entry_path(&DiskCacheStorage::hash(&key));
+        DiskCacheStorage::write_entry(&path, b"m0", b"m1", b"body").unwrap();
+
+        let span = pingora_cache::trace::Span::inactive();
+        let entry = pingora_cache::eviction::CacheEntryKey::identified(
+            key.to_compact(),
+            pingora_cache::eviction::CacheEntryId::new(1),
+        );
+        let outcome = storage
+            .purge(
+                PurgeTarget::Exact(&entry),
+                PurgeType::Eviction,
+                &span.handle(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, PurgeOutcome::NotFound);
+        assert!(
+            path.exists(),
+            "an exact purge for an id this storage never issued must not delete the entry \
+             stored under the same logical key"
         );
     }
 
     #[test]
     fn two_different_keys_produce_different_hashes() {
-        let k1 = CacheKey::new("host1", "https:/a", "");
-        let k2 = CacheKey::new("host2", "https:/b", "");
+        let k1 = CacheKey::new("host1\0https:/a", "");
+        let k2 = CacheKey::new("host2\0https:/b", "");
         assert_ne!(
             DiskCacheStorage::hash(&k1),
             DiskCacheStorage::hash(&k2),
