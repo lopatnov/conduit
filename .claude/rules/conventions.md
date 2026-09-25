@@ -66,6 +66,16 @@ whether something is patch/minor/major.
   `tests/<topic>.rs` submodule (Rust's directory-module convention — `foo.rs` + `foo/tests.rs`)
   is still fine as an organizational choice; it's just not *mandated* by this limit the way a
   production-code split is.
+  **How it is measured** (added with #314): `scripts/check_file_length.py` counts *code lines* —
+  comments, blank lines and tests are excluded, and "tests" means every `#[cfg(test)]` item, every
+  item whose `cfg` requires `test` (e.g. `#[cfg(all(test, feature = "proxy"))]`) and every
+  `#[test]`/`#[tokio::test]` fn, cut by brace matching. Whole test files are excluded too: anything
+  under a `tests` directory, `tests.rs`, `*_tests.rs`. CI (job `code-length`) posts the result as a
+  PR comment showing which files are over 400/1000 and which of them the PR touched — where the
+  run's token can write; on a fork `pull_request` run GitHub forces the token read-only, so the POST
+  is rejected and the report stays in the job log. It is informational, not a merge gate (no `--fail-on-hard`; whether
+  the check is *required* is a repository-ruleset setting, not stated here). Use the script's
+  number, not `wc -l`, when deciding whether a file needs a split.
 
 ## PR checklist (gate before merge)
 

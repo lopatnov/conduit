@@ -48,3 +48,5 @@ target-*
 # Isolated git worktrees created by the harness for background subagents
 # (Agent tool, isolation: "worktree") — transient working copies, never committed.
 /.claude/worktrees/
+# Python bytecode from scripts/*.py
+__pycache__/

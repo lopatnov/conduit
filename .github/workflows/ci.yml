@@ -539,6 +539,131 @@ jobs:
       - name: Check Layer-1 crates don't reference SiteConfig/AppConfig
         run: ./scripts/check-layer-boundaries.sh
 
+  # ── Code length report: Rust files over the soft (400) / hard (1000) limits ─
+  # Counts *code* lines (comments, blank lines and tests excluded) with
+  # scripts/check_file_length.py and posts the result as a PR comment, so a PR
+  # shows at a glance whether it pushed a file past the limits in
+  # `.claude/rules/conventions.md` ("File length"), and which touched files got
+  # longer. Informational, like the footprint/performance reports: a file being
+  # over a limit does NOT fail the job (src/config/validate.rs is over the hard
+  # limit until #315), only a broken counter does — its own unit tests run
+  # first. Posting uses the same plain `curl` + GITHUB_TOKEN mechanism, and the
+  # same PR lookup for `push`-triggered migration-branch PRs, as the footprint
+  # job above; on a fork `pull_request` run GitHub forces the token read-only, so
+  # the POST is simply rejected and the report stays in the job log.
+  code-length:
+    name: Code length report
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0  # the base commit is needed to tell which files the PR touched
+
+      - name: Unit-test the counter
+        run: python3 scripts/test_check_file_length.py
+
+      - name: Find associated PR and its base commit
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "number=$EVENT_PR_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "base_sha=$EVENT_BASE_SHA" >> "$GITHUB_OUTPUT"
+          else
+            pr_json=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/pulls?head=$REPO_OWNER:$REF_NAME&state=open" || true)
+            echo "number=$(echo "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['number'] if isinstance(d, list) and d else '')" 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+            echo "base_sha=$(echo "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['base']['sha'] if isinstance(d, list) and d else '')" 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Measure code lines
+        env:
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BASE_SHA" ]; then
+            python3 scripts/check_file_length.py --base "$BASE_SHA" --markdown /tmp/length-report.md
+          else
+            python3 scripts/check_file_length.py --markdown /tmp/length-report.md
+          fi
+
+      - name: Post/update PR comment
+        if: steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          MARKER: "<!-- code-length-report -->"
+        run: |
+          set -euo pipefail
+
+          # Find OUR earlier comment: scan up to 5 pages of 100 (a long-lived tracking PR has many comments),
+          # and accept only a comment authored by github-actions[bot] that carries the marker — so a user
+          # comment that merely contains the marker string is never picked up (and never PATCHed).
+          # An API error body (rate limit, 5xx) is treated as "no page", not as a crash.
+          existing_id=""
+          for page in 1 2 3 4 5; do
+            curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments?per_page=100&page=$page" \
+              > /tmp/comments-page.json || echo '[]' > /tmp/comments-page.json
+            result=$(python3 -c "
+          import json, os
+          try:
+              with open('/tmp/comments-page.json', encoding='utf-8') as f:
+                  data = json.load(f)
+          except ValueError:
+              data = None
+          marker = os.environ['MARKER']
+          found = ''
+          if isinstance(data, list):
+              for c in data:
+                  if marker in (c.get('body') or '') and (c.get('user') or {}).get('login') == 'github-actions[bot]':
+                      found = str(c['id'])
+                      break
+          full_page = 1 if isinstance(data, list) and len(data) == 100 else 0
+          print(found + '|' + str(full_page))
+          ")
+            existing_id=${result%%|*}
+            if [ -n "$existing_id" ] || [ "${result##*|}" != "1" ]; then
+              break
+            fi
+          done
+
+          payload=$(python3 -c "
+          import json
+          with open('/tmp/length-report.md', encoding='utf-8') as f:
+              print(json.dumps({'body': f.read()}))
+          ")
+
+          # The report is informational, so a failed POST/PATCH (the read-only token GitHub forces on a fork
+          # run, a rate limit) must not fail the job — but it must not be invisible either. `|| code=000` sits
+          # outside the substitution: `-w` has already printed a code by the time curl can exit non-zero, and
+          # an `|| echo 000` inside would glue a second one onto it. curl's own error text (`-S`) stays in the log.
+          if [ -n "$existing_id" ]; then
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/issues/comments/$existing_id" -d "$payload") || code=000
+          else
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" -d "$payload") || code=000
+          fi
+          case "$code" in
+            2??) ;;
+            *) echo "::warning::The code-length report comment was not posted (HTTP $code); the report is in the log of the 'Measure code lines' step." ;;
+          esac
+
   ci-hack:
     name: Feature isolation (cargo-hack)
     runs-on: ubuntu-latest

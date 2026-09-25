@@ -47,7 +47,7 @@ src/
 │   ├── args.rs          clap CLI definitions
 │   └── init.rs          conduit init wizard
 ├── config/
-│   ├── schema.rs        all config types (serde)
+│   ├── schema/          all config types (serde), one submodule per concern; mod.rs re-exports them
 │   ├── parse.rs         load_config(), from_str(), normalize()
 │   ├── validate.rs      semantic validation + TLS cert expiry
 │   ├── env.rs           $VAR interpolation
@@ -120,8 +120,9 @@ whether by hand or via the `crate-extractor` agent.
 
 1. **Re-export at the original location.** Every relocated item gets a `pub use` at its
    original file (and, where practical, its original line) in the root crate — e.g.
-   `src/config/schema.rs` still has `CONFIG_VERSION` at the same line it always did, now
-   as `pub use conduit_config_core::parse::CONFIG_VERSION;`. This is what keeps
+   `crate::config::schema::CONFIG_VERSION` still resolves — `src/config/schema/mod.rs` (formerly
+   `schema.rs`, split into a directory in #314) has it as
+   `pub use conduit_config_core::parse::CONFIG_VERSION;`. This is what keeps
    `conduit::`-prefixed paths — and therefore every existing integration test — compiling
    unchanged. Never do one blanket top-level re-export (`pub use conduit_x as x;` in
    `lib.rs`) — if the root already has a real module at that name (e.g. `conduit::config`
