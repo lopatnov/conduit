@@ -50,15 +50,14 @@ the key itself (the host, a NUL byte, then `scheme:path?query`).
 
 These advisories affect transitive dependencies that Conduit cannot upgrade without waiting for
 an upstream project to update first. Each entry explains why it cannot be fixed and what the
-actual risk is. Nothing is suppressed in `.cargo/audit.toml` or `osv-scanner.toml`: an open
-advisory stays visible in the GitHub Security tab until it is really fixed.
+actual risk is. Nothing is suppressed in `.cargo/audit.toml` or `osv-scanner.toml`.
 
 ### RUSTSEC-2023-0071 — rsa 0.9.10: Marvin Attack (CVE-2023-49092)
 
 | Field | Value |
 |---|---|
 | Advisory | [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071) |
-| Affected crate | `rsa 0.9.10` (the latest stable release; `0.10` is still a pre-release) |
+| Affected crate | `rsa 0.9.10` (latest stable release as of 2026-09; the `0.10` release candidates are affected too) |
 | Fix requires | No patched release exists |
 | Status | **Acknowledged — no fix available upstream; left open, not suppressed** |
 
@@ -73,12 +72,15 @@ not of `default`).
 
 **Why Conduit is not at risk:**
 
-The Marvin attack is a timing side channel on RSA *private-key* operations. Conduit only
-**verifies** RS256/RS384/RS512 token signatures, using public keys taken from a JWKS endpoint. It
-holds no RSA private key and never signs or decrypts with RSA in production code (the only
-signing calls are in tests).
+The Marvin attack is a timing side channel on RSA *private-key* operations. The `rsa` crate is
+linked only for JWT verification: Conduit **verifies** RS256/RS384/RS512 token signatures with
+public keys taken from a JWKS endpoint. TLS private keys, RSA ones included, are handled by
+rustls's crypto provider, not by the `rsa` crate. The only signing calls that use the `rsa`
+crate are in tests.
 
-**Blocked by:** `rsa 0.10` becoming stable and `jsonwebtoken` moving to it.
+**Blocked by:** no fixed `rsa` release exists (per the advisory, the `0.10` release candidates
+are affected too). Avoiding the `rsa` crate altogether, for example through a `jsonwebtoken`
+backend that does not use it, has not been evaluated.
 
 ### Resolved: RUSTSEC-2024-0437 — protobuf 2.28.0: Uncontrolled Recursion / Crash
 
