@@ -539,6 +539,102 @@ jobs:
       - name: Check Layer-1 crates don't reference SiteConfig/AppConfig
         run: ./scripts/check-layer-boundaries.sh
 
+  # ── Code length report: Rust files over the soft (400) / hard (1000) limits ─
+  # Counts *code* lines (comments, blank lines and tests excluded) with
+  # scripts/check_file_length.py and posts the result as a PR comment, so a PR
+  # shows at a glance whether it pushed a file past the limits in
+  # `.claude/rules/conventions.md` ("File length"), and which touched files got
+  # longer. Informational, like the footprint/performance reports: a file being
+  # over a limit does NOT fail the job (src/config/validate.rs is over the hard
+  # limit until #315), only a broken counter does — its own unit tests run
+  # first. Posting uses the same plain `curl` + GITHUB_TOKEN mechanism, and the
+  # same PR lookup for `push`-triggered migration-branch PRs, as the footprint
+  # job above; on a run whose token is read-only (forks, Dependabot) the POST is
+  # simply rejected and the report stays in the job log.
+  code-length:
+    name: Code length report
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0  # the base commit is needed to tell which files the PR touched
+
+      - name: Unit-test the counter
+        run: python3 scripts/test_check_file_length.py
+
+      - name: Find associated PR and its base commit
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "number=$EVENT_PR_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "base_sha=$EVENT_BASE_SHA" >> "$GITHUB_OUTPUT"
+          else
+            pr_json=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/pulls?head=$REPO_OWNER:$REF_NAME&state=open" || true)
+            echo "number=$(echo "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['number'] if isinstance(d, list) and d else '')" 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+            echo "base_sha=$(echo "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['base']['sha'] if isinstance(d, list) and d else '')" 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Measure code lines
+        env:
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BASE_SHA" ]; then
+            python3 scripts/check_file_length.py --base "$BASE_SHA" --markdown /tmp/length-report.md
+          else
+            python3 scripts/check_file_length.py --markdown /tmp/length-report.md
+          fi
+
+      - name: Post/update PR comment
+        if: steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          MARKER: "<!-- code-length-report -->"
+        run: |
+          set -euo pipefail
+          existing_id=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
+            | python3 -c "
+          import json, os, sys
+          data = json.load(sys.stdin)
+          marker = os.environ['MARKER']
+          for c in data:
+              if marker in c['body']:
+                  print(c['id'])
+                  break
+          ")
+
+          payload=$(python3 -c "
+          import json
+          with open('/tmp/length-report.md', encoding='utf-8') as f:
+              print(json.dumps({'body': f.read()}))
+          ")
+
+          if [ -n "$existing_id" ]; then
+            curl -sS -X PATCH -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/issues/comments/$existing_id" -d "$payload" > /dev/null
+          else
+            curl -sS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" -d "$payload" > /dev/null
+          fi
+
   ci-hack:
     name: Feature isolation (cargo-hack)
     runs-on: ubuntu-latest
