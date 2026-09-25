@@ -5,7 +5,13 @@ argument-hint: "(none — reads state from GitHub: open PRs, #114's open sub-iss
 
 # /feature-workspace-cycle — one iteration
 
-This command is fired **once a day at 4AM by a Routine bound to this same
+> **Since 2026-09-26 the nightly Routine is disabled** (`trig_01Ehd6ceyaWxB6aytQwuydsp` was
+> failing every night — repository not attached — and the owner said it can be retired:
+> they start this command by hand). The steps below are unchanged; wherever they say
+> "the Routine fires again", "tomorrow at 4AM" or "once a day", read "the next time the owner
+> starts the cycle". Don't repair, re-enable or re-create the Routine.
+
+This command was fired **once a day at 4AM by a Routine bound to this same
 session** (self-bind mode — changed from hourly per the user's own request,
 since hourly was too frequent), so it continues the actual conversation
 rather than starting cold each time. Before doing anything else: **look at
@@ -548,8 +554,8 @@ for genuinely idle firings, not a guaranteed periodic pass.)
      note in your final output that the routine driving this command should
      be disabled (don't disable it yourself — that's the user's Routine to
      stop, flag it clearly).
-- Otherwise: end the turn normally. The Routine fires again tomorrow at 4AM
-  and Step 0 will pick up from here.
+- Otherwise: end the turn normally. The next cycle (started by the owner — the
+  Routine is retired) will pick up from here via Step 0.
 
 ## Escalation (stop and ask, don't guess)
 
