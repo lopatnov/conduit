@@ -10,7 +10,7 @@ mod warnings;
 #[cfg(feature = "redis")]
 use self::cross_site::check_redis_store_consistency;
 use self::cross_site::{
-    admin_bind, validate_global, validate_http_redirect_ports, validate_no_duplicate_host_port,
+    admin_port, validate_global, validate_http_redirect_ports, validate_no_duplicate_host_port,
 };
 use self::proxy_loop::check_proxy_loop_warnings;
 use self::site::validate_site;
@@ -32,15 +32,9 @@ pub fn validate(config: &AppConfig) -> Vec<ValidationError> {
     #[cfg(feature = "redis")]
     check_redis_store_consistency(config, &mut errors);
 
-    let (admin_port, admin_host) = admin_bind(config);
+    let admin_port = admin_port(config);
     for (i, site) in config.sites.iter().enumerate() {
-        validate_site(
-            site,
-            admin_port,
-            admin_host,
-            &format!("sites[{i}]"),
-            &mut errors,
-        );
+        validate_site(site, admin_port, &format!("sites[{i}]"), &mut errors);
     }
 
     errors

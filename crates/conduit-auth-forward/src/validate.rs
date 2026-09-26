@@ -7,15 +7,14 @@ use url::Url as ParsedUrl;
 
 use conduit_config_core::validation::ValidationError;
 
-/// `true` when `url` points at the Conduit Admin API on `admin_port`: a loopback or "this host" address
-/// (`localhost`, any `*.localhost`, an IPv4 `127.0.0.0/8` address, `0.0.0.0`, IPv6 `::1` / `::`, or an
-/// IPv4-mapped IPv6 one), or the configured `admin_host`. The port defaults to 80/443 for a URL without one,
-/// like a real request would.
+/// `true` when `url` points at the Conduit Admin API: a loopback or "this host" address (`localhost`, any
+/// `*.localhost`, an IPv4 `127.0.0.0/8` address, `0.0.0.0`, IPv6 `::1` / `::`, or an IPv4-mapped IPv6 one) on
+/// `admin_port`. The port defaults to 80/443 for a URL without one, like a real request would.
 ///
-/// Host classification uses the parsed [`url::Host`]; configured IPv6 hosts are parsed too so equivalent
-/// spellings match.
+/// Host classification uses the parsed [`url::Host`], not `host_str()`: `host_str()` returns an IPv6 host
+/// in brackets (`[::1]`), which a string comparison against `"::1"` never matches (#447).
 #[cfg(feature = "forward-auth")]
-fn targets_admin_api(url: &str, admin_port: u16, admin_host: Option<&str>) -> bool {
+fn targets_admin_api(url: &str, admin_port: u16) -> bool {
     let Ok(parsed) = ParsedUrl::parse(url) else {
         return false;
     };
@@ -35,14 +34,7 @@ fn targets_admin_api(url: &str, admin_port: u16, admin_host: Option<&str>) -> bo
         }
         None => false,
     };
-    let same_host = admin_host.is_some_and(|h| {
-        let host = h.trim_matches(['[', ']']);
-        match (parsed.host(), host.parse::<std::net::Ipv6Addr>()) {
-            (Some(url::Host::Ipv6(addr)), Ok(admin_addr)) => addr == admin_addr,
-            _ => parsed.host_str().map(|s| s.trim_matches(['[', ']')) == Some(host),
-        }
-    });
-    (loopback || same_host) && parsed.port_or_known_default() == Some(admin_port)
+    loopback && parsed.port_or_known_default() == Some(admin_port)
 }
 
 /// Reject a forwardAuth URL that targets the Conduit Admin API (`admin_port`: the port of
@@ -59,15 +51,14 @@ fn targets_admin_api(url: &str, admin_port: u16, admin_host: Option<&str>) -> bo
 fn check_forward_auth_admin_target(
     cfg: &crate::config::ForwardAuthConfig,
     admin_port: u16,
-    admin_host: Option<&str>,
     prefix: &str,
     errors: &mut Vec<ValidationError>,
 ) {
-    if targets_admin_api(&cfg.url, admin_port, admin_host) {
+    if targets_admin_api(&cfg.url, admin_port) {
         errors.push(ValidationError::new(
             format!("{prefix}.url"),
             format!(
-                "forwardAuth.url points to the Conduit Admin API on port {admin_port}. \
+                "forwardAuth.url points to 127.0.0.1:{admin_port} — this is the Conduit Admin API. \
                  Routing external auth requests through the admin API is a security risk. \
                  Use a dedicated auth service instead."
             ),
@@ -82,18 +73,16 @@ fn check_forward_auth_admin_target(
 fn check_forward_auth_admin_target(
     _cfg: &crate::config::ForwardAuthConfig,
     _admin_port: u16,
-    _admin_host: Option<&str>,
     _prefix: &str,
     _errors: &mut Vec<ValidationError>,
 ) {
 }
 
-/// Validate a `forwardAuth` block. The Admin API address (see [`check_forward_auth_admin_target`]) is read
-/// from `global.admin.bind` by the root crate.
+/// Validate a `forwardAuth` block. `admin_port` is the port the Admin API listens on (see
+/// [`check_forward_auth_admin_target`]); the root crate reads it from `global.admin.bind`.
 pub fn validate_forward_auth(
     cfg: &crate::config::ForwardAuthConfig,
     admin_port: u16,
-    admin_host: Option<&str>,
     prefix: &str,
     errors: &mut Vec<ValidationError>,
 ) {
@@ -111,7 +100,7 @@ pub fn validate_forward_auth(
         return;
     }
 
-    check_forward_auth_admin_target(cfg, admin_port, admin_host, prefix, errors);
+    check_forward_auth_admin_target(cfg, admin_port, prefix, errors);
     if let Some(0) = cfg.timeout_ms {
         errors.push(ValidationError::new(
             format!("{prefix}.timeoutMs"),
@@ -126,99 +115,58 @@ mod tests {
 
     #[test]
     fn the_default_admin_address_is_flagged() {
-        assert!(targets_admin_api("http://127.0.0.1:2019/auth", 2019, None));
-        assert!(targets_admin_api("http://localhost:2019/auth", 2019, None));
-        assert!(targets_admin_api("http://127.1.2.3:2019/auth", 2019, None));
+        assert!(targets_admin_api("http://127.0.0.1:2019/auth", 2019));
+        assert!(targets_admin_api("http://localhost:2019/auth", 2019));
+        assert!(targets_admin_api("http://127.1.2.3:2019/auth", 2019));
     }
 
     #[test]
     fn ipv6_loopback_is_flagged_although_host_str_brackets_it() {
         // The #447 case: `host_str()` is "[::1]", so the old `== "::1"` never matched.
-        assert!(targets_admin_api("http://[::1]:2019/auth", 2019, None));
+        assert!(targets_admin_api("http://[::1]:2019/auth", 2019));
         assert!(targets_admin_api(
             "http://[::ffff:127.0.0.1]:2019/auth",
-            2019,
-            None,
+            2019
         ));
     }
 
     #[test]
     fn unspecified_addresses_reach_this_host_and_are_flagged() {
-        assert!(targets_admin_api("http://0.0.0.0:2019/auth", 2019, None));
-        assert!(targets_admin_api("http://[::]:2019/auth", 2019, None));
-        assert!(targets_admin_api(
-            "http://[::ffff:0.0.0.0]:2019/auth",
-            2019,
-            None
-        ));
+        assert!(targets_admin_api("http://0.0.0.0:2019/auth", 2019));
+        assert!(targets_admin_api("http://[::]:2019/auth", 2019));
+        assert!(targets_admin_api("http://[::ffff:0.0.0.0]:2019/auth", 2019));
     }
 
     #[test]
     fn localhost_spellings_are_flagged() {
-        assert!(targets_admin_api("http://LOCALHOST:2019/", 2019, None));
-        assert!(targets_admin_api("http://localhost.:2019/", 2019, None));
-        assert!(targets_admin_api(
-            "http://admin.localhost:2019/",
-            2019,
-            None
-        ));
+        assert!(targets_admin_api("http://LOCALHOST:2019/", 2019));
+        assert!(targets_admin_api("http://localhost.:2019/", 2019));
+        assert!(targets_admin_api("http://admin.localhost:2019/", 2019));
     }
 
     #[test]
     fn the_configured_admin_port_is_protected_and_2019_is_free_again() {
-        assert!(targets_admin_api("http://127.0.0.1:3000/auth", 3000, None));
-        assert!(!targets_admin_api("http://127.0.0.1:2019/auth", 3000, None));
-    }
-
-    #[test]
-    fn configured_admin_host_is_flagged() {
-        assert!(targets_admin_api(
-            "http://192.0.2.10:3000/auth",
-            3000,
-            Some("192.0.2.10"),
-        ));
-        assert!(targets_admin_api(
-            "http://[2001:db8::1]:3000/auth",
-            3000,
-            Some("[2001:db8::1]"),
-        ));
-        assert!(!targets_admin_api(
-            "http://192.0.2.11:3000/auth",
-            3000,
-            Some("192.0.2.10"),
-        ));
+        assert!(targets_admin_api("http://127.0.0.1:3000/auth", 3000));
+        assert!(!targets_admin_api("http://127.0.0.1:2019/auth", 3000));
     }
 
     #[test]
     fn a_url_without_a_port_uses_the_scheme_default() {
-        assert!(targets_admin_api("http://127.0.0.1/auth", 80, None));
-        assert!(targets_admin_api("https://127.0.0.1/auth", 443, None));
-        assert!(!targets_admin_api("https://127.0.0.1/auth", 80, None));
+        assert!(targets_admin_api("http://127.0.0.1/auth", 80));
+        assert!(targets_admin_api("https://127.0.0.1/auth", 443));
+        assert!(!targets_admin_api("https://127.0.0.1/auth", 80));
     }
 
     #[test]
     fn other_hosts_are_not_flagged() {
-        assert!(!targets_admin_api(
-            "http://auth-service:2019/verify",
-            2019,
-            None
-        ));
-        assert!(!targets_admin_api(
-            "http://10.0.0.1:2019/verify",
-            2019,
-            None
-        ));
-        assert!(!targets_admin_api(
-            "http://[2001:db8::1]:2019/verify",
-            2019,
-            None
-        ));
+        assert!(!targets_admin_api("http://auth-service:2019/verify", 2019));
+        assert!(!targets_admin_api("http://10.0.0.1:2019/verify", 2019));
+        assert!(!targets_admin_api("http://[2001:db8::1]:2019/verify", 2019));
         // A domain that merely starts with "127." is not loopback (the old `starts_with("127.")` said it was).
         assert!(!targets_admin_api(
             "http://127.example.com:2019/verify",
-            2019,
-            None,
+            2019
         ));
-        assert!(!targets_admin_api("not a url", 2019, None));
+        assert!(!targets_admin_api("not a url", 2019));
     }
 }
