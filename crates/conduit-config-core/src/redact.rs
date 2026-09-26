@@ -43,6 +43,13 @@ pub fn redact_url(url: &str) -> Cow<'_, str> {
     // second review-round finding on PR #331: `find` here previously leaked
     // a fragment of a password containing its own '@').
     let Some(at) = authority.rfind('@') else {
+        // No '@' in the authority. A password with a raw '/' (same no-URL-encoding model) ends the
+        // "authority" early — `redis://alice:pa/ss@host` reads as host `alice`, port `pa`, path
+        // `/ss@host` — so an '@' further on together with an authority that cannot be
+        // `host[:port]` means the credentials are in the part we would otherwise print.
+        if !is_host_port(authority) && rest[authority_end..].contains('@') {
+            return Cow::Owned(format!("{}[REDACTED]", &url[..authority_start]));
+        }
         return Cow::Borrowed(url);
     };
     Cow::Owned(format!(
@@ -50,6 +57,25 @@ pub fn redact_url(url: &str) -> Cow<'_, str> {
         &url[..authority_start],
         &rest[at + 1..]
     ))
+}
+
+/// Whether `authority` (no userinfo) is a plausible `host[:port]`: the text after the last `:` is
+/// all digits, or the whole thing is a bracketed IPv6 literal with an optional `:digits` port.
+fn is_host_port(authority: &str) -> bool {
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    if authority.starts_with('[') {
+        return match authority.find(']') {
+            Some(end) => {
+                let tail = &authority[end + 1..];
+                tail.is_empty() || tail.strip_prefix(':').is_some_and(digits)
+            }
+            None => false,
+        };
+    }
+    match authority.rsplit_once(':') {
+        Some((_, port)) => digits(port),
+        None => true,
+    }
 }
 
 #[cfg(test)]
@@ -88,6 +114,30 @@ mod tests {
         // No '@' before the first '/' after the scheme -- not userinfo.
         let url = "redis://example.com:6379/db@1";
         assert_eq!(redact_url(url), url);
+    }
+
+    #[test]
+    fn redact_url_password_containing_a_slash_does_not_leak() {
+        // `alice:pa/ss@host` — the first '/' ends the "authority" (`alice:pa`, not a valid
+        // `host:port`), so the credential-separating '@' looks like it is in the path.
+        let redacted = redact_url("redis://alice:pa/ss@host:6379");
+        assert_eq!(redacted, "redis://[REDACTED]");
+        assert!(
+            !redacted.contains("alice") && !redacted.contains("pa") && !redacted.contains("ss"),
+            "no part of the credentials must survive redaction: {redacted}"
+        );
+    }
+
+    #[test]
+    fn redact_url_keeps_a_valid_authority_with_an_at_sign_in_the_path() {
+        for url in [
+            "redis://example.com:6379/db@1",
+            "redis://example.com/db@1",
+            "redis://[::1]:6379/db@1",
+            "redis://[::1]/db@1",
+        ] {
+            assert_eq!(redact_url(url), url);
+        }
     }
 
     #[test]

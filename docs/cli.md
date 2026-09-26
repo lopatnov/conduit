@@ -486,7 +486,7 @@ mandb
 
 | Variable                  | Default          | Description                                                                                                                                                                          |
 | ------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `RUST_LOG`                | `warn`           | Log level for the server process. Format: `error\|warn\|info\|debug\|trace` or per-crate: `conduit=debug,pingora=warn`                                                               |
+| `RUST_LOG`                | `warn`           | Log level for the server process. Format: `error\|warn\|info\|debug\|trace` or per-crate: `conduit=debug,pingora=warn` (the crates split out of `conduit` log under their own names, e.g. `conduit_runtime=debug`)                                                               |
 | `CONDUIT_ADMIN`           | `127.0.0.1:2019` | Admin API address used by `reload`, `status`, `shutdown`, and `upstreams` commands                                                                                                   |
 | `CONDUIT_ADMIN_TOKEN`     | —                | Bearer token sent with every Admin API request from the CLI. Set when the server has `global.admin.token` configured.                                                                |
 | `CONDUIT_ACME_EXTRA_ROOT` | —                | Path to a PEM CA file trusted for ACME HTTP client. For CI environments using test ACME servers (e.g. [Pebble](https://github.com/letsencrypt/pebble)) with self-signed certificates |

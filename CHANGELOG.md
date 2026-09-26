@@ -9,6 +9,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **A Redis URL whose password contains a raw `/` is no longer logged with the password.**
+  Credentials are redacted before a Redis URL is logged, but the search for the `user:password@`
+  part stopped at the first `/`, so in `redis://alice:pa/ss@host:6379` the `@` looked like part of
+  the path and the URL was printed as it was. A URL whose leading part cannot be `host[:port]` and
+  that has an `@` further on is now printed as `redis://[REDACTED]`. (The redaction helper is now
+  shared by every crate that prints config values.)
 - **The vulnerable `protobuf 2.28.0` (RUSTSEC-2024-0437 / CVE-2025-53605) is
   gone from the dependency tree.** It was pulled in unconditionally by
   `pingora-core 0.8` through `prometheus 0.13`; Pingora 0.9 no longer depends

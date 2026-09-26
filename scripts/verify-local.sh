@@ -118,7 +118,11 @@ list_tests() { # list_tests DIR OUTFILE PROFILE-ARGS...
   # The baseline builds in its own target directory (see above); the head builds in the ordinary one. Building the head in the
   # baseline's directory would reuse its stale rlibs, fail to compile, and (stderr is dropped) leave an empty list.
   if [ "$dir" = "$ROOT" ]; then
-    (cd "$dir" && cargo test "$@" -- --list </dev/null 2>/dev/null | grep -E ': test$' | sort) > "$out"
+    # A doctest is listed under its file path (`src/x.rs - item (line N)`), so one that moved into the crate MOVED_TO shows up
+    # under `crates/<dir>/src/x.rs`; put it back under `src/` so the move is not reported as a test that disappeared.
+    local moved_dir=""; [ -n "$MOVED_TO" ] && moved_dir="crates[\\\\/]${MOVED_TO#lopatnov-}[\\\\/]"
+    (cd "$dir" && cargo test "$@" -- --list </dev/null 2>/dev/null | grep -E ': test$' \
+      | { if [ -n "$moved_dir" ]; then sed -E "s#^${moved_dir}##"; else cat; fi; } | sort) > "$out"
   else
     (cd "$dir" && CARGO_TARGET_DIR="$OUT/target-base" cargo test "$@" -- --list </dev/null 2>/dev/null | grep -E ': test$' | sort) > "$out"
   fi
@@ -181,7 +185,9 @@ if ! skipped tests; then
     local totals; totals=$(grep -E '^test result' "$OUT/test-$label.log" | awk '{p+=$4; f+=$6} END {print p" passed, "f" failed"}')
     result "cargo test [$label]" "$([ $rc = 0 ] && echo PASS || echo FAIL)" "$totals"
   }
-  pkgs=""; [ -n "$ALSO_PKG" ] && pkgs="-p lopatnov-conduit -p $ALSO_PKG"
+  # The package the tests moved to runs next to the root in the profiles that gate its tests, even without --also-pkg.
+  extra_pkg="${ALSO_PKG:-$MOVED_TO}"
+  pkgs=""; [ -n "$extra_pkg" ] && pkgs="-p lopatnov-conduit -p $extra_pkg"
   run_tests workspace --workspace
   # shellcheck disable=SC2086
   run_tests full $pkgs --features full

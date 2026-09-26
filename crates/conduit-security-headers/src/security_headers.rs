@@ -248,6 +248,11 @@ mod tests {
 
         assert!(is_host_allowed(None, Some("[::1]"), "[::1]:8080"));
         assert!(!is_host_allowed(None, Some("[::1]"), "[::2]:8080"));
+
+        // Junk after the bracket is not the literal: the header (echoed into `X-Forwarded-Host`)
+        // would name another host while the check saw an allowed one.
+        assert!(!is_host_allowed(Some(&cfg), None, "[::1]@evil.com"));
+        assert!(!is_host_allowed(None, Some("[::1]"), "[::1]@evil.com"));
     }
 
     #[test]
