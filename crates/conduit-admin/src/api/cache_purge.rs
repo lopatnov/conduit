@@ -19,15 +19,6 @@ pub(super) struct CachePurgeParams {
     pub(super) url: String,
 }
 
-/// `DELETE /cache/purge?url=<url>` — invalidate a specific cache entry.
-///
-/// Parses the URL into its components, builds the same `CacheKey` that the
-/// proxy would use, and calls `MemCache::purge()` on the shared storage.
-///
-/// Returns `{"status":"ok","purged":true}` when an entry was found and removed,
-/// `{"status":"ok","purged":false}` when no matching entry existed, or an error
-/// JSON on bad input.
-///
 /// The cache key that a purge of `raw` (a full `http://`/`https://` URL) has to target.
 ///
 /// The key's host is the URL's host **without its port** — `build_cache_key` drops a port, exactly
@@ -61,6 +52,15 @@ pub(super) fn purge_cache_key(raw: &str) -> Result<pingora_cache::CacheKey, Admi
     ))
 }
 
+/// `DELETE /cache/purge?url=<url>` — invalidate a specific cache entry.
+///
+/// Parses the URL into its components, builds the same `CacheKey` that the
+/// proxy would use, and calls `MemCache::purge()` on the shared storage.
+///
+/// Returns `{"status":"ok","purged":true}` when an entry was found and removed,
+/// `{"status":"ok","purged":false}` when no matching entry existed, or an error
+/// JSON on bad input.
+///
 /// The `cache` variant. Without the feature there is no response cache to
 /// purge -- and the `url` crate this handler parses with is not compiled in
 /// (issue #144, PR 4b) -- so the route stays registered but answers 501, see

@@ -9,6 +9,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **`global.admin.token: ""` is now a validation error** (issue #480). The Admin API compares the
+  bearer token in constant time, and a request with no `Authorization` header is an empty string,
+  so an empty configured token authenticated every request — which is what an unresolved
+  `$ADMIN_TOKEN` expands to. `metrics.token: ""` was already rejected for the same reason; omit the
+  field to leave the Admin API unauthenticated.
 - **A Redis URL whose password contains a raw `/` is no longer logged with the password.**
   Credentials are redacted before a Redis URL is logged, but the search for the `user:password@`
   part stopped at the first `/`, so in `redis://alice:pa/ss@host:6379` the `@` looked like part of
@@ -182,7 +187,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `global.admin.bind` such as `192.0.2.10:2019`, that address itself was not flagged. It is now
   (an IP address written any way — `2001:db8:0::1` equals `2001:db8::1`, an IPv4-mapped form
   equals its IPv4 one — or a host name, compared case-insensitively). The message for a loopback
-  URL is unchanged.
+  URL is unchanged, and the admin port is taken from every bind form as before, an unbracketed
+  IPv6 one such as `::1:3000` included.
 
 ### Changed
 

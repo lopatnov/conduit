@@ -173,7 +173,13 @@ pub(super) fn admin_endpoint(config: &AppConfig) -> AdminEndpoint {
 }
 
 /// Split a `global.admin.bind` value into its host and port: a socket address first (`192.0.2.10:2019`,
-/// `[2001:db8::1]:2019` — the host is returned without brackets), else `name:port`.
+/// `[2001:db8::1]:2019` — the host is returned without brackets), else everything before the last `:` is the
+/// host and what follows is the port.
+///
+/// The port is kept whenever the text after the last `:` parses, whatever the host looks like: the server binds
+/// with `TcpListener::bind(&str)`, which splits at the last `:` the same way, so an unbracketed IPv6 bind such as
+/// `::1:3000` really listens on port 3000 and the forwardAuth lint has to protect that port (the port rule of
+/// #447 did; keeping it here is what stops #470 from being a regression). An empty host is dropped, not the port.
 fn split_bind(bind: &str) -> Option<AdminEndpoint> {
     if let Ok(addr) = bind.parse::<std::net::SocketAddr>() {
         return Some(AdminEndpoint {
@@ -182,11 +188,9 @@ fn split_bind(bind: &str) -> Option<AdminEndpoint> {
         });
     }
     let (host, port) = bind.rsplit_once(':')?;
-    let port = port.parse().ok()?;
-    // A bare IPv6 address without brackets is not a `host:port` pair.
-    (!host.is_empty() && !host.contains(':')).then(|| AdminEndpoint {
-        host: Some(host.to_owned()),
-        port,
+    Some(AdminEndpoint {
+        host: (!host.is_empty()).then(|| host.to_owned()),
+        port: port.parse().ok()?,
     })
 }
 
@@ -204,6 +208,23 @@ pub(super) fn validate_global(config: &AppConfig, errors: &mut Vec<ValidationErr
                 "must be greater than 0 (0 would run the server with no worker threads)",
             ));
         }
+    }
+    // An empty token string is not "no token" (`None`, the unauthenticated case): the bearer layer compares in
+    // constant time and a request without an `Authorization` header is an empty `provided` string, so
+    // `token: ""` matches it and authenticates every request — which is exactly what an unresolved `$ADMIN_TOKEN`
+    // expands to. Reject it outright, like `metrics.token` (issue #480).
+    let admin_token = config
+        .global
+        .as_ref()
+        .and_then(|g| g.admin.as_ref())
+        .and_then(|a| a.token.as_deref());
+    if admin_token == Some("") {
+        errors.push(ValidationError::new(
+            "global.admin.token",
+            "global.admin.token must not be an empty string — an empty token matches a request with no \
+             Authorization header at all, authenticating every request. Omit the field entirely to leave \
+             the Admin API unauthenticated, or set a real token (an unset `$VAR` expands to an empty string).",
+        ));
     }
 }
 
