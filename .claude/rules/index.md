@@ -478,6 +478,16 @@ don't stage, delete, or read into them without being asked.
   Once a finding has a real disposition (fixed, filed as an issue, or explicitly accepted
   with reasoning posted once), later identical re-postings of the *same* finding text are
   safe to skip silently — don't re-investigate or re-reply each time it resurfaces.
+- **Gitar's auto-apply (on for the tracking PR #152, off on sub-issue PRs) commits straight
+  to the migration branch, with no review.** After every merge it re-reviews the diff and
+  pushes "fix:" commits. Seen 2026-09-26: `8f5e37a` relaxed a flaky test (harmless), then four
+  commits rewrote the security-reviewed forwardAuth Admin-API validator — one changed a
+  golden-pinned error text, the last one did not compile — and the branch was red until they
+  were reverted (`8d8991d`). So: `git fetch` and read `git log <your last known tip>..origin/<branch>`
+  before starting work and before every push to that branch; treat a Gitar commit like any
+  unreviewed change (it needs the security gate if it touches auth/TLS/validation) and revert
+  it if it breaks the build. Turning auto-apply off is a comment `gitar auto-apply:off` on #152 —
+  the owner's call, since it changes a bot's standing configuration.
 - **`SonarCloud analysis` fails on essentially every Dependabot-authored PR against `main`** —
   confirmed 2026-08-31 by reading the actual job log (not just the pass/fail badge): `ERROR
   Not authorized or project not found. Please check the 'SONAR_TOKEN' environment variable...`.
