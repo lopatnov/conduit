@@ -955,8 +955,8 @@
   },
   {
    "tls": {
-    "cert": "c.pem",
-    "key": "c.key"
+    "cert": "no-such-file.pem",
+    "key": "no-such-file.key"
    },
    "proxy": "https://localhost",
    "port": 9206
@@ -1209,8 +1209,8 @@
   },
   {
    "tls": {
-    "cert": "server.pem",
-    "key": "server.key",
+    "cert": "no-such-file.pem",
+    "key": "no-such-file.key",
     "clientAuth": {
      "ca": ""
     }
@@ -1220,7 +1220,7 @@
   {
    "tls": {
     "clientAuth": {
-     "ca": "cno-such-file.pem"
+     "ca": "no-such-file.pem"
     }
    },
    "port": 9240
@@ -1721,6 +1721,82 @@
    "port": 9280
   },
   {
+   "proxy": {
+    "/rl": {
+     "targets": [
+      "http://a.example:1"
+     ],
+     "rateLimit": {
+      "windowSecs": 0,
+      "limit": 0,
+      "algorithm": "leaky",
+      "keyBy": "header:bad name",
+      "store": "memcached://x"
+     }
+    }
+   },
+   "port": 9281
+  },
+  {
+   "routes": [
+    {
+     "match": {
+      "path": "/rl/**"
+     },
+     "proxy": {
+      "targets": [
+       "http://a.example:1"
+      ],
+      "rateLimit": {
+       "windowSecs": 0,
+       "limit": 0,
+       "algorithm": "leaky",
+       "keyBy": "header:bad name",
+       "store": "memcached://x"
+      }
+     }
+    }
+   ],
+   "port": 9282
+  },
+  {
+   "rateLimit": {
+    "windowSecs": 1,
+    "limit": 1,
+    "keyBy": "cookie"
+   },
+   "port": 9283
+  },
+  {
+   "ipFilter": {
+    "allow": [
+     "999.1.1.1",
+     "10.0.0.0/33",
+     "::1/129",
+     "not-an-ip"
+    ],
+    "deny": [
+     "10.0.0.1/abc",
+     "1.2.3"
+    ]
+   },
+   "port": 9284
+  },
+  {
+   "consumers": {
+    "consumers": [
+     {
+      "username": ""
+     },
+     {
+      "username": "nocred"
+     }
+    ],
+    "sharedJwt": {}
+   },
+   "port": 9285
+  },
+  {
    "tls": {
     "cert": "no-such-file.pem"
    },
@@ -1731,6 +1807,21 @@
     "/multi": {
      "targets": []
     }
+   },
+   "routes": [
+    {
+     "match": {
+      "path": "/multi/**"
+     },
+     "proxy": {
+      "targets": []
+     }
+    }
+   ],
+   "ipFilter": {
+    "deny": [
+     "bad"
+    ]
    },
    "upload": {
     "path": "up",
@@ -1773,12 +1864,13 @@
      {
       "username": ""
      }
-    ]
+    ],
+    "sharedJwt": {}
    },
    "limits": {
     "timeoutSecs": 0
    },
-   "port": 9281
+   "port": 9286
   }
  ]
 }
