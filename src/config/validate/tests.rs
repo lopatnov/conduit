@@ -1365,6 +1365,38 @@ fn forward_auth_to_admin_api_port_is_error() {
     );
 }
 
+/// #447: `url::Url::host_str()` returns an IPv6 host in brackets, so the old `== "::1"` check never
+/// matched. `[::1]:2019` is the input on which the old and the fixed behaviour genuinely disagree.
+#[cfg(feature = "forward-auth")]
+#[test]
+fn forward_auth_to_ipv6_loopback_admin_api_is_error() {
+    let e = errs(r#"{ "port": 8080, "forwardAuth": { "url": "http://[::1]:2019/auth" } }"#);
+    assert!(
+        e.iter().any(|err| err.message.contains("Admin API")),
+        "forwardAuth pointing at [::1]:2019 must be an error: {e:?}"
+    );
+}
+
+/// #447: the rule follows `global.admin.bind`, not the literal 2019: the configured admin port is
+/// protected and 2019 becomes an ordinary port again.
+#[cfg(feature = "forward-auth")]
+#[test]
+fn forward_auth_admin_rule_follows_the_configured_admin_port() {
+    let config = |url: &str| {
+        format!(
+            r#"{{ "global": {{ "admin": {{ "bind": "127.0.0.1:3000" }} }},
+                 "sites": [{{ "port": 8080, "forwardAuth": {{ "url": "{url}" }} }}] }}"#
+        )
+    };
+    let admin_error = |url: &str| {
+        errs(&config(url))
+            .iter()
+            .any(|err| err.message.contains("Admin API"))
+    };
+    assert!(admin_error("http://127.0.0.1:3000/auth"));
+    assert!(!admin_error("http://127.0.0.1:2019/auth"));
+}
+
 /// Without `forward-auth` the whole `forwardAuth` block is ignored (and
 /// `feature_warnings()` says so), so the Admin-API-target rule has nothing
 /// to guard: it is scoped to builds that enforce forwardAuth, together with

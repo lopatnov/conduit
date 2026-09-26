@@ -22,11 +22,17 @@ use super::tls::validate_tls;
 
 use crate::config::schema::{ProxyRouteTarget, SiteConfig, TcpConfig};
 
-pub(super) fn validate_site(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
+/// `admin_port`: the port of the Admin API, which a forwardAuth URL must not point at.
+pub(super) fn validate_site(
+    site: &SiteConfig,
+    admin_port: u16,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
     validate_site_transport(site, prefix, errors);
     validate_site_routing(site, prefix, errors);
     validate_site_request_handling(site, prefix, errors);
-    validate_site_auth(site, prefix, errors);
+    validate_site_auth(site, admin_port, prefix, errors);
     validate_site_limits(site, prefix, errors);
 }
 
@@ -92,7 +98,12 @@ fn validate_site_request_handling(
 }
 
 /// `apiKey` / `jwtAuth` / `forwardAuth` / `consumers`.
-fn validate_site_auth(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
+fn validate_site_auth(
+    site: &SiteConfig,
+    admin_port: u16,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
     if let Some(api_key_cfg) = &site.api_key {
         validate_api_key(api_key_cfg, prefix, errors);
     }
@@ -100,7 +111,7 @@ fn validate_site_auth(site: &SiteConfig, prefix: &str, errors: &mut Vec<Validati
         validate_jwt_auth(jwt, &format!("{prefix}.jwtAuth"), errors);
     }
     if let Some(fa) = &site.forward_auth {
-        validate_forward_auth(fa, &format!("{prefix}.forwardAuth"), errors);
+        validate_forward_auth(fa, admin_port, &format!("{prefix}.forwardAuth"), errors);
     }
     if let Some(c) = &site.consumers {
         validate_consumers(c, &format!("{prefix}.consumers"), errors);
