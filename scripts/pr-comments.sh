@@ -17,7 +17,7 @@
 # Needs an authenticated `gh`. Read-only.
 set -uo pipefail
 
-usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 PR=""; SINCE="0000-00-00T00:00:00Z"; LIMIT=900; REPO=""
 while [ $# -gt 0 ]; do
