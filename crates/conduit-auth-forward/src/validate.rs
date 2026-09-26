@@ -134,7 +134,7 @@ mod tests {
         assert!(targets_admin_api(
             "http://[::ffff:127.0.0.1]:2019/auth",
             2019,
-            None
+            None,
         ));
     }
 
@@ -163,17 +163,17 @@ mod tests {
         assert!(targets_admin_api(
             "http://192.0.2.10:3000/auth",
             3000,
-            Some("192.0.2.10")
+            Some("192.0.2.10"),
         ));
         assert!(targets_admin_api(
             "http://[2001:db8::1]:3000/auth",
             3000,
-            Some("[2001:db8::1]")
+            Some("[2001:db8::1]"),
         ));
         assert!(!targets_admin_api(
             "http://192.0.2.11:3000/auth",
             3000,
-            Some("192.0.2.10")
+            Some("192.0.2.10"),
         ));
     }
 
@@ -193,7 +193,7 @@ mod tests {
         assert!(!targets_admin_api(
             "http://127.example.com:2019/verify",
             2019,
-            None
+            None,
         ));
         assert!(!targets_admin_api("not a url", 2019, None));
     }
