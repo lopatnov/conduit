@@ -492,10 +492,8 @@ axum.workspace  = true
 # --- Observability ---
 tracing.workspace            = true
 tracing-subscriber.workspace = true
-prometheus.workspace         = true
 
 # --- Performance & state ---
-arc-swap.workspace = true
 dashmap.workspace  = true
 
 # --- Functionality ---
@@ -511,8 +509,6 @@ dashmap.workspace  = true
 # the unrelated config-file hot-reload watcher, pre-existing and out of
 # #140's scope — still pulls it in regardless of this crate's `hotreload`
 # feature.)
-regex.workspace      = true
-uuid.workspace       = true
 
 # --- TLS (always needed) ---
 x509-parser.workspace = true
@@ -539,14 +535,7 @@ subtle.workspace    = true
 # longer needs `dep:url`. The validation rules themselves are unchanged
 # wherever the thing they guard can exist.
 url = { workspace = true, optional = true }
-# httpdate stays unconditional here — logging.rs (access-log CLF dates) and
-# response_phase.rs (stale-while-revalidate date handling) both use it
-# directly and are unrelated to #114/#139's scope. crates/conduit-static
-# carries its own separate, gated `httpdate` edge for ETag/Last-Modified
-# formatting in the moved static-file handler.
-httpdate.workspace  = true
 http.workspace      = true
-base64.workspace    = true
 # hmac/sha2: no longer direct root-crate dependencies — their only callers
 # (sticky-session HMAC signing/verification, `router.rs`) moved into
 # `crates/conduit-proxy-http` (#114/#143), which carries its own `hmac`/
@@ -561,17 +550,14 @@ base64.workspace    = true
 
 # --- HTTP client (feature: jwt for JWKS via crates/conduit-auth-jwt,
 # forward-auth, mirroring) ---
-# reqwest is optional (issue #144, PR 4b): the only two root call sites are
-# traffic mirroring (`fire_mirror_request`, gated on `proxy` since PR 3) and
-# the cache's early-refresh fetch (`fire_early_refresh`, gated on `cache`).
-# `cache` implies `proxy` (D1), so `proxy` is the single feature that enables
-# `dep:reqwest`. The forwardAuth and JWKS clients live in
-# `crates/conduit-auth-forward` / `crates/conduit-auth-jwt` with their own
-# `reqwest` edge and are unaffected.
+# reqwest is no longer a root [dependencies] entry (issue #145): its only callers — traffic mirroring
+# (`fire_mirror_request`) and the cache's early-refresh fetch (`fire_early_refresh`) — moved into
+# `crates/conduit-runtime`, whose `proxy` feature enables it. The forwardAuth and JWKS clients live in
+# `crates/conduit-auth-forward` / `crates/conduit-auth-jwt` with their own `reqwest` edge. Only the
+# [dev-dependencies] entry below (integration-test HTTP client) remains.
 # `jsonwebtoken` itself moved to `crates/conduit-auth-jwt` (#114/#133) and is
 # no longer a direct root-crate [dependencies] entry — only a
 # [dev-dependencies] one below (tests/auth.rs generates test tokens).
-reqwest = { workspace = true, optional = true }
 
 # Redis-backed rate limiting AND caching both live entirely in their owning
 # crates as of #114/#137 slice 2 (rate limiting) / #114/#135 (caching) — the
@@ -598,13 +584,10 @@ lopatnov-conduit-k8s = { workspace = true, optional = true }
 # the [dependencies] comment on `lopatnov-conduit-middleware` below).
 
 # --- OpenTelemetry OTLP tracing (optional feature) ---
-# `opentelemetry` (base API) is still needed directly here for per-request
-# span creation/finishing (`RequestCtx.otel_span`, `request_phase.rs`,
-# `logging_phase.rs`) — that stays in the root crate per CLAUDE.md decision
-# #30. `opentelemetry_sdk`/`opentelemetry-otlp` (tracer-provider + exporter
-# construction) moved to `crates/conduit-otlp` (#129) and are no longer a
-# direct root dependency.
-opentelemetry = { workspace = true, optional = true }
+# `opentelemetry` (base API) is no longer a root dependency (issue #145): per-request span creation/finishing
+# (`RequestCtx.otel_span`, the request/logging phases) moved into `crates/conduit-runtime` together with the
+# per-request state, whose `otlp` feature enables it. `opentelemetry_sdk`/`opentelemetry-otlp` (tracer-provider +
+# exporter construction) live in `crates/conduit-otlp` (#129).
 
 
 [features]
@@ -646,7 +629,6 @@ default = ["proxy", "compression", "static", "hotreload"]
 proxy = [
     "lopatnov-conduit-proxy-http/proxy",
     "lopatnov-conduit-upstream/proxy",
-    "dep:reqwest",
     "dep:url",
     "lopatnov-conduit-runtime/proxy",
 ]
@@ -841,7 +823,7 @@ fault-injection = ["lopatnov-conduit-faults/fault-injection", "lopatnov-conduit-
 # OpenTelemetry OTLP distributed tracing (global.otlp config). `dep:opentelemetry`
 # covers this crate's own per-request span code (RequestCtx.otel_span);
 # `lopatnov-conduit-otlp/otlp` forwards into the tracer-provider crate (#129).
-otlp = ["dep:opentelemetry", "lopatnov-conduit-otlp/otlp", "lopatnov-conduit-runtime/otlp"]
+otlp = ["lopatnov-conduit-otlp/otlp", "lopatnov-conduit-runtime/otlp"]
 # Tokio event-loop lag gauge (conduit_eventloop_lag_ms).
 # Uses a yield-probe task that measures scheduling delay — no external deps,
 # no tokio_unstable required.  Safe to enable in production.
@@ -923,6 +905,9 @@ full = [
 # reqwest: adds test-only features (http2/blocking/multipart) on top of the
 # main-crate base feature set via workspace-inherited feature union.
 reqwest                = { workspace = true, features = ["http2", "blocking", "multipart"] }
+# tests/auth.rs builds Basic-auth headers and a JWK by hand (the runtime crate, which used to be built into this one,
+# carries its own base64 dependency for the Basic-auth decoder).
+base64                 = { workspace = true }
 criterion.workspace     = true
 tempfile.workspace      = true
 serial_test.workspace   = true
