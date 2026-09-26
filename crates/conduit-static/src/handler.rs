@@ -52,19 +52,7 @@ pub struct StaticFileHandler {
 #[async_trait]
 impl LocalHandlerImpl for StaticFileHandler {
     async fn handle(&mut self, session: &mut Session) -> Result<()> {
-        let found = handle_static(
-            session,
-            &self.roots,
-            &self.options,
-            self.strip_prefix.as_deref(),
-            &self.extra_headers,
-            #[cfg(feature = "compression")]
-            self.compress_opts.as_ref(),
-            #[cfg(not(feature = "compression"))]
-            None,
-            &self.accept_enc,
-        )
-        .await?;
+        let found = handle_static(session, self).await?;
 
         if !found {
             crate::fallback::handle_fallback(
@@ -88,16 +76,18 @@ impl LocalHandlerImpl for StaticFileHandler {
 /// …).  Returns `Ok(false)` when the file was not found and **no response has
 /// been written yet** — the caller must handle the miss (e.g. invoke the
 /// fallback handler).
-pub async fn handle_static(
-    session: &mut Session,
-    roots: &[PathBuf],
-    options: &Arc<StaticOptions>,
-    strip_prefix: Option<&str>,
-    extra: &[(String, String)],
-    #[cfg(feature = "compression")] compress_opts: Option<&CompressOptions>,
-    #[cfg(not(feature = "compression"))] _compress_opts: Option<()>,
-    accept_enc: &AcceptEncoding,
-) -> Result<bool> {
+///
+/// Everything that does not depend on the request — the roots, the options, the prefix to strip,
+/// the extra headers and the compression settings — is read from `handler` (it was seven loose
+/// parameters before, one over Sonar's `rust:S107` limit).
+pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -> Result<bool> {
+    let roots = handler.roots.as_slice();
+    let options = &handler.options;
+    let strip_prefix = handler.strip_prefix.as_deref();
+    let extra = handler.extra_headers.as_slice();
+    #[cfg(feature = "compression")]
+    let compress_opts = handler.compress_opts.as_ref();
+    let accept_enc = &handler.accept_enc;
     let method = session.req_header().method.clone();
     let req_path = session.req_header().uri.path().to_owned();
     let rel = decode_rel_path(&req_path, strip_prefix);

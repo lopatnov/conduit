@@ -30,6 +30,7 @@ lopatnov-conduit-core        = { path = "crates/conduit-core", version = "2.0.0"
 lopatnov-conduit-config-core = { path = "crates/conduit-config-core", version = "2.0.0" }
 lopatnov-conduit-config      = { path = "crates/conduit-config", version = "2.0.0" }
 lopatnov-conduit-runtime     = { path = "crates/conduit-runtime", version = "2.0.0" }
+lopatnov-conduit-admin       = { path = "crates/conduit-admin", version = "2.0.0" }
 lopatnov-conduit-otlp        = { path = "crates/conduit-otlp", version = "2.0.0" }
 lopatnov-conduit-acme        = { path = "crates/conduit-acme", version = "2.0.0" }
 lopatnov-conduit-tcp         = { path = "crates/conduit-tcp", version = "2.0.0" }
@@ -252,6 +253,9 @@ lopatnov-conduit-config.workspace      = true
 # response_time}.rs`, `src/handler/health.rs` and `src/upload/mod.rs` are facades over it (issue #145). Its own features
 # mirror the root's (each root feature below forwards to it) — see `crates/conduit-runtime/src/lib.rs`.
 lopatnov-conduit-runtime.workspace     = true
+# The Admin API server, bearer-token auth and eleven of its twelve endpoints (`src/admin/api.rs` keeps `POST /reload`
+# and the background supervisor, issue #146). Its one feature, `cache`, mirrors the root's — see `cache` below.
+lopatnov-conduit-admin.workspace       = true
 # Mandatory (like the two crates above), not `optional = true`: `OtlpConfig`
 # and the `global.otlp` field must stay parseable in every build so
 # `feature_warnings()` can keep warning on a config-without-feature mismatch
@@ -515,13 +519,11 @@ dashmap.workspace  = true
 x509-parser.workspace = true
 
 rustls.workspace         = true
-rustls-pemfile.workspace = true
 
 # --- Errors & utilities ---
 anyhow.workspace    = true
 thiserror.workspace = true
 bytes.workspace     = true
-subtle.workspace    = true
 # libc: no longer a direct root-crate dependency — its only caller
 # (`handler/static_files.rs`'s O_NOFOLLOW open) moved into
 # `crates/conduit-static` (#114/#139), which carries its own gated `libc`
@@ -799,7 +801,7 @@ redis = ["lopatnov-conduit-cache/redis", "lopatnov-conduit-ratelimit/redis", "lo
 # proxy it caches for is meaningless — and its root call sites
 # (`fire_early_refresh`, `/cache/purge`) need the `reqwest`/`url` dependencies
 # that `proxy` enables, so `cache` no longer lists them itself.
-cache = ["proxy", "lopatnov-conduit-cache/cache", "lopatnov-conduit-runtime/cache"]
+cache = ["proxy", "lopatnov-conduit-cache/cache", "lopatnov-conduit-runtime/cache", "lopatnov-conduit-admin/cache"]
 # Disk cache backend (cache.store: "disk:/path"). Forwards into
 # `crates/conduit-cache`'s own `disk-cache` feature (also a marker feature —
 # the `disk` module itself has no feature gate, matching pre-extraction).

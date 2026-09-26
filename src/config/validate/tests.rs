@@ -1353,6 +1353,33 @@ fn metrics_empty_string_token_is_error() {
     );
 }
 
+/// Issue #480: the same hole as `metrics.token: ""`, for the Admin API — an unresolved `$ADMIN_TOKEN` expands to
+/// `""`, which would authenticate a request with no `Authorization` header.
+#[test]
+fn admin_empty_string_token_is_error() {
+    let e = errs(
+        r#"{ "global": { "admin": { "bind": "127.0.0.1:2019", "token": "" } },
+             "sites": [{ "port": 8080 }] }"#,
+    );
+    assert!(
+        e.iter().any(|err| err.path == "global.admin.token"),
+        "empty global.admin.token must be a validation error: {e:?}"
+    );
+    // a real token, and no token at all, are fine
+    for admin in [
+        r#"{ "bind": "127.0.0.1:2019", "token": "s3cr3t" }"#,
+        r#"{ "bind": "127.0.0.1:2019" }"#,
+    ] {
+        let e = errs(&format!(
+            r#"{{ "global": {{ "admin": {admin} }}, "sites": [{{ "port": 8080 }}] }}"#
+        ));
+        assert!(
+            e.iter().all(|err| err.path != "global.admin.token"),
+            "{e:?}"
+        );
+    }
+}
+
 // ── forwardAuth SSRF to admin API ─────────────────────────────────────────
 
 #[cfg(feature = "forward-auth")]
@@ -1395,6 +1422,61 @@ fn forward_auth_admin_rule_follows_the_configured_admin_port() {
     };
     assert!(admin_error("http://127.0.0.1:3000/auth"));
     assert!(!admin_error("http://127.0.0.1:2019/auth"));
+}
+
+/// #470: a non-loopback `global.admin.bind` also protects the address the Admin API is bound to, not only
+/// the loopback ones; a bind that does not parse falls back to the default.
+#[cfg(feature = "forward-auth")]
+#[test]
+fn forward_auth_admin_rule_flags_the_configured_bind_host() {
+    let message = |bind: &str, url: &str| {
+        let config = format!(
+            r#"{{ "global": {{ "admin": {{ "bind": "{bind}" }} }},
+                 "sites": [{{ "port": 8080, "forwardAuth": {{ "url": "{url}" }} }}] }}"#
+        );
+        errs(&config)
+            .into_iter()
+            .find(|err| err.message.contains("Admin API"))
+            .map(|err| err.message)
+    };
+    let flagged = message("192.0.2.10:2019", "http://192.0.2.10:2019/auth").expect("bind host");
+    assert!(flagged.contains("points to 192.0.2.10:2019"), "{flagged}");
+    let v6 =
+        message("[2001:db8::1]:2019", "http://[2001:db8:0::1]:2019/auth").expect("IPv6 bind host");
+    assert!(v6.contains("points to [2001:db8::1]:2019"), "{v6}");
+    assert!(message("admin.example:2019", "http://ADMIN.example:2019/auth").is_some());
+    // another address, another port: not the Admin API
+    assert!(message("192.0.2.10:2019", "http://192.0.2.11:2019/auth").is_none());
+    assert!(message("192.0.2.10:2019", "http://192.0.2.10:3000/auth").is_none());
+    // the loopback rules keep their wording
+    let loopback = message("192.0.2.10:2019", "http://127.0.0.1:2019/auth").expect("loopback");
+    assert!(loopback.contains("points to 127.0.0.1:2019"), "{loopback}");
+    // an unparsable bind falls back to the documented default
+    assert!(message("no-port", "http://127.0.0.1:2019/auth").is_some());
+}
+
+/// #470 review: the admin port is honoured for every bind form the old rule honoured, including an unbracketed
+/// IPv6 bind (`::1:3000`, which `TcpListener::bind` accepts and splits at the last `:`) — the first version of
+/// the bind-host rule fell back to 2019 there and stopped protecting port 3000.
+#[cfg(feature = "forward-auth")]
+#[test]
+fn forward_auth_admin_rule_keeps_the_port_of_an_unbracketed_ipv6_bind() {
+    let flagged = |bind: &str, url: &str| {
+        let config = format!(
+            r#"{{ "global": {{ "admin": {{ "bind": "{bind}" }} }},
+                 "sites": [{{ "port": 8080, "forwardAuth": {{ "url": "{url}" }} }}] }}"#
+        );
+        errs(&config)
+            .iter()
+            .any(|err| err.message.contains("Admin API"))
+    };
+    assert!(flagged("::1:3000", "http://127.0.0.1:3000/auth"));
+    assert!(flagged("::1:3000", "http://[::1]:3000/auth"));
+    assert!(!flagged("::1:3000", "http://127.0.0.1:2019/auth"));
+    // an empty host does not lose the port either
+    assert!(flagged(":3000", "http://127.0.0.1:3000/auth"));
+    // and a bind that is not host:port at all still falls back to the documented default
+    assert!(flagged("garbage", "http://127.0.0.1:2019/auth"));
 }
 
 /// Without `forward-auth` the whole `forwardAuth` block is ignored (and

@@ -9,6 +9,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **`global.admin.token: ""` is now a validation error** (issue #480). The Admin API compares the
+  bearer token in constant time, and a request with no `Authorization` header is an empty string,
+  so an empty configured token authenticated every request — which is what an unresolved
+  `$ADMIN_TOKEN` expands to. `metrics.token: ""` was already rejected for the same reason; omit the
+  field to leave the Admin API unauthenticated.
 - **A Redis URL whose password contains a raw `/` is no longer logged with the password.**
   Credentials are redacted before a Redis URL is logged, but the search for the `user:password@`
   part stopped at the first `/`, so in `redis://alice:pa/ss@host:6379` the `@` looked like part of
@@ -169,6 +174,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so it would have rejected such a request once it matched. Both now keep the bracketed
   literal whole (`[::1]:8080` → `[::1]`, one shared function in `conduit-core`), so
   `host: "[::1]"` matches and is allowed.
+- **`DELETE /cache/purge?url=…` with an explicit port purged nothing** (issue #444).
+  `http://example.com:8080/x` was looked up under the cache namespace `example.com:8080`, while
+  the request path stores an entry under the `Host` header *without* its port (`example.com`),
+  so the purge answered `{"purged": false}` and the stale entry survived. The cache key now drops
+  a port from its host in one place, used by both, so they cannot disagree again; no stored key
+  changes, so a persistent (disk/Redis) cache is not made cold. Still not covered: a `Host`
+  header with upper-case letters (the purge lower-cases the host) and entries cached with `Vary`.
+- **`forwardAuth.url` pointing at the address the Admin API is bound to is now rejected**
+  (issue #470). The validation rule that keeps `forwardAuth` away from the Admin API flagged
+  loopback and "this host" addresses on the admin port; with a non-loopback
+  `global.admin.bind` such as `192.0.2.10:2019`, that address itself was not flagged. It is now
+  (an IP address written any way — `2001:db8:0::1` equals `2001:db8::1`, an IPv4-mapped form
+  equals its IPv4 one — or a host name, compared case-insensitively). The message for a loopback
+  URL is unchanged, and the admin port is taken from every bind form as before, an unbracketed
+  IPv6 one such as `::1:3000` included.
 
 ### Changed
 
@@ -276,6 +296,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `conduit::proxy::…` / `conduit::filter::…`, so a filter such as
   `RUST_LOG=conduit::proxy=debug` no longer matches them (the default `warn` level is
   unaffected). The `otlp`, `tokio-metrics` and the other feature names are unchanged.
+- **The Admin API moved into a new workspace crate, `lopatnov-conduit-admin`** (issue #146): the
+  axum server, the bearer-token layer and eleven of the twelve endpoints (everything except
+  `POST /reload`, which needs the root's config validation and joins the router through its single
+  extension point, merged before the authentication layer). No route, status code or JSON changed
+  and every route still answers 401 without the token (now pinned by a test on all twelve). One
+  operator-visible effect: the `tracing` lines from the moved code carry the targets
+  `conduit_admin::api::…` instead of `conduit::admin::api`, so `RUST_LOG=conduit::admin=debug` no
+  longer matches them. The crate has one feature, `cache` (the purge endpoint), enabled by the root's
+  `cache`.
 - **The config schema (`AppConfig`, `SiteConfig` and the types they contain) and
   the config-file parsing moved into a new workspace crate,
   `lopatnov-conduit-config`** (issue #222). No config shape or behaviour change:

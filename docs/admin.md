@@ -450,7 +450,9 @@ Invalidate a specific URL from the in-memory proxy cache.
 curl -X DELETE "http://localhost:2019/cache/purge?url=https://api.example.com/v1/products"
 ```
 
-**Query parameter:** `url` — the full URL to purge (scheme + host + path + query).
+**Query parameter:** `url` — the full URL to purge (scheme + host + path + query). A port in the
+URL is ignored, the same way the cache ignores the port of a request's `Host` header:
+`http://example.com:8080/x` and `http://example.com/x` are one entry.
 
 **Response:**
 

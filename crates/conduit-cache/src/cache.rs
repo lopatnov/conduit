@@ -9,6 +9,7 @@
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
+use conduit_core::util::host::host_without_port;
 use pingora_cache::lock::{CacheKeyLockImpl, CacheLock};
 use pingora_cache::{CacheKey, CacheMeta, MemCache, NoCacheReason, RespCacheable};
 use pingora_http::ResponseHeader;
@@ -59,6 +60,13 @@ pub fn cache_lock() -> &'static CacheKeyLockImpl {
 /// same path are stored independently.  The rest of the key is
 /// `scheme:path` (with `?query` appended when present).
 ///
+/// The host is the host **without a port** (`example.com:8080` and `example.com` are one
+/// namespace, a bracketed IPv6 literal keeps its brackets): the request path derives it from the
+/// `Host` header, the Admin API's cache purge from a URL, and both go through this function, so
+/// the two cannot disagree (issue #444: a purge for `http://example.com:8080/x` used to look in
+/// the namespace `example.com:8080` and never found the entry stored under `example.com`).
+/// Stripping is idempotent, so a caller that already stripped the port is unaffected.
+///
 /// Pingora 0.9 hashes only the bytes handed to [`CacheKey::new`] and leaves
 /// the framing of components to the caller (0.8 had a separate `namespace`
 /// argument, concatenated with the primary key without a delimiter).  The
@@ -79,6 +87,7 @@ pub fn build_cache_key(
     vary_headers: Option<&[String]>,
     request_headers: Option<&http::HeaderMap>,
 ) -> CacheKey {
+    let host = host_without_port(host);
     let base = match query {
         Some(q) if !q.is_empty() => format!("{scheme}:{path}?{q}"),
         _ => format!("{scheme}:{path}"),
@@ -348,6 +357,45 @@ mod tests {
     fn cache_key_without_query() {
         let k = build_cache_key("example.com", "https", "/api/data", None, None, None);
         assert_eq!(k.primary_key(), b"example.com\0https:/api/data");
+    }
+
+    /// Issue #444: the Admin API's purge builds the key from a URL (`http://example.com:8080/x`), the
+    /// request path from the `Host` header; both must land in the namespace `example.com`.
+    #[test]
+    fn cache_key_ignores_the_port_of_the_host() {
+        let bare = build_cache_key("example.com", "http", "/x", None, None, None);
+        let with_port = build_cache_key("example.com:8080", "http", "/x", None, None, None);
+        assert_eq!(with_port.primary_key(), b"example.com\0http:/x");
+        assert_eq!(with_port.to_compact().primary, bare.to_compact().primary);
+    }
+
+    #[test]
+    fn cache_key_keeps_the_brackets_of_an_ipv6_host_and_drops_its_port() {
+        let bare = build_cache_key("[::1]", "http", "/x", None, None, None);
+        let with_port = build_cache_key("[::1]:8080", "http", "/x", None, None, None);
+        assert_eq!(with_port.primary_key(), b"[::1]\0http:/x");
+        assert_eq!(with_port.to_compact().primary, bare.to_compact().primary);
+    }
+
+    /// The request path already strips the port before it gets here; stripping again changes nothing.
+    #[test]
+    fn cache_key_host_stripping_is_idempotent() {
+        for host in ["example.com", "sub.example.com", "[::1]", "127.0.0.1"] {
+            let once = build_cache_key(host, "https", "/p", Some("q=1"), None, None);
+            let twice = build_cache_key(
+                host_without_port(host),
+                "https",
+                "/p",
+                Some("q=1"),
+                None,
+                None,
+            );
+            assert_eq!(
+                once.to_compact().primary,
+                twice.to_compact().primary,
+                "{host}"
+            );
+        }
     }
 
     #[test]

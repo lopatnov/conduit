@@ -83,7 +83,10 @@ impl IpGuard {
         // POST/DELETE /ip-deny handler) must not silently disable the whole
         // dynamic deny list for every subsequent request. Matches the
         // recovery pattern already used on the admin write-side.
-        let deny_list = self.dynamic_deny.read().unwrap_or_else(|e| e.into_inner());
+        let deny_list = self
+            .dynamic_deny
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if deny_list.is_empty() {
             return false;
         }

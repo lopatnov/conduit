@@ -53,3 +53,7 @@ lopatnov-conduit-cache = { workspace = true }
 lopatnov-conduit-ratelimit = { workspace = true }
 # `RouteConfig.static` (`StaticConfig`/`StaticOptions`).
 lopatnov-conduit-static = { workspace = true }
+
+[dev-dependencies]
+# Captures the `tracing::warn!` lines of `validate.rs`'s slow-start warnings in a test.
+tracing-subscriber = { workspace = true }

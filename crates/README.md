@@ -94,6 +94,26 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   directory with the first (`scripts/verify-local.sh` keeps its baseline in
   its own).
 
+- **`conduit-admin`** (Phase 6.2, [#146](https://github.com/lopatnov/conduit/issues/146))
+  — Layer-3 Admin API: the axum server (`api::serve`), the bearer-token layer and
+  eleven of the twelve endpoints (`/status`, `/shutdown`, `/upstreams` + `add`/`remove`/
+  `weight`, `/rate-limits`, `/cache/purge`, `/ip-deny`, `/certs/reload`), plus
+  `validate_cert_key_pem` (re-exported from `src/server/tls.rs`). `POST /reload`
+  stays in the root crate — it needs the root's config validation — and joins the router
+  through `api::build_router`'s single `extra` parameter, merged **before** the auth layer, so
+  a route added from outside cannot skip authentication (a test asserts 401 on all twelve).
+  `AdminApiService`, the background supervisor (rate-limit cleanup, health probes, the
+  hot-reload watcher), stays in the root too: it runs even without `global.admin`. One
+  feature, `cache` (`dep:url`, for the purge URL), mirrored by a compile-time assert in
+  `src/admin/api.rs`. **Why one crate, not the issue's `conduit-admin-core` + an `admin`
+  feature per feature crate:** every build already compiles every Layer-1 crate, the
+  handlers need `AppState` (Layer 3), and only `/cache/purge` depends on a feature — the
+  inversion would have cost 4–5 new features and asserts for no dependency saved. Same
+  device as `conduit-runtime`: small alias modules in `lib.rs` keep the moved files'
+  `crate::…` paths, so the 35 moved items are byte-identical to before apart from
+  visibility prefixes (`pub(super)`/`pub`) and one deleted line in the certs handler
+  (its `use` of the validator, which now sits in the same file).
+
 - **`conduit-otlp`** (Phase 3.1, [#129](https://github.com/lopatnov/conduit/issues/129))
   — the template extraction for every subsequent feature crate. Owns
   `OtlpConfig` (the `global.otlp` config struct) and the OTLP tracer-provider

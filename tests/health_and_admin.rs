@@ -90,6 +90,49 @@ fn admin_token_missing_returns_401() {
     assert_eq!(resp.status().as_u16(), 401, "missing token must return 401");
 }
 
+/// Every Admin API route sits behind the bearer-token layer — the built-in ones, the destructive ones
+/// (`POST /shutdown` would end the process) and `POST /reload`, which the root crate contributes to the
+/// router through `build_router`'s `extra` parameter. That parameter is merged before the layer; a route
+/// added after it would answer here instead of 401. Keep the table in step with the router: a new route
+/// belongs in it. (Never send a *valid* token to `/shutdown` from a test: it exits the process.)
+#[test]
+fn every_admin_route_requires_the_token() {
+    use reqwest::Method;
+    let srv = server_with_admin_token("some-token");
+    let routes: [(Method, &str); 12] = [
+        (Method::GET, "/status"),
+        (Method::POST, "/reload"),
+        (Method::POST, "/shutdown"),
+        (Method::GET, "/upstreams"),
+        (Method::POST, "/upstreams/add"),
+        (Method::POST, "/upstreams/remove"),
+        (Method::POST, "/upstreams/weight"),
+        (Method::DELETE, "/cache/purge?url=http://example.com/x"),
+        (Method::GET, "/rate-limits"),
+        (Method::POST, "/ip-deny"),
+        (Method::DELETE, "/ip-deny"),
+        (Method::POST, "/certs/reload"),
+    ];
+    let client = Client::new();
+    for (method, path) in routes {
+        // no header, a wrong token, and the right token without the `Bearer ` scheme
+        for auth in [None, Some("Bearer wrong-token"), Some("some-token")] {
+            let mut request = client.request(method.clone(), srv.admin_url(path));
+            if let Some(value) = auth {
+                request = request.header("authorization", value);
+            }
+            let resp = request
+                .send()
+                .unwrap_or_else(|e| panic!("{method} {path}: {e}"));
+            assert_eq!(
+                resp.status().as_u16(),
+                401,
+                "{method} {path} with authorization {auth:?} must be refused"
+            );
+        }
+    }
+}
+
 // ── POST /certs/reload ───────────────────────────────────────────────────────
 
 /// Helper: generate a fresh self-signed (cert PEM, key PEM) pair.

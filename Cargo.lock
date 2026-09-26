@@ -2805,6 +2805,7 @@ dependencies = [
  "indicatif",
  "jsonwebtoken",
  "lopatnov-conduit-acme",
+ "lopatnov-conduit-admin",
  "lopatnov-conduit-auth-consumers",
  "lopatnov-conduit-auth-forward",
  "lopatnov-conduit-auth-jwt",
@@ -2841,12 +2842,10 @@ dependencies = [
  "reqwest",
  "rsa",
  "rustls",
- "rustls-pemfile",
  "serde",
  "serde_json",
  "serde_yaml",
  "serial_test",
- "subtle",
  "tempfile",
  "thiserror 2.0.20",
  "time",
@@ -2880,6 +2879,28 @@ dependencies = [
  "tokio",
  "tracing",
  "x509-parser 0.18.1",
+]
+
+[[package]]
+name = "lopatnov-conduit-admin"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "indexmap 2.14.2",
+ "lopatnov-conduit-config",
+ "lopatnov-conduit-runtime",
+ "pingora-cache",
+ "pingora-core",
+ "rustls",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -2950,6 +2971,7 @@ dependencies = [
  "dashmap 6.2.1",
  "http",
  "lopatnov-conduit-config-core",
+ "lopatnov-conduit-core",
  "pingora-cache",
  "pingora-core",
  "pingora-http",
@@ -3211,6 +3233,7 @@ dependencies = [
  "sha2 0.11.0",
  "subtle",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
