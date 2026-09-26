@@ -9,7 +9,8 @@
 /// After a closing bracket only nothing or a `:port` may follow. Anything else — `[::1]junk`,
 /// `[::1]@evil.com` — is malformed, and so is an unterminated bracket: both are returned as is, so
 /// they match no site and no `allowedHosts` entry instead of passing as the literal in front of them.
-/// (What comes after the `:` is not checked here; the strict `Host` validation guard does that.)
+/// What comes after the `:` is not checked here, for a bracketed literal or a plain host alike:
+/// `example.com:80@evil.com` is `example.com` (issue #474).
 pub fn host_without_port(host: &str) -> &str {
     if host.starts_with('[') {
         return match host.find(']') {
