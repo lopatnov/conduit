@@ -756,6 +756,14 @@ jobs:
       - name: Unit tests, --no-default-features --features upload
         run: cargo test -p lopatnov-conduit --lib --no-default-features --features upload
 
+      # `consumers` without `jwt` is the only profile in which the "consumers
+      # use `sharedJwt`/a consumer `jwt` credential but `jwt` is not compiled"
+      # warning can fire (no other CI profile has `consumers` on and `jwt` off),
+      # so this is where the golden test for `feature_warnings()` covers it
+      # (`src/config/validate/golden_tests.rs`, issue #316).
+      - name: Unit tests, --no-default-features --features consumers
+        run: cargo test -p lopatnov-conduit --lib --no-default-features --features consumers
+
       # The integration tests spawn the real `conduit` binary, so this is also
       # the only place a build without `proxy` is exercised end to end. The
       # tests that proxy real traffic are compiled out (a file-level

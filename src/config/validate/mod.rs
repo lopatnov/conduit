@@ -68,4 +68,6 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
 }
 
 #[cfg(test)]
+mod golden_tests;
+#[cfg(test)]
 mod tests;
