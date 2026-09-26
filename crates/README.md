@@ -75,9 +75,10 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   in the issue text but cannot stay behind: trait impls must sit with the type
   (orphan rule) and `chain.rs` calls `ConduitMetrics::global()`. The module
   tree mirrors the root's on purpose and the small `crate::…` aliases the moved
-  files use are module re-exports in each `mod.rs`, so the files themselves are
-  byte-identical to before (checked with `git show <parent>:<old> | diff`) and
-  every test kept its name. The root re-exports every public item at its old
+  files use are module re-exports in each `mod.rs`, so 22 of the 24 files are
+  byte-identical to before (checked with `git show <parent>:<old> | diff`; the
+  other two are `cache_redis.rs`, whose `connect_all` became `pub`, and `dispatch.rs`, one doctest path)
+  and every test kept its name. The root re-exports every public item at its old
   path (12 facade files), so no call site changed. **Features:** it declares the 14
   root features that gate code in the pipeline (`proxy`, `compression`, `static`,
   `hotreload`, `jwt`, `consumers`, `forward-auth`, `upload`, `redis`, `cache`,

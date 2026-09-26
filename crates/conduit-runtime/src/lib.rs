@@ -52,7 +52,8 @@ pub mod features {
 
 // Aliases for the paths the moved files used in the root crate.
 mod config {
-    #[cfg(test)]
+    // Only `proxy/cache_redis.rs`'s tests use it (`redis` + `cache`); anywhere else it is an unused import.
+    #[cfg(all(test, feature = "redis", feature = "cache"))]
     pub(crate) use conduit_config::parse;
     pub(crate) use conduit_config::schema;
 }

@@ -130,7 +130,7 @@ pub(super) fn extract_host(session: &Session) -> String {
 /// carries, and what `url::Url::host_str()` returns; a site's `host` is compared against it).
 /// Cutting at the first `:` used to turn every IPv6 literal into `"["`, so such a request never
 /// matched its site by host and all of them shared one cache namespace. An unterminated bracket
-/// is malformed and returned as is.
+/// is malformed and returned as is; whatever follows the closing bracket (a port, or junk) is dropped.
 fn host_without_port(host: &str) -> &str {
     if host.starts_with('[') {
         return match host.find(']') {
@@ -504,6 +504,13 @@ mod tests {
     #[test]
     fn host_without_port_leaves_an_unterminated_bracket_alone() {
         assert_eq!(host_without_port("[::1"), "[::1");
+    }
+
+    /// Whatever follows the closing bracket is not part of the host, valid port or not.
+    #[test]
+    fn host_without_port_drops_whatever_follows_the_closing_bracket() {
+        assert_eq!(host_without_port("[::1]junk"), "[::1]");
+        assert_eq!(host_without_port("[::1]:not-a-port"), "[::1]");
     }
 
     // Duplicated across this file, `handlers.rs`, `peer.rs`, and `retry.rs`'s

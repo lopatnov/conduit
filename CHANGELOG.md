@@ -153,6 +153,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   used to load and now fails validation; a different service on port 2019 is no
   longer rejected once `global.admin.bind` uses another port, and a domain that
   merely starts with `127.` is no longer treated as loopback.
+- **A site whose `host` is an IPv6 literal was never matched by its requests.** The proxy cut
+  the `Host` header at its first `:`, so `[::1]:8080` became `[`; such a request fell through
+  to the catch-all site (or found none) and all of them shared one cache namespace. The
+  bracketed literal is now kept whole (`[::1]:8080` → `[::1]`), so `host: "[::1]"` matches.
+  The same cut is still made by the `allowedHosts` check and by the HTTP→HTTPS redirect;
+  those are tracked separately.
 
 ### Changed
 
@@ -252,9 +258,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The request pipeline moved into a new workspace crate, `lopatnov-conduit-runtime`**
   (issue #145): the Pingora `ProxyHttp` implementation, `AppState`, the per-request state,
   the request/response/logging phases, request routing, the guard and response chains, the
-  access log and the health handler. No config shape or behaviour change and no new
+  access log and the health handler. No config shape change and no new
   dependency (the shipped crate set is unchanged); the root re-exports every item at its
-  old path. One operator-visible effect: the `tracing` log lines emitted by this code now
+  old path. The one behaviour change made alongside is the IPv6 `Host` fix listed under
+  *Fixed*. One operator-visible effect: the `tracing` log lines emitted by this code now
   carry the targets `conduit_runtime::proxy::…` / `conduit_runtime::filter::…` instead of
   `conduit::proxy::…` / `conduit::filter::…`, so a filter such as
   `RUST_LOG=conduit::proxy=debug` no longer matches them (the default `warn` level is

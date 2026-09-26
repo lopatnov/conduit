@@ -65,7 +65,9 @@ say "verify-local: HEAD=$HEAD_SHA base=$BASE_SHA dirty=$DIRTY_BEFORE started=$(d
 # Normal-dependency crate set of a checkout, one line per unique crate (paths and versions of workspace crates stripped).
 crates_of() { # crates_of DIR PROFILE-ARGS...
   local dir="$1"; shift
-  (cd "$dir" && CARGO_TARGET_DIR="$OUT/target-base" cargo tree -p lopatnov-conduit "$@" -e normal --prefix none 2>/dev/null | sed 's/ (.*//' | sort -u)
+  # A workspace crate is compared by name only: its version changes with every release bump, which is not a dependency change.
+  (cd "$dir" && CARGO_TARGET_DIR="$OUT/target-base" cargo tree -p lopatnov-conduit "$@" -e normal --prefix none 2>/dev/null \
+    | sed -E 's/ \(.*//; s/^(lopatnov-conduit[^ ]*) v[^ ]*$/\1/' | sort -u)
 }
 
 # ---- 1. leak -------------------------------------------------------------------------------------------------
@@ -113,7 +115,15 @@ fi
 # ---- 3. lists ------------------------------------------------------------------------------------------------
 list_tests() { # list_tests DIR OUTFILE PROFILE-ARGS...
   local dir="$1" out="$2"; shift 2
-  (cd "$dir" && CARGO_TARGET_DIR="$OUT/target-base" cargo test "$@" -- --list </dev/null 2>/dev/null | grep -E ': test$' | sort) > "$out"
+  # The baseline builds in its own target directory (see above); the head builds in the ordinary one. Building the head in the
+  # baseline's directory would reuse its stale rlibs, fail to compile, and (stderr is dropped) leave an empty list.
+  if [ "$dir" = "$ROOT" ]; then
+    (cd "$dir" && cargo test "$@" -- --list </dev/null 2>/dev/null | grep -E ': test$' | sort) > "$out"
+  else
+    (cd "$dir" && CARGO_TARGET_DIR="$OUT/target-base" cargo test "$@" -- --list </dev/null 2>/dev/null | grep -E ': test$' | sort) > "$out"
+  fi
+  # An empty list means the build failed, not that there are no tests.
+  [ -s "$out" ] || say "  no test list produced for $dir $*"
 }
 if ! skipped lists; then
   # With --moved-to the head list is taken over BOTH packages in the same profile (the moved tests only exist under the
