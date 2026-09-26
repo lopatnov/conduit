@@ -179,7 +179,7 @@ fn find_wildcard_match(sites: &[SiteConfig], server_port: u16) -> Option<usize> 
 /// Returns `None` if the header is absent, malformed, or the urgency is out of range.
 ///
 /// ```
-/// # use conduit::proxy::router::parse_rfc9218_priority;
+/// # use conduit_runtime::proxy::router::parse_rfc9218_priority;
 /// assert_eq!(parse_rfc9218_priority("u=0"), Some(100)); // highest urgency
 /// assert_eq!(parse_rfc9218_priority("u=3"), Some(58));  // default urgency
 /// assert_eq!(parse_rfc9218_priority("u=7"), Some(2));   // lowest urgency

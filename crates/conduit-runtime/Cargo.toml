@@ -1,0 +1,100 @@
+[package]
+name        = "lopatnov-conduit-runtime"
+version.workspace    = true
+edition.workspace    = true
+description = "Layer-3 request pipeline for conduit's feature-driven workspace (issue #114/#145) — the Pingora ProxyHttp implementation, per-request state, the guard/response chains and the local handlers"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_runtime"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json  = { workspace = true }
+indexmap    = { workspace = true }
+arc-swap    = { workspace = true }
+dashmap     = { workspace = true }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+prometheus  = { workspace = true }
+bytes       = { workspace = true }
+http        = { workspace = true }
+regex       = { workspace = true }
+uuid        = { workspace = true }
+httpdate    = { workspace = true }
+async-trait = { workspace = true }
+pingora-core  = { workspace = true }
+pingora-proxy = { workspace = true }
+pingora-http  = { workspace = true }
+pingora-cache = { workspace = true }
+anyhow      = { workspace = true }
+serde       = { workspace = true }
+base64      = { workspace = true }
+
+# Only the proxy pipeline needs an HTTP client (traffic mirroring, the forwardAuth subrequest) and only the
+# `otlp` feature carries a span in the per-request state.
+reqwest       = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+
+lopatnov-conduit-core        = { workspace = true }
+lopatnov-conduit-config-core = { workspace = true }
+lopatnov-conduit-config      = { workspace = true }
+
+# Every feature crate the pipeline calls into. All are plain dependencies (a feature-off build still needs the
+# always-compiled config types and the warnings); each feature of THIS crate forwards to the feature of the same
+# name in the crate that owns the behaviour, exactly like the root's own feature list does.
+lopatnov-conduit-acme             = { workspace = true }
+lopatnov-conduit-auth-consumers   = { workspace = true }
+lopatnov-conduit-auth-forward     = { workspace = true }
+lopatnov-conduit-auth-jwt         = { workspace = true }
+lopatnov-conduit-cache            = { workspace = true }
+lopatnov-conduit-compression      = { workspace = true }
+lopatnov-conduit-cors             = { workspace = true }
+lopatnov-conduit-faults           = { workspace = true }
+lopatnov-conduit-hotreload        = { workspace = true }
+lopatnov-conduit-ipfilter         = { workspace = true }
+lopatnov-conduit-limits           = { workspace = true }
+lopatnov-conduit-metrics          = { workspace = true }
+lopatnov-conduit-middleware       = { workspace = true }
+lopatnov-conduit-proxy-http       = { workspace = true }
+lopatnov-conduit-ratelimit        = { workspace = true }
+lopatnov-conduit-redirects        = { workspace = true }
+lopatnov-conduit-security-headers = { workspace = true }
+lopatnov-conduit-static           = { workspace = true }
+lopatnov-conduit-upload           = { workspace = true }
+lopatnov-conduit-upstream         = { workspace = true }
+
+[dev-dependencies]
+tempfile    = { workspace = true }
+serial_test = { workspace = true }
+futures     = { workspace = true }
+
+[features]
+# Mirrors the root crate's features that gate code in the request pipeline. The root's own features forward
+# here (`lopatnov-conduit-runtime/<feature>`) beside their existing forwards, and the root asserts at compile
+# time that every one of them agrees (`features` module) — a feature enabled in the root but not here would
+# compile and silently drop a guard.
+default = []
+proxy = [
+    "lopatnov-conduit-proxy-http/proxy",
+    "lopatnov-conduit-upstream/proxy",
+    "dep:reqwest",
+]
+compression = [
+    "lopatnov-conduit-compression/compression",
+    "lopatnov-conduit-static/compression",
+    "lopatnov-conduit-metrics/compression",
+]
+static = ["lopatnov-conduit-static/static"]
+hotreload = ["lopatnov-conduit-hotreload/hotreload"]
+jwt = ["lopatnov-conduit-auth-jwt/jwt", "lopatnov-conduit-auth-consumers/jwt"]
+consumers = ["lopatnov-conduit-auth-consumers/consumers"]
+forward-auth = ["lopatnov-conduit-auth-forward/forward-auth"]
+upload = ["lopatnov-conduit-upload/upload"]
+redis = ["lopatnov-conduit-cache/redis", "lopatnov-conduit-ratelimit/redis"]
+cache = ["proxy", "lopatnov-conduit-cache/cache"]
+acme = ["lopatnov-conduit-acme/acme"]
+fault-injection = ["lopatnov-conduit-faults/fault-injection"]
+otlp = ["dep:opentelemetry"]
+tokio-metrics = []
