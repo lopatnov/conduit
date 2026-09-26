@@ -117,21 +117,42 @@
 [] error|sites[178].proxy["/mirror"].mirror|mirror URL must be http:// or https://
 [] error|sites[179].proxy["/cache"].cache.store|invalid store "bogus" — must be "memory", a redis:// URL, a rediss:// URL (TLS), or disk:<path>
 [] error|sites[180].routes[0].proxy.targets|At least one target is required (or use 'groups' for two-level balancing)
-[] error|sites[181].tls|TLS 'cert' and 'key' must both be set — 'key' is missing
-[] error|sites[181].tcp.targets|at least one target is required for a TCP proxy site
-[] error|sites[181].tcp|tcp cannot be combined with proxy on the same site
-[] error|sites[181].proxy["/multi"].targets|At least one target is required (or use 'groups' for two-level balancing)
-[] error|sites[181].upload.path|Upload path 'up' must start with '/'
-[] error|sites[181].metrics.path|Metrics path 'm' must start with '/'
-[] error|sites[181].rateLimit.windowSecs|windowSecs must be greater than 0
-[] error|sites[181].rateLimit.limit|limit must be greater than 0
-[] error|sites[181].redirects[0].status|Invalid redirect status 200 — must be 301, 302, 307, or 308
-[] error|sites[181].fallback.status|Invalid fallback status 99 — must be a valid HTTP status code (100–599)
-[] error|sites[181].middleware[0].type|unknown middleware type "nope"
-[] error|sites[181].cors.credentials|cors.credentials: true requires cors.origins to be an explicit, non-wildcard list of allowed origins — without it, every origin's credentialed cross-origin requests would be allowed
-[] error|sites[181].apiKey.keys|apiKey.keys must contain at least one key
-[] error|sites[181].jwtAuth|jwtAuth requires either "secret" (HS256) or "jwksUrl" (RS256/ES256)
-[] error|sites[181].forwardAuth.url|forwardAuth.url must not be empty
-[] error|sites[181].consumers.consumers[0].username|consumer username must not be empty
-[] error|sites[181].consumers.consumers[0]|consumer requires at least one credential: apiKey, basicAuth, jwt (or configure consumers.sharedJwt)
-[] error|sites[181].limits.timeoutSecs|limits.timeoutSecs must be >= 1 (set to null/omit to disable)
+[] error|sites[181].proxy["/rl"].rateLimit.windowSecs|windowSecs must be greater than 0
+[] error|sites[181].proxy["/rl"].rateLimit.limit|limit must be greater than 0
+[] error|sites[181].proxy["/rl"].rateLimit.algorithm|invalid algorithm "leaky" — only "token-bucket" is supported
+[] error|sites[181].proxy["/rl"].rateLimit.keyBy|invalid header name "bad name" in "header:bad name" — must be a valid HTTP header field name (letters, digits, and !#$%&'*+-.^_`|~)
+[] error|sites[181].proxy["/rl"].rateLimit.store|invalid store "memcached://x" — must be "memory", a redis:// URL (plaintext), or a rediss:// URL (TLS)
+[] error|sites[182].routes[0].proxy.rateLimit.windowSecs|windowSecs must be greater than 0
+[] error|sites[182].routes[0].proxy.rateLimit.limit|limit must be greater than 0
+[] error|sites[182].routes[0].proxy.rateLimit.algorithm|invalid algorithm "leaky" — only "token-bucket" is supported
+[] error|sites[182].routes[0].proxy.rateLimit.keyBy|invalid header name "bad name" in "header:bad name" — must be a valid HTTP header field name (letters, digits, and !#$%&'*+-.^_`|~)
+[] error|sites[182].routes[0].proxy.rateLimit.store|invalid store "memcached://x" — must be "memory", a redis:// URL (plaintext), or a rediss:// URL (TLS)
+[] error|sites[183].rateLimit.keyBy|invalid keyBy "cookie" — must be "ip" or "header:<name>"
+[] error|sites[184].ipFilter.allow[0]|Invalid IP address or CIDR block: '999.1.1.1'
+[] error|sites[184].ipFilter.allow[1]|Invalid IP address or CIDR block: '10.0.0.0/33'
+[] error|sites[184].ipFilter.allow[2]|Invalid IP address or CIDR block: '::1/129'
+[] error|sites[184].ipFilter.allow[3]|Invalid IP address or CIDR block: 'not-an-ip'
+[] error|sites[184].ipFilter.deny[0]|Invalid IP address or CIDR block: '10.0.0.1/abc'
+[] error|sites[184].ipFilter.deny[1]|Invalid IP address or CIDR block: '1.2.3'
+[] error|sites[185].consumers.sharedJwt|consumers.sharedJwt requires either "secret" (HS256) or "jwksUrl" (RS256/ES256)
+[] error|sites[185].consumers.consumers[0].username|consumer username must not be empty
+[] error|sites[186].tls|TLS 'cert' and 'key' must both be set — 'key' is missing
+[] error|sites[186].tcp.targets|at least one target is required for a TCP proxy site
+[] error|sites[186].tcp|tcp cannot be combined with proxy on the same site
+[] error|sites[186].proxy["/multi"].targets|At least one target is required (or use 'groups' for two-level balancing)
+[] error|sites[186].routes[0].proxy.targets|At least one target is required (or use 'groups' for two-level balancing)
+[] error|sites[186].ipFilter.deny[0]|Invalid IP address or CIDR block: 'bad'
+[] error|sites[186].upload.path|Upload path 'up' must start with '/'
+[] error|sites[186].metrics.path|Metrics path 'm' must start with '/'
+[] error|sites[186].rateLimit.windowSecs|windowSecs must be greater than 0
+[] error|sites[186].rateLimit.limit|limit must be greater than 0
+[] error|sites[186].redirects[0].status|Invalid redirect status 200 — must be 301, 302, 307, or 308
+[] error|sites[186].fallback.status|Invalid fallback status 99 — must be a valid HTTP status code (100–599)
+[] error|sites[186].middleware[0].type|unknown middleware type "nope"
+[] error|sites[186].cors.credentials|cors.credentials: true requires cors.origins to be an explicit, non-wildcard list of allowed origins — without it, every origin's credentialed cross-origin requests would be allowed
+[] error|sites[186].apiKey.keys|apiKey.keys must contain at least one key
+[] error|sites[186].jwtAuth|jwtAuth requires either "secret" (HS256) or "jwksUrl" (RS256/ES256)
+[] error|sites[186].forwardAuth.url|forwardAuth.url must not be empty
+[] error|sites[186].consumers.sharedJwt|consumers.sharedJwt requires either "secret" (HS256) or "jwksUrl" (RS256/ES256)
+[] error|sites[186].consumers.consumers[0].username|consumer username must not be empty
+[] error|sites[186].limits.timeoutSecs|limits.timeoutSecs must be >= 1 (set to null/omit to disable)

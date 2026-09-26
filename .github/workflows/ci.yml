@@ -764,6 +764,13 @@ jobs:
       - name: Unit tests, --no-default-features --features consumers
         run: cargo test -p lopatnov-conduit --lib --no-default-features --features consumers
 
+      # The mirror image: `redis` on and `consumers` off. The multiple-Redis-URLs
+      # warning lists different URLs in the two cases (per-consumer stores are only
+      # scanned with `consumers`), and no other CI profile has this combination, so
+      # this is where the `[redis,!consumers]` variant of the golden is checked.
+      - name: Unit tests, --no-default-features --features redis
+        run: cargo test -p lopatnov-conduit --lib --no-default-features --features redis
+
       # The integration tests spawn the real `conduit` binary, so this is also
       # the only place a build without `proxy` is exercised end to end. The
       # tests that proxy real traffic are compiled out (a file-level
