@@ -9,7 +9,7 @@
 #                       migration branch on origin, else with origin/main)
 #   --quick             only leak, deps, lists, clippy (skip tests, goldens, hack)
 #   --skip STEPS        comma list of: leak deps lists clippy tests goldens hack
-#   --moved-to PKG[:S]  tests were moved out of the root package into workspace package PKG: a test that
+#   --moved-to PKG[:S]  tests were moved out of the root package into workspace package PKG: the head list is taken over root + PKG, so a test that
 #                       disappears from the root list must appear in PKG's list (after removing the prefix S,
 #                       e.g. `config::`, from its name) — otherwise it is a FAIL
 #   --also-pkg PKG      also run PKG next to the root package in the `--features full` / `static-server` test runs
@@ -116,29 +116,29 @@ list_tests() { # list_tests DIR OUTFILE PROFILE-ARGS...
   (cd "$dir" && CARGO_TARGET_DIR="$OUT/target-base" cargo test "$@" -- --list </dev/null 2>/dev/null | grep -E ': test$' | sort) > "$out"
 }
 if ! skipped lists; then
-  pkg_list=""
-  if [ -n "$MOVED_TO" ]; then
-    pkg_list="$OUT/list-pkg.txt"
-    (cargo test -p "$MOVED_TO" -- --list </dev/null 2>/dev/null | grep -E ': test$' | sort) > "$pkg_list"
-  fi
+  # With --moved-to the head list is taken over BOTH packages in the same profile (the moved tests only exist under the
+  # features the root forwards to the other package, so the other package's default-feature list would miss most of them).
+  head_pkgs=""
+  [ -n "$MOVED_TO" ] && head_pkgs="-p lopatnov-conduit -p $MOVED_TO"
   for spec in "default:" "standard:--features standard" "full:--features full"; do
     name="${spec%%:*}"; args="${spec#*:}"
     cache="$OUT/list-${BASE_SHA:0:12}-$name.txt"
     # shellcheck disable=SC2086
     [ -s "$cache" ] || list_tests "$BASE_DIR" "$cache" $args
     # shellcheck disable=SC2086
-    list_tests "$ROOT" "$OUT/list-head-$name.txt" $args
+    list_tests "$ROOT" "$OUT/list-head-$name.txt" $head_pkgs $args
     removed=$(comm -23 "$cache" "$OUT/list-head-$name.txt"); added=$(comm -13 "$cache" "$OUT/list-head-$name.txt")
     nrem=$(printf '%s' "$removed" | grep -c . || true); nadd=$(printf '%s' "$added" | grep -c . || true)
     uncovered="$removed"
-    if [ -n "$pkg_list" ] && [ -n "$removed" ]; then
+    if [ -n "$STRIP" ] && [ -n "$removed" ]; then
+      # a test that was renamed by the move: found again once STRIP is removed from its old name
       uncovered=$(printf '%s\n' "$removed" | while IFS= read -r line; do
         n="${line#"$STRIP"}"
-        grep -qxF "$n" "$pkg_list" || echo "$line"
+        grep -qxF "$n" "$OUT/list-head-$name.txt" || echo "$line"
       done)
     fi
     if [ -z "$uncovered" ]; then
-      result "test list [$name]" PASS "$(wc -l < "$cache") -> $(wc -l < "$OUT/list-head-$name.txt"): $nrem left the root${MOVED_TO:+ (all found in $MOVED_TO)}, $nadd added"
+      result "test list [$name]" PASS "$(wc -l < "$cache") -> $(wc -l < "$OUT/list-head-$name.txt"): $nrem missing from the root-only list${MOVED_TO:+ (none missing across root + $MOVED_TO)}, $nadd added"
     else
       result "test list [$name]" FAIL "$(printf '%s\n' "$uncovered" | grep -c .) test(s) disappeared: $(printf '%s\n' "$uncovered" | head -3 | tr '\n' ' ')"
     fi
