@@ -95,7 +95,9 @@ src/
 │    crates/conduit-middleware — issue #114/#141; formerly filter/script.rs
 │    and filter/wasm.rs here)
 ├── admin/
-│   └── api.rs           Admin API (Axum) — status, reload, upstream management
+│   └── api.rs           the root's part of the Admin API: `POST /reload` and the background supervisor
+│                        (`AdminApiService`); the server, auth and the other eleven endpoints are in
+│                        crates/conduit-admin since #146
 ├── upload/
 │   └── server.rs        upload server (Axum loopback, port 0)
 └── util/

@@ -105,7 +105,7 @@
     `"route\0{site_label}\0{route_key}\0{client_key}"`; per-consumer: `"consumer\0{username}"`
     (**намеренно** не скоуплен по сайту — квота consumer'а глобальна по всем сайтам, где он
     разрешён). `site_label` = тот же `"{host}:{port}"`/`"*"`, что уже используется в
-    `conduit_rate_limit_rejected_total{site=…}`. `GET /rate-limits` (`admin/api.rs`) парсит
+    `conduit_rate_limit_rejected_total{site=…}`. `GET /rate-limits` (`crates/conduit-admin/src/api/rate_limits.rs` с #146) парсит
     все три формы и суммирует per-client бакеты в один total на (site, route) — раньше
     (до фикса) не парсил вообще ничего реального, всегда отдавал `{}` (issue #303). Redis-бэкенд
     (`crates/conduit-ratelimit/src/redis.rs`, за фичей `redis`, извлечён вместе с фиксом #317
