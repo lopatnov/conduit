@@ -49,7 +49,7 @@ src/
 ├── config/
 │   ├── schema/          all config types (serde), one submodule per concern; mod.rs re-exports them
 │   ├── parse.rs         load_config(), from_str(), normalize()
-│   ├── validate.rs      semantic validation + TLS cert expiry
+│   ├── validate/        semantic validation + TLS cert expiry, one submodule per concern; mod.rs has validate()/feature_warnings()
 │   ├── env.rs           $VAR interpolation
 │   └── defaults.rs      Default impls
 ├── server/

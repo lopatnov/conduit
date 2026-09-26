@@ -3,8 +3,8 @@
 //!
 //! Three call sites used to hand-duplicate this exact site → proxy-map-route
 //! → consumer scan: `src/server/builder.rs::find_redis_rate_limit_store`,
-//! `src/config/validate.rs::collect_redis_stores`, and
-//! `src/config/validate.rs::site_uses_redis_store`. None of them scanned
+//! `src/config/validate/cross_site.rs::collect_redis_stores`, and
+//! `src/config/validate/warnings.rs::site_uses_redis_store`. None of them scanned
 //! `site.routes[*].proxy.rateLimit` (Phase 3.6 "advanced routing") at all —
 //! the same blind spot #360 found in the actual *enforcement* path
 //! (`router.rs::find_route_rate_limit`, now deleted in favor of stamping the

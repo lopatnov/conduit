@@ -170,7 +170,7 @@ fn reload_cold_field_workers_rejected() {
 /// detection compares the configured path strings before any file is ever
 /// read, so no real PEM content is needed to trigger it (mirrors how
 /// `check_cert_expiry` itself silently skips a missing file at validation
-/// time — see `src/config/validate.rs`).
+/// time — see `src/config/validate/tls.rs`).
 #[test]
 #[serial]
 fn reload_cold_field_tls_cert_rejected() {

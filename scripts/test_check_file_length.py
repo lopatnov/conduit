@@ -410,6 +410,15 @@ class MultiLineAttributes(unittest.TestCase):
         short = "#[cfg(all(\n    test,\n" + "    unix,\n" * 3 + "))]\nmod t {\n    fn a() {}\n}\nfn after() {}\n"
         self.assertEqual(n(short), 1)                                          # within the window: excluded
 
+    def test_the_join_window_is_exactly_max_attr_lines_plus_one(self):
+        """The window is the attribute's first line plus MAX_ATTR_LINES more: an attribute of MAX_ATTR_LINES + 1 lines
+        is still joined (its module is excluded), one of MAX_ATTR_LINES + 2 lines is not."""
+        def src(total):     # an attribute of `total` lines, then a test module and one production line
+            return "#[cfg(all(\n    test,\n" + "    unix,\n" * (total - 3) + "))]\nmod t {\n    fn a() {}\n}\nfn after() {}\n"
+        last_joined = cfl.MAX_ATTR_LINES + 1
+        self.assertEqual(n(src(last_joined)), 1)                               # excluded: `after` only
+        self.assertEqual(n(src(last_joined + 1)), (last_joined + 1) + 3 + 1)   # not joined: every line is code
+
     def test_macro_rules_after_a_test_attribute_is_an_item(self):
         seen = []
         got = cfl.count_source("#[cfg(test)]\nmacro_rules! m {\n    () => {};\n}\nfn after() {}\n",

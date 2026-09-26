@@ -545,9 +545,8 @@ jobs:
   # shows at a glance whether it pushed a file past the limits in
   # `.claude/rules/conventions.md` ("File length"), and which touched files got
   # longer. Informational, like the footprint/performance reports: a file being
-  # over a limit does NOT fail the job (src/config/validate.rs is over the hard
-  # limit until #315), only a broken counter does — its own unit tests run
-  # first. Posting uses the same plain `curl` + GITHUB_TOKEN mechanism, and the
+  # over a limit does NOT fail the job (it is listed in the report), only a
+  # broken counter does — its own unit tests run first. Posting uses the same plain `curl` + GITHUB_TOKEN mechanism, and the
   # same PR lookup for `push`-triggered migration-branch PRs, as the footprint
   # job above; on a fork `pull_request` run GitHub forces the token read-only, so
   # the POST is simply rejected and the report stays in the job log.
