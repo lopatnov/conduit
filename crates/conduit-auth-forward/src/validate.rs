@@ -12,8 +12,8 @@ use conduit_config_core::validation::ValidationError;
 /// IPv4-mapped IPv6 one), or the configured `admin_host`. The port defaults to 80/443 for a URL without one,
 /// like a real request would.
 ///
-/// Host classification uses the parsed [`url::Host`], not `host_str()`: `host_str()` returns an IPv6 host
-/// in brackets (`[::1]`), which a string comparison against `"::1"` never matches (#447).
+/// Host classification uses the parsed [`url::Host`]; configured IPv6 hosts are parsed too so equivalent
+/// spellings match.
 #[cfg(feature = "forward-auth")]
 fn targets_admin_api(url: &str, admin_port: u16, admin_host: Option<&str>) -> bool {
     let Ok(parsed) = ParsedUrl::parse(url) else {
@@ -36,7 +36,11 @@ fn targets_admin_api(url: &str, admin_port: u16, admin_host: Option<&str>) -> bo
         None => false,
     };
     let same_host = admin_host.is_some_and(|h| {
-        parsed.host_str().map(|s| s.trim_matches(['[', ']'])) == Some(h.trim_matches(['[', ']']))
+        let host = h.trim_matches(['[', ']']);
+        match (parsed.host(), host.parse::<std::net::Ipv6Addr>()) {
+            (Some(url::Host::Ipv6(addr)), Ok(admin_addr)) => addr == admin_addr,
+            _ => parsed.host_str().map(|s| s.trim_matches(['[', ']')) == Some(host),
+        }
     });
     (loopback || same_host) && parsed.port_or_known_default() == Some(admin_port)
 }
