@@ -302,9 +302,9 @@ lopatnov-conduit-auth-forward.workspace   = true
 # `feature_warnings()` can keep warning on a config-without-feature
 # mismatch. Only the real `identify::identify_consumer` is gated, via
 # `lopatnov-conduit-auth-consumers/consumers` in the `consumers` feature
-# below. `ConsumersGuard` itself stays in this crate's own
-# `src/filter/chain.rs` — see that crate's `src/lib.rs` doc comment for why
-# (issue #114/#134: it also needs this crate's own not-yet-extracted
+# below. `ConsumersGuard` itself lives in `crates/conduit-runtime`'s
+# `filter/chain.rs` (#145; `src/filter/chain.rs` here is a facade) — see that
+# crate's `src/lib.rs` doc comment for why (issue #114/#134: it also needs the
 # `RateLimiter`).
 lopatnov-conduit-auth-consumers.workspace = true
 # Mandatory (like the crates above), not `optional = true`: `CacheConfig`
@@ -338,8 +338,9 @@ lopatnov-conduit-security-headers.workspace = true
 # `lopatnov-conduit-ipfilter` above (`CLAUDE.md` decision #31's rationale
 # extended to rate limiting). Slice 1 of #137: owns `RateLimitConfig` and the
 # pure token-bucket admission logic; the Redis backend and `Session`-aware
-# wrappers stay in this crate's own `src/filter/rate_limit{,_redis}.rs` for
-# now — see `crates/conduit-ratelimit/src/lib.rs` for the full scope note.
+# wrappers live in `crates/conduit-runtime`'s `filter/rate_limit.rs` since #145
+# (`src/filter/rate_limit{,_redis}.rs` here are facades) — see
+# `crates/conduit-ratelimit/src/lib.rs` for the full scope note.
 lopatnov-conduit-ratelimit.workspace         = true
 # Mandatory, no `[features]` table — same always-on rationale as
 # `lopatnov-conduit-ipfilter` above (`CLAUDE.md` decision #31). The second
@@ -732,7 +733,7 @@ jwt = ["lopatnov-conduit-auth-jwt/jwt", "lopatnov-conduit-auth-consumers/jwt", "
 # (see the [dependencies] comment above); this only forwards into that
 # crate's own `consumers` feature, which gates the real
 # `identify::identify_consumer`. `ConsumersGuard` itself (rate-limit step +
-# header injection) stays in this crate's `src/filter/chain.rs`.
+# header injection) lives in `crates/conduit-runtime`'s `filter/chain.rs` (#145).
 consumers = ["lopatnov-conduit-auth-consumers/consumers", "lopatnov-conduit-runtime/consumers"]
 # ForwardAuth: delegate authentication to an external HTTP service.
 # `ForwardAuthConfig` moved to `crates/conduit-auth-forward` (#114/#134) and

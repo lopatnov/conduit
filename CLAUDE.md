@@ -140,7 +140,7 @@
 17. **LoadBalanceStrategy** — 8 вариантов (включая P2c). Веса статические. Для IpHash/CH — `hash_key: "ip" | "header:X-Key" | "url"`. P2C: splitmix64 RNG, O(1).
 18. **Динамические upstream'ы** — только в памяти. `UpstreamRegistry` отдельно от конфига. `conduit reload` сбрасывает overrides.
 19. **Upstream groups** — `groups` + `groupStrategy`. Phase 3.7b.
-20. **Filter Chain (CoR)** — `src/filter/chain.rs`. Новый guard = `impl RequestFilter` + push в chain. `service.rs` не трогать. `phase: "response"` scripts пропускаются в request-фазе (`MiddlewareGuard::apply`, теперь в `crates/conduit-middleware/src/guard.rs` — issue #114/#141; сборка chain'а остаётся здесь, в `src/filter/chain.rs`).
+20. **Filter Chain (CoR)** — `crates/conduit-runtime/src/filter/chain.rs` (с #145; `src/filter/chain.rs` в корне — фасад). Новый guard = `impl RequestFilter` + push в chain. `service.rs` не трогать. `phase: "response"` scripts пропускаются в request-фазе (`MiddlewareGuard::apply`, теперь в `crates/conduit-middleware/src/guard.rs` — issue #114/#141; сборка chain'а — там же, в `filter/chain.rs` крейта `conduit-runtime`).
 20a. **Feature warnings** — `config::validate::feature_warnings()`. WASM (без `--features wasm`) + OTLP (без `--features otlp`) → `tracing::warn!` при старте и hot-reload. `/reload` response включает поле `warnings: [...]`.
 21. **Handler Registry** — трейт `LocalHandlerImpl` в `src/handler/mod.rs`. 7 handler structs реализованы. `dispatch_local` → `build_handler()` + `handle()`.
 22. **Routing Strategy** — трейт `LoadBalancingStrategy` в `src/proxy/strategy.rs`. Новая стратегия = новый struct + `from_config()` arm. `router.rs` не трогать.
@@ -185,8 +185,8 @@
     под нагрузкой) и streaming-дизайна для больших тел запроса/ответа. Полный разбор — в
     телах issues, не здесь (не дублировать).
 29. **Тесты** — port 0, rcgen, serial_test для Admin API, mock = `TcpListener` без Axum.
-30. **`RequestCtx` per-request state (Conduit 2.0 migration, #114)** — поля остаются в корневом крейте
-    (status quo), НЕ выносятся в type-erased extension slot и НЕ через отдельный trait в `conduit-core`.
+30. **`RequestCtx` per-request state (Conduit 2.0 migration, #114)** — поля живут в крейте, которому принадлежит
+    структура (`conduit-runtime` с #145, до этого — корневой крейт), НЕ выносятся в type-erased extension slot и НЕ через отдельный trait в `conduit-core`.
     Каждое feature-specific поле — через `#[cfg(feature = "x")]` по образцу уже существующих
     `otel_span`/`early_refresh_upstream_url`. Решение пользователя 2026-08-21 по итогам `architect`-аудита
     Phase 2 facade-checkpoint (issue #128) — снимает блокировку с #129 (`conduit-otlp`) и последующих
@@ -207,6 +207,12 @@
     реально болезненной на практике — не гипотетически, а по факту застревания/переделок в процессе PR —
     это и есть триггер вернуться к вопросу, не раньше.
 
+    **Переформулировано 2026-09-26 (#145) с явного «да» владельца.** Issue #145 переносит `RequestCtx` вместе с конвейером
+    запроса (`ProxyHttp`-реализация, фазы, chains) в `crates/conduit-runtime`: структура обязана жить в том же крейте, где на ней
+    реализованы методы и трейты (orphan rule: `impl ConduitProxy`, `impl ResponseCtx for RequestCtx`). Суть решения не изменилась —
+    feature-поля остаются `#[cfg]`-полями на самой структуре, без type-erased слота и без trait'а в `conduit-core`; условие
+    пересмотра (болезненная экстракция #133/#134/#135) по-прежнему не наступало. Список 14 root-фич, гейтящих код конвейера,
+    зеркалится в `conduit-runtime` (`features`), а 14 compile-time assert'ов в корне не дают им разойтись.
 31. **Feature-гейты для ipFilter/cors/securityHeaders/compression/static/fallback/hotReload/metrics/
     redirects (Conduit 2.0 migration, #114, фазы 3.8/4.1-4.3 — сабишью #136-#140)** — гибрид, не
     поголовное превращение всех девяти в `--features`. Извлечь в отдельные крейты для организации
@@ -266,7 +272,7 @@ upstream_request_filter()
   └─ fire_mirror_request() if mirror_url set (fire-and-forget tokio task)
 
 upstream_response_filter()                    ← тонкая обёртка над ResponseFilterChain
-  ResponseFilterChain (src/filter/response_chain.rs):
+  ResponseFilterChain (crates/conduit-runtime/src/filter/response_chain.rs; в корне — фасад):
   Phase 1  CrlfProtectionFilter   — strip CR/LF from upstream headers
   Phase 2  InjectExtraHeadersFilter — CORS + security + custom headers
   Phase 3  ResponseTransformFilter — responseTransform: set/remove
@@ -1077,8 +1083,8 @@ Tokio "full" features уже включены. Ключевые находки �
 - `WeightedRoundRobin` валидация: targets — `WeightedTarget`, не строки
 - Docs: `docs/configuration.md`, `docs/deployment.md`, `docs/benchmarks.md`
 - YAML: `.yaml`/`.yml` через `from_yaml()`, env interpolation + version check работают так же
-- Filter Chain: `src/filter/chain.rs` — добавлять новые guard-фильтры ТОЛЬКО сюда
-- Response Chain: `src/filter/response_chain.rs` — добавлять новые response-фазы ТОЛЬКО сюда
+- Filter Chain: `crates/conduit-runtime/src/filter/chain.rs` (фасад `src/filter/chain.rs`) — добавлять новые guard-фильтры ТОЛЬКО сюда
+- Response Chain: `crates/conduit-runtime/src/filter/response_chain.rs` (фасад `src/filter/response_chain.rs`) — добавлять новые response-фазы ТОЛЬКО сюда
 - Routing Strategy: `src/proxy/strategy.rs` — добавлять стратегии ТОЛЬКО сюда
 - Cache lock: Pingora уже имеет `pingora-cache/src/lock.rs` → `WritePermit` — использовать его
 - `retry.budgetPercent`: мягкое ограничение, TOCTOU гонки допустимы
