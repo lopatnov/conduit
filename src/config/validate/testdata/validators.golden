@@ -1,0 +1,48 @@
+# Baseline recorded on the code as it was BEFORE #316 (tree cc4c808), from src/config/validate/testdata/kitchen_sink.json.
+# Format: [conditions] text, in emission order; a condition is a root feature that must be on (jwt) or off (!jwt).
+# See golden_tests.rs. Do not edit by hand; a refactor must never need to change this file.
+[] error|sites[1].tls|TLS 'cert' and 'key' must both be set — 'key' is missing
+[] error|sites[4].tls.versions|tls.versions is not currently enforced — Pingora 0.9's rustls TLS backend gives Conduit no API to restrict protocol versions (TLS 1.2 and 1.3 are always both enabled). Remove this field; see https://github.com/lopatnov/conduit/issues/189 for status.
+[] error|sites[5].redirects[0].status|Invalid redirect status 200 — must be 301, 302, 307, or 308
+[] error|sites[7].rateLimit.windowSecs|windowSecs must be greater than 0
+[] error|sites[8].proxy["/api"].targets|At least one target is required (or use 'groups' for two-level balancing)
+[] error|sites[9].fallback.status|Invalid fallback status 99 — must be a valid HTTP status code (100–599)
+[] error|sites[10].fallback.status|Invalid fallback status 600 — must be a valid HTTP status code (100–599)
+[] error|sites[14].cors.credentials|cors.credentials: true requires cors.origins to be an explicit, non-wildcard list of allowed origins — without it, every origin's credentialed cross-origin requests would be allowed
+[] error|sites[15].cors.credentials|cors.credentials: true requires cors.origins to be an explicit, non-wildcard list of allowed origins — without it, every origin's credentialed cross-origin requests would be allowed
+[] error|sites[16].cors.credentials|cors.credentials: true requires cors.origins to be an explicit, non-wildcard list of allowed origins — without it, every origin's credentialed cross-origin requests would be allowed
+[] error|sites[22].tls|TLS 'cert' and 'key' must both be set — 'cert' is missing
+[] error|sites[23].proxy|Invalid upstream URL 'not-a-url' — must start with http:// or https://
+[] error|sites[24].proxy["/api"][1]|Invalid upstream URL 'ftp://bad:4000' — must start with http:// or https://
+[] error|sites[28].ipFilter.deny[0]|Invalid IP address or CIDR block: '999.999.0.0/8'
+[] error|sites[28].ipFilter.deny[1]|Invalid IP address or CIDR block: 'not-an-ip'
+[] error|sites[30].ipFilter.deny[0]|Invalid IP address or CIDR block: '10.0.0.0/33'
+[] error|sites[31].upload.path|Upload path 'upload' must start with '/'
+[] error|sites[33].metrics.path|Metrics path 'metrics' must start with '/'
+[] error|sites[36].rateLimit.algorithm|invalid algorithm "leaky-bucket" — only "token-bucket" is supported
+[] error|sites[39].rateLimit.keyBy|invalid header name "bad name" in "header:bad name" — must be a valid HTTP header field name (letters, digits, and !#$%&'*+-.^_`|~)
+[] error|sites[40].rateLimit.keyBy|invalid keyBy "header" — must be "ip" or "header:<name>"
+[] error|sites[41].rateLimit.keyBy|invalid keyBy "cookie" — must be "ip" or "header:<name>"
+[] error|sites[43].tcp.targets|at least one target is required for a TCP proxy site
+[] error|sites[44].tcp.targets[0]|TCP target "http://mysql:3306" must be a plain host:port — no http:// prefix
+[] error|sites[45].tcp.targets[0]|TCP target "just-a-host" must include a port, e.g. "host:3306" or "[::1]:3306" for IPv6
+[] error|sites[46].tcp|tcp cannot be combined with proxy on the same site
+[] error|sites[47].middleware[0].path|middleware type "script" requires a "path" field
+[] error|sites[53].middleware[0].type|unknown middleware type "magic"
+[] error|sites[56].rateLimit.limit|limit must be greater than 0
+[] error|sites[57].upload.dir|Upload directory path must not be empty
+[] error|sites[58].ipFilter.deny[0]|Invalid IP address or CIDR block: '10.0.0.0/abc'
+[] error|sites[59].proxy["/api"]|Invalid upstream URL 'ftp://bad' — must start with http:// or https://
+[] error|sites[60].proxy["/api"].targets[0]|Invalid upstream URL 'ftp://bad:4000' — must start with http:// or https://
+[] error|sites[61].metrics.token|metrics.token must not be an empty string — an empty token matches a request with no Authorization header at all, authenticating every request. Omit the field entirely to leave the endpoint unauthenticated, or set a real token.
+[forward-auth] error|sites[62].forwardAuth.url|forwardAuth.url points to 127.0.0.1:2019 — this is the Conduit Admin API. Routing external auth requests through the admin API is a security risk. Use a dedicated auth service instead.
+[] error|sites[64].apiKey.keys[0]|API key must not be empty — an empty key allows unauthenticated access
+[] error|sites[66].apiKey.keys|apiKey.keys must contain at least one key
+[] error|sites[68].ipFilter.deny[0]|Invalid IP address or CIDR block: '::1/129'
+[] error|sites[72].forwardAuth.url|forwardAuth.url must be an http:// or https:// URL
+[] error|sites[73].limits.maxInflightRequests|limits.maxInflightRequests must be >= 1 (set to null/omit to disable)
+[] error|sites[74].limits.maxBodyBytes|limits.maxBodyBytes must be >= 1 (set to null/omit to disable)
+[] error|sites[76].tcp|tcp cannot be combined with static on the same site
+[] error|sites[77].jwtAuth|jwtAuth requires either "secret" (HS256) or "jwksUrl" (RS256/ES256)
+[] error|sites[79].proxy["/"].targets[0]|Invalid upstream URL 'backend:4000' — must start with http:// or https://
+[] error|sites[80].upload.dir|Upload directory path must not be empty

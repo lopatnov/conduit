@@ -1,0 +1,604 @@
+{
+ "sites": [
+  {
+   "port": 9100
+  },
+  {
+   "tls": {
+    "cert": "a.pem"
+   },
+   "port": 9101
+  },
+  {
+   "tls": {
+    "acme": {
+     "email": "a@b.com"
+    }
+   },
+   "port": 9102
+  },
+  {
+   "tls": {
+    "cert": "a.pem",
+    "key": "a.key"
+   },
+   "port": 9103
+  },
+  {
+   "tls": {
+    "cert": "a.pem",
+    "key": "a.key",
+    "versions": [
+     "TLSv1.2"
+    ]
+   },
+   "port": 9104
+  },
+  {
+   "redirects": [
+    {
+     "from": "/a",
+     "to": "/b",
+     "status": 200
+    }
+   ],
+   "port": 9105
+  },
+  {
+   "redirects": [
+    {
+     "from": "/a",
+     "to": "/b",
+     "status": 301
+    }
+   ],
+   "port": 9106
+  },
+  {
+   "rateLimit": {
+    "windowSecs": 0,
+    "limit": 100
+   },
+   "port": 9107
+  },
+  {
+   "proxy": {
+    "/api": {
+     "targets": []
+    }
+   },
+   "port": 9108
+  },
+  {
+   "fallback": {
+    "status": 99
+   },
+   "port": 9109
+  },
+  {
+   "fallback": {
+    "status": 600
+   },
+   "port": 9110
+  },
+  {
+   "fallback": {
+    "status": 404
+   },
+   "port": 9111
+  },
+  {
+   "fallback": {
+    "status": 200
+   },
+   "port": 9112
+  },
+  {
+   "fallback": {},
+   "port": 9113
+  },
+  {
+   "cors": {
+    "credentials": true
+   },
+   "port": 9114
+  },
+  {
+   "cors": {
+    "credentials": true,
+    "origins": [
+     "*"
+    ]
+   },
+   "port": 9115
+  },
+  {
+   "cors": {
+    "credentials": true,
+    "origins": []
+   },
+   "port": 9116
+  },
+  {
+   "cors": {
+    "credentials": true,
+    "origins": [
+     "https://app.example.com"
+    ]
+   },
+   "port": 9117
+  },
+  {
+   "cors": true,
+   "port": 9118
+  },
+  {
+   "cors": {
+    "origins": [
+     "*"
+    ]
+   },
+   "port": 9119
+  },
+  {
+   "cors": {},
+   "port": 9120
+  },
+  {
+   "cors": false,
+   "port": 9121
+  },
+  {
+   "tls": {
+    "key": "a.key"
+   },
+   "port": 9122
+  },
+  {
+   "proxy": "not-a-url",
+   "port": 9123
+  },
+  {
+   "proxy": {
+    "/api": [
+     "http://ok:4000",
+     "ftp://bad:4000"
+    ]
+   },
+   "port": 9124
+  },
+  {
+   "proxy": "http://localhost:4000",
+   "port": 9125
+  },
+  {
+   "proxy": "https://api.example.com",
+   "port": 9126
+  },
+  {
+   "proxy": {
+    "/api": {
+     "targets": [
+      "http://b1:4000",
+      "http://b2:4000"
+     ]
+    }
+   },
+   "port": 9127
+  },
+  {
+   "ipFilter": {
+    "deny": [
+     "999.999.0.0/8",
+     "not-an-ip"
+    ]
+   },
+   "port": 9128
+  },
+  {
+   "ipFilter": {
+    "allow": [
+     "10.0.0.0/8",
+     "192.168.1.1",
+     "::1",
+     "2001:db8::/32"
+    ]
+   },
+   "port": 9129
+  },
+  {
+   "ipFilter": {
+    "deny": [
+     "10.0.0.0/33"
+    ]
+   },
+   "port": 9130
+  },
+  {
+   "upload": {
+    "path": "upload",
+    "dir": "./uploads"
+   },
+   "port": 9131
+  },
+  {
+   "upload": {
+    "path": "/upload",
+    "dir": "./uploads"
+   },
+   "port": 9132
+  },
+  {
+   "metrics": {
+    "path": "metrics"
+   },
+   "port": 9133
+  },
+  {
+   "metrics": {
+    "path": "/__metrics__"
+   },
+   "port": 9134
+  },
+  {
+   "rateLimit": {
+    "windowSecs": 60,
+    "limit": 100,
+    "store": "redis://127.0.0.1:6379"
+   },
+   "port": 9135
+  },
+  {
+   "rateLimit": {
+    "windowSecs": 60,
+    "limit": 100,
+    "algorithm": "leaky-bucket"
+   },
+   "port": 9136
+  },
+  {
+   "rateLimit": {
+    "windowSecs": 60,
+    "limit": 100,
+    "keyBy": "ip"
+   },
+   "port": 9137
+  },
+  {
+   "rateLimit": {
+    "windowSecs": 60,
+    "limit": 100,
+    "keyBy": "header:X-User-ID"
+   },
+   "port": 9138
+  },
+  {
+   "rateLimit": {
+    "windowSecs": 60,
+    "limit": 100,
+    "keyBy": "header:bad name"
+   },
+   "port": 9139
+  },
+  {
+   "rateLimit": {
+    "windowSecs": 60,
+    "limit": 100,
+    "keyBy": "header"
+   },
+   "port": 9140
+  },
+  {
+   "rateLimit": {
+    "windowSecs": 60,
+    "limit": 100,
+    "keyBy": "cookie"
+   },
+   "port": 9141
+  },
+  {
+   "tcp": {
+    "targets": [
+     "mysql:3306"
+    ]
+   },
+   "port": 9142
+  },
+  {
+   "tcp": {
+    "targets": []
+   },
+   "port": 9143
+  },
+  {
+   "tcp": {
+    "targets": [
+     "http://mysql:3306"
+    ]
+   },
+   "port": 9144
+  },
+  {
+   "tcp": {
+    "targets": [
+     "just-a-host"
+    ]
+   },
+   "port": 9145
+  },
+  {
+   "tcp": {
+    "targets": [
+     "mysql:3306"
+    ]
+   },
+   "proxy": "http://b:4000",
+   "port": 9146
+  },
+  {
+   "middleware": [
+    {
+     "type": "script"
+    }
+   ],
+   "port": 9147
+  },
+  {
+   "middleware": [
+    {
+     "type": "script",
+     "path": "./my.rhai"
+    }
+   ],
+   "port": 9148
+  },
+  {
+   "middleware": [
+    {
+     "type": "ipFilter"
+    }
+   ],
+   "port": 9149
+  },
+  {
+   "middleware": [
+    {
+     "type": "rateLimit"
+    }
+   ],
+   "port": 9150
+  },
+  {
+   "middleware": [
+    {
+     "type": "auth"
+    }
+   ],
+   "port": 9151
+  },
+  {
+   "middleware": [
+    {
+     "type": "headers"
+    }
+   ],
+   "port": 9152
+  },
+  {
+   "middleware": [
+    {
+     "type": "magic"
+    }
+   ],
+   "port": 9153
+  },
+  {
+   "middleware": [
+    {
+     "type": "script",
+     "path": "./ok.rhai",
+     "phase": "response"
+    }
+   ],
+   "port": 9154
+  },
+  {
+   "middleware": [
+    {
+     "type": "script",
+     "path": "./ok.rhai"
+    }
+   ],
+   "port": 9155
+  },
+  {
+   "rateLimit": {
+    "windowSecs": 60,
+    "limit": 0
+   },
+   "port": 9156
+  },
+  {
+   "upload": {
+    "path": "/upload",
+    "dir": ""
+   },
+   "port": 9157
+  },
+  {
+   "ipFilter": {
+    "deny": [
+     "10.0.0.0/abc"
+    ]
+   },
+   "port": 9158
+  },
+  {
+   "proxy": {
+    "/api": "ftp://bad"
+   },
+   "port": 9159
+  },
+  {
+   "proxy": {
+    "/api": {
+     "targets": [
+      "ftp://bad:4000"
+     ]
+    }
+   },
+   "port": 9160
+  },
+  {
+   "metrics": {
+    "token": ""
+   },
+   "port": 9161
+  },
+  {
+   "forwardAuth": {
+    "url": "http://127.0.0.1:2019/auth"
+   },
+   "port": 9162
+  },
+  {
+   "forwardAuth": {
+    "url": "http://auth-service:4000/verify"
+   },
+   "port": 9163
+  },
+  {
+   "apiKey": {
+    "keys": [
+     ""
+    ]
+   },
+   "port": 9164
+  },
+  {
+   "apiKey": {
+    "keys": [
+     "secret-key-123"
+    ]
+   },
+   "port": 9165
+  },
+  {
+   "apiKey": {
+    "keys": []
+   },
+   "port": 9166
+  },
+  {
+   "ipFilter": {
+    "deny": [
+     "::1/128"
+    ]
+   },
+   "port": 9167
+  },
+  {
+   "ipFilter": {
+    "deny": [
+     "::1/129"
+    ]
+   },
+   "port": 9168
+  },
+  {
+   "ipFilter": {
+    "allow": [
+     "192.168.1.100"
+    ]
+   },
+   "port": 9169
+  },
+  {
+   "ipFilter": {
+    "allow": [
+     "2001:db8::1"
+    ]
+   },
+   "port": 9170
+  },
+  {
+   "rateLimit": {
+    "limit": 100,
+    "windowSecs": 60
+   },
+   "port": 9171
+  },
+  {
+   "forwardAuth": {
+    "url": "grpc://auth:4000/verify"
+   },
+   "port": 9172
+  },
+  {
+   "limits": {
+    "maxInflightRequests": 0
+   },
+   "port": 9173
+  },
+  {
+   "limits": {
+    "maxBodyBytes": 0
+   },
+   "port": 9174
+  },
+  {
+   "limits": {
+    "timeoutSecs": 30
+   },
+   "port": 9175
+  },
+  {
+   "tcp": {
+    "targets": [
+     "mysql:3306"
+    ]
+   },
+   "static": "./dist",
+   "port": 9176
+  },
+  {
+   "jwtAuth": {},
+   "port": 9177
+  },
+  {
+   "proxy": {
+    "/": {
+     "targets": [
+      "http://backend:4000"
+     ]
+    }
+   },
+   "port": 9178
+  },
+  {
+   "proxy": {
+    "/": {
+     "targets": [
+      "backend:4000"
+     ]
+    }
+   },
+   "port": 9179
+  },
+  {
+   "upload": {
+    "path": "/upload",
+    "dir": "   "
+   },
+   "port": 9180
+  },
+  {
+   "tcp": {
+    "targets": [
+     "[::1]:3306"
+    ]
+   },
+   "port": 9181
+  }
+ ]
+}

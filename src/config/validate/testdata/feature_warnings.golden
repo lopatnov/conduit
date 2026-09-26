@@ -1,0 +1,31 @@
+# Baseline recorded on the code as it was BEFORE #316 (tree cc4c808), from src/config/validate/testdata/kitchen_sink.json.
+# Format: [conditions] text, in emission order; a condition is a root feature that must be on (jwt) or off (!jwt).
+# See golden_tests.rs. Do not edit by hand; a refactor must never need to change this file.
+[!otlp] global.otlp is configured but Conduit was compiled without the `otlp` feature — OpenTelemetry tracing will be disabled. Recompile with `--features otlp` to enable.
+[!jwt] sites[0].jwtAuth is configured but Conduit was compiled without the `jwt` feature — JWT authentication will be disabled. Recompile with `--features jwt` to enable.
+[!forward-auth] sites[0].forwardAuth is configured but Conduit was compiled without the `forward-auth` feature — ForwardAuth will be disabled. Recompile with `--features forward-auth` to enable.
+[!acme] sites[1].tls.acme is configured but Conduit was compiled without the `acme` feature — automatic TLS certificate provisioning will be disabled. Recompile with `--features acme` to enable.
+[!tcp] sites[2].tcp is configured but Conduit was compiled without the `tcp` feature — TCP proxy mode will be disabled. Recompile with `--features tcp` to enable.
+[!redis] sites[3].rateLimit.store (site, route, or consumer level) uses Redis but Conduit was compiled without the `redis` feature — falling back to in-memory rate limiting everywhere. Recompile with `--features redis` to enable.
+[!redis] sites[4].rateLimit.store (site, route, or consumer level) uses Redis but Conduit was compiled without the `redis` feature — falling back to in-memory rate limiting everywhere. Recompile with `--features redis` to enable.
+[!cache] sites[4] has proxy routes with cache configured but Conduit was compiled without the `cache` feature — response caching will be disabled. Recompile with `--features cache` to enable.
+[!proxy] sites[4].proxy is configured but Conduit was compiled without the `proxy` feature — reverse proxying is disabled and this configuration will be ignored (requests fall through to `static`/`fallback`). Recompile with `--features proxy` to enable.
+[!redis,consumers] sites[5].rateLimit.store (site, route, or consumer level) uses Redis but Conduit was compiled without the `redis` feature — falling back to in-memory rate limiting everywhere. Recompile with `--features redis` to enable.
+[consumers,!jwt] sites[5].consumers uses `sharedJwt` or a consumer `jwt` credential but Conduit was compiled without the `jwt` feature — those consumers will be permanently unreachable. Recompile with `--features jwt` to enable.
+[!consumers] sites[5].consumers is configured but Conduit was compiled without the `consumers` feature — consumer authentication will be disabled and every request will bypass it. Recompile with `--features consumers` to enable.
+[!upload] sites[6].upload is configured but Conduit was compiled without the `upload` feature — file upload will be disabled. Recompile with `--features upload` to enable.
+[!fault-injection] sites[6].faultInjection is configured but Conduit was compiled without the `fault-injection` feature — fault injection will be disabled. Recompile with `--features fault-injection` to enable.
+[!compression] sites[6].compression is configured but Conduit was compiled without the `compression` feature — response compression will be disabled. Recompile with `--features compression` to enable.
+[!static] sites[6].static is configured but Conduit was compiled without the `static` feature — static file serving will be disabled. Recompile with `--features static` to enable.
+[!static] sites[6].fallback is configured but Conduit was compiled without the `static` feature — fallback responses (including the site's default 404) will be disabled. Recompile with `--features static` to enable.
+[!hotreload] sites[6].hotReload is configured but Conduit was compiled without the `hotreload` feature — browser hot-reload (the SSE stream and file watcher) will be disabled. Recompile with `--features hotreload` to enable.
+[!wasm] sites[7].middleware[0] has type "wasm" but Conduit was compiled without the `wasm` feature — this middleware entry will be ignored. Recompile with `--features wasm` to enable.
+[!rhai] sites[7].middleware[1] has type "script" but Conduit was compiled without the `rhai` feature — this entry will be ignored. Recompile with `--features rhai` to enable.
+[!wasm] sites[7].middleware[2] has type "wasm" but Conduit was compiled without the `wasm` feature — this middleware entry will be ignored. Recompile with `--features wasm` to enable.
+[!proxy] sites[8].routes[1].proxy is configured but Conduit was compiled without the `proxy` feature — requests matching this route are answered by the site's `fallback` response (its `static` action, if any, is not served either). Recompile with `--features proxy` to enable.
+[!proxy] sites[9].proxy is configured but Conduit was compiled without the `proxy` feature — reverse proxying is disabled and this configuration will be ignored (requests fall through to `static`/`fallback`). Recompile with `--features proxy` to enable.
+[proxy] sites[4] proxies to 'http://127.0.0.1:8003' which appears to point back to Conduit itself (loopback + port 8003 is a configured listening port) — this will create an infinite request loop.
+[] sites[0].jwtAuth.secret is only 5 bytes — minimum recommended length is 32 bytes for HS256.  A short secret can be brute-forced. Use a cryptographically random secret of at least 32 bytes.
+[] sites[5].consumers.consumers[1].jwt.secret is only 4 bytes — minimum recommended length is 32 bytes.
+[] sites[0].metrics is configured without a token — the /__metrics__ endpoint is publicly accessible. Set metrics.token to require Bearer authentication in production.
+[] sites[8].jwtAuht is not a recognized configuration key and will be ignored — check for a typo.
