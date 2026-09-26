@@ -49,7 +49,7 @@ pub(crate) fn request_cache_filter(
         // Select storage backend based on store string.
         let storage: &'static (dyn CacheStorage + Sync) = if cfg.store == "memory" {
             proxy_cache::cache_storage()
-        } else if cfg.store.starts_with("redis://") || cfg.store.starts_with("rediss://") {
+        } else if conduit_config_core::scheme::is_redis_url(&cfg.store) {
             #[cfg(feature = "redis")]
             {
                 match cache_redis::get(&cfg.store) {

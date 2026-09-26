@@ -293,7 +293,7 @@ impl RequestFilter for ConsumersGuard {
                 let allowed = if rl_cfg
                     .store
                     .as_deref()
-                    .is_some_and(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
+                    .is_some_and(conduit_config_core::scheme::is_redis_url)
                 {
                     if let Some(rrl) = &self.redis_rate_limiter {
                         rrl.check(
@@ -481,7 +481,7 @@ async fn rate_limit_allowed(
     if cfg
         .store
         .as_deref()
-        .is_some_and(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
+        .is_some_and(conduit_config_core::scheme::is_redis_url)
     {
         if let Some(rrl) = redis {
             let key = rate_limit::extract_client_key(cfg, session);

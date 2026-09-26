@@ -32,7 +32,7 @@ pub(crate) fn collect_redis_cache_urls(config: &AppConfig) -> Vec<String> {
     let mut push_if_redis = |target: &ProxyRouteTarget| {
         if let ProxyRouteTarget::Full(cfg) = target {
             if let Some(cache) = &cfg.cache {
-                if cache.store.starts_with("redis://") || cache.store.starts_with("rediss://") {
+                if conduit_config_core::scheme::is_redis_url(&cache.store) {
                     urls.insert(cache.store.clone());
                 }
             }
