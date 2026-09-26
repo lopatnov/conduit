@@ -143,12 +143,6 @@ fn bind_upload_listener_if_needed(
     }
 }
 
-/// `true` if `store` looks like a Redis connection URL (`redis://`/`rediss://`).
-#[cfg(feature = "redis")]
-fn is_redis_store(store: &str) -> bool {
-    store.starts_with("redis://") || store.starts_with("rediss://")
-}
-
 /// Find the first `redis://`/`rediss://` `rateLimit.store` configured anywhere
 /// in `config` — site-level, per-route (`proxy.*.rateLimit` AND
 /// `routes[*].proxy.rateLimit`, issue #360), or per-consumer
@@ -169,7 +163,7 @@ fn find_redis_rate_limit_store(config: &AppConfig) -> Option<String> {
         .iter()
         .flat_map(crate::config::rate_limit_scan::iter_rate_limit_configs)
         .filter_map(|rl| rl.store.as_deref())
-        .find(|store| is_redis_store(store))
+        .find(|store| conduit_config_core::scheme::is_redis_url(store))
         .map(str::to_owned)
 }
 

@@ -62,6 +62,37 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   crate's `COMPILED` with the *root's* feature), the file/Kubernetes
   providers, `defaults.rs` and `rate_limit_scan.rs`.
 
+- **`conduit-runtime`** (Phase 6.1, [#145](https://github.com/lopatnov/conduit/issues/145))
+  — Layer-3 request pipeline: the Pingora `ProxyHttp` implementation
+  (`proxy::service`, whose methods are one-line delegators), `AppState`,
+  the per-request state (`proxy::ctx`), the request/response/logging phases
+  (`proxy::request/*`, `response_phase`, `logging_phase`), request routing
+  (`proxy::router`, `dispatch`), the guard chain and the response chain
+  (`filter::chain`, `filter::response_chain`), the access log and the health
+  handler, plus the upload service's `UploadConfigSource` impl — 24 files, ~4,700
+  code lines, ~300 unit tests. Six of the files (`filter/{auth,rate_limit,
+  response_time}`, `handler/health`, `proxy/cache_redis`, `upload/mod`) are not
+  in the issue text but cannot stay behind: trait impls must sit with the type
+  (orphan rule) and `chain.rs` calls `ConduitMetrics::global()`. The module
+  tree mirrors the root's on purpose and the small `crate::…` aliases the moved
+  files use are module re-exports in each `mod.rs`, so the files themselves are
+  byte-identical to before (checked with `git show <parent>:<old> | diff`) and
+  every test kept its name. The root re-exports every public item at its old
+  path (12 facade files), so no call site changed. **Features:** it declares the 14
+  root features that gate code in the pipeline (`proxy`, `compression`, `static`,
+  `hotreload`, `jwt`, `consumers`, `forward-auth`, `upload`, `redis`, `cache`,
+  `acme`, `fault-injection`, `otlp`, `tokio-metrics`), every root feature forwards
+  to it beside its existing forwards, and 14 compile-time asserts in
+  `src/proxy/service.rs` compare `conduit_runtime::features::X` with the root's
+  `cfg!` — a forward that is missed would otherwise compile and silently drop a
+  guard. Doc comments in other crates that say a thing "stays in the root
+  crate's `src/filter/chain.rs`" (or `src/proxy/…`) are still true as *paths* —
+  those root files are now facades — and are corrected as the crates are next
+  touched. Because member crates are hashed by their path relative to the
+  workspace root, a second checkout of this repo must not share a target
+  directory with the first (`scripts/verify-local.sh` keeps its baseline in
+  its own).
+
 - **`conduit-otlp`** (Phase 3.1, [#129](https://github.com/lopatnov/conduit/issues/129))
   — the template extraction for every subsequent feature crate. Owns
   `OtlpConfig` (the `global.otlp` config struct) and the OTLP tracer-provider

@@ -21,21 +21,9 @@ mod upstream;
 
 #[cfg(test)]
 use indexmap::IndexMap;
-use std::fmt;
 
-/// Marker printed in place of a secret value in a manual `Debug` impl —
-/// distinguishing "present" (`Some([REDACTED])`) from "absent" (`None`)
-/// without ever printing the actual value (issue #354: every secret-bearing
-/// config field used to derive plain `Debug`, so a `{:?}`-formatted print or
-/// a panic message that happened to include one would leak it verbatim).
-#[derive(Clone)]
-struct Redacted;
-
-impl fmt::Debug for Redacted {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[REDACTED]")
-    }
-}
+// The `[REDACTED]` marker for manual `Debug` impls (issue #354) is shared with every crate: #471.
+use conduit_config_core::redact::Redacted;
 
 // ── Constants ──────────────────────────────────────────────────────────────
 

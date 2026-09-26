@@ -610,7 +610,7 @@ impl ConduitProxy {
         if rl_cfg
             .store
             .as_deref()
-            .is_some_and(|s| s.starts_with("redis://") || s.starts_with("rediss://"))
+            .is_some_and(conduit_config_core::scheme::is_redis_url)
         {
             if let Some(rrl) = &self.state.redis_rate_limiter {
                 let scope = rate_limit::redis_route_scope(site_label, route_key);

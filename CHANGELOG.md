@@ -249,6 +249,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `conduit_cache::validate` instead of `conduit::config::validate::proxy`. The
   default `warn` level still shows them, but a filter such as
   `RUST_LOG=conduit::config=debug` no longer matches them.
+- **The request pipeline moved into a new workspace crate, `lopatnov-conduit-runtime`**
+  (issue #145): the Pingora `ProxyHttp` implementation, `AppState`, the per-request state,
+  the request/response/logging phases, request routing, the guard and response chains, the
+  access log and the health handler. No config shape or behaviour change and no new
+  dependency (the shipped crate set is unchanged); the root re-exports every item at its
+  old path. One operator-visible effect: the `tracing` log lines emitted by this code now
+  carry the targets `conduit_runtime::proxy::…` / `conduit_runtime::filter::…` instead of
+  `conduit::proxy::…` / `conduit::filter::…`, so a filter such as
+  `RUST_LOG=conduit::proxy=debug` no longer matches them (the default `warn` level is
+  unaffected). The `otlp`, `tokio-metrics` and the other feature names are unchanged.
 - **The config schema (`AppConfig`, `SiteConfig` and the types they contain) and
   the config-file parsing moved into a new workspace crate,
   `lopatnov-conduit-config`** (issue #222). No config shape or behaviour change:

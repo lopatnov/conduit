@@ -1,3 +1,4 @@
+use conduit_config_core::redact::Redacted;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -29,17 +30,6 @@ pub struct JwtAuthConfig {
     /// Paths that bypass JWT validation (same glob syntax as `basicAuth.skipPaths`).
     #[serde(rename = "skipPaths", skip_serializing_if = "Option::is_none")]
     pub skip_paths: Option<Vec<String>>,
-}
-
-/// Marker printed in place of a secret value in a manual `Debug` impl (issue
-/// #354 — `secret` used to derive plain `Debug`, printing the raw HMAC key
-/// verbatim on any `{:?}`-formatted print or panic message that includes it).
-struct Redacted;
-
-impl fmt::Debug for Redacted {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[REDACTED]")
-    }
 }
 
 impl fmt::Debug for JwtAuthConfig {
