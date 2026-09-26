@@ -1,6 +1,8 @@
 //! `feature_warnings()`: advisory messages for configuration that a compile-time feature would
 //! act on but that this build ignores, plus the secret/metrics/unknown-key warnings.
 
+use conduit_config_core::scheme::is_redis_url;
+
 use crate::config::schema::{AppConfig, SiteConfig};
 
 // The feature-off texts live in the crate that owns each feature (#316); each crate reports through its `COMPILED` whether *its*
@@ -274,13 +276,9 @@ fn site_has_cache_config(site: &SiteConfig) -> bool {
 /// answer here rather than the actual URL. Delegates to the shared
 /// [`crate::config::rate_limit_scan::iter_rate_limit_configs`] walk.
 fn site_uses_redis_store(site: &SiteConfig) -> bool {
-    fn is_redis_store(store: &str) -> bool {
-        store.starts_with("redis://") || store.starts_with("rediss://")
-    }
-
     crate::config::rate_limit_scan::iter_rate_limit_configs(site)
         .filter_map(|rl| rl.store.as_deref())
-        .any(is_redis_store)
+        .any(is_redis_url)
 }
 
 /// Warn when JWT HMAC secrets are shorter than the 32-byte minimum.

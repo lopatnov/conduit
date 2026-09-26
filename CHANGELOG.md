@@ -9,6 +9,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **A Redis URL whose password contains a raw `/` is no longer logged with the password.**
+  Credentials are redacted before a Redis URL is logged, but the search for the `user:password@`
+  part stopped at the first `/`, so in `redis://alice:pa/ss@host:6379` the `@` looked like part of
+  the path and the URL was printed as it was — as were `redis://alice:/pw@host` and
+  `redis://default:1234/abc@host`, and a password holding both `@` and `/` was cut in the middle.
+  Everything before the last `@` is now treated as credentials, since a Redis URL's path
+  (`/` or `/<db-number>`) never holds an `@`; a malformed URL such as `redis://host:6379/db@1` is
+  therefore printed as `redis://***@1`. (The redaction helper is now shared by every crate that
+  prints config values.)
 - **The vulnerable `protobuf 2.28.0` (RUSTSEC-2024-0437 / CVE-2025-53605) is
   gone from the dependency tree.** It was pulled in unconditionally by
   `pingora-core 0.8` through `prometheus 0.13`; Pingora 0.9 no longer depends
@@ -153,6 +162,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   used to load and now fails validation; a different service on port 2019 is no
   longer rejected once `global.admin.bind` uses another port, and a domain that
   merely starts with `127.` is no longer treated as loopback.
+- **A site whose `host` is an IPv6 literal was never matched by its requests.** The proxy cut
+  the `Host` header at its first `:`, so `[::1]:8080` became `[`; such a request fell through
+  to the catch-all site (or found none) and all of them shared one cache namespace. The
+  `allowedHosts` check (and the site-host fallback of `securityHeaders`) cut it the same way,
+  so it would have rejected such a request once it matched. Both now keep the bracketed
+  literal whole (`[::1]:8080` → `[::1]`, one shared function in `conduit-core`), so
+  `host: "[::1]"` matches and is allowed.
 
 ### Changed
 
@@ -249,6 +265,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `conduit_cache::validate` instead of `conduit::config::validate::proxy`. The
   default `warn` level still shows them, but a filter such as
   `RUST_LOG=conduit::config=debug` no longer matches them.
+- **The request pipeline moved into a new workspace crate, `lopatnov-conduit-runtime`**
+  (issue #145): the Pingora `ProxyHttp` implementation, `AppState`, the per-request state,
+  the request/response/logging phases, request routing, the guard and response chains, the
+  access log and the health handler. No config shape change and no new
+  dependency (the shipped crate set is unchanged); the root re-exports every item at its
+  old path. The one behaviour change made alongside is the IPv6 `Host` fix listed under
+  *Fixed*. One operator-visible effect: the `tracing` log lines emitted by this code now
+  carry the targets `conduit_runtime::proxy::…` / `conduit_runtime::filter::…` instead of
+  `conduit::proxy::…` / `conduit::filter::…`, so a filter such as
+  `RUST_LOG=conduit::proxy=debug` no longer matches them (the default `warn` level is
+  unaffected). The `otlp`, `tokio-metrics` and the other feature names are unchanged.
 - **The config schema (`AppConfig`, `SiteConfig` and the types they contain) and
   the config-file parsing moved into a new workspace crate,
   `lopatnov-conduit-config`** (issue #222). No config shape or behaviour change:

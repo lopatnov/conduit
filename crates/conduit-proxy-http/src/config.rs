@@ -17,25 +17,12 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use conduit_cache::CacheConfig;
+use conduit_config_core::redact::Redacted;
 use conduit_ratelimit::RateLimitConfig;
 use conduit_static::StaticConfig;
 use conduit_upstream::{
     LoadBalanceStrategy, ProxyTarget, UpstreamGroup, UpstreamHealthCheck, UpstreamTlsConfig,
 };
-
-/// Marker printed in place of a secret value in a manual `Debug` impl —
-/// mirrors `crates/conduit-auth-consumers/src/config.rs`'s own copy (issue
-/// #354, every secret-bearing field in this module used to derive plain
-/// `Debug`, printing the raw value verbatim on any `{:?}`-formatted print or
-/// panic message that happens to include it). Kept as a private per-module
-/// copy rather than shared, matching that crate's own established pattern.
-struct Redacted;
-
-impl fmt::Debug for Redacted {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[REDACTED]")
-    }
-}
 
 // ── Proxy ──────────────────────────────────────────────────────────────────
 

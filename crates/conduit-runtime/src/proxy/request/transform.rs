@@ -15,6 +15,7 @@
 //! request header transform. Each gated step is a two-variant function, not
 //! a `#[cfg]` inside a body (see the #341/#342 lesson in `CLAUDE.md`).
 
+use conduit_core::util::host::host_without_port;
 #[cfg(feature = "proxy")]
 use dashmap::DashMap;
 use pingora_core::Result;
@@ -121,7 +122,7 @@ pub(super) fn extract_host(session: &Session) -> String {
         .headers
         .get("host")
         .and_then(|v| v.to_str().ok())
-        .map(|h| h.split(':').next().unwrap_or(h).to_owned())
+        .map(|h| host_without_port(h).to_owned())
         .unwrap_or_default()
 }
 

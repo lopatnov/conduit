@@ -2,17 +2,8 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Marker printed in place of a secret value in a manual `Debug` impl (issue
-/// #354 — every secret-bearing field in this module used to derive plain
-/// `Debug`, printing the raw value verbatim on any `{:?}`-formatted print or
-/// panic message that happens to include it).
-struct Redacted;
-
-impl fmt::Debug for Redacted {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[REDACTED]")
-    }
-}
+// `Redacted` (the marker manual `Debug` impls print instead of a secret, issue #354) is shared: #471.
+use conduit_config_core::redact::Redacted;
 
 /// Named-consumer authentication: credentials and per-consumer policies stored
 /// per-consumer rather than per-route.

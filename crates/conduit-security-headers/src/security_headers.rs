@@ -1,4 +1,5 @@
 use crate::config::{SecurityHeadersConfig, SecurityHeadersOptions};
+use conduit_core::util::host::host_without_port;
 
 /// Build the security response headers for the given config.
 ///
@@ -32,8 +33,8 @@ pub fn is_host_allowed(
     site_host: Option<&str>,
     host: &str,
 ) -> bool {
-    // Strip port from host for matching.
-    let host_no_port = host.split(':').next().unwrap_or(host);
+    // Strip port from host for matching (a bracketed IPv6 literal keeps its brackets).
+    let host_no_port = host_without_port(host);
 
     if let Some(SecurityHeadersConfig::Options(opts)) = cfg {
         if let Some(allowed) = &opts.allowed_hosts {
@@ -229,6 +230,29 @@ mod tests {
         let cfg = SecurityHeadersConfig::Options(opts);
         // Host header often includes port: "api.example.com:8080"
         assert!(is_host_allowed(Some(&cfg), None, "api.example.com:8080"));
+    }
+
+    /// `split(':').next()` cut `[::1]:8080` down to `"["`, so a bracketed IPv6 literal was rejected
+    /// as soon as the `Host` header carried a port — by `allowedHosts` and by the site-host fallback.
+    #[test]
+    fn a_bracketed_ipv6_host_with_a_port_matches_its_entry() {
+        use crate::config::SecurityHeadersOptions;
+        let opts = SecurityHeadersOptions {
+            allowed_hosts: Some(vec!["[::1]".to_owned()]),
+            ..Default::default()
+        };
+        let cfg = SecurityHeadersConfig::Options(opts);
+        assert!(is_host_allowed(Some(&cfg), None, "[::1]:8080"));
+        assert!(is_host_allowed(Some(&cfg), None, "[::1]"));
+        assert!(!is_host_allowed(Some(&cfg), None, "[::2]:8080"));
+
+        assert!(is_host_allowed(None, Some("[::1]"), "[::1]:8080"));
+        assert!(!is_host_allowed(None, Some("[::1]"), "[::2]:8080"));
+
+        // Junk after the bracket is not the literal: the header (echoed into `X-Forwarded-Host`)
+        // would name another host while the check saw an allowed one.
+        assert!(!is_host_allowed(Some(&cfg), None, "[::1]@evil.com"));
+        assert!(!is_host_allowed(None, Some("[::1]"), "[::1]@evil.com"));
     }
 
     #[test]

@@ -59,35 +59,35 @@ src/
 │   ├── acme.rs          Auto-TLS via instant-acme (Let's Encrypt)
 │   ├── redirect.rs      HTTP→HTTPS redirect proxy
 │   └── shutdown.rs      graceful shutdown
-├── proxy/
-│   ├── service.rs       ConduitProxy (ProxyHttp impl)
-│   ├── router.rs        host + path routing, route table
+├── proxy/               (the modules marked * are facades over crates/conduit-runtime since #145 — see below)
+│   ├── service.rs *     ConduitProxy (ProxyHttp impl), AppState
+│   ├── router.rs *      host + path routing, route table
 │   ├── routes.rs        RouteConfig / MatchConfig (glob, method, header, query)
-│   ├── ctx.rs           RequestCtx, UpstreamTarget, GuardCtx
+│   ├── ctx.rs *         RequestCtx, UpstreamTarget, GuardCtx
 │   ├── upstream.rs      load balancer, URL parsing, health registry
 │   ├── health.rs        background health checks, UpstreamRegistry
 │   ├── cache.rs         build_cache_key(), in-memory storage singleton
-│   ├── cache_redis.rs   Redis-backed pingora-cache Storage impl
+│   ├── cache_redis.rs * Redis proxy-cache registry glue
 │   └── cache_disk.rs    Disk-backed pingora-cache Storage impl
 ├── handler/
 │   ├── response.rs      write_local_response() helper
 │   ├── static_files.rs  ETag, Range, Cache-Control, streaming compression
-│   ├── health.rs        /__health__ with optional upstream status
+│   ├── health.rs *      /__health__ with optional upstream status
 │   ├── metrics.rs       /__metrics__ (Prometheus)
 │   ├── hot_reload.rs    SSE browser hot reload + notify watcher
 │   └── fallback.rs      fallback responses (byAccept, file, body)
 ├── filter/
-│   ├── auth.rs          Basic Auth, API key, skip-paths
+│   ├── auth.rs *        Basic Auth, API key, skip-paths
 │   ├── compression.rs   gzip / brotli negotiation + streaming
 │   ├── cors.rs          CORS + preflight (bypasses auth)
 │   ├── headers.rs       custom response headers
 │   ├── ip_filter.rs     CIDR allow/deny, X-Forwarded-For
 │   ├── limits.rs        maxBodyBytes (413), maxHeaderBytes (431)
-│   ├── logging.rs       5 log formats, atomic file switching
-│   ├── rate_limit.rs    token-bucket, in-memory or Redis
+│   ├── logging.rs *     5 log formats, atomic file switching
+│   ├── rate_limit.rs *  token-bucket, in-memory or Redis
 │   ├── rate_limit_redis.rs  Redis fixed-window counter with fallback
 │   ├── redirects.rs     path redirects with :param captures
-│   ├── response_time.rs X-Response-Time header
+│   ├── response_time.rs * X-Response-Time header
 │   └── security_headers.rs  HSTS, CSP, X-Frame-Options, etc.
 │   (Rhai scripting middleware moved to crates/conduit-script-rhai, WASM
 │    plugin middleware to crates/conduit-plugin-wasm, and the
@@ -169,9 +169,10 @@ whether by hand or via the `crate-extractor` agent.
   `ResponseFilter`) and therefore needs `&mut Session`/pingora types. A crate with no
   request-lifecycle behavior (like `conduit-otlp`'s tracer init) takes primitives
   (`&str`, `u16`, ...) instead and has no pingora dependency at all.
-- **Chain assembly and ordering stay in the root crate.** `src/filter/chain.rs` decides
-  guard order (see `CLAUDE.md` decision #20); a feature crate exports a filter
-  implementation and a constructor, never a chain position.
+- **Chain assembly and ordering live in `conduit-runtime`, never in a feature crate.**
+  `crates/conduit-runtime/src/filter/chain.rs` decides guard order (see `CLAUDE.md`
+  decision #20; `src/filter/chain.rs` in the root is a facade); a feature crate exports a
+  filter implementation and a constructor, never a chain position.
 
 ### Watch for name collisions during extraction
 
@@ -244,6 +245,24 @@ cargo test -- --nocapture
 # Benchmarks
 cargo bench
 ```
+
+### Verifying a refactor or an extraction
+
+`cargo test` does not show a feature that silently stopped being compiled or a test that
+silently stopped running. For a PR that moves code between crates or changes the feature graph,
+run the whole chain once on the final head:
+
+```bash
+scripts/verify-local.sh --base <rev-before-the-change>      # ~1 h; --quick skips tests, goldens and cargo hack
+scripts/verify-local.sh --moved-to lopatnov-conduit-config:config:: --also-pkg lopatnov-conduit-config
+```
+
+It checks CI's dependency-leak rule, that the set of third-party crates and the list of tests are
+unchanged against the base (tests that moved into another package must reappear there), clippy
+`-D warnings` on eight profiles, the tests, the validation golden tests in every feature set, and
+`cargo hack --each-feature`. See the header of the script for the options; it writes
+`target/verify-local/summary.txt` and exits non-zero on any FAIL. Do not commit while its
+`cargo hack` step runs (cargo-hack rewrites the manifests until it exits).
 
 ### Integration tests
 

@@ -23,4 +23,6 @@ pub mod env;
 pub mod format;
 pub mod parse;
 pub mod provider;
+pub mod redact;
+pub mod scheme;
 pub mod validation;

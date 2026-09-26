@@ -1,6 +1,7 @@
 //! Config validation for `rateLimit` (site, route and per-consumer): called by the root crate's `config::validate`.
 
 use crate::config::RateLimitConfig;
+use conduit_config_core::scheme::is_redis_url;
 use conduit_config_core::validation::ValidationError;
 
 /// Validate the shared rate-limit rules (`windowSecs`/`limit`/`algorithm`/
@@ -71,8 +72,7 @@ pub fn validate_rate_limit(cfg: &RateLimitConfig, prefix: &str, errors: &mut Vec
     // or a rediss:// URL (TLS — requires Redis with in-transit encryption,
     // e.g. AWS ElastiCache TLS, Azure Cache for Redis).
     if let Some(store) = cfg.store.as_deref() {
-        let valid_store =
-            store == "memory" || store.starts_with("redis://") || store.starts_with("rediss://");
+        let valid_store = store == "memory" || is_redis_url(store);
         if !valid_store {
             errors.push(ValidationError::new(
                 format!("{prefix}.rateLimit.store"),

@@ -7,6 +7,10 @@ use super::ValidationError;
 
 #[cfg(feature = "redis")]
 use super::warnings::sanitize_for_log;
+#[cfg(feature = "redis")]
+use conduit_config_core::redact::redact_url;
+#[cfg(feature = "redis")]
+use conduit_config_core::scheme::is_redis_url;
 
 use crate::config::defaults::DEFAULT_ADMIN_BIND;
 use crate::config::schema::{AppConfig, SiteConfig};
@@ -64,38 +68,6 @@ pub(super) fn check_redis_store_consistency(config: &AppConfig, errors: &mut Vec
     }
 }
 
-/// Strip userinfo (`user:pass@`) from a Redis URL before it can reach a log
-/// line — this codebase's `$VAR` secret-interpolation model has no
-/// URL-encoding step, so a raw credential in a `redis://user:pass@host`
-/// `rateLimit.store` value is realistic. Mirrors
-/// `crates/conduit-cache/src/redis.rs`'s `redact_url` (added for #330/#331);
-/// duplicated locally rather than shared because that one is private to the
-/// cache crate and this is the config-validation crate's only Redis-URL sink
-/// — same small-helper-per-module pattern already used for `is_redis_store`
-/// in this file, `src/server/builder.rs`, and `src/filter/rate_limit.rs`.
-#[cfg(feature = "redis")]
-fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
-    let Some(scheme_end) = url.find("://") else {
-        return std::borrow::Cow::Borrowed(url);
-    };
-    let authority_start = scheme_end + 3;
-    let rest = &url[authority_start..];
-    let authority_end = rest.find('/').unwrap_or(rest.len());
-    let authority = &rest[..authority_end];
-    // The LAST '@' within the authority is the userinfo/host separator, not
-    // the first — see the cache crate's `redact_url` doc comment for why
-    // (PR #331 review: a password containing its own '@' would otherwise
-    // leak a fragment of itself).
-    let Some(at) = authority.rfind('@') else {
-        return std::borrow::Cow::Borrowed(url);
-    };
-    std::borrow::Cow::Owned(format!(
-        "{}***@{}",
-        &url[..authority_start],
-        &rest[at + 1..]
-    ))
-}
-
 /// Collect every `redis://`/`rediss://` `rate_limit.store` value configured on
 /// `site` — site-level, then per-route (`proxy` map AND `routes[]`, issue
 /// #360), then per-consumer — in the same scan order as
@@ -104,14 +76,10 @@ fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
 /// shared [`crate::config::rate_limit_scan::iter_rate_limit_configs`] walk.
 #[cfg(feature = "redis")]
 fn collect_redis_stores(site: &SiteConfig, out: &mut Vec<String>) {
-    fn is_redis_store(store: &str) -> bool {
-        store.starts_with("redis://") || store.starts_with("rediss://")
-    }
-
     out.extend(
         crate::config::rate_limit_scan::iter_rate_limit_configs(site)
             .filter_map(|rl| rl.store.as_deref())
-            .filter(|s| is_redis_store(s))
+            .filter(|s| is_redis_url(s))
             .map(str::to_owned),
     );
 }

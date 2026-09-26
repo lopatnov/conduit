@@ -76,10 +76,10 @@ jobs:
         continue-on-error: true
 
       - name: clippy (all features)
-        run: cargo clippy --features full --tests -- -D warnings
+        run: cargo clippy -p lopatnov-conduit -p lopatnov-conduit-runtime --features full --tests -- -D warnings
 
       - name: test (all features)
-        run: cargo test --features full
+        run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime --features full
 
   # ── Build + test with the `standard` feature bundle ──────────────────────────
   # Matches the feature set shipped in release.yml's un-suffixed binaries and
@@ -104,10 +104,10 @@ jobs:
         continue-on-error: true  # transient cache failures must not abort the build
 
       - name: clippy (standard features)
-        run: cargo clippy --features standard --tests -- -D warnings
+        run: cargo clippy -p lopatnov-conduit -p lopatnov-conduit-runtime --features standard --tests -- -D warnings
 
       - name: test (standard features)
-        run: cargo test --features standard
+        run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime --features standard
 
   # ── Footprint report: stripped binary size + dep count per feature profile ──
   # Makes the migration's value measurable and catches silent footprint
@@ -726,8 +726,11 @@ jobs:
           key: no-proxy
         continue-on-error: true  # transient cache failures must not abort the build
 
+      # `-p lopatnov-conduit-runtime` next to the root in every run below: the request pipeline (routing, guards, phases —
+      # ~300 unit tests, including the no-`proxy` router ones) lives in that crate since #145, and a run naming only the root
+      # package would silently stop running them in exactly the profiles that exist to cover them.
       - name: Unit tests, --no-default-features
-        run: cargo test -p lopatnov-conduit --lib --no-default-features
+        run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime --lib --no-default-features
 
       # A separate invocation on purpose. Until PR 4a the root pinned this
       # crate's `proxy` feature on unconditionally, so putting the root package
@@ -746,7 +749,7 @@ jobs:
       # the terminal-Fallback test is decisive (with `static` off a StaticFile
       # can't be produced at all).
       - name: Unit tests, --no-default-features --features static
-        run: cargo test -p lopatnov-conduit --lib --no-default-features --features static
+        run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime --lib --no-default-features --features static
 
       # `upload` is served through `upstream_peer` (an `UpstreamTarget::Upload`
       # classifies as `HandlerKind::Proxy`), so the real `upstream_peer` /
@@ -754,7 +757,7 @@ jobs:
       # neither feature on, `upstream_peer` is a 404 stub (the plain
       # `--no-default-features` run above covers that one).
       - name: Unit tests, --no-default-features --features upload
-        run: cargo test -p lopatnov-conduit --lib --no-default-features --features upload
+        run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime --lib --no-default-features --features upload
 
       # `consumers` without `jwt` is the only profile in which the "consumers
       # use `sharedJwt`/a consumer `jwt` credential but `jwt` is not compiled"
@@ -762,14 +765,14 @@ jobs:
       # so this is where the golden test for `feature_warnings()` covers it
       # (`src/config/validate/golden_tests.rs`, issue #316).
       - name: Unit tests, --no-default-features --features consumers
-        run: cargo test -p lopatnov-conduit --lib --no-default-features --features consumers
+        run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime --lib --no-default-features --features consumers
 
       # The mirror image: `redis` on and `consumers` off. The multiple-Redis-URLs
       # warning lists different URLs in the two cases (per-consumer stores are only
       # scanned with `consumers`), and no other CI profile has this combination, so
       # this is where the `[redis,!consumers]` variant of the golden is checked.
       - name: Unit tests, --no-default-features --features redis
-        run: cargo test -p lopatnov-conduit --lib --no-default-features --features redis
+        run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime --lib --no-default-features --features redis
 
       # The integration tests spawn the real `conduit` binary, so this is also
       # the only place a build without `proxy` is exercised end to end. The
@@ -781,7 +784,7 @@ jobs:
       # compression and hot-reload tests need their own features -- it is the
       # default set minus `proxy`, so it isolates exactly what `proxy` gates.
       - name: Integration tests, --no-default-features --features static-server
-        run: cargo test -p lopatnov-conduit --no-default-features --features static-server --tests
+        run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime --no-default-features --features static-server --tests
 
       # The property #144 exists for: a build without `proxy` must not carry
       # proxy-only dependencies: the sticky-session stack (`hmac`, `sha2`), the

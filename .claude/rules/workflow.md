@@ -182,7 +182,10 @@ matrix, CI).
 - **Proof scales with risk.** A pure move (code cut by line range, behaviour pinned by
   golden tests and `--list` identity): one verifier per PR and one small set of mutation
   controls — not a generator and a verifier per slice. New logic (a gate switch, a new
-  check): the full set — verifier, negative and polarity controls, pin tests.
+  check): the full set — verifier, negative and polarity controls, pin tests. The
+  before/after chain itself is `scripts/verify-local.sh` (leak check, dependency sets,
+  `--list` identity, clippy matrix, tests, goldens in every feature set, `cargo hack`):
+  run it once on the final head instead of writing a new chain per PR.
 - **Bugs in the code the issue touches ride along.** When taking an issue, look for open
   bugs in the files/functions it moves or changes (`gh issue list --search`, the integrity
   audit log) and tell the owner in one line each which ones you will fix in the same PR.
