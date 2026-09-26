@@ -197,6 +197,13 @@ matrix, CI).
 - **Ask plainly.** A question to the owner is short, self-contained and carries the
   context needed to answer it, with the recommendation first. No internal labels (F1, S3,
   D9) unless spelled out in the same sentence.
+- **A performance problem becomes an issue the moment it is found** (owner, 2026-09-26): a
+  suspiciously low number in the CI report, a regression, a benchmark that contradicts the
+  docs. Search existing issues, then file it in the same turn with the measured numbers and
+  where they come from, what is unknown, the suspects to test and a plan — even when the
+  measurement itself has to wait for a free machine (a local verification chain makes any
+  benchmark meaningless). A chat remark or a "later" note is lost on the next compaction;
+  #475 is the first issue filed this way.
 
 ## Session budget discipline
 
