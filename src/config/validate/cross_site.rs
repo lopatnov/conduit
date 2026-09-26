@@ -187,12 +187,6 @@ pub(super) fn validate_no_duplicate_host_port(
     }
 }
 
-/// `global.workers: 0` used to be silently inert (issue #226 — the field was
-/// parsed but never applied), so a typo'd `0` had no real effect. Now that it
-/// actually reaches Pingora's `ServerConf.threads`, `0` would mean the server
-/// spawns no worker threads at all — reject it at validate-time rather than
-/// let it reach `Server::new_with_opt_and_conf` (found by CodeRabbit/Gitar
-/// review on the #226 fix itself).
 /// The port the Admin API listens on: the port of `global.admin.bind` when it parses, else the
 /// documented default ([`DEFAULT_ADMIN_BIND`]). A forwardAuth URL must not point at it (#447).
 pub(super) fn admin_port(config: &AppConfig) -> u16 {
@@ -211,6 +205,12 @@ pub(super) fn admin_port(config: &AppConfig) -> u16 {
         .unwrap_or(2019)
 }
 
+/// `global.workers: 0` used to be silently inert (issue #226 — the field was
+/// parsed but never applied), so a typo'd `0` had no real effect. Now that it
+/// actually reaches Pingora's `ServerConf.threads`, `0` would mean the server
+/// spawns no worker threads at all — reject it at validate-time rather than
+/// let it reach `Server::new_with_opt_and_conf` (found by CodeRabbit/Gitar
+/// review on the #226 fix itself).
 pub(super) fn validate_global(config: &AppConfig, errors: &mut Vec<ValidationError>) {
     if let Some(workers) = config.global.as_ref().and_then(|g| g.workers) {
         if workers == 0 {

@@ -7,9 +7,9 @@ use url::Url as ParsedUrl;
 
 use conduit_config_core::validation::ValidationError;
 
-/// `true` when `url` points at the Conduit Admin API: a loopback host (`localhost`, any `*.localhost`,
-/// an IPv4 `127.0.0.0/8` address, IPv6 `::1` or an IPv4-mapped IPv6 loopback) on `admin_port`. The port
-/// defaults to 80/443 for a URL without one, like a real request would.
+/// `true` when `url` points at the Conduit Admin API: a loopback or "this host" address (`localhost`, any
+/// `*.localhost`, an IPv4 `127.0.0.0/8` address, `0.0.0.0`, IPv6 `::1` / `::`, or an IPv4-mapped IPv6 one) on
+/// `admin_port`. The port defaults to 80/443 for a URL without one, like a real request would.
 ///
 /// Host classification uses the parsed [`url::Host`], not `host_str()`: `host_str()` returns an IPv6 host
 /// in brackets (`[::1]`), which a string comparison against `"::1"` never matches (#447).
@@ -23,9 +23,14 @@ fn targets_admin_api(url: &str, admin_port: u16) -> bool {
             let name = name.trim_end_matches('.');
             name == "localhost" || name.ends_with(".localhost")
         }
-        Some(url::Host::Ipv4(addr)) => addr.is_loopback(),
+        // `0.0.0.0` / `[::]` are "this host" when connected to (Linux, macOS), so they reach the Admin API too.
+        Some(url::Host::Ipv4(addr)) => addr.is_loopback() || addr.is_unspecified(),
         Some(url::Host::Ipv6(addr)) => {
-            addr.is_loopback() || addr.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+            addr.is_loopback()
+                || addr.is_unspecified()
+                || addr
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| v4.is_loopback() || v4.is_unspecified())
         }
         None => false,
     };
@@ -123,6 +128,13 @@ mod tests {
             "http://[::ffff:127.0.0.1]:2019/auth",
             2019
         ));
+    }
+
+    #[test]
+    fn unspecified_addresses_reach_this_host_and_are_flagged() {
+        assert!(targets_admin_api("http://0.0.0.0:2019/auth", 2019));
+        assert!(targets_admin_api("http://[::]:2019/auth", 2019));
+        assert!(targets_admin_api("http://[::ffff:0.0.0.0]:2019/auth", 2019));
     }
 
     #[test]
