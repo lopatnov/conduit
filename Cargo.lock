@@ -2949,6 +2949,7 @@ dependencies = [
  "bytes",
  "dashmap 6.2.1",
  "http",
+ "lopatnov-conduit-config-core",
  "pingora-cache",
  "pingora-core",
  "pingora-http",
@@ -3009,6 +3010,7 @@ version = "2.0.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
  "pingora-core",
  "pingora-http",
@@ -3052,6 +3054,7 @@ version = "2.0.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
  "pingora-core",
  "pingora-proxy",
@@ -3084,6 +3087,7 @@ dependencies = [
  "bytes",
  "dashmap 6.2.1",
  "http",
+ "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
  "pingora-core",
  "pingora-proxy",
@@ -3097,6 +3101,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "lopatnov-conduit-compression",
+ "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
  "pingora-core",
  "pingora-http",
@@ -3114,6 +3119,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "http",
+ "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
  "lopatnov-conduit-plugin-wasm",
  "lopatnov-conduit-script-rhai",
@@ -3178,6 +3184,7 @@ version = "2.0.0"
 dependencies = [
  "anyhow",
  "dashmap 6.2.1",
+ "lopatnov-conduit-config-core",
  "redis",
  "serde",
  "tokio",
@@ -3189,6 +3196,7 @@ name = "lopatnov-conduit-redirects"
 version = "2.0.0"
 dependencies = [
  "async-trait",
+ "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
  "pingora-core",
  "serde",
@@ -3229,6 +3237,7 @@ dependencies = [
  "indexmap 2.14.2",
  "libc",
  "lopatnov-conduit-compression",
+ "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
  "mime_guess",
  "pingora-core",
@@ -3246,6 +3255,7 @@ name = "lopatnov-conduit-tcp"
 version = "2.0.0"
 dependencies = [
  "async-trait",
+ "lopatnov-conduit-config-core",
  "pingora-core",
  "serde",
  "tokio",
@@ -3258,6 +3268,7 @@ version = "2.0.0"
 dependencies = [
  "async-trait",
  "axum",
+ "lopatnov-conduit-config-core",
  "mime_guess",
  "pingora-core",
  "serde",

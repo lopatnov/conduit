@@ -63,6 +63,7 @@ pub mod config;
 pub mod ctx;
 pub mod guard;
 pub mod limits;
+pub mod validate;
 
 pub use config::LimitsConfig;
 pub use ctx::LimitsReqState;

@@ -37,5 +37,6 @@
 pub mod config;
 pub mod guard;
 pub mod redirects;
+pub mod validate;
 
 pub use config::RedirectRule;

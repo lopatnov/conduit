@@ -7,7 +7,7 @@ use url::Url as ParsedUrl;
 
 use super::ValidationError;
 
-use super::limits::validate_rate_limit;
+use conduit_ratelimit::validate::validate_rate_limit;
 
 use crate::config::schema::{ApiKeyConfig, Consumer, ConsumerJwtConfig, ConsumersSharedJwtConfig};
 

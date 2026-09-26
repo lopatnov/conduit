@@ -1,50 +1,21 @@
-//! Validation of `limits` and `rateLimit`.
+//! Config validation for `rateLimit` (site, route and per-consumer): called by the root crate's `config::validate`.
 
-use super::ValidationError;
-
-use crate::config::schema::RateLimitConfig;
-
-pub(super) fn validate_limits(
-    cfg: &crate::config::schema::LimitsConfig,
-    prefix: &str,
-    errors: &mut Vec<ValidationError>,
-) {
-    if cfg.max_inflight_requests == Some(0) {
-        errors.push(ValidationError::new(
-            format!("{prefix}.maxInflightRequests"),
-            "limits.maxInflightRequests must be >= 1 (set to null/omit to disable)",
-        ));
-    }
-    if cfg.max_body_bytes == Some(0) {
-        errors.push(ValidationError::new(
-            format!("{prefix}.maxBodyBytes"),
-            "limits.maxBodyBytes must be >= 1 (set to null/omit to disable)",
-        ));
-    }
-    if cfg.timeout_secs == Some(0) {
-        errors.push(ValidationError::new(
-            format!("{prefix}.timeoutSecs"),
-            "limits.timeoutSecs must be >= 1 (set to null/omit to disable)",
-        ));
-    }
-}
+use crate::config::RateLimitConfig;
+use conduit_config_core::validation::ValidationError;
 
 /// Validate the shared rate-limit rules (`windowSecs`/`limit`/`algorithm`/
 /// `keyBy`/`store`).
 ///
 /// Takes a concrete `&RateLimitConfig` — as of issue #114/#137 slice 1, the
-/// site/route-level type (`crate::config::schema::RateLimitConfig`) and the
+/// site/route-level type (the root crate's `config::schema::RateLimitConfig`) and the
 /// per-consumer type (`conduit_auth_consumers::RateLimitConfig`) are the
-/// *same* type (both re-export `conduit_ratelimit::RateLimitConfig`),
-/// so all three call sites (`site.rs`, `proxy.rs`, `auth.rs`) share one signature.
+/// *same* type (both re-export this crate's `RateLimitConfig`),
+/// so the site, route and consumer callers in the root crate's config validation
+/// share one signature.
 /// Before #137 this
 /// took primitive fields specifically because the two were nominally
 /// distinct types.
-pub(super) fn validate_rate_limit(
-    cfg: &RateLimitConfig,
-    prefix: &str,
-    errors: &mut Vec<ValidationError>,
-) {
+pub fn validate_rate_limit(cfg: &RateLimitConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
     if cfg.window_secs == 0 {
         errors.push(ValidationError::new(
             format!("{prefix}.rateLimit.windowSecs"),

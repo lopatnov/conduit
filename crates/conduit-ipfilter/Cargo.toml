@@ -11,6 +11,8 @@ name = "conduit_ipfilter"
 path = "src/lib.rs"
 
 [dependencies]
+# `ValidationError` for this crate's config validation (`src/validate.rs`).
+lopatnov-conduit-config-core = { workspace = true }
 # No [features] table — ipFilter is always-on (CLAUDE.md decision #31), so
 # every dependency here (including lopatnov-conduit-core, needed by
 # guard::IpGuard) is mandatory, not `optional = true`. See src/lib.rs doc

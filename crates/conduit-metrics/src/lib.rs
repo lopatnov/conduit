@@ -42,5 +42,6 @@
 
 pub mod config;
 pub mod handler;
+pub mod validate;
 
 pub use config::MetricsConfig;

@@ -74,5 +74,6 @@
 pub mod config;
 pub mod guard;
 pub mod response;
+pub mod validate;
 
 pub use config::MiddlewareEntry;
