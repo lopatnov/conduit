@@ -187,22 +187,25 @@ pub(super) fn validate_no_duplicate_host_port(
     }
 }
 
-/// The port the Admin API listens on: the port of `global.admin.bind` when it parses, else the
+/// The address the Admin API listens on: the `global.admin.bind` when it parses, else the
 /// documented default ([`DEFAULT_ADMIN_BIND`]). A forwardAuth URL must not point at it (#447).
-pub(super) fn admin_port(config: &AppConfig) -> u16 {
+pub(super) fn admin_bind(config: &AppConfig) -> (u16, Option<&str>) {
     fn port_of(bind: &str) -> Option<u16> {
         bind.rsplit(':').next()?.parse().ok()
+    }
+    fn host_of(bind: &str) -> Option<&str> {
+        bind.rsplit_once(':').map(|(host, _)| host)
     }
     let configured = config
         .global
         .as_ref()
         .and_then(|g| g.admin.as_ref())
-        .and_then(|a| a.bind.as_deref())
-        .and_then(port_of);
+        .and_then(|a| a.bind.as_deref());
+    let bind = configured
+        .filter(|bind| port_of(bind).is_some())
+        .unwrap_or(DEFAULT_ADMIN_BIND);
     // The default is a constant with a port in it (`defaults.rs` pins that).
-    configured
-        .or_else(|| port_of(DEFAULT_ADMIN_BIND))
-        .unwrap_or(2019)
+    (port_of(bind).unwrap_or(2019), host_of(bind))
 }
 
 /// `global.workers: 0` used to be silently inert (issue #226 — the field was
