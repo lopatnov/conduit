@@ -306,6 +306,13 @@ for genuinely idle firings, not a guaranteed periodic pass.)
   and say so in the summary. A claim older than ~48 h with no branch, PR or
   follow-up comment is stale: mention it in the summary and ask rather than
   silently taking the work over.
+- **A plan in an issue comment is a snapshot — re-measure before executing it.** The `architect`
+  plans on #316 (2026-08) and #222 (2026-08-30) were written before #314–#316 and the
+  extractions in between: #316's said 12 `#[cfg]` gates (there were 42) and #222's said ~1600
+  lines of schema to move (about 800 were left). Recount what the plan counts (line counts with
+  `scripts/check_file_length.py`, gates with `grep -c '#\[cfg('`, what is still root-owned) and
+  correct the numbers in your own summary; the direction of a plan usually survives, its sizes
+  and slice count often do not.
 - **Once you have picked an issue, look for open bugs in the code it touches and bundle
   them** (owner's rule, 2026-09-26 — see `workflow.md` "Proportionate process"). Search the
   issues and the integrity-audit log for the files/functions the issue moves or changes
@@ -551,6 +558,10 @@ for genuinely idle firings, not a guaranteed periodic pass.)
 - Comment on the sub-issue (and #114 if it's a phase-completing step) with a
   short summary: what changed, the footprint delta if measured, what's next.
   This is what Step 0 of the *next* firing reads to pick up context.
+- **Close the issues yourself after the merge.** `Closes #N` in a PR body only auto-closes
+  when the PR merges into the repository's *default* branch; every sub-issue PR here merges
+  into the migration branch, so #316, #222, #447, #468 all stayed open until closed by hand.
+  Close each with a comment giving the measured result (the acceptance numbers, not "done").
 
 ## Step 9 — check the finish line
 

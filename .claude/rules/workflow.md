@@ -59,6 +59,10 @@ Concretely:
   commits are mechanical moves: those it checks against the verifier; only the
   non-mechanical parts get a line-by-line read. If a commit lands afterwards (a bot finding,
   a fix), review just the delta from the reviewed SHA to the new head, not the whole PR again.
+  Do it by resuming the same reviewer with `SendMessage` (it keeps its context: on #469 the
+  delta review of one commit took 40 s and 4 tool calls, against ~6 minutes for the full pass),
+  naming the parent SHA and the new commit. If the agent has no worktree any more it can still
+  read the branch ref from the shared object store.
   A round caused by fixing your own wording (a doc, a comment) means that text should have
   been checked before the review.
 - **Post the verdict as an actual PR comment before merging** (a short one, e.g.

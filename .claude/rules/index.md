@@ -432,6 +432,14 @@ don't stage, delete, or read into them without being asked.
   (0 errors, 0 warnings under `-D warnings` — see CLAUDE.md "Zero warnings").
 - Use `build-validator` to keep raw `cargo`/`rustc` output out of the main context — it
   returns a compact GREEN/RED verdict instead.
+- **Never patch source files with a Python (or sed) script passed through a Bash heredoc
+  when the text contains backslashes.** In this environment the heredoc silently turns `\\`
+  into `\` (and `\\n` into a real newline): the script runs without error and writes
+  something else — a Rust string continuation got glued into one line, a control's search
+  pattern stopped matching. It has happened four times (#315, #316 twice, #222). Use the
+  `Edit`/`Write` tools for any text with backslashes or quotes; a plain `cat >> file <<'EOF'`
+  append is fine when there are none. After a scripted edit, look at the result (`cat -A`, or
+  the diff) before trusting the run.
 
 ## Economy & avoiding CI races
 
