@@ -36,5 +36,6 @@ pub mod challenge;
 pub mod config;
 #[cfg(feature = "acme")]
 pub mod flow;
+pub mod warnings;
 
 pub use config::AcmeConfig;

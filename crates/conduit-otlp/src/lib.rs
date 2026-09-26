@@ -29,5 +29,6 @@
 
 pub mod config;
 pub mod tracer;
+pub mod warnings;
 
 pub use config::OtlpConfig;

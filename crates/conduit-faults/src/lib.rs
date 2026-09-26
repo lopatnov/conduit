@@ -38,5 +38,6 @@
 pub mod config;
 #[cfg(feature = "fault-injection")]
 pub mod guard;
+pub mod warnings;
 
 pub use config::{FaultAbort, FaultDelay, FaultInjectionConfig};

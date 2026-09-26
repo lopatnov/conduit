@@ -84,5 +84,6 @@ pub mod mime;
 #[cfg(feature = "static")]
 pub mod roots;
 pub mod validate;
+pub mod warnings;
 
 pub use config::{FallbackConfig, FallbackRule, StaticConfig, StaticOptions};

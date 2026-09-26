@@ -43,5 +43,6 @@
 pub mod config;
 pub mod handler;
 pub mod validate;
+pub mod warnings;
 
 pub use config::MetricsConfig;

@@ -26,5 +26,6 @@ pub mod config;
 #[cfg(feature = "tcp")]
 pub mod proxy;
 pub mod validate;
+pub mod warnings;
 
 pub use config::TcpConfig;

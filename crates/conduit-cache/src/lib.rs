@@ -95,6 +95,7 @@ pub mod disk;
 #[cfg(feature = "redis")]
 pub mod redis;
 pub mod validate;
+pub mod warnings;
 
 pub use config::CacheConfig;
 #[cfg(feature = "cache")]

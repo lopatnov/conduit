@@ -48,6 +48,7 @@ pub mod bucket;
 pub mod config;
 pub mod redis;
 pub mod validate;
+pub mod warnings;
 
 pub use bucket::{check_key, cleanup, RateLimiter, TokenBucket, MAX_BUCKETS};
 pub use config::RateLimitConfig;

@@ -39,5 +39,6 @@ pub mod config;
 #[cfg(feature = "upload")]
 pub mod server;
 pub mod validate;
+pub mod warnings;
 
 pub use config::UploadConfig;
