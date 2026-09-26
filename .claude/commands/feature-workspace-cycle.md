@@ -519,7 +519,9 @@ for genuinely idle firings, not a guaranteed periodic pass.)
   green or the unresolved-thread count is 0** (added 2026-09-18, after a merge
   that skipped this and only found two review threads by accident; the user's
   words: "I may forget, you can't"). Before *every* merge (here and in Step 1):
-  1. Fetch and read all three streams — `gh api repos/lopatnov/conduit/issues/<n>/comments`,
+  1. Fetch and read all three streams — `scripts/pr-comments.sh <n>` prints them all
+     (`--since` for what is new; it also flags checks still pending) — or by hand:
+     `gh api repos/lopatnov/conduit/issues/<n>/comments`,
      `.../pulls/<n>/comments` (inline) and `.../pulls/<n>/reviews` — from every
      author: CodeRabbit, Gitar, Sonar, Semgrep, Socket, and the user's own
      comments. A `@coderabbitai review` comment *from the user* means they asked

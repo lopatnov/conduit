@@ -204,6 +204,17 @@ matrix, CI).
   measurement itself has to wait for a free machine (a local verification chain makes any
   benchmark meaningless). A chat remark or a "later" note is lost on the next compaction;
   #475 is the first issue filed this way.
+- **Build development tools freely** (owner, 2026-09-26). When a task would be faster, safer
+  or repeatable with a script, checker, generator or small helper, write it — don't hesitate
+  and don't do the same manual sequence a third time. Examples that paid for themselves:
+  `scripts/verify-local.sh` (its first real run found four bugs in itself and stopped a wrong
+  "tests disappeared" verdict), `scripts/check_file_length.py`, `scripts/pr-comments.sh`.
+  Keep tools in the repo (`scripts/`), run them for real before relying on them, and add a
+  line to CONTRIBUTING when other people or sessions need them. **If there is no time now,
+  the idea must not stay in chat** — turn it into the thing that fits its shape: a repeatable
+  procedure → a command or skill in `.claude/`; a check → a script (and a CI step when it
+  should gate); a lookup across many docs/issues/logs → a RAG/index tool; anything else → a
+  GitHub issue (label `enhancement`, plus `fast-follow` if it came up while reviewing).
 
 ## Session budget discipline
 

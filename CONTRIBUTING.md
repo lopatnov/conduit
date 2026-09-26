@@ -264,6 +264,18 @@ unchanged against the base (tests that moved into another package must reappear 
 `target/verify-local/summary.txt` and exits non-zero on any FAIL. Do not commit while its
 `cargo hack` step runs (cargo-hack rewrites the manifests until it exits).
 
+### Reading everything said on a pull request
+
+```bash
+scripts/pr-comments.sh <pr> [--since 2026-09-26T19:00:00Z] [--full]
+```
+
+Prints the PR's head SHA and state, every check that is not green (a bot whose check is still
+pending has not commented yet), and all three comment streams from every author — issue comments,
+reviews and inline review comments. The PR page folds resolved and outdated threads and a green
+check list says nothing about comments, so use this before merging (a review a bot posts on a
+later commit is easy to miss otherwise).
+
 ### Integration tests
 
 Integration tests in `tests/` start a real Conduit process on a random port using
