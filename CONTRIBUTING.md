@@ -47,8 +47,8 @@ src/
 │   ├── args.rs          clap CLI definitions
 │   └── init.rs          conduit init wizard
 ├── config/
-│   ├── schema/          all config types (serde), one submodule per concern; mod.rs re-exports them
-│   ├── parse.rs         load_config(), from_str(), normalize()
+│   ├── schema/          facade: mod.rs re-exports every config type from crates/conduit-config (#222)
+│   ├── parse.rs         facade: load_config(), from_str(), normalize() live in crates/conduit-config
 │   ├── validate/        semantic validation + TLS cert expiry, one submodule per concern; mod.rs has validate()/feature_warnings();
 │   │                    the per-block validators and feature-off warning texts live in the owning crates (`validate.rs`/`warnings.rs`)
 │   ├── env.rs           $VAR interpolation
@@ -117,7 +117,7 @@ from how `conduit-core` ([#126](https://github.com/lopatnov/conduit/issues/126))
 actually built and independently audited. Read this before extracting a new crate,
 whether by hand or via the `crate-extractor` agent.
 
-### The four rules
+### The five rules
 
 1. **Re-export at the original location.** Every relocated item gets a `pub use` at its
    original file (and, where practical, its original line) in the root crate — e.g.
@@ -153,6 +153,14 @@ whether by hand or via the `crate-extractor` agent.
    `conduit_core::filter::path::path_matches` was accidentally hoisted from `pub(crate)` to
    `pub` during the `conduit-core` extraction and caught only in a later audit — see
    `crates/conduit-core/src/filter/path.rs`.)
+
+5. **Extracting the aggregate itself (`AppConfig`/`SiteConfig`, #222) is all-or-nothing.** A
+   struct's fields must name types from crates it depends on, so every type a `SiteConfig`
+   field points at has to move with it (or already live in a crate it can depend on) — it cannot
+   be cut into slices the way a leaf can. Do the module split as a separate earlier step
+   (#314), then move the whole directory with `git mv`. Rule 1's "original location" for an
+   aggregate is a *module path*: a facade whose body is an explicit `pub use conduit_config::schema::{…}`
+   (not a glob) satisfies it, and keeps every existing `crate::config::schema::X` call site unedited.
 
 ### Two things that are *not* part of the recipe (deliberately)
 
