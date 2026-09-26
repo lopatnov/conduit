@@ -40,7 +40,7 @@ pub(super) fn check_redis_store_consistency(config: &AppConfig, errors: &mut Vec
         // `validate_rate_limit` only checks the `redis://`/`rediss://` prefix
         // on `store` — it doesn't reject embedded control characters, so an
         // operator-supplied URL could carry a raw newline this far.
-        // `sanitize_for_log` (already used above for other config-derived
+        // `sanitize_for_log` (in `warnings.rs`, also used for other config-derived
         // values reaching a warning/error message) escapes those before they
         // can forge a fake log line in this warning's output.
         let redacted: Vec<String> = distinct

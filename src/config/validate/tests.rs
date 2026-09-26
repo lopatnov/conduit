@@ -1066,7 +1066,7 @@ fn partition_by_severity_all_warnings_yields_no_hard_errors() {
 #[test]
 fn proxy_route_url_variant_invalid_scheme_rejected() {
     // `{ "/api": "ftp://bad" }` parses as ProxyRouteTarget::Url("ftp://bad").
-    // Exercises the Url arm of validate_proxy_route_target (lines 381-385).
+    // Exercises the Url arm of `proxy::validate_proxy_route_target`.
     let e = errs(r#"{ "proxy": { "/api": "ftp://bad" } }"#);
     assert!(!e.is_empty(), "non-HTTP proxy URL must be rejected");
     assert!(
@@ -1079,7 +1079,8 @@ fn proxy_route_url_variant_invalid_scheme_rejected() {
 
 #[test]
 fn proxy_route_full_invalid_target_url_rejected() {
-    // Full form with an ftp:// target URL exercises lines 474-476 in validate_route_config.
+    // Full form with an ftp:// target URL exercises `proxy::validate_target_urls`,
+    // which `proxy::validate_route_config` calls.
     let e = errs(r#"{ "proxy": { "/api": { "targets": ["ftp://bad:4000"] } } }"#);
     assert!(!e.is_empty(), "non-HTTP target URL must be rejected");
     assert!(

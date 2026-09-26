@@ -36,7 +36,8 @@ pub(super) fn validate_limits(
 /// site/route-level type (`crate::config::schema::RateLimitConfig`) and the
 /// per-consumer type (`conduit_auth_consumers::RateLimitConfig`) are the
 /// *same* type (both re-export `conduit_ratelimit::RateLimitConfig`),
-/// so all three call sites below can share one signature. Before #137 this
+/// so all three call sites (`site.rs`, `proxy.rs`, `auth.rs`) share one signature.
+/// Before #137 this
 /// took primitive fields specifically because the two were nominally
 /// distinct types.
 pub(super) fn validate_rate_limit(
