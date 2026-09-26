@@ -1,7 +1,8 @@
 //! Warn when a proxy target points back at a listener of this same Conduit instance.
 
-// `url` is optional (issue #144, PR 4b): only the proxy-loop warning (`proxy`) and the
-// forwardAuth-targets-the-Admin-API check (`forward-auth`) parse URLs.
+// `url` is optional (issue #144, PR 4b): here only the proxy-loop warning (`proxy`) parses URLs.
+// The forwardAuth-targets-the-Admin-API check lives in `conduit-auth-forward` since #316 and
+// has its own optional `url` behind that crate's `forward-auth` feature.
 #[cfg(feature = "proxy")]
 use url::Url as ParsedUrl;
 

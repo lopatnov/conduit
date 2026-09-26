@@ -41,7 +41,10 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   `src/config/defaults.rs` deliberately stay in the root crate — the former
   is a schema decision coupled to `AppConfig`/`SiteConfig` (moves with them
   in Phase 3), the latter is mostly dead/per-feature policy, not a Layer-0
-  concern.
+  concern. Since [#316](https://github.com/lopatnov/conduit/issues/316) its
+  `ValidationError`/`Severity` are also what the `validate.rs` module of each
+  feature crate reports through (see `CONTRIBUTING.md`, "A feature crate owns
+  its config validation and its feature-off warning").
 
 - **`conduit-otlp`** (Phase 3.1, [#129](https://github.com/lopatnov/conduit/issues/129))
   — the template extraction for every subsequent feature crate. Owns
