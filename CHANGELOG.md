@@ -156,9 +156,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **A site whose `host` is an IPv6 literal was never matched by its requests.** The proxy cut
   the `Host` header at its first `:`, so `[::1]:8080` became `[`; such a request fell through
   to the catch-all site (or found none) and all of them shared one cache namespace. The
-  bracketed literal is now kept whole (`[::1]:8080` → `[::1]`), so `host: "[::1]"` matches.
-  The same cut is still made by the `allowedHosts` check and by the HTTP→HTTPS redirect;
-  those are tracked separately.
+  `allowedHosts` check (and the site-host fallback of `securityHeaders`) cut it the same way,
+  so it would have rejected such a request once it matched. Both now keep the bracketed
+  literal whole (`[::1]:8080` → `[::1]`, one shared function in `conduit-core`), so
+  `host: "[::1]"` matches and is allowed.
 
 ### Changed
 
