@@ -28,6 +28,7 @@ pingora-cache = { version = "0.9", features = ["rustls"] }
 # once member crates start publishing (see #114's crates.io-publishing risk).
 lopatnov-conduit-core        = { path = "crates/conduit-core", version = "2.0.0" }
 lopatnov-conduit-config-core = { path = "crates/conduit-config-core", version = "2.0.0" }
+lopatnov-conduit-config      = { path = "crates/conduit-config", version = "2.0.0" }
 lopatnov-conduit-otlp        = { path = "crates/conduit-otlp", version = "2.0.0" }
 lopatnov-conduit-acme        = { path = "crates/conduit-acme", version = "2.0.0" }
 lopatnov-conduit-tcp         = { path = "crates/conduit-tcp", version = "2.0.0" }
@@ -242,6 +243,9 @@ pingora-cache.workspace = true
 # --- Conduit workspace member crates ---
 lopatnov-conduit-core.workspace        = true
 lopatnov-conduit-config-core.workspace = true
+# The config schema (`AppConfig`/`SiteConfig` and every type they contain) and the file parsing that
+# produces it (issue #222); `src/config/schema/mod.rs` and `parse.rs` are facades over it.
+lopatnov-conduit-config.workspace      = true
 # Mandatory (like the two crates above), not `optional = true`: `OtlpConfig`
 # and the `global.otlp` field must stay parseable in every build so
 # `feature_warnings()` can keep warning on a config-without-feature mismatch

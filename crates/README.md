@@ -46,6 +46,22 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   feature crate reports through (see `CONTRIBUTING.md`, "A feature crate owns
   its config validation and its feature-off warning").
 
+- **`conduit-config`** (Phase 5.7, [#222](https://github.com/lopatnov/conduit/issues/222))
+  — Layer-2 config schema: `AppConfig`, `SiteConfig` and every type they
+  contain (the root-owned ones — `GlobalConfig`, `TlsConfig`, `LoggingConfig`,
+  `ApiKeyConfig`, ... — are defined here; the rest are re-exported from the
+  Layer-1 crate that owns the feature), plus `ConfigFile`/`normalize()` and
+  `load_config`/`from_str`/`from_yaml`, which bind `conduit-config-core`'s
+  generic loader to that schema. It depends on every Layer-1 config crate
+  (always, never optionally: every field stays parseable in every build) and
+  has **no Cargo features** — relocating the schema does not gate any field.
+  Root's `src/config/schema/mod.rs` (an explicit re-export list) and
+  `src/config/parse.rs` are facades over it, so every `crate::config::…` path
+  keeps resolving. What deliberately stays in the root crate: `validate`
+  (`validate()`/`feature_warnings()`, whose 17 feature-parity asserts compare a
+  crate's `COMPILED` with the *root's* feature), the file/Kubernetes
+  providers, `defaults.rs` and `rate_limit_scan.rs`.
+
 - **`conduit-otlp`** (Phase 3.1, [#129](https://github.com/lopatnov/conduit/issues/129))
   — the template extraction for every subsequent feature crate. Owns
   `OtlpConfig` (the `global.otlp` config struct) and the OTLP tracer-provider

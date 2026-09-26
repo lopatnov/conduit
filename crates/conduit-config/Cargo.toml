@@ -1,0 +1,51 @@
+[package]
+name        = "lopatnov-conduit-config"
+version.workspace    = true
+edition.workspace    = true
+description = "Layer-2 config schema for conduit's feature-driven workspace (issue #114/#222) — AppConfig, SiteConfig and the file-format parsing that turns a config file into them"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_config"
+path = "src/lib.rs"
+
+[dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }
+indexmap   = { workspace = true }
+anyhow     = { workspace = true }
+
+# The generic loading mechanism (`load_file<T>`, env interpolation, version check) — this crate
+# binds it to `ConfigFile`/`AppConfig`.
+lopatnov-conduit-config-core = { workspace = true }
+
+# Every config type a `SiteConfig`/`AppConfig` field points at lives in the Layer-1 crate that owns
+# the feature. They are always dependencies (never optional): every field must stay parseable in every
+# build so `feature_warnings()` can warn on a config-without-feature mismatch instead of the value
+# silently landing nowhere. No feature of this crate gates a field (#222 is a relocation).
+lopatnov-conduit-otlp             = { workspace = true }
+lopatnov-conduit-acme             = { workspace = true }
+lopatnov-conduit-tcp              = { workspace = true }
+lopatnov-conduit-upload           = { workspace = true }
+lopatnov-conduit-faults           = { workspace = true }
+lopatnov-conduit-auth-jwt         = { workspace = true }
+lopatnov-conduit-auth-forward     = { workspace = true }
+lopatnov-conduit-auth-consumers   = { workspace = true }
+lopatnov-conduit-cache            = { workspace = true }
+lopatnov-conduit-ipfilter         = { workspace = true }
+lopatnov-conduit-cors             = { workspace = true }
+lopatnov-conduit-security-headers = { workspace = true }
+lopatnov-conduit-ratelimit        = { workspace = true }
+lopatnov-conduit-limits           = { workspace = true }
+lopatnov-conduit-compression      = { workspace = true }
+lopatnov-conduit-static           = { workspace = true }
+lopatnov-conduit-hotreload        = { workspace = true }
+lopatnov-conduit-metrics          = { workspace = true }
+lopatnov-conduit-redirects        = { workspace = true }
+lopatnov-conduit-middleware       = { workspace = true }
+lopatnov-conduit-upstream         = { workspace = true }
+lopatnov-conduit-proxy-http       = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

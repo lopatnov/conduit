@@ -2812,6 +2812,7 @@ dependencies = [
  "lopatnov-conduit-auth-jwt",
  "lopatnov-conduit-cache",
  "lopatnov-conduit-compression",
+ "lopatnov-conduit-config",
  "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
  "lopatnov-conduit-cors",
@@ -2974,6 +2975,40 @@ dependencies = [
  "lopatnov-conduit-core",
  "serde",
  "tokio",
+]
+
+[[package]]
+name = "lopatnov-conduit-config"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "indexmap 2.14.2",
+ "lopatnov-conduit-acme",
+ "lopatnov-conduit-auth-consumers",
+ "lopatnov-conduit-auth-forward",
+ "lopatnov-conduit-auth-jwt",
+ "lopatnov-conduit-cache",
+ "lopatnov-conduit-compression",
+ "lopatnov-conduit-config-core",
+ "lopatnov-conduit-cors",
+ "lopatnov-conduit-faults",
+ "lopatnov-conduit-hotreload",
+ "lopatnov-conduit-ipfilter",
+ "lopatnov-conduit-limits",
+ "lopatnov-conduit-metrics",
+ "lopatnov-conduit-middleware",
+ "lopatnov-conduit-otlp",
+ "lopatnov-conduit-proxy-http",
+ "lopatnov-conduit-ratelimit",
+ "lopatnov-conduit-redirects",
+ "lopatnov-conduit-security-headers",
+ "lopatnov-conduit-static",
+ "lopatnov-conduit-tcp",
+ "lopatnov-conduit-upload",
+ "lopatnov-conduit-upstream",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

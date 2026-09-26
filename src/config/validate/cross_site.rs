@@ -8,6 +8,7 @@ use super::ValidationError;
 #[cfg(feature = "redis")]
 use super::warnings::sanitize_for_log;
 
+use crate::config::defaults::DEFAULT_ADMIN_BIND;
 use crate::config::schema::{AppConfig, SiteConfig};
 
 /// Warn (advisory, not fatal) when more than one distinct `redis://`/`rediss://`
@@ -184,6 +185,24 @@ pub(super) fn validate_no_duplicate_host_port(
             check_http_site_port_conflicts(i, site, port, &tcp_ports, &mut seen, errors);
         }
     }
+}
+
+/// The port the Admin API listens on: the port of `global.admin.bind` when it parses, else the
+/// documented default ([`DEFAULT_ADMIN_BIND`]). A forwardAuth URL must not point at it (#447).
+pub(super) fn admin_port(config: &AppConfig) -> u16 {
+    fn port_of(bind: &str) -> Option<u16> {
+        bind.rsplit(':').next()?.parse().ok()
+    }
+    let configured = config
+        .global
+        .as_ref()
+        .and_then(|g| g.admin.as_ref())
+        .and_then(|a| a.bind.as_deref())
+        .and_then(port_of);
+    // The default is a constant with a port in it (`defaults.rs` pins that).
+    configured
+        .or_else(|| port_of(DEFAULT_ADMIN_BIND))
+        .unwrap_or(2019)
 }
 
 /// `global.workers: 0` used to be silently inert (issue #226 — the field was
