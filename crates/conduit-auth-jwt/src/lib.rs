@@ -60,6 +60,8 @@ pub mod guard;
 #[cfg(feature = "jwt")]
 pub mod jwt;
 pub mod template;
+pub mod validate;
+pub mod warnings;
 
 pub use config::JwtAuthConfig;
 #[cfg(feature = "jwt")]

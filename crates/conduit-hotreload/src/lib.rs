@@ -65,6 +65,7 @@
 pub mod config;
 #[cfg(feature = "hotreload")]
 pub mod handler;
+pub mod warnings;
 #[cfg(feature = "hotreload")]
 pub mod watcher;
 

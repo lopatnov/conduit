@@ -519,13 +519,15 @@ subtle.workspace    = true
 # (`handler/static_files.rs`'s O_NOFOLLOW open) moved into
 # `crates/conduit-static` (#114/#139), which carries its own gated `libc`
 # edge. See the [dependencies] comment on `lopatnov-conduit-static` above.
-# url: optional (issue #144, PR 4b) -- only three root call sites parse URLs:
-# the proxy-loop warning (`proxy`), the forwardAuth-targets-the-Admin-API
-# check (`forward-auth`) and `/cache/purge` (`cache`, which implies `proxy`
-# since D1). `proxy` and `forward-auth` enable `dep:url`, so `url` and its
-# whole `idna`/`icu_*` tree (~23 crates) leave a build that has neither. The
-# validation rules themselves are unchanged wherever the thing they guard can
-# exist.
+# url: optional (issue #144, PR 4b) -- only two root call sites parse URLs:
+# the proxy-loop warning (`proxy`) and `/cache/purge` (`cache`, which implies
+# `proxy` since D1). `proxy` enables `dep:url`, so `url` and its whole
+# `idna`/`icu_*` tree (~23 crates) leave a build without it. The
+# forwardAuth-targets-the-Admin-API check, the third call site until #316,
+# moved into `crates/conduit-auth-forward`, which carries its own optional
+# `url` behind its `forward-auth` feature -- so the root's `forward-auth` no
+# longer needs `dep:url`. The validation rules themselves are unchanged
+# wherever the thing they guard can exist.
 url = { workspace = true, optional = true }
 # httpdate stays unconditional here — logging.rs (access-log CLF dates) and
 # response_phase.rs (stale-while-revalidate date handling) both use it
@@ -743,7 +745,7 @@ consumers = ["lopatnov-conduit-auth-consumers/consumers"]
 # is always a dependency (see the [dependencies] comment above); this only
 # forwards into that crate's own `forward-auth` feature, which gates the
 # real `guard::ForwardAuthGuard`.
-forward-auth = ["lopatnov-conduit-auth-forward/forward-auth", "dep:url"]
+forward-auth = ["lopatnov-conduit-auth-forward/forward-auth"]
 
 # ── Scripting & plugins ────────────────────────────────────────────────────────
 # Rhai scripting middleware (type: "script" in middleware[]). `MiddlewareEntry`

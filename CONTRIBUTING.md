@@ -49,7 +49,8 @@ src/
 ├── config/
 │   ├── schema/          all config types (serde), one submodule per concern; mod.rs re-exports them
 │   ├── parse.rs         load_config(), from_str(), normalize()
-│   ├── validate/        semantic validation + TLS cert expiry, one submodule per concern; mod.rs has validate()/feature_warnings()
+│   ├── validate/        semantic validation + TLS cert expiry, one submodule per concern; mod.rs has validate()/feature_warnings();
+│   │                    the per-block validators and feature-off warning texts live in the owning crates (`validate.rs`/`warnings.rs`)
 │   ├── env.rs           $VAR interpolation
 │   └── defaults.rs      Default impls
 ├── server/
@@ -188,6 +189,32 @@ are large/independent enough to be their own crates (bringing their own dependen
 `wasmtime`, `rhai` — that nothing else in the workspace needs) but the dispatcher itself
 still needs to be always-compiled for the same config-parses-everywhere reason every other
 `MiddlewareEntry`-shaped struct is (`CLAUDE.md` decision-#20a-style `feature_warnings()`).
+
+### A feature crate owns its config validation and its feature-off warning
+
+The crate that owns a config block also owns what `config::validate` says about it (issue
+[#316](https://github.com/lopatnov/conduit/issues/316)). Up to two always-compiled modules, next to the config types:
+
+- **`src/validate.rs`** — the block's validator, `pub fn validate_x(cfg, prefix, errors)`, reporting through
+  `conduit_config_core::validation::ValidationError` (so the crate depends on `lopatnov-conduit-config-core`).
+  The root's `src/config/validate/site.rs` calls it. A check that needs the whole `SiteConfig`/`AppConfig` (a
+  combination of two blocks, proxy-loop detection, the Redis cross-site check) stays in the root: the
+  `layer-boundaries` CI job rejects those types in a member crate.
+- **`src/warnings.rs`** — `pub const COMPILED: bool = cfg!(feature = "<this crate's feature>")` and
+  `pub fn feature_warning(i, cfg) -> Option<String>`, which is `None` when the feature is compiled in or the block is
+  absent. The message text lives here, not in the root. A test that needs the whole site (`redis`, `cache`) is
+  evaluated in the root and handed over as a `bool`. Add a text-pin test for the message.
+
+The root then needs exactly two lines per feature in `src/config/validate/warnings.rs`: a flat call in
+`check_site_simple_feature_warnings` (its position is the position of the warning in `feature_warnings()`'s output),
+and a `const _: () = assert!(<crate>::warnings::COMPILED == cfg!(feature = "<root feature>"), ..)` next to the others.
+The assert is what keeps the two features in step: if a crate feature is ever enabled without the root feature (or the
+reverse), the build fails instead of the warning silently disappearing. Cargo features are unified per build, so it
+cannot be checked from the crate alone.
+
+The golden tests (`src/config/validate/golden_tests.rs`, fixtures in `testdata/`) pin the exact ordered output of
+`validate()` and `feature_warnings()` in every feature combination; a new feature-off warning has to be added to the
+fixture, and the baseline is regenerated only for a deliberate behaviour change (see that file's module comment).
 
 ---
 

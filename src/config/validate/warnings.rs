@@ -3,6 +3,78 @@
 
 use crate::config::schema::{AppConfig, SiteConfig};
 
+// The feature-off texts live in the crate that owns each feature (#316); each crate reports through its `COMPILED` whether *its*
+// feature is on in this build. The root's feature of the same name must agree: if a crate's feature were on while the root's is
+// off (or the reverse), a warning would silently vanish or appear where it should not. Turn any such drift into a build error.
+const _: () = assert!(
+    conduit_otlp::warnings::COMPILED == cfg!(feature = "otlp"),
+    "`conduit-otlp`'s `otlp` feature and the root crate's `otlp` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_middleware::warnings::WASM_COMPILED == cfg!(feature = "wasm"),
+    "`conduit-middleware`'s `wasm` feature and the root crate's `wasm` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_middleware::warnings::RHAI_COMPILED == cfg!(feature = "rhai"),
+    "`conduit-middleware`'s `rhai` feature and the root crate's `rhai` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_proxy_http::warnings::COMPILED == cfg!(feature = "proxy"),
+    "`conduit-proxy-http`'s `proxy` feature and the root crate's `proxy` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_auth_jwt::warnings::COMPILED == cfg!(feature = "jwt"),
+    "`conduit-auth-jwt`'s `jwt` feature and the root crate's `jwt` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_auth_forward::warnings::COMPILED == cfg!(feature = "forward-auth"),
+    "`conduit-auth-forward`'s `forward-auth` feature and the root crate's `forward-auth` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_acme::warnings::COMPILED == cfg!(feature = "acme"),
+    "`conduit-acme`'s `acme` feature and the root crate's `acme` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_tcp::warnings::COMPILED == cfg!(feature = "tcp"),
+    "`conduit-tcp`'s `tcp` feature and the root crate's `tcp` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_ratelimit::warnings::COMPILED == cfg!(feature = "redis"),
+    "`conduit-ratelimit`'s `redis` feature and the root crate's `redis` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_cache::warnings::COMPILED == cfg!(feature = "cache"),
+    "`conduit-cache`'s `cache` feature and the root crate's `cache` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_upload::warnings::COMPILED == cfg!(feature = "upload"),
+    "`conduit-upload`'s `upload` feature and the root crate's `upload` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_faults::warnings::COMPILED == cfg!(feature = "fault-injection"),
+    "`conduit-faults`'s `fault-injection` feature and the root crate's `fault-injection` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_auth_consumers::warnings::COMPILED == cfg!(feature = "consumers"),
+    "`conduit-auth-consumers`'s `consumers` feature and the root crate's `consumers` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_auth_consumers::warnings::JWT_COMPILED == cfg!(feature = "jwt"),
+    "`conduit-auth-consumers`'s `jwt` feature and the root crate's `jwt` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_compression::warnings::COMPILED == cfg!(feature = "compression"),
+    "`conduit-compression`'s `compression` feature and the root crate's `compression` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_static::warnings::COMPILED == cfg!(feature = "static"),
+    "`conduit-static`'s `static` feature and the root crate's `static` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_hotreload::warnings::COMPILED == cfg!(feature = "hotreload"),
+    "`conduit-hotreload`'s `hotreload` feature and the root crate's `hotreload` feature must be enabled together"
+);
+
 /// Maps a top-level `SiteConfig` JSON/YAML key to the Cargo feature that
 /// owns it. Used by `check_extra_key_warnings` below to turn a key that
 /// lands in `SiteConfig.extra` (unrecognized by any named field) into an
@@ -89,23 +161,9 @@ pub(super) fn sanitize_for_log(s: &str) -> String {
 
 /// Check warnings for global-level feature flags (e.g. OTLP).
 pub(super) fn check_global_feature_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
-    // ── global.otlp ───────────────────────────────────────────────────────────
-    #[cfg(not(feature = "otlp"))]
-    if config
-        .global
-        .as_ref()
-        .and_then(|g| g.otlp.as_ref())
-        .is_some()
-    {
-        warnings.push(
-            "global.otlp is configured but Conduit was compiled without the `otlp` feature \
-             — OpenTelemetry tracing will be disabled. \
-             Recompile with `--features otlp` to enable."
-                .to_owned(),
-        );
-    }
-    #[cfg(feature = "otlp")]
-    let _ = (config, &warnings);
+    warnings.extend(conduit_otlp::warnings::feature_warning(
+        config.global.as_ref().and_then(|g| g.otlp.as_ref()),
+    ));
 }
 
 /// Check per-site feature-gated option warnings.
@@ -117,271 +175,86 @@ pub(super) fn check_per_site_feature_warnings(config: &AppConfig, warnings: &mut
     }
 }
 
-/// Warn about `proxy` configuration a build without the `proxy` feature cannot
-/// honour (issue #144): the router ignores `sites[].proxy` entirely and ends a
-/// `routes[]` entry with a `proxy` action in the site's fallback response, so
-/// without this the operator would just see 404s and no explanation.
-///
-/// Two cfg'd variants rather than a `#[cfg]` inside one body, so the
-/// proxy-enabled build carries no unused-variable noise (same shape as
-/// `resolve_site_proxy` in `router.rs`).
-#[cfg(not(feature = "proxy"))]
+/// `proxy` / `routes[].proxy` in a build without the `proxy` feature (issue #144).
 fn check_site_proxy_feature_warnings(i: usize, site: &SiteConfig, warnings: &mut Vec<String>) {
-    if site.proxy.is_some() {
-        warnings.push(format!(
-            "sites[{i}].proxy is configured but Conduit was compiled without the `proxy` \
-             feature — reverse proxying is disabled and this configuration will be ignored \
-             (requests fall through to `static`/`fallback`). \
-             Recompile with `--features proxy` to enable."
-        ));
-    }
-    for (j, route) in site.routes.iter().flatten().enumerate() {
-        if route.proxy.is_some() {
-            warnings.push(format!(
-                "sites[{i}].routes[{j}].proxy is configured but Conduit was compiled without \
-                 the `proxy` feature — requests matching this route are answered by the \
-                 site's `fallback` response (its `static` action, if any, is not served \
-                 either). Recompile with `--features proxy` to enable."
-            ));
-        }
-    }
+    conduit_proxy_http::warnings::feature_warnings(
+        i,
+        site.proxy.as_ref(),
+        site.routes.as_deref(),
+        warnings,
+    );
 }
 
-#[cfg(feature = "proxy")]
-fn check_site_proxy_feature_warnings(_i: usize, _site: &SiteConfig, _warnings: &mut Vec<String>) {}
-
-/// Check middleware-level feature warnings (wasm, rhai) for a single site.
+/// Middleware-level feature warnings (wasm, rhai) for a single site.
 fn check_site_middleware_feature_warnings(i: usize, site: &SiteConfig, warnings: &mut Vec<String>) {
-    let Some(middleware) = &site.middleware else {
-        return;
-    };
-    for (j, entry) in middleware.iter().enumerate() {
-        // ── middleware type: "wasm" ───────────────────────────────────────────
-        #[cfg(not(feature = "wasm"))]
-        if entry.r#type == "wasm" {
-            warnings.push(format!(
-                "sites[{i}].middleware[{j}] has type \"wasm\" but Conduit was compiled \
-                 without the `wasm` feature — this middleware entry will be ignored. \
-                 Recompile with `--features wasm` to enable."
-            ));
-        }
-        // ── Rhai scripting (feature: rhai) ────────────────────────────────────
-        #[cfg(not(feature = "rhai"))]
-        if entry.r#type == "script" {
-            warnings.push(format!(
-                "sites[{i}].middleware[{j}] has type \"script\" but Conduit was compiled \
-                 without the `rhai` feature — this entry will be ignored. \
-                 Recompile with `--features rhai` to enable."
-            ));
-        }
-        #[cfg(all(feature = "wasm", feature = "rhai"))]
-        let _ = (i, j, entry, &warnings);
+    if let Some(middleware) = &site.middleware {
+        conduit_middleware::warnings::feature_warnings(i, middleware, warnings);
     }
 }
 
-/// Check simple (non-middleware) per-site feature warnings.
+/// Simple (non-middleware) per-site feature warnings, in a fixed order that the golden tests pin.
+///
+/// `redis` and `cache` need the whole site to decide whether the feature would matter (`site_uses_redis_store`,
+/// `site_has_cache_config`), so the root evaluates those two predicates and hands the crate a `bool`.
+/// `consumers` appears twice on purpose: the plain feature-off warning is 9th and the consumers-without-`jwt` one 14th, and
+/// the warnings between them keep their positions.
 fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mut Vec<String>) {
-    // ── JWT authentication (feature: jwt) ────────────────────────────────────
-    #[cfg(not(feature = "jwt"))]
-    if site.jwt_auth.is_some() {
-        warnings.push(format!(
-            "sites[{i}].jwtAuth is configured but Conduit was compiled without the `jwt` \
-             feature — JWT authentication will be disabled. \
-             Recompile with `--features jwt` to enable."
-        ));
-    }
-
-    // ── ForwardAuth (feature: forward-auth) ──────────────────────────────────
-    #[cfg(not(feature = "forward-auth"))]
-    if site.forward_auth.is_some() {
-        warnings.push(format!(
-            "sites[{i}].forwardAuth is configured but Conduit was compiled without the \
-             `forward-auth` feature — ForwardAuth will be disabled. \
-             Recompile with `--features forward-auth` to enable."
-        ));
-    }
-
-    // ── ACME / auto-TLS (feature: acme) ──────────────────────────────────────
-    #[cfg(not(feature = "acme"))]
-    if site.tls.as_ref().and_then(|t| t.acme.as_ref()).is_some() {
-        warnings.push(format!(
-            "sites[{i}].tls.acme is configured but Conduit was compiled without the `acme` \
-             feature — automatic TLS certificate provisioning will be disabled. \
-             Recompile with `--features acme` to enable."
-        ));
-    }
-
-    // ── TCP proxy (feature: tcp) ──────────────────────────────────────────────
-    #[cfg(not(feature = "tcp"))]
-    if site.tcp.is_some() {
-        warnings.push(format!(
-            "sites[{i}].tcp is configured but Conduit was compiled without the `tcp` \
-             feature — TCP proxy mode will be disabled. \
-             Recompile with `--features tcp` to enable."
-        ));
-    }
-
-    // ── Redis (feature: redis) ────────────────────────────────────────────────
-    //
-    // Checks site, route, and consumer levels alike (issue #322 gave the
-    // latter two real effect when `redis` *is* compiled — before that, a
-    // route/consumer `store: "redis://..."` was always a no-op regardless of
-    // this feature, so warning about it there would have been misleading).
-    #[cfg(not(feature = "redis"))]
-    {
-        if site_uses_redis_store(site) {
-            warnings.push(format!(
-                "sites[{i}].rateLimit.store (site, route, or consumer level) uses Redis but \
-                 Conduit was compiled without the `redis` feature — falling back to in-memory \
-                 rate limiting everywhere. Recompile with `--features redis` to enable."
-            ));
-        }
-    }
-
-    // ── Cache (feature: cache) ────────────────────────────────────────────────
-    #[cfg(not(feature = "cache"))]
-    {
-        let has_cache = site_has_cache_config(site);
-        if has_cache {
-            warnings.push(format!(
-                "sites[{i}] has proxy routes with cache configured but Conduit was compiled \
-                 without the `cache` feature — response caching will be disabled. \
-                 Recompile with `--features cache` to enable."
-            ));
-        }
-    }
-
-    // ── Upload (feature: upload) ──────────────────────────────────────────────
-    #[cfg(not(feature = "upload"))]
-    if site.upload.is_some() {
-        warnings.push(format!(
-            "sites[{i}].upload is configured but Conduit was compiled without the `upload` \
-             feature — file upload will be disabled. \
-             Recompile with `--features upload` to enable."
-        ));
-    }
-
-    // ── Fault injection (feature: fault-injection) ────────────────────────────
-    #[cfg(not(feature = "fault-injection"))]
-    if site.fault_injection.is_some() {
-        warnings.push(format!(
-            "sites[{i}].faultInjection is configured but Conduit was compiled without the \
-             `fault-injection` feature — fault injection will be disabled. \
-             Recompile with `--features fault-injection` to enable."
-        ));
-    }
-
-    // ── Consumers (feature: consumers) ────────────────────────────────────────
-    #[cfg(not(feature = "consumers"))]
-    if site.consumers.is_some() {
-        warnings.push(format!(
-            "sites[{i}].consumers is configured but Conduit was compiled without the \
-             `consumers` feature — consumer authentication will be disabled and every \
-             request will bypass it. \
-             Recompile with `--features consumers` to enable."
-        ));
-    }
-
-    // ── Compression (feature: compression) ───────────────────────────────────
-    // Unlike every other feature checked here, `compression` is default-on
-    // at the root crate (issue #114/#138) — this warning only fires for a
-    // deliberate `--no-default-features` build (or one that otherwise
-    // excludes `compression`), same mechanism as the rest of this function.
-    #[cfg(not(feature = "compression"))]
-    if site.compression.is_some() {
-        warnings.push(format!(
-            "sites[{i}].compression is configured but Conduit was compiled without the \
-             `compression` feature — response compression will be disabled. \
-             Recompile with `--features compression` to enable."
-        ));
-    }
-
-    // ── Static files (feature: static) ────────────────────────────────────────
-    // Unlike every other feature checked here besides `compression`, `static`
-    // is default-on at the root crate (issue #114/#139) — this warning only
-    // fires for a deliberate `--no-default-features` build (or one that
-    // otherwise excludes `static`), same mechanism as the rest of this
-    // function.
-    #[cfg(not(feature = "static"))]
-    if site.static_files.is_some() {
-        warnings.push(format!(
-            "sites[{i}].static is configured but Conduit was compiled without the `static` \
-             feature — static file serving will be disabled. \
-             Recompile with `--features static` to enable."
-        ));
-    }
-
-    // ── Fallback responses (feature: static) ──────────────────────────────────
-    // Same default-on caveat as `static` above — `fallback` is served by the
-    // same crate/feature (crates/conduit-static, issue #114/#139).
-    #[cfg(not(feature = "static"))]
-    if site.fallback.is_some() {
-        warnings.push(format!(
-            "sites[{i}].fallback is configured but Conduit was compiled without the `static` \
-             feature — fallback responses (including the site's default 404) will be \
-             disabled. \
-             Recompile with `--features static` to enable."
-        ));
-    }
-
-    // ── Hot reload (feature: hotreload) ───────────────────────────────────────
-    // Unlike every other feature checked here besides `compression`/`static`,
-    // `hotreload` is default-on at the root crate (issue #114/#140) — this
-    // warning only fires for a deliberate `--no-default-features` build (or
-    // one that otherwise excludes `hotreload`), same mechanism as the rest of
-    // this function. Previously had no `feature_warnings()` case at all
-    // (found during #140's extraction) — `hotReload` was never gated behind
-    // any feature pre-extraction, so there was nothing to warn about yet.
-    #[cfg(not(feature = "hotreload"))]
-    if site.hot_reload.is_some() {
-        warnings.push(format!(
-            "sites[{i}].hotReload is configured but Conduit was compiled without the \
-             `hotreload` feature — browser hot-reload (the SSE stream and file watcher) will \
-             be disabled. \
-             Recompile with `--features hotreload` to enable."
-        ));
-    }
-
-    // ── Consumer JWT / sharedJwt without the `jwt` feature ────────────────────
-    // `consumers` alone doesn't imply `jwt` — a consumer whose only credential
-    // is `jwt` (V2) or a `consumers.sharedJwt` block (V3) is silently
-    // unreachable without it (see `check_consumer_credentials`/
-    // `identify_consumer` in `crates/conduit-auth-consumers/src/identify.rs`,
-    // both `jwt`-gated).
-    #[cfg(all(feature = "consumers", not(feature = "jwt")))]
-    if let Some(ref consumers_cfg) = site.consumers {
-        let has_shared_jwt = consumers_cfg.shared_jwt.is_some();
-        let any_consumer_jwt = consumers_cfg.consumers.iter().any(|c| c.jwt.is_some());
-        if has_shared_jwt || any_consumer_jwt {
-            warnings.push(format!(
-                "sites[{i}].consumers uses `sharedJwt` or a consumer `jwt` credential but \
-                 Conduit was compiled without the `jwt` feature — those consumers will be \
-                 permanently unreachable. \
-                 Recompile with `--features jwt` to enable."
-            ));
-        }
-    }
-
-    // Suppress unused-variable warning when all per-site features are enabled.
-    #[cfg(all(
-        feature = "jwt",
-        feature = "forward-auth",
-        feature = "acme",
-        feature = "tcp",
-        feature = "redis",
-        feature = "cache",
-        feature = "upload",
-        feature = "fault-injection",
-        feature = "consumers",
-        feature = "compression",
-        feature = "static",
-        feature = "hotreload"
-    ))]
-    let _ = (i, site, warnings);
+    warnings.extend(conduit_auth_jwt::warnings::feature_warning(
+        i,
+        site.jwt_auth.as_ref(),
+    ));
+    warnings.extend(conduit_auth_forward::warnings::feature_warning(
+        i,
+        site.forward_auth.as_ref(),
+    ));
+    warnings.extend(conduit_acme::warnings::feature_warning(
+        i,
+        site.tls.as_ref().and_then(|t| t.acme.as_ref()),
+    ));
+    warnings.extend(conduit_tcp::warnings::feature_warning(i, site.tcp.as_ref()));
+    warnings.extend(conduit_ratelimit::warnings::feature_warning(
+        i,
+        site_uses_redis_store(site),
+    ));
+    warnings.extend(conduit_cache::warnings::feature_warning(
+        i,
+        site_has_cache_config(site),
+    ));
+    warnings.extend(conduit_upload::warnings::feature_warning(
+        i,
+        site.upload.as_ref(),
+    ));
+    warnings.extend(conduit_faults::warnings::feature_warning(
+        i,
+        site.fault_injection.as_ref(),
+    ));
+    warnings.extend(conduit_auth_consumers::warnings::feature_warning(
+        i,
+        site.consumers.as_ref(),
+    ));
+    warnings.extend(conduit_compression::warnings::feature_warning(
+        i,
+        site.compression.as_ref(),
+    ));
+    warnings.extend(conduit_static::warnings::static_feature_warning(
+        i,
+        site.static_files.as_ref(),
+    ));
+    warnings.extend(conduit_static::warnings::fallback_feature_warning(
+        i,
+        site.fallback.as_ref(),
+    ));
+    warnings.extend(conduit_hotreload::warnings::feature_warning(
+        i,
+        site.hot_reload.as_ref(),
+    ));
+    warnings.extend(conduit_auth_consumers::warnings::jwt_feature_warning(
+        i,
+        site.consumers.as_ref(),
+    ));
 }
 
 /// Return `true` when any proxy route in the site has a `cache` config block.
-#[cfg(not(feature = "cache"))]
 fn site_has_cache_config(site: &SiteConfig) -> bool {
     match &site.proxy {
         Some(crate::config::schema::ProxyConfig::Routes(routes)) => routes.values().any(|t| {
@@ -400,7 +273,6 @@ fn site_has_cache_config(site: &SiteConfig) -> bool {
 /// find_redis_rate_limit_store`'s scan (issue #322), but only needs a yes/no
 /// answer here rather than the actual URL. Delegates to the shared
 /// [`crate::config::rate_limit_scan::iter_rate_limit_configs`] walk.
-#[cfg(not(feature = "redis"))]
 fn site_uses_redis_store(site: &SiteConfig) -> bool {
     fn is_redis_store(store: &str) -> bool {
         store.starts_with("redis://") || store.starts_with("rediss://")
@@ -415,16 +287,7 @@ fn site_uses_redis_store(site: &SiteConfig) -> bool {
 pub(super) fn check_jwt_secret_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
     for (i, site) in config.sites.iter().enumerate() {
         if let Some(jwt) = &site.jwt_auth {
-            if let Some(secret) = &jwt.secret {
-                if secret.len() < 32 {
-                    warnings.push(format!(
-                        "sites[{i}].jwtAuth.secret is only {} bytes — minimum recommended \
-                         length is 32 bytes for HS256.  A short secret can be brute-forced. \
-                         Use a cryptographically random secret of at least 32 bytes.",
-                        secret.len()
-                    ));
-                }
-            }
+            warnings.extend(conduit_auth_jwt::warnings::secret_warning(i, jwt));
         }
         check_consumer_jwt_secret_warnings(i, site, warnings);
     }
@@ -432,21 +295,8 @@ pub(super) fn check_jwt_secret_warnings(config: &AppConfig, warnings: &mut Vec<S
 
 /// Warn when consumer-level JWT secrets are too short.
 fn check_consumer_jwt_secret_warnings(i: usize, site: &SiteConfig, warnings: &mut Vec<String>) {
-    let Some(consumers_cfg) = &site.consumers else {
-        return;
-    };
-    for (j, consumer) in consumers_cfg.consumers.iter().enumerate() {
-        if let Some(jwt) = &consumer.jwt {
-            if let Some(secret) = &jwt.secret {
-                if secret.len() < 32 {
-                    warnings.push(format!(
-                        "sites[{i}].consumers.consumers[{j}].jwt.secret is only {} bytes \
-                         — minimum recommended length is 32 bytes.",
-                        secret.len()
-                    ));
-                }
-            }
-        }
+    if let Some(consumers_cfg) = &site.consumers {
+        conduit_auth_consumers::warnings::secret_warnings(i, consumers_cfg, warnings);
     }
 }
 
@@ -454,13 +304,7 @@ fn check_consumer_jwt_secret_warnings(i: usize, site: &SiteConfig, warnings: &mu
 pub(super) fn check_metrics_auth_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
     for (i, site) in config.sites.iter().enumerate() {
         if let Some(metrics) = &site.metrics {
-            if metrics.token.is_none() {
-                warnings.push(format!(
-                    "sites[{i}].metrics is configured without a token — the \
-                     /__metrics__ endpoint is publicly accessible. \
-                     Set metrics.token to require Bearer authentication in production."
-                ));
-            }
+            warnings.extend(conduit_metrics::warnings::token_warning(i, metrics));
         }
     }
 }

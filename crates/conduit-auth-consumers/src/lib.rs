@@ -52,6 +52,8 @@
 pub mod config;
 #[cfg(feature = "consumers")]
 pub mod identify;
+pub mod validate;
+pub mod warnings;
 
 pub use config::{
     Consumer, ConsumerBasicAuth, ConsumerJwtConfig, ConsumersConfig, ConsumersSharedJwtConfig,

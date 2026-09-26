@@ -40,5 +40,6 @@
 pub mod config;
 pub mod cors;
 pub mod guard;
+pub mod validate;
 
 pub use config::{CorsConfig, CorsOptions};

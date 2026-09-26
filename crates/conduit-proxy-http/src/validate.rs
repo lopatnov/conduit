@@ -1,14 +1,14 @@
-//! Validation of `proxy`/`routes[]` proxy targets, route configs, caches, upstream groups and rewrites.
+//! Config validation for `proxy`/`routes[]`: proxy targets, route configs, caches, upstream groups and rewrites. Called by the root
+//! crate's `config::validate`.
 
-use super::ValidationError;
+use conduit_cache::validate::validate_cache_config;
+use conduit_config_core::validation::ValidationError;
+use conduit_ratelimit::validate::validate_rate_limit;
+use conduit_upstream::{LoadBalanceStrategy, ProxyTarget, UpstreamGroup};
 
-use super::limits::validate_rate_limit;
+use crate::config::{ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, RewriteRule};
 
-use crate::config::schema::{
-    LoadBalanceStrategy, ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RewriteRule,
-};
-
-pub(super) fn validate_proxy(proxy: &ProxyConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
+pub fn validate_proxy(proxy: &ProxyConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
     match proxy {
         ProxyConfig::Single(url) => {
             if !is_valid_upstream_url(url) {
@@ -72,7 +72,7 @@ fn is_valid_upstream_url(url: &str) -> bool {
     !rest.split('/').next().unwrap_or("").is_empty()
 }
 
-pub(super) fn validate_route_config(
+pub fn validate_route_config(
     cfg: &ProxyRouteConfig,
     prefix: &str,
     errors: &mut Vec<ValidationError>,
@@ -165,39 +165,9 @@ pub(super) fn validate_route_config(
     }
 }
 
-/// Validate the `cache` config block on a proxy route.
-fn validate_cache_config(
-    cache: &crate::config::schema::CacheConfig,
-    prefix: &str,
-    errors: &mut Vec<ValidationError>,
-) {
-    let store = &cache.store;
-    let valid = store == "memory"
-        || store.starts_with("redis://")
-        || store.starts_with("rediss://")
-        || store.starts_with("disk:");
-    if !valid {
-        errors.push(ValidationError::new(
-            format!("{prefix}.store"),
-            format!(
-                "invalid store \"{store}\" — must be \"memory\", \
-                 a redis:// URL, a rediss:// URL (TLS), or disk:<path>"
-            ),
-        ));
-    }
-    if let (Some(swr), Some(ttl)) = (cache.stale_while_revalidate_secs, cache.ttl_secs) {
-        if swr as u64 > ttl.saturating_mul(10) {
-            // Not a hard error, just a suspicious config.
-            tracing::debug!(
-                "{prefix}.staleWhileRevalidateSecs ({swr}) is more than 10× ttlSecs ({ttl})"
-            );
-        }
-    }
-}
-
 /// Validate upstream groups: non-empty targets and WRR strategy requirements.
 fn validate_groups_config(
-    groups: &[crate::config::schema::UpstreamGroup],
+    groups: &[UpstreamGroup],
     prefix: &str,
     errors: &mut Vec<ValidationError>,
 ) {

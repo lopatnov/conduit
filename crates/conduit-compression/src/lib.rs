@@ -47,5 +47,6 @@
 pub mod config;
 #[cfg(feature = "compression")]
 pub mod logic;
+pub mod warnings;
 
 pub use config::{CompressionConfig, CompressionOptions};

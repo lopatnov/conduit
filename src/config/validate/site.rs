@@ -2,14 +2,22 @@
 
 use super::ValidationError;
 
-use super::auth::{validate_api_key, validate_consumers, validate_forward_auth, validate_jwt_auth};
-use super::handlers::{
-    validate_fallback, validate_metrics, validate_middleware, validate_redirect_rules,
-    validate_upload,
-};
-use super::limits::{validate_limits, validate_rate_limit};
-use super::net::{validate_cors, validate_ip_filter};
-use super::proxy::{validate_proxy, validate_route_config};
+use conduit_auth_consumers::validate::validate_consumers;
+use conduit_auth_forward::validate::validate_forward_auth;
+use conduit_auth_jwt::validate::validate_jwt_auth;
+use conduit_cors::validate::validate_cors;
+use conduit_ipfilter::validate::validate_ip_filter;
+use conduit_limits::validate::validate_limits;
+use conduit_metrics::validate::validate_metrics;
+use conduit_middleware::validate::validate_middleware;
+use conduit_proxy_http::validate::{validate_proxy, validate_route_config};
+use conduit_ratelimit::validate::validate_rate_limit;
+use conduit_redirects::validate::validate_redirect_rules;
+use conduit_static::validate::validate_fallback;
+use conduit_tcp::validate::validate_tcp;
+use conduit_upload::validate::validate_upload;
+
+use super::auth::validate_api_key;
 use super::tls::validate_tls;
 
 use crate::config::schema::{ProxyRouteTarget, SiteConfig, TcpConfig};
@@ -113,40 +121,7 @@ fn validate_tcp_site(
     prefix: &str,
     errors: &mut Vec<ValidationError>,
 ) {
-    if tcp.targets.is_empty() {
-        errors.push(ValidationError::new(
-            format!("{prefix}.tcp.targets"),
-            "at least one target is required for a TCP proxy site",
-        ));
-    }
-    for (i, t) in tcp.targets.iter().enumerate() {
-        // Targets must be "host:port" — no http:// prefix.
-        if t.starts_with("http://") || t.starts_with("https://") {
-            errors.push(ValidationError::new(
-                format!("{prefix}.tcp.targets[{i}]"),
-                format!("TCP target \"{t}\" must be a plain host:port — no http:// prefix"),
-            ));
-        } else {
-            // Validate host:port using SocketAddr parsing (handles IPv4 and IPv6).
-            let valid = t.parse::<std::net::SocketAddr>().is_ok()
-                || t.rsplit_once(':')
-                    .map(|(host, port)| {
-                        !host.is_empty()
-                            && !port.is_empty()
-                            && port.chars().all(|c| c.is_ascii_digit())
-                    })
-                    .unwrap_or(false);
-            if !valid {
-                errors.push(ValidationError::new(
-                    format!("{prefix}.tcp.targets[{i}]"),
-                    format!(
-                        "TCP target \"{t}\" must include a port, e.g. \"host:3306\" \
-                         or \"[::1]:3306\" for IPv6"
-                    ),
-                ));
-            }
-        }
-    }
+    validate_tcp(tcp, prefix, errors);
     // TCP sites cannot be combined with HTTP features.
     if site.proxy.is_some() {
         errors.push(ValidationError::new(

@@ -41,5 +41,6 @@
 pub mod config;
 pub mod guard;
 pub mod ip_filter;
+pub mod validate;
 
 pub use config::IpFilterConfig;
