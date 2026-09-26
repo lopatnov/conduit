@@ -110,6 +110,21 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   `[dev-dependencies]` entry for in-memory TLS test certificates, unrelated
   to ACME.
 
+- **`conduit-auth-jwt`**, **`conduit-auth-forward`**, **`conduit-auth-consumers`**
+  ([#133](https://github.com/lopatnov/conduit/issues/133) and
+  [#134](https://github.com/lopatnov/conduit/issues/134)) — the `jwtAuth`, `forwardAuth` and `consumers` config types (always
+  compiled) and, behind each crate's own `jwt` / `forward-auth` / `consumers`
+  feature, the guards. Since [#316](https://github.com/lopatnov/conduit/issues/316)
+  each also owns its config validation (`validate.rs`) and feature-off warning
+  (`warnings.rs`). The secret-xor-`jwksUrl` config check is shared:
+  `conduit-auth-consumers` calls `conduit_auth_jwt::validate::check_secret_or_jwks`
+  ([#468](https://github.com/lopatnov/conduit/issues/468)), so it depends on
+  `conduit-auth-jwt` unconditionally — a `--no-default-features` consumers
+  build links that crate's always-compiled `serde`/`serde_json`/`regex`
+  surface, not its `jwt` feature. `conduit-auth-forward`'s `forward-auth`
+  feature also pulls in `url`, for the rule that rejects a `forwardAuth` URL
+  pointing at the Admin API.
+
 - **`conduit-faults`** (Phase 3.4, [#132](https://github.com/lopatnov/conduit/issues/132))
   — fault injection (chaos testing). Owns `FaultInjectionConfig`/`FaultAbort`/
   `FaultDelay` (the `sites[].faultInjection` config structs) and the real
