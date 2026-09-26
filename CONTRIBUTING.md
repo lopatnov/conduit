@@ -245,6 +245,24 @@ cargo test -- --nocapture
 cargo bench
 ```
 
+### Verifying a refactor or an extraction
+
+`cargo test` does not show a feature that silently stopped being compiled or a test that
+silently stopped running. For a PR that moves code between crates or changes the feature graph,
+run the whole chain once on the final head:
+
+```bash
+scripts/verify-local.sh --base <rev-before-the-change>      # ~1 h; --quick skips tests, goldens and cargo hack
+scripts/verify-local.sh --moved-to lopatnov-conduit-config:config:: --also-pkg lopatnov-conduit-config
+```
+
+It checks CI's dependency-leak rule, that the set of third-party crates and the list of tests are
+unchanged against the base (tests that moved into another package must reappear there), clippy
+`-D warnings` on eight profiles, the tests, the validation golden tests in every feature set, and
+`cargo hack --each-feature`. See the header of the script for the options; it writes
+`target/verify-local/summary.txt` and exits non-zero on any FAIL. Do not commit while its
+`cargo hack` step runs (cargo-hack rewrites the manifests until it exits).
+
 ### Integration tests
 
 Integration tests in `tests/` start a real Conduit process on a random port using
