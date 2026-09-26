@@ -12,6 +12,8 @@ use conduit_config_core::redact::redact_url;
 #[cfg(feature = "redis")]
 use conduit_config_core::scheme::is_redis_url;
 
+use conduit_auth_forward::validate::AdminEndpoint;
+
 use crate::config::defaults::DEFAULT_ADMIN_BIND;
 use crate::config::schema::{AppConfig, SiteConfig};
 
@@ -155,22 +157,37 @@ pub(super) fn validate_no_duplicate_host_port(
     }
 }
 
-/// The port the Admin API listens on: the port of `global.admin.bind` when it parses, else the
-/// documented default ([`DEFAULT_ADMIN_BIND`]). A forwardAuth URL must not point at it (#447).
-pub(super) fn admin_port(config: &AppConfig) -> u16 {
-    fn port_of(bind: &str) -> Option<u16> {
-        bind.rsplit(':').next()?.parse().ok()
-    }
+/// Where the Admin API listens: the host and port of `global.admin.bind` when it parses, else the
+/// documented default ([`DEFAULT_ADMIN_BIND`]). A forwardAuth URL must not point at it (#447, #470).
+pub(super) fn admin_endpoint(config: &AppConfig) -> AdminEndpoint {
     let configured = config
         .global
         .as_ref()
         .and_then(|g| g.admin.as_ref())
         .and_then(|a| a.bind.as_deref())
-        .and_then(port_of);
+        .and_then(split_bind);
     // The default is a constant with a port in it (`defaults.rs` pins that).
     configured
-        .or_else(|| port_of(DEFAULT_ADMIN_BIND))
-        .unwrap_or(2019)
+        .or_else(|| split_bind(DEFAULT_ADMIN_BIND))
+        .unwrap_or(AdminEndpoint::on_port(2019))
+}
+
+/// Split a `global.admin.bind` value into its host and port: a socket address first (`192.0.2.10:2019`,
+/// `[2001:db8::1]:2019` — the host is returned without brackets), else `name:port`.
+fn split_bind(bind: &str) -> Option<AdminEndpoint> {
+    if let Ok(addr) = bind.parse::<std::net::SocketAddr>() {
+        return Some(AdminEndpoint {
+            host: Some(addr.ip().to_string()),
+            port: addr.port(),
+        });
+    }
+    let (host, port) = bind.rsplit_once(':')?;
+    let port = port.parse().ok()?;
+    // A bare IPv6 address without brackets is not a `host:port` pair.
+    (!host.is_empty() && !host.contains(':')).then(|| AdminEndpoint {
+        host: Some(host.to_owned()),
+        port,
+    })
 }
 
 /// `global.workers: 0` used to be silently inert (issue #226 — the field was
