@@ -17,14 +17,15 @@
 # Needs an authenticated `gh`. Read-only.
 set -uo pipefail
 
-usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 PR=""; SINCE="0000-00-00T00:00:00Z"; LIMIT=900; REPO=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --since) SINCE="${2:-}"; shift 2 ;;
+    # `shift 2` with one argument left shifts nothing and the loop would see the option again for ever.
+    --since) [ $# -ge 2 ] || { echo "--since needs a value" >&2; usage; }; SINCE="$2"; shift 2 ;;
     --full) LIMIT=1000000; shift ;;
-    --repo) REPO="${2:-}"; shift 2 ;;
+    --repo) [ $# -ge 2 ] || { echo "--repo needs a value" >&2; usage; }; REPO="$2"; shift 2 ;;
     -h|--help) usage 0 ;;
     -*) echo "unknown option: $1" >&2; usage ;;
     *) [ -z "$PR" ] && PR="$1" || { echo "unexpected argument: $1" >&2; usage; }; shift ;;
@@ -46,8 +47,17 @@ gh pr view "$PR" -R "$REPO" --json title,state,baseRefName,headRefOid,mergeState
 
 echo
 echo "== checks that are not green =="
-CHECKS=$(gh pr checks "$PR" -R "$REPO" 2>/dev/null | awk -F'\t' '$2 != "pass" && $2 != "skipping" {print "  " $2 "\t" $1}')
-if [ -z "$CHECKS" ]; then echo "  (all passing)"; else printf '%s\n' "$CHECKS"; fi
+# `gh pr checks` exits 8 while checks are pending and 1 when some failed, and prints its tab-separated table either
+# way; anything without a table (auth or network error, bad repo, "no checks reported") is a real failure and must
+# not be shown as a green list (a false "all passing" on a script meant to gate merges).
+RAW=$(gh pr checks "$PR" -R "$REPO" 2>&1); RC=$?
+if ! printf '%s\n' "$RAW" | grep -q "$(printf '\t')"; then
+  echo "  !! could not read the checks (gh exit $RC): ${RAW:-no output}"
+  CHECKS=""
+else
+  CHECKS=$(printf '%s\n' "$RAW" | awk -F'\t' 'NF > 1 && $2 != "pass" && $2 != "skipping" {print "  " $2 "\t" $1}')
+  if [ -z "$CHECKS" ]; then echo "  (all passing)"; else printf '%s\n' "$CHECKS"; fi
+fi
 if printf '%s\n' "$CHECKS" | grep -qiE 'pending|queued|in_progress'; then
   echo "  !! something is still running — a bot that has not finished has not commented yet; run this again"
 fi
