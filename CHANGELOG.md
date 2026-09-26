@@ -225,6 +225,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `cargo build` keeps serving static files and fallback responses exactly
   like before; only `--no-default-features` (without re-adding `static`)
   now produces a build with neither capability compiled in.
+- **Config validation moved into the crates that own each config block** (issue
+  #316): the `rateLimit`, `limits`, `ipFilter`, `cors`, `middleware`,
+  `redirects`, `fallback`, `upload`, `metrics`, `cache`, `tcp`, `proxy`,
+  `jwtAuth`, `consumers` and `forwardAuth` checks, and every "configured but
+  this build lacks the feature" warning text, now live in those crates. The
+  messages, their order and the output of `conduit validate` are unchanged. One
+  operator-visible effect: the log lines emitted while validating a route (a
+  `slowStartSecs` that is ignored on a hash-based or sticky route) or a cache
+  block are now logged under the targets `conduit_proxy_http::validate` and
+  `conduit_cache::validate` instead of `conduit::config::validate::proxy`. The
+  default `warn` level still shows them, but a filter such as
+  `RUST_LOG=conduit::config=debug` no longer matches them.
 
 ---
 
