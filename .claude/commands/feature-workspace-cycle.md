@@ -362,6 +362,21 @@ for genuinely idle firings, not a guaranteed periodic pass.)
   re-planned after it started; two earlier monolithic attempts had died on usage limits with
   no code written). Use it for any issue that spans many files or several config forms — the
   remaining #114 Phase 6 issues are the next candidates. What made it work:
+
+  > **Revised 2026-09-26 by the owner's explicit rule — one issue = one PR.** The slices
+  > below are **commits of that one PR**, not separate PRs. Only the epic (#114) is split
+  > into many PRs, one per sub-issue. #144 went out as six PRs before this rule, and #316
+  > (five PRs for one issue) showed why that is wrong: the per-PR overhead — CI ~20 min even
+  > for a tests-only change, an independent security review per head SHA (any later commit
+  > needs a new one), reading every bot stream, the merge, rebasing the next slice — dominated
+  > the actual work. So: one branch, slices as separate individually verifiable commits (the
+  > baseline/golden-tests commit first, the moves next, the risky switch last, each with its own
+  > verifier evidence and each compiling); keep the branch PR-less until it is complete, open
+  > the PR once, run the verification chain once on the final head, and ask the reviewer to go
+  > commit by commit. A genuinely independent piece (a bug found on the way) may still be its
+  > own small PR; a slice of the same issue may not. Where the list below says "PR" for a slice,
+  > read "commit".
+
   1. **`architect` design pass first**, with a self-contained brief, and **post the plan on
      the issue** so it survives a cut-off session. Every carry-over (review findings,
      ordering corrections) goes back onto the issue, and the next slice's PR cites it.
