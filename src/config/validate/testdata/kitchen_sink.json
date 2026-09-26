@@ -1,5 +1,5 @@
 {
-  "global": { "otlp": { "endpoint": "http://otel:4317" } },
+  "global": { "otlp": { "endpoint": "http://otel:4317" }, "workers": 0 },
   "sites": [
     {
       "port": 8000,
@@ -9,7 +9,7 @@
     },
     {
       "port": 8001,
-      "tls": { "cert": "a.pem", "key": "a.key", "acme": { "email": "a@b.com" } }
+      "tls": { "cert": "no-such-file.pem", "key": "no-such-file.key", "acme": { "email": "a@b.com" } }
     },
     {
       "port": 8002,
@@ -17,7 +17,7 @@
     },
     {
       "port": 8003,
-      "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://cache:6379" }
+      "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://user:secret@cache:6379" }
     },
     {
       "port": 8004,
@@ -74,6 +74,28 @@
       "port": 8009,
       "proxy": "http://backend:4000",
       "rateLimit": { "windowSecs": 60, "limit": 100 }
+    },
+    {
+      "port": 8009
+    },
+    {
+      "port": 8002
+    },
+    {
+      "port": 8002,
+      "tcp": { "targets": ["x:1"] }
+    },
+    {
+      "port": 8443,
+      "tls": { "cert": "no-such-file.pem", "key": "no-such-file.key", "httpRedirectPort": 8080 }
+    },
+    {
+      "port": 8444,
+      "tls": { "cert": "no-such-file.pem", "key": "no-such-file.key", "httpRedirectPort": 8080 }
+    },
+    {
+      "port": 8015,
+      "bad\nkey": true
     }
   ]
 }

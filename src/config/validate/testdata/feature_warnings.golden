@@ -24,8 +24,10 @@
 [!wasm] sites[7].middleware[2] has type "wasm" but Conduit was compiled without the `wasm` feature — this middleware entry will be ignored. Recompile with `--features wasm` to enable.
 [!proxy] sites[8].routes[1].proxy is configured but Conduit was compiled without the `proxy` feature — requests matching this route are answered by the site's `fallback` response (its `static` action, if any, is not served either). Recompile with `--features proxy` to enable.
 [!proxy] sites[9].proxy is configured but Conduit was compiled without the `proxy` feature — reverse proxying is disabled and this configuration will be ignored (requests fall through to `static`/`fallback`). Recompile with `--features proxy` to enable.
+[!tcp] sites[12].tcp is configured but Conduit was compiled without the `tcp` feature — TCP proxy mode will be disabled. Recompile with `--features tcp` to enable.
 [proxy] sites[4] proxies to 'http://127.0.0.1:8003' which appears to point back to Conduit itself (loopback + port 8003 is a configured listening port) — this will create an infinite request loop.
 [] sites[0].jwtAuth.secret is only 5 bytes — minimum recommended length is 32 bytes for HS256.  A short secret can be brute-forced. Use a cryptographically random secret of at least 32 bytes.
 [] sites[5].consumers.consumers[1].jwt.secret is only 4 bytes — minimum recommended length is 32 bytes.
 [] sites[0].metrics is configured without a token — the /__metrics__ endpoint is publicly accessible. Set metrics.token to require Bearer authentication in production.
 [] sites[8].jwtAuht is not a recognized configuration key and will be ignored — check for a typo.
+[] sites[15].bad\\nkey is not a recognized configuration key and will be ignored — check for a typo.
