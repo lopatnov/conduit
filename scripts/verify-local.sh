@@ -65,7 +65,7 @@ say "verify-local: HEAD=$HEAD_SHA base=$BASE_SHA dirty=$DIRTY_BEFORE started=$(d
 # Normal-dependency crate set of a checkout, one line per unique crate (paths and versions of workspace crates stripped).
 crates_of() { # crates_of DIR PROFILE-ARGS...
   local dir="$1"; shift
-  (cd "$dir" && CARGO_TARGET_DIR="$ROOT/target" cargo tree -p lopatnov-conduit "$@" -e normal --prefix none 2>/dev/null | sed 's/ (.*//' | sort -u)
+  (cd "$dir" && CARGO_TARGET_DIR="$OUT/target-base" cargo tree -p lopatnov-conduit "$@" -e normal --prefix none 2>/dev/null | sed 's/ (.*//' | sort -u)
 }
 
 # ---- 1. leak -------------------------------------------------------------------------------------------------
@@ -81,6 +81,9 @@ if ! skipped leak; then
 fi
 
 # ---- baseline worktree (deps, lists) ------------------------------------------------------------------------------
+# The baseline is built with its OWN target directory. Cargo hashes a workspace member's artifacts by its path relative to the
+# workspace root, so two checkouts of this repo sharing one target directory collide: the head build then silently reuses the
+# baseline's stale rlibs ("cannot find `scheme` in `conduit_config_core`" with the new source sitting right there).
 BASE_DIR="$OUT/base-${BASE_SHA:0:12}"
 need_base=0
 skipped deps || need_base=1
@@ -110,7 +113,7 @@ fi
 # ---- 3. lists ------------------------------------------------------------------------------------------------
 list_tests() { # list_tests DIR OUTFILE PROFILE-ARGS...
   local dir="$1" out="$2"; shift 2
-  (cd "$dir" && CARGO_TARGET_DIR="$ROOT/target" cargo test "$@" -- --list </dev/null 2>/dev/null | grep -E ': test$' | sort) > "$out"
+  (cd "$dir" && CARGO_TARGET_DIR="$OUT/target-base" cargo test "$@" -- --list </dev/null 2>/dev/null | grep -E ': test$' | sort) > "$out"
 }
 if ! skipped lists; then
   pkg_list=""
