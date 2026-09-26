@@ -2,7 +2,6 @@ pub use conduit_config_core::validation::{partition_by_severity, Severity, Valid
 
 mod auth;
 mod cross_site;
-mod proxy;
 mod proxy_loop;
 mod site;
 mod tls;

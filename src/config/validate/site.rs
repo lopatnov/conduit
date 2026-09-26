@@ -7,6 +7,7 @@ use conduit_ipfilter::validate::validate_ip_filter;
 use conduit_limits::validate::validate_limits;
 use conduit_metrics::validate::validate_metrics;
 use conduit_middleware::validate::validate_middleware;
+use conduit_proxy_http::validate::{validate_proxy, validate_route_config};
 use conduit_ratelimit::validate::validate_rate_limit;
 use conduit_redirects::validate::validate_redirect_rules;
 use conduit_static::validate::validate_fallback;
@@ -14,7 +15,6 @@ use conduit_tcp::validate::validate_tcp;
 use conduit_upload::validate::validate_upload;
 
 use super::auth::{validate_api_key, validate_consumers, validate_forward_auth, validate_jwt_auth};
-use super::proxy::{validate_proxy, validate_route_config};
 use super::tls::validate_tls;
 
 use crate::config::schema::{ProxyRouteTarget, SiteConfig, TcpConfig};

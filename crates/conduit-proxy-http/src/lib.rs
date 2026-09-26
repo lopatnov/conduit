@@ -92,6 +92,7 @@ pub mod outcome;
 pub mod routes;
 pub mod state;
 pub mod targets;
+pub mod validate;
 
 // ── Gated behind `proxy` (issue #144) ────────────────────────────────────────
 // The proxy-target *resolution* engine. With the feature off, `routes::
