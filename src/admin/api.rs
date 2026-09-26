@@ -1084,7 +1084,7 @@ async fn ip_deny_add_handler(
         let mut list = state
             .dynamic_deny
             .write()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !list.contains(&cidr) {
             list.push(cidr.clone());
         }
@@ -1104,7 +1104,7 @@ async fn ip_deny_remove_handler(
         let mut list = state
             .dynamic_deny
             .write()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         list.retain(|c| c != &cidr);
     }
     Json(json!({ "status": "ok", "action": "removed", "cidr": cidr }))
