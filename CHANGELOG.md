@@ -141,6 +141,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   already use for capacity. Fails open to the naive rotation target if
   every candidate is saturated, so a request that has already spent
   attempts is never 503'd purely because capacity deteriorated mid-request.
+- **The "`forwardAuth.url` points at the Admin API" validation error now catches
+  what it was meant to** (issue #447). It compared the URL's host with `"::1"`
+  while the URL library returns IPv6 hosts in brackets, so `http://[::1]:2019`
+  was never rejected; it also hard-coded port 2019. The rule now classifies the
+  parsed host (`localhost` and `*.localhost`, IPv4 `127.0.0.0/8`, `::1`,
+  IPv4-mapped IPv6, and `0.0.0.0` / `[::]`, which connect to the local host on
+  Linux and macOS), treats a URL without a port as its scheme's default port,
+  and follows the port of `global.admin.bind` (2019 when it is not set). A
+  config that pointed `forwardAuth` at such an address on the Admin API's port
+  used to load and now fails validation; a different service on port 2019 is no
+  longer rejected once `global.admin.bind` uses another port, and a domain that
+  merely starts with `127.` is no longer treated as loopback.
 
 ### Changed
 
@@ -237,6 +249,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `conduit_cache::validate` instead of `conduit::config::validate::proxy`. The
   default `warn` level still shows them, but a filter such as
   `RUST_LOG=conduit::config=debug` no longer matches them.
+- **The config schema (`AppConfig`, `SiteConfig` and the types they contain) and
+  the config-file parsing moved into a new workspace crate,
+  `lopatnov-conduit-config`** (issue #222). No config shape or behaviour change:
+  the crate has no Cargo features and gates no field, and the root crate
+  re-exports everything from the same `config::schema` / `config::parse` paths.
 
 ---
 
