@@ -2950,6 +2950,7 @@ dependencies = [
  "dashmap 6.2.1",
  "http",
  "lopatnov-conduit-config-core",
+ "lopatnov-conduit-core",
  "pingora-cache",
  "pingora-core",
  "pingora-http",

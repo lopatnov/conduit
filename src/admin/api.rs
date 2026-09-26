@@ -979,17 +979,14 @@ struct CachePurgeParams {
 /// `{"status":"ok","purged":false}` when no matching entry existed, or an error
 /// JSON on bad input.
 ///
-/// The `cache` variant. Without the feature there is no response cache to
-/// purge -- and the `url` crate this handler parses with is not compiled in
-/// (issue #144, PR 4b) -- so the route stays registered but answers 501, see
-/// the no-`cache` variant below.
+/// The cache key that a purge of `raw` (a full `http://`/`https://` URL) has to target.
+///
+/// The key's host is the URL's host **without its port** — `build_cache_key` drops a port, exactly
+/// as it does for the `Host` header on the request path — so `http://example.com:8080/x` finds the
+/// entry stored for a request to `example.com:8080` (issue #444: the two used to disagree, the purge
+/// answered `purged:false` and the stale entry survived).
 #[cfg(feature = "cache")]
-async fn cache_purge_handler(Query(params): Query<CachePurgeParams>) -> AdminResult<Json<Value>> {
-    use pingora_cache::storage::{PurgeOutcome, PurgeTarget, PurgeType, Storage};
-    use pingora_cache::trace::Span;
-
-    let raw = params.url.trim();
-
+fn purge_cache_key(raw: &str) -> Result<pingora_cache::CacheKey, AdminError> {
     // Use the url crate for robust parsing (handles IPv6, query-only URLs, etc.)
     let parsed =
         url::Url::parse(raw).map_err(|e| AdminError::BadRequest(format!("invalid url: {e}")))?;
@@ -1001,20 +998,31 @@ async fn cache_purge_handler(Query(params): Query<CachePurgeParams>) -> AdminRes
         ));
     }
 
-    let authority = parsed
+    let host = parsed
         .host_str()
         .ok_or_else(|| AdminError::BadRequest("url has no host".to_owned()))?;
-    let authority = if let Some(port) = parsed.port() {
-        format!("{authority}:{port}")
-    } else {
-        authority.to_owned()
-    };
 
-    let path = parsed.path();
-    let query = parsed.query();
+    Ok(crate::proxy::cache::build_cache_key(
+        host,
+        scheme,
+        parsed.path(),
+        parsed.query(),
+        None,
+        None,
+    ))
+}
 
-    let cache_key =
-        crate::proxy::cache::build_cache_key(&authority, scheme, path, query, None, None);
+/// The `cache` variant. Without the feature there is no response cache to
+/// purge -- and the `url` crate this handler parses with is not compiled in
+/// (issue #144, PR 4b) -- so the route stays registered but answers 501, see
+/// the no-`cache` variant below.
+#[cfg(feature = "cache")]
+async fn cache_purge_handler(Query(params): Query<CachePurgeParams>) -> AdminResult<Json<Value>> {
+    use pingora_cache::storage::{PurgeOutcome, PurgeTarget, PurgeType, Storage};
+    use pingora_cache::trace::Span;
+
+    let raw = params.url.trim();
+    let cache_key = purge_cache_key(raw)?;
     let compact = cache_key.to_compact();
     let storage = crate::proxy::cache::cache_storage();
 
@@ -1280,6 +1288,41 @@ mod tests {
         .expect("a well-formed http URL is accepted");
         assert_eq!(v["status"], "ok");
         assert_eq!(v["purged"], false);
+    }
+
+    /// Issue #444: a purge URL with an explicit port must target the key the request path stores
+    /// under. That path keys on the `Host` header *without* its port, so `example.com:8080` and
+    /// `example.com` are one entry and one purge target; the purge used to look in the namespace
+    /// `example.com:8080` and answer `purged:false` while the stale entry survived.
+    #[cfg(feature = "cache")]
+    #[test]
+    fn purge_key_of_a_url_with_a_port_is_the_key_the_request_path_stores() {
+        let key = |url: &str| {
+            purge_cache_key(url)
+                .expect("valid url")
+                .to_compact()
+                .primary
+        };
+        let stored = |host: &str, path: &str, query: Option<&str>| {
+            crate::proxy::cache::build_cache_key(host, "http", path, query, None, None)
+                .to_compact()
+                .primary
+        };
+        assert_eq!(
+            key("http://example.com:8080/x?a=1"),
+            stored("example.com", "/x", Some("a=1"))
+        );
+        assert_eq!(
+            key("http://example.com/x?a=1"),
+            stored("example.com", "/x", Some("a=1"))
+        );
+        // the `url` crate lowercases the host, and the stored key is lowercase for a lowercase Host
+        assert_eq!(
+            key("http://EXAMPLE.com:8080/x"),
+            stored("example.com", "/x", None)
+        );
+        // a bracketed IPv6 literal keeps its brackets and loses its port, like the request side
+        assert_eq!(key("http://[::1]:8080/x"), stored("[::1]", "/x", None));
     }
 
     /// With the feature, a non-http(s) scheme is rejected as a bad request
