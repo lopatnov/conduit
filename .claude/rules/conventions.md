@@ -83,7 +83,8 @@ whether something is patch/minor/major.
       a judgment call** (see `.claude/rules/workflow.md` "Security review is
       unconditional"). Applies even to a routine Dependabot bump that looks completely
       clean — the point of making it unconditional is that "this one looks safe" is
-      exactly the judgment a malicious PR/comment would try to manipulate.
+      exactly the judgment a malicious PR/comment would try to manipulate. One pass, on
+      the final head (delta only if a commit lands afterwards) — `workflow.md`.
 - [ ] `/build` green — fmt, clippy (`-D warnings`), tests (default + `full` if feature-gated).
 - [ ] `mcp__github__pull_request_read` (`method: "get_check_runs"`) — all CI jobs pass (or
       known-transient failures re-run via `mcp__github__actions_run_trigger` in a cloud

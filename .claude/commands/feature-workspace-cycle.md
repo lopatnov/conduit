@@ -306,6 +306,14 @@ for genuinely idle firings, not a guaranteed periodic pass.)
   and say so in the summary. A claim older than ~48 h with no branch, PR or
   follow-up comment is stale: mention it in the summary and ask rather than
   silently taking the work over.
+- **Once you have picked an issue, look for open bugs in the code it touches and bundle
+  them** (owner's rule, 2026-09-26 — see `workflow.md` "Proportionate process"). Search the
+  issues and the integrity-audit log for the files/functions the issue moves or changes
+  (`gh issue list --search "<function or file>"`). Tell the owner in one line each which you
+  will fix in the same PR, then fix each as a separate final commit marked "behaviour change"
+  with the golden/tests updated — before the single security pass, so one review covers it.
+  Example: #447 (`[::1]` never matched by the forwardAuth admin-API rule) sat in a function
+  #316 was moving and was filed instead of fixed; it should have been a commit in that PR.
 - **Batch size scales with complexity — pick a tier before picking items**
   (generalized 2026-09-01 per the user's explicit request; supersedes and
   absorbs the narrower 2026-08-22 "batch small independent leaves" rule,
