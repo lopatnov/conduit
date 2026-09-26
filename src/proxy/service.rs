@@ -525,13 +525,13 @@ mod tests {
     // ── ConduitMetrics (tokio-metrics feature) ────────────────────────────────
 
     /// Verify that `eventloop_lag_ms` gauge is accessible when the feature is
-    /// compiled in.  The gauge starts at 0.0 before any probe fires.
+    /// compiled in.  A probe may fire before the gauge is read.
     #[cfg(feature = "tokio-metrics")]
     #[test]
     fn eventloop_lag_ms_gauge_is_registered() {
         let metrics = ConduitMetrics::global();
-        // Gauge should start at 0.0 (no probe has fired yet).
-        assert_eq!(metrics.eventloop_lag_ms.get(), 0.0);
+        // Event loop lag is non-negative, but may be positive under load.
+        assert!(metrics.eventloop_lag_ms.get() >= 0.0);
     }
 
     /// The gauge can be set and read back correctly.
