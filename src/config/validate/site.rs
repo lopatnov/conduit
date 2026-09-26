@@ -2,6 +2,9 @@
 
 use super::ValidationError;
 
+use conduit_auth_consumers::validate::validate_consumers;
+use conduit_auth_forward::validate::validate_forward_auth;
+use conduit_auth_jwt::validate::validate_jwt_auth;
 use conduit_cors::validate::validate_cors;
 use conduit_ipfilter::validate::validate_ip_filter;
 use conduit_limits::validate::validate_limits;
@@ -14,7 +17,7 @@ use conduit_static::validate::validate_fallback;
 use conduit_tcp::validate::validate_tcp;
 use conduit_upload::validate::validate_upload;
 
-use super::auth::{validate_api_key, validate_consumers, validate_forward_auth, validate_jwt_auth};
+use super::auth::validate_api_key;
 use super::tls::validate_tls;
 
 use crate::config::schema::{ProxyRouteTarget, SiteConfig, TcpConfig};

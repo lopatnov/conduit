@@ -43,5 +43,6 @@
 pub mod config;
 #[cfg(feature = "forward-auth")]
 pub mod guard;
+pub mod validate;
 
 pub use config::ForwardAuthConfig;
