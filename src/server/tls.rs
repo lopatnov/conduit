@@ -1,4 +1,3 @@
-use std::io::BufReader;
 use std::sync::Arc;
 
 use pingora_core::listeners::tls::TlsSettings;
@@ -71,65 +70,9 @@ pub fn make_tls_settings_with_client_auth(
     );
     Ok(settings)
 }
-
-/// Validate a cert+key PEM pair without touching the disk.
-///
-/// Parses both PEM strings and attempts to build a `rustls::ServerConfig` from
-/// them.  Returns `Ok(())` when they form a valid, matching pair; otherwise
-/// returns an error message describing what is wrong (mismatched key, no
-/// certificate found, malformed PEM, …). Does not check certificate expiry —
-/// an already-expired but key-matched pair passes this check.
-///
-/// This is used by `POST /certs/reload` to reject invalid certs before writing
-/// anything to disk.
-pub fn validate_cert_key_pem(cert_pem: &str, key_pem: &str) -> anyhow::Result<()> {
-    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-    use rustls_pemfile::Item;
-
-    // Parse certificates
-    let cert_items: Vec<Item> = rustls_pemfile::read_all(&mut BufReader::new(cert_pem.as_bytes()))
-        .collect::<Result<_, _>>()
-        .map_err(|e| anyhow::anyhow!("failed to parse cert PEM: {e}"))?;
-
-    let certs: Vec<CertificateDer<'static>> = cert_items
-        .into_iter()
-        .filter_map(|item| {
-            if let Item::X509Certificate(der) = item {
-                Some(CertificateDer::from(der.to_vec()))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if certs.is_empty() {
-        anyhow::bail!("no X.509 certificates found in cert PEM");
-    }
-
-    // Parse private key
-    let key_items: Vec<Item> = rustls_pemfile::read_all(&mut BufReader::new(key_pem.as_bytes()))
-        .collect::<Result<_, _>>()
-        .map_err(|e| anyhow::anyhow!("failed to parse key PEM: {e}"))?;
-
-    let key: PrivateKeyDer<'static> = key_items
-        .into_iter()
-        .find_map(|item| match item {
-            Item::Pkcs1Key(k) => Some(PrivateKeyDer::Pkcs1(k.clone_key())),
-            Item::Pkcs8Key(k) => Some(PrivateKeyDer::Pkcs8(k.clone_key())),
-            Item::Sec1Key(k) => Some(PrivateKeyDer::Sec1(k.clone_key())),
-            _ => None,
-        })
-        .ok_or_else(|| anyhow::anyhow!("no private key found in key PEM"))?;
-
-    // Build a ServerConfig — rustls verifies that the key matches the certificate.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|e| anyhow::anyhow!("cert/key validation failed: {e}"))?;
-
-    Ok(())
-}
+/// Moved to `crates/conduit-admin` (issue #146) with the `POST /certs/reload` handler that uses it; re-exported so
+/// this module's tests and callers keep the old path.
+pub use conduit_admin::api::validate_cert_key_pem;
 
 /// Load CA certificates from a PEM file and build a `WebPkiClientVerifier`.
 fn build_client_verifier(

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fails if any Layer-1 feature crate under crates/ references SiteConfig or
 # AppConfig directly. Those types are owned by Layer 2 (conduit-config) and
-# consumed at the top by conduit-runtime/conduit-admin-core/conduit-server/
+# consumed at the top by conduit-runtime/conduit-admin/conduit-server/
 # conduit-cli — a Layer-1 feature crate reaching for them directly recreates
 # the config<->feature circular dependency the workspace split exists to
 # avoid. See issue #114 (Phase 1.6, #125): catching this now is cheap;
@@ -23,7 +23,7 @@ ALLOWED_CRATES=(
   lopatnov-conduit-config-core
   lopatnov-conduit-config
   lopatnov-conduit-runtime
-  lopatnov-conduit-admin-core
+  lopatnov-conduit-admin
   lopatnov-conduit-server
   lopatnov-conduit-cli
 )
