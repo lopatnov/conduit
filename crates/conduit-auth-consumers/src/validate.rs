@@ -1,5 +1,6 @@
 //! Config validation for `consumers` (incl. `sharedJwt`): called by the root crate's `config::validate`.
 
+use conduit_auth_jwt::validate::{check_secret_or_jwks, SecretOrJwksMessages};
 use conduit_config_core::validation::ValidationError;
 use conduit_ratelimit::validate::validate_rate_limit;
 
@@ -27,28 +28,19 @@ fn validate_shared_jwt(
     errors: &mut Vec<ValidationError>,
 ) {
     let sj_prefix = format!("{prefix}.sharedJwt");
-    let has_secret = sj.secret.is_some();
-    let has_jwks = sj.jwks_url.is_some();
-    if !has_secret && !has_jwks {
-        errors.push(ValidationError::new(
-            sj_prefix.clone(),
-            "consumers.sharedJwt requires either \"secret\" (HS256) or \"jwksUrl\" (RS256/ES256)",
-        ));
-    }
-    if has_secret && has_jwks {
-        errors.push(ValidationError::new(
-            sj_prefix.clone(),
-            "consumers.sharedJwt.secret and sharedJwt.jwksUrl are mutually exclusive",
-        ));
-    }
-    if let Some(url) = &sj.jwks_url {
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            errors.push(ValidationError::new(
-                format!("{sj_prefix}.jwksUrl"),
-                "consumers.sharedJwt.jwksUrl must be an http:// or https:// URL",
-            ));
-        }
-    }
+    check_secret_or_jwks(
+        sj.secret.is_some(),
+        sj.jwks_url.as_deref(),
+        &sj_prefix,
+        &format!("{sj_prefix}.jwksUrl"),
+        &SecretOrJwksMessages {
+            missing:
+                "consumers.sharedJwt requires either \"secret\" (HS256) or \"jwksUrl\" (RS256/ES256)",
+            both: "consumers.sharedJwt.secret and sharedJwt.jwksUrl are mutually exclusive",
+            bad_scheme: "consumers.sharedJwt.jwksUrl must be an http:// or https:// URL",
+        },
+        errors,
+    );
 }
 
 /// Validate a single consumer entry.
@@ -112,26 +104,16 @@ fn validate_consumer_jwt(
     entry_prefix: &str,
     errors: &mut Vec<ValidationError>,
 ) {
-    let has_secret = jwt_cfg.secret.is_some();
-    let has_jwks = jwt_cfg.jwks_url.is_some();
-    if !has_secret && !has_jwks {
-        errors.push(ValidationError::new(
-            format!("{entry_prefix}.jwt"),
-            "consumer jwt requires either \"secret\" (HS256) or \"jwksUrl\" (RS256/ES256)",
-        ));
-    }
-    if has_secret && has_jwks {
-        errors.push(ValidationError::new(
-            format!("{entry_prefix}.jwt"),
-            "consumer jwt.secret and jwt.jwksUrl are mutually exclusive",
-        ));
-    }
-    if let Some(url) = &jwt_cfg.jwks_url {
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            errors.push(ValidationError::new(
-                format!("{entry_prefix}.jwt.jwksUrl"),
-                "consumer jwt.jwksUrl must be an http:// or https:// URL",
-            ));
-        }
-    }
+    check_secret_or_jwks(
+        jwt_cfg.secret.is_some(),
+        jwt_cfg.jwks_url.as_deref(),
+        &format!("{entry_prefix}.jwt"),
+        &format!("{entry_prefix}.jwt.jwksUrl"),
+        &SecretOrJwksMessages {
+            missing: "consumer jwt requires either \"secret\" (HS256) or \"jwksUrl\" (RS256/ES256)",
+            both: "consumer jwt.secret and jwt.jwksUrl are mutually exclusive",
+            bad_scheme: "consumer jwt.jwksUrl must be an http:// or https:// URL",
+        },
+        errors,
+    );
 }
