@@ -23,6 +23,39 @@ use crate::proxy::cache as proxy_cache;
 use crate::proxy::ctx::RequestCtx;
 use crate::proxy::service::ConduitProxy;
 
+// ── Retry-failure bookkeeping (feature-gated, issue #144 PR 3) ───────────────
+
+/// Record passive health / metrics for the upstream that just failed, before
+/// a `RetryUpstream` outcome turns into a Pingora retry -- the `proxy`
+/// variant. See `ConduitProxy::record_failed_upstream_for_retry` for the full
+/// rationale (#47).
+#[cfg(feature = "proxy")]
+fn record_retry_failure(
+    proxy: &ConduitProxy,
+    ctx: &mut Option<RequestCtx>,
+    config: &crate::config::schema::AppConfig,
+    status: u16,
+) {
+    proxy.record_failed_upstream_for_retry(ctx, config, status);
+}
+
+/// No-`proxy` variant of [`record_retry_failure`]: no upstream health is
+/// tracked without the proxy routing resolvers, so there is nothing to
+/// attribute the failure to. The `5xx_retry` error that follows the call is
+/// *not* gated -- it is what lets `should_serve_stale()` serve a stale cached
+/// response (#48). Since D1 (`cache` implies `proxy`) a cache build always has
+/// the proxy, so this variant never runs alongside the cache; the error stays
+/// ungated anyway because it belongs to the cache/stale machinery, not to the
+/// proxy's retry bookkeeping, and gating it would buy nothing.
+#[cfg(not(feature = "proxy"))]
+fn record_retry_failure(
+    _proxy: &ConduitProxy,
+    _ctx: &mut Option<RequestCtx>,
+    _config: &crate::config::schema::AppConfig,
+    _status: u16,
+) {
+}
+
 // ── Trait-method bodies (called from thin delegators in `impl ProxyHttp`) ────
 
 /// Body of [`pingora_proxy::ProxyHttp::upstream_response_filter`].
@@ -64,7 +97,10 @@ pub(super) async fn upstream_response_filter(
             CachePhase::Hit | CachePhase::Stale | CachePhase::StaleUpdating
         ) {
             if let Some(req_ctx_mut) = ctx.as_mut() {
-                req_ctx_mut.cache_age_secs = Some(compute_response_age(upstream_response));
+                req_ctx_mut
+                    .cache
+                    .get_or_insert_with(Default::default)
+                    .cache_age_secs = Some(compute_response_age(upstream_response));
             }
         }
     }
@@ -89,7 +125,7 @@ pub(super) async fn upstream_response_filter(
     if status_u16 != 101 && upstream_response.status.is_informational() {
         tracing::debug!(
             status = status_u16,
-            upstream = ?req_ctx.proxy_upstream_url,
+            upstream = ?req_ctx.proxy.proxy_upstream_url,
             "skipping ResponseFilterChain for interim 1xx response"
         );
         return Ok(());
@@ -101,9 +137,9 @@ pub(super) async fn upstream_response_filter(
     // when the route explicitly declares `websocket: true`.  Otherwise the
     // upstream is violating the HTTP protocol contract and we drop the
     // connection with 502 to prevent unexpected tunnelling.
-    if status_u16 == 101 && !req_ctx.websocket_allowed {
+    if status_u16 == 101 && !req_ctx.proxy.websocket_allowed {
         tracing::warn!(
-            upstream = ?req_ctx.proxy_upstream_url,
+            upstream = ?req_ctx.proxy.proxy_upstream_url,
             "upstream returned 101 Switching Protocols but websocket is not \
              enabled for this route — rejecting upgrade"
         );
@@ -119,7 +155,7 @@ pub(super) async fn upstream_response_filter(
     // Clone sticky-cookie data before the chain runs so that subsequent
     // mutable borrows of `ctx` (in MaskBody / RetryUpstream arms) do not
     // conflict with the immutable `req_ctx` reference.
-    let sticky_cookie: Option<(String, String)> = req_ctx.sticky_set_cookie.clone();
+    let sticky_cookie: Option<(String, String)> = req_ctx.proxy.sticky_set_cookie.clone();
 
     // The response chain may execute WASM plugins whose .wasm file is
     // read from disk on first load.  Use block_in_place to signal Tokio
@@ -134,10 +170,12 @@ pub(super) async fn upstream_response_filter(
             // Failure propagation fix (#47): record health / metrics for the
             // failed upstream BEFORE returning the retry error — see
             // `record_failed_upstream_for_retry` for the full rationale.
-            proxy.record_failed_upstream_for_retry(ctx, &config, status);
+            record_retry_failure(proxy, ctx, &config, status);
             // Use new_up() so ErrorSource::Upstream is set — required for
             // should_serve_stale() to recognise this as an upstream error
-            // and serve a stale cached response (#48).
+            // and serve a stale cached response (#48). This return is
+            // deliberately NOT part of the feature-gated step above: stale-if-error
+            // belongs to the cache machinery, not to the proxy's retry bookkeeping.
             return Err(
                 pingora_core::Error::new_up(pingora_core::ErrorType::Custom("5xx_retry"))
                     .more_context(format!("upstream returned HTTP {status}")),
@@ -238,6 +276,7 @@ pub(super) async fn response_filter(
 
         // Only when the route has earlyRefreshSecs configured.
         let early_window_secs = req_ctx
+            .proxy
             .proxy_cache_cfg
             .as_ref()
             .and_then(|c| c.early_refresh_secs)
@@ -247,7 +286,7 @@ pub(super) async fn response_filter(
         }
 
         // Get the upstream URL for the background refresh task.
-        let upstream_url = match &req_ctx.proxy_upstream_url {
+        let upstream_url = match &req_ctx.proxy.proxy_upstream_url {
             Some(url) => url.clone(),
             None => return Ok(()),
         };
@@ -267,7 +306,10 @@ pub(super) async fn response_filter(
                 early_window_secs,
                 "cache TTL within early-refresh window — scheduling background refresh"
             );
-            req_ctx.early_refresh_upstream_url = Some(upstream_url);
+            req_ctx
+                .cache
+                .get_or_insert_with(Default::default)
+                .early_refresh_upstream_url = Some(upstream_url);
         }
     }
     #[cfg(not(feature = "cache"))]
@@ -287,7 +329,7 @@ pub(super) fn response_cache_filter(
 ) -> Result<RespCacheable> {
     let cacheable = ctx
         .as_ref()
-        .and_then(|c| c.proxy_cache_cfg.as_ref())
+        .and_then(|c| c.proxy.proxy_cache_cfg.as_ref())
         .map(|cfg| proxy_cache::response_cacheable(cfg, resp))
         .unwrap_or(RespCacheable::Uncacheable(NoCacheReason::Custom(
             "no-cache-cfg",

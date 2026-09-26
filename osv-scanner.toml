@@ -2,15 +2,13 @@
 # Each entry is a documented risk-acceptance, not a permanent suppression.
 # Re-evaluate when the conditions in "reason" change.
 #
-# Real CVEs (rsa@0.9.10 / CVE-2023-49092, protobuf@2.28.0 / CVE-2025-53605)
-# are intentionally NOT listed here — left open in the Security tab until an
-# upstream fix is available. See CLAUDE.md session log for the risk analysis.
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2025-0069"
-reason = """
-daemonize@0.5.0 is unmaintained (no CVE; advisory lists all versions as
-affected with no patch). Direct dependency of pingora-core 0.8.1 (current
-latest) used for Unix daemon mode -- not swappable without patching pingora
-upstream. Re-evaluate when pingora-core drops or replaces daemonize.
-"""
+# No vulnerabilities are ignored at the moment.
+#
+# Real CVEs (rsa@0.9.10 / CVE-2023-49092) are intentionally NOT listed here —
+# left open in the Security tab until an upstream fix is available. See
+# .claude/logs/session-log.md (2026-06-12 entry) for the risk analysis.
+#
+# History: RUSTSEC-2025-0069 (daemonize unmaintained) was ignored while
+# pingora-core 0.8.1 depended on it; Pingora 0.9 replaced it with daemonix, so
+# the entry was removed. protobuf@2.28.0 / CVE-2025-53605 left the dependency
+# tree in the same upgrade (pingora-core stopped depending on prometheus 0.13).

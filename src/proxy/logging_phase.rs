@@ -32,8 +32,8 @@ pub(super) async fn logging(
     // Decrement inflight for proxy requests (local handlers decrement inline).
     proxy.state.metrics.active_connections.dec();
     // The per-IP connection slot is released automatically here:
-    // RequestCtx.ip_conn_slot (IpConnSlotGuard) is dropped when ctx is
-    // cleared at the end of this function, so no manual fetch_sub needed.
+    // RequestCtx.limits.ip_conn_slot (IpConnSlotGuard) is dropped when ctx
+    // is cleared at the end of this function, so no manual fetch_sub needed.
     release_proxy_upstream(proxy, session, ctx);
 
     write_access_log_entry(proxy, session, ctx);
@@ -72,9 +72,22 @@ fn release_proxy_upstream(proxy: &ConduitProxy, session: &Session, ctx: &Option<
     if matches!(req_ctx.upstream, UpstreamTarget::Local(_)) {
         return;
     }
+    // Unconditional -- for every proxied request AND the upload loopback
+    // upstream (both are non-`Local` above). `inflight` is incremented for all
+    // of them at request start; gating this decrement behind `proxy` would
+    // leak the counter (the same leak class as #216) in an upload-only build.
     proxy.state.inflight.fetch_sub(1, Ordering::Relaxed);
+    release_upstream_health(proxy, session, req_ctx);
+}
+
+/// The `proxy`-only half of [`release_proxy_upstream`]: the retry-budget
+/// decrement, the per-upstream connection slot (least-conn), Peak EWMA
+/// latency + passive health tracking, and outlier-detection ejection.
+#[cfg(feature = "proxy")]
+fn release_upstream_health(proxy: &ConduitProxy, session: &Session, req_ctx: &RequestCtx) {
     // Decrement retry budget counter if this request was a retry.
     if req_ctx
+        .proxy
         .retry
         .as_ref()
         .map(|r| r.is_retrying)
@@ -85,10 +98,10 @@ fn release_proxy_upstream(proxy: &ConduitProxy, session: &Session, ctx: &Option<
     // proxy_upstream_url is populated for every proxied request (#155) so
     // passive-health attribution below runs regardless of strategy; only
     // release the conn_count slot when this request actually holds one.
-    let Some(ref url) = req_ctx.proxy_upstream_url else {
+    let Some(ref url) = req_ctx.proxy.proxy_upstream_url else {
         return;
     };
-    if req_ctx.upstream_conn_slot {
+    if req_ctx.proxy.upstream_conn_slot {
         proxy.state.upstream_health.conn_dec(url);
     }
 
@@ -115,15 +128,24 @@ fn release_proxy_upstream(proxy: &ConduitProxy, session: &Session, ctx: &Option<
     }
 }
 
+/// No-`proxy` variant of [`release_upstream_health`]: retry state and
+/// `proxy_upstream_url` are only ever populated by the proxy routing
+/// resolvers, so there is no retry-budget slot, connection slot, or passive
+/// health record to release.
+#[cfg(not(feature = "proxy"))]
+fn release_upstream_health(_proxy: &ConduitProxy, _session: &Session, _req_ctx: &RequestCtx) {}
+
 /// Passive health check (Caddy pattern):
 /// Count the response as a failure when it matches `unhealthyStatus` or
 /// exceeds `unhealthyLatencyMs` — even if the HTTP status is 2xx.
 /// A failure is signalled to `record_request_latency` by returning 503.
+#[cfg(feature = "proxy")]
 fn passive_effective_status(req_ctx: &RequestCtx, url: &str, status: u16, elapsed_us: u64) -> u16 {
     let latency_ms = elapsed_us / 1000;
-    let unhealthy_by_status = !req_ctx.passive_unhealthy_status.is_empty()
-        && req_ctx.passive_unhealthy_status.contains(&status);
+    let unhealthy_by_status = !req_ctx.proxy.passive_unhealthy_status.is_empty()
+        && req_ctx.proxy.passive_unhealthy_status.contains(&status);
     let unhealthy_by_latency = req_ctx
+        .proxy
         .passive_unhealthy_latency_ms
         .map(|t| latency_ms > t)
         .unwrap_or(false);
@@ -155,15 +177,17 @@ fn write_access_log_entry(proxy: &ConduitProxy, session: &Session, ctx: &Option<
         .headers
         .get("x-request-id")
         .and_then(|v| v.to_str().ok());
-    let upstream_addr = ctx.as_ref().and_then(|c| c.proxy_upstream_url.as_deref());
+    let upstream_addr = ctx
+        .as_ref()
+        .and_then(|c| c.proxy.proxy_upstream_url.as_deref());
     let upstream_ms = ctx
         .as_ref()
-        .and_then(|c| c.upstream_start)
+        .and_then(|c| c.proxy.upstream_start)
         .map(|t| t.elapsed().as_millis() as u64);
     logging::write_access_log(
         session,
         start_time,
-        site,
+        site.and_then(|s| s.logging.as_ref()),
         &proxy.state.log_writer,
         &logging::AccessLogContext {
             request_id,
@@ -212,14 +236,19 @@ fn record_request_metrics(
 }
 
 /// Per-upstream metrics: active-connections decrement, requests_total,
-/// latency_seconds, and the per-peer response-code breakdown (#40).
+/// latency_seconds, and the per-peer response-code breakdown (#40) -- the
+/// `proxy` variant.
+#[cfg(feature = "proxy")]
 fn record_upstream_metrics(
     proxy: &ConduitProxy,
     ctx: &Option<RequestCtx>,
     status: &str,
     status_u16: u16,
 ) {
-    let Some(url) = ctx.as_ref().and_then(|c| c.proxy_upstream_url.as_deref()) else {
+    let Some(url) = ctx
+        .as_ref()
+        .and_then(|c| c.proxy.proxy_upstream_url.as_deref())
+    else {
         return;
     };
     // Decrement the active-connections gauge now that this request finished.
@@ -241,7 +270,7 @@ fn record_upstream_metrics(
     crate::proxy::health::record_response_status(&proxy.state.upstream_health, url, status_u16);
     if let Some(upstream_secs) = ctx
         .as_ref()
-        .and_then(|c| c.upstream_start)
+        .and_then(|c| c.proxy.upstream_start)
         .map(|t| t.elapsed().as_secs_f64())
     {
         proxy
@@ -253,11 +282,24 @@ fn record_upstream_metrics(
     }
 }
 
+/// No-`proxy` variant of [`record_upstream_metrics`]: `proxy_upstream_url` is
+/// only ever set by the proxy routing resolvers, so there are no per-upstream
+/// series to record (and no gauge increment from `upstream_request_filter`
+/// to reconcile).
+#[cfg(not(feature = "proxy"))]
+fn record_upstream_metrics(
+    _proxy: &ConduitProxy,
+    _ctx: &Option<RequestCtx>,
+    _status: &str,
+    _status_u16: u16,
+) {
+}
+
 /// Cache hit / miss counters (only for proxy requests with caching enabled).
 fn record_cache_metrics(proxy: &ConduitProxy, session: &Session, ctx: &Option<RequestCtx>) {
     if ctx
         .as_ref()
-        .and_then(|c| c.proxy_cache_cfg.as_ref())
+        .and_then(|c| c.proxy.proxy_cache_cfg.as_ref())
         .is_none()
     {
         return;
@@ -294,10 +336,11 @@ fn record_cache_metrics(proxy: &ConduitProxy, session: &Session, ctx: &Option<Re
 /// request is still in flight.
 #[cfg(feature = "cache")]
 fn spawn_early_cache_refresh(session: &Session, ctx: &Option<RequestCtx>) {
-    let Some(early_url) = ctx
-        .as_ref()
-        .and_then(|c| c.early_refresh_upstream_url.as_deref().map(str::to_owned))
-    else {
+    let Some(early_url) = ctx.as_ref().and_then(|c| {
+        c.cache
+            .as_ref()
+            .and_then(|s| s.early_refresh_upstream_url.as_deref().map(str::to_owned))
+    }) else {
         return;
     };
     let path = session
@@ -338,7 +381,7 @@ fn finish_otel_span(
     // `finish_otel_span` is the last helper called in `logging()` and has
     // mutable access to `ctx`, so take the URL instead of cloning it — the
     // context is cleared by Pingora immediately after this returns.
-    if let Some(url) = req_ctx.proxy_upstream_url.take() {
+    if let Some(url) = req_ctx.proxy.proxy_upstream_url.take() {
         span.set_attribute(KeyValue::new("upstream.url", url));
     }
     // Attach the X-Request-ID so the trace is correlatable with logs.

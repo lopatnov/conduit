@@ -33,6 +33,87 @@ fn subtle_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.ct_eq(b).into()
 }
 
+/// Resolve `(healthCheck config, target URLs)` pairs for every `proxy: {}`
+/// route (the legacy map form) that has `healthCheck` configured, across
+/// every site.
+///
+/// Lives in the root crate, not `crates/conduit-upstream` — it needs
+/// `AppConfig`/`ProxyConfig`/`ProxyRouteTarget`, root-only types not yet
+/// extracted (a later migration phase — #143/#144). `conduit_upstream`'s
+/// `spawn_health_checks`/`spawn_connection_warmup` take this narrower,
+/// already-resolved slice instead of `&AppConfig` directly — see issue #142
+/// and `crates/conduit-upstream/src/health.rs`'s own doc comment. The same
+/// pattern `conduit-hotreload`'s `build_watch_config` call site
+/// (`config.sites.iter().map(...)`, a few lines above `start()`'s hot-reload
+/// block) already uses for its own analogous problem — this one is just a
+/// deeper extraction (sites → routes → route targets) instead of a flat
+/// per-site map, so it earns its own named helper rather than being inlined
+/// at each of the three call sites.
+///
+/// `proxy`-only (issue #144, PR 4a): its only callers are the two upstream
+/// probe spawners below, which don't exist without the feature.
+#[cfg(feature = "proxy")]
+fn health_check_routes(
+    config: &crate::config::schema::AppConfig,
+) -> Vec<(&crate::config::schema::UpstreamHealthCheck, Vec<String>)> {
+    use crate::config::schema::{ProxyConfig, ProxyRouteTarget};
+
+    config
+        .sites
+        .iter()
+        .filter_map(|site| match &site.proxy {
+            Some(ProxyConfig::Routes(routes)) => Some(routes.values()),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|route_target| {
+            let ProxyRouteTarget::Full(cfg) = route_target else {
+                return None;
+            };
+            let hc = cfg.health_check.as_ref()?;
+            Some((hc, crate::proxy::upstream::target_urls(route_target)))
+        })
+        .collect()
+}
+
+/// Spawn the active upstream health-check tasks for every route that has
+/// `healthCheck` configured, and -- only when `warmup` is set (server start,
+/// not a reload) -- warm the connection pools of routes with
+/// `prewarmConnections`. The `proxy` variant.
+///
+/// This is the gate boundary for the admin surface (issue #144, PR 4a): it is
+/// the one place the process makes timed outbound HTTP probes to third-party
+/// hosts purely on behalf of proxying, and the only root call site of
+/// `conduit_upstream::health::spawn_connection_warmup`, which exists only
+/// with `conduit-upstream/proxy`. The registry readers (`/upstreams*`,
+/// `/__health__?full=1`) stay compiled and simply see no probe results.
+#[cfg(feature = "proxy")]
+fn spawn_upstream_probes(
+    state: &AppState,
+    config: &crate::config::schema::AppConfig,
+    warmup: bool,
+) {
+    let routes = health_check_routes(config);
+    health::spawn_health_checks(
+        state.upstream_health.clone(),
+        routes.iter().map(|(hc, urls)| (*hc, urls.as_slice())),
+    );
+    if warmup {
+        // Warm up connection pools for routes with prewarmConnections set.
+        health::spawn_connection_warmup(routes.iter().map(|(hc, urls)| (*hc, urls.as_slice())));
+    }
+}
+
+/// No-`proxy` variant of [`spawn_upstream_probes`]: nothing is proxied, so
+/// there is nothing to probe or warm.
+#[cfg(not(feature = "proxy"))]
+fn spawn_upstream_probes(
+    _state: &AppState,
+    _config: &crate::config::schema::AppConfig,
+    _warmup: bool,
+) {
+}
+
 // ── Typed error responses ─────────────────────────────────────────────────────
 
 /// Typed error for Admin API handlers.
@@ -52,6 +133,11 @@ pub enum AdminError {
         message: String,
         fields: Vec<String>,
     },
+    /// 501 Not Implemented -- the endpoint exists but this build does not
+    /// include the feature behind it (e.g. `/cache/purge` without `cache`,
+    /// issue #144 PR 4b). Only constructed in such builds.
+    #[cfg_attr(feature = "cache", allow(dead_code))]
+    NotImplemented(String),
 }
 
 impl IntoResponse for AdminError {
@@ -64,6 +150,11 @@ impl IntoResponse for AdminError {
                 .into_response(),
             AdminError::ServerError(m) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "status": "error", "message": m })),
+            )
+                .into_response(),
+            AdminError::NotImplemented(m) => (
+                StatusCode::NOT_IMPLEMENTED,
                 Json(json!({ "status": "error", "message": m })),
             )
                 .into_response(),
@@ -158,19 +249,31 @@ impl BackgroundService for AdminApiService {
             });
         }
 
-        // Spawn upstream health check tasks for every route that has healthCheck configured.
+        // Spawn upstream health check tasks for every route that has healthCheck
+        // configured, and warm connection pools for routes with prewarmConnections.
         {
             let config = self.state.config.load();
-            health::spawn_health_checks(self.state.upstream_health.clone(), &config);
-            // Warm up connection pools for routes with prewarmConnections set.
-            health::spawn_connection_warmup(&config);
+            spawn_upstream_probes(&self.state, &config, true);
+        }
+
+        // Connect every configured Redis-backed proxy cache up front (issue
+        // #330) -- the request path only ever looks up an already-connected
+        // store, it never connects from inside Pingora's own runtime.
+        #[cfg(all(feature = "cache", feature = "redis"))]
+        {
+            let config = self.state.config.load_full();
+            crate::proxy::cache_redis::connect_all(&config).await;
         }
 
         // Spawn the browser hot-reload file watcher if any site has hotReload enabled.
+        #[cfg(feature = "hotreload")]
         {
             let config = self.state.config.load();
-            if let Some((dirs, extensions)) =
-                crate::handler::hot_reload::build_watch_config(&config)
+            let sites = config
+                .sites
+                .iter()
+                .map(|s| (s.hot_reload.as_ref(), s.static_files.as_ref()));
+            if let Some((dirs, extensions)) = crate::handler::hot_reload::build_watch_config(sites)
             {
                 let reload_tx = self.state.hot_reload_tx.clone();
                 tokio::spawn(crate::handler::hot_reload::run_file_watcher(
@@ -374,7 +477,14 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
     }
 
     // Spawn health-check tasks for any newly-configured routes.
-    health::spawn_health_checks(state.upstream_health.clone(), &new_config);
+    spawn_upstream_probes(&state, &new_config, false);
+
+    // Connect any Redis-backed proxy cache URL introduced by this reload
+    // (issue #330) -- before the config swap below, so there's no window
+    // where the new config is live but its cache store isn't registered
+    // yet. Idempotent: URLs already connected are a cheap no-op.
+    #[cfg(all(feature = "cache", feature = "redis"))]
+    crate::proxy::cache_redis::connect_all(&new_config).await;
 
     // Apply: hot-swap config, clear runtime upstream overrides, reset rate limiter.
     state.config.store(Arc::new(new_config));
@@ -739,31 +849,51 @@ fn build_flat_upstream_list(registry: &health::UpstreamRegistry) -> Vec<Value> {
 /// `GET /rate-limits` — per-site/route rate-limiter counters.
 ///
 /// Returns a nested object: `{ site: { route_key: { passed, rejected } } }`.
-/// The key format mirrors the internal rate-limiter key (`"{site}\0{route}"`).
+/// `route_key` is `"*"` for the site-level (non-route) bucket.
+///
+/// Bucket keys are per-*client* (`rate_limit::site_key`/`route_key` include
+/// the client key), so this aggregates (sums) every client-keyed bucket
+/// that shares a `(site, route)` pair, rather than assuming a 1:1 mapping —
+/// there is no other way to report meaningful site/route-level totals, and
+/// summing avoids leaking individual client keys/IPs in the response.
+/// Consumer-level buckets (`consumer\0{username}`) are deliberately excluded
+/// — they're global, not attributable to one site or route.
 async fn rate_limits_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     use serde_json::Map;
-    let mut result: std::collections::BTreeMap<String, serde_json::Value> =
+
+    #[derive(Default)]
+    struct Agg {
+        passed: u64,
+        rejected: u64,
+    }
+
+    let mut agg: std::collections::BTreeMap<(String, String), Agg> =
         std::collections::BTreeMap::new();
 
     for entry in state.rate_limiter.iter() {
-        // Key format: "{site}\0{route}" or "*\0{route}" for wildcard.
-        // Skip keys from other namespaces (e.g. "consumer:{username}" inserted
-        // by ConsumersGuard) that do not follow the site\0route convention.
-        let key = entry.key();
-        let (site, route) = match key.split_once('\0') {
-            Some(pair) => pair,
-            None => continue, // not a site\0route key — skip
+        let parts: Vec<&str> = entry.key().split('\0').collect();
+        let (site, route) = match parts.as_slice() {
+            ["site", site_label, _client] => ((*site_label).to_owned(), "*".to_owned()),
+            ["route", site_label, route_key, _client] => {
+                ((*site_label).to_owned(), (*route_key).to_owned())
+            }
+            _ => continue, // "consumer\0{username}" or an unrecognized shape — not a site/route bucket
         };
         let bucket = entry.value();
+        let a = agg.entry((site, route)).or_default();
+        a.passed += bucket.passed;
+        a.rejected += bucket.rejected;
+    }
+
+    let mut result: std::collections::BTreeMap<String, serde_json::Value> =
+        std::collections::BTreeMap::new();
+    for ((site, route), a) in agg {
         result
-            .entry(site.to_owned())
+            .entry(site)
             .or_insert_with(|| serde_json::Value::Object(Map::new()))
             .as_object_mut()
             .unwrap()
-            .insert(
-                route.to_owned(),
-                json!({ "passed": bucket.passed, "rejected": bucket.rejected }),
-            );
+            .insert(route, json!({ "passed": a.passed, "rejected": a.rejected }));
     }
 
     Json(json!(result))
@@ -836,6 +966,7 @@ async fn upstreams_weight_handler(
 #[derive(Deserialize)]
 struct CachePurgeParams {
     /// Full URL to purge, e.g. `https://example.com/api/data?page=1`
+    #[cfg_attr(not(feature = "cache"), allow(dead_code))]
     url: String,
 }
 
@@ -847,8 +978,14 @@ struct CachePurgeParams {
 /// Returns `{"status":"ok","purged":true}` when an entry was found and removed,
 /// `{"status":"ok","purged":false}` when no matching entry existed, or an error
 /// JSON on bad input.
+///
+/// The `cache` variant. Without the feature there is no response cache to
+/// purge -- and the `url` crate this handler parses with is not compiled in
+/// (issue #144, PR 4b) -- so the route stays registered but answers 501, see
+/// the no-`cache` variant below.
+#[cfg(feature = "cache")]
 async fn cache_purge_handler(Query(params): Query<CachePurgeParams>) -> AdminResult<Json<Value>> {
-    use pingora_cache::storage::{PurgeType, Storage};
+    use pingora_cache::storage::{PurgeOutcome, PurgeTarget, PurgeType, Storage};
     use pingora_cache::trace::Span;
 
     let raw = params.url.trim();
@@ -882,13 +1019,31 @@ async fn cache_purge_handler(Query(params): Query<CachePurgeParams>) -> AdminRes
     let storage = crate::proxy::cache::cache_storage();
 
     let span = Span::inactive().handle();
-    let purged = storage
-        .purge(&compact, PurgeType::Invalidation, &span)
+    let outcome = storage
+        .purge(
+            PurgeTarget::Active(&compact),
+            PurgeType::Invalidation,
+            &span,
+        )
         .await
         .map_err(|e| AdminError::ServerError(format!("cache purge failed: {e}")))?;
+    let purged = matches!(outcome, PurgeOutcome::Purged(_));
 
     Ok(Json(
         json!({ "status": "ok", "purged": purged, "url": raw }),
+    ))
+}
+
+/// No-`cache` variant of [`cache_purge_handler`]: a build without the `cache`
+/// feature has no response cache, so answering `{"purged":false}` (what the
+/// real handler would say for an entry that never existed) would be a silent
+/// lie about a store nothing writes to. 501 says what is actually true.
+#[cfg(not(feature = "cache"))]
+async fn cache_purge_handler(Query(_params): Query<CachePurgeParams>) -> AdminResult<Json<Value>> {
+    Err(AdminError::NotImplemented(
+        "cache purge is unavailable: this Conduit was built without the `cache` feature, \
+         so there is no response cache to purge"
+            .to_owned(),
     ))
 }
 
@@ -987,9 +1142,11 @@ struct CertReloadRequest {
 ///
 /// # Notes on zero-downtime rotation
 ///
-/// Pingora 0.8's rustls backend does not expose a runtime cert-swap API.
-/// True zero-downtime rotation (hot-swap without restarting the listener)
-/// requires a process upgrade: start the new process with `--upgrade` so it
+/// Conduit installs the certificate once, when it builds the listener's rustls
+/// config, and does not yet register a certificate resolver that could swap it
+/// at runtime (Pingora 0.9 exposes `TlsSettings::set_cert_resolver` for that).
+/// Until it does, zero-downtime rotation (hot-swap without restarting the
+/// listener) requires a process upgrade: start the new process with `--upgrade` so it
 /// inherits the listening socket FDs from the old process, then send SIGQUIT
 /// to the old process.  On systems managed by systemd this is done via
 /// `systemctl reload conduit`.
@@ -1080,6 +1237,63 @@ fn log_file_path(cfg: &Option<LoggingConfig>) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::config::from_str as parse_config;
+
+    // ── cache purge (issue #144, PR 4b) ──────────────────────────────────────
+
+    /// `NotImplemented` is a 501 with the usual `{"status":"error","message":…}`
+    /// body -- unconditional, so it is exercised in every build.
+    #[tokio::test]
+    async fn not_implemented_is_501_with_error_body() {
+        let resp = AdminError::NotImplemented("nope".to_owned()).into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["message"], "nope");
+    }
+
+    /// Without the `cache` feature the route stays registered but must answer
+    /// 501 -- not `{"purged":false}`, which would claim there was a store to
+    /// purge and that the entry simply did not exist.
+    #[cfg(not(feature = "cache"))]
+    #[tokio::test]
+    async fn cache_purge_without_cache_feature_answers_501() {
+        let err = cache_purge_handler(Query(CachePurgeParams {
+            url: "http://example.com/x".to_owned(),
+        }))
+        .await
+        .expect_err("there is no response cache to purge in this build");
+        assert_eq!(err.into_response().status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    /// With the feature, purging an URL that was never cached is an ordinary
+    /// success that reports `purged: false`.
+    #[cfg(feature = "cache")]
+    #[tokio::test]
+    async fn cache_purge_with_cache_feature_reports_not_purged_for_unknown_url() {
+        let Json(v) = cache_purge_handler(Query(CachePurgeParams {
+            url: "http://example.com/never-cached".to_owned(),
+        }))
+        .await
+        .expect("a well-formed http URL is accepted");
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["purged"], false);
+    }
+
+    /// With the feature, a non-http(s) scheme is rejected as a bad request
+    /// before the cache is touched.
+    #[cfg(feature = "cache")]
+    #[tokio::test]
+    async fn cache_purge_with_cache_feature_rejects_non_http_scheme() {
+        let err = cache_purge_handler(Query(CachePurgeParams {
+            url: "ftp://example.com/x".to_owned(),
+        }))
+        .await
+        .expect_err("ftp is not a cacheable scheme");
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
 
     // ── validate_cidr ────────────────────────────────────────────────────────
 
@@ -1198,6 +1412,92 @@ mod tests {
         assert_eq!(result.0["status"], "ok");
         assert_eq!(result.0["action"], "removed");
         assert!(state.dynamic_deny.read().unwrap().is_empty());
+    }
+
+    // ── rate_limits_handler (#303/#304) ───────────────────────────────────────
+
+    fn bucket_with_counts(passed: u64, rejected: u64) -> crate::filter::rate_limit::TokenBucket {
+        let mut b = crate::filter::rate_limit::TokenBucket::new(100, 0, 60);
+        b.passed = passed;
+        b.rejected = rejected;
+        b
+    }
+
+    #[tokio::test]
+    async fn rate_limits_handler_parses_site_and_route_namespaces() {
+        let state = app_state_for_ip_deny();
+        state.rate_limiter.insert(
+            crate::filter::rate_limit::site_key("app.example.com:8080", "1.2.3.4"),
+            bucket_with_counts(10, 1),
+        );
+        state.rate_limiter.insert(
+            crate::filter::rate_limit::route_key("app.example.com:8080", "/api", "1.2.3.4"),
+            bucket_with_counts(20, 2),
+        );
+
+        let result = rate_limits_handler(State(state)).await;
+        let site = &result.0["app.example.com:8080"];
+        assert_eq!(site["*"]["passed"], 10);
+        assert_eq!(site["*"]["rejected"], 1);
+        assert_eq!(site["/api"]["passed"], 20);
+        assert_eq!(site["/api"]["rejected"], 2);
+    }
+
+    #[tokio::test]
+    async fn rate_limits_handler_excludes_consumer_buckets() {
+        let state = app_state_for_ip_deny();
+        state.rate_limiter.insert(
+            crate::filter::rate_limit::consumer_key("alice"),
+            bucket_with_counts(5, 0),
+        );
+
+        let result = rate_limits_handler(State(state)).await;
+        assert_eq!(
+            result.0,
+            serde_json::json!({}),
+            "consumer buckets are global, not attributable to a site — must not appear here"
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limits_handler_aggregates_multiple_clients_into_one_site_route_total() {
+        // Two different clients hitting the same site's same route — bucket
+        // keys differ (per-client), but the handler must report one summed
+        // total for the (site, route) pair, not two separate entries.
+        let state = app_state_for_ip_deny();
+        state.rate_limiter.insert(
+            crate::filter::rate_limit::route_key("a.example.com:80", "/x", "1.1.1.1"),
+            bucket_with_counts(3, 1),
+        );
+        state.rate_limiter.insert(
+            crate::filter::rate_limit::route_key("a.example.com:80", "/x", "2.2.2.2"),
+            bucket_with_counts(4, 0),
+        );
+
+        let result = rate_limits_handler(State(state)).await;
+        let route = &result.0["a.example.com:80"]["/x"];
+        assert_eq!(route["passed"], 7);
+        assert_eq!(route["rejected"], 1);
+    }
+
+    #[tokio::test]
+    async fn rate_limits_handler_keeps_two_sites_separate_regression_304() {
+        // The bug #304 was filed against: two sites sharing a client key
+        // must not collide into one bucket. Since the fix scopes the key by
+        // site_label, they naturally land as two distinct handler entries.
+        let state = app_state_for_ip_deny();
+        state.rate_limiter.insert(
+            crate::filter::rate_limit::site_key("site-a.example.com:80", "9.9.9.9"),
+            bucket_with_counts(1, 0),
+        );
+        state.rate_limiter.insert(
+            crate::filter::rate_limit::site_key("site-b.example.com:80", "9.9.9.9"),
+            bucket_with_counts(2, 0),
+        );
+
+        let result = rate_limits_handler(State(state)).await;
+        assert_eq!(result.0["site-a.example.com:80"]["*"]["passed"], 1);
+        assert_eq!(result.0["site-b.example.com:80"]["*"]["passed"], 2);
     }
 
     // ── detect_cold_changes ──────────────────────────────────────────────────

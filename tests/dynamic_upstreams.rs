@@ -1,3 +1,8 @@
+// The tests that proxy real traffic are compiled out without the `proxy`
+// feature (`#[cfg(feature = "proxy")]` on each), which leaves their
+// mock-upstream helpers unused in that build.
+#![cfg_attr(not(feature = "proxy"), allow(dead_code))]
+
 mod common;
 
 use std::io::{Read, Write};
@@ -81,6 +86,7 @@ fn admin_post_json(addr: &str, path: &str, json_body: &str) -> serde_json::Value
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// Start a server with a single upstream and verify the test infrastructure works.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn add_upstream_routes_traffic_to_new_target() {
@@ -145,6 +151,7 @@ fn add_upstream_routes_traffic_to_new_target() {
     );
 }
 
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn remove_upstream_stops_traffic_to_target() {
@@ -244,6 +251,7 @@ fn remove_unknown_upstream_returns_not_found() {
     );
 }
 
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn weight_update_changes_distribution() {
@@ -327,6 +335,7 @@ fn weight_update_unknown_target_returns_not_found() {
     );
 }
 
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn reload_clears_overrides() {

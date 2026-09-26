@@ -20,7 +20,7 @@ use crate::filter::rate_limit::RateLimiter;
 use crate::filter::rate_limit_redis::RedisRateLimiter;
 use crate::proxy::ctx::RequestCtx;
 use crate::proxy::health::UpstreamRegistry;
-use crate::proxy::{logging_phase, request_phase, response_phase};
+use crate::proxy::{logging_phase, request, response_phase};
 use crate::util::log_writer::LogWriter;
 
 // ── Prometheus metrics (registered once per process) ─────────────────────────
@@ -338,7 +338,7 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
-        request_phase::request_filter(self, session, ctx).await
+        request::request_filter(self, session, ctx).await
     }
 
     async fn upstream_peer(
@@ -349,7 +349,7 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
-        request_phase::upstream_peer(self, ctx).await
+        request::upstream_peer(self, ctx).await
     }
 
     async fn request_body_filter(
@@ -362,7 +362,7 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
-        request_phase::request_body_filter(self, body, ctx).await
+        request::request_body_filter(self, body, ctx).await
     }
 
     async fn upstream_request_filter(
@@ -374,7 +374,7 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
-        request_phase::upstream_request_filter(self, session, upstream_request, ctx).await
+        request::upstream_request_filter(self, session, upstream_request, ctx).await
     }
 
     async fn upstream_response_filter(
@@ -415,7 +415,7 @@ impl ProxyHttp for ConduitProxy {
     where
         Self::CTX: Send + Sync,
     {
-        request_phase::request_cache_filter(self, session, ctx)
+        request::request_cache_filter(self, session, ctx)
     }
 
     fn should_serve_stale(
@@ -424,14 +424,14 @@ impl ProxyHttp for ConduitProxy {
         ctx: &mut Self::CTX,
         error: Option<&pingora_core::Error>,
     ) -> bool {
-        request_phase::should_serve_stale(ctx, error)
+        request::should_serve_stale(ctx, error)
     }
 
     fn cache_key_callback(&self, session: &Session, ctx: &mut Self::CTX) -> Result<CacheKey>
     where
         Self::CTX: Send + Sync,
     {
-        request_phase::cache_key_callback(self, session, ctx)
+        request::cache_key_callback(self, session, ctx)
     }
 
     fn response_cache_filter(
@@ -453,7 +453,7 @@ impl ProxyHttp for ConduitProxy {
         ctx: &mut Self::CTX,
         e: Box<pingora_core::Error>,
     ) -> Box<pingora_core::Error> {
-        request_phase::fail_to_connect(self, session, ctx, e)
+        request::fail_to_connect(self, session, ctx, e)
     }
 
     fn error_while_proxy(
@@ -464,7 +464,7 @@ impl ProxyHttp for ConduitProxy {
         ctx: &mut Self::CTX,
         client_reused: bool,
     ) -> Box<pingora_core::Error> {
-        request_phase::error_while_proxy(self, peer, session, e, ctx, client_reused)
+        request::error_while_proxy(self, peer, session, e, ctx, client_reused)
     }
 
     async fn logging(
@@ -525,13 +525,13 @@ mod tests {
     // ── ConduitMetrics (tokio-metrics feature) ────────────────────────────────
 
     /// Verify that `eventloop_lag_ms` gauge is accessible when the feature is
-    /// compiled in.  The gauge starts at 0.0 before any probe fires.
+    /// compiled in.  A probe may fire before the gauge is read.
     #[cfg(feature = "tokio-metrics")]
     #[test]
     fn eventloop_lag_ms_gauge_is_registered() {
         let metrics = ConduitMetrics::global();
-        // Gauge should start at 0.0 (no probe has fired yet).
-        assert_eq!(metrics.eventloop_lag_ms.get(), 0.0);
+        // Event loop lag is non-negative, but may be positive under load.
+        assert!(metrics.eventloop_lag_ms.get() >= 0.0);
     }
 
     /// The gauge can be set and read back correctly.

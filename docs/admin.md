@@ -460,6 +460,10 @@ curl -X DELETE "http://localhost:2019/cache/purge?url=https://api.example.com/v1
 
 `"purged": false` when no matching entry was found in the cache.
 
+> Requires the `cache` feature (part of the published `standard`/`full` builds,
+> not of a plain `cargo build`). Without it the endpoint answers
+> `501 Not Implemented` — there is no response cache to purge.
+
 > Only the in-memory cache is supported. Redis cache purge is not yet
 > implemented.
 
@@ -494,9 +498,18 @@ curl http://localhost:2019/rate-limits
 ```
 
 The outer key is the site label (`host:port` or `"*"` for wildcard rules) and the
-inner key is the route prefix. Both `passed` and `rejected` are monotonically
-increasing counters that reset when the process restarts or `POST /reload` is called
-(reload clears in-memory rate-limiter state).
+inner key is the route prefix, or `"*"` for the site-level (non-route) bucket. Since
+each client gets its own bucket internally, the numbers shown here are summed across
+every client that has hit that site/route — this endpoint reports totals, not
+per-client detail (and never exposes individual client keys/IPs). Both `passed` and
+`rejected` are monotonically increasing counters that reset when the process restarts
+or `POST /reload` is called (reload clears in-memory rate-limiter state).
+
+Only the in-memory rate limiter is reflected here (site-level and per-route
+buckets). Per-consumer rate limits are global across every site a consumer is
+allowed to call, not attributable to one site or route, so they're excluded
+from this endpoint. Requests admitted through a Redis-backed rate limit
+(`rateLimit.store: redis://...`) are also not reflected here.
 
 ---
 
@@ -569,11 +582,12 @@ endpoint only rewrites file *content* at the existing paths, so `/reload`'s
 cold-field detection (which compares config *values*) never sees a change
 and reports success without the new certificate ever being loaded.
 
-> **Why a restart?** Pingora 0.8's rustls backend builds an immutable
-> `ServerConfig` at startup and has no runtime cert-swap API. Writing the
-> files here is the safe atomic step; applying them without downtime will be
-> possible once Pingora exposes a `ResolvesServerCert` hook (planned for 0.9+).
-> For Let's Encrypt, use `tls.acme` instead — renewals are fully automatic.
+> **Why a restart?** Conduit loads the certificate once, when it builds the
+> listener's rustls `ServerConfig` at startup, and does not yet install a
+> certificate resolver that could swap it at runtime (Pingora 0.9 exposes the
+> `ResolvesServerCert` hook this needs; wiring it in is a planned follow-up).
+> Writing the files here is the safe atomic step; until then a restart applies
+> them. For Let's Encrypt, use `tls.acme` instead — renewals are fully automatic.
 
 **Request body:**
 

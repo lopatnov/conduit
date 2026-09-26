@@ -30,18 +30,18 @@ cargo build --release
 ```
 
 `cargo build --release` with no flags produces the **minimal build**
-(`default = []`) — core reverse proxy, TLS, static files, rate limiting,
-basic/API-key auth, compression, hot-reload, Prometheus metrics, health
-checks, and the Admin API. See [Optional features](#optional-features) below
-for the `standard` bundle that matches the published binaries and Docker
-images.
+(`default = ["proxy", "compression", "static", "hotreload"]`) — core reverse proxy, TLS, static files, rate
+limiting, basic/API-key auth, compression, hot-reload, Prometheus metrics,
+health checks, and the Admin API. See [Optional features](#optional-features)
+below for the `standard` bundle that matches the published binaries and
+Docker images.
 
 ---
 
 ## Optional features
 
-The default build (`default = []`) is the minimal embed-friendly proxy.
-Add features with `--features`:
+The default build (`default = ["proxy", "compression", "static", "hotreload"]`) is the minimal embed-friendly
+proxy. Add features with `--features`:
 
 | Feature         | What it enables                                                            |
 | --------------- | -------------------------------------------------------------------------- |
@@ -53,14 +53,82 @@ Add features with `--features`:
 | `tcp`           | Raw TCP proxy mode (`type: "tcp"` site)                                    |
 | `upload`        | Multipart file upload handler (`upload:` site config)                      |
 | `redis`         | Redis-backed rate limiting and caching                                     |
-| `cache`         | Response caching (`proxy.*.cache`)                                         |
+| `cache`         | Response caching (`proxy.*.cache`); implies `proxy`                        |
 | `disk-cache`    | Disk-backed cache store (`cache.store: "disk:/path"`)                      |
 | `acme`          | Auto-TLS via Let's Encrypt (`tls.acme`)                                    |
 | `fault-injection` | Fault injection for chaos testing (`faultInjection`)                     |
 | `otlp`          | OpenTelemetry OTLP distributed tracing (`global.otlp`)                     |
 | `kubernetes`    | Kubernetes CRD config provider (`--kubernetes-namespace`)                  |
 | `standard`      | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` — typical self-hosted reverse-proxy / API-gateway set |
-| `full`          | All of the above                                                           |
+| `static-server` | Bundle for `--no-default-features`: `static` + `compression` + `hotreload` — the default set minus `proxy` |
+| `gateway`       | Bundle for `--no-default-features`: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `acme` + `compression` — the `standard` set without static files and hot-reload |
+| `full`          | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) |
+
+`proxy`, `compression`, `static` and `hotreload` are on by default and are not
+listed above because there is nothing to add — `--no-default-features` turns
+them off. `static-server` and `gateway` are shorthands for the two useful
+things to switch back on afterwards; they add nothing to a default build.
+
+```bash
+# A static-file server: no reverse proxy and none of its dependencies
+# (reqwest, url, hmac, sha2); the Admin API and its /upstreams* endpoints stay
+cargo build --release --no-default-features --features static-server
+
+# An API gateway: reverse proxy + auth + cache + auto-TLS, but no static files
+cargo build --release --no-default-features --features gateway
+```
+
+### Building without `proxy`
+
+**Without `proxy`, reverse proxying is compiled out.** `proxy` and
+`routes[].proxy` are ignored, and Conduit logs a startup warning naming each
+ignored entry (also returned in the `warnings` array of `POST /reload`). Static
+files, `upload`, `tcp` sites, the Admin API, `/metrics` and hot-reload keep
+working.
+
+**Who is affected:** only `--no-default-features` builds. `default`, `standard`
+and `full` all include `proxy`; their dependency sets and behavior are
+unchanged.
+
+**Three config shapes change meaning** without `proxy` — check for them before
+switching:
+
+1. A legacy top-level `proxy` shorthand (`proxy: "http://…"`) next to a
+   site-level `static`. With `proxy`, the proxy wins and the `static` root is
+   shadowed — it is never served. Without `proxy` the shadow disappears and
+   **the previously dead `static` root becomes live**, so a directory that was
+   never reachable is now served.
+2. A legacy `proxy` map (`proxy: { "/api": "http://…" }`) next to a site-level
+   `static`. Requests under the proxied prefixes used to go to an upstream; they
+   now fall through to `static`, then to `fallback`.
+3. A `routes[]` entry with a `proxy` action. It ends in the site's `fallback`
+   response — not in that entry's own `static` half, which stays dead
+   configuration.
+
+**What leaves the binary** (`--no-default-features --features static`: 302 → 265
+crates): the proxy-only code (upstream selection with capacity limits,
+slow-start and sticky sessions, retry, traffic mirroring, active health
+checks), the sticky-session crypto (`hmac`, `sha2`), the HTTP client used for
+traffic mirroring and cache early-refresh (`reqwest` with its
+`hyper-rustls`/`tower-http` layers) and the URL parser (`url` with its
+`idna`/`icu_*` tree). Features that need them bring them back: `proxy` brings
+back all of it, and so does `cache` (it implies `proxy`), while `forward-auth`
+and `jwt` each bring back `reqwest`, `url` and `tower-http` through their own
+crates (`jwt` also `hmac`/`sha2`) — so a build that enables any of those is
+larger than the figures above. `--no-default-features --features static-server`
+is the shortest way to get the default set minus `proxy`; it counts a few more
+crates than the `static`-only figures above because it also keeps `compression`
+and `hotreload`.
+
+**What stays:** the Admin API (axum) and Pingora still need the
+`hyper`/`tower`/`h2` stack, plus `base64`, `subtle`, `regex`, `dashmap`, `notify`
+and `prometheus`, so this is not a "no HTTP stack" build. The `/upstreams*` admin
+endpoints and the `conduit upstreams …` / `status --upstream` commands stay
+available — they are plain HTTP clients of an admin API, which may belong to
+another instance — but no active health checks run, so the upstream registry
+holds no probe results. `DELETE /cache/purge` answers `501` without `cache`.
+
+Tracking: [#144](https://github.com/lopatnov/conduit/issues/144).
 
 ```bash
 # Typical self-hosted reverse-proxy / API gateway (auth stack + caching +
@@ -170,7 +238,7 @@ cargo bench
 Build locally using the production Dockerfile (multi-stage musl + `FROM scratch`):
 
 ```bash
-# Minimal image (default = [])
+# Minimal image (default = ["proxy", "compression", "static", "hotreload"])
 docker build -f contrib/Dockerfile -t conduit:local .
 
 # Standard image (matches the published default tag)

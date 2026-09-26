@@ -1,6 +1,6 @@
 # Conduit — Claude's reference
 
-> Высокопроизводительный реверс-прокси на Rust · Cloudflare Pingora · v1.1.0
+> Высокопроизводительный реверс-прокси на Rust · Cloudflare Pingora · `main` = v1.5.0 · ветка миграции Conduit 2.0 (#114) = `2.0.0`
 > Проект: `<projects-root>\conduit`
 
 ---
@@ -19,20 +19,23 @@
 > **`/cleanup` не должен трогать `.reference/`** — это не разовый scratch для одной
 > проверки, а накопительный кэш источников, которым сессии пользуются повторно; см. также
 > `.claude/rules/index.md`. По состоянию на 2026-09-13 уже склонированы: `pingora` (tag
-> `0.9.0` — при апгрейде с текущего запиненного 0.8.1, см. сессионный лог ниже), `tokio`
-> (tag `tokio-1.53.1`, совпадает с `Cargo.lock`), `axum` (tag `axum-v0.8.9`), `kube` (tag
-> `4.2.0`), `k8s-openapi` (tag `v0.28.0`), `rhai` (tag `v1.26.0`), `wasmtime` (tag
-> `v48.0.1`, без submodules — `--no-recurse-submodules`, ~118 MB даже так, самый крупный
-> клон в `.reference/`) — все пять последних добавлены по прямому запросу пользователя
-> ("странно что не скачиваешь то, что мы используем") ровно на версии, реально запиненные
-> в `Cargo.lock` на момент клонирования.
+> `0.9.0` — совпадает с `Cargo.lock` после апгрейда с 0.8.1 на ветке миграции 2026-09-20), `tokio`
+> (tag `tokio-1.53.1`, совпадает с `Cargo.lock`), `dashmap` (tag `v6.2.1`), `axum` (tag
+> `axum-v0.8.9`), `kube` (tag `4.2.0`), `k8s-openapi` (tag `v0.28.0`), `rhai` (tag `v1.26.0`),
+> `wasmtime` (tag `v48.0.1`, без submodules — `--no-recurse-submodules`, ~118 MB даже так,
+> самый крупный клон в `.reference/`), `arc-swap` (tag `v1.9.1` — Cargo.lock пинит `1.9.2`,
+> но на GitHub нет такого тега, используем последний доступный `v1.9.1`) — последние семь добавлены
+> по прямому запросу пользователя ("странно что не скачиваешь то, что мы используем") ровно на версии,
+> реально запиненные в `Cargo.lock` на момент клонирования.
 
 ### Rust (прямо применимо к Conduit)
 | `.reference/<name>` | Что даёт |
 |------|---------|
-| `pingora` | КРИТИЧНО. ProxyHttp, TlsSettings, CachePhase, все хуки. Conduit запинен на 0.8.1 (`Cargo.toml`); 0.9.0 вышел 2026-09-09 — см. сессионный лог внизу файла за находки по факту чтения исходника (не changelog), включая реально unblocked backlog-пункты |
+| `pingora` | КРИТИЧНО. ProxyHttp, TlsSettings, CachePhase, все хуки. Conduit запинен на 0.9 (`Cargo.toml`, `Cargo.lock` = 0.9.0; апгрейд с 0.8.1 сделан на ветке миграции 2026-09-20) — см. `.claude/logs/session-log.md` (записи 2026-09-12 и 2026-09-20) за находки по факту чтения исходника (не changelog), включая реально unblocked backlog-пункты, которые ещё не подключены |
 | `tokio` | Async runtime, spawn, channels |
+| `dashmap` | Concurrent hashmap (`DashMap<String, TokenBucket>` в rate limiter, `UpstreamRegistry` в health.rs, connection tracking). Запинен на `"6"`, реально `6.2.1` |
 | `axum` | Admin API (порт 2019), upload loopback-сервис, hot-reload SSE-эндпоинт. Запинен на `"0.8"` (`Cargo.toml`) — актуально для `{param}` vs `:param` route-синтаксиса (0.7→0.8 breaking change, см. issue #352's ACME-сервер баг) |
+| `arc-swap` | Atomic read-copy-update контейнер для `AppState.config: Arc<ArcSwap<AppConfig>>` — безлокновая горячая переконфигурация через `POST /reload`, см. decision #12 ("Всё остальное — hot через ArcSwap"). Запинен на `"1"`, реально `1.9.2` в Cargo.lock (но на GitHub только tag `v1.9.1`) |
 | `kube` | `KubernetesProvider` (`--features kubernetes`), CRD `ConduitSite`. Запинен на `"4.0"`, реально `4.2.0` |
 | `k8s-openapi` | Типы K8s API объектов для `kube`. Запинен на `"0.28"`, feature `v1_32` |
 | `rhai` | Rhai-скриптинг для `type: "script"` middleware (`ScriptGuard`, `on_response` фаза). Запинен на `"1"` с `features = ["sync"]`, реально `1.26.0` |
@@ -75,7 +78,12 @@
 
 ## Архитектурные решения
 
-Не пересматривать без явного обсуждения.
+Не пересматривать без явного обсуждения. **Если решение всё же пересмотрено и его статус
+поменялся** (не просто уточнён факт под ним, а сам вывод — например "не входит в Conduit"
+→ "вопрос открыт") — **менять саму headline-строку решения**, не только дописывать заметку
+ниже неё. Дописанная-снизу заметка при неизменённой headline создаёт видимое противоречие
+(поймано CodeRabbit на decision #28, 2026-09-12: заметка ниже уже говорила "статус открыт",
+а сама строка #28 всё ещё звучала как окончательное "не входит, отдельный проект").
 
 1. **Обработка запросов:** статика/health/metrics/hot-reload/fallback → Pingora напрямую. Upload → Axum loopback `127.0.0.1:0`. Admin API → Axum порт 2019.
 2. **Upload:** стартует только если `upload` в конфиге. Порт не конфигурируется.
@@ -90,21 +98,49 @@
 11. **IP filter** — CIDR, применяется ДО auth и rate limit.
 12. **Hot/cold reload:** port, tls.cert/key/versions/ciphers, workers, backlog, admin — cold. Всё остальное — hot через ArcSwap.
 13. **`LogWriter`** — `Arc<LogWriter>` в `AppState.log_writer`; Mutex внутри.
-14. **Rate limiter** — `DashMap` v6. Ключи реально используемые: site-level — bare client
-    key (IP или значение заголовка, `keyBy`); per-route — `"route:{key}:{ip}"`; per-consumer —
-    `"consumer:{username}"`. **Исправление 2026-08-30** (Step 1c аудит `rate_limit.rs`): эта
-    строка раньше ошибочно приписывала рейт-лимитеру формат `"{site}\0{route}"` /
-    `"*\0{route}"` — тот формат принадлежит `UpstreamRegistry.override_key()` в
-    `src/proxy/health.rs` (`conduit upstreams add/remove/weight --site`), не рейт-лимитеру.
-    Отдельно найдено и заведено issue: site-level бакеты НЕ скоуплены по сайту (общий
-    `AppState.rate_limiter` на процесс, ключ — голый client key без метки сайта) — два сайта
-    с разными `rateLimit` конфигами и общим клиентским IP делят один бакет.
+14. **Rate limiter** — `DashMap` v6 (`AppState.rate_limiter`, shared by site/route/consumer
+    layers). **Канонический формат ключа с 2026-08-30** (`src/filter/rate_limit.rs`:
+    `site_key`/`route_key`/`consumer_key`, fix для #303/#304): `\0`-разделённые, с тегом
+    namespace — site-level: `"site\0{site_label}\0{client_key}"`; per-route:
+    `"route\0{site_label}\0{route_key}\0{client_key}"`; per-consumer: `"consumer\0{username}"`
+    (**намеренно** не скоуплен по сайту — квота consumer'а глобальна по всем сайтам, где он
+    разрешён). `site_label` = тот же `"{host}:{port}"`/`"*"`, что уже используется в
+    `conduit_rate_limit_rejected_total{site=…}`. `GET /rate-limits` (`admin/api.rs`) парсит
+    все три формы и суммирует per-client бакеты в один total на (site, route) — раньше
+    (до фикса) не парсил вообще ничего реального, всегда отдавал `{}` (issue #303). Redis-бэкенд
+    (`crates/conduit-ratelimit/src/redis.rs`, за фичей `redis`, извлечён вместе с фиксом #317
+    как #137 slice 2) — отдельный ключевой неймспейс: `"conduit:rl:{scope_label}\0{window_secs}\0
+    {client_key}"` для реального Redis, `"{scope_label}\0{client_key}\0{limit}\0{burst}\0
+    {window_secs}"` для его in-process fallback-мапы (оба `\0`-разделены, не `:`-разделены — фикс
+    2026-09-07, issue #350: `scope_label`/`client_key` могут легитимно содержать двоеточие —
+    IPv6-хост без скобок в site_label, IPv6 client_key, произвольное значение `keyBy:
+    "header:X-Name"` — что при `:`-разделителе давало реально воспроизводимую коллизию двух разных
+    (scope, client) пар на один физический Redis-ключ; проверено напрямую конкретным примером,
+    не абстрактно). `src/filter/rate_limit_redis.rs` в корне — тонкий facade
+    re-export. **С 2026-09-05 (issue #322)** `scope_label` (переименован из `site_label`,
+    чисто ради ясности — сигнатура не менялась) — это либо site_label как раньше, либо
+    `"route\0{site_label}\0{route_key}"` для per-route (`rate_limit::redis_route_scope`), либо
+    фиксированный литерал `"consumer"` для per-consumer (username передаётся отдельным
+    параметром `client_key`, не встраивается в scope). Redis работает на всех трёх уровнях, но
+    **на процесс устанавливается только одно реальное соединение** — `connect_redis_rate_limiter_if_configured`
+    сканирует site → route → consumer и подключается к первому найденному URL; если на разных
+    уровнях настроены разные Redis URL, все уровни всё равно используют одно (первое найденное)
+    соединение без предупреждения — задокументировано явно в `docs/configuration.md`, доведение
+    до предупреждения/переподключения при hot-reload — issue #357, отдельное архитектурное
+    решение, не сделано.
+    **История находки (2026-08-30, Step 1c аудит `rate_limit.rs`)**: до этого фикса запись здесь
+    ошибочно приписывала рейт-лимитеру формат `"{site}\0{route}"` — тот формат на самом деле
+    принадлежит `UpstreamRegistry.override_key()` в `src/proxy/health.rs`
+    (`conduit upstreams add/remove/weight --site`); отдельно было найдено, что site-level
+    бакеты не были скоуплены по сайту вообще (issue #304) и что per-route бакеты имели тот же
+    класс бага (найдено при реализации фикса, не было отдельным issue — два сайта с одинаковым
+    `route_key` и общим клиентом делили бакет). Оба закрыты этим фиксом.
 15. **Graceful shutdown** — `Arc<AtomicUsize>` inflight. SIGTERM → перестать принимать → ждать нуля → exit.
 16. **`FallbackConfig`:** нет поля `redirect`.
 17. **LoadBalanceStrategy** — 8 вариантов (включая P2c). Веса статические. Для IpHash/CH — `hash_key: "ip" | "header:X-Key" | "url"`. P2C: splitmix64 RNG, O(1).
 18. **Динамические upstream'ы** — только в памяти. `UpstreamRegistry` отдельно от конфига. `conduit reload` сбрасывает overrides.
 19. **Upstream groups** — `groups` + `groupStrategy`. Phase 3.7b.
-20. **Filter Chain (CoR)** — `src/filter/chain.rs`. Новый guard = `impl RequestFilter` + push в chain. `service.rs` не трогать. `phase: "response"` scripts пропускаются в request-фазе (`MiddlewareGuard::apply`).
+20. **Filter Chain (CoR)** — `src/filter/chain.rs`. Новый guard = `impl RequestFilter` + push в chain. `service.rs` не трогать. `phase: "response"` scripts пропускаются в request-фазе (`MiddlewareGuard::apply`, теперь в `crates/conduit-middleware/src/guard.rs` — issue #114/#141; сборка chain'а остаётся здесь, в `src/filter/chain.rs`).
 20a. **Feature warnings** — `config::validate::feature_warnings()`. WASM (без `--features wasm`) + OTLP (без `--features otlp`) → `tracing::warn!` при старте и hot-reload. `/reload` response включает поле `warnings: [...]`.
 21. **Handler Registry** — трейт `LocalHandlerImpl` в `src/handler/mod.rs`. 7 handler structs реализованы. `dispatch_local` → `build_handler()` + `handle()`.
 22. **Routing Strategy** — трейт `LoadBalancingStrategy` в `src/proxy/strategy.rs`. Новая стратегия = новый struct + `from_config()` arm. `router.rs` не трогать.
@@ -115,14 +151,18 @@
     в request-фазе (+7 в response-фазе, см. пункт бэклога "WASM `on_response()` hook" — 4 из них те же
     самые имена, переиспользованные в обоих линкерах (`conduit_set_response_header`,
     `conduit_set_response_body`, `conduit_get_plugin_config`, `conduit_log`), так что суммарно
-    различных имён — 20), fail-open. `src/filter/wasm.rs`. Плагины экспортируют `on_request() -> i32`.
+    различных имён — 20), fail-open. `crates/conduit-plugin-wasm/src/wasm.rs` (issue #114/#141, было
+    `src/filter/wasm.rs` до извлечения крейта). Плагины экспортируют `on_request() -> i32`.
     Память должна быть экспортирована как `"memory"`, если плагин вызывает хоть одну host-функцию,
     читающую или пишущую в неё — плагин без единой такой функции (например, всегда возвращающий
     `on_request() -> 0`) работает и без `memory` экспорта; см. issue #381 про то, что при пропущенном
     экспорте это вырождается в молчаливую деградацию без единого warning в лог, а не в чёткую ошибку.
     (Число реюзов поправлено 2026-09-07 по итогам ревью PR #382 — было ошибочно "2"; счёт "12"→"17"
     поправлен в этой же сессии, Step 1c аудит, не совпадал ни с одной реальной точкой в истории фичи.)
-27. **MiddlewareGuard** — объединяет Rhai ("script") и WASM ("wasm") в `src/filter/chain.rs`. Порядок entries соблюдается. `ScriptGuard` = type alias для совместимости.
+27. **MiddlewareGuard** — объединяет Rhai ("script") и WASM ("wasm") в `crates/conduit-middleware/src/guard.rs`
+    (issue #114/#141, было `src/filter/chain.rs` до извлечения крейта; сборка chain'а сама по себе
+    остаётся в `src/filter/chain.rs` — правило "Filter Chain" ниже про это). Порядок entries
+    соблюдается. `ScriptGuard` = type alias для совместимости.
 28. **CGI** — вопрос "входит в Conduit или отдельный проект" остаётся **открытым**
     (пере-рассмотрено 2026-09-12, было "не входит, отдельный проект" — см. ниже);
     реализацию не начинать до снятия блокеров.
@@ -145,6 +185,62 @@
     под нагрузкой) и streaming-дизайна для больших тел запроса/ответа. Полный разбор — в
     телах issues, не здесь (не дублировать).
 29. **Тесты** — port 0, rcgen, serial_test для Admin API, mock = `TcpListener` без Axum.
+30. **`RequestCtx` per-request state (Conduit 2.0 migration, #114)** — поля остаются в корневом крейте
+    (status quo), НЕ выносятся в type-erased extension slot и НЕ через отдельный trait в `conduit-core`.
+    Каждое feature-specific поле — через `#[cfg(feature = "x")]` по образцу уже существующих
+    `otel_span`/`early_refresh_upstream_url`. Решение пользователя 2026-08-21 по итогам `architect`-аудита
+    Phase 2 facade-checkpoint (issue #128) — снимает блокировку с #129 (`conduit-otlp`) и последующих
+    #131/#133/#135/#141/#142. Не пересматривать без явного обсуждения (см. заголовок раздела).
+    **Пере-рассмотрено и подтверждено 2026-08-23** (пользователь явно попросил перепроверить, issue
+    #114 "owner decisions" пункт 1, всё ещё числился в теле issue как открытый — устарел, реальное
+    решение уже было в этом пункте с 2026-08-21). Проверено против реального кода:
+    `crates/conduit-otlp/src/lib.rs` уже документирует именно этот паттерн ("Per-request span
+    creation/finishing... deliberately stays in the root crate... see CLAUDE.md's architectural
+    decision #30") — вариант C уже единственный факт на земле, не гипотеза. Вердикт по итогам
+    повторного рассмотрения: подтвердить, не менять. Zero-cost на hot path перевешивает
+    архитектурную "чистоту" отдельных крейтов для проекта, чья заявленная ценность — производительность;
+    вариант A (TypeMap) добавляет hash-lookup+аллокацию на каждый запрос на каждую активную фичу; вариант B
+    (typed slot в conduit-core) потенциально не хуже C по цене, но сам механизм не спроектирован — это
+    неготовое решение, а не альтернатива на сегодня. Условие пересмотра (не абстрактное, конкретное):
+    если экстракция #133 (`conduit-auth-jwt`, jwt_claims пишется в request_filter, читается в
+    upstream_request_filter) или #135/#134 (consumers/forward-auth, похожий cross-phase паттерн) окажется
+    реально болезненной на практике — не гипотетически, а по факту застревания/переделок в процессе PR —
+    это и есть триггер вернуться к вопросу, не раньше.
+
+31. **Feature-гейты для ipFilter/cors/securityHeaders/compression/static/fallback/hotReload/metrics/
+    redirects (Conduit 2.0 migration, #114, фазы 3.8/4.1-4.3 — сабишью #136-#140)** — гибрид, не
+    поголовное превращение всех девяти в `--features`. Извлечь в отдельные крейты для организации
+    кода (один крейт = одна забота), но по-настоящему опциональными (с расширением `default`, чтобы
+    сегодняшний zero-flag билд не потерял поведение) делать только то, что реально тяжёлое —
+    `static`/`hotReload` (тянут `notify`, mime-детект) и, возможно, `compression`. `ipFilter`/`cors`/
+    `securityHeaders`/`redirects`/`metrics` остаются always-on/не-опциональными — гейтинг ради гейтинга
+    почти не даёт footprint-выгоды (это лёгкая логика без тяжёлых third-party крейтов), а стоимость
+    "забыл флаг — тихо не работает" реальна. Конкретно проверено для `metrics`: `cargo tree -i
+    prometheus@0.13.4` показывает, что `prometheus` уже безусловно тянется `pingora-core` независимо
+    от наших фич — гейтинг нашего `/metrics`-хендлера не убирает эту зависимость из бинарника, экономия
+    была бы только на нашем собственном коде хендлера. Решение пользователя 2026-08-23.
+    **Обновление 2026-09-25 (Pingora 0.9, PR #450) — посылка про `prometheus` устарела, вывод решения
+    нет.** `pingora-core` 0.9 больше не зависит от `prometheus` (тот вынесен в отдельный
+    `pingora-prometheus`, который Conduit не использует; серверный `/metrics` Pingora мы не подключали
+    никогда), и `prometheus 0.14` теперь тянут только `lopatnov-conduit` и `lopatnov-conduit-metrics` —
+    значит, `metrics` *можно* сделать опциональной фичей. Измерено (`cargo tree -i`): из дерева ушли бы
+    только `protobuf` и `protobuf-support` (2–3 крейта, <1% бинаря; `fnv`, `lazy_static`, `memchr`,
+    `parking_lot`, `thiserror` нужны другим), а запись метрик (`ConduitMetrics`, `src/proxy/service.rs`)
+    проходит по горячему пути → `#[cfg]` на каждый вызов. Решение остаётся (always-on), но причина теперь
+    другая: малый выигрыш при реальной работе, а не «всё равно тянет pingora-core». Пересматривать только
+    если понадобится бюджет размера. Записано в #451.
+
+32. **Публикация member-крейтов на crates.io (Conduit 2.0 migration, #114)** — публиковать (технически
+    почти вынужденно: `cargo publish` для самого бинарника `lopatnov-conduit` требует `version =`, не
+    просто `path =`, у каждой зависимости — раз бинарник продолжает публиковаться на crates.io, все
+    ~28 member-крейтов обязаны публиковаться в лок-степ), но **как internal-plumbing, не как полноценный
+    публичный API** — без семвер-гарантий, `pub`-поверхность чистится по мере обнаружения утечек (как
+    `conduit_core::filter::path::path_matches`, PR #230), не превентивно с библиотечной строгостью.
+    Имя уже выбрано: `lopatnov-conduit-<name>` (см. `crates/README.md`). Переход на полноценный
+    публичный API (вариант A — реальная документация, семвер-дисциплина на каждый крейт) осознанно
+    отложен, не отклонён — пользователю идея нравится, но сейчас она существенно замедлит миграцию;
+    трекается отдельным issue (см. беклог) для пересмотра после того, как механические фазы экстракции
+    #114 приземлятся. Решение пользователя 2026-08-23.
 
 ---
 
@@ -157,7 +253,7 @@ request_filter()
   │              → RateLimitGuard → ConsumersGuard (6) → BasicAuthGuard → ApiKeyGuard → JwtGuard (6c)
   │              → ForwardAuthGuard (6d) → RedirectGuard → FaultInjectionGuard
   │              → MiddlewareGuard (Rhai + WASM in order)
-  ├─ Per-route rate limit check (post-routing, key "route:{key}:{ip}")
+  ├─ Per-route rate limit check (post-routing, key via rate_limit::route_key — see decision #14)
   ├─ Priority load shedding: if inflight/maxInflight ≥ threshold AND route.priority < 50 → 503
   ├─ Circuit breaker: if all upstreams at maxConns → LocalHandler::Overloaded → 503
   └─ JWT claims extraction (for {{ jwt.sub }} templates) → RequestCtx.jwt_claims
@@ -229,6 +325,10 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
   Follow-ups filed, not fixed in #156: #216 (retry attempts bypass the cap and undercount
   `conn_count`), #217 (`routes[]` retry list not health/capacity-filtered), #218
   (`failed_upstream_attempts` is write-only state).
+  **#216 closed 2026-09-06** — turned out to be a real leak, not just an undercount; see the
+  2026-09-06 entries in `.claude/logs/session-log.md` for the full 4-PR fix (#367, #368, #216 parts 1 and 2).
+  **#217 and #218 were both already closed separately** (2026-08-22 and prior, respectively)
+  before this session picked up #216 — verified via `gh issue view`, not assumed.
 - [x] **Forward Auth** — `forwardAuth: { url, requestHeaders?, responseHeaders?, timeoutMs?, skipPaths? }`. `ForwardAuthGuard` (6d в chain). Subrequest через `reqwest::Client` singleton. 2xx=allow+inject headers, 4xx/5xx=deny, unreachable=fail closed. 5 integration tests.
 - [x] **Service Failover** — `ProxyRouteConfig.backup`. Когда все primary unhealthy → route to backup. Логика в `resolve_proxy()`.
 - [x] **Inflight request limit** — `LimitsConfig.maxInflightRequests`. `LimitsGuard` проверяет `inflight` перед прочими лимитами. 503 при превышении.
@@ -237,8 +337,13 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 #### Средний приоритет
 
 - [🚫 BLOCKED] **Request queue + backpressure** — когда upstream на maxconn: ставить в очередь (не сразу 503). Priority queue по классу + timestamp. HAProxy: `queue.c`.
-  **Причина:** `ProxyHttp` trait не имеет хука "upstream перегружен, подожди" — Pingora не предоставляет механизма задержки принятия соединения до освобождения upstream slot. Circuit Breaker (`maxConnectionsPerUpstream`) покрывает основной кейс. Ждём Pingora 0.9+.
+  **Причина:** `ProxyHttp` trait не имеет хука "upstream перегружен, подожди" — Pingora не предоставляет механизма задержки принятия соединения до освобождения upstream slot. Circuit Breaker (`maxConnectionsPerUpstream`) покрывает основной кейс. Pingora 0.9 вышел (2026-09-09), но пункт по его исходнику **не перепроверялся** — #58, #451.
 - [x] **Upstream slow start** — `UpstreamEntry.recovery_time_secs` + `slow_start_fraction()` в health.rs. `UpstreamHealthCheck.slowStartSecs` config field.
+  **Уточнение 2026-09-06 (issue #157)**: чекбокс был отмечен преждевременно — сам механизм
+  (`slow_start_fraction`) существовал, но нигде не вызывался за пределами собственных тестов;
+  конфиг `slowStartSecs` был полным no-op. Реально подключено фиксом #157 — см. запись 2026-09-06 в
+  `.claude/logs/session-log.md`. `src/proxy/slow_start.rs::Ramp` — probabilistic Bernoulli admission gate внутри
+  `capacity::pick_bounded`, hash-стратегии/sticky — структурно исключены.
 - [x] **Sticky sessions** — `ProxyRouteConfig.sticky.cookie`. `extract_cookie()` в router.rs. Cookie value → consistent-hash key. `StickyConfig` в schema.
 
 ---
@@ -328,7 +433,7 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 
 - [x] **Header injection protection** — CRLF: collect+remove headers от upstream с `\r`/`\n` в `upstream_response_filter` (Pingora HMap нет retain).
 - [🚫 BLOCKED] **OCSP stapling config** — expose через конфиг, сейчас rustls обрабатывает внутренне.
-  **Причина:** Pingora rustls backend не имеет публичного API для управления OCSP stapling. Rustls обрабатывает его внутренне без конфигурации. Ждём Pingora 0.9+.
+  **Причина:** Pingora rustls backend не имеет публичного API для управления OCSP stapling. Rustls обрабатывает его внутренне без конфигурации. Pingora 0.9 вышел, по его исходнику **не перепроверялось** — #59, #451.
 - [🚫 BLOCKED] **`tls.versions`/`tls.ciphers` enforcement** (issue #189, найдено
   `integrity-auditor` при Step 1c аудите `src/server/tls.rs`) — поля парсятся с самого первого
   коммита (`58ec267`), но никогда не были подключены: `make_tls_settings()` не принимает
@@ -338,8 +443,12 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
   зашивает `ServerConfig::builder_with_protocol_versions(&[TLS12, TLS13])` без cipher-suite
   API, все поля `TlsSettings` приватные, единственный конструктор `intermediate()` берёт
   только cert/key path, `add_tls_with_settings()` принимает исключительно `TlsSettings` —
-  никакого хука для кастомного `ServerConfig`/`Acceptor`. Ждём Pingora 0.9+
-  (`ResolvesServerCert`-подобный API или публичный доступ к builder).
+  никакого хука для кастомного `ServerConfig`/`Acceptor`. **Перепроверено на 0.9.0
+  (2026-09-25, security-review PR #450) — блокировка остаётся:** `TlsSettings::build()` по-прежнему
+  зашивает `[TLS12, TLS13]`; `Acceptor::from_server_config` в 0.9 есть, но listener принимает только
+  `TlsSettings` (`listeners/mod.rs:411`, поле `tls` — `pub(crate)`), так что кастомный acceptor
+  подключить нельзя. (Запись 2026-09-12 в журнале называла `from_server_config` рабочим обходом —
+  это было неверно.) `set_cert_resolver` (0.9) даёт только выбор сертификата, не версий/шифров.
   **Фикс (2026-08-29, issue #189)**: раз честно wire-нуть нельзя — поля теперь **жёстко
   отклоняются на `validate()`** (`Severity::Error`, блокирует старт и `/reload`) вместо
   тихого игнорирования, чтобы оператор не решил, что TLS-версии/шифры реально ограничены.
@@ -418,7 +527,7 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
   Review-фидбек (Gemini ×4 — &str-borrow path + Option::take) применён коммитом `7a9dedb`.
   Вне scope остались 3 старых S3776: `router.rs::route_request` CC 79,
   `config/validate.rs` CC 21, `cli/init.rs` CC 16 (если делать — отдельным пунктом).
-  **Все три закрыты 2026-08-17** — см. запись в конце этого файла
+  **Все три закрыты 2026-08-17** — см. запись в `.claude/logs/session-log.md`
   ("Реализовано в сессии 2026-08-17"), включая поправку: CC 79 был не в
   `route_request` (плоский `match`, CC ~7), а в безымянном теле match-arm
   внутри `resolve_proxy`, теперь названном `resolve_proxy_routes`.
@@ -475,7 +584,7 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 
 ### 🔒 Безопасность
 
-- [x] **Certificate rotation** — `POST /certs/reload`. Принимает `{ cert, key }` PEM, валидирует пару через rustls (cert/key match), записывает атомарно в `tls.cert`/`tls.key` файлы. После — `conduit reload` или рестарт процесса активирует новый серт. `validate_cert_key_pem()` в `server/tls.rs`. 5 unit-тестов + 4 integration-теста. **Zero-downtime hot-swap заблокирован Pingora 0.8** — нет `ResolvesServerCert` API для rustls backend. Ожидаем Pingora 0.9+.
+- [x] **Certificate rotation** — `POST /certs/reload`. Принимает `{ cert, key }` PEM, валидирует пару через rustls (cert/key match), записывает атомарно в `tls.cert`/`tls.key` файлы. После — `conduit reload` или рестарт процесса активирует новый серт. `validate_cert_key_pem()` в `server/tls.rs`. 5 unit-тестов + 4 integration-теста. **Zero-downtime hot-swap: в Pingora 0.9.0 хук есть** (`TlsSettings::set_cert_resolver`, `listeners/tls/rustls/mod.rs:127`), Conduit его пока **не подключает** — трекается в #451 вместе с мультисертификатным SNI (тот же хук).
 
 - [x] **IP rate limit с burst** — `rateLimit.burst: u32`.
   Сейчас токен-бакет без burst. Добавить burst capacity.
@@ -534,6 +643,18 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
   `<projects-root>\pingora\pingora\examples\graceful_upgrade.rs`.
 
 - [x] **Upstream connection pool warmup** — `healthCheck.prewarmConnections: u8` (макс 8). `spawn_connection_warmup()` в `health.rs` запускает N HEAD-запросов к upstream при старте через reqwest. Вызывается из `AdminApiService::start()`. Значения выше 8 обрезаются.
+  **🚫 BLOCKED, подтверждено 2026-09-06 (issue #158)** — фича не даёт заявленного эффекта и
+  не может его дать на Pingora 0.8: каждый warmup-запрос идёт через одноразовый
+  `reqwest::Client`, который не имеет отношения к реальному пулу Pingora
+  (`HttpProxy::client_upstream`, используемому `upstream_peer()` для настоящего трафика).
+  Проверено напрямую по vendored-исходникам `pingora-proxy-0.8.1/src/lib.rs`:
+  `client_upstream` — приватное поле без единого публичного геттера во всех `impl`-блоках
+  структуры, и `ProxyHttp` trait (который реализует Conduit) никогда не получает на него
+  ссылку ни в одном хуке. Публичного API достучаться до этого пула снаружи крейта в
+  Pingora 0.8 нет — тот же класс блокировки, что у OCSP stapling / request queue. Оставлено
+  как есть (безвредные HEAD-запросы при старте), доки поправлены на честное "🚫 BLOCKED"
+  вместо более мягкого "doesn't yet". **Перепроверено на 0.9.0 (2026-09-25):** `client_upstream`
+  по-прежнему приватное поле без аксессора — блокировка остаётся.
 
 - [x] **Retry с экспоненциальным jitter** — `retry.backoffMs` + jitter ±50%.
   Сейчас backoffMs фиксированный. Thundering herd при массовом retry.
@@ -663,12 +784,12 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 - [🚫 BLOCKED] **X-Reproxy-URL internal redirect** — upstream возвращает `X-Reproxy-URL: https://...`,
   прокси отменяет текущий ответ и прозрачно пересылает к новому URL.
   Паттерн: auth-сервис валидирует запрос → редиректит на внутренний asset storage.
-  **Причина:** требует mid-request смены upstream в Pingora — нет публичного API. Ждём 0.9+.
+  **Причина:** требует mid-request смены upstream в Pingora — нет публичного API. Pingora 0.9 вышел, по его исходнику **не перепроверялось** — #60, #451.
   Источник: `h2o/lib/handler/reproxy.c`.
 
 - [🚫 BLOCKED] **Upstream H1/H2 protocol ratio selector** — дефицитный RR алгоритм для
   выбора протокола (H1/H2) по конфигурируемым процентам.
-  **Причина:** требует управления ALPN на уровне Pingora — не экспонировано. Ждём 0.9+.
+  **Причина:** требует управления ALPN на уровне Pingora — не экспонировано. Pingora 0.9 вышел, по его исходнику **не перепроверялось** — #63, #451.
   Источник: `h2o/lib/common/httpclient.c` — `select_protocol()`.
 
 - [🚫 BLOCKED] **Happy Eyeballs RFC 8305** — параллельные IPv4/IPv6 попытки коннекта.
@@ -889,44 +1010,31 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 
 ## Integrity audit log (Conduit 2.0 cycle, Step 1c)
 
-> Append-only. `/feature-workspace-cycle` Step 1c writes one row here each time it audits
-> a feature/module via `integrity-auditor`, so a later firing can see what's already been
-> checked recently instead of re-auditing the same area. Newest entries on top.
+> Append-only — **full history moved to `.claude/logs/integrity-audit.md`** (split out
+> 2026-08-28, see `.claude/rules/index.md`'s note on append-only logs bloating every
+> session's context). `/feature-workspace-cycle` Step 1c writes one row there each time it
+> audits a feature/module via `integrity-auditor`. Only the newest row stays inline below;
+> read the full file for anything older or to count firings since the last entry (the
+> cadence gate needs that count).
 
 | Date | Area audited | Result | Notes |
 |------|---------------|--------|-------|
-| 2026-08-21 | `src/filter/auth.rs` (consumer identification: API key / Basic Auth / per-consumer JWT V2 / shared JWT V3) | 2 real behavioral gaps + 7 low-risk doc/test issues | Third Step 1c firing (cadence gate satisfied: Step 0/1 both idle, ~4 daily firings since the 2026-08-10 `jwt.rs` audit — this table's own previous top row, not 2026-08-17 as an earlier in-session note assumed; corrected here). Prompted by a live Gitar finding on tracking PR #152 flagging `identify_consumer`'s doc comment as stale ("two credential types" vs. the actual four) — confirmed that specific drift was already fixed on `main` via `e17ec67` (2026-08-18), but 2 sibling doc-comment instances of the same drift (`ConsumersGuard` in `chain.rs`, `SiteConfig.consumers` in `schema.rs`) and CLAUDE.md's own pipeline diagram (omitted `ConsumersGuard` entirely) had not been. Root finding needing design judgment: `feature_warnings()` has no case for `consumers` at all — building without `--features consumers` while a config sets `sites[].consumers` silently drops all consumer-based auth with zero startup/hot-reload warning (every sibling feature — jwt/forward-auth/tcp/redis/acme/etc. — warns; `consumers` doesn't), filed as [#233](https://github.com/lopatnov/conduit/issues/233) (security-relevant, pre-existing, not introduced by this audit's fix). Second gap: `identify_consumer`'s consumer-list scan short-circuits at first match, unlike `check_api_key`'s deliberate non-short-circuiting constant-time design a few lines above — a minor timing-characteristic judgment call, filed as [#234](https://github.com/lopatnov/conduit/issues/234) for `security-engineer` to weigh in on. The 7 low-risk items (the 2 sibling doc-drift instances + the diagram fix + a real validation gap — `Consumer.rate_limit` was never run through the existing `validate_rate_limit` helper, so `limit=0`/`windowSecs=0` passed validation but then silently, permanently locked the consumer out at runtime — + 3 test-coverage additions: X-Consumer-ID injection for Basic Auth/shared-JWT V3, per-consumer rate limit via a non-API-key path, `consumer.headers` custom-header injection, none previously asserted + a missing sibling test for `jwtAuth`'s own feature-warning) shipped directly via [PR #235](https://github.com/lopatnov/conduit/pull/235) (off `main`, not the migration branch) — `security-engineer` PASS recorded, CodeRabbit reviewed with no actionable comments (Merge Risk: Minimal). |
-| 2026-08-10 | `src/filter/jwt.rs` (JWT bearer-token auth, unchanged functionally since v1.1.0/2026-06-06 — only a clippy fix touched it since) | 2 real behavioral gaps + 6 low-risk doc/test issues | Second Step 1c firing (cadence gate satisfied: ~5 firings since the 08-03 audit, Step 0/1 both idle). Root finding: JWKS refresh is a synchronous blocking fetch inside the async `JwtGuard`, with no single-flight lock and no fallback to stale-but-still-valid keys on refetch failure — despite the module doc and `JwtAuthConfig.jwksUrl` doc both claiming a background-refresh design that doesn't exist. Filed as [#163](https://github.com/lopatnov/conduit/issues/163) (needs design judgment — recommended adapting the existing `CACHE_LOCK`/stale-while-revalidate pattern rather than inventing a new one). Companion gap: the RS256/ES256/JWKS code path — literally half of what the feature advertises — has zero test coverage (all 20 unit + 6 integration tests are HS256-only); filed as [#164](https://github.com/lopatnov/conduit/issues/164). Low-risk fixes shipped directly on `fix/jwt-audit-gaps-integrity` (off `main`, not the migration branch): case-sensitive `strip_prefix("Bearer ")` in claim-template extraction reusing the already-tested case-insensitive `extract_bearer` instead of a second ad hoc parse; `jwksRefreshSecs` minimum (60s, matches `schema/conduit.schema.json`) now enforced in `validate.rs` (previously schema-only, unenforced at runtime); docs updated for JWKS-unreachable-after-TTL fail-closed behavior and non-string-claim JSON-text serialization in `{{ jwt.<claim> }}` templates (both previously undocumented); a mislabeled test (`non_object_claims_returns_none_from_extract`) that silently tested the wrong thing rewritten to actually build a non-object-payload JWT; stale `jsonwebtoken v9`/test-count claims in this file corrected. |
-| 2026-08-03 | `src/proxy/health.rs` (unchanged since v1.1.0/PR #67 — oldest actively-used file in the codebase) | 4 real behavioral gaps + 4 low-risk doc/comment issues | First-ever Step 1c firing (cadence gate finally satisfied: Step 0 idle, Step 1 found nothing to triage). Root finding: passive health tracking (Outlier Detection, Peak EWMA, per-peer response stats) and true circuit-breaker enforcement (skipping a single at-limit upstream) only actually work for `LoadBalanceStrategy::LeastConn` or when `maxConnectionsPerUpstream` happens to also be set — for the `RoundRobin` default and 4 other strategies without a connection cap, several `[x]`-marked "done" backlog items silently no-op. Also found `slowStartSecs` fully unwired (zero effect) and `prewarmConnections` warming a throwaway client instead of Pingora's real pool. Doc/comment-only fixes (scrambled doc-comment un-scramble, honest known-limitation notes, 2 stale CLAUDE.md backlog claims corrected) shipped directly via [PR #154](https://github.com/lopatnov/conduit/pull/154) per the low-risk/unambiguous routing rule. The 4 behavioral gaps needing design judgment filed as [#155](https://github.com/lopatnov/conduit/issues/155) (passive tracking gate), [#156](https://github.com/lopatnov/conduit/issues/156) (circuit-breaker enforcement gate, cross-references #155), [#157](https://github.com/lopatnov/conduit/issues/157) (`slowStartSecs` dead code), [#158](https://github.com/lopatnov/conduit/issues/158) (`prewarmConnections` doesn't warm the real pool) — ordinary repo backlog, not #114 sub-issues. Note: the agent originally delegated to file these issues (`scrum-master`) turned out not to have GitHub MCP tools in its grant, fell back to raw-credential API probing (blocked by egress policy, no data exposed) — flagged as a security-relevant subagent-behavior incident and routed to `security-engineer` for review rather than self-cleared; issues were filed directly by the conductor's own properly-scoped tools instead. |
----
+| 2026-09-07 | `src/filter/wasm.rs` (WASM plugin middleware, unchanged since it shipped 2026-06-05, never audited before) | 10 findings: 7 low-risk/unambiguous + 3 needing design judgment | Filed [#379](https://github.com/lopatnov/conduit/issues/379) (high severity — `on_response` body override is completely non-functional and leaks two internal headers to the client), [#380](https://github.com/lopatnov/conduit/issues/380) (`conduit_get_header_names`'s "insertion order" doc claim is unreachable, sourced from a `HashMap`), [#381](https://github.com/lopatnov/conduit/issues/381) (missing `"memory"` export degrades silently with zero warning log). 7 low-risk docs/schema fixes + 3 new resource-limit tests shipped via [PR #382](https://github.com/lopatnov/conduit/pull/382) (off `main`) — see `.claude/logs/integrity-audit.md` for the full findings list, the 6 real gitar/CodeRabbit findings on the PR's own docs prose (all fixed), and a genuine HOLD on the 3rd review round: one of those 6 "fixes" was itself factually wrong (a wasmtime memory-limit claim taken from CodeRabbit's own unverified web-doc summary instead of the vendored source), caught and corrected before merge. |
+
 
 ## Dependabot & branch hygiene log
 
-> Append-only. See `.claude/rules/index.md` "Dependabot & branch hygiene reflex check" —
-> any session that touches this repo's GitHub state runs this cheap sweep if the newest
-> row here is older than ~24h, then logs a row (even "nothing new"). Newest on top.
+> Append-only — **full history moved to `.claude/logs/dependabot-hygiene.md`** (split out
+> 2026-08-28, same rationale as above). See `.claude/commands/dependabot-hygiene.md` (was
+> `.claude/rules/index.md` "Dependabot & branch hygiene reflex check") — any session that
+> touches this repo's GitHub state runs this cheap sweep if the newest row in the full log
+> file is older than ~24h, then logs a row there (even "nothing new"). Only the newest
+> row(s) stay inline below.
 
 | Date/time (UTC) | New Dependabot PRs found/acted on | Orphan branches flagged | Notes |
 |---|---|---|---|
-| 2026-08-23 ~00:15 (mid-session sweep, triggered by handling PR #252) | 0 open (confirmed directly via `search_issues author:app/dependabot`) | 2 flagged, not new — `claude/cycle-integrity-audit-step` (PR #149, closed/not merged) and `claude/stoic-stonebraker-d51bed` (PR #90, closed/not merged despite CLAUDE.md recording #90's changes as merged via manual `a84b467` — same "closed without using the GitHub merge button" pattern noted for #90 elsewhere in this file) — both pre-existing leftover clutter, not chased per the no-delete-from-session rule. Branch count 24 (up from the 2026-08-12 baseline of 22): +1 is this session's own active `fix/tls-cert-rotation-190-191` (PR #252, not yet merged); the other +1 wasn't reconciled against the exact historical list (diminishing returns for a routine sweep) but no *new* PR-less orphan was found among the branches checked. Only 2 open PRs total: #252 (mine, awaiting security-engineer) and #152 (tracking PR, draft, not actionable here per Step 7). Migration branch (`d01fe6f`) still exactly at `main`'s tip (`1586e20`) — no sync needed yet. |
-| 2026-08-12 ~01:15 (daily cycle firing) | 0 open (confirmed directly via `search_pull_requests author:app/dependabot`) | 0 (branch count unchanged at 22 — the 3 branches opened during yesterday's incident chain, `fix/echo-upstream-port-race`/`feat/narrow-config-slices-122`/`fix/sonar-coverage-exclusions-sync`, were all auto-deleted on merge) | Clean sweep. Found and corrected a real state drift on the way in: tracking PR #152 had somehow become non-draft (no comment/event trail explains when — predates this firing, not caused by yesterday's work) despite its own body and Step 9 explicitly requiring it stay draft until #114 is fully complete (26 of 34 sub-issues still open) — converted back to draft. |
-| 2026-08-11 ~03:16 (same-day addendum — log is append-only, original 01:48 row below left unchanged) | (continuation of the same firing below, no separate Dependabot check) | 0 | Later in the same session as the row below: closed issue #122 via PR #179 (narrowed `SiteConfig` usage in `logging`/`fallback`/`static_files`); root-caused and fixed a `sonar-project.properties`/`.tarpaulin.toml` drift via PR #180 — first attempt wrongly excluded 4 files with real unit-test coverage from the SonarCloud gate, caught by `security-engineer`'s mandatory HOLD, corrected and re-verified PASS; `.tarpaulin.toml` deleted outright (dead config for a tool this repo's CI has never run); issue #181 filed for 7 further pre-existing exclusion-list files with real coverage, deferred pending SonarCloud dashboard access this session doesn't have. |
-| 2026-08-11 ~01:48 | 10 found, all triaged and merged (#168-177) | 0 (branch count 23 — up from 22 only because `fix/echo-upstream-port-race`, #178, is active work; all 10 `dependabot/cargo/*` branches auto-deleted on merge) | Batch `security-engineer` PASS on all 10 (real advisory found: `RUSTSEC-2026-0190` anyhow unsoundness, current pin `1.0.102` vulnerable — #177 merged first as priority). `lawyer` cleared the one new transitive dep (`rustls-platform-verifier` via #174's kube bump) as MIT OR Apache-2.0. 4 PRs (#168/#169/#172/#173) shared an identical new `syn 3.0.3` Cargo.lock entry — merged sequentially, GitHub/Dependabot resolved each rebase automatically, no manual `@dependabot rebase` nudge needed. Migration branch synced with `main` afterward (10 commits, clean `Cargo.lock` auto-merge, `cargo check --features full` green) and pushed. Also fixed a real CI flake found via #177's checks: `AddrInUse` race in `tests/common/mod.rs::start_echo_upstream` (cross-binary port collision) — fixed on `fix/echo-upstream-port-race` (#178, off `main`, not the migration branch), CodeRabbit's one finding (inaccurate "drop to shut down" doc comment) addressed by correcting the doc rather than adding real shutdown machinery. |
-| 2026-08-09 ~02:45 (daily cycle firing) | 0 open (confirmed directly) | 0 (branch count unchanged at 22, migration branch 27 ahead / 0 behind `main`, no sync needed) | Clean sweep, nothing to act on. Only open PR is #152 (tracking PR, not actionable here per Step 7). |
-| 2026-08-08 ~04:00 (daily cycle firing) | 0 open (confirmed directly) | 0 (branch count unchanged at 22, `main` unchanged since last sync) | Clean sweep, nothing to act on. |
-| 2026-08-06 ~00:15 (daily cycle firing) | 0 open (confirmed directly via `search_pull_requests author:app/dependabot`) | 0 (branch count unchanged at 22, `main` unchanged since yesterday's sync) | Clean sweep, nothing to act on. Fetched directly this time instead of delegating to `dependency-steward` with an assumption about its tool grant. |
-| 2026-08-05 ~00:20 (daily cycle firing) | 0 open (confirmed directly via `search_pull_requests author:app/dependabot`) | 0 (branch count unchanged at 22) | Sent `dependency-steward` to triage with an incorrect prompt claiming it has GitHub MCP tools (it doesn't — `Bash, Read, Glob, Grep, WebFetch` only, per yesterday's fix). It correctly followed the new "on a tool gap, stop and report" rule instead of routing around it — first real validation of that fix. No actual triage was lost since the conductor had already independently confirmed 0 open Dependabot PRs via its own tools before the agent's report landed. |
-| 2026-08-04 ~02:15 (daily cycle firing, Step 1c follow-through) | 0 open (clean) | 0 | First-ever Step 1c firing (see "Integrity audit log" below) produced PR #154 (health.rs doc fixes) and PR #159 (subagent tool-gap hardening, from a security-engineer-reviewed incident) — both merged into `main` with the unconditional security gate. Migration branch was 2 commits behind afterward; synced clean (`git merge origin/main`, no conflicts — the two branches had independently edited overlapping `.claude/` files but in non-overlapping regions), `cargo fmt --check` + `cargo clippy --lib -- -D warnings` green, pushed as `f12fb00`. The `security/dependabot/3` alert noted below is still unresolved and still unreachable with this session's tools. |
-| 2026-08-03 ~02:00 (daily cycle firing) | 0 open (clean, only open PR is #152 the tracking PR) | 0 (branch count unchanged at 22 — `feat/workspace-hoist-deps-116` was created and auto-deleted on squash-merge within this same firing, netting to the same count) | `git push` on the migration branch has repeatedly surfaced a GitHub-native notice: "1 vulnerability (1 high)" on `main` at `github.com/lopatnov/conduit/security/dependabot/3`. Could not inspect it — no MCP tool in this session lists/reads Dependabot security alerts (only Dependabot *PRs*, of which there are none open, meaning no auto-PR exists for this alert), and the alert page itself needs authenticated access WebFetch can't provide. **Flagged to the user, unresolved** — needs a look from the GitHub UI or a session with alert-reading access. |
-| 2026-08-02 ~04:00 (daily cycle firing) | 0 open (clean) | 0 (branch count dropped 25→22 since last check — user cleanup via the provided script + GitHub's own Dependabot branch auto-cleanup; `fix/pr112-review` orphan also gone) | Migration branch was 2 commits behind `main` (#101 kube fix, #151 all-actions bump) — the new "keep migration branch in sync" bullet caught this on its first real firing. Merged clean (`git merge origin/main`, no conflicts, `cargo check --features full` green), pushed as `844a174`. |
-| 2026-08-01 ~10:00 | #151 (all-actions group, 11 updates) — merged; #101 (kube 3→4.0.0) — root-caused a real k8s-openapi 0.28 version conflict, fixed, merged | 0 (all ~25 branches checked accounted for by a PR — either open, merged, or closed) | Prompted by the user noticing `feat/workspace-scaffolding-115` and `dependabot/cargo/kube-4.0.0` in the branch list. Root cause of the untriaged PR + leftover branches: repo has no "Automatically delete head branches" setting and the cycle went from hourly to daily, leaving a gap between firings that no other session filled. This log + rule exist to close that gap. |
-
-> Note: this log previously existed only on the `claude/cargo-workspace-features-23qxfr`
-> migration branch's copy of `CLAUDE.md` — `main` never had it. PR #178 brings it to `main`
-> for the first time; entries above dated before 2026-08-11 were backfilled from the
-> migration branch's history rather than reflecting actions taken directly on `main`.
-
----
+| 2026-09-20 ~17:10 (ad hoc, run by `/retro`; `main` still frozen) | 1 open: #422 (pingora major) — HELD, not merged | 0 new (24 remote heads; the ~21 old remote-only branches flagged 2026-09-18 untouched) | The full log was stale by its own newest row (2026-09-13) because the 09-18 row had been written only here — backfilled; `dependabot-hygiene.md` now says to write the full log first. Full detail in `.claude/logs/dependabot-hygiene.md`. |
+| 2026-09-26 (ad hoc, while working #450/#314; `main` still frozen) | 5 new against `main` (#452 clap, #453 rustls, #454 clap_complete, #455 jsonwebtoken, #456 async-compression — all patch/minor), all HELD under the freeze; #422 (pingora) closed as superseded by #450 | 0 new; 29 remote heads (24 + 5 Dependabot branches), the ~21 old remote-only branches untouched | Written from the full log row first. Full detail in `.claude/logs/dependabot-hygiene.md`. |
 
 ## Tokio 1.52.3 — возможности (исследовано)
 
@@ -952,14 +1060,15 @@ Tokio "full" features уже включены. Ключевые находки �
 
 ## Правила
 
-- `pingora-cache = "0.8"` — кастомный cache key обязателен (CVE-2026-2836)
-- Pingora `"0.8"` — только 0.8+, 3 CVE исправлено
+- `pingora-cache = "0.9"` — кастомный cache key обязателен (CVE-2026-2836). С 0.9 у `CacheKey::new` нет `namespace`: хост вшивается в primary через `\0` (`build_cache_key` в `crates/conduit-cache/src/cache.rs`), хэши отличаются от 0.8 — персистентный кэш (disk/redis) после апгрейда холодный
+- Pingora `"0.9"` — только 0.8+ (3 CVE исправлено в 0.8; в 0.9 ушли `protobuf 2.28.0` и `daemonize`)
+- Pingora 0.9: `RequestHeader`/`ResponseHeader` без `DerefMut` — заголовки менять только через `insert_header`/`append_header`/`remove_header`, не через `.headers.*`
 - `schema/conduit.schema.json` — вручную синхронизировать со `schema.rs`. Обновлён 2026-05-31 со всеми Phase 4 полями. Валидировать: `node -e "JSON.parse(fs.readFileSync('schema/conduit.schema.json','utf8'))"`
 - HTTP/3 (Phase 5) — ждём Pingora Issue #95, ~август 2026
 - `src/main.rs` тонкий: CLI → `dispatch_command()` → command struct → `execute()`
 - `tls.versions`/`tls.ciphers` — **не работают, отклоняются на validate()** (issue #189,
-  2026-08-29). Pingora 0.8's rustls `TlsSettings` не даёт API для ограничения версий/шифров —
-  подробности в разделе "Безопасность" ниже.
+  2026-08-29). Pingora (0.8 и 0.9 — проверено по исходнику) rustls `TlsSettings` не даёт API для
+  ограничения версий/шифров — подробности в разделе "Безопасность" ниже.
 - Admin API bind — только loopback
 - `hotReload` при `static` как IndexMap — следить за ВСЕМИ директориями
 - `routes` backward-compatible с top-level `proxy`/`static`
@@ -982,7 +1091,7 @@ Tokio "full" features уже включены. Ключевые находки �
 - ForwardAuth: process-wide `OnceLock<reqwest::Client>` в `forward_auth_client()` — не per-request
 - Header insert из Vec<String>: сначала collect в Vec<(String,String)> — избегаем lifetime issues
 - Axum middleware state: `from_fn_with_state(Arc<T>)` конфликтует с `Router.with_state(Arc<U>)`. Использовать closure: `from_fn(move |req, next| { let t = t.clone(); async move { ... } })`
-- Consumer rate limit key: `"consumer:{username}"` (global для этого consumer, не per-IP). Bucket создаётся через `ctx.rate_limiter.entry(key).or_insert_with(|| TokenBucket::new(limit, window))`.
+- Consumer rate limit key: `rate_limit::consumer_key(username)` → `"consumer\0{username}"` (global для этого consumer, не per-IP — см. decision #14). Admission — через `conduit_ratelimit::check_key_for` (единая MAX_BUCKETS-капнутая точка на все слои, issue #305), не через ручной `entry().or_insert_with()`.
 - Circuit Breaker: `conn_count` инкрементируется для ALL стратегий при `maxConnectionsPerUpstream`. Non-LC: `circuit_tracking = true` → `conn_inc()` + `proxy_upstream_url = Some(url)`. Декремент в `logging()` как обычно.
 - JWT claims: `RequestCtx.jwt_claims` заполняется ПОСЛЕ guards в `do_request_filter`. `expand_jwt_templates()` вызывается в `upstream_request_filter`. Неизвестные claims → пустая строка.
 - `LocalHandler::Overloaded` → `HandlerKind::Overloaded` → `OverloadedHandler` → 503. Не bypasses guard chain (auth проверяется сначала).
@@ -1000,736 +1109,30 @@ Tokio "full" features уже включены. Ключевые находки �
 
 ---
 
-### Реализовано в сессии 2026-05-31 (продолжение phase-next)
+## Журнал сессий
 
-- **Structured access log**: `AccessLogContext { request_id, upstream_addr }` в `filter/logging.rs`
-- **Error masking**: `SiteConfig.maskErrors`, `RequestCtx.mask_upstream_body`, `upstream_response_body_filter`
-- **Peak EWMA**: `UpstreamEntry.ewma_latency_us` α=0.1, `record_request_latency()` вызывается из `logging()`
-- **Outlier Detection**: `OutlierDetectionConfig`, `maybe_eject()`, `ejected_until_secs/ejection_count`
-- **Retry budget**: `RetryConfig.budgetPercent`, `AppState.retry_inflight`, `retry_budget_allows()`, `RetryState.is_retrying`
-- **Traffic Mirroring**: `ProxyRouteConfig.mirror`, `UpstreamTarget::Proxy.mirror_url`, `fire_mirror_request()`
-- **JWT auth**: `JwtAuthConfig`, `JwtGuard`, `src/filter/jwt.rs`, `jsonwebtoken = "9"`, `reqwest` в main deps
-- **Forward Auth**: `ForwardAuthConfig`, `ForwardAuthGuard` (6d), `forward_auth_client()` OnceLock, fail closed
-- **Header Transform**: `HeaderTransformConfig`, `requestTransform`/`responseTransform` fields в SiteConfig
-- **Prometheus metrics**: added `active_connections` (Gauge), `upstream_errors_total{route,status}`, `retry_attempts_total{route,condition}`, `rate_limit_rejected_total{site}`
-- `RateLimitGuard` now has `site_label: String` for metrics; `GuardCtx.site_label` computed from site config
-- **Per-route rate limiting**: `proxy.*.rateLimit` in `ProxyRouteConfig`. `find_route_rate_limit(site, path)` in router.rs. Applied post-routing in `do_request_filter`. Key prefix `"route:{route_key}:"`.
-- **X-Forwarded-Host**: injected in `append_forwarded_headers()` alongside XFF and XFP
-- **logging.skipPaths**: suppress noisy paths from access log (same glob syntax)
-- **Validation**: forwardAuth.url format, timeoutMs > 0, mirror URL format
-- **Admin API auth**: `global.admin.token` — Bearer token middleware via Axum `from_fn_with_state`
-- **Upstream TLS**: `upstreamTls: { verify, serverName }` in `ProxyRouteConfig` + `UpstreamTarget::Proxy`
-- **Circuit Breaker**: `healthCheck.maxConnectionsPerUpstream` → `LocalHandler::Overloaded` → 503 (all-maxed case, all strategies). Per-upstream-skip mechanism now lives in `src/proxy/capacity.rs` (`Capacity`/`pick_bounded`) and works for every strategy, not just `LeastConn` — fixed 2026-08-17, issue #156 (see the dated backlog entry above for detail). The old inline `under_limit`-computed-then-discarded mechanism this note originally described no longer exists.
-- **JSON Schema sync**: `schema/conduit.schema.json` обновлён со всеми Phase 4 полями + новые $defs.
-- **conduit probe параллельный**: `std::thread::spawn` per URL, сортировка, ✓/✗, итог.
-- **Header Transform V2 (JWT templates)**: `{{ jwt.<claim> }}` в requestTransform.setHeaders. `extract_claims()` + `RequestCtx.jwt_claims` + `expand_jwt_templates()` pub(crate) в service.rs.
-- **OpenTelemetry OTLP**: `global.otlp`, `src/server/otel.rs`, `--features otlp`. `RequestCtx.otel_span` (#[cfg(feature="otlp")]). opentelemetry 0.27 + opentelemetry-otlp 0.27 + opentelemetry_sdk 0.27. SpanExporter::builder().with_tonic().
-- **Consumer model**: `ConsumersConfig`, `Consumer`, `ConsumerBasicAuth` в schema.rs. `ConsumersGuard` (step 6, before basicAuth). `identify_consumer()` в auth.rs. `examples/consumers.yaml`.
-- Total tests: 447 unit + 328+ integration = **775+ total** (all green when run individually)
+> Полная история — в `.claude/logs/session-log.md` (вынесена 2026-09-20: занимала 76% этого
+> файла, ~313 КБ, и подгружалась целиком в каждую сессию и при каждой компакции). Здесь
+> остаются **две последние записи**. У записи один дом: новую добавляй **в конец этой секции**,
+> а если записей стало больше двух — самую старую **вырежи** и допиши в конец
+> `.claude/logs/session-log.md` (не копируй — иначе журналы разойдутся, как строка hygiene
+> 2026-09-18). Всё ещё открытое — комментарием на issue (Step 8 цикла), а не прозой здесь:
+> «открыто на конец сессии» устаревает за часы.
 
-### Реализовано в сессии 2026-06-02 (feature flag separation + docs)
+### Реализовано в сессии 2026-09-26 (#316 закрыт — PR #467; правило «одна issue = один PR»; жалоба владельца на стоимость процесса; main по-прежнему заморожен)
 
-- **Feature flag separation** — 13 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`, `otlp`, `kubernetes`. `default = []` (minimal build). `full` = all features. Standard build ~30% smaller binary.
-- **`upload` feature gating** — `multer` dep optional. `src/upload/` gated with `#![cfg(feature = "upload")]`. Router, service, builder all cfg-gated.
-- **`cache` feature gating** — `request_cache_filter()` body wrapped in `#[cfg(feature = "cache")]`. `CacheStorage` import gated.
-- **Zero warnings** — both `cargo build` (default) and `cargo build --features full` produce 0 warnings.
-- **`feature_warnings()`** — covers all 11 config-visible features (wasm, otlp, rhai, jwt, forward-auth, acme, tcp, redis, fault-injection, cache, upload).
-- **Documentation** — `docs/configuration.md` updated with 14 previously undocumented config fields: `compression.types`, `logging.stripQuery`, `limits.maxConnectionsPerIp`, `healthCheck.unhealthyStatus`, `healthCheck.unhealthyLatencyMs`, `ipFilter.dryRun`, `rateLimit.dryRun`, security headers `permissionsPolicy`/`allowedHosts`/`hstsIncludeSubDomains`/`hstsPreload`, `s-maxage` behavior table.
-- **Feature-warning tests** — `upload_without_feature_generates_warning` + `cache_without_feature_generates_warning` added to `tests/middleware.rs`.
-- Total tests: **511+ unit** (509 passing) + integration tests (all green).
+- **#316 — [PR #467](https://github.com/lopatnov/conduit/pull/467)** (squash `3a69220`; `Closes #316` не закрыл issue — база PR не default-ветка, закрыл вручную). 16 крейтов получили `validate.rs` и/или `warnings.rs`: 15 валидаторов (rateLimit, limits, ipFilter, cors, middleware, redirects, fallback, upload, metrics, cache, tcp, proxy, jwtAuth, consumers, forwardAuth) и 22 текста предупреждений переехали из `src/config/validate/`; в корне остались `validate_api_key`, `validate_tcp_site` (комбинации), `site_uses_redis_store`/`site_has_cache_config` (передаются bool'ом — второй не может уйти в cache: proxy-http зависит от cache). Гейты: `warnings.rs` 24 → 0, `auth.rs` 3 → 0, `validate/` 42 → 15 (proxy_loop 9 + redis 6). Механизм S4: крейт отдаёт `COMPILED = cfg!(feature=..)` + `feature_warning(i, cfg)`; корень зовёт плоско в старом порядке и держит **17 compile-time assert'ов** `COMPILED == cfg!(feature = "<root>")` (расхождение фич = ошибка сборки, а не молча пропавшее предупреждение). Слайсы S1–S5 — коммиты одного PR (S0/S0b — #465/#466, смерджены раньше правила: ошибка плана D9). Корневой `forward-auth` больше не тянет `dep:url` (S5).
+- **Проверено:** golden без изменений в 61 комбинации фич; `--list` идентичен (968/1026/1083); зависимости корня идентичны; hack `--workspace --each-feature` 79/79 + depth-2 powerset для S5 14/14; clippy `-D warnings` 8 профилей + `--workspace --tests`; `cargo test --workspace` 1776. Контроли: для S1–S3 по 12–18 мутаций на верификатор; для S4 — плюс полярность (перевернуть `COMPILED ||` → golden падает в `--no-default-features`) и расхождение фич (`consumers` тянет `auth-jwt/jwt` → E0080 «must be enabled together»). **Security-ревью: один проход по 5 коммитам, PASS на `ea218ec`, без блокеров** (~15 мин, 264 тыс. токенов); его находки старые: #447 (`[::1]`) и ValidationError без `sanitize_for_log` (не заводил).
+- **Технические находки:** (1) rustfmt переставляет `pub mod` (сортирует смежные объявления, в т.ч. рядом с `#[cfg]`) — после генератора всегда `cargo fmt`. (2) Heredoc с Python в Bash опять молча испортил `\\n` (два раза) — только `Write`/`Edit`. (3) Доказательство переноса текстов сообщений: сравнение строковых литералов по значению (без `\`-продолжений; в базе предварительно вычеркнуты `#[cfg]`-атрибуты, т.к. в них тоже строки с именами фич) — этого достаточно, отдельные генераторы на каждый слайс не нужны. (4) **Gitar с auto-apply закоммитил прямо в ветку миграции** (`8f5e37a`, «relax event loop lag assertion», флак `eventloop_lag_ms`) без PR-ревью; безвредно, но auto-apply включён на #152 (на #467 выключен). (5) `Cargo.lock`/`Cargo.toml` перезаписывает `cargo hack` пока идёт — в worktree ничего не коммитить (снова соблюдено).
+- **Жалоба владельца (2026-09-26): «затратный процесс»** — отдельные PR на одну задачу, security-ревью по кругу, 4 генератора/верификатора и ~60 контролей на чисто механические переносы, баг #447 вынесен в issue вместо коммита в тот же PR. Разбор F1–F5 (пропорциональность, объём security-ревью, баги в тех же файлах в тот же PR, «разбить на N PR» — вопрос владельцу, бюджет на issue) подготовлен; **владелец подтвердил, правила записаны в `.claude/rules/workflow.md`** (раздел «Proportionate process»: одна issue = один PR = один проход security-ревью, доказательства по риску, баги затронутого кода — в тот же PR отдельным коммитом, бюджет «второй раунд ревью или ~2 часа — спросить», вопросы владельцу коротко и без внутренних меток; в «Security review» гейт остался безусловным, но один проход на финальном head с выводом верификатора) и в шаге 2 цикла. Память: `feedback_proportionate_process`.
+- **PR #152 (на 8f5e37a, «глянь»):** 39 из 41 проверки зелёные; красные две — CodeQL (26 алертов в тестовом коде: те же, что #463; закрыть может только владелец в Security → Code scanning) и SonarCloud QG (E Security Rating из-за 2 `secrets:S6739` — `redis://alice:s3cret@…` в `tests.rs:645` и `testdata/validators_sink.json:541`, тесты проверяют, что пароль не попадает в предупреждение). Решение по ним — за владельцем (пометить false positive в Sonar либо переименовать пароль в тестовых данных). Комментарии #152: Gitar Approved (6/6 закрыто), новых замечаний нет.
+- **Issues:** #468 (fast-follow: дедуп JWT-проверок secret/jwksUrl, D10). `CHANGELOG.md` `[Unreleased]` дополнен строкой про смену tracing-таргетов и перенос валидации.
 
-### Реализовано в сессии 2026-06-02 (часть 2 — метрики, документация)
+### Реализовано в сессии 2026-09-26 (часть 2 — #222 + #447 + #468 одним PR #469; правила пропорционального процесса записаны; main по-прежнему заморожен)
 
-- **`conduit_upstream_active_connections{upstream}` gauge** — increment in `upstream_request_filter()`, decrement in `logging()`. Completes per-upstream metrics suite alongside requests_total + latency_seconds.
-- **Prometheus Metrics Reference** — `docs/configuration.md` table updated with all 11 metrics including the new gauge.
-- **docs/cli.md** — fixed upload feature dependency (`multer` not `—`).
-- **docs/deployment.md** — Docker image variants updated to list all 13 features in full image; added Standard vs Full guidance paragraph.
-- **docs/recipes.md** — new "File Upload" section with curl example + success response format.
-- **examples/file-upload.{yaml,json}** — runnable upload config example with MIME allowlist, size limits, proxy fallback.
-- Total tests: **509 unit** (default) / **586 unit** (--features full) + integration tests (all green).
-
-### Реализовано в сессии 2026-06-11 (часть 2 — wire `standard` feature into CI/release pipeline)
-
-PR #73 добавил Cargo-фичу `standard` (`jwt`+`consumers`+`forward-auth`+`cache`+`acme`), но
-не подключил её к release/CI/Docker — все "standard"-артефакты продолжали собираться с
-`default=[]`. Выбран вариант "переименовать на месте" (рекомендованный): un-suffixed
-release-бинарники, un-suffixed Docker-образ и riscv64gc cross-compile теперь собираются
-с `--features standard`; `default=[]` остаётся source-build-only ("minimal").
-
-- **`.github/workflows/release.yml`**: все 7 "Standard builds" в матрице
-  (`features: ""` → `features: "standard"`); `docker` job build-arg `FEATURES=standard`.
-- **`.github/workflows/ci.yml`**: новый job `ci-standard` (clippy + test с
-  `--features standard`, зеркалирует `ci-features`); riscv64gc cross-compile —
-  `--features standard`.
-- **`contrib/Dockerfile`**: top-comment документирует 3 tier'а (`""` = minimal/`default=[]`,
-  `standard`, `full`); `ARG FEATURES=""` не менялся (локальный `docker build .` остаётся
-  minimal).
-- **Документация** (`docs/cli.md`, `docs/building.md`, `npm/Readme.md`, `docs/deployment.md`,
-  `docs/benchmarks.md`, `docs/configuration.md`) — устранена путаница "standard" =
-  `default=[]` (старое значение) vs "standard" = Cargo-фича `standard` (новое значение).
-  `npm/Readme.md` "Standard vs Full" таблица: 5 строк (jwt/consumers/forwardAuth/cache/acme)
-  перенесены из "full-only" в "included в standard".
-- **Build size**: `--features standard` → Windows MSVC **21.2 MB** (измерено,
-  `cargo build --release --features standard`, exit 0); Linux musl ~17.8 MB — оценка через
-  коэффициент строки `default` (14.3/17.0 ≈ 0.84), не измерено напрямую (см. backlog
-  "Re-benchmark `--features standard`"). Новая строка в `docs/benchmarks.md` Build Sizes;
-  `docs/deployment.md` nginx-ingress сравнение `~14 MB` → `~18 MB`.
-- Локальная проверка: `cargo clippy --features standard -- -D warnings` (чисто),
-  `cargo test --features standard` (зелёный, 0 failed).
-- Ветка `ci/wire-standard-feature-pipeline` → [PR #83](https://github.com/lopatnov/conduit/pull/83) (main).
-  **Смерджен 2026-06-12.**
-
-### Реализовано в сессии 2026-06-12 (review-sweep + мердж PR #82/#83)
-
-- **Полный разбор review-комментариев PR #82 и #83** (gemini-code-assist, CodeRabbit, qodo):
-  - PR #82: единственный inline-тред (perf-замечание gemini по `logging_phase.rs:294`) —
-    отвечен ("pre-existing code moved verbatim"), resolved; замечание трекается как backlog-пункт
-    "Zero-allocation `logging()` hot path".
-  - PR #83: gemini (inline, `docs/benchmarks.md:73`) + CodeRabbit (outside-diff, строки 407-408)
-    оба указали, что rename "standard"→"minimal" в `docs/benchmarks.md` был неполным
-    (~13 строк со старым значением "standard" остались). Дофиксено коммитом `6efbf29`:
-    интро, TOC-якорь, Build Sizes таблица, секция "Standard vs Full"→"Minimal vs Full",
-    таблицы static/proxy/nginx/Traefik, комментарии в скрипте бенчмарков. Тред resolved,
-    на outside-diff комментарий дан обычный PR-комментарий (inline-ответ невозможен).
-- **PR #83 и PR #82 смерджены в main** (пользователем, 2026-06-12): `8779b85` (ci: standard
-  pipeline) и `6ce4597` (refactor: service.rs split). Локальный main обновлён, ветки удалены.
-- **diffray[bot] удалён** (2026-06-11, пользователем) по итогам сравнительной оценки качества
-  ревью diffray vs qodo: медленный (~20 мин), падал на обоих PR, находки дублировали
-  gemini/CodeRabbit. Stale failing check "diffray code review" на старых PR — игнорировать.
-  Активные ревью-боты: gemini-code-assist, coderabbitai, qodo-code-review + сканеры.
-- **Следующее по плану**: пункт 1a (SonarCloud CC на phase-файлах) разблокирован мерджем #82 —
-  отдельный `refactor:` PR; затем пункт 2 (V2 feature-driven архитектура) после обсуждения.
-
-### Реализовано в сессии 2026-06-12 (часть 4 — fix warning-префикса + wiki sync + аудит OSV)
-
-- **Исправлен мисс-лейбл `feature not compiled in:`** — `feature_warnings()`
-  (`config/validate.rs:54`) агрегирует 5 проверок, но только 2 — про
-  отсутствующие compile-фичи; остальные 3 (JWT secret strength,
-  metrics-auth-token, proxy-loop) — обычные config/security warnings.
-  `main.rs:343` и `admin/api.rs:331` навешивали этот префикс на всё подряд —
-  убран (соответствует doc-comment контракту `feature_warnings`, который и
-  так показывал `tracing::warn!("{w}")` без префикса). Из-за этого бага demo
-  показывала "feature not compiled in: sites[0].metrics is configured
-  without a token..." — само предупреждение про metrics-токен корректно,
-  просто было неправильно подписано.
-- **`.github/workflows/wiki.yml`** — синхронизация `docs/*.md` → GitHub Wiki
-  (push на main при изменении `docs/**` + workflow_dispatch). Чекаутит
-  `<repo>.wiki` (уже существует, branch `master`), копирует `docs/*.md`,
-  `README.md` → `Home.md`, добавляет баннер "auto-generated, edit in docs/".
-  Коммитит/пушит только если есть изменения.
-- **Аудит 5 открытых code-scanning алертов (OSV-Scanner, см.
-  `.github/workflows/osv-scanner.yml`, `continue-on-error: true`)** — делегировано
-  `security-engineer`, проверено `cargo tree --invert`:
-  - **#38 `proc-macro-error2@2.0.1` unmaintained (RUSTSEC-2026-0173, не CVE)
-    — ЗАКРЫТО**: `cargo update -p getset` (0.1.6→0.1.7) убирает
-    proc-macro-error2 + proc-macro-error-attr2 из дерева целиком (путь:
-    pingora-cache/pingora-proxy → cf-rustracing-jaeger → local-ip-address →
-    neli → getset, build-time proc-macro). Cargo.lock-only,
-    `cargo build --features full` зелёный (1m01s).
-  - **#21 `daemonize@0.5.0` unmaintained (RUSTSEC-2025-0069, не CVE) —
-    SUPPRESSED** в новом `osv-scanner.toml`. Прямая хард-зависимость
-    pingora-core 0.8.1 (текущий latest), Unix daemon mode — не заменить без
-    патча pingora. Revisit: когда pingora-core уберёт/заменит daemonize.
-  - **#34 `rsa@0.9.10` Marvin Attack (CVE-2023-49092) — ОСТАВЛЕНО ОТКРЫТЫМ**
-    (реальный CVE → по решению пользователя трогаем только когда появится
-    фикс, не suppress). Путь: jsonwebtoken (`rust_crypto`) → conduit,
-    `filter/jwt.rs` использует RSA только для JWKS RS256/RS384/RS512
-    **verify** (публичный ключ) — приватного RSA-ключа в conduit нет, атака
-    на утечку приватного ключа через тайминг неприменима. Фикса нет (rsa
-    0.10 ещё pre-release). Revisit: rsa 0.10 stable + jsonwebtoken перейдёт
-    на него.
-  - **#20/#17 `protobuf@2.28.0` decode stack-overflow (CVE-2025-53605,
-    дубликат-алерт x2) — ОСТАВЛЕНО ОТКРЫТЫМ** (реальный CVE, та же причина).
-    Путь: prometheus 0.13.4 ← pingora-core 0.8.1 (latest, всё ещё на этой
-    версии). Проверено: и pingora-core (`prometheus_http_app`), и
-    `handler/metrics.rs` используют только `prometheus::gather()` +
-    `TextEncoder` (text exposition) — decode-путь
-    (`CodedInputStream::skip_group`) не вызывается. Свой `prometheus 0.14.0`
-    у conduit уже на protobuf 3.7.2 (fixed). Revisit: если pingora-core
-    поднимет prometheus до >=0.14.
-- **Один PR** на ветке `claude/focused-albattani-40372a` (commits: fix
-  warning-префикс, ci wiki sync, chore(deps) getset bump, chore(security) osv
-  ignore daemonize).
-
-### Реализовано в сессии 2026-06-13 (пункт 1a — рефакторинг S3776 phase-оркестраторов)
-
-- **[PR #91](https://github.com/lopatnov/conduit/pull/91)
-  `refactor(proxy): extract helpers from phase orchestrators (rust:S3776)`**
-  (ветка `refactor/s3776-phase-helpers`, коммит `efa63db`) — фикс обоих
-  CRITICAL S3776 issues из бэклога 1a. Подтверждено через SonarCloud MCP
-  перед началом: оба issue OPEN, CC ровно 41 (`logging_phase.rs:26`) и 37
-  (`request_phase.rs:204`), flow-разбивка инкрементов совпала с расчётом.
-- **`logging()` CC 41 → 0** — плоский оркестратор; блоки вынесены в
-  `release_proxy_upstream` (+ `passive_effective_status`),
-  `write_access_log_entry`, `record_request_metrics`
-  (+ `record_upstream_metrics`, `record_cache_metrics`),
-  `spawn_early_cache_refresh` (`cfg(cache)`), `finish_otel_span` (`cfg(otlp)`).
-  Zero-allocation свойства из PR #90 сохранены: `method`/`status` —
-  borrow из session, `status_u16`/`elapsed` считаются один раз и передаются
-  параметрами в metrics- и otel-хелперы.
-- **`do_request_filter()` CC 37 → ~6** — вынесены `store_ip_conn_slot`,
-  `enforce_route_rate_limit` (429), `shed_low_priority_request` (503,
-  X-Priority strip — внутри хелпера, до early-return'ов),
-  `jwt_claims_from_session` (`cfg(jwt)`, free fn). Вложенность заменена
-  `let-else` early-return'ами — в стиле существующих хелперов файла
-  (`enforce_max_body_bytes`, `apply_path_strip`).
-- Поведение не менялось (код перенесён дословно); попутно удалён повисший
-  фрагмент doc-комментария на `dispatch_local` ("Determine whether the
-  request is allowed by the rate limiter…") — остаток split'а #82.
-- `/build` GREEN: fmt, clippy `-D warnings` (default + full), тесты
-  (default + full) — 0 warnings, всё зелёное.
-- **Review-фидбек + мердж**: коммит `7a9dedb` применил 4 Gemini-замечания
-  (borrow `path` как `&str` вместо `.to_owned()` в `enforce_route_rate_limit`
-  /`shed_low_priority_request`; `proxy_upstream_url.take()` вместо clone в
-  `finish_otel_span`) — минус 3 String-аллокации и 1 clone на hot path, без
-  изменения поведения. CodeRabbit (Major, config-snapshot drift) — отклонён с
-  обоснованием (предсуществующее, не регрессия #91; занесён в бэклог как 1b).
-  Все 5 review-тредов отвечены + resolved. SonarCloud QG PASSED (0 new issues),
-  27/27 CI зелёные. **Squash-merge `267ba51` в main, 2026-06-13.** Ветка
-  (remote+local) удалена. ⚠️ `gh pr merge --delete-branch` упал на локальном
-  шаге checkout (main занят основным worktree) — мердж на GitHub при этом
-  прошёл; remote-ветку удалил вручную через `gh api -X DELETE`.
-- Вне scope: 3 старых S3776 (`router.rs::route_request` CC 79,
-  `config/validate.rs` CC 21, `cli/init.rs` CC 16) — зафиксировано в
-  пункте 1a бэклога. **Закрыты 2026-08-17**, см. соответствующую запись
-  ниже — `route_request` в этой заметке был мислейблом, реальная функция —
-  `resolve_proxy`/`resolve_proxy_routes`.
-
-### Реализовано в сессии 2026-06-13 (пункт 1b — единый config-снапшот в post-route хелперах)
-
-- **[PR #92](https://github.com/lopatnov/conduit/pull/92)
-  `refactor(proxy): share one config snapshot across post-route helpers`**
-  (ветка `refactor/config-snapshot-helpers`, squash-merge `5cc1c59`) — закрывает
-  config-snapshot drift (CodeRabbit Major на #91, бэклог 1b).
-- `do_request_filter` теперь берёт **один** `config.load_full()` (owned `Arc`)
-  и использует его и для `route_request`, и для резолва `site` (один раз) →
-  прокидывает `Option<&SiteConfig>` в `store_ip_conn_slot` /
-  `enforce_route_rate_limit` / `shed_low_priority_request`. Routing + 3 хелпера
-  теперь на одном снапшоте; routing-vs-helper TOCTOU закрыт. **4 `load()` → 1
-  `load_full()`.** `SiteConfig` добавлен в `use crate::config::schema::{…}`.
-- `load_full()` (owned Arc, рефкаунт-инкремент без аллокации) безопасно держать
-  через `.await` guard-чейна — именно поэтому хелперы раньше перезагружали
-  конфиг (guard от `load()` нельзя долго держать). Заодно убран held-guard-across
-  -await smell.
-- Поведение в steady state не изменилось; разница только при hot-reload —
-  хелперы консистентны с routing-решением вместо гонки с ним.
-- `/build` GREEN: fmt (был 1 fix — две строки превысили лимит после нового
-  параметра, поправлено `cargo fmt`), clippy `-D warnings` (default + full),
-  тесты 1341 (default) / 1534 (full). SonarCloud QG PASSED (0 new issues, без
-  новых S3776). 27/27 CI зелёные; CodeRabbit "no actionable comments", Gemini —
-  без замечаний. Ветка (remote+local) удалена (тот же worktree-gotcha с
-  `--delete-branch`, см. [[worktree-merge-gotcha]]).
-
-### Реализовано в сессии 2026-06-13 (тесты stale-if-error #48 + бенчмарк-тулинг + worktree guards)
-
-- **[PR #93](https://github.com/lopatnov/conduit/pull/93)
-  `test(cache): cover stale-if-error on retry exhaustion + connection error`**
-  (squash-merge `7e2f811`, [issue #48](https://github.com/lopatnov/conduit/issues/48)
-  CLOSED, смерджен пользователем) — детали в чекбоксе «stale-if-error при исчерпании
-  retry» выше. 3 интеграционных теста в `tests/cache.rs`; gemini нашёл реальный баг в
-  тесте (`{ path_prefix: route }` → литерал-ключ вместо значения, `(path_prefix)` фикс),
-  no-retry ассерты ужаты до `== 2`, retry оставлен `>= 2` (счётчик retry —
-  implementation detail, боты разошлись 3 vs 4). Все треды resolved.
-- **Бенчмарк-тулинг (дешёвый, для будущих сессий)**: создан агент
-  `.claude/agents/benchmark-runner.md` (haiku) + команда `.claude/commands/benchmark.md`
-  (`/benchmark [default|standard|full] [size|throughput|both]`) — делегирует агенту,
-  правит только `docs/benchmarks.md`. Реестр агентов/команд грузится на старте → доступны
-  со следующей сессии.
-- **Re-benchmark `--features standard` (бэклог) — НЕ завершён в этом окружении**: `cross`
-  0.2.5 не ставит linux-тулчейн на Windows (`toolchain ... may not be able to run`), wrk
-  не установлен и требует Linux-рантайма. Точную musl-цифру взять из артефакта
-  `release.yml` (`conduit-x86_64-unknown-linux-musl`), throughput — на Linux. Цифры в
-  `benchmarks.md` НЕ выдуманы, оценка `~17.8 MB ¹` оставлена с пометкой.
-- **Worktree-guards** (после того как .claude-тулинг дважды оказывался в эфемерной
-  worktree-копии): правило «Worktree persistence» в `.claude/rules/index.md` + `Stop`-хук
-  в user-настройках (`<user-home>\.claude\settings.json`, `shell: powershell`),
-  аддитивно зеркалит worktree `.claude/{agents,commands,skills,rules}` → main checkout
-  (robocopy /XO, без удалений). См. [[worktree-dotclaude-split]].
-
-### Релиз v1.1.2 (2026-06-13)
-
-- [PR #94](https://github.com/lopatnov/conduit/pull/94) `chore: bump version to 1.1.2`
-  (squash-merge `a31b00925`) — version lockstep (`Cargo.toml`/`Cargo.lock`/
-  `npm/package.json`/`docs/{benchmarks,cli,deployment}.md`).
-- Тег `v1.1.2` → [`release.yml` run 27466039300](https://github.com/lopatnov/conduit/actions/runs/27466039300)
-  — все 21 джоба зелёные (кросс-компиляция ×10 платформ, Docker `:1.1.2`/`:1.1.2-full` +
-  Trivy, crates.io, npm, GitHub Release).
-- Артефакты проверены: [GitHub Release v1.1.2](https://github.com/lopatnov/conduit/releases/tag/v1.1.2)
-  (бинарники + `SHA256SUMS.txt`), оба Docker-манифеста резолвятся, `lopatnov-conduit = "1.1.2"`
-  на crates.io, `@lopatnov/conduit@1.1.2` на npm.
-- Ветка `chore/bump-version-1.1.2` удалена (локально + remote) после мерджа.
-
-### Процессные правки (2026-06-13, не в git — `.claude/`)
-
-- **Лимит длины файла**: `rules/conventions.md` «Code quality» — мягкий лимит 400 строк,
-  жёсткий 1000. При превышении — вызывать новый агент `architect` (opus, advisory-only,
-  `.claude/agents/architect.md`) за планом разбиения.
-- **Новый агент `architect`** (opus, только `Read/Glob/Grep/Bash`, не редактирует файлы) —
-  для планов разбиения файлов и декомпозиции крупных архитектурных задач. Добавлен в
-  `rules/workflow.md` (триггер-таблица) и `rules/index.md` (реестр субагентов).
-- При разборе пункта 2 (V2 feature-driven архитектура) выявлено: `request_phase.rs`
-  (3157 строк) и `router.rs` (2642, CC 79) уже втрое превышают новый жёсткий лимит —
-  естественные кандидаты на разбиение через `architect` как часть V2-дизайна.
-
-### Реализовано в сессии 2026-08-17 (закрытие "3 старых S3776" + прочее на `main`)
-
-- **PR #193** (мигрейшн-ветка) — `crates/conduit-core` добавлен как первый Layer-0
-  workspace-член (`FilterOutcome`/`FilterContext`/`RequestFilter`,
-  `ResponseFilterOutcome`/`ResponseCtx`/`ResponseFilter`, `is_path_skipped`,
-  `LocalHandlerImpl`, `write_denied`/`write_redirect`/`write_response`,
-  `AcceptEncoding`, `content_type`, `LogWriter`), `src/` держит тонкие facade
-  ре-экспорты. По ходу найден и исправлен реальный баг в
-  `scripts/check-layer-boundaries.sh` (#125/#186) — неверные имена крейтов в
-  `ALLOWED_CRATES` и небезопасная эвристика распознавания комментариев
-  (исключение строк с `*` ловило валидный `*guard = ...` код, а не только
-  block-comment continuation) — поймано `security-engineer`'s ревью.
-  CI/coverage довинчены под новый workspace-член (`ci.yml --workspace`,
-  `sonar.yml --workspace`, `sonar-project.properties`).
-- **PR #204/#206/#208** — все 3 давних CRITICAL rust:S3776, отложенных
-  PR #91 (2026-06-13), закрыты: `config/validate.rs::validate_site` CC 21→0,
-  `cli/init.rs::run_init` CC 16→2, `proxy/router.rs::resolve_proxy` CC 79→~4.
-  `architect` (opus) дал план разбиения для всех трёх. Поправка, найденная
-  при разборе: CLAUDE.md 2026-06-13 назвал CC-79 функцию
-  `router.rs::route_request` — та функция плоский `match`, CC ~7; реальное
-  тело было безымянным match-arm внутри `resolve_proxy`, теперь названным
-  `resolve_proxy_routes`. Перед рефактором `resolve_proxy` отдельным PR #207
-  добавлены 4 unit-теста на sticky/HMAC-роутинг и malformed-backup-URL —
-  путей без покрытия выше HMAC-примитивов не было вообще; один тест поймал
-  реальный неверный assumption (`"not-a-url"` парсится нормально через
-  `url_to_host_port`, понадобился `"http://"` для настоящего failure path).
-  `security-engineer` дал PR #208 повышенное внимание (независимый построчный
-  разбор диффа, не просто доверие тестам) — само по себе поймал слабый
-  assert в новом sticky-тесте (CodeRabbit) на #207, исправлено до мерджа.
-- **12 Dependabot PR смерджены** (#194-203, включая `jsonwebtoken` 10→11 и
-  `redis` 1.3→1.5, оба MAJOR/значимые minor на security-relevant крейтах —
-  `security-engineer` проверил changelog'и, PASS на оба; `base64` 0.22→0.23
-  смерджен вместе с jsonwebtoken как transitive dep).
-- **Issue #181 закрыт** (PR #205) — 7 файлов в `sonar.coverage.exclusions`
-  исключали реально протестированный код (85 `#[test]` суммарно, включая
-  security-sensitive `tls.rs`/`cache_disk.rs`/`cache_redis.rs`). SonarCloud
-  dashboard/API недоступны из этого окружения (тот же блокер, что и у автора
-  issue) — проверено напрямую через `cargo llvm-cov --lib --features full`
-  локально, реальное покрытие 57–85% на всех 7 файлах.
-  Итого за сессию: 8 PR смерджено в `main` (#193 на мигрейшн-ветку,
-  #204-208 + #199/#200/#203 отдельно среди 12 dependabot).
-
-### Реализовано в сессии 2026-08-17 (часть 2 — issue #155 и #156, passive-health + circuit breaker)
-
-- **#155 закрыт** ([PR #214](https://github.com/lopatnov/conduit/pull/214), squash-merge
-  `1264312`) — `RequestCtx.proxy_upstream_url` теперь заполняется безусловно для любой
-  стратегии во всех трёх routing-путях (`resolve_proxy_routes`, `resolve_grouped`,
-  `routes.rs::full_cfg_to_result`), так что Peak EWMA/Outlier Detection/per-peer stats
-  реально работают вне `LeastConn`. Новое поле `RequestCtx.upstream_conn_slot: bool`
-  (зеркалируется на `router.rs::RouteResolution`) отдельно трекает, держит ли запрос
-  реальный `conn_count`-слот — иначе два маршрута на общий upstream (один `least-conn`,
-  другой нет) портили бы общий счётчик фантомными декрементами. 4 unit + 3 integration
-  теста, включая `attribution_only_route_does_not_corrupt_shared_conn_count`, которая
-  специально доказывает отсутствие этого фантомного декремента.
-- **#156 закрыт** (ветка `fix/circuit-breaker-capacity-enforcement-156`) — `maxConnectionsPerUpstream`
-  теперь реально enforced для всех 8 стратегий (issue называл 6, на деле было 7 —
-  `LeastResponseTime` тоже пропущен — плюс sticky-роуты, которые принудительно используют
-  `ConsistentHash`), и во всех трёх форматов конфига (`proxy: {}`, `routes[]`, `groups` —
-  `routes[]`/`groups` раньше вообще не имели circuit-breaker кода). Новый модуль
-  `src/proxy/capacity.rs`: `Capacity` enum (`Unlimited`/`Under`/`Exhausted`) + единая точка
-  диспетчеризации `pick_bounded`/`BoundedPick` — ни `router.rs`, ни `routes.rs` не матчатся
-  по вариантам `LoadBalanceStrategy` для целей capacity, весь match — только внутри
-  `capacity.rs` (сохраняет гарантию decision #22 "router.rs не трогать при добавлении
-  стратегии", а не нарушает её, как предполагал один из промежуточных планов).
-  Для `IpHash`/`ConsistentHash` — forward-probing по несужаемому hash-кольцу
-  (`hash_pick_bounded`), а не наивная фильтрация кандидатов: `pick_by_hash` — наивный
-  modulo, не настоящий hash ring с virtual nodes, так что сужение домена на один элемент
-  ремапнуло бы почти всех клиентов, а не только тех, чей peer выбыл — особенно опасно
-  здесь, поскольку conn_count меняется на каждый запрос (в отличие от health, который
-  меняется раз в ~10s). Cap — мягкий (soft limit, TOCTOU overshoot допустим, тот же
-  trade-off что и `retry.budgetPercent`). Мёртвый код `conn_inc_if_below`/
-  `pick_least_conn_with_max` (+ 4 их теста) удалён — после фикса живой механизм ровно
-  один. ~13 новых тестов (4 unit в `router.rs`, 3 unit в `routes.rs`, ~19 unit в новом
-  `capacity.rs`, 2 integration в `tests/upstream_health.rs`).
-  Попутно подтверждено и задокументировано: `cache.earlyRefreshSecs` (закрытый
-  feature-issue #31) был гейтирован тем же условием `proxy_upstream_url` и уже
-  автоматически починен побочным эффектом #214 — отдельного кода не потребовалось.
-  Найдены и заведены 3 отдельных issue, не в этот PR: **#216** (retry-попытки обходят
-  cap и недоучитываются в `conn_count`), **#217** (`routes[]` retry-список не
-  health/capacity-фильтрован), **#218** (`RequestCtx.failed_upstream_attempts` —
-  write-only состояние, doc-comment утверждал обратное — поправлен на месте).
-- **Процессная находка**: план для #156 прогонялся через `architect` дважды — первый
-  прогон (до мерджа #214, доступен только по моему пересказу в чате, не raw-отчёт) и
-  второй (после #214, свежий против актуального кода) разошлись в нескольких местах
-  (где жить диспетчеру стратегий, статус `cache.earlyRefreshSecs`, WeightedRoundRobin,
-  один PR vs отдельный PR C для `routes[]`/`groups`). Пользователь заметил расхождение и
-  остановил реализацию; потребовался третий, явно реконсиляционный прогон `architect`
-  с обоими планами целиком в промпте, который разрешил все 4 спорных пункта с
-  аргументацией и явно указал, где какой план был прав/неправ. Урок: не полагаться на
-  собственный пересказ прошлого agent-вызова как на источник истины, когда есть
-  расхождение с новым прогоном — давать обоим полный текст и просить явную реконсиляцию.
-
-### Реализовано в сессии 2026-09-07 (PR #386 — Node.js/Python worker-pool recipe, doc-only, `main`)
-
-- **[PR #386](https://github.com/lopatnov/conduit/pull/386)
-  `docs: add Node.js/Python worker-pool recipe via dynamic upstream API`**
-  (branch `docs/node-python-worker-recipe` → `main`, not the migration branch — this is
-  ordinary doc work, not #114) — new `docs/node-python-workers.md` recipe covering issues
-  [#290](https://github.com/lopatnov/conduit/issues/290) (Node.js) and
-  [#291](https://github.com/lopatnov/conduit/issues/291) (Python): run a Node.js/Python app
-  behind Conduit as a fixed pool of worker processes, wired up via the existing dynamic-
-  upstream Admin API (`POST /upstreams/add|remove|weight`) rather than any new Conduit
-  feature. Explicitly scoped as *not* a CGI/Azure-Functions-style invoke-on-demand model —
-  see the business-analyst reconciliation below for why that's a separate, harder problem.
-  Went through 6 rounds of `security-engineer` review (mandatory unconditional gate) across
-  several real bugs found empirically, not just by reading the doc's own code blocks:
-  - **Config shape bug**: the doc's first draft used the flat `{ port, proxy }` shorthand,
-    under which `global.admin` silently doesn't exist at all (`ConfigFile::Single` has no
-    `global` field — see decision #4) — the Admin API never started. Fixed by switching every
-    example to the `{ global: { admin: {...} }, sites: [...] }` shape. Found only by actually
-    building and running `conduit` against the doc's own config, not by reading the code.
-  - **`least-conn` demo bug**: round-robin was swapped in after 20 concurrent curl requests
-    against `least-conn` all landed on the same worker (near-instant synthetic responses make
-    its tie-breaking consistently favor one peer) — confusing for a first-run demo, not a
-    Conduit bug.
-  - **Node `worker.js` missing loopback bind** (security-engineer round 1 HOLD) —
-    `.listen(port, ...)` defaulted to all interfaces; fixed to `.listen(port, '127.0.0.1', ...)`.
-  - **Python startup race** (gitar-bot, round 2) — `pool.py` called `/upstreams/add` before
-    confirming the worker's `HTTPServer` was actually bound. Fixed with a
-    `multiprocessing.Event` readiness handshake (`worker.py` constructs `HTTPServer` first,
-    which binds synchronously, then sets the event, then calls `serve_forever()`).
-  - **`ready.wait()` no-timeout deadlock** (security-engineer round 3, reproduced not just
-    theorized) — a worker crashing before `HTTPServer()` succeeds hangs that slot forever;
-    documented as an inline caveat rather than adding full timeout+retry machinery, matching
-    the reviewer's own suggested minimal remedy.
-  - **Round 4 fixes** (4 unresolved CodeRabbit/gitar threads, found via GraphQL
-    `reviewThreads`, since replying alone doesn't satisfy this repo's
-    `required_review_thread_resolution: true` ruleset — see the v1.4.0 release entry above
-    for where this convention was first established): MD040 fence-language label; reload-
-    reconciliation (the doc wrongly claimed a restarted supervisor re-registering on its own
-    startup made `conduit reload` clearing all in-memory registrations "a non-issue in
-    practice" — wrong, since `reload` fires on *any* config change while the supervisor
-    process itself keeps running untouched; fixed with a 30s periodic re-`/upstreams/add`
-    timer in both examples, relying on that endpoint's documented idempotency); failed-
-    first-registration handling (bounded retry+backoff, kill+respawn on exhaustion); explicit
-    `global.admin.token` recommendation for any host running other processes.
-  - **Round 5 HOLD → round 6 PASS**: security-engineer found the Node.js `callAdmin` never
-    checked `res.statusCode` — a 401 (missing/wrong admin token) returns an empty body, and
-    `JSON.parse('')` throws inside an `'end'` event handler, which is *not* caught by the
-    enclosing Promise and becomes an uncaught exception crashing the whole `pool.js`
-    supervisor (not just the one misconfigured worker). Directly undercut this same PR's own
-    round-4 "set `global.admin.token`" advice. Reproduced the exact crash empirically against
-    a real `conduit` binary with the token configured but not supplied by the client
-    (`SyntaxError: Unexpected end of JSON input`, uncaught, process exit 1), then verified the
-    fix (check `res.statusCode`, reject before `JSON.parse` on non-2xx) instead retries 5x and
-    kills+respawns the worker with the supervisor staying alive throughout — both the buggy
-    and fixed behavior confirmed live, not just read. The Python example was already correct
-    here (`urllib` raises `HTTPError` on any non-2xx before `json.loads` runs).
-  - All 8 review threads replied-then-resolved via GraphQL `resolveReviewThread` (not just
-    replies) before merge, per the same convention as the v1.4.0 release entry.
-- **Business-analyst reconciliation of #290/#291 against this recipe** (pass #2, run
-  specifically because the user's original intent for #290/#291 turned out to be a true
-  CGI/Azure-Functions-style invoke-on-demand model — message-passing, warm/cold process
-  lifecycle, "nothing hangs around besides the server" — not the fixed worker-pool pattern
-  PR #386 actually builds): confirmed the shipped recipe is still worth merging as-is (it
-  answers a real, different need — CPU-parallelism for a steady-throughput Node/Python app
-  behind Conduit's own routing/LB/health/circuit-breaker machinery, "nginx + Node.js" made
-  slightly more convenient), but does **not** answer the invoke-on-demand half of #290/#291's
-  original scope. Conduit itself needs zero new code for the fixed-pool half — confirmed
-  against prior-art research into OpenFaaS `faasd` (single-binary, containerd+CNI, no k8s)
-  and `of-watchdog` (per-function HTTP sidecar doing CGI-style translation), plus Knative's
-  Activator component (holds connections open during cold-start scale-from-zero — a plain
-  reverse proxy is *not* inherently cold-start-aware, a caveat worth remembering if
-  invoke-on-demand is ever attempted). Recommended next steps, **not yet done**: (1) re-scope
-  #290/#291 with a banner splitting the two conflated motivations (CPU-parallelism, resolved
-  by PR #386; true invoke-on-demand FaaS, unaddressed); (2) file a new issue for "Function
-  router: CGI/FaaS-style invoke-on-demand execution" as a separate project (decision #28 — CGI
-  is explicitly out of Conduit's own scope), with a `faasd` build-vs-adopt spike as the first
-  concrete action item, not a bespoke design.
-
-### Реализовано в сессии 2026-09-12 (PR #386 tail closed — 4 more review rounds, merged)
-
-- PR #386 had been left open since 2026-09-07 (handoff note from an earlier session):
-  the author pushed a further "minor edits" commit (`4be5025`) after the round-6 PASS —
-  a Prettier-style reformat that incidentally **dropped two prose blocks** (the intro
-  status callout with #290/#291 links, and the "this is not an invoke-on-demand model"
-  disclaimer) with no reformatting reason to touch either, and left 5 CodeRabbit findings
-  unresolved. Since any commit after a PASS invalidates it (see `workflow.md` "Security
-  review is unconditional"), this needed a fresh review chain, not a rubber-stamp merge.
-- **`72db4eb`** — restored both dropped prose blocks verbatim, fixed all 5 outstanding
-  findings: documented the Admin API bearer token as local authorization (not transport
-  confidentiality), stripped `CONDUIT_ADMIN_TOKEN` from the Node.js/Python worker's own
-  env (`delete workerEnv.CONDUIT_ADMIN_TOKEN` / `os.environ.pop(...)` inside `run_worker`),
-  added a Node.js `alive` guard against a `'ready'` registration resolving after the
-  worker already exited (previously could start a periodic timer re-adding a dead target
-  forever), bounded the Python `ready.wait()` with a timeout instead of an unbounded
-  block, wrapped the Python deregistration call in try/except. `security-engineer` PASS
-  with 2 non-blocking findings.
-- **`006181d`** — folded in both non-blocking findings: the `alive` guard could skip
-  cleanup when a late registration *succeeded* after exit (fixed with a compensating
-  `/upstreams/remove`), and a doc caveat that stripping the token doesn't scrub
-  `/proc/<pid>/environ` on Linux (verified directly via WSL2, both `fork` and `spawn`
-  multiprocessing start methods). `security-engineer` PASS — but gitar-bot's own review
-  of this same commit immediately flagged a narrower residual race (the compensating
-  remove could deregister a *respawned* worker on the same port instead of the stale one).
-- **`1947e8d`** — closed gitar's finding with a per-port generation counter (only undo a
-  late registration if no respawn has happened yet for that port). `security-engineer`
-  PASS on the fix's own correctness — but flagged that a **fresh CodeRabbit review had
-  landed on this exact head one minute before the review started**, posting 3 new Major
-  findings: HOLD, correctly not rubber-stamped.
-- **`6663e08`** — fixed all 3 CodeRabbit findings for real rather than narrowing further:
-  (1) the generation-counter heuristic still allowed the compensating remove to be
-  dispatched-but-not-yet-landed when a fast respawn's own registration arrived first —
-  replaced entirely with genuine serialization (`spawnWorker`'s `'ready'` handling
-  extracted into `async function handleReady()`, its promise stored in `readySettled`,
-  and the exit handler's respawn `setTimeout` now `await`s it before calling
-  `spawnWorker(port)` again — so a respawn literally cannot start until any pending
-  cleanup for the same port has fully landed, by construction, not by heuristic);
-  (2) Python's `ADMIN_TOKEN` was a **module-level global** that `run_worker()`'s
-  `os.environ.pop()` never actually reached (a forked child inherits it as already-bound
-  memory; a spawned child re-binds it via module re-import before `run_worker` ever
-  runs) — fixed by reading `os.environ.get(...)` fresh inside `call_admin()` on every
-  call instead of caching it (CWE-522, real finding, not a false positive); (3) bare
-  `proc.terminate()` + unbounded `proc.join()` in two Python failure branches could hang
-  the whole supervisor loop if a worker ignored/was slow to handle SIGTERM — new
-  `terminate_and_reap()` helper bounds the wait before escalating to `proc.kill()`
-  (SIGKILL, not ignorable) and joining again. **Final `security-engineer` PASS** — all 4
-  scenarios (original bug, `006181d`'s late-success undo, the generation-counter gap,
-  and the fully-serialized fix) verified together in one test harness with negative
-  controls confirming each catches the regression it claims to guard against. Merged
-  `6663e08` via squash into `main` as `d75c6d5`.
-- **Testing discipline note, generalizing this repo's existing "negative controls need a
-  fixture that can actually fail" rule** (`conventions.md`/`testing/SKILL.md`, previously
-  written for hash/modulo/ring-index bugs specifically): the same discipline applied
-  cleanly to a pure async-ordering race with no hash/modulo involved at all — an isolated
-  harness reproducing the exact event interleaving (stubbed `fork`/`callAdmin` with
-  controllable network delays), run once with the fix and once with it reverted, at every
-  one of the 4 review rounds. Caught a real test-harness bug of its own along the way (a
-  manually-scheduled `emit("ready")` at a fixed absolute time raced ahead of when the
-  real code would have attached its listeners — an artifact of the test, not the code
-  under test — caught because the "PASS" result looked suspicious given the harness's own
-  assumptions, not because anything crashed).
-- **Process note**: this session picked up mid-review after a `security-engineer` subagent
-  call was cut off by the session's own usage-limit reset — resumed via `SendMessage` to
-  the same `agentId` (not a fresh spawn) per the established pattern, twice in a row for
-  the same underlying investigation across two different limit resets. Also: the final
-  review round's own agent noted its tool-grant description says it has no `gh` CLI, but
-  `gh` was in fact present and already authenticated in that particular sandbox instance —
-  used read-only for CI/merge-state checks, no credential-hunting involved. Not otherwise
-  actioned this session (worth a future `/retro` note if it recurs, per "GitHub access
-  differs by execution context" — this may be a subagent-specific variant of that same
-  environment-dependent-tool-access pattern, not yet confirmed as such).
-
-### Реализовано в сессии 2026-09-12 (часть 2 — Pingora 0.9.0 released: real findings from vendored source, not changelog)
-
-- User asked whether Pingora had a new version. It did — **0.9.0**, published to crates.io
-  2026-09-09 (conduit currently pins `0.8.1`). Rather than trust the GitHub release-notes
-  prose, cloned the actual `0.9.0` tag into `.reference/pingora` (see the new "Локальные
-  репозитории" convention above) and traced the specific claims against real source.
-- **Confirmed genuine unblocks** for backlog items previously marked `[🚫 BLOCKED]`/waiting
-  on 0.9: (1) **zero-downtime cert rotation** — `TlsSettings::set_cert_resolver(Arc<dyn
-  ResolvesServerCert>)` is real and wired into `build()`
-  (`pingora-core/src/listeners/tls/rustls/mod.rs`); a resolver backed by an `ArcSwap`-style
-  shared cert store would let `POST /certs/reload` hot-swap the live cert with no restart.
-  (2) **`upstreamTls.ca` per-peer CA** — `PeerOptions.ca: Option<Arc<CaType>>` genuinely
-  feeds a per-peer `RootCertStore` in the rustls connector
-  (`pingora-core/src/connectors/tls/rustls/mod.rs:142`), confirmed by reading the actual
-  connector code, not just the field's existence. (3) The previously-accepted-open
-  CVE-2025-53605 tracking note (protobuf via `prometheus@0.13.4` pulled unconditionally by
-  `pingora-core`) resolves automatically on upgrade — `pingora-prometheus` is now a
-  **dev-dependency only** of the top-level `pingora` crate; `pingora-core` doesn't depend
-  on `prometheus`/`protobuf` at all anymore. (4) `ServerConf.daemon_wait_for_ready` +
-  real SIGUSR1 signalling in `server/daemon.rs` confirmed implemented (graceful
-  process-handoff backlog item). (5) `tls.versions`/`tls.ciphers` (issue #189): partial —
-  `TlsSettings::build()` itself is unchanged (still hardcodes TLS1.2+1.3, no cipher
-  control), but the new `Acceptor::from_server_config(Arc<ServerConfig>)` lets conduit
-  build its own `rustls::ServerConfig` with real version/cipher control and bypass
-  `TlsSettings` entirely for that path — a real route, not yet proven end-to-end.
-- **Real breaking-change cost found by reading conduit's own source against the new API,
-  not by reading the changelog's "Potential Breaking Changes" list alone**:
-  `RequestHeader`/`ResponseHeader` lost `DerefMut` (kept `Deref`) — grepped the whole
-  codebase and found **5 real call sites** relying on it: `resp.headers.remove(&name)` /
-  `resp.headers.remove("transfer-encoding")` / `resp.headers.remove("age")` /
-  `resp.headers.remove(name.as_str())` in `src/filter/response_chain.rs`, and
-  `req.headers.remove(name.as_str())` in `src/proxy/request_phase.rs:2452`. Confirmed the
-  fix is a trivial 1:1 rename to the already-present `.remove_header(...)` method (same
-  `AsHeaderName`-generic signature) — and actually a **latent correctness fix**, since the
-  raw `.headers.remove()` deref path bypasses `pingora-http`'s internal
-  `header_name_map` bookkeeping that `remove_header()` maintains for header-case
-  preservation, while the direct deref route doesn't touch it.
-- **Second real behavioral finding**: 0.9 ships a new `PeerOptions.
-  http_upstream_request_policy: HttpUpstreamRequestPolicy` field, defaulting (via
-  `HttpUpstreamRequestPolicy::default()` = `standard()`) to stripping hop-by-hop headers
-  and a `WebSocketOnly` upgrade policy on every upstream request. Since this field didn't
-  exist in 0.8, conduit would silently inherit the new stricter default on upgrade (no
-  code change forced, but real behavior change) — traced the call sites
-  (`pingora-proxy/src/proxy_h1.rs`/`proxy_h2.rs`) to confirm it's genuinely
-  `PeerOptions`-driven, not a global switch. Looks compatible with conduit's existing
-  WebSocket feature (`WebSocketOnly` still explicitly allows real WebSocket upgrades) but
-  not yet verified against conduit's own WebSocket/Java-duplicate-chunked tests — a
-  `HttpUpstreamRequestPolicy::preserve()` escape hatch exists if it regresses anything.
-  mTLS API (`WebPkiClientVerifier`, `load_ca_file_into_store`, `set_client_cert_verifier`)
-  confirmed unchanged. MSRV bump to 1.85/1.88 is a non-issue (this environment/CI already
-  on rustc 1.98.0).
-- **Not yet done, deliberately** — this was scoped as a research pass, not an
-  implementation. Recommended to the user: route the actual upgrade through the normal
-  `business-analyst`/`architect` process given it touches TLS/cert-handling and upstream
-  header-forwarding (both security-sensitive), land the mechanical `.remove_header()` fix
-  + WebSocket-policy verification as its own PR first to prove the bump itself is safe,
-  then scope the newly-unblocked features (cert hot-swap, per-peer CA) as separate
-  follow-ups rather than bundling everything into one PR.
-- **`.reference/` convention established** (see "Локальные репозитории" above and
-  `.claude/rules/index.md`) — the old `<projects-root>\` top-level clones were lost to an
-  OS reinstall; `.reference/<name>` inside this repo (gitignored) is the new home,
-  populated on demand rather than bulk-fetched, and explicitly exempt from `/cleanup`
-  (it's a reusable cache, not one-shot scratch state). `pingora` (tag `0.9.0`) and `tokio`
-  (tag `tokio-1.53.1`, matching `Cargo.lock`) cloned this session as the first two entries.
-- **Migration-vs-main prioritization question, asked directly by the user**: given #114
-  (the Conduit 2.0 workspace migration) still has ~13 sub-issues remaining (Phase 4.5
-  k8s through Phase 6.4 lockstep publishing — confirmed by reading the epic's actual body,
-  not estimated), is it better to pause new `main` work until the migration finishes, or
-  keep doing both and pay a heavier eventual merge? Pointed out that the epic **already
-  has a recorded owner decision on this exact question** (2026-08-23, item 5 in #114's
-  body): interleave, don't choose one exclusively — bug/gap fixes route through `main`'s
-  ordinary process and get folded into #114 sub-issue selection, already implemented via
-  `feature-workspace-cycle.md` Step 2. Recommended keeping that policy (the sync log shows
-  dozens of clean, low-conflict merges under it already), with one refinement specific to
-  the Pingora findings above: TLS itself has no extraction sub-issue before the very last
-  phase (#147, Phase 6.3) — confirmed via the epic body's own text — so cert-rotation/
-  per-peer-CA work is safe to do on `main` now with low near-term conflict risk; the
-  per-peer-CA change also touches `upstream_peer()`/`health.rs`, which Phase 5.1/5.2
-  (`conduit-upstream`/`conduit-proxy-http`, #142/#143) are about to touch next — worth a
-  deliberate check during that extraction rather than a blind merge, not a reason to avoid
-  doing the feature work now.
-
-### Released v1.4.0 (2026-09-05)
-
-> Backfilled 2026-09-13 — this entry existed on the migration branch's own copy of
-> `CLAUDE.md` but was never ported to `main`'s, leaving two later entries in this same
-> file (PR #386's session log) with dangling references to "the v1.4.0 release entry
-> above" that didn't actually exist here. Content below is unchanged from the migration
-> branch's original.
-
-- User asked to release whatever was on `main` as `v1.4.0`. `main` was 5 commits ahead of
-  the last tag (`v1.3.0`): 3 real fixes (#343 CORS `credentials:true` without an origins
-  allowlist — CWE-942; #344 forward-auth letting a client-forged identity header survive
-  when the auth service doesn't return it; #345 Redis rate-limiter TTL-leak race between
-  `INCR`/`EXPIRE`), plus #342 (ACME-challenge routing gated on the `acme` feature) and #346
-  (a Dependabot Actions-group bump) — all already individually reviewed and merged in
-  earlier sessions (see the "PR #152 backlog sweep" entry above), this was pure
-  version-bump bookkeeping, not new feature work.
-- **[PR #361](https://github.com/lopatnov/conduit/pull/361)
-  `chore: bump version to 1.4.0`** (3 commits, squash-merged `af899e5` on `main`) — the
-  usual 4-artifact lockstep (`Cargo.toml`/`Cargo.lock`/`npm/package.json`/
-  `docs/{benchmarks,cli,deployment}.md`) plus `CHANGELOG.md`, which already had an accurate
-  `[Unreleased]` section describing exactly these fixes (added in an earlier session,
-  ahead of this repo's own established lockstep convention catching up to it) — converted
-  to a `[1.4.0]` entry. Two CodeRabbit/Gitar follow-ups fixed before merge: the new
-  `[1.4.0]` heading had no matching link-reference definition (and `[Unreleased]`'s own
-  link was stale since 1.2.0) — fixed; a third comment asking to backfill the *missing*
-  `[1.3.0]` entry (a pre-existing gap unrelated to this PR) was declined with reasoning and
-  the thread resolved, rather than scope-creeping a version bump into a changelog
-  archaeology exercise.
-  `security-engineer` PASSed all three commits (confirmed a genuine no-op version/docs
-  bump with zero `.rs` changes, and separately spot-checked the actual diffs of #342-#346
-  by reading them directly rather than trusting the summary, since those are what's
-  actually being shipped).
-  **New process discovery**: `gh pr merge` failed with "the base branch policy prohibits
-  the merge" despite `gh api .../branches/main/protection` returning 404 ("not
-  protected") — `main` is governed by a **repository ruleset** (a separate, newer GitHub
-  mechanism from classic branch protection, checked via `gh api repos/.../rules/branches/
-  main`), which had `required_review_thread_resolution: true`. Replying to a review
-  thread (what this session's `coderabbit-reply`-style workflow already does) is not the
-  same as *resolving* it — resolution needs the GraphQL `resolveReviewThread` mutation
-  (`gh api graphql`), which this session hadn't been doing on top of replies. Worth adding
-  to the PR checklist: on any repo where this ruleset might be enabled, replying to a
-  thread doesn't clear this gate — check `gh pr view <n> --json mergeStateStatus` for
-  `BLOCKED` before assuming a PR with all-green CI is actually mergeable, and resolve
-  every thread via GraphQL, not just reply to it.
-- **Release pipeline**: tag `v1.4.0` pushed, [`release.yml` run
-  33988572421](https://github.com/lopatnov/conduit/actions/runs/33988572421) — all jobs
-  green (8 cross-compile targets × standard+full, 2 Docker image publishes, 2 Trivy scans,
-  build-provenance attestation, crates.io, npm, GitHub Release). Verified artifacts
-  directly rather than trusting the green checkmark alone: [GitHub Release
-  v1.4.0](https://github.com/lopatnov/conduit/releases/tag/v1.4.0) (not draft/prerelease,
-  all binaries + `SHA256SUMS.txt` present), `crates.io/api/v1/crates/lopatnov-conduit`
-  (`newest_version`/`max_version`/`default_version` all `1.4.0`, `yanked: false` —
-  note: crates.io's API silently returns an empty body without a `User-Agent` header, not
-  an error — needed one to actually see the response), `registry.npmjs.org/@lopatnov/
-  conduit/latest` (`1.4.0`). Docker manifests not independently pulled (no `docker` CLI in
-  this environment and the `gh` token lacked `read:packages` scope for the GHCR API) — relied
-  instead on the pipeline's own two Trivy vulnerability-scan jobs passing, which requires
-  actually pulling and scanning the just-pushed `:1.4.0`/`:1.4.0-full` images, as sufficient
-  indirect confirmation they exist and are valid.
-- **Process note on CI-wait pacing**: repeatedly polled `gh pr checks`/`gh run view`
-  directly via short `ScheduleWakeup` cycles for both the PR's CI matrix and the release
-  pipeline before switching to the `Monitor` tool with a poll-loop script — the direct
-  polling worked but was inefficient (many short wakeups). A first `Monitor` attempt for
-  the release pipeline had a real bug (`select(.conclusion != null ...)` fired false
-  "failure" alarms on jobs still `in_progress`, since GitHub's API returns `""` not `null`
-  for an unset conclusion) — caught before actually reacting to the false alarm, fixed to
-  `select(.status == "completed" and .conclusion != "success" ...)`. For any future
-  multi-minute CI/pipeline wait, prefer `Monitor` with a corrected exit-on-completion loop
-  from the start over a chain of `ScheduleWakeup` polls.
-
-### Released v1.5.0 (2026-09-13)
-
-- **User's explicit call**: `main` and the Conduit 2.0 migration branch
-  (`claude/cargo-workspace-features-23qxfr`) have diverged enough that continuing to
-  develop both is no longer worth the merge cost — ship whatever's on `main` now as one
-  clean minor release, then freeze `main` (no further changes) until the migration branch
-  replaces it wholesale.
-- **[PR #410](https://github.com/lopatnov/conduit/pull/410) `chore: bump version to
-  1.5.0`** (squash-merge `2180fcf`) — the usual 4-artifact lockstep plus a new
-  `CHANGELOG.md` `[1.5.0]` entry for the 10 commits since `v1.4.0`: a real
-  `schema/conduit.schema.json` bug fix (`middleware[].type` enum missing `"wasm"`, from
-  #382's Step 1c audit fix), the new Node.js/Python worker-pool recipe (#386), and the
-  `fallback.byAccept` docs fix (#405). Routine Dependabot patch bumps (indexmap, rcgen,
-  async-compression) omitted from the changelog per its existing convention.
-  `security-engineer` PASSed (confirmed via `git diff --stat` that only the 7 expected
-  files changed, and that `Cargo.lock`'s only diff hunk is the root package's own version
-  line — no dependency drift riding along).
-  **Real verification incident, not a code problem**: two `build-validator` agents were
-  spawned back-to-back without `isolation: "worktree"` (a repeat of the exact class of
-  mistake already logged in `.claude/rules/index.md` — this time for a *nominally
-  read-only* agent, not a write-heavy one) and raced on the shared checkout, each reporting
-  RED with confusing, non-reproducible failures — one even reported `conduit_ratelimit`/
-  `conduit_limits` crate-not-found errors that only make sense on the *migration* branch,
-  not on `main` or this release branch. Diagnosed by checking the shared checkout's actual
-  state directly (clean, correctly on `main`, no real corruption — the confusion was
-  entirely in the racing agents' own transient cross-contamination) and then getting a
-  decisive, trustworthy answer by cloning the exact release commit fresh into WSL (a
-  genuinely separate, uncontended Linux environment the user had just installed a Rust
-  toolchain into) and running the full suite there in one atomic shot: **exit 0, all 34
-  test binaries reporting 0 failed**, 1109 lib tests + every integration suite green. Every
-  individual test that had "failed" in the racing agents' reports also passed cleanly every
-  time when re-run in isolation on Windows — textbook resource-contention flakiness, not a
-  regression from a docs+version-string-only diff. Saved as a feedback memory
-  (`feedback_build_validator_checkout_race.md`) so this doesn't recur.
-- **One CodeQL "Analyze (actions)" job failed on PR #410**, unrelated to its content (the
-  diff touches zero workflow files) — not a required status check for this branch (no
-  `required_status_checks` rule exists for `main`, confirmed via `gh api repos/.../rules/
-  branches/main`), and the specific run couldn't be re-triggered through normal means
-  (fired via GitHub's own code-scanning default-setup "dynamic" trigger, which rejects
-  both single-job and whole-run reruns). Merged past it with the reasoning recorded in the
-  merge commit message rather than silently ignoring a red check.
-- **Release pipeline**: tag `v1.5.0` pushed → [`release.yml` run
-  34750169582](https://github.com/lopatnov/conduit/actions/runs/34750169582) — succeeded.
-  Verified artifacts directly: [GitHub Release
-  v1.5.0](https://github.com/lopatnov/conduit/releases/tag/v1.5.0) (not draft/prerelease,
-  all 8 target binaries + `-full` variants + `SHA256SUMS.txt` present),
-  `crates.io/api/v1/crates/lopatnov-conduit` (`newest_version`/`max_version` `1.5.0`,
-  not yanked), `registry.npmjs.org/@lopatnov/conduit/latest` (`1.5.0`).
-- **GitHub Release descriptions backfilled for all 10 published releases** (`v0.2.0`,
-  `v0.3.0`, `v1.0.0`, `v1.1.0`, `v1.1.1`, `v1.1.2`, `v1.2.0`, `v1.3.0`, `v1.4.0`, `v1.5.0`)
-  — every one had nothing but GitHub's own auto-generated "What's Changed" raw PR list, no
-  human-readable summary of what actually changed. User originally asked only about
-  `v1.3.0`/`v1.4.0`/`v1.5.0` (pointed out directly, having noticed on the real [Releases
-  page](https://github.com/lopatnov/conduit/releases) rather than in this file), then asked
-  whether backfilling the remaining 7 was worth the effort — judged easy, did all of them.
-  `v1.3.0` also had no `CHANGELOG.md` `[1.3.0]` entry at all to draw from (a pre-existing
-  gap from PR #361's review, deliberately left alone at the time rather than scope-creeping
-  a version bump into changelog archaeology) — wrote a short one from scratch by reading
-  the actual merged PRs (#298 log-injection sanitization, #299 `tls.versions`/`ciphers`
-  hard-rejection, #296 DNS-resolution caching, #263 CLI UX fix). `v1.4.0`/`v1.5.0`
-  summaries condensed from their existing `CHANGELOG.md` entries; the other 7 (pre-dating
-  `CHANGELOG.md`'s own existence) written from scratch by reading each release's actual
-  merged PR list. Each release's existing "What's Changed" PR list kept intact, with a
-  short `## Summary` prepended above it via `gh release edit --notes-file` (had to pass
-  `--repo lopatnov/conduit` explicitly — running from a scratch directory outside the git
-  checkout otherwise silently no-ops the edit despite `gh` exiting 0 and printing nothing
-  that reads as an error).
+- **[PR #469](https://github.com/lopatnov/conduit/pull/469)** (squash `9a1a43f`, три issue закрыты вручную — база не default-ветка). **#222:** после #314/#315/#316 в корне оставалось ~800 строк схемы (не ~1600 из плана 2026-08), они переехали вместе с `ConfigFile`/`normalize()`/`load_config` в новый крейт `lopatnov-conduit-config` (12 из 13 файлов schema — R100, `mod.rs` байт-в-байт, `parse.rs` — 3 строки путей); корень держит явный `pub use`-фасад (69 имён) и однострочный `parse.rs`, ни один call site не менялся. Решения: без `[features]` и без gate'инга полей (это отдельное изменение поведения), `validate`/провайдеры/`defaults.rs`/`rate_limit_scan.rs` остаются в корне (17 parity-assert'ов сравнивают `COMPILED` крейта с фичей КОРНЯ — перенос потребовал бы 17 форвардов). **#447 (поведение):** правило «forwardAuth → Admin API» теперь классифицирует `url::Host` (localhost/`*.localhost`, IPv4 127/8, `::1`, IPv4-mapped, `0.0.0.0`/`[::]`), берёт дефолтный порт схемы и порт из `global.admin.bind` (2019, если не задан); домен, начинающийся на `127.`, больше не «loopback». **#468:** три копии «secret xor jwksUrl» → `conduit_auth_jwt::validate::check_secret_or_jwks`, тексты передаются данными, `auth-consumers` зависит от `auth-jwt` безусловно.
+- **Проверено:** из root-списка тестов ушло ровно 22 (schema-redaction + parse; проверено разностью множеств), крейт-список = 22, добавлены 2 новых теста #447; зависимости корня идентичны с точностью до нового узла; golden без изменений в 61 комбинации; hack `--workspace --each-feature` 80/80; clippy 8 профилей + `--workspace --tests`; `cargo test --workspace` 1779. **Ревью безопасности: один проход на финальном head (PASS, 6 мин, 171 тыс. токенов — против 15 мин/264 тыс. на #467) + дельта-ревью одного коммита через `SendMessage` (PASS, 40 с)**. Замечания ревью: `admin_port` вставлен между doc-блоком `validate_global` и функцией (моя ошибка, исправлено) и предложение флагать `0.0.0.0`/`[::]` (сделано) — оба в одном дельта-коммите. Footprint «Deps» +29 — это строки `cargo tree` (новый узел + 28 уже присутствующих рёбер), уникальный набор крейтов тот же.
+- **Правила процесса записаны** (владелец: «то что написано логично», 2026-09-26): `workflow.md` — раздел «Proportionate process» и пункт «One pass, on the final head» в разделе про security-ревью (гейт остаётся безусловным); шаг 2 цикла — искать баги затронутого кода и брать в тот же PR. **Первое применение — этот PR:** #447/#468 вместо отдельных issue-PR ехали отдельными коммитами, один CI, один проход ревью. Владелец же указал: вопросы к нему — коротко и без внутренних меток (F1/S3/D9), объяснения тоже стоят ему токенов.
+- **PR #152:** Sonar QG зелёный (два `secrets:S6739` в тестовых данных помечены false positive через `mcp__sonarqube__change_sonar_issue_status` по решению владельца); CodeQL остаётся красным — 26 алертов в тестовом коде (#463), закрыть может только владелец. Замечания Grok на #469 (`port_of` для нестандартного bind, текст ошибки с `127.0.0.1`) отклонены с обоснованием в комментарии PR; примечание про `auth-consumers → auth-jwt` вошло в `crates/README.md`, изменения — в `CHANGELOG.md`.
+- **Технически:** (1) Python-heredoc в Bash в третий раз молча испортил `\\` в литерале сообщения (склеил строки) — поймано по `cat -A`; правки только `Edit`/`Write`. (2) `git mv` каталога + новый файл-фасад на том же пути: git показывает rename только для файлов, чей путь исчез (12 из 13), `mod.rs` и `parse.rs` проверять `git show <old>:<path> | diff`. (3) Перенос doc-комментария `#226` между функциями (вставил новую функцию между doc-блоком и его функцией) — при вставке функции в файл проверять, что предыдущий `///`-блок остался над своей функцией.
+- **Открыто:** следующий по плану миграции — #145 (`conduit-runtime`), затем #146–#148; #461 (токены report-jobs), #463 (CodeQL, владелец), #464 (Sonar-чистка: S3776 `validate_route_config`, S107 `handle_static`, S1612), Dependabot #452–#456 ждут смерджа миграции.

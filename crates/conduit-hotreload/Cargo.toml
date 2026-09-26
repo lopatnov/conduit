@@ -1,0 +1,70 @@
+[package]
+name        = "lopatnov-conduit-hotreload"
+version.workspace    = true
+edition.workspace    = true
+description = "Browser hot-reload (SSE + file watcher) config and handlers for conduit's feature-driven workspace (issue #114/#140)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_hotreload"
+path = "src/lib.rs"
+
+[dependencies]
+# HotReloadConfig/HotReloadOptions themselves are always compiled — see
+# src/lib.rs doc comment.
+serde = { workspace = true }
+
+# Everything below is only needed by the real SSE/client-JS handlers
+# (`handler`) and the `notify`-backed file watcher (`watcher`), gated behind
+# this crate's own `hotreload` Cargo feature — mirrors the pre-extraction
+# unconditional compilation of src/handler/hot_reload.rs. Unlike most other
+# extracted optional features, `hotreload` is genuinely heavyweight enough
+# (pulls in `notify` and its platform filesystem-watcher backend) to be worth
+# gating for real (CLAUDE.md decision #31) — but like `compression`/`static`
+# before it, it stays **default-on** at the root crate: a plain `cargo build`
+# keeps serving `/__hot-reload__`/`/__hot-reload__/client.js` and watching
+# configured `static`/`hotReload` directories exactly like before this
+# extraction; `--no-default-features` drops this crate's own real logic. Note
+# `notify` itself does NOT actually leave the dependency tree even then —
+# `crates/conduit-config-core`'s unrelated, always-on config-file-reload
+# watcher (`FileProvider`'s auto-reload mode, pre-existing since #127) has
+# its own unconditional `notify` dependency; this crate's own gate is still
+# correct/worth having for feature-correctness (verified by
+# `cargo hack --each-feature`), just not a source of `notify` footprint
+# savings on its own.
+async-trait           = { workspace = true, optional = true }
+bytes                 = { workspace = true, optional = true }
+tokio                 = { workspace = true, optional = true }
+pingora-core          = { workspace = true, optional = true }
+pingora-http          = { workspace = true, optional = true }
+pingora-proxy         = { workspace = true, optional = true }
+notify                = { workspace = true, optional = true }
+tracing               = { workspace = true, optional = true }
+lopatnov-conduit-core = { workspace = true, optional = true }
+
+# `watcher::build_watch_config` needs to inspect each site's `static` config
+# (to find directories to watch) alongside its own `hotReload` config — but
+# `AppConfig`/`SiteConfig` themselves aren't extracted out of the root crate
+# yet (a later migration phase), so this crate can't depend on them. Instead
+# `build_watch_config` takes an iterator of `(Option<&HotReloadConfig>,
+# Option<&StaticConfig>)` pairs, one per site — the root crate's own call
+# site (`admin/api.rs`) maps `config.sites` into that shape. `StaticConfig`
+# lives in `crates/conduit-static` (#114/#139) and is always compiled there
+# too (same config-always-on rationale), so this dependency is optional here,
+# gated behind the same `hotreload` feature (the only place it's used).
+lopatnov-conduit-static = { workspace = true, optional = true }
+
+[features]
+hotreload = [
+    "dep:async-trait",
+    "dep:bytes",
+    "dep:tokio",
+    "dep:pingora-core",
+    "dep:pingora-http",
+    "dep:pingora-proxy",
+    "dep:notify",
+    "dep:tracing",
+    "dep:lopatnov-conduit-core",
+    "dep:lopatnov-conduit-static",
+]

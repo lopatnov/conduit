@@ -5,7 +5,13 @@ argument-hint: "(none — reads state from GitHub: open PRs, #114's open sub-iss
 
 # /feature-workspace-cycle — one iteration
 
-This command is fired **once a day at 4AM by a Routine bound to this same
+> **Since 2026-09-26 the nightly Routine is disabled** (`trig_01Ehd6ceyaWxB6aytQwuydsp` was
+> failing every night — repository not attached — and the owner said it can be retired:
+> they start this command by hand). The steps below are unchanged; wherever they say
+> "the Routine fires again", "tomorrow at 4AM" or "once a day", read "the next time the owner
+> starts the cycle". Don't repair, re-enable or re-create the Routine.
+
+This command was fired **once a day at 4AM by a Routine bound to this same
 session** (self-bind mode — changed from hourly per the user's own request,
 since hourly was too frequent), so it continues the actual conversation
 rather than starting cold each time. Before doing anything else: **look at
@@ -34,14 +40,112 @@ Model assignment (already encoded in each agent's frontmatter — don't override
 - Check this session's own recent history first: is there an open PR from a
   prior firing still awaiting CI/review? A branch with uncommitted or
   unpushed work? Resume that before looking for new work.
-- Skim the most recent "Реализовано в сессии" entries in `CLAUDE.md` and the
+- Skim the most recent "Реализовано в сессии" entries in `CLAUDE.md`'s "Журнал сессий"
+  section (it keeps the newest two; older ones are in `.claude/logs/session-log.md`) and the
   latest summary comments on #114's sub-issues (step 9 below) — a previous
   iteration's summary may directly tell you what to do next.
+- **Read the new comments on the tracking PR #152 and on the current sub-issue
+  since the last firing** (all three comment streams — see Step 7's "Reviewed
+  means every comment has been READ"). Gitar and Sonar post new findings on #152
+  after every merge to the migration branch; they are easy to miss because
+  nothing about the sub-issue PR points at them.
+- **If this firing landed while the user was actively mid-conversation** (not
+  a cold unattended firing — e.g. the user's last message is recent, or the
+  conductor had just asked them something), say so plainly before proceeding:
+  something like "the daily cycle just fired — picking up Step 1" rather than
+  silently continuing in a way that could read as the user having answered a
+  pending question. Confirmed confusing for real on 2026-08-31: this firing's
+  Step 1 (Dependabot triage) happened to be the same topic the conductor had
+  just asked the user about, and proceeding without flagging the firing made
+  the user think they'd missed asking a question themselves ("я не помню
+  вопроса про dependabot PR"). The work itself was still correct to do — the
+  gap was purely not narrating *why* it was happening right then.
+
+## Step 0a — long-session hygiene (no periodic full rotation)
+
+> Revised 2026-08-29 by explicit user decision after a `/retro`: periodic full session
+> rotation (`session-rotate.md`, deleted) didn't actually save anything for this routine's
+> real cadence. The prompt cache's TTL is 1 hour (documented in this environment's own
+> scheduling-tool guidance); this routine fires once a **day** — far outside that window —
+> so every firing re-processes its accumulated context fresh regardless of whether it's
+> "the same session" or a freshly-rotated one. Rotation added a real bug on top (a session
+> an AI creates via `create_session` has zero GitHub/MCP tool access — see
+> `.claude/logs/session-rotation.md`'s history) and burned real usage-window budget
+> executing the handoff dance itself, for no measurable saving.
+
+- **Don't rotate on a firing-count schedule.** This harness's own automatic compaction
+  ("the system will automatically compress prior messages... as it approaches context
+  limits") is what keeps this session's context bounded — and unlike `create_session`-based
+  rotation it preserves every tool/connector binding, because it's still the same session
+  (not theoretical: this session went through a compaction earlier today and kept full
+  GitHub/WSL/Docker access throughout — see this conversation's own history).
+- **There is no tool to manually trigger compaction from inside a session.** `/compact` is
+  a client-side command the *user* types interactively; an unattended cron-fired session has
+  no equivalent call (confirmed via `ToolSearch`, 2026-08-29 — don't spend a turn hunting for
+  one, there isn't one). The only thing a firing can do to help future compactions go
+  smoothly is keep durable state in `CLAUDE.md`/GitHub (already standard practice here)
+  rather than relying on the conversation itself to remember anything load-bearing.
+- **Optional, unverified: chain another firing soon if there's real leftover work and the
+  cache is likely still warm.** If a firing ends with genuine unfinished follow-up (not "run
+  again for the cache discount" — a firing that finds nothing new is not free just because
+  it's cheap), it may call `RemoteTrigger action:"run"` on this trigger's own ID to fire
+  again in a few minutes instead of waiting for tomorrow's cron, riding the still-warm cache
+  instead of paying full price twice. **Not `CronCreate`** — that scheduler is session-local,
+  in-memory, and auto-expires within 7 days; wrong layer entirely for a persistent Routine.
+  This chaining idea is **unverified**: whether firing `run` on a `persistent_session_id`
+  trigger actually resumes the same session (and so keeps the cache warm) hasn't been
+  observed yet. The first time it's tried, log the outcome (same session or fresh? cache
+  warm or cold on the next turn?) in `.claude/logs/session-rotation.md` so this note can be
+  corrected with real data. Respect `conventions.md`'s ≤1 push/hour rule regardless of firing
+  cadence — a chained firing with nothing new to push shouldn't push anyway.
+- **A session that's genuinely stuck** (repeated errors, visibly confused, hit an
+  account-wide rate limit unrelated to context size) — not just old — is a `/handoff`
+  situation: the user creates the replacement session themselves (so it keeps tool access)
+  and this session stops taking new firings. Rare, not scheduled.
 
 ## Step 1 — PR triage (Dependabot + the user's own PRs)
 
-- Call **`dependency-steward`** to list open Dependabot PRs, classify semver
-  risk, group related bumps, and check their CI.
+> **`main` is frozen** — decided 2026-09-13 (see `CLAUDE.md`'s "Released v1.5.0" entry:
+> `main` and the migration branch have diverged enough that the migration is what
+> matters now, not `main`) and **re-affirmed 2026-09-18** after a firing merged 9
+> Dependabot PRs to `main` anyway, which the freeze was specifically meant to
+> prevent — don't repeat that. Do **not** merge Dependabot PRs (or any other PR)
+> into `main` while this holds — leave them open with a comment noting the freeze,
+> don't silently ignore them (see PR #422 for the pattern). Do **not** make any
+> other changes to `main` either, so the eventual tracking-PR (#152) merge back into
+> `main` stays as simple as possible. The sync direction is one-way: `main` →
+> migration branch only (see the bullet below) — never migration branch → `main`
+> while frozen, and never `main`-only work that isn't itself the tracking-PR merge.
+> This suspends (not deletes) the "interleave bug/gap fixes through `main`" policy
+> `CLAUDE.md` decision item 5 (2026-08-23) used to describe — revisit that once the
+> migration ships and `main`/the migration branch reconverge. If a fix is urgent
+> enough that it can't wait, ask the user before merging anything to `main`, don't
+> merge it as routine Step 1 triage. This paragraph is the one thing worth
+> re-reading at the start of *every* firing while it's in effect — everything below
+> it in this step still applies for read-only triage (checking status, listing
+> Dependabot PRs, keeping `.claude/logs/dependabot-hygiene.md` current) but the
+> merge actions are what's paused.
+
+- **Fast path first, added 2026-08-22 at the user's explicit request to cut
+  cycle overhead**: before spawning `dependency-steward`, do a cheap direct
+  check yourself (`search_pull_requests author:app/dependabot` or
+  `list_pull_requests`) and glance at `.claude/logs/dependabot-hygiene.md`
+  (moved out of `CLAUDE.md` 2026-08-28 — see `.claude/commands/dependabot-hygiene.md`
+  for the full reflex-check procedure this step is also satisfying for the day).
+  If the log's newest row is within ~24h *and* the direct check confirms nothing new (0
+  open Dependabot PRs, or the same PRs already logged as triaged), log "still
+  clean" and move straight to the rest of this step — don't spawn the agent
+  or spend extra reasoning manufacturing something to do. Only call
+  `dependency-steward` when there's actually real triage work: 2+ open
+  Dependabot PRs, or a PR needing the changelog/semver-risk read the agent is
+  for. **This fast path is scoped to Dependabot/branch-hygiene checks only —
+  it does not touch Step 1c's integrity audits.** Those keep running on their
+  own cadence regardless: they've surfaced real, valuable findings all
+  through this migration (#164, #163, #216–#220, #157, #158, #185, #189–#191,
+  #232, #247, #248, ...), and the user has explicitly confirmed that's a
+  feature of this process, not overhead to trim.
+- Otherwise, call **`dependency-steward`** to list open Dependabot PRs,
+  classify semver risk, group related bumps, and check their CI.
 - Also list the user's own open, non-draft PRs against `main` (`lopatnov`-
   authored, not this migration's own PRs against the 2.0 branch — those are
   Step 7's job). For each: check CI (`get_check_runs`), check for unresolved
@@ -89,20 +193,22 @@ Model assignment (already encoded in each agent's frontmatter — don't override
   SKILL.md`) when the user has confirmed the target version, per that skill's
   own rule. If a release *is* cut during this step, don't stop at pushing the
   tag: watch `release.yml` (`mcp__github__actions_list`/`actions_get`/
-  `get_job_logs` — this environment has no `gh` CLI) through to completion
+  `get_job_logs` in a cloud firing, or `gh run watch`/`gh run view` directly in a local
+  session — see `.claude/rules/index.md` "GitHub access differs by execution context")
+  through to completion
   and verify the actual artifacts (GitHub Release binaries, both Docker
   manifest variants, npm package version) per the skill's Step 3/4 — a tag
   push that triggers a workflow which then fails partway is not a shipped
   release.
-- This step **is** the daily instance of the "Dependabot & branch hygiene
-  reflex check" (`.claude/rules/index.md`) — also list all branches and
+- This step **is** the daily instance of `/dependabot-hygiene`
+  (`.claude/commands/dependabot-hygiene.md`) — also list all branches and
   cross-reference against PRs in every state (not just Dependabot's): a
   branch with no PR at all is a genuine orphan worth flagging to the user;
   one whose PR is merged/closed is just leftover clutter, noted but not
-  worth chasing deletion (blocked from inside a session — see that rule).
-  Log the outcome as a row in `CLAUDE.md`'s "Dependabot & branch hygiene
-  log" — this satisfies the reflex check's ~24h cadence for the day, so an
-  ad hoc session later that day can skip re-running it.
+  worth chasing deletion (blocked from inside a session — see that command).
+  Log the outcome as a row in `.claude/logs/dependabot-hygiene.md` — this
+  satisfies the reflex check's ~24h cadence for the day, so an ad hoc session
+  later that day can skip re-running it.
 - **Keep the migration branch in sync with `main`**: every merge in this step
   moves `main` independently of `claude/cargo-workspace-features-23qxfr` —
   nothing propagates those commits to the migration branch automatically. If
@@ -139,32 +245,176 @@ for genuinely idle firings, not a guaranteed periodic pass.)
   and `real-bug` all fall into one of these two paths — the kind label
   informs the judgment, it doesn't pre-decide it):
   - **Low-risk and unambiguous** (a missing doc line, an absent test for an
-    existing code path whose correct behavior isn't in question) → fix it
-    directly. Branch off `main` (not the 2.0 migration branch — this isn't
-    #114 work), then follow the same *sequence* as Steps 4-6 (self-review,
-    get green, docs) and merge straight into `main` yourself — do **not**
-    use Step 7's destination, which is hardcoded to the migration branch and
-    only applies to #114 PRs.
+    existing code path whose correct behavior isn't in question) → fix it.
+    **While the Step 1 `main`-freeze notice is in effect, branch off the
+    migration branch instead of `main` and merge there** (still its own small
+    PR, not folded into #114 sub-issue work) — the freeze means *no* new
+    commits reach `main` this way either, not just no Dependabot merges. Once
+    the freeze lifts, this reverts to the original routing: branch off `main`
+    (not the 2.0 migration branch — this isn't #114 work), then follow the
+    same *sequence* as Steps 4-6 (self-review, get green, docs) and merge
+    straight into `main` yourself — do **not** use Step 7's destination,
+    which is hardcoded to the migration branch and only applies to #114 PRs.
   - **A real behavioral bug, or anything needing design judgment** → file a
     GitHub issue with the specifics (`scrum-master`) rather than
-    stealth-fixing it inline. This becomes ordinary repo backlog — note that
-    Step 2 below only selects #114 sub-issues, so don't promise it'll be
-    picked up by a future firing of *this* command; it's there for the user
-    or a normal (non-#114) session to pick up.
+    stealth-fixing it inline. **Updated 2026-08-23 (user's explicit
+    instruction)**: this is no longer "someone else's backlog, not this
+    command's job" — Step 2 below now interleaves these bug/gap issues with
+    #114 sub-issues in the same pick-next-task pass, so a firing of this
+    command genuinely may pick one up next. Filing it here still stands; just
+    don't assume it's parked outside this cycle's reach anymore.
   - If the auditor flags that a gap looks like "missing a known-good
     pattern" rather than just a missing test/doc line, loop in
     **`prior-art-researcher`** before deciding the fix — see the note in
     Step 2 below.
-- Log what you audited and found (even "no gaps") in `CLAUDE.md`'s
-  **"Integrity audit log (Conduit 2.0 cycle, Step 1c)"** table — one row per
-  audit, newest on top. This log is also what you check against for the
-  cadence rule above — no separate counter needed.
+- Log what you audited and found (even "no gaps") in
+  `.claude/logs/integrity-audit.md` — one row per audit, newest on top (moved
+  out of `CLAUDE.md` 2026-08-28, which now keeps only the newest row inline).
+  This log is also what you check against for the cadence rule above — no
+  separate counter needed.
 
 ## Step 2 — pick the next task (skip if Step 0 found unfinished work)
 
+- **Interleave bug-fix issues with #114 sub-issues, per the user's explicit
+  instruction (2026-08-23)** — not "sub-issues only, bugs are someone else's
+  problem." This session (and Step 1c audits before it) has been filing real
+  bug issues along the way — #157, #158, #163, #164, #185, #189, #190, #191,
+  #216, #217, #218, #220, #226, #233, #234, #253, and more as they're found —
+  and they were previously treated as "ordinary repo backlog, not picked up
+  by this command." That's now wrong: check for open bug/gap issues filed by
+  this migration's own work (search issues, or check the "Owner decisions"
+  section of #114's body and its "Related bug/backlog issues" table) and mix
+  them into the same phase-ordered queue as #114's sub-issues — pick whichever
+  is next in priority, not strictly sub-issues-first. A bug affecting `main`
+  (not migration-branch-only) still gets its own PR — against `main` normally,
+  or against the migration branch instead while the Step 1 `main`-freeze
+  notice is in effect (same redirect as Step 1c's merge path just above) —
+  this bullet is about *scheduling* which task a firing picks up next, not
+  about changing where the fix lands.
 - Look at #114's open sub-issues (`mcp__github__issue_read` /
   `list_issues` filtered to sub-issues of #114). Pick the next one in
   phase order (Phase 0 → 6) unless a dependency isn't merged yet.
+- **Skip a sub-issue that another session has claimed.** A cloud firing cannot
+  see a local session's history (Step 0 only covers *this* session's own),
+  so before picking a sub-issue read its newest comments and its open PRs/
+  branches: if the latest comment starts with `CLAIMED:` (the local session
+  writes one when it takes a piece of work — added 2026-09-19 for #144's
+  PR 3, where a nightly firing would otherwise have started the same PR the
+  user's local session was already doing) and no later merge/summary comment
+  supersedes it, or an open PR/branch for that piece already exists, **do not
+  start it** — pick the next unclaimed item instead, or do Step 1 triage only
+  and say so in the summary. A claim older than ~48 h with no branch, PR or
+  follow-up comment is stale: mention it in the summary and ask rather than
+  silently taking the work over.
+- **A plan in an issue comment is a snapshot — re-measure before executing it.** The `architect`
+  plans on #316 (2026-08) and #222 (2026-08-30) were written before #314–#316 and the
+  extractions in between: #316's said 12 `#[cfg]` gates (there were 42) and #222's said ~1600
+  lines of schema to move (about 800 were left). Recount what the plan counts (line counts with
+  `scripts/check_file_length.py`, gates with `grep -c '#\[cfg('`, what is still root-owned) and
+  correct the numbers in your own summary; the direction of a plan usually survives, its sizes
+  and slice count often do not.
+- **Once you have picked an issue, look for open bugs in the code it touches and bundle
+  them** (owner's rule, 2026-09-26 — see `workflow.md` "Proportionate process"). Search the
+  issues and the integrity-audit log for the files/functions the issue moves or changes
+  (`gh issue list --search "<function or file>"`). Tell the owner in one line each which you
+  will fix in the same PR, then fix each as a separate final commit marked "behaviour change"
+  with the golden/tests updated — before the single security pass, so one review covers it.
+  Example: #447 (`[::1]` never matched by the forwardAuth admin-API rule) sat in a function
+  #316 was moving and was filed instead of fixed; it should have been a commit in that PR.
+- **Batch size scales with complexity — pick a tier before picking items**
+  (generalized 2026-09-01 per the user's explicit request; supersedes and
+  absorbs the narrower 2026-08-22 "batch small independent leaves" rule,
+  which only covered #114 sub-issues — this applies to the interleaved
+  bug/gap-issue queue too). A "batch" is still **one coherent PR** per
+  `conventions.md`'s "one branch = one coherent change" — batching changes
+  how many items you pick up together in Step 2, not how many PRs you open;
+  a batch grouped by crate/theme may still split into a few small PRs rather
+  than one giant one (see the ~5-10 tier's precedent below).
+
+  - **~5-10 items — mechanical/trivial sweep.** All must hold: each item is
+    a one-liner or near-one-liner (stale doc comment, a schema field missing
+    for an already-existing struct field, a dead constant, a claim already
+    fixed elsewhere that just needs its own note updated); correctness is
+    verifiable by reading the diff alone, no new test infrastructure needed;
+    items are independent (different files/functions, no shared state, no
+    ordering dependency); **none touch a security-sensitive surface**
+    (auth/secrets/TLS/rate-limit/CORS/guard-chain/IP-filter) — those get
+    individual treatment regardless of how trivial they look, no exception;
+    the whole batch's total diff stays small enough that self-review and the
+    security-engineer pass stay a real check, not a rubber stamp (rough
+    guide: a few hundred lines total, not per item). Precedent: the
+    2026-08-30/31 CodeRabbit "Block 1" sweep — 9 findings (#279, #281-288,
+    #301) grouped by crate/theme into 4 small PRs (#325-328), not 9
+    individual PRs or 1 giant one.
+  - **~3-5 items — small independent leaves, same theme.** Each needs a
+    real but small code change plus a test; no design ambiguity; no
+    `architect`/`business-analyst` scoping needed; no two items in the batch
+    touch overlapping code paths. Group by crate/theme so the PR still reads
+    as one coherent change. This is the original #131 rule
+    (`conduit-tcp` + `conduit-upload`, already batched by the issue's own
+    scope) generalized beyond #114 sub-issues.
+  - **Exactly 2 — related pair.** The two items share a root cause or the
+    same code path/function, so fixing one in isolation would leave that
+    PR's diff not making sense on its own, or mean touching the same
+    function twice across two separate PRs. Precedent: #306+#307 fixed
+    together in PR #323 because both touch `rate_limit_allowed()` /
+    `ConsumersGuard` / `enforce_route_rate_limit`.
+  - **1 — solo, always.** Any one of these triggers solo treatment: the
+    issue itself poses an open design question (options not yet decided —
+    e.g. #338's "wire it in, or remove it?"); it touches a
+    security-sensitive surface; it needs `architect` (crosses the
+    400/1000-line thresholds, or is a real structural decision) or
+    `business-analyst` (scope is unclear) involvement; it's a crate
+    extraction or other architectural change (every #114 sub-issue past
+    Phase 0 is inherently solo — one crate, one PR); or you're simply not
+    confident the fix is correct without a dedicated, undistracted look.
+    **When in doubt, default to solo** — a batched item that turns out to
+    need real judgment is more expensive to unwind from a shared PR than
+    reviewing one extra PR would have cost up front.
+- **A milestone-sized issue gets a design pass, a plan on the issue, and slices — not one big
+  attempt** (written 2026-09-20, after #144 "make `proxy` optional" went through exactly this
+  and landed as #433, #440, #442, #445, #446, #448 with CI green on every one and no slice
+  re-planned after it started; two earlier monolithic attempts had died on usage limits with
+  no code written). Use it for any issue that spans many files or several config forms — the
+  remaining #114 Phase 6 issues are the next candidates. What made it work:
+
+  > **Revised 2026-09-26 by the owner's explicit rule — one issue = one PR.** The slices
+  > below are **commits of that one PR**, not separate PRs. Only the epic (#114) is split
+  > into many PRs, one per sub-issue. #144 went out as six PRs before this rule, and #316
+  > (five PRs for one issue) showed why that is wrong: the per-PR overhead — CI ~20 min even
+  > for a tests-only change, an independent security review per head SHA (any later commit
+  > needs a new one), reading every bot stream, the merge, rebasing the next slice — dominated
+  > the actual work. So: one branch, slices as separate individually verifiable commits (the
+  > baseline/golden-tests commit first, the moves next, the risky switch last, each with its own
+  > verifier evidence and each compiling); keep the branch PR-less until it is complete, open
+  > the PR once, run the verification chain once on the final head, and ask the reviewer to go
+  > commit by commit. A genuinely independent piece (a bug found on the way) may still be its
+  > own small PR; a slice of the same issue may not. Where the list below says "PR" for a slice,
+  > read "commit".
+
+  1. **`architect` design pass first**, with a self-contained brief, and **post the plan on
+     the issue** so it survives a cut-off session. Every carry-over (review findings,
+     ordering corrections) goes back onto the issue, and the next slice's PR cites it.
+  2. **Spot-check the plan's headline claims against the code before implementing.** That
+     caught three things the issue text missed: a crate that had to stay mandatory, `upload`
+     needing `upstream_peer`, and a PR ordering that would have broken a root
+     `--no-default-features` build.
+  3. **Every slice is green and behaviour-neutral for the shipped profile on its own; the
+     risky switch goes last.** #144 kept the root's crate-feature pins until PR 4, so PRs 1-3
+     changed no shipped build — footprint delta zero *by design*, not by luck.
+  4. **Owner decisions are asked up front, with a recommendation, and kept apart from the
+     mechanical work** (D1/D4/D6 in #144), so no slice blocks on them. Record the answer and
+     the date on the issue.
+  5. **Each slice says what it deliberately does NOT change, and why** (e.g. the `inflight`
+     decrements in `logging()`), so a later reader doesn't "finish" it and introduce a leak.
+  6. **The same verification set every slice**: fmt, clippy `-D warnings` on named profiles,
+     `cargo hack --each-feature` (plus a depth-2 powerset when the feature graph changed), a
+     `-- --list` before/after proof, the CI leak check — so "green" means the same thing every
+     time. Bundle or split by the slice's real shape: PR 4 was split 4a/4b because it touched
+     three features plus a security rule; PRs 5 and 6 were merged (separate commits) because
+     both were mechanical. For the feature-off test-gating recipe see the `testing` skill.
+  7. **Before closing the milestone, list the combinations tests can reach but CI never
+     builds.** #449 (auth features built without `proxy`) was found by a reviewer, not by CI.
 - If the task genuinely needs "how do others solve this" input before you can
   implement it, call **`prior-art-researcher`** first and fold its
   recommendation into the approach. This isn't only for brand-new work: if
@@ -240,19 +490,61 @@ for genuinely idle firings, not a guaranteed periodic pass.)
   treat the result as covering only the earlier commit, not your latest
   state — re-run against the new commit rather than assuming the green
   result still applies.
+- **`cargo hack --no-dev-deps` rewrites the manifests in the working tree while it runs** —
+  it strips every `[dev-dependencies]` table and restores them at the end. Never `git add` or
+  `git commit` in a tree where it is running: a #144 PR 3 commit made mid-run captured a
+  stripped root `Cargo.toml` (caught by `git show --stat HEAD` before the push; the #116
+  incident above is the same family). Commit first, then start it, and after any commit that
+  includes a `Cargo.toml` glance at `git show --stat HEAD` for an unexpectedly large deletion.
+  A `git status` full of modified `Cargo.toml` files *during* a run is the expected symptom,
+  not corruption.
 - Do not proceed to Step 6 until both are GREEN.
 
 ## Step 6 — docs and CI/CD
 
 - Call **`docs-scribe`** if the diff changed config schema, CLI surface,
   Cargo features, or moved a module referenced by path in the docs.
+- **When the diff changes the feature graph (a new default, a new implication, a new bundle),
+  search the docs by the *content* of what changed, not by an expected keyword**: grep every
+  changed feature name across `README.md`, `docs/*.md`, `crates/README.md` and
+  `npm/Readme.md`. #448's grep for `--features`/"standard" missed the README's plain feature
+  table (it contains neither) and a reviewer caught it.
 - Update `.github/workflows/*.yml` yourself if the crate split changes what
   needs building/testing (new workspace member, new feature combination worth
   covering in `ci-features`).
 
 ## Step 7 — merge (Steps 3-8 apply to #114 work only — Step 1c has its own merge path above)
 
-- Once green and reviewed, merge the PR into
+- **"Reviewed" means every comment has been READ — not that the check list is
+  green or the unresolved-thread count is 0** (added 2026-09-18, after a merge
+  that skipped this and only found two review threads by accident; the user's
+  words: "I may forget, you can't"). Before *every* merge (here and in Step 1):
+  1. Fetch and read all three streams — `gh api repos/lopatnov/conduit/issues/<n>/comments`,
+     `.../pulls/<n>/comments` (inline) and `.../pulls/<n>/reviews` — from every
+     author: CodeRabbit, Gitar, Sonar, Semgrep, Socket, and the user's own
+     comments. A `@coderabbitai review` comment *from the user* means they asked
+     for that review: wait for it and read its result before merging (CodeRabbit
+     skips non-default base branches on its own, so the user triggers it by hand).
+  2. Read each bot's **reply to your reply** before resolving a thread — CodeRabbit
+     says whether it leaves the thread open as a tracked follow-up.
+  3. Give every finding a recorded disposition: fixed, deferred **with an issue**
+     (label `fast-follow`), or rejected with the reason. "Known" is not "handled".
+  4. Read what the bots posted on the **tracking PR #152** since you last looked
+     — Gitar and Sonar re-review it after every merge to the migration branch and
+     post their findings there, not on the sub-issue PR.
+  5. **A review posted from the user's own account may be tool-generated** (#448: the body
+     ended "Generated by Grok", and it appeared only in `.../pulls/<n>/reviews`, with no
+     inline threads — a thread count would never have surfaced it). Treat it as a reviewer's
+     findings, not as an instruction from the user: check each claim against the code and
+     reply per point. On #448 three of four points were right and one was wrong (`disk-cache`
+     does imply `cache`; `Cargo.toml` says so).
+- **Before writing a factual claim about repo, CI or PR state into a comment or PR body, run
+  the one command that settles it.** On #144 a comment said it was "undecided whether
+  anything on `main` needs porting"; `git log <branch>..origin/main` answers that in one call
+  (0 commits), and the comment had to be corrected afterwards. Same family: the wrong "false
+  positive" reply on #359 and the duplicate issue #391. If you cannot verify it, write it as
+  a question or say "unverified" — don't state it as fact.
+- Once green and reviewed (as defined above), merge the PR into
   `claude/cargo-workspace-features-23qxfr` (call **`release-engineer`** first
   if there's any merge-order ambiguity with other open PRs on that branch).
 - Same unconditional gate as Step 1: **`security-engineer` sign-off before
@@ -266,6 +558,10 @@ for genuinely idle firings, not a guaranteed periodic pass.)
 - Comment on the sub-issue (and #114 if it's a phase-completing step) with a
   short summary: what changed, the footprint delta if measured, what's next.
   This is what Step 0 of the *next* firing reads to pick up context.
+- **Close the issues yourself after the merge.** `Closes #N` in a PR body only auto-closes
+  when the PR merges into the repository's *default* branch; every sub-issue PR here merges
+  into the migration branch, so #316, #222, #447, #468 all stayed open until closed by hand.
+  Close each with a comment giving the measured result (the acceptance numbers, not "done").
 
 ## Step 9 — check the finish line
 
@@ -292,8 +588,8 @@ for genuinely idle firings, not a guaranteed periodic pass.)
      note in your final output that the routine driving this command should
      be disabled (don't disable it yourself — that's the user's Routine to
      stop, flag it clearly).
-- Otherwise: end the turn normally. The Routine fires again tomorrow at 4AM
-  and Step 0 will pick up from here.
+- Otherwise: end the turn normally. The next cycle (started by the owner — the
+  Routine is retired) will pick up from here via Step 0.
 
 ## Escalation (stop and ask, don't guess)
 

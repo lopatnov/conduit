@@ -4,7 +4,7 @@ use serde_json::Value as JsonValue;
 
 use pingora_proxy::Session;
 
-use crate::config::schema::{LogFormat, LoggingConfig, SiteConfig};
+use crate::config::schema::{LogFormat, LoggingConfig};
 use crate::util::log_writer::LogWriter;
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -28,12 +28,10 @@ pub struct AccessLogContext<'a> {
 pub fn write_access_log(
     session: &Session,
     start_time: Instant,
-    site_config: Option<&SiteConfig>,
+    logging_cfg: Option<&LoggingConfig>,
     log_writer: &LogWriter,
     extra: &AccessLogContext<'_>,
 ) {
-    let logging_cfg = site_config.and_then(|s| s.logging.as_ref());
-
     let (format, file_path, skip_paths, strip_query) = match logging_cfg {
         None | Some(LoggingConfig::Enabled(false)) => return,
         Some(LoggingConfig::Enabled(true)) => (&LogFormat::Combined, None, None, false),

@@ -7,36 +7,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [1.5.0] — 2026-09-13
-
-### Fixed
-
-- `schema/conduit.schema.json`'s `middleware[].type` enum was missing
-  `"wasm"` entirely, even though `validate.rs` has recognized it since the
-  feature shipped — a documented, working WASM middleware config would fail
-  schema validation.
-
-### Documentation
-
-- **New recipe: running Node.js/Python apps behind conduit as a fixed
-  worker pool**, wired up via the existing dynamic-upstream Admin API
-  (`POST /upstreams/add|remove|weight`) rather than any new conduit
-  feature — see `docs/node-python-workers.md`.
-- **`fallback.byAccept` key-matching semantics documented** — `text`/
-  `image` are special substring-matching keys (`text/`/`image/` prefix
-  families); any other key falls back to a literal-substring match against
-  `Accept`. Previously only `html`/`json`/`*` were shown as bare examples
-  with no explanation of the actual matching rules.
-- Corrected several stale WASM-plugin doc claims: `docs/configuration.md`'s
-  host-function and Rhai-function tables listed functions that don't
-  actually exist under those names; `docs/wasm.md`'s "hot-reload clears the
-  module cache" claim was false (the module cache is compile-once-per-path,
-  same as Rhai's `AST_CACHE`).
-
-## [1.4.0] — 2026-09-05
-
 ### Security
 
+- **The vulnerable `protobuf 2.28.0` (RUSTSEC-2024-0437 / CVE-2025-53605) is
+  gone from the dependency tree.** It was pulled in unconditionally by
+  `pingora-core 0.8` through `prometheus 0.13`; Pingora 0.9 no longer depends
+  on `prometheus` from `pingora-core`, so only Conduit's own `prometheus 0.14`
+  (with `protobuf 3.7.2`) remains and the `cargo-audit` ignore for it is
+  removed. The unmaintained `daemonize` crate (RUSTSEC-2025-0069) is replaced
+  by `daemonix` in the same upgrade, so its OSV ignore is removed as well.
+- **Pingora 0.9 hardening applies to every proxied request** — stricter
+  request-target and authority validation, hop-by-hop upstream header
+  sanitisation (see *Changed*), and bounded default HTTP/2 server limits.
+- **Per-route and per-consumer rate limiting no longer bypass the shared
+  memory-exhaustion cap.** `rateLimit` at the site level has always refused
+  to create more than 100,000 distinct token buckets, to stop an attacker
+  sending unbounded unique `keyBy: "header:X-Name"` values from exhausting
+  memory. Per-route and per-consumer rate limits shared the same underlying
+  map but bypassed that cap entirely — confirmed as a real DoS vector on the
+  documented usage pattern. All three layers (plus the Redis fallback path)
+  now share one capacity-checked admission point.
+- **Per-route `rateLimit` is now validated at config-load time.** Previously
+  `windowSecs`/`limit`/`algorithm`/`keyBy`/`store` on a per-route rate limit
+  were parsed but never checked — a malformed `keyBy: "header:bad name"`
+  silently collapsed every client into one shared bucket at runtime instead
+  of failing validation up front. Site-level and per-consumer rate limits
+  already validated these fields; per-route now does too, matching them.
 - **CORS `credentials: true` now requires an explicit, non-wildcard `origins`
   allowlist.** Previously, `credentials: true` with `origins` unset (or
   containing `"*"`) echoed the request's `Origin` header back verbatim with
@@ -59,16 +55,205 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the configured limit, that one client is rejected *permanently* instead
   of just for the current window (a transient blip degrading into a
   permanent fail-closed, contradicting the module's own fail-open design).
-  Both commands now run as a single atomic Lua script (`EVAL`).
+  Both commands now run as a single atomic Lua script (`EVAL`), which also
+  self-heals any key already leaked by the old two-round-trip code the next
+  time it's checked.
 
 ### Fixed
 
+- **HMAC-signed sticky sessions now actually route to the upstream their
+  cookie names.** After verifying the cookie against a specific upstream,
+  Conduit threw that result away and instead hashed the upstream's *URL
+  string* back through `hash % len` — which lands on the pinned upstream
+  itself only by coincidence. Measured across 2–8-upstream pools, that
+  coincidence holds about 23% of the time (i.e. chance); with exactly four
+  upstreams it never holds. So a signed session was usually served by a
+  different upstream than the one it was pinned to, silently. The pin is now
+  honored directly whenever its upstream is healthy and under
+  `maxConnectionsPerUpstream`, with the previous relocate-and-self-heal
+  behavior kept for when it isn't. Two knock-on effects are fixed with it:
+  `strict: true` was checking the health of the pinned upstream while
+  serving a different one, and the "capacity relocation" guard (which
+  suppresses cookie re-signing) was firing on nearly every sticky request
+  rather than only on real relocations.
+- **A route with `retry` configured no longer ignores its load-balancing
+  strategy.** The retry path bypassed strategy dispatch entirely and did
+  plain round-robin, so `ipHash`/`consistentHash`, weighted round-robin,
+  least-conn *and* sticky affinity were all silently inert the moment
+  `retry` was added to a route. The first attempt now goes through the same
+  strategy dispatch as a non-retry request, and the retry rotation is
+  anchored to whichever upstream that produced.
+- **Response compression now applies to the metrics endpoint and fallback
+  responses, not just static files.** `compression`'s negotiation logic
+  (`Content-Encoding` selection, `minBytes`/`types` thresholds) was fully
+  implemented and tested but never actually wired into the `/__metrics__`
+  handler or fallback (404/SPA-shell/custom-body) responses — both were
+  always served uncompressed regardless of config. Each response type is
+  still negotiated independently against the site's `compression` config, so
+  a small response may stay uncompressed exactly as before.
 - **A request to `/.well-known/acme-challenge/*` on a build without
   `--features acme` no longer surfaces as a 502.** The path matched
   unconditionally regardless of the compiled feature; without `acme` there
   was no handler to serve it, and the request fell through to Pingora's
   proxy path with no real upstream to select. The path now only matches
   when `acme` is actually compiled in.
+- **`healthCheck.slowStartSecs` now actually ramps traffic to a
+  recently-recovered upstream.** The field was parsed and the underlying
+  fraction calculation existed, but nothing outside its own unit tests ever
+  called it — a freshly-recovered upstream got 100% of its normal traffic
+  share immediately, the exact thundering-herd scenario the feature exists
+  to prevent (`LeastConn` was the worst-affected strategy: a recovered
+  peer's drained connection count made it win every pick until real traffic
+  caught it up). Every load-balance strategy now honors it except
+  `ipHash`/`consistentHash` and sticky sessions, which are deliberately
+  exempt (a probabilistic ramp would break their own consistency
+  guarantee) — configuring both together now logs a warning instead of
+  silently doing nothing.
+- **A `routes[]`-array route with `retry` configured no longer defeats its
+  own load-balancing strategy on the first attempt.** The retry candidate
+  list was built independently of the peer the route's strategy actually
+  chose, so `retry.urls[0]` was always the head of an unrotated list —
+  round-robin never rotated, and per-peer stats (`conn_count`, EWMA,
+  outlier detection, access logs) were attributed to the wrong upstream.
+- **`retry.budgetPercent` no longer self-suppresses over the life of a
+  long-running process.** The internal `retry_inflight` counter incremented
+  once per retry *decision* but was only ever decremented once per
+  *request* — a request that took 2+ retry attempts (e.g. `attempts: 3`
+  fully exhausted) leaked a permanent +1 into the counter. Enough leaked
+  requests eventually make the budget check deny all retries sitewide, with
+  no error or warning.
+- **Retry attempts no longer leak a `conn_count` slot on a connect-phase or
+  proxy-phase-timeout failure.** Only the 5xx-retry path correctly released
+  the connection-capacity slot before moving to the next attempt; a
+  connection refusal/timeout, or a read/write timeout mid-response, left
+  the slot held forever. Once enough slots leaked past
+  `maxConnectionsPerUpstream`, the affected route returned `503` permanently
+  until process restart — the opposite of the circuit breaker's intended
+  behavior. Both failure modes now also feed passive health/outlier
+  detection, which previously only the 5xx path did.
+- **Retry attempts now actually respect `maxConnectionsPerUpstream`.**
+  Capacity used to be evaluated once, at initial routing, and never
+  re-checked as a request moved through its retry attempts — a retry could
+  land on (and further overload) a peer already at its connection cap. Each
+  retry attempt now forward-probes the retry candidate list for the next
+  peer currently under the cap, skipping (not permanently removing) a
+  saturated one — the same forward-probe shape `ipHash`/`consistentHash`
+  already use for capacity. Fails open to the naive rotation target if
+  every candidate is saturated, so a request that has already spent
+  attempts is never 503'd purely because capacity deteriorated mid-request.
+- **The "`forwardAuth.url` points at the Admin API" validation error now catches
+  what it was meant to** (issue #447). It compared the URL's host with `"::1"`
+  while the URL library returns IPv6 hosts in brackets, so `http://[::1]:2019`
+  was never rejected; it also hard-coded port 2019. The rule now classifies the
+  parsed host (`localhost` and `*.localhost`, IPv4 `127.0.0.0/8`, `::1`,
+  IPv4-mapped IPv6, and `0.0.0.0` / `[::]`, which connect to the local host on
+  Linux and macOS), treats a URL without a port as its scheme's default port,
+  and follows the port of `global.admin.bind` (2019 when it is not set). A
+  config that pointed `forwardAuth` at such an address on the Admin API's port
+  used to load and now fails validation; a different service on port 2019 is no
+  longer rejected once `global.admin.bind` uses another port, and a domain that
+  merely starts with `127.` is no longer treated as loopback.
+
+### Changed
+
+- **Pingora upgraded from 0.8.1 to 0.9.0.** Two behaviour changes are visible
+  to operators:
+  - *Response-cache keys hash differently.* Pingora 0.9 removed the separate
+    `namespace` argument of `CacheKey`, so Conduit now joins the host and the
+    rest of the key with an explicit `\0` boundary instead of relying on the
+    old, ambiguous concatenation. A persistent `cache.store` (`disk:` /
+    `redis://`) starts cold once after the upgrade. Redis entries expire on
+    their TTL; old `disk:` files are never read again and are **not** removed
+    automatically — delete the cache directory to reclaim the space. Nodes that
+    share one Redis store see disjoint keys across the upgrade: during a rolling
+    upgrade old and new nodes cache separately (no collision, no corruption),
+    and a `DELETE /cache/purge` on one version does not remove the entry the
+    other version wrote.
+  - *Hop-by-hop request headers are no longer forwarded to the upstream.*
+    Pingora's standard policy now drops `Keep-Alive`, `Proxy-Connection`,
+    `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`,
+    `Transfer-Encoding` (re-framed by Pingora), `Connection`, `HTTP2-Settings`,
+    any header named in the client's `Connection` header, and `Upgrade` unless
+    the request is a valid WebSocket handshake (which is normalised and still
+    forwarded). A request whose `Connection` header nominates `Host`,
+    `X-Forwarded-For`, `X-Forwarded-Host` or `X-Forwarded-Proto` is rejected.
+    An HTTP/2 client talking to an HTTP/2 upstream (e.g. gRPC) is not
+    rewritten.
+
+  The purge admin endpoint (`DELETE /cache/purge`) keeps its response shape.
+  Internally the `Storage::purge` implementations of the disk and Redis cache
+  backends follow Pingora 0.9's `PurgeTarget`/`PurgeOutcome` API, and Conduit's
+  own header edits use `remove_header`/`append_header` (Pingora 0.9 no longer
+  lets `RequestHeader`/`ResponseHeader` be mutated through `DerefMut`).
+- **`--no-default-features` builds no longer contain any reverse-proxy code or
+  its dependencies** (issue #144). `proxy` is now a real Cargo feature: with it
+  off, upstream selection (capacity limits, slow-start, sticky sessions), retry,
+  traffic mirroring and the active health checks are compiled out, together with
+  `reqwest`, `url` (and its `idna`/`icu_*` tree) and `hmac`/`sha2` — 302 → 265
+  crates for `--no-default-features --features static`. `default`, `standard`
+  and `full` include `proxy` and are unchanged. Three config shapes change
+  meaning in a build without it: a legacy top-level `proxy` shorthand next to a
+  site-level `static` (the previously shadowed `static` root becomes live), a
+  legacy `proxy` map next to `static` (requests under the proxied prefixes fall
+  through to `static`/`fallback` instead of an upstream), and a `routes[]` entry
+  with a `proxy` action (it ends in the site's `fallback`, never in its own
+  `static` half). Each logs a startup warning naming the exact index. See
+  `docs/building.md`.
+- **The "`forwardAuth.url` points at the Admin API (`127.0.0.1:2019`)" validation
+  error now applies only to builds that enforce forwardAuth** (`--features
+  forward-auth`, part of `standard`/`full`). Without the feature the whole
+  `forwardAuth` block is ignored (and already warned about), so such a config
+  loads with that warning instead of an error; the rule itself is unchanged
+  wherever forwardAuth runs.
+- **`DELETE /cache/purge` answers `501 Not Implemented` in builds without the
+  `cache` feature.** It used to answer `{"status":"ok","purged":false}` — for a
+  cache such a build does not have. `cache` is not part of `default`, so a plain
+  `cargo build` is affected; the published `standard`/`full` binaries and
+  images are not.
+- **The `cache` feature now implies `proxy`** (issue #144). The cache stores
+  proxied responses only, so a cache build without its proxy was never
+  meaningful, and its call sites (`cache.earlyRefreshSecs`, `/cache/purge`) need
+  the HTTP client and URL parser that `proxy` brings in. `--features cache`
+  therefore also compiles `proxy`; `default`, `standard` and `full` are
+  unaffected (they already include both).
+- **Two bundles for `--no-default-features` builds** (issue #144):
+  `static-server` (`static` + `compression` + `hotreload` — the default set
+  minus `proxy`) and `gateway` (`proxy` + `jwt` + `consumers` + `forward-auth` +
+  `cache` + `acme` + `compression` — the `standard` set without static files
+  and hot-reload). They add nothing to a default build.
+- The integration tests that proxy real traffic (`proxy`, `lb_strategies`,
+  `rewrite`, `upstream_groups`, `websocket`, and the proxy-dependent tests inside
+  `dynamic_upstreams`, `routes`, `security`, `upstream_health`) now require the
+  `proxy` feature, so `cargo test --no-default-features --features
+  static-server` runs cleanly. A build with `proxy` runs exactly the same tests
+  as before.
+- `RateLimitConfig` moved to its own crate (`conduit-ratelimit`, issue
+  #114/#137 slice 1) — no config shape or behavior change, this closes a
+  code-duplication finding between the root crate and
+  `conduit-auth-consumers`.
+- Static-file serving and fallback (404/SPA-shell/custom-body) responses
+  moved to their own crate (`conduit-static`, issue #114/#139) behind a new
+  `static` Cargo feature. **Default-on**, like `compression` — a plain
+  `cargo build` keeps serving static files and fallback responses exactly
+  like before; only `--no-default-features` (without re-adding `static`)
+  now produces a build with neither capability compiled in.
+- **Config validation moved into the crates that own each config block** (issue
+  #316): the `rateLimit`, `limits`, `ipFilter`, `cors`, `middleware`,
+  `redirects`, `fallback`, `upload`, `metrics`, `cache`, `tcp`, `proxy`,
+  `jwtAuth`, `consumers` and `forwardAuth` checks, and every "configured but
+  this build lacks the feature" warning text, now live in those crates. The
+  messages, their order and the output of `conduit validate` are unchanged. One
+  operator-visible effect: the log lines emitted while validating a route (a
+  `slowStartSecs` that is ignored on a hash-based or sticky route) or a cache
+  block are now logged under the targets `conduit_proxy_http::validate` and
+  `conduit_cache::validate` instead of `conduit::config::validate::proxy`. The
+  default `warn` level still shows them, but a filter such as
+  `RUST_LOG=conduit::config=debug` no longer matches them.
+- **The config schema (`AppConfig`, `SiteConfig` and the types they contain) and
+  the config-file parsing moved into a new workspace crate,
+  `lopatnov-conduit-config`** (issue #222). No config shape or behaviour change:
+  the crate has no Cargo features and gates no field, and the root crate
+  re-exports everything from the same `config::schema` / `config::parse` paths.
 
 ---
 
@@ -138,6 +323,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Consumer `rateLimit.limit`/`windowSecs` of `0` is now rejected at
   config-validation time**, instead of silently locking the consumer out of
   every request at runtime.
+
+---
+
+## [2.0.0] — in progress on `claude/cargo-workspace-features-23qxfr`
+
+Marks the start of the feature-driven Cargo workspace migration (see GitHub
+issue #114): splitting the single `lopatnov-conduit` crate into one crate per
+feature so a build only compiles the code and dependencies a chosen feature
+set actually needs. This is a long-lived migration branch, not a cut release —
+`main` and its `1.x` line are unaffected until the migration lands. Every PR
+merged into this branch bumps the workspace minor version (`2.1.0`, `2.2.0`,
+...) so migration progress is traceable; the branch is retired into a real
+`2.0.0` release once #114's sub-issues are all closed.
 
 ---
 
