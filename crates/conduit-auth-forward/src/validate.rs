@@ -142,14 +142,22 @@ mod tests {
     fn unspecified_addresses_reach_this_host_and_are_flagged() {
         assert!(targets_admin_api("http://0.0.0.0:2019/auth", 2019, None));
         assert!(targets_admin_api("http://[::]:2019/auth", 2019, None));
-        assert!(targets_admin_api("http://[::ffff:0.0.0.0]:2019/auth", 2019, None));
+        assert!(targets_admin_api(
+            "http://[::ffff:0.0.0.0]:2019/auth",
+            2019,
+            None
+        ));
     }
 
     #[test]
     fn localhost_spellings_are_flagged() {
         assert!(targets_admin_api("http://LOCALHOST:2019/", 2019, None));
         assert!(targets_admin_api("http://localhost.:2019/", 2019, None));
-        assert!(targets_admin_api("http://admin.localhost:2019/", 2019, None));
+        assert!(targets_admin_api(
+            "http://admin.localhost:2019/",
+            2019,
+            None
+        ));
     }
 
     #[test]
@@ -186,9 +194,21 @@ mod tests {
 
     #[test]
     fn other_hosts_are_not_flagged() {
-        assert!(!targets_admin_api("http://auth-service:2019/verify", 2019, None));
-        assert!(!targets_admin_api("http://10.0.0.1:2019/verify", 2019, None));
-        assert!(!targets_admin_api("http://[2001:db8::1]:2019/verify", 2019, None));
+        assert!(!targets_admin_api(
+            "http://auth-service:2019/verify",
+            2019,
+            None
+        ));
+        assert!(!targets_admin_api(
+            "http://10.0.0.1:2019/verify",
+            2019,
+            None
+        ));
+        assert!(!targets_admin_api(
+            "http://[2001:db8::1]:2019/verify",
+            2019,
+            None
+        ));
         // A domain that merely starts with "127." is not loopback (the old `starts_with("127.")` said it was).
         assert!(!targets_admin_api(
             "http://127.example.com:2019/verify",
