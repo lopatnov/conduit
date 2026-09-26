@@ -292,32 +292,53 @@ impl BackgroundService for AdminApiService {
             }
         };
 
-        let app = build_router(self.state.clone());
-        let listener = match TcpListener::bind(&bind_addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("admin API failed to bind {bind_addr}: {e}");
-                return;
-            }
-        };
-        let addr = listener.local_addr().ok();
-        if let Some(addr) = addr {
-            tracing::info!("admin API listening on http://{addr}");
-        }
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                shutdown.changed().await.ok();
-            })
-            .await
-            .ok();
+        serve(self.state.clone(), &bind_addr, root_routes(), shutdown).await;
     }
 }
 
-fn build_router(state: Arc<AppState>) -> Router {
+/// Bind the Admin HTTP server on `bind_addr` and serve it until `shutdown` fires.
+///
+/// `extra` is the routes contributed by the layer above this module — see [`build_router`].
+async fn serve(
+    state: Arc<AppState>,
+    bind_addr: &str,
+    extra: Router<Arc<AppState>>,
+    mut shutdown: ShutdownWatch,
+) {
+    let app = build_router(state, extra);
+    let listener = match TcpListener::bind(bind_addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("admin API failed to bind {bind_addr}: {e}");
+            return;
+        }
+    };
+    let addr = listener.local_addr().ok();
+    if let Some(addr) = addr {
+        tracing::info!("admin API listening on http://{addr}");
+    }
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown.changed().await.ok();
+        })
+        .await
+        .ok();
+}
+
+/// The Admin API routes that live in the root crate rather than with the built-in ones:
+/// `POST /reload` needs the root's config validation.
+fn root_routes() -> Router<Arc<AppState>> {
+    Router::new().route("/reload", post(reload_handler))
+}
+
+/// Build the Admin API router: the built-in endpoints plus `extra`, all behind the bearer-token layer.
+///
+/// `extra` is merged **before** that layer is applied, and this is the only way to add a route, so a
+/// route contributed from outside cannot skip authentication.
+fn build_router(state: Arc<AppState>, extra: Router<Arc<AppState>>) -> Router {
     // Build the protected routes first.
     let protected = Router::new()
         .route("/status", get(status_handler))
-        .route("/reload", post(reload_handler))
         .route("/shutdown", post(shutdown_handler))
         .route("/upstreams", get(upstreams_handler))
         .route("/upstreams/add", post(upstreams_add_handler))
@@ -327,7 +348,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/rate-limits", get(rate_limits_handler))
         .route("/ip-deny", post(ip_deny_add_handler))
         .route("/ip-deny", delete(ip_deny_remove_handler))
-        .route("/certs/reload", post(certs_reload_handler));
+        .route("/certs/reload", post(certs_reload_handler))
+        .merge(extra);
 
     // Wrap with bearer-token auth middleware.
     // Read the token from the live config on every request so that POST /reload
