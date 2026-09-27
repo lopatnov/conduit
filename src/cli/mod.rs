@@ -1,34 +1,16 @@
-pub mod admin_client;
-pub mod args;
-pub mod config_path;
-pub mod fmt;
-pub mod init;
-pub mod probe;
-pub mod serve;
-pub mod status;
-pub mod upstream_urls;
-pub mod validate;
+//! Facade over `conduit_cli` (issue #147): `main()`'s CLI subcommand dispatch moved into `crates/conduit-cli`.
+//! Every item is re-exported here at its original path, so no call site changed — `src/main.rs` and
+//! `tests/cli.rs` still reach `conduit::cli::args::Cli`/`conduit::cli::dispatch::dispatch_command`/etc.
 
-/// `conduit::cli::*` is binary-support API for the `conduit` executable
-/// (`src/main.rs`) — not general-purpose library API. Its functions call
-/// `std::process::exit` on fatal errors and are not meant to be used from
-/// other applications embedding this crate.
-///
-/// A CLI subcommand that can be executed.
-///
-/// ## Adding a new command
-///
-/// 1. Add a variant to `Command` in `cli/args.rs`.
-/// 2. Put the command's body in `src/cli/<command>.rs` (e.g. `cli/serve.rs`)
-///    as a `pub fn run(...)`, and keep a struct in `main.rs` that holds the
-///    pre-extracted arguments for that command.
-/// 3. `impl CliCommand for YourCmd { fn execute(self) { <module>::run(...) } }`
-///    — the struct's `execute()` should stay a one-line delegating call.
-/// 4. Add one arm to `dispatch_command()` in `main.rs`.
-///
-/// No other changes to `main()` are required.
-pub trait CliCommand {
-    /// Run the command.  Implementations may call `std::process::exit` on
-    /// fatal errors (consistent with the binary entry-point convention).
-    fn execute(self);
-}
+pub use conduit_cli::{
+    admin_client, args, config_path, dispatch, fmt, init, probe, serve, status, upstream_urls,
+    validate, CliCommand,
+};
+
+// The `Cli.kubernetes_namespace` field and `dispatch_command`'s Kubernetes-mode branch (`args.rs`/`dispatch.rs`)
+// need this crate's own `kubernetes` feature; a build where it drifts from the root's would compile fine and
+// either lose `--kubernetes-namespace` silently or expose a flag that panics reaching for missing code.
+const _: () = assert!(
+    conduit_cli::features::KUBERNETES == cfg!(feature = "kubernetes"),
+    "`lopatnov-conduit-cli`'s `kubernetes` feature and the root crate's `kubernetes` feature must be enabled together"
+);

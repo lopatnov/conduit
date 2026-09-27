@@ -144,9 +144,9 @@
 20a. **Feature warnings** — `config::validate::feature_warnings()`. WASM (без `--features wasm`) + OTLP (без `--features otlp`) → `tracing::warn!` при старте и hot-reload. `/reload` response включает поле `warnings: [...]`.
 21. **Handler Registry** — трейт `LocalHandlerImpl` в `src/handler/mod.rs`. 7 handler structs реализованы. `dispatch_local` → `build_handler()` + `handle()`.
 22. **Routing Strategy** — трейт `LoadBalancingStrategy` в `src/proxy/strategy.rs`. Новая стратегия = новый struct + `from_config()` arm. `router.rs` не трогать.
-23. **CLI Commands** — трейт `CliCommand` в `src/cli/mod.rs`. Новая команда = struct + arm в `dispatch_command()`. `main()` не трогать.
+23. **CLI Commands** — трейт `CliCommand` в `crates/conduit-cli/src/lib.rs` (с #147; `src/cli/mod.rs` в корне — фасад). Новая команда = struct + arm в `dispatch_command()` (`crates/conduit-cli/src/dispatch.rs`, вынесен из `main.rs` тем же #147). `main()` не трогать.
 24. **YAML конфиг** — `serde_yaml`, `from_yaml()` в `parse.rs`, автопоиск `conduit.yaml/yml`.
-25. **Provider pattern** — `Provider` trait в `src/config/provider.rs`. `FileProvider` (one-shot + auto-reload). `KubernetesProvider` (feature = "kubernetes") в `src/config/kubernetes.rs`.
+25. **Provider pattern** — `Provider` trait в `crates/conduit-server/src/config/provider.rs` (с #147; `src/config/provider.rs` в корне — фасад). `FileProvider` (one-shot + auto-reload). `KubernetesProvider` (feature = "kubernetes") в `crates/conduit-server/src/config/kubernetes.rs` (тот же #147; `src/config/kubernetes.rs` — фасад).
 26. **WASM middleware** — `type: "wasm"` в middleware array, feature = "wasm". Wasmtime, 17 host-функций
     в request-фазе (+7 в response-фазе, см. пункт бэклога "WASM `on_response()` hook" — 4 из них те же
     самые имена, переиспользованные в обоих линкерах (`conduit_set_response_header`,

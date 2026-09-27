@@ -1,0 +1,114 @@
+[package]
+name        = "lopatnov-conduit-server"
+version.workspace    = true
+edition.workspace    = true
+description = "Server bootstrap, Admin API supervisor, config validation and providers for conduit's feature-driven workspace (issue #114/#147)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_server"
+path = "src/lib.rs"
+
+[dependencies]
+# `AppState`/`ConduitProxy`/`ConduitMetrics`, the guard chain and `AppState.config` (Layer 3).
+lopatnov-conduit-runtime = { workspace = true }
+# The Admin API's axum server, bearer-token auth and eleven of its endpoints — this crate keeps `POST /reload` and the
+# background supervisor (`AdminApiService`), which needs `serve`/`AdminError`/`AdminResult`/`validate_cert_key_pem`.
+lopatnov-conduit-admin   = { workspace = true }
+# The config schema types (`AppConfig`, `SiteConfig`, ...) and the parser (`load_config`/`from_str`).
+lopatnov-conduit-config  = { workspace = true }
+lopatnov-conduit-config-core = { workspace = true }
+
+# --- Config validation (`config/validate/{site,warnings,cross_site}.rs`) ---
+# `validate_site`/`feature_warnings` call every feature crate's own `validate::validate_x`/`warnings::feature_warning`
+# UNCONDITIONALLY (config validation and feature-off warnings must work regardless of which Cargo features this
+# build enables — the same "config-must-stay-parseable-everywhere" reasoning the root crate used to have for all
+# of these). So, unlike the root's post-#147 Cargo.toml, none of these fourteen can be `optional = true` here —
+# `#[cfg(feature = "x")]` only gates the REAL implementation inside each of these crates, exactly as it did when
+# `config::validate` lived in the root.
+lopatnov-conduit-acme            = { workspace = true }
+lopatnov-conduit-auth-consumers  = { workspace = true }
+lopatnov-conduit-auth-forward    = { workspace = true }
+lopatnov-conduit-auth-jwt        = { workspace = true }
+lopatnov-conduit-cache           = { workspace = true }
+lopatnov-conduit-compression     = { workspace = true }
+lopatnov-conduit-cors            = { workspace = true }
+lopatnov-conduit-faults          = { workspace = true }
+lopatnov-conduit-hotreload       = { workspace = true }
+lopatnov-conduit-ipfilter        = { workspace = true }
+lopatnov-conduit-limits          = { workspace = true }
+lopatnov-conduit-metrics         = { workspace = true }
+lopatnov-conduit-middleware      = { workspace = true }
+lopatnov-conduit-otlp            = { workspace = true }
+lopatnov-conduit-proxy-http      = { workspace = true }
+lopatnov-conduit-ratelimit       = { workspace = true }
+lopatnov-conduit-redirects       = { workspace = true }
+lopatnov-conduit-static          = { workspace = true }
+lopatnov-conduit-tcp             = { workspace = true }
+lopatnov-conduit-upload          = { workspace = true }
+
+# The Kubernetes provider (`KubernetesProvider`, CRD types) — the whole `config::kubernetes` module (and this
+# dependency) is gated behind this crate's own `kubernetes` feature; nothing else references it.
+lopatnov-conduit-k8s         = { workspace = true, optional = true }
+
+pingora-core  = { workspace = true }
+pingora-proxy = { workspace = true }
+pingora-http  = { workspace = true }
+
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+anyhow      = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+async-trait = { workspace = true }
+axum        = { workspace = true }
+dashmap     = { workspace = true }
+bytes       = { workspace = true }
+rustls      = { workspace = true }
+x509-parser = { workspace = true }
+# The proxy-loop warning's loopback-URL parsing (`config/validate/proxy_loop.rs`) — gated behind this crate's own
+# `proxy` feature, matching the root crate's pre-#147 treatment exactly (only that one call site needs it).
+url         = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+rcgen    = { workspace = true }
+time     = { workspace = true }
+indexmap = { workspace = true }
+
+[features]
+# Reverse proxying: active health checks + connection warmup spawned by the Admin API supervisor at startup/reload,
+# plus the proxy-loop warning's loopback-URL parsing (`dep:url`). Mirrors the root crate's `proxy` feature — see
+# `src/lib.rs`'s compile-time asserts on the root side. Forwarding `lopatnov-conduit-runtime/proxy` covers
+# `target_urls`/`spawn_health_checks`/`spawn_connection_warmup` transitively (that crate's own `proxy` feature
+# already forwards into `lopatnov-conduit-proxy-http`/`lopatnov-conduit-upstream`, and Cargo unifies features per
+# package) — but `lopatnov-conduit-proxy-http`'s own `proxy` feature (gating `validate_proxy`'s real body vs. its
+# feature-off warning inside that crate) still needs forwarding directly, since this crate depends on it too.
+proxy = ["lopatnov-conduit-proxy-http/proxy", "lopatnov-conduit-runtime/proxy", "dep:url"]
+# Redis-backed rate limiting: connects the Redis rate limiter at startup/reload if any level configures a
+# `redis://`/`rediss://` store.
+redis = ["lopatnov-conduit-ratelimit/redis", "lopatnov-conduit-runtime/redis"]
+# Consumer model — no forwarding of its own beyond `lopatnov-conduit-auth-consumers` (mandatory above, like the
+# root's pre-#147 Cargo.toml); this crate's only OWN use of the feature name is a test-gated code path
+# (`find_redis_rate_limit_store`'s consumer-level scan test), matching the pre-extraction gate exactly.
+consumers = []
+# Response caching — connects every configured Redis-backed proxy cache at startup/reload (issue #330), and turns
+# on `crates/conduit-admin`'s `DELETE /cache/purge` handler (its own `cache` feature, asserted against this one
+# in `src/admin/api.rs`, matching the pre-move root-crate assert exactly).
+cache = ["lopatnov-conduit-cache/cache", "lopatnov-conduit-runtime/cache", "lopatnov-conduit-admin/cache"]
+# Auto-TLS via ACME/Let's Encrypt.
+acme = ["lopatnov-conduit-acme/acme", "lopatnov-conduit-runtime/acme"]
+# Raw TCP passthrough proxy services.
+tcp = ["lopatnov-conduit-tcp/tcp"]
+# File upload handler background service.
+upload = ["lopatnov-conduit-upload/upload", "lopatnov-conduit-runtime/upload"]
+# Browser hot-reload file watcher, spawned by the Admin API supervisor. The watcher itself is reached through
+# `conduit_runtime::handler::hot_reload` (that crate's own re-export of `lopatnov-conduit-hotreload`) — no direct
+# edge needed for that part — but this crate's own (mandatory) dependency still needs its real feature-off-warning
+# text vs. real behavior split forwarded.
+hotreload = ["lopatnov-conduit-hotreload/hotreload", "lopatnov-conduit-runtime/hotreload"]
+# Tokio event-loop lag gauge, spawned by the Admin API supervisor.
+tokio-metrics = ["lopatnov-conduit-runtime/tokio-metrics"]
+# Kubernetes CRD provider (`ConduitSite`).
+kubernetes = ["dep:lopatnov-conduit-k8s"]

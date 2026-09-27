@@ -75,14 +75,15 @@ jobs:
           key: features-all
         continue-on-error: true
 
-      # The root, the request pipeline (`conduit-runtime`, #145) and the Admin API (`conduit-admin`, #146) are named
-      # together: a package named only by the root's `--features` would not run its own tests, and the admin crate's `cache`
-      # tests (the purge endpoint) exist only when the root's `cache` feature reaches it.
+      # The root, the request pipeline (`conduit-runtime`, #145), the Admin API (`conduit-admin`, #146) and the server
+      # bootstrap/CLI dispatch (`conduit-server`/`conduit-cli`, #147) are named together: a package named only by the
+      # root's `--features` would not run its own tests, and the admin crate's `cache` tests (the purge endpoint)
+      # exist only when the root's `cache` feature reaches it.
       - name: clippy (all features)
-        run: cargo clippy -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin --features full --tests -- -D warnings
+        run: cargo clippy -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin -p lopatnov-conduit-server -p lopatnov-conduit-cli --features full --tests -- -D warnings
 
       - name: test (all features)
-        run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin --features full
+        run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin -p lopatnov-conduit-server -p lopatnov-conduit-cli --features full
 
   # ── Build + test with the `standard` feature bundle ──────────────────────────
   # Matches the feature set shipped in release.yml's un-suffixed binaries and
@@ -107,10 +108,10 @@ jobs:
         continue-on-error: true  # transient cache failures must not abort the build
 
       - name: clippy (standard features)
-        run: cargo clippy -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin --features standard --tests -- -D warnings
+        run: cargo clippy -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin -p lopatnov-conduit-server -p lopatnov-conduit-cli --features standard --tests -- -D warnings
 
       - name: test (standard features)
-        run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin --features standard
+        run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin -p lopatnov-conduit-server -p lopatnov-conduit-cli --features standard
 
   # ── Footprint report: stripped binary size + dep count per feature profile ──
   # Makes the migration's value measurable and catches silent footprint

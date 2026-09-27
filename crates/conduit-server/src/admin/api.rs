@@ -16,11 +16,12 @@ use crate::config::validate;
 use crate::proxy::health;
 use crate::proxy::service::AppState;
 
-// The admin crate's `cache` feature turns the purge endpoint on; a build where it drifts from the root's feature would
-// answer 501 in a cache build (or `purged: false` against a store nothing writes to). Compile-time, like the runtime's.
+// The admin crate's `cache` feature turns the purge endpoint on; a build where it drifts from this crate's own
+// feature would answer 501 in a cache build (or `purged: false` against a store nothing writes to). Compile-time,
+// like the root's own assert against this crate's `cache` feature (`src/config/validate/mod.rs`).
 const _: () = assert!(
     conduit_admin::features::CACHE == cfg!(feature = "cache"),
-    "`lopatnov-conduit-admin`'s `cache` feature and the root crate's `cache` feature must be enabled together"
+    "`lopatnov-conduit-admin`'s `cache` feature and this crate's `cache` feature must be enabled together"
 );
 
 /// Resolve `(healthCheck config, target URLs)` pairs for every `proxy: {}`

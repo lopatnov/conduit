@@ -319,6 +319,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `conduit_admin::api::…` instead of `conduit::admin::api`, so `RUST_LOG=conduit::admin=debug` no
   longer matches them. The crate has one feature, `cache` (the purge endpoint), enabled by the root's
   `cache`.
+- **The server bootstrap, the Admin API's background supervisor and `POST /reload`, config
+  validation, and the CLI's subcommand dispatch moved into two new workspace crates,
+  `lopatnov-conduit-server` and `lopatnov-conduit-cli`** (issue #147): `run_server()` (Pingora
+  bootstrap, TLS/plain listener wiring, ACME procurement, Redis rate-limiter connect, TCP/redirect
+  services), `AdminApiService` (the rate-limit cleanup, health probe/warmup, Redis cache connect and
+  hot-reload watcher background tasks, plus `POST /reload`), `validate()`/`feature_warnings()` and
+  the file/Kubernetes config providers on one side; `main()`'s CLI subcommand dispatch and every
+  `conduit <command>` implementation on the other. No config shape, route, or CLI flag changed.
+  One operator-visible effect: the
+  `tracing` lines from the moved code carry the targets `conduit_server::…` instead of
+  `conduit::server::…`/`conduit::admin::api`/`conduit::config::…`, so a filter such as
+  `RUST_LOG=conduit::server=debug` no longer matches them (the default `warn` level is unaffected).
+  `clap`/`clap_complete`/`clap_mangen`/`dialoguer` are no longer root-crate dependencies (`conduit-
+  cli` owns them now); `indicatif`, `thiserror` and the root's direct `pingora-cache` edge were
+  unused and are dropped from the workspace entirely. Ten root features (`proxy`, `redis`,
+  `consumers`, `cache`, `acme`, `tcp`, `upload`, `hotreload`, `tokio-metrics`, `kubernetes`) now
+  also forward into `conduit-server`, and `kubernetes` into `conduit-cli` too — every existing
+  feature name and bundle (`standard`/`gateway`/`full`/etc.) is unchanged.
 - **The config schema (`AppConfig`, `SiteConfig` and the types they contain) and
   the config-file parsing moved into a new workspace crate,
   `lopatnov-conduit-config`** (issue #222). No config shape or behaviour change:

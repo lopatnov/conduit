@@ -5,77 +5,13 @@ use conduit_config_core::scheme::is_redis_url;
 
 use crate::config::schema::{AppConfig, SiteConfig};
 
-// The feature-off texts live in the crate that owns each feature (#316); each crate reports through its `COMPILED` whether *its*
-// feature is on in this build. The root's feature of the same name must agree: if a crate's feature were on while the root's is
-// off (or the reverse), a warning would silently vanish or appear where it should not. Turn any such drift into a build error.
-const _: () = assert!(
-    conduit_otlp::warnings::COMPILED == cfg!(feature = "otlp"),
-    "`conduit-otlp`'s `otlp` feature and the root crate's `otlp` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_middleware::warnings::WASM_COMPILED == cfg!(feature = "wasm"),
-    "`conduit-middleware`'s `wasm` feature and the root crate's `wasm` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_middleware::warnings::RHAI_COMPILED == cfg!(feature = "rhai"),
-    "`conduit-middleware`'s `rhai` feature and the root crate's `rhai` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_proxy_http::warnings::COMPILED == cfg!(feature = "proxy"),
-    "`conduit-proxy-http`'s `proxy` feature and the root crate's `proxy` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_auth_jwt::warnings::COMPILED == cfg!(feature = "jwt"),
-    "`conduit-auth-jwt`'s `jwt` feature and the root crate's `jwt` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_auth_forward::warnings::COMPILED == cfg!(feature = "forward-auth"),
-    "`conduit-auth-forward`'s `forward-auth` feature and the root crate's `forward-auth` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_acme::warnings::COMPILED == cfg!(feature = "acme"),
-    "`conduit-acme`'s `acme` feature and the root crate's `acme` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_tcp::warnings::COMPILED == cfg!(feature = "tcp"),
-    "`conduit-tcp`'s `tcp` feature and the root crate's `tcp` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_ratelimit::warnings::COMPILED == cfg!(feature = "redis"),
-    "`conduit-ratelimit`'s `redis` feature and the root crate's `redis` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_cache::warnings::COMPILED == cfg!(feature = "cache"),
-    "`conduit-cache`'s `cache` feature and the root crate's `cache` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_upload::warnings::COMPILED == cfg!(feature = "upload"),
-    "`conduit-upload`'s `upload` feature and the root crate's `upload` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_faults::warnings::COMPILED == cfg!(feature = "fault-injection"),
-    "`conduit-faults`'s `fault-injection` feature and the root crate's `fault-injection` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_auth_consumers::warnings::COMPILED == cfg!(feature = "consumers"),
-    "`conduit-auth-consumers`'s `consumers` feature and the root crate's `consumers` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_auth_consumers::warnings::JWT_COMPILED == cfg!(feature = "jwt"),
-    "`conduit-auth-consumers`'s `jwt` feature and the root crate's `jwt` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_compression::warnings::COMPILED == cfg!(feature = "compression"),
-    "`conduit-compression`'s `compression` feature and the root crate's `compression` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_static::warnings::COMPILED == cfg!(feature = "static"),
-    "`conduit-static`'s `static` feature and the root crate's `static` feature must be enabled together"
-);
-const _: () = assert!(
-    conduit_hotreload::warnings::COMPILED == cfg!(feature = "hotreload"),
-    "`conduit-hotreload`'s `hotreload` feature and the root crate's `hotreload` feature must be enabled together"
-);
+// The sixteen `conduit_x::warnings::COMPILED == cfg!(feature = "x")` compile-time asserts that used to sit here
+// (checking each feature-owning crate's `COMPILED` const against this crate's own `cfg!()`) now live in the ROOT
+// crate's `src/config/validate/mod.rs` instead, unchanged — see this crate's own top-level doc comment
+// (`crates/conduit-server/src/lib.rs`) for why: the functions below never read their own crate's `cfg!()`, they
+// only call into each leaf crate's `warnings::feature_warning()`/`COMPILED`, so moving this file doesn't change
+// what the asserts need to check — only where `cfg!()` needs to point, which is the root's own Cargo features,
+// not this crate's (this crate has no reason to depend on `otlp`/`wasm`/`rhai`/... otherwise).
 
 /// Maps a top-level `SiteConfig` JSON/YAML key to the Cargo feature that
 /// owns it. Used by `check_extra_key_warnings` below to turn a key that
@@ -149,7 +85,11 @@ pub(super) fn check_extra_key_warnings(config: &AppConfig, warnings: &mut Vec<St
 ///
 /// Escaping (not stripping) preserves the operator's ability to see what the
 /// offending value actually contained, just rendered as a single log line.
-pub(super) fn sanitize_for_log(s: &str) -> String {
+///
+/// `pub`, not `pub(super)`: the root crate's `src/config/validate/tests.rs` (which stays in the root — see this
+/// crate's own top-level doc comment) needs it too, re-exported at `crate::config::validate::sanitize_for_log`
+/// (`mod.rs`).
+pub fn sanitize_for_log(s: &str) -> String {
     s.chars()
         .flat_map(|c| {
             if c.is_control() {
