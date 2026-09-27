@@ -81,7 +81,7 @@ impl ConduitProxy {
     fn record_retry_failure_health(
         &self,
         req_ctx: &RequestCtx,
-        config: &crate::config::schema::AppConfig,
+        config: &conduit_config::schema::AppConfig,
         status: u16,
         connection_established: bool,
     ) {
@@ -142,7 +142,7 @@ impl ConduitProxy {
     pub(crate) fn record_failed_upstream_for_retry(
         &self,
         ctx: &mut Option<RequestCtx>,
-        config: &crate::config::schema::AppConfig,
+        config: &conduit_config::schema::AppConfig,
         status: u16,
     ) {
         let Some(req_ctx_mut) = ctx.as_mut() else {
@@ -205,7 +205,7 @@ impl ConduitProxy {
         session: &Session,
         req_ctx: &mut RequestCtx,
         e: &mut Box<pingora_core::Error>,
-        config: &crate::config::schema::AppConfig,
+        config: &conduit_config::schema::AppConfig,
     ) {
         use pingora_core::ErrorType::*;
         let is_conn_err = matches!(
@@ -279,7 +279,7 @@ impl ConduitProxy {
         session: &Session,
         req_ctx: &mut RequestCtx,
         e: &mut Box<pingora_core::Error>,
-        config: &crate::config::schema::AppConfig,
+        config: &conduit_config::schema::AppConfig,
     ) {
         use pingora_core::ErrorType::*;
         let is_timeout = matches!(e.etype(), ReadTimedout | WriteTimedout);
@@ -622,16 +622,16 @@ pub(super) fn select_retry_target(req_ctx: &mut RequestCtx, health: &UpstreamReg
 mod tests {
     use super::*;
 
-    use crate::config::schema::AppConfig;
     use crate::proxy::ctx::{LocalHandler, ProxyReqState, UpstreamTarget};
     use crate::proxy::service::AppState;
+    use conduit_config::schema::AppConfig;
 
     // `make_proxy`/`make_ctx` are duplicated across this file, `handlers.rs`,
     // `peer.rs`, and `transform.rs`'s test modules -- each needs one, and
     // none of these sibling modules depend on each other. `peer.rs` holds
     // the "canonical" original location for `make_ctx`.
     fn make_proxy() -> ConduitProxy {
-        let config = crate::config::schema::AppConfig::default();
+        let config = conduit_config::schema::AppConfig::default();
         let state = AppState::new(config, std::path::PathBuf::from("."), None);
         ConduitProxy {
             state: std::sync::Arc::new(state),
@@ -1061,8 +1061,8 @@ mod tests {
 
         // Build an AppConfig with outlier detection enabled on site 0.
         let mut config = AppConfig::default();
-        let site = crate::config::schema::SiteConfig {
-            outlier_detection: Some(crate::config::schema::OutlierDetectionConfig {
+        let site = conduit_config::schema::SiteConfig {
+            outlier_detection: Some(conduit_config::schema::OutlierDetectionConfig {
                 consecutive_5xx: Some(1),
                 base_ejection_time_secs: Some(5),
                 max_ejection_time_secs: Some(30),

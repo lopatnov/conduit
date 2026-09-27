@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::config::schema::ResponseTimeConfig;
+use conduit_config::schema::ResponseTimeConfig;
 
 /// Returns `true` when `X-Response-Time` should be added for this site.
 pub fn is_enabled(cfg: Option<&ResponseTimeConfig>) -> bool {
@@ -31,7 +31,7 @@ pub fn format_elapsed(elapsed: Duration, digits: u8) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{ResponseTimeConfig, ResponseTimeOptions};
+    use conduit_config::schema::{ResponseTimeConfig, ResponseTimeOptions};
 
     #[test]
     fn disabled_when_none() {

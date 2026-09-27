@@ -27,9 +27,9 @@
 use pingora_core::Result;
 use pingora_http::ResponseHeader;
 
-use crate::config::schema::{AppConfig, HeaderTransformConfig, ResponseTimeConfig};
 use crate::filter::response_time;
 use crate::proxy::ctx::RequestCtx;
+use conduit_config::schema::{AppConfig, HeaderTransformConfig, ResponseTimeConfig};
 
 // ── Outcome + Trait (Layer-0 vocabulary, #114/#120/#126) ────────────────────────
 
@@ -705,7 +705,7 @@ mod tests {
         resp.insert_header("x-remove-me", "old").unwrap();
         let ctx = dummy_ctx();
         ResponseTransformFilter {
-            transform: crate::config::schema::HeaderTransformConfig {
+            transform: conduit_config::schema::HeaderTransformConfig {
                 set_headers: Some(
                     [("x-added".to_owned(), "yes".to_owned())]
                         .iter()
@@ -884,7 +884,7 @@ mod tests {
     fn response_time_filter_adds_header_when_enabled() {
         use std::time::Instant;
         let filter = ResponseTimeFilter {
-            rt_cfg: Some(crate::config::schema::ResponseTimeConfig::Enabled(true)),
+            rt_cfg: Some(conduit_config::schema::ResponseTimeConfig::Enabled(true)),
             start_time: Instant::now(),
         };
         let mut resp = make_resp(200);
@@ -907,7 +907,7 @@ mod tests {
     fn response_time_filter_skips_header_when_disabled() {
         use std::time::Instant;
         let filter = ResponseTimeFilter {
-            rt_cfg: Some(crate::config::schema::ResponseTimeConfig::Enabled(false)),
+            rt_cfg: Some(conduit_config::schema::ResponseTimeConfig::Enabled(false)),
             start_time: Instant::now(),
         };
         let mut resp = make_resp(200);
@@ -937,7 +937,7 @@ mod tests {
 
     #[test]
     fn response_time_filter_with_decimal_digits() {
-        use crate::config::schema::{ResponseTimeConfig, ResponseTimeOptions};
+        use conduit_config::schema::{ResponseTimeConfig, ResponseTimeOptions};
         use std::time::Instant;
         let filter = ResponseTimeFilter {
             rt_cfg: Some(ResponseTimeConfig::Options(ResponseTimeOptions {
@@ -1194,7 +1194,7 @@ mod tests {
 
     #[test]
     fn build_basic_chain_works_without_site() {
-        use crate::config::schema::AppConfig;
+        use conduit_config::schema::AppConfig;
         // build() with no matching site (site_idx=999) must not panic.
         let ctx = dummy_ctx();
         let config = AppConfig::default();
@@ -1206,8 +1206,8 @@ mod tests {
 
     #[test]
     fn build_chain_with_mask_errors_enabled() {
-        use crate::config::schema::AppConfig;
-        use crate::config::schema::SiteConfig;
+        use conduit_config::schema::AppConfig;
+        use conduit_config::schema::SiteConfig;
         let mut config = AppConfig::default();
         config.sites.push(SiteConfig {
             mask_errors: Some(true),
@@ -1232,7 +1232,7 @@ mod tests {
     /// unconditional call (a thread hand-off per proxied response) fails this test.
     #[tokio::test]
     async fn a_chain_without_middleware_does_not_use_block_in_place() {
-        use crate::config::schema::{AppConfig, HeaderTransformConfig, SiteConfig};
+        use conduit_config::schema::{AppConfig, HeaderTransformConfig, SiteConfig};
         let mut config = AppConfig::default();
         // Every optional phase of `build()` except the middleware one, so a new phase added without its
         // `may_block() -> false` shows up here as a chain that blocks.
@@ -1281,7 +1281,7 @@ mod tests {
     /// `block_in_place` (which needs the multi-thread runtime Pingora provides).
     #[tokio::test(flavor = "multi_thread")]
     async fn a_chain_with_middleware_runs_through_block_in_place() {
-        use crate::config::schema::{AppConfig, SiteConfig};
+        use conduit_config::schema::{AppConfig, SiteConfig};
         use conduit_middleware::config::MiddlewareEntry;
         let mut config = AppConfig::default();
         config.sites.push(SiteConfig {
@@ -1309,7 +1309,7 @@ mod tests {
     /// response a `block_in_place` either (current-thread runtime: an unwanted call panics).
     #[tokio::test]
     async fn a_chain_with_only_request_phase_middleware_does_not_use_block_in_place() {
-        use crate::config::schema::{AppConfig, SiteConfig};
+        use conduit_config::schema::{AppConfig, SiteConfig};
         use conduit_middleware::config::MiddlewareEntry;
         let mut config = AppConfig::default();
         config.sites.push(SiteConfig {
@@ -1338,7 +1338,7 @@ mod tests {
 
     #[test]
     fn transform_filter_no_op_when_empty_config() {
-        use crate::config::schema::HeaderTransformConfig;
+        use conduit_config::schema::HeaderTransformConfig;
         let filter = ResponseTransformFilter {
             transform: HeaderTransformConfig {
                 set_headers: None,
@@ -1355,7 +1355,7 @@ mod tests {
 
     #[test]
     fn transform_filter_only_remove() {
-        use crate::config::schema::HeaderTransformConfig;
+        use conduit_config::schema::HeaderTransformConfig;
         let filter = ResponseTransformFilter {
             transform: HeaderTransformConfig {
                 set_headers: None,

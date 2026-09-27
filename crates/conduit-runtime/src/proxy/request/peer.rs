@@ -25,8 +25,6 @@ use std::time::Instant;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
 
-#[cfg(any(feature = "proxy", feature = "upload"))]
-use crate::config::schema::{ConnectionPoolConfig, ProxyTimeout};
 use crate::proxy::ctx::RequestCtx;
 #[cfg(any(feature = "proxy", feature = "upload"))]
 use crate::proxy::ctx::UpstreamTarget;
@@ -39,6 +37,8 @@ use crate::proxy::request::retry::{apply_backoff, select_retry_target};
 use crate::proxy::service::ConduitProxy;
 #[cfg(feature = "proxy")]
 use crate::proxy::upstream;
+#[cfg(any(feature = "proxy", feature = "upload"))]
+use conduit_config::schema::{ConnectionPoolConfig, ProxyTimeout};
 
 /// Body of [`pingora_proxy::ProxyHttp::upstream_peer`] for a build with
 /// neither `proxy` nor `upload`: there is no upstream to select, so answer
@@ -304,7 +304,7 @@ mod stub_tests {
     #[tokio::test]
     async fn upstream_peer_without_proxy_or_upload_answers_404() {
         let state = AppState::new(
-            crate::config::schema::AppConfig::default(),
+            conduit_config::schema::AppConfig::default(),
             std::path::PathBuf::from("."),
             None,
         );
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn apply_peer_options_sets_timeouts() {
-        use crate::config::schema::ProxyTimeout;
+        use conduit_config::schema::ProxyTimeout;
         // Use IP address to avoid DNS lookup in tests
         let addr: std::net::SocketAddr = "127.0.0.1:4000".parse().unwrap();
         let mut peer = HttpPeer::new(addr, false, String::new());
@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn apply_peer_options_sets_idle_timeout() {
-        use crate::config::schema::ConnectionPoolConfig;
+        use conduit_config::schema::ConnectionPoolConfig;
         let addr: std::net::SocketAddr = "127.0.0.1:4000".parse().unwrap();
         let mut peer = HttpPeer::new(addr, false, String::new());
         let pool = ConnectionPoolConfig {
@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn apply_peer_options_first_byte_ms_overrides_read_timeout() {
-        use crate::config::schema::ProxyTimeout;
+        use conduit_config::schema::ProxyTimeout;
         let addr: std::net::SocketAddr = "127.0.0.1:4000".parse().unwrap();
         let mut peer = HttpPeer::new(addr, false, String::new());
         let timeout = ProxyTimeout {

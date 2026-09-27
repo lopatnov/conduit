@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::proxy::service::AppState;
+use conduit_runtime::proxy::service::AppState;
 
 pub(super) async fn status_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     let config = state.config.load();
@@ -17,13 +17,13 @@ pub(super) async fn status_handler(State(state): State<Arc<AppState>>) -> Json<V
         .iter()
         .filter_map(|s| s.proxy.as_ref())
         .map(|p| match p {
-            crate::config::schema::ProxyConfig::Single(_) => 1,
-            crate::config::schema::ProxyConfig::Routes(routes) => routes
+            conduit_config::schema::ProxyConfig::Single(_) => 1,
+            conduit_config::schema::ProxyConfig::Routes(routes) => routes
                 .values()
                 .map(|target| match target {
-                    crate::config::schema::ProxyRouteTarget::Url(_) => 1,
-                    crate::config::schema::ProxyRouteTarget::RoundRobin(v) => v.len(),
-                    crate::config::schema::ProxyRouteTarget::Full(cfg) => cfg.targets.len(),
+                    conduit_config::schema::ProxyRouteTarget::Url(_) => 1,
+                    conduit_config::schema::ProxyRouteTarget::RoundRobin(v) => v.len(),
+                    conduit_config::schema::ProxyRouteTarget::Full(cfg) => cfg.targets.len(),
                 })
                 .sum(),
         })

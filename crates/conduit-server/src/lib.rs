@@ -53,30 +53,3 @@ pub mod features {
     pub const TOKIO_METRICS: bool = cfg!(feature = "tokio-metrics");
     pub const KUBERNETES: bool = cfg!(feature = "kubernetes");
 }
-
-// Aliases for the paths the moved files used in the root crate — same device as `conduit-runtime`/`conduit-admin`.
-mod filter {
-    #[cfg(feature = "redis")]
-    pub(crate) use conduit_ratelimit::redis as rate_limit_redis;
-    pub(crate) use conduit_runtime::filter::rate_limit;
-}
-
-mod proxy {
-    #[cfg(all(feature = "cache", feature = "redis"))]
-    pub(crate) use conduit_runtime::proxy::cache_redis;
-    pub(crate) use conduit_runtime::proxy::service;
-    #[cfg(feature = "proxy")]
-    pub(crate) use conduit_runtime::proxy::{health, upstream};
-    #[cfg(feature = "tcp")]
-    pub(crate) use conduit_tcp::proxy as tcp;
-}
-
-mod handler {
-    #[cfg(feature = "hotreload")]
-    pub(crate) use conduit_runtime::handler::hot_reload;
-}
-
-#[cfg(feature = "upload")]
-mod upload {
-    pub(crate) use conduit_runtime::upload::UploadService;
-}

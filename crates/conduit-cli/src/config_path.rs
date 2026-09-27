@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process;
 
-use crate::config::schema::AppConfig;
+use conduit_config::schema::AppConfig;
 
 /// Resolve the config path, trying YAML alternatives when the default JSON
 /// path does not exist.
@@ -29,7 +29,7 @@ pub fn resolve_config_path(config_arg: &str) -> String {
 /// failure. Shared by every command whose first step is loading a config
 /// file, so the missing-file hint (below) stays consistent across all of them.
 pub(crate) fn load_config_or_exit(path: &Path) -> AppConfig {
-    match crate::config::load_config(path) {
+    match conduit_config::parse::load_config(path) {
         Ok(cfg) => cfg,
         Err(e) => {
             eprintln!("error loading config: {e}");

@@ -13,9 +13,9 @@ use crate::admin::api::AdminApiService;
 #[allow(unused_imports)]
 use crate::config::defaults::DEFAULT_ADMIN_BIND;
 use crate::config::schema::AppConfig;
-use crate::proxy::service::{AppState, ConduitProxy};
+use conduit_runtime::proxy::service::{AppState, ConduitProxy};
 #[cfg(feature = "upload")]
-use crate::upload::UploadService;
+use conduit_runtime::upload::UploadService;
 
 #[cfg(feature = "acme")]
 use super::acme_certs::obtain_acme_certs;
@@ -221,7 +221,7 @@ fn register_tcp_proxy_services(config: &AppConfig, server: &mut Server) {
             continue;
         }
         let port = site.port.unwrap_or(80);
-        let proxy = crate::proxy::tcp::TcpProxy::new(tcp_cfg);
+        let proxy = conduit_tcp::proxy::TcpProxy::new(tcp_cfg);
         let mut tcp_svc = ListeningService::new(format!("Conduit TCP Proxy :{port}"), proxy);
         tcp_svc.add_tcp(&format!("0.0.0.0:{port}"));
         server.add_service(tcp_svc);

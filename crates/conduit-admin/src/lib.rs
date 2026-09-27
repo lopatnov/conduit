@@ -21,20 +21,3 @@ pub mod api;
 pub mod features {
     pub const CACHE: bool = cfg!(feature = "cache");
 }
-
-// Aliases for the paths the moved code used in the root crate, so the bodies stay byte-identical (same device as
-// `conduit-runtime`).
-mod config {
-    pub(crate) use conduit_config::schema;
-}
-
-#[cfg(test)]
-mod filter {
-    pub(crate) use conduit_runtime::filter::rate_limit;
-}
-
-mod proxy {
-    #[cfg(feature = "cache")]
-    pub(crate) use conduit_runtime::proxy::cache;
-    pub(crate) use conduit_runtime::proxy::{health, service};
-}

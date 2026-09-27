@@ -18,7 +18,7 @@
 //! full reasoning — confirmed via grep before this decision that none of
 //! the files that DID move into that crate ever called any function here.
 
-use crate::config::schema::{AppConfig, SiteConfig};
+use conduit_config::schema::{AppConfig, SiteConfig};
 
 /// Returns `Some(token)` when `path` matches the configured metrics endpoint.
 /// `token` is `None` when the endpoint has no auth token.
@@ -39,7 +39,7 @@ pub(crate) fn is_health_path(site: Option<&SiteConfig>, path: &str) -> bool {
     let default_path = "/__health__";
     if let Some(site) = site {
         if let Some(hc) = &site.health_check {
-            use crate::config::schema::HealthCheckConfig;
+            use conduit_config::schema::HealthCheckConfig;
             match hc {
                 HealthCheckConfig::Enabled(false) => return false,
                 HealthCheckConfig::Enabled(true) => return bare == default_path,
@@ -66,7 +66,7 @@ pub(crate) fn is_health_path(site: Option<&SiteConfig>, path: &str) -> bool {
 /// through to Pingora's proxy path with no real upstream to select).
 #[cfg(feature = "hotreload")]
 pub(crate) fn is_hot_reload_sse_path(site: Option<&SiteConfig>, path: &str) -> bool {
-    use crate::config::schema::HotReloadConfig;
+    use conduit_config::schema::HotReloadConfig;
     let Some(site) = site else { return false };
     let Some(hr) = &site.hot_reload else {
         return false;
@@ -90,7 +90,7 @@ pub(crate) fn is_hot_reload_sse_path(_site: Option<&SiteConfig>, _path: &str) ->
 /// `is_hot_reload_sse_path`'s doc comment.
 #[cfg(feature = "hotreload")]
 pub(crate) fn is_hot_reload_js_path(site: Option<&SiteConfig>, path: &str) -> bool {
-    use crate::config::schema::HotReloadConfig;
+    use conduit_config::schema::HotReloadConfig;
     let Some(site) = site else { return false };
     let Some(hr) = &site.hot_reload else {
         return false;
@@ -205,7 +205,7 @@ pub fn parse_rfc9218_priority(header: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{HealthCheckConfig, HealthCheckOptions, MetricsConfig};
+    use conduit_config::schema::{HealthCheckConfig, HealthCheckOptions, MetricsConfig};
 
     // ── is_health_path ────────────────────────────────────────────────────────
 
@@ -405,7 +405,7 @@ mod tests {
     #[cfg(feature = "hotreload")]
     fn hot_reload_sse_path_when_enabled() {
         let site = SiteConfig {
-            hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
+            hot_reload: Some(conduit_config::schema::HotReloadConfig::Enabled(true)),
             ..Default::default()
         };
         assert!(is_hot_reload_sse_path(Some(&site), "/__hot-reload__"));
@@ -420,7 +420,7 @@ mod tests {
     #[cfg(feature = "hotreload")]
     fn hot_reload_sse_path_when_disabled() {
         let site = SiteConfig {
-            hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(false)),
+            hot_reload: Some(conduit_config::schema::HotReloadConfig::Enabled(false)),
             ..Default::default()
         };
         assert!(!is_hot_reload_sse_path(Some(&site), "/__hot-reload__"));
@@ -436,7 +436,7 @@ mod tests {
     #[cfg(feature = "hotreload")]
     fn hot_reload_js_path_when_enabled() {
         let site = SiteConfig {
-            hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
+            hot_reload: Some(conduit_config::schema::HotReloadConfig::Enabled(true)),
             ..Default::default()
         };
         assert!(is_hot_reload_js_path(
@@ -450,7 +450,7 @@ mod tests {
     #[cfg(feature = "hotreload")]
     fn hot_reload_js_path_when_disabled() {
         let site = SiteConfig {
-            hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(false)),
+            hot_reload: Some(conduit_config::schema::HotReloadConfig::Enabled(false)),
             ..Default::default()
         };
         assert!(!is_hot_reload_js_path(
@@ -463,7 +463,7 @@ mod tests {
     #[cfg(feature = "hotreload")]
     fn hot_reload_js_path_with_query_string() {
         let site = SiteConfig {
-            hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
+            hot_reload: Some(conduit_config::schema::HotReloadConfig::Enabled(true)),
             ..Default::default()
         };
         // Query string should be stripped before comparison.
@@ -480,7 +480,7 @@ mod tests {
         // paths must never win routing precedence — no matter how the site
         // configures `hotReload`.
         let site = SiteConfig {
-            hot_reload: Some(crate::config::schema::HotReloadConfig::Enabled(true)),
+            hot_reload: Some(conduit_config::schema::HotReloadConfig::Enabled(true)),
             ..Default::default()
         };
         assert!(!is_hot_reload_sse_path(Some(&site), "/__hot-reload__"));

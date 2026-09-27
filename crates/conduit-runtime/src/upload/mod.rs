@@ -40,7 +40,7 @@ mod tests {
     use conduit_upload::UploadConfig;
 
     use super::*;
-    use crate::config::schema::{AppConfig, SiteConfig};
+    use conduit_config::schema::{AppConfig, SiteConfig};
 
     fn state_with_sites(sites: Vec<SiteConfig>) -> AppState {
         AppState::new(

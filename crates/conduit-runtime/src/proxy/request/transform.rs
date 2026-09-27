@@ -226,7 +226,7 @@ pub(super) fn apply_upstream_path_transforms(
 fn apply_proxy_path_transforms(
     upstream_request: &mut RequestHeader,
     strip_prefix: Option<&str>,
-    rewrite: Option<&[crate::config::schema::RewriteRule]>,
+    rewrite: Option<&[conduit_config::schema::RewriteRule]>,
 ) -> Result<()> {
     let original = upstream_request.uri.path();
     let path = apply_path_strip(original, strip_prefix);
@@ -245,7 +245,7 @@ fn apply_proxy_path_transforms(
 fn apply_proxy_path_transforms(
     _upstream_request: &mut RequestHeader,
     _strip_prefix: Option<&str>,
-    _rewrite: Option<&[crate::config::schema::RewriteRule]>,
+    _rewrite: Option<&[conduit_config::schema::RewriteRule]>,
 ) -> Result<()> {
     Ok(())
 }
@@ -268,7 +268,7 @@ pub(super) fn apply_path_strip(path: &str, prefix: Option<&str>) -> String {
 #[cfg(feature = "proxy")]
 pub(super) fn apply_path_rewrites(
     path: &str,
-    rules: Option<&[crate::config::schema::RewriteRule]>,
+    rules: Option<&[conduit_config::schema::RewriteRule]>,
 ) -> String {
     let Some(rules) = rules else {
         return path.to_owned();
@@ -302,7 +302,7 @@ pub(super) fn apply_path_rewrites(
 /// `do_request_filter`.
 pub(super) fn apply_header_transform_request_with_claims(
     req: &mut RequestHeader,
-    transform: &crate::config::schema::HeaderTransformConfig,
+    transform: &conduit_config::schema::HeaderTransformConfig,
     jwt_claims: &Option<std::collections::HashMap<String, serde_json::Value>>,
 ) -> pingora_core::Result<()> {
     if let Some(remove) = &transform.remove_headers {
@@ -313,7 +313,7 @@ pub(super) fn apply_header_transform_request_with_claims(
     if let Some(set) = &transform.set_headers {
         for (name, value) in set {
             let resolved = if value.contains("{{") {
-                crate::util::jwt_template::expand_jwt_templates(value, jwt_claims)
+                conduit_auth_jwt::template::expand_jwt_templates(value, jwt_claims)
             } else {
                 value.clone()
             };
@@ -513,7 +513,7 @@ mod tests {
     fn header_transform_sets_header() {
         use pingora_http::RequestHeader;
         let mut req = RequestHeader::build("GET", b"/api", None).unwrap();
-        let transform = crate::config::schema::HeaderTransformConfig {
+        let transform = conduit_config::schema::HeaderTransformConfig {
             set_headers: Some(
                 [("x-env".to_owned(), "production".to_owned())]
                     .iter()
@@ -531,7 +531,7 @@ mod tests {
         use pingora_http::RequestHeader;
         let mut req = RequestHeader::build("GET", b"/api", None).unwrap();
         req.insert_header("x-remove", "bye").unwrap();
-        let transform = crate::config::schema::HeaderTransformConfig {
+        let transform = conduit_config::schema::HeaderTransformConfig {
             set_headers: None,
             remove_headers: Some(vec!["x-remove".to_owned()]),
         };
@@ -547,7 +547,7 @@ mod tests {
         use pingora_http::RequestHeader;
         use std::collections::HashMap;
         let mut req = RequestHeader::build("GET", b"/api", None).unwrap();
-        let transform = crate::config::schema::HeaderTransformConfig {
+        let transform = conduit_config::schema::HeaderTransformConfig {
             set_headers: Some(
                 [("x-user".to_owned(), "{{ jwt.sub }}".to_owned())]
                     .iter()
@@ -601,7 +601,7 @@ mod tests {
 
         #[test]
         fn apply_path_rewrites_no_match_returns_unchanged() {
-            let rules = vec![crate::config::schema::RewriteRule {
+            let rules = vec![conduit_config::schema::RewriteRule {
                 from: "^/api/(.*)".to_owned(),
                 to: "/v2/$1".to_owned(),
             }];
@@ -613,7 +613,7 @@ mod tests {
 
         #[test]
         fn apply_path_rewrites_matching_rule_transforms_path() {
-            let rules = vec![crate::config::schema::RewriteRule {
+            let rules = vec![conduit_config::schema::RewriteRule {
                 from: "^/v1/(.*)".to_owned(),
                 to: "/v2/$1".to_owned(),
             }];
@@ -623,11 +623,11 @@ mod tests {
         #[test]
         fn apply_path_rewrites_first_match_wins() {
             let rules = vec![
-                crate::config::schema::RewriteRule {
+                conduit_config::schema::RewriteRule {
                     from: "^/v1/(.*)".to_owned(),
                     to: "/first/$1".to_owned(),
                 },
-                crate::config::schema::RewriteRule {
+                conduit_config::schema::RewriteRule {
                     from: "^/v1/(.*)".to_owned(),
                     to: "/second/$1".to_owned(),
                 },

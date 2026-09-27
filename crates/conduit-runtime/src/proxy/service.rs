@@ -14,14 +14,14 @@ use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
 use prometheus::{CounterVec, HistogramVec};
 
-use crate::config::schema::AppConfig;
 use crate::filter::rate_limit::RateLimiter;
 #[cfg(feature = "redis")]
 use crate::filter::rate_limit_redis::RedisRateLimiter;
 use crate::proxy::ctx::RequestCtx;
 use crate::proxy::health::UpstreamRegistry;
 use crate::proxy::{logging_phase, request, response_phase};
-use crate::util::log_writer::LogWriter;
+use conduit_config::schema::AppConfig;
+use conduit_core::util::log_writer::LogWriter;
 
 // ── Prometheus metrics (registered once per process) ─────────────────────────
 
@@ -489,7 +489,7 @@ mod tests {
 
     #[test]
     fn app_state_new_initializes_correctly() {
-        let config = crate::config::schema::AppConfig::default();
+        let config = conduit_config::schema::AppConfig::default();
         let state = AppState::new(config, std::path::PathBuf::from("."), None);
         // inflight starts at 0
         assert_eq!(state.inflight.load(Ordering::Relaxed), 0);
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn app_state_config_path_stored() {
-        let config = crate::config::schema::AppConfig::default();
+        let config = conduit_config::schema::AppConfig::default();
         let path = std::path::PathBuf::from("/etc/conduit/config.json");
         let state = AppState::new(config, path.clone(), None);
         assert_eq!(state.config_path, path);

@@ -13,8 +13,8 @@ use crate::config;
 use crate::config::schema::LoggingConfig;
 use crate::config::validate;
 #[cfg(feature = "proxy")]
-use crate::proxy::health;
-use crate::proxy::service::AppState;
+use conduit_runtime::proxy::health;
+use conduit_runtime::proxy::service::AppState;
 
 // The admin crate's `cache` feature turns the purge endpoint on; a build where it drifts from this crate's own
 // feature would answer 501 in a cache build (or `purged: false` against a store nothing writes to). Compile-time,
@@ -62,7 +62,10 @@ fn health_check_routes(
                 return None;
             };
             let hc = cfg.health_check.as_ref()?;
-            Some((hc, crate::proxy::upstream::target_urls(route_target)))
+            Some((
+                hc,
+                conduit_runtime::proxy::upstream::target_urls(route_target),
+            ))
         })
         .collect()
 }
@@ -136,7 +139,7 @@ impl BackgroundService for AdminApiService {
                         _ = interval.tick() => {}
                         _ = shutdown.changed() => return,
                     }
-                    crate::filter::rate_limit::cleanup(&limiter);
+                    conduit_runtime::filter::rate_limit::cleanup(&limiter);
                     // Also clean up the Redis fallback map if in use.
                     #[cfg(feature = "redis")]
                     if let Some(ref rrl) = redis_rl {
@@ -154,7 +157,7 @@ impl BackgroundService for AdminApiService {
         // A rising value indicates CPU saturation or I/O stall in the runtime.
         #[cfg(feature = "tokio-metrics")]
         {
-            use crate::proxy::service::ConduitMetrics;
+            use conduit_runtime::proxy::service::ConduitMetrics;
             let gauge = ConduitMetrics::global().eventloop_lag_ms.clone();
             // Own clone of `shutdown`, same reasoning as the rate-limit cleanup task above.
             let mut shutdown = shutdown.clone();
@@ -190,7 +193,7 @@ impl BackgroundService for AdminApiService {
         #[cfg(all(feature = "cache", feature = "redis"))]
         {
             let config = self.state.config.load_full();
-            crate::proxy::cache_redis::connect_all(&config).await;
+            conduit_runtime::proxy::cache_redis::connect_all(&config).await;
         }
 
         // Spawn the browser hot-reload file watcher if any site has hotReload enabled.
@@ -201,10 +204,11 @@ impl BackgroundService for AdminApiService {
                 .sites
                 .iter()
                 .map(|s| (s.hot_reload.as_ref(), s.static_files.as_ref()));
-            if let Some((dirs, extensions)) = crate::handler::hot_reload::build_watch_config(sites)
+            if let Some((dirs, extensions)) =
+                conduit_runtime::handler::hot_reload::build_watch_config(sites)
             {
                 let reload_tx = self.state.hot_reload_tx.clone();
-                tokio::spawn(crate::handler::hot_reload::run_file_watcher(
+                tokio::spawn(conduit_runtime::handler::hot_reload::run_file_watcher(
                     dirs, extensions, reload_tx,
                 ));
             }
@@ -303,7 +307,7 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
     // where the new config is live but its cache store isn't registered
     // yet. Idempotent: URLs already connected are a cheap no-op.
     #[cfg(all(feature = "cache", feature = "redis"))]
-    crate::proxy::cache_redis::connect_all(&new_config).await;
+    conduit_runtime::proxy::cache_redis::connect_all(&new_config).await;
 
     // Apply: hot-swap config, clear runtime upstream overrides, reset rate limiter.
     state.config.store(Arc::new(new_config));

@@ -1,9 +1,9 @@
 use std::path::Path;
 use std::process;
 
-use crate::config::schema::AppConfig;
-use crate::config::validate;
-use crate::server::builder;
+use conduit_config::schema::AppConfig;
+use conduit_server::config::validate;
+use conduit_server::server::builder;
 
 use super::config_path::load_config_or_exit;
 
@@ -54,10 +54,10 @@ fn validate_or_exit(cfg: &AppConfig) {
 /// Requires: `cargo build --features kubernetes`.
 #[cfg(feature = "kubernetes")]
 pub fn run_kubernetes(namespace: &str) {
-    use crate::config::kubernetes::KubernetesProvider;
-    use crate::config::provider::Provider;
+    use conduit_server::config::kubernetes::KubernetesProvider;
+    use conduit_server::config::provider::Provider;
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::config::schema::AppConfig>(4);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<conduit_config::schema::AppConfig>(4);
     let ns = namespace.to_owned();
 
     // Spawn the provider in its own thread with a dedicated Tokio runtime.

@@ -7,7 +7,7 @@ use axum::routing::{delete, get, post};
 use axum::Router;
 use std::sync::Arc;
 
-use crate::proxy::service::AppState;
+use conduit_runtime::proxy::service::AppState;
 
 use super::cache_purge::cache_purge_handler;
 use super::certs::certs_reload_handler;

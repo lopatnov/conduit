@@ -21,14 +21,14 @@ use bytes::Bytes;
 use pingora_core::Result;
 use pingora_proxy::Session;
 
-#[cfg(feature = "consumers")]
-use crate::config::schema::ConsumersConfig;
-use crate::config::schema::{ApiKeyConfig, BasicAuthConfig, RateLimitConfig};
 use crate::filter::rate_limit::RateLimiter;
 #[cfg(feature = "redis")]
 use crate::filter::rate_limit_redis::RedisRateLimiter;
 use crate::filter::{auth, rate_limit};
 use crate::handler::response;
+#[cfg(feature = "consumers")]
+use conduit_config::schema::ConsumersConfig;
+use conduit_config::schema::{ApiKeyConfig, BasicAuthConfig, RateLimitConfig};
 use uuid::Uuid;
 
 // ── Outcome + Context + Trait (Layer-0 vocabulary, #114/#126) ──────────────────

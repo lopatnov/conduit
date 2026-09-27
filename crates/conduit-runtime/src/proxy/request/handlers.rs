@@ -11,7 +11,6 @@ use async_trait::async_trait;
 use pingora_core::Result;
 use pingora_proxy::Session;
 
-use crate::config::schema::HealthCheckConfig;
 #[cfg(feature = "compression")]
 use crate::filter::compression;
 use crate::filter::response_time;
@@ -26,6 +25,7 @@ use crate::handler::{health, metrics as metrics_handler, LocalHandlerImpl};
 use crate::proxy::ctx::{LocalHandler, RequestCtx, UpstreamTarget};
 use crate::proxy::request::HandlerKind;
 use crate::proxy::service::ConduitProxy;
+use conduit_config::schema::HealthCheckConfig;
 
 impl ConduitProxy {
     /// Dispatch a request to the appropriate local handler.
@@ -511,7 +511,7 @@ mod tests {
     // `retry_budget_allows` tests need it, and neither module depends on the
     // other. See `retry.rs`'s copy for the "canonical" original location.
     fn make_proxy() -> ConduitProxy {
-        let config = crate::config::schema::AppConfig::default();
+        let config = conduit_config::schema::AppConfig::default();
         let state = AppState::new(config, std::path::PathBuf::from("."), None);
         ConduitProxy {
             state: std::sync::Arc::new(state),
@@ -529,8 +529,8 @@ mod tests {
 
     #[test]
     fn collect_upstream_infos_no_include_upstreams_returns_empty() {
-        let config = crate::config::schema::AppConfig {
-            sites: vec![crate::config::schema::SiteConfig::default()],
+        let config = conduit_config::schema::AppConfig {
+            sites: vec![conduit_config::schema::SiteConfig::default()],
             ..Default::default()
         };
         let state = AppState::new(config, std::path::PathBuf::from("."), None);

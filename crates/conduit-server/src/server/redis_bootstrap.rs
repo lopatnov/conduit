@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::config::schema::AppConfig;
-use crate::filter::rate_limit_redis::RedisRateLimiter;
+use conduit_ratelimit::redis::RedisRateLimiter;
 
 /// Find the first `redis://`/`rediss://` `rateLimit.store` configured anywhere
 /// in `config` — site-level, per-route (`proxy.*.rateLimit` AND
