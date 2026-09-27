@@ -75,6 +75,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The Admin API's rate-limit-cleanup and event-loop-lag-gauge background tasks now stop when the process
+  shuts down**, instead of running until process exit regardless of what `BackgroundService::start()`'s
+  caller expects. Found while moving this code into `crates/conduit-server` (issue #147) — not new to that
+  move, but a real pre-existing gap.
 - **A proxied response no longer takes a thread hand-off unless a script or WASM plugin can run on it (issue
   #475).** The response filter chain ran through Tokio's `block_in_place` on every response, although it only
   edits headers unless the site configures response-phase script or WASM `middleware`. On a multi-thread runtime `block_in_place` gives the worker's

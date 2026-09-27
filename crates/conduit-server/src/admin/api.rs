@@ -119,14 +119,23 @@ pub struct AdminApiService {
 impl BackgroundService for AdminApiService {
     async fn start(&self, mut shutdown: ShutdownWatch) {
         // Spawn a background task that evicts stale rate-limiter entries every 60 s.
+        //
+        // Takes its own clone of `shutdown` and exits the loop once it fires — without this the task
+        // would keep running (and the process couldn't cleanly finish shutting down its background
+        // services) until process exit, regardless of what `BackgroundService::start()`'s caller expects
+        // (found during review of #147, filed as a review note on that issue before this fix).
         {
             let limiter = self.state.rate_limiter.clone();
             #[cfg(feature = "redis")]
             let redis_rl = self.state.redis_rate_limiter.clone();
+            let mut shutdown = shutdown.clone();
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
                 loop {
-                    interval.tick().await;
+                    tokio::select! {
+                        _ = interval.tick() => {}
+                        _ = shutdown.changed() => return,
+                    }
                     crate::filter::rate_limit::cleanup(&limiter);
                     // Also clean up the Redis fallback map if in use.
                     #[cfg(feature = "redis")]
@@ -147,13 +156,18 @@ impl BackgroundService for AdminApiService {
         {
             use crate::proxy::service::ConduitMetrics;
             let gauge = ConduitMetrics::global().eventloop_lag_ms.clone();
+            // Own clone of `shutdown`, same reasoning as the rate-limit cleanup task above.
+            let mut shutdown = shutdown.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
                 // Under heavy load the tick may be missed; Skip prevents a burst
                 // of catch-up probes that would skew the lag metric.
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
-                    ticker.tick().await;
+                    tokio::select! {
+                        _ = ticker.tick() => {}
+                        _ = shutdown.changed() => return,
+                    }
                     // Measure how long between yielding and being resumed.
                     let before = std::time::Instant::now();
                     tokio::task::yield_now().await;
