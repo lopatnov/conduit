@@ -41,7 +41,8 @@
             "sampleRate":  { "type": "number", "minimum": 0, "maximum": 1, "default": 1.0 },
             "timeoutMs":   { "type": "integer", "minimum": 1, "default": 5000 }
           }
-        }
+        },
+        "providers": { "description": "Reserved for future service-discovery providers (Consul, etcd, etc.) — not yet implemented." }
       }
     },
     "SiteConfig": {
@@ -398,6 +399,7 @@
         "hashKey":     { "type": "string" },
         "http2":       { "type": "boolean" },
         "stripPrefix": { "type": "boolean" },
+        "backup": { "type": "string", "description": "Explicit backup (failover) upstream URL, used when all primary targets are unhealthy.", "examples": ["http://fallback:4000"] },
         "timeout": {
           "type": "object",
           "properties": {
@@ -596,6 +598,12 @@
           "type": "object",
           "additionalProperties": { "type": "string" },
           "description": "Query parameter values that must be present and match (exact or regex)."
+        },
+        "cookies": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Cookie values (from the Cookie request header) that must be present and match (exact or regex).",
+          "examples": [{"beta": "1"}]
         }
       }
     },

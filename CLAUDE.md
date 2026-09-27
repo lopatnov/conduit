@@ -1076,7 +1076,7 @@ Tokio "full" features уже включены. Ключевые находки �
 - `pingora-cache = "0.9"` — кастомный cache key обязателен (CVE-2026-2836). С 0.9 у `CacheKey::new` нет `namespace`: хост вшивается в primary через `\0` (`build_cache_key` в `crates/conduit-cache/src/cache.rs`), хэши отличаются от 0.8 — персистентный кэш (disk/redis) после апгрейда холодный
 - Pingora `"0.9"` — только 0.8+ (3 CVE исправлено в 0.8; в 0.9 ушли `protobuf 2.28.0` и `daemonize`)
 - Pingora 0.9: `RequestHeader`/`ResponseHeader` без `DerefMut` — заголовки менять только через `insert_header`/`append_header`/`remove_header`, не через `.headers.*`
-- `schema/conduit.schema.json` — вручную синхронизировать со `schema.rs`. Обновлён 2026-05-31 со всеми Phase 4 полями. Валидировать: `node -e "JSON.parse(fs.readFileSync('schema/conduit.schema.json','utf8'))"`
+- `schema/conduit.schema.json` — вручную синхронизировать с реальными `Config`-структурами (после миграции #114 они разбросаны по крейтам, не в одном `schema.rs`). Валидировать: `node -e "JSON.parse(fs.readFileSync('schema/conduit.schema.json','utf8'))"`. С issue #496 (PR закрывающий #496) — `scripts/check_schema_superset.py` (CI job `schema-superset-check`) best-effort ловит дрейф для structs, у которых есть именованный `$defs`-эквивалент; untagged-энумы, `#[serde(flatten)]` и инлайновые (без своего `$defs`) блоки вне его охвата — см. докстринг скрипта.
 - HTTP/3 (Phase 5) — ждём Pingora Issue #95, ~август 2026
 - `src/main.rs` тонкий: CLI → `dispatch_command()` → command struct → `execute()`
 - `tls.versions`/`tls.ciphers` — **не работают, отклоняются на validate()** (issue #189,
