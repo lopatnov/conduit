@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 
-use crate::proxy::health;
+use conduit_runtime::proxy::health;
 
 // ── upstreams_handler helpers ─────────────────────────────────────────────────
 
@@ -44,8 +44,8 @@ pub(super) fn url_health_entry(
 }
 
 /// Map a `LoadBalanceStrategy` to its JSON-API string form.
-pub(super) fn strategy_label(s: &crate::config::schema::LoadBalanceStrategy) -> &'static str {
-    use crate::config::schema::LoadBalanceStrategy as S;
+pub(super) fn strategy_label(s: &conduit_config::schema::LoadBalanceStrategy) -> &'static str {
+    use conduit_config::schema::LoadBalanceStrategy as S;
     match s {
         S::RoundRobin => "round-robin",
         S::WeightedRoundRobin => "weighted-round-robin",
@@ -59,8 +59,8 @@ pub(super) fn strategy_label(s: &crate::config::schema::LoadBalanceStrategy) -> 
 }
 
 /// Extract `(url, weight)` from a `ProxyTarget`.
-pub(super) fn proxy_target_url_weight(t: &crate::config::schema::ProxyTarget) -> (&str, u32) {
-    use crate::config::schema::ProxyTarget;
+pub(super) fn proxy_target_url_weight(t: &conduit_config::schema::ProxyTarget) -> (&str, u32) {
+    use conduit_config::schema::ProxyTarget;
     match t {
         ProxyTarget::Simple(u) => (u.as_str(), 1),
         ProxyTarget::Weighted(w) => (w.url.as_str(), w.weight),
@@ -69,7 +69,7 @@ pub(super) fn proxy_target_url_weight(t: &crate::config::schema::ProxyTarget) ->
 
 /// Convert a `ProxyRouteConfig`'s targets (flat or grouped) to JSON entries.
 pub(super) fn format_full_config_targets(
-    cfg: &crate::config::schema::ProxyRouteConfig,
+    cfg: &conduit_config::schema::ProxyRouteConfig,
     registry: &health::UpstreamRegistry,
 ) -> Vec<Value> {
     if let Some(groups) = &cfg.groups {
@@ -95,10 +95,10 @@ pub(super) fn format_full_config_targets(
 
 /// Convert a `ProxyRouteTarget` to `(strategy_label, target_list)`.
 pub(super) fn format_proxy_route_targets(
-    rt: &crate::config::schema::ProxyRouteTarget,
+    rt: &conduit_config::schema::ProxyRouteTarget,
     registry: &health::UpstreamRegistry,
 ) -> (&'static str, Vec<Value>) {
-    use crate::config::schema::{LoadBalanceStrategy, ProxyRouteTarget};
+    use conduit_config::schema::{LoadBalanceStrategy, ProxyRouteTarget};
     match rt {
         ProxyRouteTarget::Url(url) => (
             "round-robin",
@@ -124,9 +124,9 @@ pub(super) fn format_proxy_route_targets(
 
 /// Collect `(path, route_target)` pairs from a site's proxy map and routes array.
 pub(super) fn collect_site_proxy_entries(
-    site: &crate::config::schema::SiteConfig,
-) -> Vec<(String, &crate::config::schema::ProxyRouteTarget)> {
-    use crate::config::schema::ProxyConfig;
+    site: &conduit_config::schema::SiteConfig,
+) -> Vec<(String, &conduit_config::schema::ProxyRouteTarget)> {
+    use conduit_config::schema::ProxyConfig;
     let mut entries = Vec::new();
     if let Some(ProxyConfig::Routes(route_map)) = &site.proxy {
         for (path, rt) in route_map {

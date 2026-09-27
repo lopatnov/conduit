@@ -5,7 +5,7 @@ use axum::Json;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use crate::proxy::service::AppState;
+use conduit_runtime::proxy::service::AppState;
 
 /// `GET /rate-limits` — per-site/route rate-limiter counters.
 ///

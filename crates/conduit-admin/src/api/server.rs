@@ -5,7 +5,7 @@ use pingora_core::server::ShutdownWatch;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-use crate::proxy::service::AppState;
+use conduit_runtime::proxy::service::AppState;
 
 use super::router::build_router;
 

@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use crate::proxy::service::AppState;
+use conduit_runtime::proxy::service::AppState;
 
 use super::error::{AdminError, AdminResult};
 

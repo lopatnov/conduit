@@ -8,7 +8,7 @@ use axum::Json;
 use serde_json::Value;
 use std::sync::Arc;
 
-use crate::proxy::service::AppState;
+use conduit_runtime::proxy::service::AppState;
 
 use super::*;
 
@@ -70,7 +70,7 @@ fn purge_key_of_a_url_with_a_port_is_the_key_the_request_path_stores() {
             .primary
     };
     let stored = |host: &str, path: &str, query: Option<&str>| {
-        crate::proxy::cache::build_cache_key(host, "http", path, query, None, None)
+        conduit_runtime::proxy::cache::build_cache_key(host, "http", path, query, None, None)
             .to_compact()
             .primary
     };
@@ -141,7 +141,7 @@ fn invalid_cidrs() {
 
 fn app_state_for_ip_deny() -> Arc<AppState> {
     Arc::new(AppState::new(
-        crate::config::schema::AppConfig::default(),
+        conduit_config::schema::AppConfig::default(),
         std::path::PathBuf::from("."),
         None,
     ))
@@ -225,8 +225,11 @@ async fn ip_deny_remove_handler_removes_from_list() {
 
 // ── rate_limits_handler (#303/#304) ───────────────────────────────────────
 
-fn bucket_with_counts(passed: u64, rejected: u64) -> crate::filter::rate_limit::TokenBucket {
-    let mut b = crate::filter::rate_limit::TokenBucket::new(100, 0, 60);
+fn bucket_with_counts(
+    passed: u64,
+    rejected: u64,
+) -> conduit_runtime::filter::rate_limit::TokenBucket {
+    let mut b = conduit_runtime::filter::rate_limit::TokenBucket::new(100, 0, 60);
     b.passed = passed;
     b.rejected = rejected;
     b
@@ -236,11 +239,11 @@ fn bucket_with_counts(passed: u64, rejected: u64) -> crate::filter::rate_limit::
 async fn rate_limits_handler_parses_site_and_route_namespaces() {
     let state = app_state_for_ip_deny();
     state.rate_limiter.insert(
-        crate::filter::rate_limit::site_key("app.example.com:8080", "1.2.3.4"),
+        conduit_runtime::filter::rate_limit::site_key("app.example.com:8080", "1.2.3.4"),
         bucket_with_counts(10, 1),
     );
     state.rate_limiter.insert(
-        crate::filter::rate_limit::route_key("app.example.com:8080", "/api", "1.2.3.4"),
+        conduit_runtime::filter::rate_limit::route_key("app.example.com:8080", "/api", "1.2.3.4"),
         bucket_with_counts(20, 2),
     );
 
@@ -256,7 +259,7 @@ async fn rate_limits_handler_parses_site_and_route_namespaces() {
 async fn rate_limits_handler_excludes_consumer_buckets() {
     let state = app_state_for_ip_deny();
     state.rate_limiter.insert(
-        crate::filter::rate_limit::consumer_key("alice"),
+        conduit_runtime::filter::rate_limit::consumer_key("alice"),
         bucket_with_counts(5, 0),
     );
 
@@ -275,11 +278,11 @@ async fn rate_limits_handler_aggregates_multiple_clients_into_one_site_route_tot
     // total for the (site, route) pair, not two separate entries.
     let state = app_state_for_ip_deny();
     state.rate_limiter.insert(
-        crate::filter::rate_limit::route_key("a.example.com:80", "/x", "1.1.1.1"),
+        conduit_runtime::filter::rate_limit::route_key("a.example.com:80", "/x", "1.1.1.1"),
         bucket_with_counts(3, 1),
     );
     state.rate_limiter.insert(
-        crate::filter::rate_limit::route_key("a.example.com:80", "/x", "2.2.2.2"),
+        conduit_runtime::filter::rate_limit::route_key("a.example.com:80", "/x", "2.2.2.2"),
         bucket_with_counts(4, 0),
     );
 
@@ -296,11 +299,11 @@ async fn rate_limits_handler_keeps_two_sites_separate_regression_304() {
     // site_label, they naturally land as two distinct handler entries.
     let state = app_state_for_ip_deny();
     state.rate_limiter.insert(
-        crate::filter::rate_limit::site_key("site-a.example.com:80", "9.9.9.9"),
+        conduit_runtime::filter::rate_limit::site_key("site-a.example.com:80", "9.9.9.9"),
         bucket_with_counts(1, 0),
     );
     state.rate_limiter.insert(
-        crate::filter::rate_limit::site_key("site-b.example.com:80", "9.9.9.9"),
+        conduit_runtime::filter::rate_limit::site_key("site-b.example.com:80", "9.9.9.9"),
         bucket_with_counts(2, 0),
     );
 
@@ -420,7 +423,7 @@ fn subtle_eq_empty_slices() {
 
 #[test]
 fn strategy_label_all_variants() {
-    use crate::config::schema::LoadBalanceStrategy as S;
+    use conduit_config::schema::LoadBalanceStrategy as S;
     assert_eq!(strategy_label(&S::RoundRobin), "round-robin");
     assert_eq!(
         strategy_label(&S::WeightedRoundRobin),
@@ -438,7 +441,7 @@ fn strategy_label_all_variants() {
 
 #[test]
 fn proxy_target_simple_has_weight_one() {
-    use crate::config::schema::ProxyTarget;
+    use conduit_config::schema::ProxyTarget;
     let t = ProxyTarget::Simple("http://backend:4000".to_owned());
     let (url, weight) = proxy_target_url_weight(&t);
     assert_eq!(url, "http://backend:4000");
@@ -447,7 +450,7 @@ fn proxy_target_simple_has_weight_one() {
 
 #[test]
 fn proxy_target_weighted_uses_configured_weight() {
-    use crate::config::schema::{ProxyTarget, WeightedTarget};
+    use conduit_config::schema::{ProxyTarget, WeightedTarget};
     let t = ProxyTarget::Weighted(WeightedTarget {
         url: "http://backend:4000".to_owned(),
         weight: 5,
@@ -491,7 +494,7 @@ fn atomic_write_overwrites_existing() {
 
 #[test]
 fn url_health_entry_unknown_url_returns_null_health() {
-    let reg = crate::proxy::health::UpstreamRegistry::new();
+    let reg = conduit_runtime::proxy::health::UpstreamRegistry::new();
     let entry = url_health_entry(&reg, "http://unknown:4000", 1, None);
     assert_eq!(entry["url"], "http://unknown:4000");
     assert_eq!(entry["weight"], 1);
@@ -503,7 +506,7 @@ fn url_health_entry_unknown_url_returns_null_health() {
 
 #[test]
 fn url_health_entry_known_url_includes_health_data() {
-    let reg = crate::proxy::health::UpstreamRegistry::new();
+    let reg = conduit_runtime::proxy::health::UpstreamRegistry::new();
     {
         let mut e = reg
             .statuses
@@ -524,7 +527,7 @@ fn url_health_entry_known_url_includes_health_data() {
 
 #[test]
 fn url_health_entry_with_group_includes_group_field() {
-    let reg = crate::proxy::health::UpstreamRegistry::new();
+    let reg = conduit_runtime::proxy::health::UpstreamRegistry::new();
     let entry = url_health_entry(&reg, "http://a:4000", 1, Some("primary"));
     assert_eq!(entry["group"], "primary");
 }
@@ -533,8 +536,8 @@ fn url_health_entry_with_group_includes_group_field() {
 
 #[test]
 fn format_proxy_route_targets_url_variant() {
-    use crate::config::schema::ProxyRouteTarget;
-    use crate::proxy::health::UpstreamRegistry;
+    use conduit_config::schema::ProxyRouteTarget;
+    use conduit_runtime::proxy::health::UpstreamRegistry;
     let reg = UpstreamRegistry::new();
     let rt = ProxyRouteTarget::Url("http://a:4000".to_owned());
     let (strategy, targets) = format_proxy_route_targets(&rt, &reg);
@@ -545,8 +548,8 @@ fn format_proxy_route_targets_url_variant() {
 
 #[test]
 fn format_proxy_route_targets_round_robin_variant() {
-    use crate::config::schema::ProxyRouteTarget;
-    use crate::proxy::health::UpstreamRegistry;
+    use conduit_config::schema::ProxyRouteTarget;
+    use conduit_runtime::proxy::health::UpstreamRegistry;
     let reg = UpstreamRegistry::new();
     let rt =
         ProxyRouteTarget::RoundRobin(vec!["http://a:4000".to_owned(), "http://b:4000".to_owned()]);
@@ -557,8 +560,8 @@ fn format_proxy_route_targets_round_robin_variant() {
 
 #[test]
 fn format_full_config_targets_no_groups() {
-    use crate::config::schema::{ProxyRouteConfig, ProxyTarget};
-    use crate::proxy::health::UpstreamRegistry;
+    use conduit_config::schema::{ProxyRouteConfig, ProxyTarget};
+    use conduit_runtime::proxy::health::UpstreamRegistry;
     let reg = UpstreamRegistry::new();
     let cfg = ProxyRouteConfig {
         targets: vec![
@@ -578,7 +581,7 @@ fn format_full_config_targets_no_groups() {
 
 #[test]
 fn collect_site_proxy_entries_empty_site() {
-    use crate::config::schema::SiteConfig;
+    use conduit_config::schema::SiteConfig;
     let site = SiteConfig::default();
     let entries = collect_site_proxy_entries(&site);
     assert!(entries.is_empty(), "empty site must yield empty entries");
@@ -586,7 +589,7 @@ fn collect_site_proxy_entries_empty_site() {
 
 #[test]
 fn collect_site_proxy_entries_from_routes_map() {
-    use crate::config::schema::{ProxyConfig, ProxyRouteTarget, SiteConfig};
+    use conduit_config::schema::{ProxyConfig, ProxyRouteTarget, SiteConfig};
     use indexmap::IndexMap;
     let mut routes = IndexMap::new();
     routes.insert(
@@ -606,14 +609,14 @@ fn collect_site_proxy_entries_from_routes_map() {
 
 #[test]
 fn build_flat_upstream_list_empty_registry() {
-    let reg = crate::proxy::health::UpstreamRegistry::new();
+    let reg = conduit_runtime::proxy::health::UpstreamRegistry::new();
     let list = build_flat_upstream_list(&reg);
     assert!(list.is_empty(), "empty registry must return empty list");
 }
 
 #[test]
 fn build_flat_upstream_list_includes_known_urls() {
-    use crate::proxy::health::UpstreamRegistry;
+    use conduit_runtime::proxy::health::UpstreamRegistry;
     let reg = UpstreamRegistry::new();
     reg.statuses.entry("http://a:4000".to_owned()).or_default();
     reg.statuses.entry("http://b:4000".to_owned()).or_default();
@@ -626,7 +629,7 @@ fn build_flat_upstream_list_includes_known_urls() {
 
 #[test]
 fn build_flat_upstream_list_sorted_by_url() {
-    use crate::proxy::health::UpstreamRegistry;
+    use conduit_runtime::proxy::health::UpstreamRegistry;
     let reg = UpstreamRegistry::new();
     reg.statuses.entry("http://z:4000".to_owned()).or_default();
     reg.statuses.entry("http://a:4000".to_owned()).or_default();
@@ -639,7 +642,7 @@ fn build_flat_upstream_list_sorted_by_url() {
 
 #[test]
 fn resolve_runtime_targets_no_overrides_returns_config() {
-    use crate::proxy::health::UpstreamRegistry;
+    use conduit_runtime::proxy::health::UpstreamRegistry;
     let reg = UpstreamRegistry::new();
     let config_targets = vec![serde_json::json!({"url": "http://config:4000"})];
     let result = resolve_runtime_targets(&reg, "*", "/api", config_targets.clone());
@@ -651,7 +654,7 @@ fn resolve_runtime_targets_no_overrides_returns_config() {
 
 #[test]
 fn resolve_runtime_targets_with_overrides_returns_overrides() {
-    use crate::proxy::health::UpstreamRegistry;
+    use conduit_runtime::proxy::health::UpstreamRegistry;
     let reg = UpstreamRegistry::new();
     reg.add_upstream("*", "/api", "http://override:4000", 2);
     let config_targets = vec![serde_json::json!({"url": "http://config:4000"})];

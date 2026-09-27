@@ -42,7 +42,7 @@ pub(super) fn purge_cache_key(raw: &str) -> Result<pingora_cache::CacheKey, Admi
         .host_str()
         .ok_or_else(|| AdminError::BadRequest("url has no host".to_owned()))?;
 
-    Ok(crate::proxy::cache::build_cache_key(
+    Ok(conduit_runtime::proxy::cache::build_cache_key(
         host,
         scheme,
         parsed.path(),
@@ -75,7 +75,7 @@ pub(super) async fn cache_purge_handler(
     let raw = params.url.trim();
     let cache_key = purge_cache_key(raw)?;
     let compact = cache_key.to_compact();
-    let storage = crate::proxy::cache::cache_storage();
+    let storage = conduit_runtime::proxy::cache::cache_storage();
 
     let span = Span::inactive().handle();
     let outcome = storage

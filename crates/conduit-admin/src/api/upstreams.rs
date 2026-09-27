@@ -6,8 +6,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use crate::proxy::health;
-use crate::proxy::service::AppState;
+use conduit_runtime::proxy::health;
+use conduit_runtime::proxy::service::AppState;
 
 use super::upstreams_view::{
     build_flat_upstream_list, collect_site_proxy_entries, format_proxy_route_targets,
@@ -30,7 +30,7 @@ pub(super) struct UpstreamModifyRequest {
 }
 
 pub(super) async fn upstreams_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
-    use crate::config::schema::ProxyConfig;
+    use conduit_config::schema::ProxyConfig;
 
     let registry = &state.upstream_health;
     let config = state.config.load();
