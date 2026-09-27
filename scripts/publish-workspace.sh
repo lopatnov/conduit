@@ -45,17 +45,29 @@ already_published=0
 to_publish=0
 for name in $all_names; do
     # crates.io returns 200 for GET /api/v1/crates/<name>/<version> only if
-    # that exact version exists (404 for an unknown crate or unknown
-    # version alike — either way, nothing to skip).
-    status=$(curl -s -o /dev/null -w "%{http_code}" \
+    # that exact version exists, and 404 if the crate or the version is
+    # unknown. Only 404 means "needs publishing" -- anything else (a 429
+    # from crates.io's ~1 req/s API crawler policy, a 5xx, curl's own `000`
+    # on a network error) is NOT the same as "unpublished": treating it that
+    # way would skip --exclude-ing an already-published crate, and
+    # `cargo publish --workspace` would then hard-fail with "crate already
+    # exists" -- exactly the partial-rerun case this script exists to
+    # handle safely. --retry/--max-time absorb transient failures; anything
+    # that still isn't 200 or 404 after retrying aborts the whole run rather
+    # than guessing (found by gitar-bot review on PR #498).
+    status=$(curl -s --retry 3 --retry-all-errors --max-time 20 -o /dev/null -w "%{http_code}" \
         "https://crates.io/api/v1/crates/${name}/${workspace_version}" \
         -H "User-Agent: conduit-release-ci (https://github.com/lopatnov/conduit)")
+    sleep 1
     if [[ "$status" == "200" ]]; then
         echo "  already published: $name @ $workspace_version — skipping"
         exclude_args+=("--exclude" "$name")
         already_published=$((already_published + 1))
-    else
+    elif [[ "$status" == "404" ]]; then
         to_publish=$((to_publish + 1))
+    else
+        echo "crates.io returned HTTP $status for $name — aborting (not a 200/404, so publish state is unknown)" >&2
+        exit 1
     fi
 done
 
