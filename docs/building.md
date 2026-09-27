@@ -3,6 +3,13 @@
 ## Prerequisites
 
 - **Rust stable** toolchain — [rustup.rs](https://rustup.rs)
+- **MSRV 1.89** for the default/`standard`/`kubernetes` builds (set via
+  `rust-version` in the workspace root's `[workspace.package]`, inherited by
+  every member crate). `--features wasm` (and so `full`) needs **1.95** —
+  `crates/conduit-plugin-wasm` overrides its own `rust-version` for
+  wasmtime 48's floor. CI always builds on current `stable`, which is ahead
+  of both; the MSRV numbers only matter if you pin an older toolchain
+  yourself.
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh

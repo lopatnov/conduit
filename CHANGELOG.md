@@ -432,10 +432,20 @@ Marks the start of the feature-driven Cargo workspace migration (see GitHub
 issue #114): splitting the single `lopatnov-conduit` crate into one crate per
 feature so a build only compiles the code and dependencies a chosen feature
 set actually needs. This is a long-lived migration branch, not a cut release —
-`main` and its `1.x` line are unaffected until the migration lands. Every PR
-merged into this branch bumps the workspace minor version (`2.1.0`, `2.2.0`,
-...) so migration progress is traceable; the branch is retired into a real
-`2.0.0` release once #114's sub-issues are all closed.
+`main` and its `1.x` line are unaffected until the migration lands. The
+workspace version stays pinned at `2.0.0` for the whole migration (not bumped
+per PR — reverted 2026-08-17 after an earlier per-PR-bump convention had
+inflated it to `2.11.0` with nothing published); the branch is retired into a
+real `2.0.0` release once #114's sub-issues are all closed.
+
+Issue #148 (the epic's closing sub-issue) wires up real multi-crate
+publishing: every `lopatnov-conduit-*` member crate is now
+`cargo publish --workspace`-able in dependency order (native cargo, not
+`cargo-workspaces`/`release-plz` — see that issue's PR for why), gets its
+own MSRV (`rust-version`, 1.89 workspace-wide / 1.95 for
+`conduit-plugin-wasm`), and CI proves the publish would succeed
+(`workspace-publish-dryrun`) on every PR rather than only discovering a
+break on the real `v2.0.0` tag.
 
 ---
 

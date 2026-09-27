@@ -168,8 +168,9 @@ curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86
 ### cargo install
 
 ```bash
-cargo install lopatnov-conduit            # standard
-cargo install lopatnov-conduit --features full   # all features
+cargo install lopatnov-conduit                       # default (proxy + static + compression + hot reload)
+cargo install lopatnov-conduit --features standard   # + JWT/consumers/forward-auth/cache/ACME — matches the prebuilt "Standard" binaries
+cargo install lopatnov-conduit --features full       # all features
 ```
 
 ### Optional features
