@@ -930,3 +930,35 @@ jobs:
           # Account::builder_with_root() is used when this env var is set.
           CONDUIT_ACME_EXTRA_ROOT: /tmp/pebble-ca.pem
         run: cargo test --test acme --features acme -- --nocapture
+
+  # ── Workspace publish pre-flight (issue #114/#148) ──────────────────────────
+  # release.yml's publish-crates job (see scripts/publish-workspace.sh) does a
+  # real `cargo publish --workspace` on every tag. This job proves that would
+  # actually succeed on every PR, without touching crates.io: `cargo publish
+  # --dry-run` packages every member (in dependency order, path deps stripped
+  # to their `version` string) and compiles each tarball as if it only had
+  # its published siblings available. Catches a missing description/license,
+  # an accidentally-non-pathed file the crate needs, or a version drift the
+  # check-workspace-versions.sh script below doesn't (that script only checks
+  # the literal strings in Cargo.toml; this compiles the result).
+  workspace-publish-dryrun:
+    name: Workspace publish dry-run
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: Check every workspace-dependency version is in lockstep
+        run: ./scripts/check-workspace-versions.sh
+
+      - name: cargo publish --workspace --dry-run
+        run: cargo publish --workspace --dry-run
