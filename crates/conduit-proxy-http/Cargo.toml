@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-proxy-http"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Proxy target resolution (routing, load-balancing dispatch, retry, sticky sessions) for conduit's feature-driven workspace (issue #114/#143)"
 license.workspace    = true
 repository.workspace = true

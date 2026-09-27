@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-security-headers"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Security-headers config + AllowedHosts guard for conduit's feature-driven workspace (issue #114/#136)"
 license.workspace    = true
 repository.workspace = true

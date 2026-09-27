@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-cli"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "CLI subcommand dispatch for conduit's feature-driven workspace (issue #114/#147)"
 license.workspace    = true
 repository.workspace = true

@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-compression"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Response/static-file compression config + negotiation logic for conduit's feature-driven workspace (issue #114/#138)"
 license.workspace    = true
 repository.workspace = true

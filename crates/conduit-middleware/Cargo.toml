@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-middleware"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Rhai/WASM middleware chain (config + guard + response filter) for conduit's feature-driven workspace (issue #114/#141)"
 license.workspace    = true
 repository.workspace = true

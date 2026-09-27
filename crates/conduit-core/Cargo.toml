@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-core"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Layer-0 traits and primitives for conduit's feature-driven workspace (issue #114/#126) — zero config knowledge, pingora + std only"
 license.workspace    = true
 repository.workspace = true

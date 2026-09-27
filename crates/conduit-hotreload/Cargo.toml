@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-hotreload"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Browser hot-reload (SSE + file watcher) config and handlers for conduit's feature-driven workspace (issue #114/#140)"
 license.workspace    = true
 repository.workspace = true

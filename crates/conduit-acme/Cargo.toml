@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-acme"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "ACME (Let's Encrypt) auto-TLS config + HTTP-01 certificate flow for conduit's feature-driven workspace (issue #114/#130)"
 license.workspace    = true
 repository.workspace = true

@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-runtime"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Layer-3 request pipeline for conduit's feature-driven workspace (issue #114/#145) — the Pingora ProxyHttp implementation, per-request state, the guard/response chains and the local handlers"
 license.workspace    = true
 repository.workspace = true
