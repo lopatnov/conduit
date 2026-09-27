@@ -57,8 +57,8 @@ impl ResponseFilter for MiddlewareResponseFilter {
                 // ── Rhai response scripts ─────────────────────────────────────
                 #[cfg(feature = "rhai")]
                 "script" => {
-                    let phase = entry.phase.as_deref().unwrap_or("request");
-                    if phase != "response" {
+                    // The same predicate `may_block` uses, so the two cannot drift apart.
+                    if skipped_in_response_phase(entry) {
                         continue;
                     }
                     let Some(ref path) = entry.path else { continue };

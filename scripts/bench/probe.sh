@@ -4,7 +4,7 @@
 #   probe.sh CONDUIT_BIN [ROUNDS]
 set -uo pipefail
 WORK=$(mktemp -d)   # scratch files (config, oha output) live here, not at fixed /tmp paths
-trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$WORK"' EXIT   # an interrupted run leaves no upstream/proxy on the ports
+trap 'kill -9 $(jobs -p) 2>/dev/null; rm -rf "$WORK"' EXIT   # an interrupted run leaves no upstream/proxy on the ports
 PERF=${PERF:-$HOME/perf}
 OHA=$PERF/tools/bin/oha
 MOCK=$PERF/mock/target/release/bench-upstream
