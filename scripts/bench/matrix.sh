@@ -5,6 +5,7 @@
 # Same scenario as CI's "Performance report" (`oha -z 10s`, passthrough to a fixed 22-byte JSON upstream), with a 4 s warm-up,
 # processes pinned to disjoint cores, variants rotated per round so drift and first-run penalties spread evenly.
 set -uo pipefail
+WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT   # scratch files (config, oha output) live here, not at fixed /tmp paths
 PERF=$HOME/perf
 OHA=$PERF/tools/bin/oha
 MOCK=$PERF/mock/target/release/bench-upstream
@@ -32,7 +33,7 @@ if [ -n "${ONLY:-}" ]; then   # ONLY="w1-nolog w4-nolog": run just these variant
   keep=(); for v in "${VARIANTS[@]}"; do for o in $ONLY; do [ "${v%%|*}" = "$o" ] && keep+=("$v"); done; done
   VARIANTS=("${keep[@]}")
 fi
-pkill -f bench-upstream 2>/dev/null; sleep 0.2
+pkill -x bench-upstream 2>/dev/null; sleep 0.2
 echo "round,variant,workers,connections,rps,p50_ms,p99_ms,ok_pct,cpu_us_per_req" > "$OUT"
 
 wait_http() {  # url
@@ -46,28 +47,28 @@ run_one() {  # round spec
   IFS='|' read -r name workers logging sink conns <<< "$spec"
   local site='"port": 8080, "proxy": "http://127.0.0.1:4000"'
   [ "$logging" = off ] && site="$site, \"logging\": false"
-  printf '{ "global": { "workers": %s }, "sites": [ { %s } ] }' "$workers" "$site" > /tmp/mx-conduit.json
+  printf '{ "global": { "workers": %s }, "sites": [ { %s } ] }' "$workers" "$site" > "$WORK/conduit.json"
 
   taskset -c "$CPU_UP" "$MOCK" & local up=$!
   wait_http http://127.0.0.1:4000/ || { kill -9 $up 2>/dev/null; return 1; }
   local cd
   if [ "$sink" = pipe ]; then
-    taskset -c "$CPU_CONDUIT" "$BIN" -c /tmp/mx-conduit.json > >(cat > /dev/null) 2>&1 & cd=$!
+    taskset -c "$CPU_CONDUIT" "$BIN" -c "$WORK/conduit.json" > >(cat > /dev/null) 2>&1 & cd=$!
   else
-    taskset -c "$CPU_CONDUIT" "$BIN" -c /tmp/mx-conduit.json > /dev/null 2>&1 & cd=$!
+    taskset -c "$CPU_CONDUIT" "$BIN" -c "$WORK/conduit.json" > /dev/null 2>&1 & cd=$!
   fi
   wait_http http://127.0.0.1:8080/__health__ || { echo "$name: conduit did not start" >&2; kill -9 $cd $up 2>/dev/null; return 1; }
 
   taskset -c "$CPU_LOAD" "$OHA" -z 4s -c "$conns" --no-tui http://127.0.0.1:8080/ > /dev/null 2>&1
   local t0; t0=$(ticks $cd)
-  taskset -c "$CPU_LOAD" "$OHA" -z 10s -c "$conns" --no-tui --output-format json http://127.0.0.1:8080/ > /tmp/mx-oha.json 2>/dev/null
+  taskset -c "$CPU_LOAD" "$OHA" -z 10s -c "$conns" --no-tui --output-format json http://127.0.0.1:8080/ > "$WORK/oha.json" 2>/dev/null
   local t1; t1=$(ticks $cd)
   kill -9 $cd $up 2>/dev/null; wait $cd $up 2>/dev/null
 
-  python3 - "$round" "$name" "$workers" "$conns" "$t0" "$t1" >> "$OUT" <<'PY'
+  python3 - "$round" "$name" "$workers" "$conns" "$t0" "$t1" "$WORK/oha.json" >> "$OUT" <<'PY'
 import json, sys
-round_, name, workers, conns, t0, t1 = sys.argv[1:7]
-m = json.load(open('/tmp/mx-oha.json'))['metrics']
+round_, name, workers, conns, t0, t1, oha = sys.argv[1:8]
+m = json.load(open(oha))['metrics']
 rps = m["requests_per_sec"]
 cpu_s = (int(t1) - int(t0)) / 100.0
 us_per_req = cpu_s / (rps * 10.0) * 1e6 if rps else 0

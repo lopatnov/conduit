@@ -7,19 +7,20 @@
 # Prints, per variant and arm, the mean requests/s, p50/p99 and CPU µs per request, and every run. Layout and prerequisites:
 # scripts/bench/README.md. Do not run other CPU-heavy work while it measures.
 set -uo pipefail
+WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT   # scratch files (config, oha output) live here, not at fixed /tmp paths
 A=${1:?usage: ab.sh BIN_A BIN_B [ROUNDS]}
 B=${2:?usage: ab.sh BIN_A BIN_B [ROUNDS]}
 ROUNDS=${3:-3}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT=${OUT:-/tmp/ab.csv}
+OUT=${OUT:-$HOME/perf/ab.csv}
 ONLY=${ONLY:-"w1-nolog w2-nolog w4-nolog w8-nolog"}
 
 echo "arm,round,variant,workers,connections,rps,p50_ms,p99_ms,ok_pct,cpu_us_per_req" > "$OUT"
 for r in $(seq 1 "$ROUNDS"); do
   for arm in A B B A; do
     bin=$A; [ "$arm" = B ] && bin=$B
-    ONLY="$ONLY" bash "$HERE/matrix.sh" "$bin" /tmp/ab-one.csv 1 > /dev/null 2>&1
-    tail -n +2 /tmp/ab-one.csv | sed "s/^/$arm,/" >> "$OUT"
+    ONLY="$ONLY" bash "$HERE/matrix.sh" "$bin" "$WORK/one.csv" 1 > /dev/null 2>&1
+    tail -n +2 "$WORK/one.csv" | sed "s/^/$arm,/" >> "$OUT"
   done
   echo "[ab] round $r/$ROUNDS done"
 done

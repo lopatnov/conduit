@@ -22,6 +22,12 @@ pub struct MiddlewareResponseFilter {
 }
 
 impl ResponseFilter for MiddlewareResponseFilter {
+    // Runs a Rhai script or a WASM plugin, which can block (a module read from disk on first load, a slow script), so
+    // the chain holding this filter runs through `block_in_place`. Stated even though it is the trait default.
+    fn may_block(&self) -> bool {
+        true
+    }
+
     fn apply(
         &self,
         #[cfg_attr(not(any(feature = "rhai", feature = "wasm")), allow(unused_variables))]

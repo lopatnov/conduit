@@ -17,7 +17,9 @@
 //! ## Adding a new response phase
 //!
 //! 1. Create a struct that holds its config.
-//! 2. `impl ResponseFilter for YourFilter`.
+//! 2. `impl ResponseFilter for YourFilter`. If it only edits the header map in memory, also override
+//!    `may_block` to return `false`: the trait defaults to "may block" (safe), and a chain holding such a filter
+//!    runs through `block_in_place`, a thread hand-off per response (issue #475).
 //! 3. Push it into `ResponseFilterChain::build()` at the correct position.
 //!
 //! No other files need to change.
@@ -63,16 +65,11 @@ impl ResponseFilterChain {
         Self::default()
     }
 
+    /// Append a filter. The chain can block as soon as one of its filters can ([`ResponseFilter::may_block`], `true`
+    /// unless the filter says otherwise).
     pub fn push(mut self, f: impl ResponseFilter + 'static) -> Self {
+        self.may_block |= f.may_block();
         self.filters.push(Box::new(f));
-        self
-    }
-
-    /// Like [`push`](Self::push) for a filter that can block the thread it runs on (a Rhai script, a WASM plugin that
-    /// reads its module from disk on first load): the chain then runs through `block_in_place`.
-    pub fn push_blocking(mut self, f: impl ResponseFilter + 'static) -> Self {
-        self.filters.push(Box::new(f));
-        self.may_block = true;
         self
     }
 
@@ -188,7 +185,7 @@ impl ResponseFilterChain {
             .cloned()
             .unwrap_or_default();
         if !middleware.is_empty() {
-            chain = chain.push_blocking(MiddlewareResponseFilter { middleware });
+            chain = chain.push(MiddlewareResponseFilter { middleware });
         }
 
         chain
@@ -214,6 +211,11 @@ pub struct CrlfProtectionFilter {
 }
 
 impl ResponseFilter for CrlfProtectionFilter {
+    // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
+    fn may_block(&self) -> bool {
+        false
+    }
+
     fn apply(
         &self,
         resp: &mut ResponseHeader,
@@ -315,6 +317,11 @@ pub struct InjectExtraHeadersFilter {
 }
 
 impl ResponseFilter for InjectExtraHeadersFilter {
+    // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
+    fn may_block(&self) -> bool {
+        false
+    }
+
     fn apply(
         &self,
         resp: &mut ResponseHeader,
@@ -358,6 +365,11 @@ pub struct ResponseTransformFilter {
 }
 
 impl ResponseFilter for ResponseTransformFilter {
+    // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
+    fn may_block(&self) -> bool {
+        false
+    }
+
     fn apply(
         &self,
         resp: &mut ResponseHeader,
@@ -384,6 +396,11 @@ pub struct ResponseTimeFilter {
 }
 
 impl ResponseFilter for ResponseTimeFilter {
+    // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
+    fn may_block(&self) -> bool {
+        false
+    }
+
     fn apply(
         &self,
         resp: &mut ResponseHeader,
@@ -412,6 +429,11 @@ pub struct ServerTimingFilter {
 }
 
 impl ResponseFilter for ServerTimingFilter {
+    // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
+    fn may_block(&self) -> bool {
+        false
+    }
+
     fn apply(
         &self,
         resp: &mut ResponseHeader,
@@ -458,6 +480,11 @@ pub struct RetryOnErrorFilter {
 }
 
 impl ResponseFilter for RetryOnErrorFilter {
+    // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
+    fn may_block(&self) -> bool {
+        false
+    }
+
     fn apply(
         &self,
         resp: &mut ResponseHeader,
@@ -494,6 +521,11 @@ pub struct ErrorMaskFilter {
 }
 
 impl ResponseFilter for ErrorMaskFilter {
+    // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
+    fn may_block(&self) -> bool {
+        false
+    }
+
     fn apply(
         &self,
         resp: &mut ResponseHeader,
@@ -1202,12 +1234,43 @@ mod tests {
     async fn a_chain_without_middleware_does_not_use_block_in_place() {
         use crate::config::schema::{AppConfig, SiteConfig};
         let mut config = AppConfig::default();
-        config.sites.push(SiteConfig::default());
+        // Every optional phase of `build()` except the middleware one, so a new phase added without its
+        // `may_block() -> false` shows up here as a chain that blocks.
+        config.sites.push(SiteConfig {
+            mask_errors: Some(true),
+            server_timing: Some(true),
+            ..Default::default()
+        });
         let ctx = dummy_ctx();
         let chain = ResponseFilterChain::build(&ctx, &config);
         assert!(!chain.may_block(), "no middleware, nothing that can block");
         let mut resp = make_resp(200);
         chain.run_offloading(&mut resp, &ctx).unwrap();
+    }
+
+    /// The safe default (owner's priorities: security, then speed): a filter that does not say whether it blocks is
+    /// assumed to, so forgetting the override costs a thread hand-off, never a stalled worker.
+    #[test]
+    fn a_filter_that_does_not_declare_itself_makes_the_chain_blocking() {
+        struct Silent;
+        impl ResponseFilter for Silent {
+            fn apply(
+                &self,
+                _: &mut ResponseHeader,
+                _: &dyn ResponseCtx,
+            ) -> Result<ResponseFilterOutcome> {
+                Ok(ResponseFilterOutcome::Continue)
+            }
+        }
+        assert!(Silent.may_block(), "the trait default is 'may block'");
+        assert!(!ResponseFilterChain::new().may_block());
+        assert!(ResponseFilterChain::new().push(Silent).may_block());
+        // One blocking filter anywhere in the chain is enough, whatever order it was added in.
+        let chain = ResponseFilterChain::new()
+            .push(ErrorMaskFilter { mask_enabled: true })
+            .push(Silent)
+            .push(ErrorMaskFilter { mask_enabled: true });
+        assert!(chain.may_block());
     }
 
     /// A site with a response-phase middleware entry gets a chain that may block, and it runs through

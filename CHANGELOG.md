@@ -82,7 +82,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   time), 11–12 threads alive under load where `global.workers: 1` promises one worker, and a hand-off in
   every request's latency. Measured on a 5950X under WSL2 (`oha -c 50`): with one worker 9.2k → 11.2k req/s
   (+22%) and 120 → 90 µs CPU per request (A/B, six runs per arm); with 4 workers +18%, with 8 workers +20%.
-  A chain that does contain a script or WASM filter still runs through `block_in_place`.
+  A chain that does contain a script or WASM filter still runs through `block_in_place`; a filter is assumed
+  to be able to block unless it declares otherwise (`ResponseFilter::may_block`), so a new filter that forgets
+  to say is slower, not unsafe.
   Passthrough throughput scales with `global.workers` (default: one worker thread); the throughput figures
   in `docs/benchmarks.md` could not be reproduced and are annotated, and `scripts/bench/` holds the
   scripts used to measure requests per second and CPU per request.

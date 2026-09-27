@@ -3,6 +3,7 @@
 # Compares a conduit build (1 worker, access log off) with the raw TCP relay (floor) under the same load.
 #   probe.sh CONDUIT_BIN [ROUNDS]
 set -uo pipefail
+WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT   # scratch files (config, oha output) live here, not at fixed /tmp paths
 PERF=$HOME/perf
 OHA=$PERF/tools/bin/oha
 MOCK=$PERF/mock/target/release/bench-upstream
@@ -36,16 +37,16 @@ PY
 measure() {  # label
   local label=$1 pid=$2
   taskset -c "$CPU_LOAD" "$OHA" -z 4s -c 50 --no-tui http://127.0.0.1:8080/ > /dev/null 2>&1
-  snap "$pid" > /tmp/pr-s0
-  taskset -c "$CPU_LOAD" "$OHA" -z 10s -c 50 --no-tui --output-format json http://127.0.0.1:8080/ > /tmp/pr-oha.json 2>/dev/null
-  snap "$pid" > /tmp/pr-s1
-  python3 - "$label" >> "$OUT" <<'PY'
+  snap "$pid" > "$WORK/s0"
+  taskset -c "$CPU_LOAD" "$OHA" -z 10s -c 50 --no-tui --output-format json http://127.0.0.1:8080/ > "$WORK/oha.json" 2>/dev/null
+  snap "$pid" > "$WORK/s1"
+  python3 - "$label" "$WORK" >> "$OUT" <<'PY'
 import json, sys
-label = sys.argv[1]
-m = json.load(open('/tmp/pr-oha.json'))['metrics']
+label, work = sys.argv[1:3]
+m = json.load(open(work + "/oha.json"))['metrics']
 rps = m["requests_per_sec"]; reqs = rps * 10
-s0 = {l.split()[0]: l.split() for l in open('/tmp/pr-s0')}
-s1 = {l.split()[0]: l.split() for l in open('/tmp/pr-s1')}
+s0 = {l.split()[0]: l.split() for l in open(work + "/s0")}
+s1 = {l.split()[0]: l.split() for l in open(work + "/s1")}
 user = sys_ = 0; threads = []
 for tid, a in s1.items():
     b = s0.get(tid, [tid, a[1], "0", "0"])
@@ -62,11 +63,11 @@ PY
 
 for r in $(seq 1 "$ROUNDS"); do
   for target in ${TARGETS:-conduit pp relay}; do
-    pkill -f bench-upstream 2>/dev/null; taskset -c "$CPU_UP" "$MOCK" & up=$!
+    pkill -x bench-upstream 2>/dev/null; taskset -c "$CPU_UP" "$MOCK" & up=$!
     wait_tcp 4000 || { echo "mock not up" >&2; exit 1; }
     if [ "$target" = conduit ]; then
-      printf '{ "global": { "workers": 1 }, "sites": [ { "port": 8080, "proxy": "http://127.0.0.1:4000", "logging": false } ] }' > /tmp/pr-conduit.json
-      taskset -c "$CPU_PROXY" "$BIN" -c /tmp/pr-conduit.json > /dev/null 2>&1 & pid=$!
+      printf '{ "global": { "workers": 1 }, "sites": [ { "port": 8080, "proxy": "http://127.0.0.1:4000", "logging": false } ] }' > "$WORK/conduit.json"
+      taskset -c "$CPU_PROXY" "$BIN" -c "$WORK/conduit.json" > /dev/null 2>&1 & pid=$!
     elif [ "$target" = pp ]; then
       taskset -c "$CPU_PROXY" "$PP" > /dev/null 2>&1 & pid=$!
     else
