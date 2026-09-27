@@ -5,8 +5,8 @@ use pingora_core::services::listening::Service as ListeningService;
 use pingora_proxy::HttpProxy;
 
 use crate::config::schema::SiteConfig;
-use crate::proxy::service::ConduitProxy;
 use crate::server::tls as tls_util;
+use conduit_runtime::proxy::service::ConduitProxy;
 
 /// Maps a TCP port to `(cert_path, key_path, h2_enabled)` for TLS-enabled ports.
 /// (cert_path, key_path, http2_enabled, optional_client_auth)
