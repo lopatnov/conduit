@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::process;
 
+use crate::config::schema::AppConfig;
 use crate::config::validate;
 use crate::server::builder;
 
@@ -11,7 +12,20 @@ use super::config_path::load_config_or_exit;
 pub fn run(config_path: &str) {
     let path = Path::new(&config_path);
     let cfg = load_config_or_exit(path);
-    let errors = validate::validate(&cfg);
+    validate_or_exit(&cfg);
+    if let Err(e) = builder::run_server(cfg, path.to_path_buf(), None) {
+        eprintln!("server error: {e}");
+        process::exit(1);
+    }
+}
+
+/// Validate `cfg`, logging warnings and feature-off warnings, and exit the process on a hard
+/// config error. Shared by the file-based [`run`] and [`run_kubernetes`]'s initial config — a
+/// config sourced from `ConduitSite` CRDs is just as capable of having duplicate host:port
+/// pairs, bad TLS config, etc. as one sourced from a file, and skipping validation for it was
+/// a gap, not a deliberate difference (issue #492).
+fn validate_or_exit(cfg: &AppConfig) {
+    let errors = validate::validate(cfg);
     let (warnings, hard_errors) = validate::partition_by_severity(errors);
     // Advisory findings (e.g. a still-valid cert nearing expiry, issue #191)
     // are logged but must not block startup — only a real config error does.
@@ -24,12 +38,8 @@ pub fn run(config_path: &str) {
         }
         process::exit(1);
     }
-    for w in validate::feature_warnings(&cfg) {
+    for w in validate::feature_warnings(cfg) {
         tracing::warn!("{w}");
-    }
-    if let Err(e) = builder::run_server(cfg, path.to_path_buf(), None) {
-        eprintln!("server error: {e}");
-        process::exit(1);
     }
 }
 
@@ -79,6 +89,7 @@ pub fn run_kubernetes(namespace: &str) {
         sites = initial_config.sites.len(),
         "initial config loaded from ConduitSite CRDs"
     );
+    validate_or_exit(&initial_config);
 
     // Start the server; pass `rx` so CRD changes are hot-swapped automatically.
     if let Err(e) = builder::run_server(initial_config, std::path::PathBuf::new(), Some(rx)) {

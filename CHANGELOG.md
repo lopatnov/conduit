@@ -75,6 +75,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A config sourced from Kubernetes `ConduitSite` CRDs is now validated, both on startup and on every live
+  update (issue #492).** The file-based config path has always rejected a config with duplicate `host:port`
+  pairs, bad TLS config, etc. before starting or hot-swapping; the Kubernetes path swapped every update in
+  unconditionally, with no validation at all — the initial config from `run_kubernetes` and every subsequent
+  CRD-driven update from the live-update watcher. A rejected update now keeps the currently-serving config
+  instead of applying the invalid one; a rejected initial config exits the process like the file-based path
+  already did.
 - **The Admin API's rate-limit-cleanup and event-loop-lag-gauge background tasks now stop when the process
   shuts down**, instead of running until process exit regardless of what `BackgroundService::start()`'s
   caller expects. Found while moving this code into `crates/conduit-server` (issue #147) — not new to that
@@ -330,8 +337,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   services), `AdminApiService` (the rate-limit cleanup, health probe/warmup, Redis cache connect and
   hot-reload watcher background tasks, plus `POST /reload`), `validate()`/`feature_warnings()` and
   the file/Kubernetes config providers on one side; `main()`'s CLI subcommand dispatch and every
-  `conduit <command>` implementation on the other. No config shape, route, or CLI flag changed.
-  One operator-visible effect: the
+  `conduit <command>` implementation on the other. No config shape, route, or CLI flag changed. Two
+  behaviour changes rode along, listed under *Fixed*: the Kubernetes config path is now validated,
+  and two Admin API background tasks now stop on shutdown. One operator-visible effect: the
   `tracing` lines from the moved code carry the targets `conduit_server::…` instead of
   `conduit::server::…`/`conduit::admin::api`/`conduit::config::…`, so a filter such as
   `RUST_LOG=conduit::server=debug` no longer matches them (the default `warn` level is unaffected).
