@@ -464,7 +464,7 @@ jobs:
               return f'{arrow} {sign}{pct:.1f}%{flag}'
 
           lines = ['<!-- performance-report -->', '', '## ⚡ Performance report', '',
-                   '_Reverse-proxy passthrough, \`default\` feature profile, \`oha -z 10s -c 50\` — informational only, not a merge gate; single shared CI runner, treat as a trend signal, not a lab measurement._', '']
+                   '_Reverse-proxy passthrough, \`default\` feature profile, **one worker thread (the default; \`global.workers\` unset)**, \`oha -z 10s -c 50\` — informational only, not a merge gate; single shared CI runner, treat as a trend signal, not a lab measurement (see #475 and \`docs/benchmarks.md\`)._', '']
 
           if base['rps'] is None:
               lines += ['Metric | PR head', '---|---',

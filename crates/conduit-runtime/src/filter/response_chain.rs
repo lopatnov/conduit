@@ -17,7 +17,9 @@
 //! ## Adding a new response phase
 //!
 //! 1. Create a struct that holds its config.
-//! 2. `impl ResponseFilter for YourFilter`.
+//! 2. `impl ResponseFilter for YourFilter`. If it only edits the header map in memory, also override
+//!    `may_block` to return `false`: the trait defaults to "may block" (safe), and a chain holding such a filter
+//!    runs through `block_in_place`, a thread hand-off per response (issue #475).
 //! 3. Push it into `ResponseFilterChain::build()` at the correct position.
 //!
 //! No other files need to change.
@@ -53,6 +55,9 @@ impl ResponseCtx for RequestCtx {
 #[derive(Default)]
 pub struct ResponseFilterChain {
     filters: Vec<Box<dyn ResponseFilter>>,
+    /// Whether a filter in the chain can block the thread (a script or a WASM plugin) — see
+    /// [`ResponseFilterChain::run_offloading`].
+    may_block: bool,
 }
 
 impl ResponseFilterChain {
@@ -60,9 +65,37 @@ impl ResponseFilterChain {
         Self::default()
     }
 
+    /// Append a filter. The chain can block as soon as one of its filters can ([`ResponseFilter::may_block`], `true`
+    /// unless the filter says otherwise).
     pub fn push(mut self, f: impl ResponseFilter + 'static) -> Self {
+        self.may_block |= f.may_block();
         self.filters.push(Box::new(f));
         self
+    }
+
+    /// Whether a filter in the chain can block the thread it runs on.
+    pub fn may_block(&self) -> bool {
+        self.may_block
+    }
+
+    /// [`run`](Self::run), told to Tokio as blocking only when the chain can block.
+    ///
+    /// `tokio::task::block_in_place` on a multi-thread runtime hands the worker's queue over to another thread (taking
+    /// one from the blocking pool, or starting one) and takes the worker back afterwards; done for every response it
+    /// cost ~30 µs of CPU per proxied request (about 110 → 80 µs on the WSL2 test rig, most of it kernel time), left
+    /// 11–12 threads alive under load where `global.workers: 1` promises one worker, and put a thread hand-off in every
+    /// request's latency: ~25% throughput (issue #475). A chain without script or WASM filters — the common case —
+    /// only edits headers and never blocks, so it runs in place.
+    pub fn run_offloading(
+        &self,
+        resp: &mut ResponseHeader,
+        req_ctx: &dyn ResponseCtx,
+    ) -> Result<ResponseFilterOutcome> {
+        if self.may_block {
+            tokio::task::block_in_place(|| self.run(resp, req_ctx))
+        } else {
+            self.run(resp, req_ctx)
+        }
     }
 
     /// Run every filter in order.
@@ -178,6 +211,11 @@ pub struct CrlfProtectionFilter {
 }
 
 impl ResponseFilter for CrlfProtectionFilter {
+    // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
+    fn may_block(&self) -> bool {
+        false
+    }
+
     fn apply(
         &self,
         resp: &mut ResponseHeader,
@@ -279,6 +317,11 @@ pub struct InjectExtraHeadersFilter {
 }
 
 impl ResponseFilter for InjectExtraHeadersFilter {
+    // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
+    fn may_block(&self) -> bool {
+        false
+    }
+
     fn apply(
         &self,
         resp: &mut ResponseHeader,
@@ -322,6 +365,11 @@ pub struct ResponseTransformFilter {
 }
 
 impl ResponseFilter for ResponseTransformFilter {
+    // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
+    fn may_block(&self) -> bool {
+        false
+    }
+
     fn apply(
         &self,
         resp: &mut ResponseHeader,
@@ -348,6 +396,11 @@ pub struct ResponseTimeFilter {
 }
 
 impl ResponseFilter for ResponseTimeFilter {
+    // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
+    fn may_block(&self) -> bool {
+        false
+    }
+
     fn apply(
         &self,
         resp: &mut ResponseHeader,
@@ -376,6 +429,11 @@ pub struct ServerTimingFilter {
 }
 
 impl ResponseFilter for ServerTimingFilter {
+    // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
+    fn may_block(&self) -> bool {
+        false
+    }
+
     fn apply(
         &self,
         resp: &mut ResponseHeader,
@@ -422,6 +480,11 @@ pub struct RetryOnErrorFilter {
 }
 
 impl ResponseFilter for RetryOnErrorFilter {
+    // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
+    fn may_block(&self) -> bool {
+        false
+    }
+
     fn apply(
         &self,
         resp: &mut ResponseHeader,
@@ -458,6 +521,11 @@ pub struct ErrorMaskFilter {
 }
 
 impl ResponseFilter for ErrorMaskFilter {
+    // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
+    fn may_block(&self) -> bool {
+        false
+    }
+
     fn apply(
         &self,
         resp: &mut ResponseHeader,
@@ -1155,6 +1223,112 @@ mod tests {
             matches!(outcome, ResponseFilterOutcome::MaskBody),
             "mask_errors=true + 5xx → MaskBody"
         );
+    }
+
+    // ── run_offloading / may_block (issue #475) ───────────────────────────────
+
+    /// The chain built for an ordinary site has no script or WASM filter, so it must run in place.
+    /// `block_in_place` panics on a current-thread runtime — which is what `#[tokio::test]` starts — so the old
+    /// unconditional call (a thread hand-off per proxied response) fails this test.
+    #[tokio::test]
+    async fn a_chain_without_middleware_does_not_use_block_in_place() {
+        use crate::config::schema::{AppConfig, HeaderTransformConfig, SiteConfig};
+        let mut config = AppConfig::default();
+        // Every optional phase of `build()` except the middleware one, so a new phase added without its
+        // `may_block() -> false` shows up here as a chain that blocks.
+        config.sites.push(SiteConfig {
+            mask_errors: Some(true),
+            server_timing: Some(true),
+            ..Default::default()
+        });
+        let mut ctx = dummy_ctx();
+        ctx.response_transform = Some(HeaderTransformConfig {
+            set_headers: None,
+            remove_headers: None,
+        });
+        let chain = ResponseFilterChain::build(&ctx, &config);
+        assert!(!chain.may_block(), "no middleware, nothing that can block");
+        let mut resp = make_resp(200);
+        chain.run_offloading(&mut resp, &ctx).unwrap();
+    }
+
+    /// The safe default (owner's priorities: security, then speed): a filter that does not say whether it blocks is
+    /// assumed to, so forgetting the override costs a thread hand-off, never a stalled worker.
+    #[test]
+    fn a_filter_that_does_not_declare_itself_makes_the_chain_blocking() {
+        struct Silent;
+        impl ResponseFilter for Silent {
+            fn apply(
+                &self,
+                _: &mut ResponseHeader,
+                _: &dyn ResponseCtx,
+            ) -> Result<ResponseFilterOutcome> {
+                Ok(ResponseFilterOutcome::Continue)
+            }
+        }
+        assert!(Silent.may_block(), "the trait default is 'may block'");
+        assert!(!ResponseFilterChain::new().may_block());
+        assert!(ResponseFilterChain::new().push(Silent).may_block());
+        // One blocking filter anywhere in the chain is enough, whatever order it was added in.
+        let chain = ResponseFilterChain::new()
+            .push(ErrorMaskFilter { mask_enabled: true })
+            .push(Silent)
+            .push(ErrorMaskFilter { mask_enabled: true });
+        assert!(chain.may_block());
+    }
+
+    /// A site with a response-phase middleware entry gets a chain that may block, and it runs through
+    /// `block_in_place` (which needs the multi-thread runtime Pingora provides).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_chain_with_middleware_runs_through_block_in_place() {
+        use crate::config::schema::{AppConfig, SiteConfig};
+        use conduit_middleware::config::MiddlewareEntry;
+        let mut config = AppConfig::default();
+        config.sites.push(SiteConfig {
+            middleware: Some(vec![MiddlewareEntry {
+                r#type: "script".to_owned(),
+                config: None,
+                path: None,
+                phase: Some("response".to_owned()),
+            }]),
+            ..Default::default()
+        });
+        let ctx = dummy_ctx();
+        let chain = ResponseFilterChain::build(&ctx, &config);
+        assert!(
+            chain.may_block(),
+            "a middleware entry means a script/WASM filter in the chain"
+        );
+        let mut resp = make_resp(200);
+        // Fail-open: an entry without a usable script passes through; what matters is that the call is legal on
+        // the multi-thread runtime.
+        let _ = chain.run_offloading(&mut resp, &ctx);
+    }
+
+    /// Middleware that only runs in the request phase does nothing in the response chain, so it must not cost every
+    /// response a `block_in_place` either (current-thread runtime: an unwanted call panics).
+    #[tokio::test]
+    async fn a_chain_with_only_request_phase_middleware_does_not_use_block_in_place() {
+        use crate::config::schema::{AppConfig, SiteConfig};
+        use conduit_middleware::config::MiddlewareEntry;
+        let mut config = AppConfig::default();
+        config.sites.push(SiteConfig {
+            middleware: Some(vec![MiddlewareEntry {
+                r#type: "script".to_owned(),
+                config: None,
+                path: Some("auth.rhai".to_owned()),
+                phase: None, // defaults to the request phase
+            }]),
+            ..Default::default()
+        });
+        let ctx = dummy_ctx();
+        let chain = ResponseFilterChain::build(&ctx, &config);
+        assert!(
+            !chain.may_block(),
+            "a request-phase script never runs in this chain"
+        );
+        let mut resp = make_resp(200);
+        chain.run_offloading(&mut resp, &ctx).unwrap();
     }
 
     // ── MiddlewareResponseFilter — tests moved to

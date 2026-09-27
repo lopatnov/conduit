@@ -52,4 +52,14 @@ pub trait ResponseFilter: Send + Sync {
         resp: &mut ResponseHeader,
         req_ctx: &dyn ResponseCtx,
     ) -> Result<ResponseFilterOutcome>;
+
+    /// Whether [`apply`](Self::apply) can block the thread it runs on (a script, a WASM plugin, file or network I/O).
+    ///
+    /// **Defaults to `true`, the safe answer:** a chain holding such a filter runs through `tokio::task::block_in_place`,
+    /// so a blocking filter cannot stall the worker that serves other requests. Override to `false` only for a filter
+    /// that provably just edits the header map in memory — that skips the thread hand-off `block_in_place` costs on
+    /// every response (~30 µs of CPU, issue #475). A filter that forgets to say ends up slower, never unsafe.
+    fn may_block(&self) -> bool {
+        true
+    }
 }

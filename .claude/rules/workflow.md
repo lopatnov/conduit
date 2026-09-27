@@ -5,6 +5,13 @@
 > separate UI/product/design track, and the conductor + user fill the BA/PM functions for
 > almost everything).
 
+## Priorities when they conflict (owner, 2026-09-27)
+
+1. **Security.** 2. **Performance.** 3. **Usability.** A speed-up never weakens a check; the fast path is opt-in and
+the safe one is the default (a filter is assumed to block unless it says otherwise — `ResponseFilter::may_block`,
+#475), so forgetting the flag costs speed, not safety. A PR that changes a hot path says in its description what it
+does to security and availability.
+
 ## Who's the conductor
 
 **The main Claude session is the conductor.** Subagents don't replace it — they're called for

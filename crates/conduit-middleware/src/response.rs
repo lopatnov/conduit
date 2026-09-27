@@ -22,6 +22,16 @@ pub struct MiddlewareResponseFilter {
 }
 
 impl ResponseFilter for MiddlewareResponseFilter {
+    /// Runs a Rhai script or a WASM plugin, which can block (a module read from disk on first load, a slow script), so
+    /// the chain holding this filter runs through `block_in_place`. The one thing `apply` provably skips is a
+    /// request-phase script; anything else — a response-phase script, a WASM plugin, a type this filter does not know —
+    /// counts as blocking, so an entry kind added to `apply` later without touching this stays on the safe side.
+    fn may_block(&self) -> bool {
+        self.middleware
+            .iter()
+            .any(|e| !skipped_in_response_phase(e))
+    }
+
     fn apply(
         &self,
         #[cfg_attr(not(any(feature = "rhai", feature = "wasm")), allow(unused_variables))]
@@ -47,8 +57,8 @@ impl ResponseFilter for MiddlewareResponseFilter {
                 // ── Rhai response scripts ─────────────────────────────────────
                 #[cfg(feature = "rhai")]
                 "script" => {
-                    let phase = entry.phase.as_deref().unwrap_or("request");
-                    if phase != "response" {
+                    // The same predicate `may_block` uses, so the two cannot drift apart.
+                    if skipped_in_response_phase(entry) {
                         continue;
                     }
                     let Some(ref path) = entry.path else { continue };
@@ -99,6 +109,12 @@ impl ResponseFilter for MiddlewareResponseFilter {
 
         Ok(ResponseFilterOutcome::Continue)
     }
+}
+
+/// A `script` entry whose phase is not `"response"` (the default is `"request"`) is skipped by
+/// [`MiddlewareResponseFilter::apply`], so it never runs — and never blocks — in the response phase.
+fn skipped_in_response_phase(entry: &MiddlewareEntry) -> bool {
+    entry.r#type == "script" && entry.phase.as_deref().unwrap_or("request") != "response"
 }
 
 /// Apply header mutations to a Pingora response header.
@@ -171,6 +187,53 @@ mod tests {
         // Must not panic even though the file doesn't exist (script skipped).
         let outcome = filter.apply(&mut resp, &ctx).unwrap();
         assert!(matches!(outcome, ResponseFilterOutcome::Continue));
+    }
+
+    // ── may_block (issue #475) ────────────────────────────────────────────────
+
+    fn entry(kind: &str, phase: Option<&str>) -> MiddlewareEntry {
+        MiddlewareEntry {
+            r#type: kind.to_owned(),
+            path: None,
+            phase: phase.map(str::to_owned),
+            config: None,
+        }
+    }
+
+    fn may_block_for(entries: Vec<MiddlewareEntry>) -> bool {
+        MiddlewareResponseFilter {
+            middleware: entries,
+        }
+        .may_block()
+    }
+
+    /// Only a request-phase script is known not to run here; everything else counts as blocking.
+    #[test]
+    fn may_block_is_false_only_when_every_entry_is_a_skipped_request_phase_script() {
+        assert!(!may_block_for(vec![]), "nothing to run");
+        assert!(
+            !may_block_for(vec![entry("script", None)]),
+            "phase defaults to request"
+        );
+        assert!(!may_block_for(vec![
+            entry("script", Some("request")),
+            entry("script", Some("request")),
+        ]));
+
+        assert!(may_block_for(vec![entry("script", Some("response"))]));
+        assert!(
+            may_block_for(vec![entry("wasm", None)]),
+            "a WASM plugin runs whatever the phase says"
+        );
+        assert!(may_block_for(vec![entry("wasm", Some("request"))]));
+        assert!(
+            may_block_for(vec![entry("something-new", None)]),
+            "a type this filter does not know is assumed to block"
+        );
+        assert!(
+            may_block_for(vec![entry("script", Some("request")), entry("wasm", None)]),
+            "one blocking entry among skipped ones"
+        );
     }
 
     // ── apply_response_mutations ──────────────────────────────────────────────
