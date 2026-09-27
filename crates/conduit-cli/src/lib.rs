@@ -43,23 +43,3 @@ pub trait CliCommand {
 pub mod features {
     pub const KUBERNETES: bool = cfg!(feature = "kubernetes");
 }
-
-// Aliases for the paths the moved files used in the root crate — same device as `conduit-runtime`/
-// `conduit-admin`/`conduit-server`. `schema`/`load_config` come straight from `conduit_config` (a Layer-1 crate
-// this crate depends on directly like the root does); `validate`/`kubernetes`/`provider` come from
-// `conduit_server` (issue #147 moved them there, not here — `serve.rs`/`validate.rs` need the same config
-// validation `crates/conduit-server`'s own `/reload` handler uses).
-mod config {
-    pub(crate) use conduit_config::parse::load_config;
-    pub(crate) use conduit_config::schema;
-    #[cfg(feature = "kubernetes")]
-    pub(crate) use conduit_server::config::kubernetes;
-    // `provider::Provider` is only reached from `run_kubernetes`'s `KubernetesProvider::new(ns).run(tx)` call.
-    #[cfg(feature = "kubernetes")]
-    pub(crate) use conduit_server::config::provider;
-    pub(crate) use conduit_server::config::validate;
-}
-
-mod server {
-    pub(crate) use conduit_server::server::builder;
-}

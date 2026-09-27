@@ -1,4 +1,4 @@
-use crate::config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget, ProxyTarget, SiteConfig};
+use conduit_config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget, ProxyTarget, SiteConfig};
 
 /// Collect all unique upstream URLs from an `AppConfig`.
 pub(crate) fn collect_upstream_urls(app: &AppConfig) -> Vec<String> {
@@ -51,7 +51,7 @@ fn extract_route_target_urls(target: &ProxyRouteTarget) -> Vec<String> {
 }
 
 /// Collect every URL from a `Full` proxy route config (targets + group targets).
-fn collect_full_target_urls(cfg: &crate::config::schema::ProxyRouteConfig) -> Vec<String> {
+fn collect_full_target_urls(cfg: &conduit_config::schema::ProxyRouteConfig) -> Vec<String> {
     let mut out: Vec<String> = cfg.targets.iter().map(proxy_target_url).collect();
     if let Some(groups) = &cfg.groups {
         for group in groups {

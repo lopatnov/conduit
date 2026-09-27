@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::process;
 
-use crate::config::schema::ProxyConfig;
-use crate::config::validate;
+use conduit_config::schema::ProxyConfig;
+use conduit_server::config::validate;
 
 use super::config_path::load_config_or_exit;
 
