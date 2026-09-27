@@ -157,10 +157,10 @@ pub(super) async fn upstream_response_filter(
     // conflict with the immutable `req_ctx` reference.
     let sticky_cookie: Option<(String, String)> = req_ctx.proxy.sticky_set_cookie.clone();
 
-    // The response chain may execute WASM plugins whose .wasm file is
-    // read from disk on first load.  Use block_in_place to signal Tokio
-    // that this synchronous chain execution may block.
-    let run_result = tokio::task::block_in_place(|| chain.run(upstream_response, req_ctx));
+    // The response chain may execute WASM plugins whose .wasm file is read from disk on first load, so a chain that
+    // has one runs through `block_in_place`; a chain that only edits headers runs in place (issue #475: the
+    // unconditional `block_in_place` cost ~30 us of CPU and a thread hand-off per response).
+    let run_result = chain.run_offloading(upstream_response, req_ctx);
 
     match run_result? {
         ResponseFilterOutcome::Continue => {}

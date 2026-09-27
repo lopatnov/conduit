@@ -75,6 +75,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Every proxied response no longer takes a thread hand-off (issue #475).** The response filter chain
+  ran through Tokio's `block_in_place` on every response, although it only edits headers unless the site
+  configures script or WASM `middleware`. On a multi-thread runtime `block_in_place` gives the worker's
+  task queue to another thread and takes it back afterwards: about 30 µs of CPU per request (mostly kernel
+  time), 11–12 threads alive under load where `global.workers: 1` promises one worker, and a hand-off in
+  every request's latency. Measured on a 5950X under WSL2 (`oha -c 50`): with one worker 9.2k → 11.2k req/s
+  (+22%) and 120 → 90 µs CPU per request (A/B, six runs per arm); with 4 workers +18%, with 8 workers +20%.
+  A chain that does contain a script or WASM filter still runs through `block_in_place`.
+  Passthrough throughput scales with `global.workers` (default: one worker thread); the throughput figures
+  in `docs/benchmarks.md` could not be reproduced and are annotated, and `scripts/bench/` holds the
+  scripts used to measure requests per second and CPU per request.
 - **HMAC-signed sticky sessions now actually route to the upstream their
   cookie names.** After verifying the cookie against a specific upstream,
   Conduit threw that result away and instead hashed the upstream's *URL

@@ -53,6 +53,9 @@ impl ResponseCtx for RequestCtx {
 #[derive(Default)]
 pub struct ResponseFilterChain {
     filters: Vec<Box<dyn ResponseFilter>>,
+    /// Whether a filter in the chain can block the thread (a script or a WASM plugin) — see
+    /// [`ResponseFilterChain::run_offloading`].
+    may_block: bool,
 }
 
 impl ResponseFilterChain {
@@ -63,6 +66,39 @@ impl ResponseFilterChain {
     pub fn push(mut self, f: impl ResponseFilter + 'static) -> Self {
         self.filters.push(Box::new(f));
         self
+    }
+
+    /// Like [`push`](Self::push) for a filter that can block the thread it runs on (a Rhai script, a WASM plugin that
+    /// reads its module from disk on first load): the chain then runs through `block_in_place`.
+    pub fn push_blocking(mut self, f: impl ResponseFilter + 'static) -> Self {
+        self.filters.push(Box::new(f));
+        self.may_block = true;
+        self
+    }
+
+    /// Whether a filter in the chain can block the thread it runs on.
+    pub fn may_block(&self) -> bool {
+        self.may_block
+    }
+
+    /// [`run`](Self::run), told to Tokio as blocking only when the chain can block.
+    ///
+    /// `tokio::task::block_in_place` on a multi-thread runtime hands the worker's queue over to another thread (taking
+    /// one from the blocking pool, or starting one) and takes the worker back afterwards; done for every response it
+    /// cost ~30 µs of CPU per proxied request (about 110 → 80 µs on the WSL2 test rig, most of it kernel time), left
+    /// 11–12 threads alive under load where `global.workers: 1` promises one worker, and put a thread hand-off in every
+    /// request's latency: ~25% throughput (issue #475). A chain without script or WASM filters — the common case —
+    /// only edits headers and never blocks, so it runs in place.
+    pub fn run_offloading(
+        &self,
+        resp: &mut ResponseHeader,
+        req_ctx: &dyn ResponseCtx,
+    ) -> Result<ResponseFilterOutcome> {
+        if self.may_block {
+            tokio::task::block_in_place(|| self.run(resp, req_ctx))
+        } else {
+            self.run(resp, req_ctx)
+        }
     }
 
     /// Run every filter in order.
@@ -152,7 +188,7 @@ impl ResponseFilterChain {
             .cloned()
             .unwrap_or_default();
         if !middleware.is_empty() {
-            chain = chain.push(MiddlewareResponseFilter { middleware });
+            chain = chain.push_blocking(MiddlewareResponseFilter { middleware });
         }
 
         chain
@@ -1155,6 +1191,51 @@ mod tests {
             matches!(outcome, ResponseFilterOutcome::MaskBody),
             "mask_errors=true + 5xx → MaskBody"
         );
+    }
+
+    // ── run_offloading / may_block (issue #475) ───────────────────────────────
+
+    /// The chain built for an ordinary site has no script or WASM filter, so it must run in place.
+    /// `block_in_place` panics on a current-thread runtime — which is what `#[tokio::test]` starts — so the old
+    /// unconditional call (a thread hand-off per proxied response) fails this test.
+    #[tokio::test]
+    async fn a_chain_without_middleware_does_not_use_block_in_place() {
+        use crate::config::schema::{AppConfig, SiteConfig};
+        let mut config = AppConfig::default();
+        config.sites.push(SiteConfig::default());
+        let ctx = dummy_ctx();
+        let chain = ResponseFilterChain::build(&ctx, &config);
+        assert!(!chain.may_block(), "no middleware, nothing that can block");
+        let mut resp = make_resp(200);
+        chain.run_offloading(&mut resp, &ctx).unwrap();
+    }
+
+    /// A site with a response-phase middleware entry gets a chain that may block, and it runs through
+    /// `block_in_place` (which needs the multi-thread runtime Pingora provides).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_chain_with_middleware_runs_through_block_in_place() {
+        use crate::config::schema::{AppConfig, SiteConfig};
+        use conduit_middleware::config::MiddlewareEntry;
+        let mut config = AppConfig::default();
+        config.sites.push(SiteConfig {
+            middleware: Some(vec![MiddlewareEntry {
+                r#type: "script".to_owned(),
+                config: None,
+                path: None,
+                phase: Some("response".to_owned()),
+            }]),
+            ..Default::default()
+        });
+        let ctx = dummy_ctx();
+        let chain = ResponseFilterChain::build(&ctx, &config);
+        assert!(
+            chain.may_block(),
+            "a middleware entry means a script/WASM filter in the chain"
+        );
+        let mut resp = make_resp(200);
+        // Fail-open: an entry without a usable script passes through; what matters is that the call is legal on
+        // the multi-thread runtime.
+        let _ = chain.run_offloading(&mut resp, &ctx);
     }
 
     // ── MiddlewareResponseFilter — tests moved to
