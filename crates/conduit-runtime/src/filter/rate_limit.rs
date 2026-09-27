@@ -1,6 +1,6 @@
 //! `Session`-aware rate-limit key extraction and admission check.
 //!
-//! The pure, `Session`-independent parts — [`RateLimitConfig`](crate::config::
+//! The pure, `Session`-independent parts — [`RateLimitConfig`](conduit_config::
 //! schema::RateLimitConfig), `TokenBucket`, `RateLimiter`, `MAX_BUCKETS`,
 //! `cleanup` — moved to `crates/conduit-ratelimit` (issue #114/#137, slice 1)
 //! and are re-exported below so every existing `crate::filter::rate_limit::*`
@@ -11,8 +11,8 @@ use std::borrow::Cow;
 
 use pingora_proxy::Session;
 
-use crate::config::schema::RateLimitConfig;
 use crate::filter::auth::is_path_skipped;
+use conduit_config::schema::RateLimitConfig;
 
 pub use conduit_ratelimit::{cleanup, RateLimiter, TokenBucket, MAX_BUCKETS};
 

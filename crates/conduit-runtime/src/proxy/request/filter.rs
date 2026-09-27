@@ -22,7 +22,6 @@ use std::sync::atomic::Ordering;
 use pingora_core::Result;
 use pingora_proxy::Session;
 
-use crate::config::schema::{MiddlewareEntry, SiteConfig};
 use crate::filter::auth;
 #[cfg(feature = "consumers")]
 use crate::filter::chain::ConsumersGuard;
@@ -43,6 +42,7 @@ use crate::proxy::request::transform::extract_host;
 use crate::proxy::request::{handler_kind_of, GuardCtx, HandlerKind};
 use crate::proxy::router;
 use crate::proxy::service::ConduitProxy;
+use conduit_config::schema::{MiddlewareEntry, SiteConfig};
 
 impl ConduitProxy {
     /// Core request-processing pipeline.

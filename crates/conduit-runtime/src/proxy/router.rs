@@ -5,9 +5,6 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
-#[cfg(feature = "proxy")]
-use crate::config::schema::ProxyConfig;
-use crate::config::schema::{AppConfig, RouteConfig, SiteConfig, StaticOptions};
 use crate::proxy::ctx::{
     LocalHandler, ProxyReqState, RequestCtx, RetryState, RouteRateLimit, UpstreamTarget,
 };
@@ -15,6 +12,9 @@ use crate::proxy::dispatch;
 use crate::proxy::health::UpstreamRegistry;
 use crate::proxy::routes::{self, RouteMatch};
 use crate::proxy::upstream;
+#[cfg(feature = "proxy")]
+use conduit_config::schema::ProxyConfig;
+use conduit_config::schema::{AppConfig, RouteConfig, SiteConfig, StaticOptions};
 #[cfg(feature = "proxy")]
 use conduit_proxy_http::options::ProxyCtx;
 use conduit_proxy_http::outcome::{ProxyOutcome, ProxyUpstream};
@@ -32,9 +32,9 @@ pub struct RouteResolution {
     /// Retry state (URLs + attempt counter) when `retry` is configured.
     pub retry: Option<RetryState>,
     /// Per-route connection timeouts.
-    pub proxy_timeout: Option<crate::config::schema::ProxyTimeout>,
+    pub proxy_timeout: Option<conduit_config::schema::ProxyTimeout>,
     /// Per-route connection-pool settings.
-    pub proxy_pool: Option<crate::config::schema::ConnectionPoolConfig>,
+    pub proxy_pool: Option<conduit_config::schema::ConnectionPoolConfig>,
     /// Negotiate HTTP/2 with the upstream when `true`.
     pub proxy_http2: bool,
     /// Selected upstream URL — `Some` for every proxy route so passive-health
@@ -47,7 +47,7 @@ pub struct RouteResolution {
     /// URL above is for attribution only — no slot to release.
     pub upstream_conn_slot: bool,
     /// Per-route cache config, if caching is enabled.
-    pub proxy_cache_cfg: Option<crate::config::schema::CacheConfig>,
+    pub proxy_cache_cfg: Option<conduit_config::schema::CacheConfig>,
     /// Passive health: HTTP status codes that count as upstream failures.
     /// Populated from `healthCheck.unhealthyStatus`.
     pub passive_unhealthy_status: Vec<u16>,
@@ -533,10 +533,10 @@ pub use crate::proxy::dispatch::parse_rfc9218_priority;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{AppConfig, HealthCheckConfig, ProxyRouteTarget, SiteConfig};
-    #[cfg(feature = "proxy")]
-    use crate::config::schema::{LoadBalanceStrategy, RetryConfig};
     use crate::proxy::health::UpstreamRegistry;
+    use conduit_config::schema::{AppConfig, HealthCheckConfig, ProxyRouteTarget, SiteConfig};
+    #[cfg(feature = "proxy")]
+    use conduit_config::schema::{LoadBalanceStrategy, RetryConfig};
     #[cfg(feature = "proxy")]
     use conduit_proxy_http::sticky::{hmac_sign_sticky, hmac_verify_sticky};
 
@@ -622,7 +622,7 @@ mod tests {
     #[test]
     #[cfg(feature = "static")]
     fn route_request_static_file() {
-        use crate::config::schema::StaticConfig;
+        use conduit_config::schema::StaticConfig;
         let config = AppConfig {
             sites: vec![SiteConfig {
                 static_files: Some(StaticConfig::Single("./dist".to_string())),
@@ -654,7 +654,7 @@ mod tests {
     #[cfg(feature = "proxy")]
     #[test]
     fn route_request_proxy_single() {
-        use crate::config::schema::ProxyConfig;
+        use conduit_config::schema::ProxyConfig;
         let config = AppConfig {
             sites: vec![SiteConfig {
                 proxy: Some(ProxyConfig::Single("http://backend:4000".to_string())),
@@ -690,7 +690,7 @@ mod tests {
     // when the feature is on, so the negative tests cannot pass by accident.
 
     fn proxy_and_static_site() -> AppConfig {
-        use crate::config::schema::{MatchConfig, ProxyConfig};
+        use conduit_config::schema::{MatchConfig, ProxyConfig};
         AppConfig {
             sites: vec![SiteConfig {
                 routes: Some(vec![RouteConfig {
@@ -773,7 +773,7 @@ mod tests {
 
     #[cfg(feature = "static")]
     fn proxy_map_and_static_site() -> AppConfig {
-        use crate::config::schema::{ProxyConfig, StaticConfig};
+        use conduit_config::schema::{ProxyConfig, StaticConfig};
         use indexmap::IndexMap;
 
         let mut map = IndexMap::new();
@@ -844,7 +844,7 @@ mod tests {
     #[cfg(not(feature = "proxy"))]
     #[test]
     fn routes_entry_keeps_its_rate_limit_stamp_without_proxy_feature() {
-        use crate::config::schema::{MatchConfig, ProxyRouteConfig};
+        use conduit_config::schema::{MatchConfig, ProxyRouteConfig};
         use conduit_ratelimit::RateLimitConfig;
         use conduit_upstream::ProxyTarget;
 
@@ -934,7 +934,7 @@ mod tests {
 
     #[test]
     fn route_request_metrics_path() {
-        use crate::config::schema::MetricsConfig;
+        use conduit_config::schema::MetricsConfig;
         let config = AppConfig {
             sites: vec![SiteConfig {
                 metrics: Some(MetricsConfig {
@@ -972,16 +972,16 @@ mod tests {
         // When client_ip is empty the hash must be computed from path so that
         // multiple requests without a resolvable IP still distribute across
         // upstreams rather than all mapping to the same bucket.
-        use crate::config::schema::ProxyConfig;
+        use conduit_config::schema::ProxyConfig;
         use indexmap::IndexMap;
 
         let mut routes = IndexMap::new();
         routes.insert(
             "/".to_string(),
-            ProxyRouteTarget::Full(Box::new(crate::config::schema::ProxyRouteConfig {
+            ProxyRouteTarget::Full(Box::new(conduit_config::schema::ProxyRouteConfig {
                 targets: vec![
-                    crate::config::schema::ProxyTarget::Simple("http://a:4000".to_string()),
-                    crate::config::schema::ProxyTarget::Simple("http://b:4000".to_string()),
+                    conduit_config::schema::ProxyTarget::Simple("http://a:4000".to_string()),
+                    conduit_config::schema::ProxyTarget::Simple("http://b:4000".to_string()),
                 ],
                 strategy: Some(LoadBalanceStrategy::IpHash),
                 hash_key: Some("ip".to_string()),
@@ -1043,7 +1043,7 @@ mod tests {
     #[cfg(feature = "proxy")]
     #[test]
     fn override_replaces_config_targets() {
-        use crate::config::schema::ProxyConfig;
+        use conduit_config::schema::ProxyConfig;
         use indexmap::IndexMap;
 
         let mut routes = IndexMap::new();
@@ -1121,7 +1121,9 @@ mod tests {
     // used to return.
 
     fn make_priority_site(path: &str, priority: u8) -> SiteConfig {
-        use crate::config::schema::{ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget};
+        use conduit_config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget,
+        };
         let mut routes = indexmap::IndexMap::new();
         // A real upstream target is required: with an empty `targets` list,
         // routing itself produces no resolution at all (not even a
@@ -1175,7 +1177,7 @@ mod tests {
 
     #[test]
     fn route_priority_returns_none_when_not_set() {
-        use crate::config::schema::{ProxyConfig, ProxyRouteTarget};
+        use conduit_config::schema::{ProxyConfig, ProxyRouteTarget};
         let mut routes = indexmap::IndexMap::new();
         routes.insert(
             "/".to_string(),
@@ -1207,7 +1209,7 @@ mod tests {
     fn empty_override_falls_through_to_fallback() {
         // When the override list is explicitly empty, no URL can be selected
         // and the request should fall through to the Fallback handler.
-        use crate::config::schema::ProxyConfig;
+        use conduit_config::schema::ProxyConfig;
         use indexmap::IndexMap;
 
         let mut routes = IndexMap::new();
@@ -1292,7 +1294,7 @@ mod tests {
     #[cfg(feature = "proxy")]
     #[test]
     fn route_rate_limit_returns_rl_when_configured() {
-        use crate::config::schema::{
+        use conduit_config::schema::{
             ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig,
         };
         use indexmap::IndexMap;
@@ -1340,7 +1342,7 @@ mod tests {
     /// this as a regression guard.
     #[test]
     fn routes_array_match_does_not_inherit_proxy_map_rate_limit() {
-        use crate::config::schema::{
+        use conduit_config::schema::{
             MatchConfig, ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget,
             RateLimitConfig, RouteConfig,
         };
@@ -1397,7 +1399,7 @@ mod tests {
     #[cfg(feature = "proxy")]
     #[test]
     fn route_rate_limit_stamped_even_when_overloaded() {
-        use crate::config::schema::{
+        use conduit_config::schema::{
             ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig,
             UpstreamHealthCheck,
         };
@@ -1474,7 +1476,7 @@ mod tests {
     #[cfg(feature = "proxy")]
     #[test]
     fn malformed_target_still_stamps_rate_limit_issue_415() {
-        use crate::config::schema::{
+        use conduit_config::schema::{
             ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, RateLimitConfig,
         };
         use indexmap::IndexMap;
@@ -1541,7 +1543,7 @@ mod tests {
     #[test]
     #[cfg(feature = "static")]
     fn static_site_returns_static_file_handler() {
-        use crate::config::schema::StaticConfig;
+        use conduit_config::schema::StaticConfig;
         let site = SiteConfig {
             static_files: Some(StaticConfig::Single("./dist".to_owned())),
             ..Default::default()
@@ -1578,9 +1580,9 @@ mod tests {
     #[test]
     #[cfg(feature = "static")]
     fn resolve_non_proxy_route_serves_static_file() {
-        use crate::config::schema::{RouteConfig, StaticConfig};
+        use conduit_config::schema::{RouteConfig, StaticConfig};
         let route = RouteConfig {
-            r#match: crate::config::schema::MatchConfig::default(),
+            r#match: conduit_config::schema::MatchConfig::default(),
             proxy: None,
             static_files: Some(StaticConfig::Single("./dist".to_string())),
         };
@@ -1593,9 +1595,9 @@ mod tests {
 
     #[test]
     fn resolve_non_proxy_route_no_static_falls_back() {
-        use crate::config::schema::RouteConfig;
+        use conduit_config::schema::RouteConfig;
         let route = RouteConfig {
-            r#match: crate::config::schema::MatchConfig::default(),
+            r#match: conduit_config::schema::MatchConfig::default(),
             proxy: None,
             static_files: None,
         };
@@ -1611,7 +1613,7 @@ mod tests {
     #[cfg(feature = "proxy")]
     #[test]
     fn route_with_upstream_groups() {
-        use crate::config::schema::{
+        use conduit_config::schema::{
             ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, UpstreamGroup,
         };
         use indexmap::IndexMap;
@@ -1676,7 +1678,7 @@ mod tests {
     #[cfg(feature = "proxy")]
     #[test]
     fn circuit_breaker_returns_overloaded_when_all_at_max() {
-        use crate::config::schema::{
+        use conduit_config::schema::{
             ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, UpstreamHealthCheck,
         };
         use indexmap::IndexMap;
@@ -1863,7 +1865,7 @@ mod tests {
     #[cfg(feature = "proxy")]
     #[test]
     fn circuit_breaker_grouped_route_returns_overloaded_when_selected_group_saturated() {
-        use crate::config::schema::{
+        use conduit_config::schema::{
             ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, UpstreamGroup,
             UpstreamHealthCheck,
         };
@@ -1926,7 +1928,9 @@ mod tests {
     #[cfg(feature = "proxy")]
     #[test]
     fn route_to_backup_when_all_primary_unhealthy() {
-        use crate::config::schema::{ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget};
+        use conduit_config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget,
+        };
         use indexmap::IndexMap;
 
         // Set up a route with one primary and one backup.
@@ -1985,7 +1989,9 @@ mod tests {
 
     #[test]
     fn malformed_backup_url_falls_through_to_fallback() {
-        use crate::config::schema::{ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget};
+        use conduit_config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget,
+        };
         use indexmap::IndexMap;
 
         let mut routes: IndexMap<String, ProxyRouteTarget> = IndexMap::new();
@@ -2054,10 +2060,10 @@ mod tests {
         n: usize,
         pin_idx: usize,
         strict: bool,
-        retry: Option<crate::config::schema::RetryConfig>,
+        retry: Option<conduit_config::schema::RetryConfig>,
         reg: &UpstreamRegistry,
     ) -> RequestCtx {
-        use crate::config::schema::{
+        use conduit_config::schema::{
             ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, StickyConfig,
         };
         use indexmap::IndexMap;
@@ -2152,7 +2158,7 @@ mod tests {
     #[cfg(feature = "proxy")]
     #[test]
     fn sticky_pin_is_honored_and_anchored_on_a_retry_configured_route() {
-        use crate::config::schema::RetryConfig;
+        use conduit_config::schema::RetryConfig;
         for n in 2..=5usize {
             for pin_idx in 0..n {
                 let reg = UpstreamRegistry::new();
@@ -2216,7 +2222,7 @@ mod tests {
         // saturated-but-healthy pin does NOT re-sign the cookie, and (2)
         // once the original pin frees capacity, presenting the SAME
         // (unchanged) original cookie routes back to it.
-        use crate::config::schema::{
+        use conduit_config::schema::{
             ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, StickyConfig,
             UpstreamHealthCheck,
         };
@@ -2335,7 +2341,7 @@ mod tests {
         // here even though nothing in the pool is genuinely healthy.
         // Correct behavior: re-sign the cookie onto wherever the request
         // actually landed, the same as a genuinely-gone pin.
-        use crate::config::schema::{
+        use conduit_config::schema::{
             ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, StickyConfig,
             UpstreamHealthCheck,
         };
@@ -2417,7 +2423,7 @@ mod tests {
         // just-recovered ("mid-ramp") peer could be silently dropped from
         // retry attempts 1+ even though it's fully eligible for the
         // primary pick under the same strategy.
-        use crate::config::schema::{
+        use conduit_config::schema::{
             ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, UpstreamHealthCheck,
         };
         use indexmap::IndexMap;
@@ -2514,7 +2520,7 @@ mod tests {
     #[cfg(feature = "proxy")]
     #[test]
     fn sticky_strict_mode_returns_503_when_pinned_upstream_unhealthy() {
-        use crate::config::schema::{
+        use conduit_config::schema::{
             ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, StickyConfig,
         };
         use indexmap::IndexMap;
@@ -2582,7 +2588,7 @@ mod tests {
     #[cfg(feature = "proxy")]
     #[test]
     fn sticky_forged_cookie_ignored_falls_back_to_load_balancing() {
-        use crate::config::schema::{
+        use conduit_config::schema::{
             ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, StickyConfig,
         };
         use indexmap::IndexMap;
@@ -2677,7 +2683,7 @@ mod tests {
         strategy: Option<LoadBalanceStrategy>,
         max_conns_per_upstream: Option<u64>,
     ) -> AppConfig {
-        use crate::config::schema::{
+        use conduit_config::schema::{
             ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget, UpstreamHealthCheck,
         };
         use indexmap::IndexMap;
@@ -2804,7 +2810,9 @@ mod tests {
         // slot), /rr is plain round-robin (attribution only, no slot). Routing
         // /rr must NOT touch X's conn_count -- otherwise a later logging()
         // decrement for the /rr request would phantom-decrement /lc's slot.
-        use crate::config::schema::{ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget};
+        use conduit_config::schema::{
+            ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, ProxyTarget,
+        };
         use indexmap::IndexMap;
 
         const SHARED: &str = "http://x:4000";

@@ -18,7 +18,7 @@ pub use conduit_cache::redis::get;
 use std::collections::BTreeSet;
 
 #[cfg(feature = "cache")]
-use crate::config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget};
+use conduit_config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget};
 
 /// Every distinct `redis://`/`rediss://` `cache.store` URL configured
 /// anywhere in `config` — both under the `proxy` shorthand and under
@@ -96,7 +96,7 @@ mod tests {
     use super::*;
 
     fn cfg(json: &str) -> AppConfig {
-        crate::config::parse::from_str(json).expect("valid config")
+        conduit_config::parse::from_str(json).expect("valid config")
     }
 
     #[test]

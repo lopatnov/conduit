@@ -46,11 +46,11 @@ pub(crate) use peer::upstream_peer;
 pub(crate) use retry::{error_while_proxy, fail_to_connect};
 pub(crate) use transform::upstream_request_filter;
 
-use crate::config::schema::{
+use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
+use conduit_config::schema::{
     ApiKeyConfig, BasicAuthConfig, CorsConfig, IpFilterConfig, LimitsConfig, MiddlewareEntry,
     RateLimitConfig,
 };
-use crate::proxy::ctx::{LocalHandler, UpstreamTarget};
 
 #[derive(Clone)]
 pub(crate) enum HandlerKind {
@@ -76,7 +76,7 @@ pub(crate) struct GuardCtx {
     ip_cfg: Option<IpFilterConfig>,
     limits_cfg: Option<LimitsConfig>,
     /// Security headers config — used by `AllowedHostsGuard`.
-    security_cfg: Option<crate::config::schema::SecurityHeadersConfig>,
+    security_cfg: Option<conduit_config::schema::SecurityHeadersConfig>,
     /// The matched site's own `host:` config value — used by `AllowedHostsGuard`
     /// as a default-safe fallback when `allowedHosts` is not explicitly set.
     site_host: Option<String>,
@@ -104,15 +104,15 @@ pub(crate) struct GuardCtx {
     client_ip: String,
     /// Fault injection config (chaos testing).
     /// Field always present; guard only pushed when `--features fault-injection`.
-    fault_injection_cfg: Option<crate::config::schema::FaultInjectionConfig>,
+    fault_injection_cfg: Option<conduit_config::schema::FaultInjectionConfig>,
     /// JWT auth config — validated in step 6c.
-    jwt_auth_cfg: Option<crate::config::schema::JwtAuthConfig>,
+    jwt_auth_cfg: Option<conduit_config::schema::JwtAuthConfig>,
     /// Forward-auth config — validated in step 6d.
     /// Field always present; guard only pushed when `--features forward-auth`.
-    forward_auth_cfg: Option<crate::config::schema::ForwardAuthConfig>,
+    forward_auth_cfg: Option<conduit_config::schema::ForwardAuthConfig>,
     /// Consumer model auth config.
     /// Field always present; guard only pushed when `--features consumers`.
-    consumers_cfg: Option<crate::config::schema::ConsumersConfig>,
+    consumers_cfg: Option<conduit_config::schema::ConsumersConfig>,
     /// Site label for Prometheus metrics (`host:port` or `"*"`).
     site_label: String,
 }

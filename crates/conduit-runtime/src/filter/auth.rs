@@ -1,7 +1,7 @@
 use base64::Engine as _;
 use pingora_proxy::Session;
 
-use crate::config::schema::{ApiKeyConfig, BasicAuthConfig};
+use conduit_config::schema::{ApiKeyConfig, BasicAuthConfig};
 
 /// Constant-time byte-string equality for credential comparisons.
 ///

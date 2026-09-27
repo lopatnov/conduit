@@ -33,7 +33,7 @@ use crate::proxy::service::ConduitProxy;
 fn record_retry_failure(
     proxy: &ConduitProxy,
     ctx: &mut Option<RequestCtx>,
-    config: &crate::config::schema::AppConfig,
+    config: &conduit_config::schema::AppConfig,
     status: u16,
 ) {
     proxy.record_failed_upstream_for_retry(ctx, config, status);
@@ -51,7 +51,7 @@ fn record_retry_failure(
 fn record_retry_failure(
     _proxy: &ConduitProxy,
     _ctx: &mut Option<RequestCtx>,
-    _config: &crate::config::schema::AppConfig,
+    _config: &conduit_config::schema::AppConfig,
     _status: u16,
 ) {
 }

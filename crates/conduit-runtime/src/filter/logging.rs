@@ -4,8 +4,8 @@ use serde_json::Value as JsonValue;
 
 use pingora_proxy::Session;
 
-use crate::config::schema::{LogFormat, LoggingConfig};
-use crate::util::log_writer::LogWriter;
+use conduit_config::schema::{LogFormat, LoggingConfig};
+use conduit_core::util::log_writer::LogWriter;
 
 // ── Public API ─────────────────────────────────────────────────────────────
 

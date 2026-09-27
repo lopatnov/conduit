@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::config::schema::{
+use conduit_config::schema::{
     HeaderTransformConfig, RewriteRule, StaticOptions, UpstreamTlsConfig as UpstreamTlsCfg,
 };
 

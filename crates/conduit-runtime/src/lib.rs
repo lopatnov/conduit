@@ -49,19 +49,3 @@ pub mod features {
     pub const OTLP: bool = cfg!(feature = "otlp");
     pub const TOKIO_METRICS: bool = cfg!(feature = "tokio-metrics");
 }
-
-// Aliases for the paths the moved files used in the root crate.
-mod config {
-    // Only `proxy/cache_redis.rs`'s tests use it (`redis` + `cache`); anywhere else it is an unused import.
-    #[cfg(all(test, feature = "redis", feature = "cache"))]
-    pub(crate) use conduit_config::parse;
-    pub(crate) use conduit_config::schema;
-}
-
-mod util {
-    pub(crate) use conduit_core::util::log_writer;
-
-    pub(crate) mod jwt_template {
-        pub(crate) use conduit_auth_jwt::template::expand_jwt_templates;
-    }
-}
