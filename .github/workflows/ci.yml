@@ -962,3 +962,24 @@ jobs:
 
       - name: cargo publish --workspace --dry-run
         run: cargo publish --workspace --dry-run
+
+  # ── Config schema superset check (issue #496) ────────────────────────────────
+  # schema/conduit.schema.json is hand-maintained, not generated from serde —
+  # nothing else catches a config field added/renamed in Rust without a matching
+  # schema update. scripts/check_schema_superset.py is a best-effort net, not a
+  # guarantee (see its own docstring for exactly what it can't check — untagged
+  # enums, #[serde(flatten)] fields, defs inlined into a parent instead of named).
+  schema-superset-check:
+    name: Config schema superset check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate schema/conduit.schema.json is valid JSON
+        run: node -e "JSON.parse(require('fs').readFileSync('schema/conduit.schema.json','utf8'))"
+
+      - name: Check the schema hasn't drifted from the Rust config structs it can verify
+        run: python3 scripts/check_schema_superset.py
