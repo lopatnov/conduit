@@ -12,7 +12,7 @@ A=${1:?usage: ab.sh BIN_A BIN_B [ROUNDS]}
 B=${2:?usage: ab.sh BIN_A BIN_B [ROUNDS]}
 ROUNDS=${3:-3}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT=${OUT:-$HOME/perf/ab.csv}
+OUT=${OUT:-${PERF:-$HOME/perf}/ab.csv}
 ONLY=${ONLY:-"w1-nolog w2-nolog w4-nolog w8-nolog"}
 
 echo "arm,round,variant,workers,connections,rps,p50_ms,p99_ms,ok_pct,cpu_us_per_req" > "$OUT"
@@ -20,7 +20,8 @@ for r in $(seq 1 "$ROUNDS"); do
   for arm in A B B A; do
     bin=$A; [ "$arm" = B ] && bin=$B
     ONLY="$ONLY" bash "$HERE/matrix.sh" "$bin" "$WORK/one.csv" 1 > /dev/null 2>&1
-    tail -n +2 "$WORK/one.csv" | sed "s/^/$arm,/" >> "$OUT"
+    # matrix.sh numbers its own single round 1; record the outer round and the arm instead
+    tail -n +2 "$WORK/one.csv" | awk -F, -v OFS=, -v arm="$arm" -v r="$r" '{ $1 = r; print arm, $0 }' >> "$OUT"
   done
   echo "[ab] round $r/$ROUNDS done"
 done

@@ -9,12 +9,12 @@ Linux only (they read `/proc`, pin processes with `taskset`); on Windows run the
 |---|---|
 | `matrix.sh BIN OUT [ROUNDS]` | Requests/s, p50/p99 and **CPU µs per request** of one Conduit binary for several `global.workers` values, access log on/off/piped, 50 or 200 connections. `ONLY="w1-nolog w4-nolog"` runs a subset. |
 | `ab.sh BIN_A BIN_B [ROUNDS]` | The same matrix for two binaries, alternating A B B A within each round. Use it for "does this change make requests cheaper?". |
-| `probe.sh [BIN] [ROUNDS]` | CPU per request split into user and kernel time and per thread, for Conduit and the two **floors** below (`TARGETS="conduit pp relay"`). Shows whether work runs where `global.workers` says. |
+| `probe.sh BIN [ROUNDS]` | CPU per request split into user and kernel time and per thread, for Conduit and the two **floors** below (`TARGETS="conduit pp relay"`). Shows whether work runs where `global.workers` says. |
 | `floors/mock.rs` | The upstream: a multi-thread tokio HTTP server answering every request with the same 22-byte JSON body. |
 | `floors/relay.rs` | A raw single-thread TCP relay `:8080 → :4000`: the syscall + loopback floor of any proxy. |
 | `floors/pingora_min.rs` | The smallest Pingora `ProxyHttp` proxy (defaults, one worker): what Pingora itself costs, without Conduit. |
 
-## Layout the scripts expect (`$PERF`, default `$HOME/perf`)
+## Layout the scripts expect (`$PERF`, default `$HOME/perf`; `export PERF=…` to put it elsewhere)
 
 ```
 $PERF/tools/bin/oha                       # cargo install oha --version 1.16.0 --locked --root $PERF/tools

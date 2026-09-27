@@ -5,8 +5,9 @@
 # Same scenario as CI's "Performance report" (`oha -z 10s`, passthrough to a fixed 22-byte JSON upstream), with a 4 s warm-up,
 # processes pinned to disjoint cores, variants rotated per round so drift and first-run penalties spread evenly.
 set -uo pipefail
-WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT   # scratch files (config, oha output) live here, not at fixed /tmp paths
-PERF=$HOME/perf
+WORK=$(mktemp -d)   # scratch files (config, oha output) live here, not at fixed /tmp paths
+trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$WORK"' EXIT   # an interrupted run leaves no upstream/proxy on the ports
+PERF=${PERF:-$HOME/perf}
 OHA=$PERF/tools/bin/oha
 MOCK=$PERF/mock/target/release/bench-upstream
 BIN=${1:?usage: matrix.sh BIN [OUT] [ROUNDS]}

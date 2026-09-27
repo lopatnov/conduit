@@ -1305,6 +1305,32 @@ mod tests {
         let _ = chain.run_offloading(&mut resp, &ctx);
     }
 
+    /// Middleware that only runs in the request phase does nothing in the response chain, so it must not cost every
+    /// response a `block_in_place` either (current-thread runtime: an unwanted call panics).
+    #[tokio::test]
+    async fn a_chain_with_only_request_phase_middleware_does_not_use_block_in_place() {
+        use crate::config::schema::{AppConfig, SiteConfig};
+        use conduit_middleware::config::MiddlewareEntry;
+        let mut config = AppConfig::default();
+        config.sites.push(SiteConfig {
+            middleware: Some(vec![MiddlewareEntry {
+                r#type: "script".to_owned(),
+                config: None,
+                path: Some("auth.rhai".to_owned()),
+                phase: None, // defaults to the request phase
+            }]),
+            ..Default::default()
+        });
+        let ctx = dummy_ctx();
+        let chain = ResponseFilterChain::build(&ctx, &config);
+        assert!(
+            !chain.may_block(),
+            "a request-phase script never runs in this chain"
+        );
+        let mut resp = make_resp(200);
+        chain.run_offloading(&mut resp, &ctx).unwrap();
+    }
+
     // ── MiddlewareResponseFilter — tests moved to
     //    crates/conduit-middleware/src/response.rs (issue #114/#141)
 
