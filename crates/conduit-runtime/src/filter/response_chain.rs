@@ -1232,7 +1232,7 @@ mod tests {
     /// unconditional call (a thread hand-off per proxied response) fails this test.
     #[tokio::test]
     async fn a_chain_without_middleware_does_not_use_block_in_place() {
-        use crate::config::schema::{AppConfig, SiteConfig};
+        use crate::config::schema::{AppConfig, HeaderTransformConfig, SiteConfig};
         let mut config = AppConfig::default();
         // Every optional phase of `build()` except the middleware one, so a new phase added without its
         // `may_block() -> false` shows up here as a chain that blocks.
@@ -1241,7 +1241,11 @@ mod tests {
             server_timing: Some(true),
             ..Default::default()
         });
-        let ctx = dummy_ctx();
+        let mut ctx = dummy_ctx();
+        ctx.response_transform = Some(HeaderTransformConfig {
+            set_headers: None,
+            remove_headers: None,
+        });
         let chain = ResponseFilterChain::build(&ctx, &config);
         assert!(!chain.may_block(), "no middleware, nothing that can block");
         let mut resp = make_resp(200);
