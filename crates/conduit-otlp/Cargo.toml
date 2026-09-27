@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-otlp"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "OpenTelemetry OTLP tracing config + tracer lifecycle for conduit's feature-driven workspace (issue #114/#129)"
 license.workspace    = true
 repository.workspace = true

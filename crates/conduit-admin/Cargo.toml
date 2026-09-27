@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-admin"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Admin API for conduit's feature-driven workspace (issue #114/#146) — the axum server, bearer-token authentication and the endpoint handlers"
 license.workspace    = true
 repository.workspace = true

@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-auth-jwt"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "JWT bearer-token auth config + guard for conduit's feature-driven workspace (issue #114/#133)"
 license.workspace    = true
 repository.workspace = true

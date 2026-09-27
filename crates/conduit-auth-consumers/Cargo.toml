@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-auth-consumers"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Consumer-model auth (per-consumer API key / Basic Auth / JWT credentials) config + identification logic for conduit's feature-driven workspace (issue #114/#134)"
 license.workspace    = true
 repository.workspace = true

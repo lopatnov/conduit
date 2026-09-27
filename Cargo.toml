@@ -7,6 +7,11 @@ resolver = "2"
 [workspace.package]
 version    = "2.0.0"
 edition    = "2021"
+# MSRV for default/standard/kubernetes builds — the lowest floor set by a
+# mandatory dependency (kube 4.2 needs 1.89). `--features wasm` (and so
+# `full`) needs more: wasmtime 48 requires 1.95, overridden directly on
+# crates/conduit-plugin-wasm's own [package] (issue #114/#148).
+rust-version = "1.89"
 license    = "Apache-2.0"
 repository = "https://github.com/lopatnov/conduit"
 
@@ -223,6 +228,7 @@ wat         = "1"
 name        = "lopatnov-conduit"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "High-performance reverse proxy and file server built on Cloudflare Pingora"
 license.workspace    = true
 repository.workspace = true
@@ -230,7 +236,7 @@ keywords    = ["proxy", "reverse-proxy", "http", "server", "pingora"]
 categories  = ["network-programming", "web-programming::http-server"]
 # Internal AI-assistant tooling/runbooks — tracked in git for reproducibility across
 # sessions, but not part of the published crate source package.
-exclude     = [".claude/**", "CLAUDE.md"]
+exclude     = [".claude/**", "CLAUDE.md", ".codex/**", ".agents/**"]
 
 [[bin]]
 name = "conduit"

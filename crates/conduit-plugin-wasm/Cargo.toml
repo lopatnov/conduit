@@ -2,6 +2,10 @@
 name        = "lopatnov-conduit-plugin-wasm"
 version.workspace    = true
 edition.workspace    = true
+# Overrides the workspace default (1.89): wasmtime 48 (this crate's own reason
+# to exist) needs 1.95. Every other member/root inherits 1.89 via
+# `rust-version.workspace = true` — see issue #114/#148.
+rust-version = "1.95"
 description = "WASM plugin middleware backend for conduit's feature-driven workspace (issue #114/#141)"
 license.workspace    = true
 repository.workspace = true

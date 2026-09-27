@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-cache"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "HTTP response caching (config + memory/disk/redis backends) for conduit's feature-driven workspace (issue #114/#135)"
 license.workspace    = true
 repository.workspace = true

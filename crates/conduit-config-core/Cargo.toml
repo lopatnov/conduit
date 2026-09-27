@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-config-core"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Layer-0 config-loading mechanism for conduit's feature-driven workspace (issue #114/#127) — generic over the config payload type, zero schema knowledge"
 license.workspace    = true
 repository.workspace = true

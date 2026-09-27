@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-metrics"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Prometheus /metrics endpoint config + handler for conduit's feature-driven workspace (issue #114/#140)"
 license.workspace    = true
 repository.workspace = true

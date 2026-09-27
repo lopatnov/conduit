@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-static"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Static-file serving + fallback-response config and handlers for conduit's feature-driven workspace (issue #114/#139)"
 license.workspace    = true
 repository.workspace = true

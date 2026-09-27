@@ -283,10 +283,21 @@ jobs:
             dist/*
 
   # ── 3. Publish to crates.io ──────────────────────────────────────────────
+  # Issue #114/#148: this now publishes every lopatnov-conduit-* workspace
+  # member (~33 packages total, not just the root), in dependency order, via
+  # native `cargo publish --workspace`. scripts/publish-workspace.sh skips
+  # anything already published at the target version, so a re-run of this
+  # job (e.g. after crates.io's new-crate rate limit stopped a first attempt
+  # partway through) is safe to just re-trigger rather than needing a new
+  # tag. concurrency here prevents two overlapping runs (a manual re-run
+  # racing the original) from publishing the same crate twice in parallel.
   publish-crates:
-    name: Publish to crates.io
+    name: Publish to crates.io (workspace)
     needs: build
     runs-on: ubuntu-latest
+    concurrency:
+      group: publish-crates
+      cancel-in-progress: false
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -299,10 +310,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
 
-      - name: Publish
+      - name: Publish workspace crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --no-verify
+        run: ./scripts/publish-workspace.sh
 
   # ── 4. Publish Docker image to GHCR ─────────────────────────────────────
   docker:

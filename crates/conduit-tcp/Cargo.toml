@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-tcp"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Raw TCP passthrough proxy config + implementation for conduit's feature-driven workspace (issue #114/#131)"
 license.workspace    = true
 repository.workspace = true

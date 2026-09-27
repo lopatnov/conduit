@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-config"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Layer-2 config schema for conduit's feature-driven workspace (issue #114/#222) — AppConfig, SiteConfig and the file-format parsing that turns a config file into them"
 license.workspace    = true
 repository.workspace = true

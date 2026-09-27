@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-upstream"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Upstream selection, health tracking, and load-balancing strategies for conduit's feature-driven workspace (issue #114/#142)"
 license.workspace    = true
 repository.workspace = true

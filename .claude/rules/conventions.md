@@ -26,6 +26,19 @@ bump — **all four** of these need updating together (see PR #71 for the canoni
 - `npm/package.json` (`"version": "..."`)
 - `docs/benchmarks.md`, `docs/cli.md`, `docs/deployment.md` — version strings in prose/examples
 
+**Since the Conduit 2.0 workspace migration (issue #114/#148): a fifth thing.** Every
+`lopatnov-conduit-*` member crate under `crates/*` is a real, independently-versioned
+crates.io package now — but this repo does NOT bump each crate's version independently
+(no per-crate semver policy yet, see issue #258). A version bump means:
+- `[workspace.package].version` in the root `Cargo.toml` — every member inherits it via
+  `version.workspace = true`.
+- **Every `lopatnov-conduit-*` entry's own `version = "..."` string** in
+  `[workspace.dependencies]` (~32 literal strings, one per member crate) — these are what a
+  real `cargo publish --workspace` resolves inter-crate dependencies through, and they do
+  NOT auto-update with the workspace version. `./scripts/check-workspace-versions.sh` (CI
+  job `workspace-publish-dryrun`) fails the build if any one of them drifts — run it
+  locally before opening a version-bump PR, don't rely on CI to catch it first.
+
 `release-engineer` drives this; confirm the *target* version with the user first — don't guess
 whether something is patch/minor/major.
 

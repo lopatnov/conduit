@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-faults"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Fault-injection (chaos testing) config + guard for conduit's feature-driven workspace (issue #114/#132)"
 license.workspace    = true
 repository.workspace = true

@@ -2,6 +2,7 @@
 name        = "lopatnov-conduit-limits"
 version.workspace    = true
 edition.workspace    = true
+rust-version.workspace = true
 description = "Request size/inflight/per-IP/upload-rate limits config + guard for conduit's feature-driven workspace (issue #114/#137, #51)"
 license.workspace    = true
 repository.workspace = true
