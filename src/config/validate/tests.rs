@@ -1,5 +1,6 @@
-use super::warnings::sanitize_for_log;
-use super::{feature_warnings, partition_by_severity, validate, Severity, ValidationError};
+use super::{
+    feature_warnings, partition_by_severity, sanitize_for_log, validate, Severity, ValidationError,
+};
 use crate::config::from_str;
 use crate::config::schema::AppConfig;
 

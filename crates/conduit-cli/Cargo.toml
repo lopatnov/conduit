@@ -1,0 +1,38 @@
+[package]
+name        = "lopatnov-conduit-cli"
+version.workspace    = true
+edition.workspace    = true
+description = "CLI subcommand dispatch for conduit's feature-driven workspace (issue #114/#147)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_cli"
+path = "src/lib.rs"
+
+[dependencies]
+# `run_server()`/config validation/the Kubernetes provider — `serve.rs`/`validate.rs` call straight into it (see
+# the alias modules in `src/lib.rs`), no facade needed since both crates sit at the same workspace layer.
+lopatnov-conduit-server = { workspace = true }
+# `AppConfig`/`SiteConfig`/... and the parser (`load_config`) — every command that loads a config file needs
+# these directly; this crate does not depend on `conduit-server` just for config types.
+lopatnov-conduit-config = { workspace = true }
+lopatnov-conduit-config-core = { workspace = true }
+
+clap          = { workspace = true }
+clap_complete = { workspace = true }
+clap_mangen   = { workspace = true }
+dialoguer     = { workspace = true }
+serde_json    = { workspace = true }
+serde_yaml    = { workspace = true }
+tokio         = { workspace = true }
+tracing       = { workspace = true }
+anyhow        = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+# Watch Kubernetes `ConduitSite` CRDs instead of reading a config file (`--kubernetes-namespace`). Mirrors the
+# root crate's `kubernetes` feature — see `src/cli/mod.rs`'s compile-time assert on the root side.
+kubernetes = ["lopatnov-conduit-server/kubernetes"]

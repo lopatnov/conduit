@@ -31,6 +31,8 @@ lopatnov-conduit-config-core = { path = "crates/conduit-config-core", version = 
 lopatnov-conduit-config      = { path = "crates/conduit-config", version = "2.0.0" }
 lopatnov-conduit-runtime     = { path = "crates/conduit-runtime", version = "2.0.0" }
 lopatnov-conduit-admin       = { path = "crates/conduit-admin", version = "2.0.0" }
+lopatnov-conduit-server      = { path = "crates/conduit-server", version = "2.0.0" }
+lopatnov-conduit-cli         = { path = "crates/conduit-cli", version = "2.0.0" }
 lopatnov-conduit-otlp        = { path = "crates/conduit-otlp", version = "2.0.0" }
 lopatnov-conduit-acme        = { path = "crates/conduit-acme", version = "2.0.0" }
 lopatnov-conduit-tcp         = { path = "crates/conduit-tcp", version = "2.0.0" }
@@ -70,11 +72,12 @@ indexmap            = { version = "2", features = ["serde"] }
 humantime           = "2"
 
 # --- CLI ---
+# indicatif dropped (#147): zero uses anywhere in the workspace — confirmed by grep before removal, not just
+# absent from the current call sites (CONTRIBUTING.md's "progress bars in `conduit probe`" claim was false).
 clap          = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 clap_mangen   = "0.3"
 dialoguer     = "0.12"
-indicatif     = "0.18"
 async-trait   = "0.1"
 
 # --- Pingora HTTP types ---
@@ -120,8 +123,9 @@ rustls         = { version = "0.23", default-features = false, features = ["ring
 rustls-pemfile = "2"
 
 # --- Errors & utilities ---
+# thiserror dropped (#147): zero uses anywhere in the workspace (every crate uses anyhow/its own error enum
+# instead) — confirmed by grep across every crate's Cargo.toml before removal.
 anyhow    = "1"
-thiserror = "2"
 bytes     = "1"
 subtle    = "2"   # constant-time comparisons (admin token auth)
 libc      = "0.2" # O_NOFOLLOW for atomic symlink-safe file open (Unix) — crates/conduit-core, crates/conduit-acme, crates/conduit-static
@@ -238,9 +242,10 @@ path = "src/lib.rs"
 
 [dependencies]
 # --- Pingora core ---
+# pingora-cache dropped (#147): unused in the root crate — `crates/conduit-cache`/`-admin`/`-runtime` carry
+# their own edges to it (confirmed by grep across src/ and tests/ before removal).
 pingora-core.workspace  = true
 pingora-proxy.workspace = true
-pingora-cache.workspace = true
 
 # --- Conduit workspace member crates ---
 lopatnov-conduit-core.workspace        = true
@@ -253,9 +258,17 @@ lopatnov-conduit-config.workspace      = true
 # response_time}.rs`, `src/handler/health.rs` and `src/upload/mod.rs` are facades over it (issue #145). Its own features
 # mirror the root's (each root feature below forwards to it) — see `crates/conduit-runtime/src/lib.rs`.
 lopatnov-conduit-runtime.workspace     = true
-# The Admin API server, bearer-token auth and eleven of its twelve endpoints (`src/admin/api.rs` keeps `POST /reload`
-# and the background supervisor, issue #146). Its one feature, `cache`, mirrors the root's — see `cache` below.
-lopatnov-conduit-admin.workspace       = true
+# `run_server()` (Pingora bootstrap, TLS/plain listener wiring, ACME procurement, Redis rate-limiter connect, TCP/
+# redirect services), the Admin API's background supervisor and `POST /reload` (`src/admin/api.rs` before #147),
+# and config validation/providers (`src/config/{validate,provider,kubernetes,defaults}`) — issue #147. This is the
+# root crate's only remaining edge onto `crates/conduit-admin`/`crates/conduit-k8s`; both moved to being this
+# crate's own dependencies. Its ten features mirror the root's (each root feature below forwards to it) — see
+# `crates/conduit-server/src/lib.rs`, and `src/server.rs` for the root-side parity asserts.
+lopatnov-conduit-server.workspace      = true
+# `main()`'s CLI subcommand dispatch (`src/cli/*`, `dispatch_command()` moved out of `src/main.rs`) — owns
+# `clap`/`clap_complete`/`clap_mangen`/`dialoguer`, which are no longer root-crate dependencies (see below). Its
+# one feature, `kubernetes`, mirrors the root's.
+lopatnov-conduit-cli.workspace         = true
 # Mandatory (like the two crates above), not `optional = true`: `OtlpConfig`
 # and the `global.otlp` field must stay parseable in every build so
 # `feature_warnings()` can keep warning on a config-without-feature mismatch
@@ -466,12 +479,14 @@ serde_yaml.workspace = true
 indexmap.workspace   = true
 
 # --- CLI ---
-clap.workspace          = true
-clap_complete.workspace = true
-clap_mangen.workspace   = true
-dialoguer.workspace     = true
-indicatif.workspace     = true
-async-trait.workspace   = true
+# clap_complete/clap_mangen/dialoguer/async-trait dropped (#147): `crates/conduit-cli` owns the first three (every
+# `src/cli/*` module and the `Command`/`dispatch_command()` table pulled out of `src/main.rs`), `crates/conduit-
+# server` owns the last (the Admin API supervisor's `impl BackgroundService`) — root has no direct use of either
+# any more (confirmed by grep before removal). `clap` itself stays: `src/main.rs` still calls `Cli::parse()`
+# directly (the `Parser` derive macro's trait method) before handing the parsed `Cli` to
+# `conduit_cli::dispatch::dispatch_command`. It never actually leaves the *dependency tree* even where it's not
+# used directly, though: `pingora-core`'s own `Opt` derive depends on it regardless of any feature here.
+clap.workspace = true
 
 # --- Pingora HTTP types ---
 pingora-http.workspace = true
@@ -522,7 +537,6 @@ rustls.workspace         = true
 
 # --- Errors & utilities ---
 anyhow.workspace    = true
-thiserror.workspace = true
 bytes.workspace     = true
 # libc: no longer a direct root-crate dependency — its only caller
 # (`handler/static_files.rs`'s O_NOFOLLOW open) moved into
@@ -575,10 +589,12 @@ http.workspace      = true
 # `KubernetesProvider`/the CRD types/the generic list+watch mechanism moved
 # to `crates/conduit-k8s` (#114/#249) and are no longer direct root-crate
 # dependencies — `kube`/`k8s-openapi`/`schemars`/`futures` are now that
-# crate's own dependencies (see `crates/conduit-k8s/Cargo.toml`). The root
-# crate only depends on the new crate itself, gated behind the same
-# `kubernetes` feature name as before (see the [features] table below).
-lopatnov-conduit-k8s = { workspace = true, optional = true }
+# crate's own dependencies (see `crates/conduit-k8s/Cargo.toml`). As of #147
+# the root crate no longer depends on `lopatnov-conduit-k8s` at all, direct
+# or optional: `src/config/kubernetes.rs` re-exports its types through
+# `crates/conduit-server` (which now owns that edge, gated behind its own
+# `kubernetes` feature) — a `pub use` re-export chain doesn't need a direct
+# Cargo dependency at every hop. See the `kubernetes` feature below.
 
 # --- WASM plugin middleware (optional feature) ---
 # `wasmtime` itself moved to `crates/conduit-plugin-wasm` (#114/#141) and is
@@ -634,6 +650,7 @@ proxy = [
     "lopatnov-conduit-upstream/proxy",
     "dep:url",
     "lopatnov-conduit-runtime/proxy",
+    "lopatnov-conduit-server/proxy",
 ]
 
 # ── Compression ──────────────────────────────────────────────────────────────
@@ -713,7 +730,11 @@ static = ["lopatnov-conduit-static/static", "lopatnov-conduit-runtime/static"]
 # unmatched request to either path falls through to the site's own
 # `fallback`/`static`/`proxy` config exactly like any other unrecognized
 # path, not a 502.
-hotreload = ["lopatnov-conduit-hotreload/hotreload", "lopatnov-conduit-runtime/hotreload"]
+hotreload = [
+    "lopatnov-conduit-hotreload/hotreload",
+    "lopatnov-conduit-runtime/hotreload",
+    "lopatnov-conduit-server/hotreload",
+]
 
 # ── Authentication ─────────────────────────────────────────────────────────────
 # JWT bearer-token validation (HS256 + RS256/ES256 via JWKS URL).
@@ -736,7 +757,11 @@ jwt = ["lopatnov-conduit-auth-jwt/jwt", "lopatnov-conduit-auth-consumers/jwt", "
 # crate's own `consumers` feature, which gates the real
 # `identify::identify_consumer`. `ConsumersGuard` itself (rate-limit step +
 # header injection) lives in `crates/conduit-runtime`'s `filter/chain.rs` (#145).
-consumers = ["lopatnov-conduit-auth-consumers/consumers", "lopatnov-conduit-runtime/consumers"]
+consumers = [
+    "lopatnov-conduit-auth-consumers/consumers",
+    "lopatnov-conduit-runtime/consumers",
+    "lopatnov-conduit-server/consumers",
+]
 # ForwardAuth: delegate authentication to an external HTTP service.
 # `ForwardAuthConfig` moved to `crates/conduit-auth-forward` (#114/#134) and
 # is always a dependency (see the [dependencies] comment above); this only
@@ -762,14 +787,18 @@ wasm = ["lopatnov-conduit-middleware/wasm"]
 # `crates/conduit-tcp` (#114/#131) and is always a dependency (see the
 # [dependencies] comment above); this only forwards into that crate's own
 # `tcp` feature, which gates the real `TcpProxy`.
-tcp = ["lopatnov-conduit-tcp/tcp"]
+tcp = ["lopatnov-conduit-tcp/tcp", "lopatnov-conduit-server/tcp"]
 # File upload handler (upload: { path, dir } site config). `UploadConfig`
 # moved to `crates/conduit-upload` (#114/#131) and is always a dependency
 # (see the [dependencies] comment above); this only forwards into that
 # crate's own `upload` feature, which gates the real server (and enables
 # axum/multipart internally — no longer needed directly here since the
 # root crate's own axum usage, e.g. Admin API, never uses `Multipart`).
-upload = ["lopatnov-conduit-upload/upload", "lopatnov-conduit-runtime/upload"]
+upload = [
+    "lopatnov-conduit-upload/upload",
+    "lopatnov-conduit-runtime/upload",
+    "lopatnov-conduit-server/upload",
+]
 
 # ── Storage backends ───────────────────────────────────────────────────────────
 # Redis-backed rate limiting (rateLimit.store: "redis://...",
@@ -789,7 +818,12 @@ upload = ["lopatnov-conduit-upload/upload", "lopatnov-conduit-runtime/upload"]
 # each crate's `redis` Cargo feature is its own crate-local namespace,
 # entirely separate from the other's — enabling one never implicitly enables
 # the other, regardless of `?`.
-redis = ["lopatnov-conduit-cache/redis", "lopatnov-conduit-ratelimit/redis", "lopatnov-conduit-runtime/redis"]
+redis = [
+    "lopatnov-conduit-cache/redis",
+    "lopatnov-conduit-ratelimit/redis",
+    "lopatnov-conduit-runtime/redis",
+    "lopatnov-conduit-server/redis",
+]
 # Response caching (proxy.*.cache config). `CacheConfig` moved to
 # `crates/conduit-cache` (#114/#135) and is always a dependency (see the
 # [dependencies] comment above); this forwards into that crate's own `cache`
@@ -801,7 +835,15 @@ redis = ["lopatnov-conduit-cache/redis", "lopatnov-conduit-ratelimit/redis", "lo
 # proxy it caches for is meaningless — and its root call sites
 # (`fire_early_refresh`, `/cache/purge`) need the `reqwest`/`url` dependencies
 # that `proxy` enables, so `cache` no longer lists them itself.
-cache = ["proxy", "lopatnov-conduit-cache/cache", "lopatnov-conduit-runtime/cache", "lopatnov-conduit-admin/cache"]
+# `lopatnov-conduit-admin/cache` (the `/cache/purge` handler) is no longer forwarded directly — as of #147 it's
+# reached transitively through `lopatnov-conduit-server/cache`, which forwards into it itself (the root has no
+# direct dependency on `conduit-admin` any more).
+cache = [
+    "proxy",
+    "lopatnov-conduit-cache/cache",
+    "lopatnov-conduit-runtime/cache",
+    "lopatnov-conduit-server/cache",
+]
 # Disk cache backend (cache.store: "disk:/path"). Forwards into
 # `crates/conduit-cache`'s own `disk-cache` feature (also a marker feature —
 # the `disk` module itself has no feature gate, matching pre-extraction).
@@ -812,7 +854,11 @@ disk-cache = ["cache", "lopatnov-conduit-cache/disk-cache"]
 # `AcmeConfig` moved to `crates/conduit-acme` (#114/#130) and is always a
 # dependency (see the [dependencies] comment above); this only forwards into
 # that crate's own `acme` feature, which gates the real ACME flow.
-acme = ["lopatnov-conduit-acme/acme", "lopatnov-conduit-runtime/acme"]
+acme = [
+    "lopatnov-conduit-acme/acme",
+    "lopatnov-conduit-runtime/acme",
+    "lopatnov-conduit-server/acme",
+]
 
 # ── Testing / chaos ───────────────────────────────────────────────────────────
 # Fault injection for chaos testing (faultInjection config). NOT for production.
@@ -830,11 +876,12 @@ otlp = ["lopatnov-conduit-otlp/otlp", "lopatnov-conduit-runtime/otlp"]
 # Tokio event-loop lag gauge (conduit_eventloop_lag_ms).
 # Uses a yield-probe task that measures scheduling delay — no external deps,
 # no tokio_unstable required.  Safe to enable in production.
-tokio-metrics = ["lopatnov-conduit-runtime/tokio-metrics"]
+tokio-metrics = ["lopatnov-conduit-runtime/tokio-metrics", "lopatnov-conduit-server/tokio-metrics"]
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
-# Kubernetes CRD watching (--kubernetes-namespace flag).
-kubernetes = ["dep:lopatnov-conduit-k8s"]
+# Kubernetes CRD watching (--kubernetes-namespace flag). `dep:lopatnov-conduit-k8s` moved (#147): the root no
+# longer depends on that crate directly, `lopatnov-conduit-server` does (see the [dependencies] comment above).
+kubernetes = ["lopatnov-conduit-server/kubernetes", "lopatnov-conduit-cli/kubernetes"]
 
 # ── Convenience bundles ────────────────────────────────────────────────────────
 # Standard build: the typical self-hosted reverse-proxy / API-gateway feature

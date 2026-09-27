@@ -2,7 +2,6 @@ pub mod defaults;
 pub mod env;
 pub mod parse;
 pub mod provider;
-pub(crate) mod rate_limit_scan;
 pub mod schema;
 pub mod validate;
 

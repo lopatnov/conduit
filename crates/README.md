@@ -57,10 +57,13 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   has **no Cargo features** — relocating the schema does not gate any field.
   Root's `src/config/schema/mod.rs` (an explicit re-export list) and
   `src/config/parse.rs` are facades over it, so every `crate::config::…` path
-  keeps resolving. What deliberately stays in the root crate: `validate`
-  (`validate()`/`feature_warnings()`, whose 17 feature-parity asserts compare a
-  crate's `COMPILED` with the *root's* feature), the file/Kubernetes
-  providers, `defaults.rs` and `rate_limit_scan.rs`.
+  keeps resolving. As of #147, `validate()`/`feature_warnings()`, the file/
+  Kubernetes providers, `defaults.rs` and `rate_limit_scan.rs` all moved into
+  `conduit-server` (see that entry below) — only the sixteen
+  `conduit_x::warnings::COMPILED == cfg!(feature = "x")` feature-parity asserts
+  (`cfg!()` is always crate-relative, so they have to stay wherever the root's
+  own features live) and `validate`'s own test suite (which pins the *root's*
+  compiled feature set) stay in the root crate.
 
 - **`conduit-runtime`** (Phase 6.1, [#145](https://github.com/lopatnov/conduit/issues/145))
   — Layer-3 request pipeline: the Pingora `ProxyHttp` implementation
@@ -98,14 +101,16 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   — Layer-3 Admin API: the axum server (`api::serve`), the bearer-token layer and
   eleven of the twelve endpoints (`/status`, `/shutdown`, `/upstreams` + `add`/`remove`/
   `weight`, `/rate-limits`, `/cache/purge`, `/ip-deny`, `/certs/reload`), plus
-  `validate_cert_key_pem` (re-exported from `src/server/tls.rs`). `POST /reload`
-  stays in the root crate — it needs the root's config validation — and joins the router
+  `validate_cert_key_pem` (re-exported from `crates/conduit-server/src/server/tls.rs` as of #147).
+  `POST /reload` needs the config validation that moved to `conduit-server` in #147, so it moved there
+  with it (not the root crate any more) — it still joins the router
   through `api::build_router`'s single `extra` parameter, merged **before** the auth layer, so
   a route added from outside cannot skip authentication (a test asserts 401 on all twelve).
   `AdminApiService`, the background supervisor (rate-limit cleanup, health probes, the
-  hot-reload watcher), stays in the root too: it runs even without `global.admin`. One
+  hot-reload watcher), moved to `conduit-server` too (#147): it runs even without `global.admin`. One
   feature, `cache` (`dep:url`, for the purge URL), mirrored by a compile-time assert in
-  `src/admin/api.rs`. **Why one crate, not the issue's `conduit-admin-core` + an `admin`
+  `conduit-server`'s `src/admin/api.rs` (which the root's own parity assert in turn checks against —
+  see the `conduit-server` entry below). **Why one crate, not the issue's `conduit-admin-core` + an `admin`
   feature per feature crate:** every build already compiles every Layer-1 crate, the
   handlers need `AppState` (Layer 3), and only `/cache/purge` depends on a feature — the
   inversion would have cost 4–5 new features and asserts for no dependency saved. Same
@@ -113,6 +118,49 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   `crate::…` paths, so the 35 moved items are byte-identical to before apart from
   visibility prefixes (`pub(super)`/`pub`) and one deleted line in the certs handler
   (its `use` of the validator, which now sits in the same file).
+
+- **`conduit-server`** (Phase 6.3a, [#147](https://github.com/lopatnov/conduit/issues/147))
+  — Layer-3 server bootstrap and config validation: `run_server()` (Pingora bootstrap, TLS/
+  plain listener wiring, ACME procurement, Redis rate-limiter connect, TCP/redirect services
+  — `server::builder`), `tls`/`redirect`/`acme`/`otel`/`shutdown`, the Admin API's background
+  supervisor and `POST /reload` (`admin::api::AdminApiService`, moved from the root together
+  with `conduit-admin`'s eleven other endpoints in #146), and the real config-validation logic
+  (`config::validate` — `validate()`/`feature_warnings()` and their `auth`/`cross_site`/
+  `proxy_loop`/`site`/`tls`/`warnings` submodules) plus the providers (`config::provider`'s
+  `FileProvider`/`load_and_validate`, `config::kubernetes`'s `KubernetesProvider`) and
+  `config::{defaults,rate_limit_scan}`. The root's `src/config/validate/mod.rs` re-exports
+  `validate()`/`feature_warnings()` from here but keeps its own sixteen feature-parity asserts
+  and its `tests.rs`/`golden_tests.rs`/`testdata/` (see the `conduit-config` entry above for
+  why) — `validate_site`/`feature_warnings` call every feature crate's own `validate::validate_x`/
+  `warnings::feature_warning` unconditionally (config validation and feature-off warnings must
+  work regardless of which Cargo features a build enables), so unlike the root's own
+  post-#147 Cargo.toml, none of those fourteen feature crates can be `optional = true` here.
+  Ten features (`proxy`, `redis`, `consumers`, `cache`, `acme`, `tcp`, `upload`, `hotreload`,
+  `tokio-metrics`, `kubernetes`) mirror the root's, with ten compile-time asserts in the root's
+  `src/server.rs` (a facade-free file that exists only to hold them, mirroring
+  `src/proxy/service.rs`'s device for `conduit-runtime`). Two behavior fixes rode along with
+  the move (found while reviewing the code being relocated, not new to this PR's scope): the
+  rate-limit-cleanup and event-loop-lag-gauge background loops now take their own clone of the
+  `ShutdownWatch` and exit when it fires, instead of running until process exit regardless of
+  what `BackgroundService::start()`'s caller expects; and the Kubernetes live-config-update
+  watcher (`server::builder::spawn_config_update_watcher`) now validates every update before
+  swapping it in, rejecting one with hard errors and keeping the previously-serving config
+  instead of applying it unconditionally (issue #492 — the same validation the file-based
+  path already had, extended to the Kubernetes-CRD path that had skipped it).
+
+- **`conduit-cli`** (Phase 6.3b, [#147](https://github.com/lopatnov/conduit/issues/147))
+  — `main()`'s CLI subcommand dispatch: every `src/cli/*.rs` module (`args`, `admin_client`,
+  `config_path`, `fmt`, `init`, `probe`, `serve`, `status`, `upstream_urls`, `validate`) plus
+  `dispatch` — `dispatch_command()` and the `Command`-struct table pulled out of `src/main.rs`,
+  which shrank to ~10 lines (init tracing, `Cli::parse()`, call `dispatch_command`). Owns
+  `clap`/`clap_complete`/`clap_mangen`/`dialoguer`, none of which are root-crate dependencies
+  any more (`clap` itself never actually leaves the *build's* dependency tree even so —
+  `pingora-core`'s own `Opt` derive depends on it regardless). `serve.rs`/`validate.rs` reach
+  `conduit_server::{server::builder, config::validate}` directly (no facade needed between two
+  crates at the same workspace layer) through small alias modules in `lib.rs`, the same device
+  `conduit-runtime`/`conduit-admin`/`conduit-server` use for the root's `crate::…` paths. One
+  feature, `kubernetes`, mirrors the root's, with a compile-time assert in the root's
+  `src/cli/mod.rs` facade.
 
 - **`conduit-otlp`** (Phase 3.1, [#129](https://github.com/lopatnov/conduit/issues/129))
   — the template extraction for every subsequent feature crate. Owns

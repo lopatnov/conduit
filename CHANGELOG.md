@@ -75,6 +75,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A config sourced from Kubernetes `ConduitSite` CRDs is now validated, both on startup and on every live
+  update (issue #492).** The file-based config path has always rejected a config with duplicate `host:port`
+  pairs, bad TLS config, etc. before starting or hot-swapping; the Kubernetes path swapped every update in
+  unconditionally, with no validation at all — the initial config from `run_kubernetes` and every subsequent
+  CRD-driven update from the live-update watcher. A rejected update now keeps the currently-serving config
+  instead of applying the invalid one; a rejected initial config exits the process like the file-based path
+  already did.
+- **The Admin API's rate-limit-cleanup and event-loop-lag-gauge background tasks now stop when the process
+  shuts down**, instead of running until process exit regardless of what `BackgroundService::start()`'s
+  caller expects. Found while moving this code into `crates/conduit-server` (issue #147) — not new to that
+  move, but a real pre-existing gap.
 - **A proxied response no longer takes a thread hand-off unless a script or WASM plugin can run on it (issue
   #475).** The response filter chain ran through Tokio's `block_in_place` on every response, although it only
   edits headers unless the site configures response-phase script or WASM `middleware`. On a multi-thread runtime `block_in_place` gives the worker's
@@ -319,6 +330,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `conduit_admin::api::…` instead of `conduit::admin::api`, so `RUST_LOG=conduit::admin=debug` no
   longer matches them. The crate has one feature, `cache` (the purge endpoint), enabled by the root's
   `cache`.
+- **The server bootstrap, the Admin API's background supervisor and `POST /reload`, config
+  validation, and the CLI's subcommand dispatch moved into two new workspace crates,
+  `lopatnov-conduit-server` and `lopatnov-conduit-cli`** (issue #147): `run_server()` (Pingora
+  bootstrap, TLS/plain listener wiring, ACME procurement, Redis rate-limiter connect, TCP/redirect
+  services), `AdminApiService` (the rate-limit cleanup, health probe/warmup, Redis cache connect and
+  hot-reload watcher background tasks, plus `POST /reload`), `validate()`/`feature_warnings()` and
+  the file/Kubernetes config providers on one side; `main()`'s CLI subcommand dispatch and every
+  `conduit <command>` implementation on the other. No config shape, route, or CLI flag changed. Two
+  behaviour changes rode along, listed under *Fixed*: the Kubernetes config path is now validated,
+  and two Admin API background tasks now stop on shutdown. One operator-visible effect: the
+  `tracing` lines from the moved code carry the targets `conduit_server::…` instead of
+  `conduit::server::…`/`conduit::admin::api`/`conduit::config::…`, so a filter such as
+  `RUST_LOG=conduit::server=debug` no longer matches them (the default `warn` level is unaffected).
+  `clap`/`clap_complete`/`clap_mangen`/`dialoguer` are no longer root-crate dependencies (`conduit-
+  cli` owns them now); `indicatif`, `thiserror` and the root's direct `pingora-cache` edge were
+  unused and are dropped from the workspace entirely. Ten root features (`proxy`, `redis`,
+  `consumers`, `cache`, `acme`, `tcp`, `upload`, `hotreload`, `tokio-metrics`, `kubernetes`) now
+  also forward into `conduit-server`, and `kubernetes` into `conduit-cli` too — every existing
+  feature name and bundle (`standard`/`gateway`/`full`/etc.) is unchanged.
 - **The config schema (`AppConfig`, `SiteConfig` and the types they contain) and
   the config-file parsing moved into a new workspace crate,
   `lopatnov-conduit-config`** (issue #222). No config shape or behaviour change:

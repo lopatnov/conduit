@@ -42,23 +42,24 @@ cargo run -- -c examples/minimal.json
 
 ```text
 src/
-├── main.rs              entry point — CLI dispatch
+├── main.rs              entry point (~10 lines): init tracing, Cli::parse(), dispatch_command() — everything
+│                        else moved to crates/conduit-cli (#147)
 ├── cli/
-│   ├── args.rs          clap CLI definitions
-│   └── init.rs          conduit init wizard
+│   └── mod.rs           facade: every item re-exported from crates/conduit-cli (args.rs, dispatch.rs,
+│                        init.rs, serve.rs, validate.rs, and the rest) — see crates/conduit-cli/src/lib.rs
 ├── config/
 │   ├── schema/          facade: mod.rs re-exports every config type from crates/conduit-config (#222)
 │   ├── parse.rs         facade: load_config(), from_str(), normalize() live in crates/conduit-config
-│   ├── validate/        semantic validation + TLS cert expiry, one submodule per concern; mod.rs has validate()/feature_warnings();
-│   │                    the per-block validators and feature-off warning texts live in the owning crates (`validate.rs`/`warnings.rs`)
+│   ├── validate/        facade: mod.rs re-exports validate()/feature_warnings() from crates/conduit-server
+│   │                    (#147) and keeps the root-vs-feature-crate compile-time parity asserts (cfg!() is
+│   │                    always crate-relative, so those stay here); tests.rs/golden_tests.rs/testdata/ stay
+│   │                    here too, since they pin the ROOT's own compiled feature set
+│   ├── provider.rs      facade: FileProvider/Provider live in crates/conduit-server (#147)
+│   ├── kubernetes.rs    facade: KubernetesProvider/CRD types live in crates/conduit-server (#147)
 │   ├── env.rs           $VAR interpolation
-│   └── defaults.rs      Default impls
-├── server/
-│   ├── builder.rs       Pingora bootstrap
-│   ├── tls.rs           TLS settings (rustls)
-│   ├── acme.rs          Auto-TLS via instant-acme (Let's Encrypt)
-│   ├── redirect.rs      HTTP→HTTPS redirect proxy
-│   └── shutdown.rs      graceful shutdown
+│   └── defaults.rs      facade: the constants live in crates/conduit-server (#147)
+├── server.rs            no facade — just the ten root-vs-`conduit-server` compile-time parity asserts
+│                        (run_server()/AdminApiService/config::validate/the providers all moved there, #147)
 ├── proxy/               (the modules marked * are facades over crates/conduit-runtime since #145 — see below)
 │   ├── service.rs *     ConduitProxy (ProxyHttp impl), AppState
 │   ├── router.rs *      host + path routing, route table
@@ -94,10 +95,6 @@ src/
 │    MiddlewareGuard/MiddlewareResponseFilter dispatch to
 │    crates/conduit-middleware — issue #114/#141; formerly filter/script.rs
 │    and filter/wasm.rs here)
-├── admin/
-│   └── api.rs           the root's part of the Admin API: `POST /reload` and the background supervisor
-│                        (`AdminApiService`); the server, auth and the other eleven endpoints are in
-│                        crates/conduit-admin since #146
 ├── upload/
 │   └── server.rs        upload server (Axum loopback, port 0)
 └── util/
