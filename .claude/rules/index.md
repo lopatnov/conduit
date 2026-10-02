@@ -650,6 +650,11 @@ it — call them whenever the same shape of task comes up outside that cycle too
 - **`cleanup`** (`.claude/commands/cleanup.md`) — sweeps for leftover worktrees/WSL-Docker
   verification state, and for code a change should have removed or wired in but didn't. Run
   it after any task that created throwaway state; see "Clean up ephemeral debris" above.
+- **`verify-handed-over-task`** (`.claude/commands/verify-handed-over-task.md`) — run it before
+  the first edit of a task handed over from another session (a `spawn_task` chip, a `/handoff`
+  summary) and when resuming after a usage-limit reset: is it already done (e.g. the
+  2026-09-27 `builder.rs` split, merged as #495 before the session started), and does the
+  worktree's base branch even contain the file.
 
 > **Note (originally added 2026-08-29, corrected 2026-09-12):** this note used to warn that
 > the `claude/cargo-workspace-features-23qxfr` migration branch had further `.claude/` tooling
