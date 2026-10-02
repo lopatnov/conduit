@@ -9,7 +9,8 @@
 //!
 //! 1. Create a struct that holds connection / path information.
 //! 2. `impl Provider<C> for YourProvider`.
-//! 3. In `run()`: send the initial config immediately, then loop and send updates.
+//! 3. In `run()`: send the initial config immediately, then keep watching
+//!    for changes and send further updates.
 //! 4. Return `Ok(())` when `tx.send()` returns `Err` (receiver dropped = server
 //!    shutting down).
 
@@ -23,7 +24,7 @@ use tokio::sync::mpsc;
 use crate::parse::load_file;
 use crate::validation::ValidationError;
 
-// ── Trait ─────────────────────────────────────────────────────────────────────
+// ── Trait ────────────────────────────────────────────────────────────
 
 /// A configuration source that streams `C` updates.
 #[async_trait]
@@ -42,9 +43,10 @@ where
     async fn run(&self, tx: mpsc::Sender<C>) -> Result<()>;
 }
 
-// ── FileProvider ──────────────────────────────────────────────────────────────
+// ── FileProvider ───────────────────────────────────────────────────────────
 
 type Validator<C> = Box<dyn Fn(&C) -> Vec<ValidationError> + Send + Sync>;
+type Loader<C> = Box<dyn Fn(&Path) -> Result<C> + Send + Sync>;
 
 /// Load configuration `C` from a JSON or YAML file.
 ///
@@ -67,6 +69,7 @@ pub struct FileProvider<C> {
     path: PathBuf,
     auto_reload: bool,
     validator: Option<Validator<C>>,
+    loader: Option<Loader<C>>,
 }
 
 impl<C> FileProvider<C> {
@@ -76,7 +79,22 @@ impl<C> FileProvider<C> {
             path: path.into(),
             auto_reload: false,
             validator: None,
+            loader: None,
         }
+    }
+
+    /// Replace the default `load_file` deserialization (a plain
+    /// `serde::Deserialize` into `C`) with a custom loader — e.g. one that
+    /// normalizes a schema-level shorthand enum into `C` first. Without
+    /// this, `FileProvider<AppConfig>` bypasses `ConfigFile`'s shorthand
+    /// normalization (`{"port": 8080}` etc. — see `CLAUDE.md` decision #4),
+    /// which only the root crate's own `load_config()`/`from_str()` apply;
+    /// a config accepted by one loader and rejected by the other is
+    /// exactly the gap this closes.
+    #[must_use]
+    pub fn with_loader(mut self, f: impl Fn(&Path) -> Result<C> + Send + Sync + 'static) -> Self {
+        self.loader = Some(Box::new(f));
+        self
     }
 
     /// Enable automatic config reload when the file changes on disk.
@@ -109,7 +127,10 @@ impl<C: DeserializeOwned> FileProvider<C> {
     /// Returns an error if the file cannot be read, fails to parse, or the
     /// validator reports errors.
     fn load(&self) -> Result<C> {
-        let cfg: C = load_file(&self.path)?;
+        let cfg: C = match &self.loader {
+            Some(loader) => loader(&self.path)?,
+            None => load_file(&self.path)?,
+        };
         if let Some(validator) = &self.validator {
             let errors = validator(&cfg);
             if !errors.is_empty() {
@@ -222,7 +243,7 @@ impl<C: DeserializeOwned + Send + 'static> FileProvider<C> {
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────
 
 /// Create a [`notify`] watcher that fires on the given `target_path`.
 ///
@@ -256,7 +277,7 @@ fn build_file_watcher(
     Ok(watcher)
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -286,7 +307,7 @@ mod tests {
 
     const MINIMAL: &str = r#"{"port": 0}"#;
 
-    // ── Provider trait ────────────────────────────────────────────────────────
+    // ── Provider trait ────────────────────────────────────────────────
 
     #[test]
     fn file_provider_name_is_file() {
@@ -305,7 +326,7 @@ mod tests {
         assert!(p.auto_reload);
     }
 
-    // ── watch_dir (issue #283) ───────────────────────────────────────────────
+    // ── watch_dir (issue #283) ─────────────────────────
 
     #[test]
     fn watch_dir_bare_relative_filename_falls_back_to_current_dir() {
@@ -336,7 +357,7 @@ mod tests {
         assert_eq!(watch_dir(Path::new("/")), Path::new("."));
     }
 
-    // ── One-shot mode ─────────────────────────────────────────────────────────
+    // ── One-shot mode ───────────────────────────────────────────
 
     #[tokio::test]
     async fn oneshot_sends_initial_config_and_returns() {
@@ -387,7 +408,7 @@ mod tests {
         assert!(provider.run(tx).await.is_err());
     }
 
-    // ── load / with_validator ────────────────────────────────────────────────
+    // ── load / with_validator ─────────────────────────────
 
     #[test]
     fn load_accepts_valid_config() {
@@ -424,7 +445,42 @@ mod tests {
         assert!(provider.load().is_ok());
     }
 
-    // ── Auto-reload ───────────────────────────────────────────────────────────
+    // ── with_loader ─────────────────────────────────────────────
+
+    #[test]
+    fn with_loader_overrides_the_default_deserializer() {
+        let (_f, path) = write_config(MINIMAL);
+        // A custom loader that ignores the file's real content and always
+        // returns a fixed value, proving load() actually calls it instead
+        // of falling through to load_file.
+        let provider = FileProvider::<Toy>::new(&path)
+            .with_loader(|_p| Ok(Toy { port: Some(9999) }));
+        let cfg = provider.load().expect("custom loader must succeed");
+        assert_eq!(
+            cfg.port,
+            Some(9999),
+            "with_loader's closure must be used instead of the default load_file"
+        );
+    }
+
+    #[test]
+    fn without_with_loader_uses_default_load_file() {
+        let (_f, path) = write_config(MINIMAL);
+        let provider = FileProvider::<Toy>::new(&path);
+        let cfg = provider.load().expect("default loader must succeed");
+        assert_eq!(cfg.port, Some(0), "no with_loader call must use load_file");
+    }
+
+    #[test]
+    fn with_loader_errors_propagate() {
+        let (_f, path) = write_config(MINIMAL);
+        let provider = FileProvider::<Toy>::new(&path)
+            .with_loader(|_p| anyhow::bail!("custom loader rejected this config"));
+        let err = provider.load().expect_err("custom loader error must propagate");
+        assert!(err.to_string().contains("custom loader rejected this config"));
+    }
+
+    // ── Auto-reload ────────────────────────────────────────────
 
     /// Write `content` to an existing open file, truncating first.
     fn overwrite(path: &Path, content: &str) {
