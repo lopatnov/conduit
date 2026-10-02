@@ -234,10 +234,14 @@ impl Storage for DiskCacheStorage {
                     Error::because(ErrorType::InternalError, "cache meta serialize", e)
                 })?;
                 let path = self.entry_path(&Self::hash(key));
-                tokio::task::spawn_blocking(move || Self::write_entry(&path, &m0, &m1, &body))
-                    .await
-                    .map_err(|e| Error::explain(ErrorType::InternalError, e.to_string()))?
-                    .map_err(|e| Error::explain(ErrorType::InternalError, e.to_string()))?;
+                let tmp = self.tmp_path(&Self::hash(key));
+                tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                    Self::write_entry(&tmp, &m0, &m1, &body)?;
+                    std::fs::rename(&tmp, &path)
+                })
+                .await
+                .map_err(|e| Error::explain(ErrorType::InternalError, e.to_string()))?
+                .map_err(|e| Error::explain(ErrorType::InternalError, e.to_string()))?;
                 Ok(true)
             }
             _ => Ok(false),
@@ -268,12 +272,13 @@ impl HandleMiss for DiskMissHandler {
 
     async fn finish(self: Box<Self>) -> PingoraResult<MissFinishType> {
         let size = self.body.len();
-        let tmp = self.tmp_path.clone();
-        let cache = self.cache_path.clone();
+        let this = *self;
+        let tmp = this.tmp_path;
+        let cache = this.cache_path;
         let cache_display = cache.display().to_string();
-        let m0 = self.meta0.clone();
-        let m1 = self.meta1.clone();
-        let body = self.body.clone();
+        let m0 = this.meta0;
+        let m1 = this.meta1;
+        let body = this.body;
 
         let result = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             DiskCacheStorage::write_entry(&tmp, &m0, &m1, &body)?;

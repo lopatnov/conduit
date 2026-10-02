@@ -41,9 +41,11 @@ pub fn is_host_allowed(
             if allowed.is_empty() {
                 return true;
             }
-            return allowed
-                .iter()
-                .any(|a| a == "*" || a == host || a == host_no_port);
+            return allowed.iter().any(|a| {
+                a == "*"
+                    || a.eq_ignore_ascii_case(host)
+                    || a.eq_ignore_ascii_case(host_no_port)
+            });
         }
     }
 
@@ -256,6 +258,17 @@ mod tests {
     }
 
     #[test]
+    fn allowed_hosts_is_case_insensitive() {
+        use crate::config::SecurityHeadersOptions;
+        let opts = SecurityHeadersOptions {
+            allowed_hosts: Some(vec!["api.example.com".to_owned()]),
+            ..Default::default()
+        };
+        let cfg = SecurityHeadersConfig::Options(opts);
+        assert!(is_host_allowed(Some(&cfg), None, "API.Example.com:8080"));
+    }
+
+    #[test]
     fn wildcard_allows_all() {
         use crate::config::SecurityHeadersOptions;
         let opts = SecurityHeadersOptions {
@@ -315,6 +328,17 @@ mod tests {
             Some("example.com"),
             "api.example.com"
         ));
+    }
+
+    #[test]
+    fn allowed_hosts_is_case_insensitive_via_separate_case() {
+        use crate::config::SecurityHeadersOptions;
+        let opts = SecurityHeadersOptions {
+            allowed_hosts: Some(vec!["API.EXAMPLE.COM".to_owned()]),
+            ..Default::default()
+        };
+        let cfg = SecurityHeadersConfig::Options(opts);
+        assert!(is_host_allowed(Some(&cfg), None, "api.example.com"));
     }
 
     // ── HSTS edge cases ───────────────────────────────────────────────────────
