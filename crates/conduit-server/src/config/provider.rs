@@ -48,13 +48,23 @@ pub type FileProvider = conduit_config_core::provider::FileProvider<AppConfig>;
 /// `src/cli/serve.rs::run()` and the admin `/reload` handler already do
 /// (issue #253).
 pub fn file_provider(path: impl Into<std::path::PathBuf>) -> FileProvider {
-    FileProvider::new(path).with_validator(|cfg| {
-        let (warnings, hard_errors) = validate::partition_by_severity(validate::validate(cfg));
-        for w in &warnings {
-            tracing::warn!("config: {}: {}", w.path, w.message);
-        }
-        hard_errors
-    })
+    FileProvider::new(path)
+        // Without this, `FileProvider<AppConfig>`'s default loader
+        // deserializes straight into `AppConfig` (no top-level `sites`
+        // array = rejected), bypassing the `ConfigFile` shorthand enum
+        // (`{"port": 8080}` etc. — CLAUDE.md decision #4) that
+        // `load_config()` normalizes through. A config accepted by
+        // `load_and_validate()`/`from_str()` but rejected here on initial
+        // load or auto-reload was exactly that gap (CodeRabbit finding on
+        // PR #152).
+        .with_loader(load_config)
+        .with_validator(|cfg| {
+            let (warnings, hard_errors) = validate::partition_by_severity(validate::validate(cfg));
+            for w in &warnings {
+                tracing::warn!("config: {}: {}", w.path, w.message);
+            }
+            hard_errors
+        })
 }
 
 /// Load a config file, validate it, and return the [`AppConfig`].
@@ -126,11 +136,11 @@ mod tests {
         std::fs::write(&cert_path, cert_pem).unwrap();
         std::fs::write(&key_path, key_pem).unwrap();
 
-        // FileProvider<AppConfig>::load() deserializes straight into
-        // AppConfig with no ConfigFile-enum shorthand normalization (that
-        // only happens in the root crate's own load_config(), which
-        // load_and_validate() uses) — so this needs the real shape
-        // (explicit `sites` array), not the "Single" catch-all shorthand.
+        // `file_provider()` now normalizes `ConfigFile` shorthand the same
+        // way `load_and_validate()` does (both go through `load_config()`),
+        // so this could use the "Single" catch-all shorthand too — kept as
+        // the explicit `sites` shape since that's what's under test
+        // elsewhere in this file.
         let config_path = dir.path().join("conduit.json");
         let json = format!(
             r#"{{"sites": [{{"port": 0, "tls": {{"cert": {:?}, "key": {:?}}}}}]}}"#,
