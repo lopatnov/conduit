@@ -20,6 +20,19 @@ use std::collections::BTreeSet;
 #[cfg(feature = "cache")]
 use conduit_config::schema::{AppConfig, ProxyConfig, ProxyRouteTarget};
 
+/// The `redis://`/`rediss://` `cache.store` URL for a single proxy target,
+/// if it has a cache configured with a Redis-backed store — extracted out
+/// of `connect_all`'s inline closure (SonarCloud cognitive complexity 22
+/// vs. allowed 15, three nested `if`s) via a `let...else` short-circuit.
+#[cfg(feature = "cache")]
+fn redis_store_url(target: &ProxyRouteTarget) -> Option<&str> {
+    let ProxyRouteTarget::Full(cfg) = target else {
+        return None;
+    };
+    let store = cfg.cache.as_ref()?.store.as_str();
+    conduit_config_core::scheme::is_redis_url(store).then_some(store)
+}
+
 /// Every distinct `redis://`/`rediss://` `cache.store` URL configured
 /// anywhere in `config` — both under the `proxy` shorthand and under
 /// `routes[].proxy` (`ProxyRouteTarget::Full`'s `cache` field in either
@@ -30,12 +43,8 @@ pub(crate) fn collect_redis_cache_urls(config: &AppConfig) -> Vec<String> {
     let mut urls = BTreeSet::new();
 
     let mut push_if_redis = |target: &ProxyRouteTarget| {
-        if let ProxyRouteTarget::Full(cfg) = target {
-            if let Some(cache) = &cfg.cache {
-                if conduit_config_core::scheme::is_redis_url(&cache.store) {
-                    urls.insert(cache.store.clone());
-                }
-            }
+        if let Some(store) = redis_store_url(target) {
+            urls.insert(store.to_owned());
         }
     };
 

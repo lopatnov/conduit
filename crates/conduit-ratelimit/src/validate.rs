@@ -47,26 +47,7 @@ pub fn validate_rate_limit(cfg: &RateLimitConfig, prefix: &str, errors: &mut Vec
     // collapsing every client into one rate limit. Catch the typo at config-load time
     // instead (CodeRabbit finding on PR #302's review).
     if let Some(key_by) = cfg.key_by.as_deref() {
-        if let Some(header_name) = key_by.strip_prefix("header:") {
-            let valid = !header_name.is_empty()
-                && header_name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
-            if !valid {
-                errors.push(ValidationError::new(
-                    format!("{prefix}.rateLimit.keyBy"),
-                    format!(
-                        "invalid header name \"{header_name}\" in \"header:{header_name}\" — \
-                         must be a valid HTTP header field name (letters, digits, and !#$%&'*+-.^_`|~)"
-                    ),
-                ));
-            }
-        } else if key_by != "ip" {
-            errors.push(ValidationError::new(
-                format!("{prefix}.rateLimit.keyBy"),
-                format!("invalid keyBy \"{key_by}\" — must be \"ip\" or \"header:<name>\""),
-            ));
-        }
+        validate_key_by(key_by, prefix, errors);
     }
     // Validate the store field: must be "memory", a redis:// URL (plaintext),
     // or a rediss:// URL (TLS — requires Redis with in-transit encryption,
@@ -82,5 +63,33 @@ pub fn validate_rate_limit(cfg: &RateLimitConfig, prefix: &str, errors: &mut Vec
                 ),
             ));
         }
+    }
+}
+
+/// Validate `rateLimit.keyBy` (`"ip"` or `"header:<name>"`) — split out of
+/// [`validate_rate_limit`] to keep its cognitive complexity down (SonarCloud
+/// flagged the inlined version at 18 against the allowed 15).
+fn validate_key_by(key_by: &str, prefix: &str, errors: &mut Vec<ValidationError>) {
+    let Some(header_name) = key_by.strip_prefix("header:") else {
+        if key_by != "ip" {
+            errors.push(ValidationError::new(
+                format!("{prefix}.rateLimit.keyBy"),
+                format!("invalid keyBy \"{key_by}\" — must be \"ip\" or \"header:<name>\""),
+            ));
+        }
+        return;
+    };
+    let valid = !header_name.is_empty()
+        && header_name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
+    if !valid {
+        errors.push(ValidationError::new(
+            format!("{prefix}.rateLimit.keyBy"),
+            format!(
+                "invalid header name \"{header_name}\" in \"header:{header_name}\" — \
+                 must be a valid HTTP header field name (letters, digits, and !#$%&'*+-.^_`|~)"
+            ),
+        ));
     }
 }
