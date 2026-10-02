@@ -74,4 +74,30 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
+
+    #[test]
+    fn new_and_warning_set_distinct_severities() {
+        assert_eq!(ValidationError::new("x", "y").severity, Severity::Error);
+        assert_eq!(
+            ValidationError::warning("x", "y").severity,
+            Severity::Warning
+        );
+        assert_ne!(
+            ValidationError::new("x", "y"),
+            ValidationError::warning("x", "y")
+        );
+    }
+
+    #[test]
+    fn partition_returns_warnings_first_then_hard_errors() {
+        let input = vec![
+            ValidationError::new("a", "hard"),
+            ValidationError::warning("b", "soft"),
+        ];
+        let (warnings, hard) = partition_by_severity(input);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].path, "b");
+        assert_eq!(hard.len(), 1);
+        assert_eq!(hard[0].path, "a");
+    }
 }

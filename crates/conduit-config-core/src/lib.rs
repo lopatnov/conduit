@@ -15,8 +15,8 @@
 //! needs to load a config file.
 //!
 //! `ConfigFile`/`normalize()` deliberately stay in the root crate: their
-//! 3-variant untagged shape is a *schema* decision (`CLAUDE.md`
-//! Архитектурное решение #4), not a parsing mechanism, and belongs with
+//! 3-variant untagged shape is a *schema* decision (architectural decision #4,
+//! not a parsing mechanism, and belongs with
 //! `AppConfig`/`SiteConfig` when those move in Phase 3.
 
 pub mod env;
