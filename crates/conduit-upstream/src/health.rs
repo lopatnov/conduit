@@ -18,7 +18,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::config::{OutlierDetectionConfig, UpstreamHealthCheck};
 use crate::targets;
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────
 
 /// Return the current Unix timestamp as whole seconds.
 ///
@@ -41,7 +41,7 @@ fn now_secs_f64() -> f64 {
         .as_secs_f64()
 }
 
-// ── Per-upstream health state ─────────────────────────────────────────────────
+// ── Per-upstream health state ──────────────────────────────────────────
 
 /// Live health state for a single upstream URL.
 ///
@@ -340,7 +340,7 @@ pub fn slow_start_fraction(entry: &UpstreamEntry, window_secs: u64) -> f64 {
     }
 }
 
-// ── Registry ──────────────────────────────────────────────────────────────────
+// ── Registry ────────────────────────────────────────────────────────────
 
 /// Central store for upstream health state and per-upstream connection counts.
 pub struct UpstreamRegistry {
@@ -369,7 +369,7 @@ impl Default for UpstreamRegistry {
     }
 }
 
-// ── Override key helpers ──────────────────────────────────────────────────────
+// ── Override key helpers ────────────────────────────────────────────────────
 
 /// Build the DashMap key for a runtime override entry.
 ///
@@ -402,7 +402,7 @@ impl UpstreamRegistry {
         }
     }
 
-    // ── Least-conn helpers ────────────────────────────────────────────────────
+    // ── Least-conn helpers ────────────────────────────────
 
     /// Return the current inflight count for `url` (0 when unknown).
     pub fn conn_load(&self, url: &str) -> usize {
@@ -423,8 +423,8 @@ impl UpstreamRegistry {
     /// Decrement the inflight count for `url`, saturating at 0.
     pub fn conn_dec(&self, url: &str) {
         if let Some(c) = self.conn_count.get(url) {
-            // fetch_update lets us implement saturating decrement atomically.
-            let _ = c.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            // try_update lets us implement saturating decrement atomically.
+            let _ = c.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 Some(n.saturating_sub(1))
             });
         }
@@ -440,7 +440,7 @@ impl UpstreamRegistry {
         Some(chosen)
     }
 
-    // ── Health helpers ────────────────────────────────────────────────────────
+    // ── Health helpers ────────────────────────────────────────────
 
     /// Return `true` if `url` is currently considered healthy.
     ///
@@ -521,7 +521,7 @@ impl UpstreamRegistry {
         }
     }
 
-    // ── Runtime upstream overrides (Phase 2.5c) ───────────────────────────────
+    // ── Runtime upstream overrides (Phase 2.5c) ─────────────────────────
 
     /// Return the runtime override target list for `(site_label, route)`.
     ///
@@ -595,7 +595,7 @@ impl UpstreamRegistry {
     }
 }
 
-// ── Health state update ───────────────────────────────────────────────────────
+// ── Health state update ─────────────────────────────────────────────────
 
 /// Apply a single probe result to an upstream's health entry.
 ///
@@ -625,7 +625,7 @@ pub(crate) fn apply_probe_result(
     }
 }
 
-// ── Background health check tasks ─────────────────────────────────────────────
+// ── Background health check tasks ─────────────────────────────────────────
 
 /// Spawn a Tokio background task for every `(healthCheck config, target URLs)`
 /// pair supplied.
@@ -794,7 +794,7 @@ fn spawn_health_task(
     });
 }
 
-// ── HTTP health probe ─────────────────────────────────────────────────────────
+// ── HTTP health probe ─────────────────────────────────────────────────────
 
 /// Send an HTTP/1.1 HEAD request to `host_port` at `path`.
 ///
@@ -844,7 +844,7 @@ async fn probe_http(host_port: &str, path: &str) -> (bool, u64) {
 mod tests {
     use super::*;
 
-    // ── site_label ───────────────────────────────────────────────────────────
+    // ── site_label ────────────────────────────────────────────
 
     #[test]
     fn site_label_with_host_and_port() {
@@ -872,7 +872,7 @@ mod tests {
         assert_eq!(site_label(&None, None), "*");
     }
 
-    // ── slow_start_fraction ──────────────────────────────────────────────────
+    // ── slow_start_fraction ──────────────────────────────
 
     #[test]
     fn slow_start_zero_window_returns_one() {
@@ -911,7 +911,7 @@ mod tests {
         );
     }
 
-    // ── apply_probe_result ────────────────────────────────────────────────────
+    // ── apply_probe_result ────────────────────────────────
 
     fn fresh() -> UpstreamEntry {
         UpstreamEntry::default()
@@ -978,7 +978,7 @@ mod tests {
         assert!(e.healthy);
     }
 
-    // ── Peak EWMA + Outlier Detection ────────────────────────────────────────
+    // ── Peak EWMA + Outlier Detection ────────────────────────
 
     #[test]
     fn ewma_latency_updates_toward_sample() {
@@ -1087,7 +1087,7 @@ mod tests {
         );
     }
 
-    // ── probe_http ────────────────────────────────────────────────────────────
+    // ── probe_http ─────────────────────────────────────────
 
     #[tokio::test]
     async fn probe_http_succeeds_on_200() {
@@ -1235,7 +1235,7 @@ mod tests {
         );
     }
 
-    // ── override management ───────────────────────────────────────────────────
+    // ── override management ────────────────────────────────
 
     #[test]
     fn add_upstream_creates_override_and_updates_weight() {
@@ -1336,7 +1336,7 @@ mod tests {
         assert!(reg.get_override_targets("*", "/api").is_none());
     }
 
-    // ── half-open circuit breaker ─────────────────────────────────────────────
+    // ── half-open circuit breaker ──────────────────────────────
     // Tests use the module-level now_secs() helper directly.
 
     #[test]
@@ -1458,7 +1458,7 @@ mod tests {
         assert_eq!(e.ejection_count, 2, "ejection_count must be incremented");
     }
 
-    // ── override_key ──────────────────────────────────────────────────────────
+    // ── override_key ──────────────────────────────────────
 
     #[test]
     fn override_key_format_uses_nul_separator() {
@@ -1472,7 +1472,7 @@ mod tests {
         assert_eq!(key, "*\0/api");
     }
 
-    // ── UpstreamEntry default values ──────────────────────────────────────────
+    // ── UpstreamEntry default values ─────────────────────────────
 
     #[test]
     fn upstream_entry_default_is_healthy_and_not_ejected() {
@@ -1486,7 +1486,7 @@ mod tests {
         assert_eq!(e.ewma_latency_us, 30_000.0);
     }
 
-    // ── spawn_health_checks and spawn_connection_warmup ───────────────────────
+    // ── spawn_health_checks and spawn_connection_warmup ───────────────
 
     #[test]
     fn spawn_health_checks_no_routes_is_noop() {
@@ -1512,7 +1512,7 @@ mod tests {
         spawn_connection_warmup(std::iter::empty::<(&UpstreamHealthCheck, &[String])>());
     }
 
-    // ── conn_load / conn_inc / conn_dec ───────────────────────────────────────
+    // ── conn_load / conn_inc / conn_dec ──────────────────────────
 
     #[test]
     fn conn_load_returns_zero_for_unknown_url() {
@@ -1556,7 +1556,7 @@ mod tests {
         reg.conn_dec("http://never-seen:4000");
     }
 
-    // ── pick_least_conn ───────────────────────────────────────────────────────
+    // ── pick_least_conn ──────────────────────────────────
 
     #[test]
     fn pick_least_conn_returns_none_for_empty_list() {
@@ -1575,7 +1575,7 @@ mod tests {
         assert_eq!(chosen.as_deref(), Some(b.as_str()), "b has lower load");
     }
 
-    // ── filter_healthy ────────────────────────────────────────────────────────
+    // ── filter_healthy ───────────────────────────────────
 
     #[test]
     fn filter_healthy_returns_all_when_no_status_known() {
@@ -1603,7 +1603,7 @@ mod tests {
         assert!(!fail_open);
     }
 
-    // ── filter_healthy: all-unhealthy fail-open ───────────────────────────────
+    // ── filter_healthy: all-unhealthy fail-open ─────────────────────
 
     #[test]
     fn filter_healthy_returns_all_when_all_unhealthy() {
@@ -1627,7 +1627,7 @@ mod tests {
         );
     }
 
-    // ── dynamic override API ──────────────────────────────────────────────────
+    // ── dynamic override API ────────────────────────────────
 
     #[test]
     fn add_and_get_override_targets() {
