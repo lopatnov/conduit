@@ -132,13 +132,18 @@ Model assignment (already encoded in each agent's frontmatter — don't override
   `list_pull_requests`) and glance at `.claude/logs/dependabot-hygiene.md`
   (moved out of `CLAUDE.md` 2026-08-28 — see `.claude/commands/dependabot-hygiene.md`
   for the full reflex-check procedure this step is also satisfying for the day).
-  If the log's newest row is within ~24h *and* the direct check confirms nothing new (0
-  open Dependabot PRs, or the same PRs already logged as triaged), log "still
-  clean" and move straight to the rest of this step — don't spawn the agent
-  or spend extra reasoning manufacturing something to do. Only call
-  `dependency-steward` when there's actually real triage work: 2+ open
-  Dependabot PRs, or a PR needing the changelog/semver-risk read the agent is
-  for. **This fast path is scoped to Dependabot/branch-hygiene checks only —
+  If the log's newest row is within ~24h *and* the direct check confirms nothing new —
+  every currently-open Dependabot PR is already logged as triaged **at its current
+  revision** (same head SHA/body as the logged entry — a PR that was force-pushed or had
+  its body edited since is not "already logged" even if its number appears in the log) —
+  log "still clean" and move straight to the rest of this step — don't spawn the agent or
+  spend extra reasoning manufacturing something to do. A single open PR that is new, has
+  changed since it was logged, or was never actually risk-classified (semver/changelog
+  read) still requires `dependency-steward` — the fast path is for confirming nothing
+  changed, not for skipping classification on principle. Only call `dependency-steward`
+  when there's actually real triage work: 2+ open Dependabot PRs, or any PR (even one)
+  needing the changelog/semver-risk read the agent is for. **This fast path is scoped to
+  Dependabot/branch-hygiene checks only —
   it does not touch Step 1c's integrity audits.** Those keep running on their
   own cadence regardless: they've surfaced real, valuable findings all
   through this migration (#164, #163, #216–#220, #157, #158, #185, #189–#191,
@@ -325,11 +330,11 @@ for genuinely idle firings, not a guaranteed periodic pass.)
   (generalized 2026-09-01 per the user's explicit request; supersedes and
   absorbs the narrower 2026-08-22 "batch small independent leaves" rule,
   which only covered #114 sub-issues — this applies to the interleaved
-  bug/gap-issue queue too). A "batch" is still **one coherent PR** per
-  `conventions.md`'s "one branch = one coherent change" — batching changes
-  how many items you pick up together in Step 2, not how many PRs you open;
-  a batch grouped by crate/theme may still split into a few small PRs rather
-  than one giant one (see the ~5-10 tier's precedent below).
+  bug/gap-issue queue too). A "batch" is the set of items selected in one
+  Step 2 pass. Each resulting PR must remain **one coherent change** per
+  `conventions.md`'s "one branch = one coherent change" — group a batch by
+  crate or theme, then split it into small coherent PRs when needed (see the
+  ~5-10 tier's precedent below, where one batch became four PRs).
 
   - **~5-10 items — mechanical/trivial sweep.** All must hold: each item is
     a one-liner or near-one-liner (stale doc comment, a schema field missing
