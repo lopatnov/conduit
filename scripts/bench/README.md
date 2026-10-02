@@ -10,6 +10,7 @@ Linux only (they read `/proc`, pin processes with `taskset`); on Windows run the
 | `matrix.sh BIN OUT [ROUNDS]` | Requests/s, p50/p99 and **CPU µs per request** of one Conduit binary for several `global.workers` values, access log on/off/piped, 50 or 200 connections. `ONLY="w1-nolog w4-nolog"` runs a subset. |
 | `ab.sh BIN_A BIN_B [ROUNDS]` | The same matrix for two binaries, alternating A B B A within each round. Use it for "does this change make requests cheaper?". |
 | `probe.sh BIN [ROUNDS]` | CPU per request split into user and kernel time and per thread, for Conduit and the two **floors** below (`TARGETS="conduit pp relay"`). Shows whether work runs where `global.workers` says. |
+| `size.sh`, `bloatdiff.sh` | What is in the `--no-default-features` binary (#516): stripped size, `cargo bloat` per crate, and the same build of the smallest Pingora proxy as the floor; `bloatdiff.sh` prints the per-crate difference. Needs `cargo-bloat` (`size.sh` installs it) and a `~/perf/pp` crate built from `floors/pingora_min.rs`. |
 | `floors/mock.rs` | The upstream: a multi-thread tokio HTTP server answering every request with the same 22-byte JSON body. |
 | `floors/relay.rs` | A raw single-thread TCP relay `:8080 → :4000`: the syscall + loopback floor of any proxy. |
 | `floors/pingora_min.rs` | The smallest Pingora `ProxyHttp` proxy (defaults, one worker): what Pingora itself costs, without Conduit. |

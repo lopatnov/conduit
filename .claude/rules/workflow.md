@@ -5,12 +5,16 @@
 > separate UI/product/design track, and the conductor + user fill the BA/PM functions for
 > almost everything).
 
-## Priorities when they conflict (owner, 2026-09-27)
+## Priorities when they conflict (owner, 2026-09-27; extended 2026-10-03)
 
-1. **Security.** 2. **Performance.** 3. **Usability.** A speed-up never weakens a check; the fast path is opt-in and
-the safe one is the default (a filter is assumed to block unless it says otherwise — `ResponseFilter::may_block`,
-#475), so forgetting the flag costs speed, not safety. A PR that changes a hot path says in its description what it
-does to security and availability.
+1. **Security.** 2. **Performance.** 3. **Usability.** 4. **Code best practices.** 5. **Standards (RFCs).** A speed-up
+never weakens a check; the fast path is opt-in and the safe one is the default (a filter is assumed to block unless it
+says otherwise — `ResponseFilter::may_block`, #475), so forgetting the flag costs speed, not safety. A PR that changes a
+hot path says in its description what it does to security and availability. A deviation from an RFC that can be abused
+(request smuggling, header injection, cache poisoning) is a security issue first and ranks as one. For anything a client
+or an upstream can observe on the wire, cite the RFC section in the test or the PR; a deliberate deviation is written
+down next to the code, not left implicit. Security also means *less code*: a feature that is not compiled in cannot be
+attacked, so dead code, dead config fields and unused dependencies are defects, not tidiness.
 
 ## Who's the conductor
 
@@ -199,6 +203,13 @@ matrix, CI).
   Fix each as a separate last commit marked "behaviour change", with the golden/tests
   updated, and do it *before* the security pass so the one review covers it. A separate
   issue only when the code is not part of the PR.
+- **A bug found *while* doing the work is not spun off at discovery** (owner, 2026-10-03: on #147 three bugs found in
+  the moved code — #489, #490, #491 — went straight to separate issues). Keep a running "Found while here" list in a
+  comment on the issue being worked (it survives compaction), finish the feature, then put the list to the owner before
+  the PR is opened: one line each, with a recommendation. The agreed ones become separate commits in the same PR; the PR
+  description lists *every* item under "Found while here" with its disposition (fixed in commit X / deferred → #N).
+  An issue is filed only for what the owner defers, and it links the PR. Excluded: a bug in code this PR does not
+  touch, and a performance problem (that one is an issue at once, see below).
 - **Budget.** If an issue reaches a second security-review round, or is still not merged
   after ~2 hours of work, stop and ask the owner instead of continuing by the rules.
 - **Ask plainly.** A question to the owner is short, self-contained and carries the
@@ -222,6 +233,21 @@ matrix, CI).
   procedure → a command or skill in `.claude/`; a check → a script (and a CI step when it
   should gate); a lookup across many docs/issues/logs → a RAG/index tool; anything else → a
   GitHub issue (label `enhancement`, plus `fast-follow` if it came up while reviewing).
+
+## Research before building (owner, 2026-10-03)
+
+> Origin: the owner's retro observation — we rely on the model's memory and on a roadmap that was changed long ago;
+> `.reference/` clones exist, `prior-art-researcher` exists, web search works, and none of them is part of the routine.
+> Nobody had checked what the closest comparable projects (Pingap, River, nginx, Caddy, Traefik, Envoy) do, and several
+> claims in our docs turned out to be unmeasured (the 84k req/s figure) or untrue (ACME "renews automatically", #491).
+
+For a **new feature, a behaviour change or a design choice** (not a mechanical move, not a bug with an obvious cause):
+before writing code, spend at most ~10 tool calls on (a) the reference source that already implements it (`.reference/`,
+clone on demand — nginx, envoy, haproxy, traefik, caddy, pingora, and Pingap/River for Pingora-specific questions),
+(b) a web search for the governing RFC section and the known pitfalls. Record **"Prior art:" 2–4 lines in the issue**:
+what X does, what we copy, what we deliberately do not. If the lines would be empty, say that the search found nothing.
+Docs claim only what has been measured or tested: a number or a "works automatically" in `docs/` names the command or the
+test that shows it.
 
 ## Session budget discipline
 

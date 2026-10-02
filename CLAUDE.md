@@ -1091,7 +1091,8 @@ Tokio "full" features уже включены. Ключевые находки �
 - `hotReload` при `static` как IndexMap — следить за ВСЕМИ директориями
 - `routes` backward-compatible с top-level `proxy`/`static`
 - tracing spans в hot path — только `Level::TRACE`
-- Бинарник ≤15 МБ
+- Бинарник ≤15 МБ — это `--no-default-features`, stripped (замер 2026-10-03: 12,84 MiB; пол — минимальный Pingora-прокси
+  с тем же профилем, 7,64 MiB; разбор и план — #516). `default`/`standard`/`full` — по Footprint-отчёту PR, без роста без причины
 - `WeightedRoundRobin` валидация: targets — `WeightedTarget`, не строки
 - Docs: `docs/configuration.md`, `docs/deployment.md`, `docs/benchmarks.md`
 - YAML: `.yaml`/`.yml` через `from_yaml()`, env interpolation + version check работают так же
@@ -1135,7 +1136,9 @@ Tokio "full" features уже включены. Ключевые находки �
 > а если записей стало больше двух — самую старую **вырежи** и допиши в конец
 > `.claude/logs/session-log.md` (не копируй — иначе журналы разойдутся, как строка hygiene
 > 2026-09-18). Всё ещё открытое — комментарием на issue (Step 8 цикла), а не прозой здесь:
-> «открыто на конец сессии» устаревает за часы.
+> «открыто на конец сессии» устаревает за часы. **Каждая запись кончается строкой «Здоровье»**
+> (владелец, 2026-10-03): `python scripts/health.py --line`, размер `--no-default-features` из Footprint-отчёта PR и одно
+> честное предложение на вопрос «выбрал бы я этот проект для другого начала?» (подробности — Step 8 цикла).
 
 ### Реализовано в сессии 2026-09-27 (часть 5 — #475 закрыт PR #485: лишний `block_in_place` на каждый ответ; правило «безопасность → скорость → удобство»; main по-прежнему заморожен)
 

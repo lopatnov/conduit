@@ -569,6 +569,14 @@ for genuinely idle firings, not a guaranteed periodic pass.)
   when the PR merges into the repository's *default* branch; every sub-issue PR here merges
   into the migration branch, so #316, #222, #447, #468 all stayed open until closed by hand.
   Close each with a comment giving the measured result (the acceptance numbers, not "done").
+- **End every journal entry with a "Здоровье" line** (owner's retro, 2026-10-03): the output of
+  `python scripts/health.py --line` (production code lines, crate count, auto-loaded instruction KB against its budget),
+  the stripped `--no-default-features` size from the PR's Footprint report, and one honest sentence answering
+  *"if I were starting another project today, would I choose this one?"* — yes/no and the single biggest reason.
+  A "no" is not a failure, it is the trigger: name what would turn it into a "yes" and file it as an issue the same
+  turn (a size regression, a dead config field, an unmeasured doc claim, a numbers drift against the last entry).
+  The full, researched version of the answer (compare with Pingap/River/nginx/Caddy, see `rules/workflow.md`
+  "Research before building") is done at every phase boundary comment on #114 and at every `/retro`.
 
 ## Step 9 — check the finish line
 

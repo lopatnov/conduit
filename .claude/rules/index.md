@@ -551,6 +551,11 @@ Before filing a "found this while doing something else" bug issue — especially
 Cheap (one call), and the alternative cost (a duplicate discovered only later, requiring cleanup
 across every place that cited it) is exactly what happened here.
 
+**Applies to every issue, not only bugs, and the search is its own call.** On 2026-10-03 the search for a
+"crates as standalone projects" issue and the `gh issue create` ran in one shell command; the search showed #258 (the
+same decision-#32 follow-up) but the issue was already filed (#515, closed as a duplicate). Run the search, read it,
+and only then create — never `search; create` in one command.
+
 ## Dependabot & branch hygiene reflex check
 
 Any session that calls a GitHub tool against this repo for *any* reason — not just a
