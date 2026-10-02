@@ -453,8 +453,8 @@ mod tests {
         // A custom loader that ignores the file's real content and always
         // returns a fixed value, proving load() actually calls it instead
         // of falling through to load_file.
-        let provider = FileProvider::<Toy>::new(&path)
-            .with_loader(|_p| Ok(Toy { port: Some(9999) }));
+        let loader = |_p: &Path| Ok(Toy { port: Some(9999) });
+        let provider = FileProvider::<Toy>::new(&path).with_loader(loader);
         let cfg = provider.load().expect("custom loader must succeed");
         assert_eq!(
             cfg.port,
@@ -474,9 +474,9 @@ mod tests {
     #[test]
     fn with_loader_errors_propagate() {
         let (_f, path) = write_config(MINIMAL);
-        let provider = FileProvider::<Toy>::new(&path)
-            .with_loader(|_p| anyhow::bail!("custom loader rejected this config"));
-        let err = provider.load().expect_err("custom loader error must propagate");
+        let loader = |_p: &Path| anyhow::bail!("custom loader rejected this config");
+        let provider = FileProvider::<Toy>::new(&path).with_loader(loader);
+        let err = provider.load().expect_err("error must propagate");
         assert!(err.to_string().contains("custom loader rejected this config"));
     }
 
