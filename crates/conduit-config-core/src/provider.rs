@@ -277,7 +277,7 @@ fn build_file_watcher(
     Ok(watcher)
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -357,7 +357,7 @@ mod tests {
         assert_eq!(watch_dir(Path::new("/")), Path::new("."));
     }
 
-    // ── One-shot mode ───────────────────────────────────────────
+    // ── One-shot mode ───────────────────────────────
 
     #[tokio::test]
     async fn oneshot_sends_initial_config_and_returns() {
@@ -408,7 +408,7 @@ mod tests {
         assert!(provider.run(tx).await.is_err());
     }
 
-    // ── load / with_validator ─────────────────────────────
+    // ── load / with_validator ──────────────────────────
 
     #[test]
     fn load_accepts_valid_config() {
@@ -445,7 +445,7 @@ mod tests {
         assert!(provider.load().is_ok());
     }
 
-    // ── with_loader ─────────────────────────────────────────────
+    // ── with_loader ───────────────────────────────────
 
     #[test]
     fn with_loader_overrides_the_default_deserializer() {
@@ -477,10 +477,12 @@ mod tests {
         let loader = |_p: &Path| anyhow::bail!("custom loader rejected this config");
         let provider = FileProvider::<Toy>::new(&path).with_loader(loader);
         let err = provider.load().expect_err("error must propagate");
-        assert!(err.to_string().contains("custom loader rejected this config"));
+        assert!(err
+            .to_string()
+            .contains("custom loader rejected this config"));
     }
 
-    // ── Auto-reload ────────────────────────────────────────────
+    // ── Auto-reload ───────────────────────────────────
 
     /// Write `content` to an existing open file, truncating first.
     fn overwrite(path: &Path, content: &str) {
