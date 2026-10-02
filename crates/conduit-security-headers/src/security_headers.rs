@@ -42,9 +42,7 @@ pub fn is_host_allowed(
                 return true;
             }
             return allowed.iter().any(|a| {
-                a == "*"
-                    || a.eq_ignore_ascii_case(host)
-                    || a.eq_ignore_ascii_case(host_no_port)
+                a == "*" || a.eq_ignore_ascii_case(host) || a.eq_ignore_ascii_case(host_no_port)
             });
         }
     }
