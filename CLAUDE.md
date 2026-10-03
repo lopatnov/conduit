@@ -178,7 +178,7 @@ Integrity-аудит (Step 1c цикла) и Dependabot/branch hygiene веду�
 - `src/main.rs` тонкий: CLI → `dispatch_command()` → command struct → `execute()`
 - `tls.versions`/`tls.ciphers` — **не работают, отклоняются на validate()** (issue #189,
   2026-08-29). Pingora (0.8 и 0.9 — проверено по исходнику) rustls `TlsSettings` не даёт API для
-  ограничения версий/шифров — подробности в разделе "Безопасность" ниже.
+  ограничения версий/шифров (подробности и перепроверка на 0.9 — `.claude/archive/backlog.md`).
 - Admin API bind — по умолчанию loopback (`127.0.0.1:2019`); не-loopback bind (например `0.0.0.0:2019`) допустим,
   но только с `global.admin.token` и за VPN/SSH-туннелем (`docs/admin.md`, «Security»). Решение владельца 2026-09-27:
   правило переписано, а не превращено в отказ на валидации — старая формулировка «только loopback» не соответствовала коду
