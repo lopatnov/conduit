@@ -65,6 +65,7 @@ proxy. Add features with `--features`:
 | `acme`          | Auto-TLS via Let's Encrypt (`tls.acme`)                                    |
 | `fault-injection` | Fault injection for chaos testing (`faultInjection`)                     |
 | `otlp`          | OpenTelemetry OTLP distributed tracing (`global.otlp`)                     |
+| `tokio-metrics` | `conduit_eventloop_lag_ms` Prometheus gauge (no config key)                |
 | `kubernetes`    | Kubernetes CRD config provider (`--kubernetes-namespace`)                  |
 | `standard`      | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` — typical self-hosted reverse-proxy / API-gateway set |
 | `static-server` | Bundle for `--no-default-features`: `static` + `compression` + `hotreload` — the default set minus `proxy` |
