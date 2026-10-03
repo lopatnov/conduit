@@ -94,7 +94,12 @@ pub fn build_cache_key(
         _ => base,
     };
 
-    CacheKey::new(host, primary, "")
+    // pingora-cache 0.9 merged the old (namespace, primary, user_tag) constructor
+    // into (primary, user_tag) — the doc now requires callers to frame multiple
+    // logical components unambiguously themselves, so `host` is folded into the
+    // primary key with the same `\0` separator already used for vary-header
+    // components above (host names can't contain NUL, so this is unambiguous).
+    CacheKey::new(format!("{host}\0{primary}"), "")
 }
 
 // ── Request-side policy ───────────────────────────────────────────────────────
