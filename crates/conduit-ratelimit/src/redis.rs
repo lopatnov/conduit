@@ -86,11 +86,26 @@ impl RedisRateLimiter {
     /// running).  At that point the caller can fall back to a pure-memory
     /// implementation and log the failure.
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
-        let client =
-            redis::Client::open(url).map_err(|e| anyhow::anyhow!("invalid Redis URL: {e}"))?;
-        let conn = ConnectionManager::new(client)
-            .await
-            .map_err(|e| anyhow::anyhow!("cannot connect to Redis ({url}): {e}"))?;
+        // Neither `Client::open`'s nor `ConnectionManager::new`'s error embeds the raw
+        // URL deliberately, but both wrap arbitrary lower-level error text (a parse
+        // failure can echo the input back; a connect failure can include a DNS/socket
+        // address derived from it) -- redact both the URL we interpolate ourselves and
+        // the upstream error text, so a caller that logs this error never leaks
+        // credentials regardless of which half carried them (CWE-532, PR #152 thread #34
+        // follow-up -- redacting only the caller's own `url` field left this path open).
+        let safe_url = conduit_config_core::redact::redact_url(url);
+        let client = redis::Client::open(url).map_err(|e| {
+            anyhow::anyhow!(
+                "invalid Redis URL ({safe_url}): {}",
+                conduit_config_core::redact::redact_url(&e.to_string())
+            )
+        })?;
+        let conn = ConnectionManager::new(client).await.map_err(|e| {
+            anyhow::anyhow!(
+                "cannot connect to Redis ({safe_url}): {}",
+                conduit_config_core::redact::redact_url(&e.to_string())
+            )
+        })?;
         Ok(Self {
             conn,
             fallback: Arc::new(DashMap::new()),
@@ -335,6 +350,29 @@ mod tests {
         let result = RedisRateLimiter::connect("redis://127.0.0.1:1").await;
         // Port 1 is reserved / will be refused.
         assert!(result.is_err(), "connection to port 1 must fail");
+    }
+
+    /// A connect failure must not leak the URL's credentials in its error
+    /// text -- a caller that logs `{e}` (as `conduit-server`'s rate-limiter
+    /// bootstrap does) must never print a password, regardless of whether
+    /// the leak would have come from our own `{url}` interpolation or from
+    /// text embedded in the underlying `redis` crate's own error (CWE-532,
+    /// PR #152 thread #34 follow-up).
+    #[tokio::test]
+    async fn connect_failure_error_text_does_not_leak_credentials() {
+        let result = RedisRateLimiter::connect("redis://alice:s3cret@127.0.0.1:1").await;
+        let err = match result {
+            Ok(_) => panic!("connection to port 1 must fail"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            !err.contains("s3cret"),
+            "error text must not contain the raw password: {err}"
+        );
+        assert!(
+            !err.contains("alice:s3cret"),
+            "error text must not contain the raw userinfo: {err}"
+        );
     }
 
     // ── build_redis_key (issue #350 regression coverage) ───────────

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::config::schema::AppConfig;
+use conduit_config_core::redact::redact_url;
 use conduit_ratelimit::redis::RedisRateLimiter;
 
 /// Find the first `redis://`/`rediss://` `rateLimit.store` configured anywhere
@@ -45,11 +46,14 @@ pub(super) fn connect_redis_rate_limiter_if_configured(
         .map_err(|e| anyhow::anyhow!("cannot build tokio runtime for Redis: {e}"))?;
     match rt.block_on(RedisRateLimiter::connect(url)) {
         Ok(rrl) => {
-            tracing::info!("Redis rate limiter connected to {url}");
+            tracing::info!(url = %redact_url(url), "Redis rate limiter connected");
             Ok(Some(Arc::new(rrl)))
         }
         Err(e) => {
-            tracing::warn!("Redis rate limiter unavailable ({url}): {e} — using memory fallback");
+            tracing::warn!(
+                url = %redact_url(url),
+                "Redis rate limiter unavailable: {e} — using memory fallback"
+            );
             Ok(None)
         }
     }

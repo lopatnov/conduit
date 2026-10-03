@@ -11,6 +11,30 @@ fn build_client() -> reqwest::blocking::Client {
         .expect("reqwest client")
 }
 
+/// Poll `dir` until it reads as empty, or fail after 5s.
+///
+/// The server-side cleanup of a rejected upload's partial file is
+/// synchronous within the request handler, but on the transport-error path
+/// `send()` can return as soon as the client observes the connection close
+/// -- a single immediate `read_dir` can race the handler's own cleanup
+/// still running on the server side. Polling removes that race without
+/// weakening what the test actually checks (CodeRabbit finding on #152).
+fn assert_upload_dir_eventually_empty(dir: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let leftover: Vec<_> = std::fs::read_dir(dir).expect("read upload dir").collect();
+        if leftover.is_empty() {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "a rejected upload must not leave a partially-written file behind: {leftover:?}"
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// Start a conduit server with an upload endpoint configured.
 ///
 /// Returns `(server, upload_dir_path)`.  The upload directory is created
@@ -291,13 +315,7 @@ fn upload_file_exceeds_per_file_limit_leaves_no_partial_file_on_disk() {
         ),
     }
 
-    let leftover: Vec<_> = std::fs::read_dir(&upload_dir_str)
-        .expect("read upload dir")
-        .collect();
-    assert!(
-        leftover.is_empty(),
-        "a rejected upload must not leave a partially-written file behind: {leftover:?}"
-    );
+    assert_upload_dir_eventually_empty(&upload_dir_str);
 }
 
 #[test]
@@ -358,13 +376,7 @@ fn upload_single_large_field_enforces_max_total_size_bytes() {
         ),
     }
 
-    let leftover: Vec<_> = std::fs::read_dir(&upload_dir_str)
-        .expect("read upload dir")
-        .collect();
-    assert!(
-        leftover.is_empty(),
-        "a rejected upload must not leave a partially-written file behind: {leftover:?}"
-    );
+    assert_upload_dir_eventually_empty(&upload_dir_str);
 }
 
 #[test]
