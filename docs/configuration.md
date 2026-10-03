@@ -1830,11 +1830,6 @@ faultInjection:
 > **Requires** `cargo build --features cache`
 > For Redis-backed cache also add `--features redis`; for disk cache add `--features disk-cache`.
 
-> **Note:** `cache.maxSizeMb` is parsed and validated, but not yet enforced — no eviction
-> policy is implemented, so the cache can grow unbounded past this limit. `conduit validate`
-> emits an advisory warning when it's set. See [issue #520](https://github.com/lopatnov/conduit/issues/520)
-> for status.
-
 ```yaml
 # YAML
 proxy:
