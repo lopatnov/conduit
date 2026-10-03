@@ -1266,6 +1266,22 @@ fn validate_tls(tls: &TlsConfig, prefix: &str, errors: &mut Vec<ValidationError>
         ));
     }
 
+    // Issue #509: an incomplete `tls: {}` block (no cert/key and no acme) used
+    // to pass validation and then silently fall back to a plain TCP listener
+    // at runtime (`classify_site_port` in `server/builder.rs`) — a "TLS looks
+    // configured, traffic is actually plaintext" trap for a copy-paste
+    // placeholder or a typo that dropped the cert/key/acme sub-keys. Rejecting
+    // it here (hard error, matching the `tls.versions`/`tls.ciphers` precedent
+    // above) is safer than a runtime warning the operator could miss.
+    if !has_acme && !has_cert && !has_key {
+        errors.push(ValidationError::new(
+            prefix,
+            "TLS is configured but neither 'cert'/'key' nor 'acme' is set — this would \
+             silently fall back to a plain TCP listener. Remove the 'tls' block entirely for \
+             plaintext, or set 'cert'+'key' / 'acme'.",
+        ));
+    }
+
     if let Some(ref ca) = tls.client_auth {
         validate_tls_client_auth(ca, prefix, has_cert, has_acme, errors);
     }
@@ -1515,6 +1531,20 @@ fn validate_cache_config(
             );
         }
     }
+
+    // Issue #508: maxSizeMb is parsed and stored but has no enforcement code
+    // anywhere — no LRU/eviction policy is implemented, so the cache can grow
+    // unbounded past this value. Surface it as an advisory warning (not a
+    // hard error — the field itself is harmless to leave set) so an operator
+    // relying on it for a memory budget isn't silently unprotected.
+    if cache.max_size_mb.is_some() {
+        errors.push(ValidationError::warning(
+            format!("{prefix}.maxSizeMb"),
+            "cache.maxSizeMb is configured but not currently enforced — no eviction policy \
+             is implemented, so the cache may grow unbounded past this limit. See \
+             https://github.com/lopatnov/conduit/issues/508 for status.",
+        ));
+    }
 }
 
 /// Validate upstream groups: non-empty targets and WRR strategy requirements.
@@ -1672,6 +1702,22 @@ mod tests {
     #[test]
     fn tls_cert_and_key_valid() {
         assert!(errs(r#"{ "tls": { "cert": "a.pem", "key": "a.key" } }"#).is_empty());
+    }
+
+    // ── tls: {} with neither cert/key nor acme (issue #509) ──────────────────
+
+    #[test]
+    fn tls_empty_block_is_rejected() {
+        let e = errs(r#"{ "tls": {} }"#);
+        assert!(
+            e.iter()
+                .any(|x| x.message.contains("fall back to a plain TCP listener")),
+            "an empty tls block must be rejected, not silently fall back to plaintext: {e:?}"
+        );
+        assert!(
+            e.iter().all(|x| x.severity == Severity::Error),
+            "must be a hard error: {e:?}"
+        );
     }
 
     // ── tls.versions / tls.ciphers (issue #189: never enforced by Pingora 0.8) ─
@@ -2826,6 +2872,36 @@ mod tests {
         assert!(
             w.iter().any(|m| m.contains("fault-injection")),
             "missing fault-injection feature must warn: {w:?}"
+        );
+    }
+
+    // ── cache.maxSizeMb unenforced (issue #508) ──────────────────────────────
+
+    #[test]
+    fn warning_for_cache_max_size_mb_unenforced() {
+        let e = errs(
+            r#"{ "proxy": { "/api": { "targets": ["http://b:4000"],
+                 "cache": { "store": "memory", "maxSizeMb": 256 } } } }"#,
+        );
+        assert!(
+            e.iter()
+                .any(|x| x.message.contains("maxSizeMb") && x.message.contains("issues/508")),
+            "cache.maxSizeMb must warn that it's unenforced: {e:?}"
+        );
+        assert!(
+            e.iter()
+                .filter(|x| x.message.contains("maxSizeMb"))
+                .all(|x| x.severity == Severity::Warning),
+            "must be advisory, not a hard error: {e:?}"
+        );
+    }
+
+    #[test]
+    fn no_warning_for_cache_without_max_size_mb() {
+        let e = proxy_with_cache("memory");
+        assert!(
+            !e.iter().any(|x| x.message.contains("maxSizeMb")),
+            "no maxSizeMb warning expected when field is unset: {e:?}"
         );
     }
 

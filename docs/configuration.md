@@ -1709,7 +1709,7 @@ proxy:
     cache:
       store: memory
       ttlSecs: 60
-      maxSizeMb: 256 # evict LRU entries after 256 MB
+      maxSizeMb: 256 # accepted but NOT enforced yet — no eviction policy exists (issue #508)
       staleWhileRevalidateSecs: 300 # serve stale up to 5 min while refreshing
       staleIfErrorSecs: 600 # serve stale up to 10 min if upstream fails
       varyHeaders: [Accept-Language, Accept-Encoding]
@@ -1746,7 +1746,7 @@ proxy:
 | -------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------- |
 | `store`                    | string   | —             | `"memory"`, `"redis://..."` / `"rediss://..."` (`--features redis`), `"disk:/path"` (`--features disk-cache`) |
 | `ttlSecs`                  | number   | —             | Fresh cache TTL (seconds)                                                          |
-| `maxSizeMb`                | number   | —             | Memory budget; LRU eviction above this                                             |
+| `maxSizeMb`                | number   | —             | **Not currently enforced** — parsed but no eviction policy exists yet; the cache can grow unbounded past this value. Conduit logs a startup/hot-reload warning when set. See [issue #508](https://github.com/lopatnov/conduit/issues/508). |
 | `staleWhileRevalidateSecs` | number   | `0`           | Serve stale while refreshing in background (RFC 5861)                              |
 | `staleIfErrorSecs`         | number   | `0`           | Serve stale when upstream returns 5xx, including after retries are exhausted (RFC 5861) |
 | `earlyRefreshSecs`         | number   | `0`           | Refresh cache in the background when remaining TTL < this value (see below)        |
