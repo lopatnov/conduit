@@ -8,16 +8,18 @@ argument-hint: "(none — reads state from GitHub: open PRs, #114's open sub-iss
 > **#114 shipped 2026-10-03** (PR #152 merged `claude/cargo-workspace-features-23qxfr` into
 > `main` — see `CLAUDE.md`'s session log). This command's original target is done: there is
 > no more migration branch, no more `main` freeze, no more phase-ordered sub-issue queue to
-> work through. **The general habits this command embodied — periodic integrity audits,
-> unconditional security review, batch-sizing work to its risk, grouping related work into
-> one branch, writing a lesson down the instant it's found — are now extracted into
-> `.claude/rules/best-practices.md`, which applies to all work in this repo, not only a
-> migration.** This file stays as a concrete, battle-tested *template* for running a
-> similarly large multi-PR effort again (a future major version, another big structural
-> migration) — its step numbers and precedents (batch tiers, the #144/#316 milestone-task
-> playbook, the security-gate mechanics) are worth reusing wholesale next time one comes up.
-> Don't fire it as a daily routine for ongoing maintenance; for that, `best-practices.md` is
-> the thing to follow.
+> work through. **Renamed and generalized into `/issue` (`.claude/commands/issue.md`,
+> added 2026-10-03 at the owner's request) — that's the command to run for ordinary issue
+> work now, one or several issue numbers producing one PR.** The general habits this
+> command embodied — periodic integrity audits, unconditional security review, batch-sizing
+> work to its risk, grouping related work into one branch, writing a lesson down the instant
+> it's found — are extracted into `.claude/rules/best-practices.md`, which `/issue` leans on
+> and which applies to all work in this repo, not only a migration. This file stays as a
+> concrete, battle-tested *template* for running a similarly large multi-PR effort again (a
+> future major version, another big structural migration) — its step numbers and precedents
+> (batch tiers, the #144/#316 milestone-task playbook, the security-gate mechanics) are
+> worth reusing wholesale next time one comes up. Don't fire it as a daily routine for
+> ongoing maintenance; for that, use `/issue`.
 
 > **Since 2026-09-26 the nightly Routine is disabled** (`trig_01Ehd6ceyaWxB6aytQwuydsp` was
 > failing every night — repository not attached — and the owner said it can be retired:

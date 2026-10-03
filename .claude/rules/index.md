@@ -638,6 +638,11 @@ it — call them whenever the same shape of task comes up outside that cycle too
 
 ## Skills available here
 
+- **`issue`** (`.claude/commands/issue.md`) — the default command for ordinary work: takes
+  one or more issue numbers and drives them to one merged PR (orient, implement,
+  self-review, green build, docs, the mandatory security gate, merge, close). Replaces
+  `/feature-workspace-cycle` for everyday use (added 2026-10-03) — see `best-practices.md`
+  for the general habits it leans on.
 - **`testing`** (`.claude/skills/testing/SKILL.md`) — conduit's actual test idioms (port 0,
   `rcgen`, `serial_test`, raw-`TcpListener` mock upstreams) and where to find canonical
   examples to pattern-match against. Read before writing new tests rather than reinventing
