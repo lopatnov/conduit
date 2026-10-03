@@ -114,7 +114,8 @@ Cargo feature into its own workspace member crate under `crates/`. Every extract
 from how `conduit-core` ([#126](https://github.com/lopatnov/conduit/issues/126)) and
 `conduit-config-core` ([#127](https://github.com/lopatnov/conduit/issues/127)) were
 actually built and independently audited. Read this before extracting a new crate,
-whether by hand or via the `crate-extractor` agent.
+whether by hand or via the `crate-steward` agent. For a brand-new feature (not a move) use the
+`new-feature-crate` skill (`.claude/skills/new-feature-crate/SKILL.md`, issue #259).
 
 ### The five rules
 
