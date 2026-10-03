@@ -35,7 +35,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use pingora_cache::{
-    storage::{HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeType, Storage},
+    storage::{
+        HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeOutcome, PurgeTarget, PurgeType,
+        Storage,
+    },
     trace::SpanHandle,
     CacheKey, CacheMeta,
 };
@@ -196,17 +199,17 @@ impl Storage for DiskCacheStorage {
 
     async fn purge(
         &'static self,
-        key: &pingora_cache::key::CompactCacheKey,
+        target: PurgeTarget<'_>,
         _purge_type: PurgeType,
         _trace: &SpanHandle,
-    ) -> PingoraResult<bool> {
-        let path = self.entry_path(&Self::compact_hash(key));
+    ) -> PingoraResult<PurgeOutcome> {
+        let path = self.entry_path(&Self::compact_hash(target.key()));
         match std::fs::remove_file(&path) {
-            Ok(_) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Ok(_) => Ok(PurgeOutcome::Purged(None)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(PurgeOutcome::NotFound),
             Err(e) => {
                 tracing::warn!(path = %path.display(), "Disk cache purge error: {e}");
-                Ok(false)
+                Ok(PurgeOutcome::NotFound)
             }
         }
     }
@@ -485,7 +488,7 @@ mod tests {
 
     #[test]
     fn hash_produces_32_hex_chars() {
-        let key = CacheKey::new("host.example", "https:/path", "");
+        let key = CacheKey::new("host.example\0https:/path", "");
         let dir = TempDir::new().unwrap();
         let _storage = DiskCacheStorage::new(dir.path().to_str().unwrap());
         let hash = DiskCacheStorage::hash(&key);
@@ -498,8 +501,8 @@ mod tests {
 
     #[test]
     fn two_different_keys_produce_different_hashes() {
-        let k1 = CacheKey::new("host1", "https:/a", "");
-        let k2 = CacheKey::new("host2", "https:/b", "");
+        let k1 = CacheKey::new("host1\0https:/a", "");
+        let k2 = CacheKey::new("host2\0https:/b", "");
         assert_ne!(
             DiskCacheStorage::hash(&k1),
             DiskCacheStorage::hash(&k2),

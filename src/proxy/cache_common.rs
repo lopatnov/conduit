@@ -96,7 +96,7 @@ mod tests {
         let handler: Box<SimpleHitHandler> =
             Box::new(SimpleHitHandler::new(Bytes::from_static(b"x")));
         let storage = crate::proxy::cache::cache_storage() as &'static (dyn Storage + Sync);
-        let key = CacheKey::new("host.example", "https:/path", "");
+        let key = CacheKey::new("host.example\0https:/path", "");
         let span = pingora_cache::trace::Span::inactive();
         assert!(handler.finish(storage, &key, &span.handle()).await.is_ok());
     }
