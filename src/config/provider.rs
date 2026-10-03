@@ -197,13 +197,23 @@ async fn reload_on_change(
 
 /// Load a config file, validate it, and return the [`AppConfig`].
 ///
-/// Returns an error if the file cannot be read, fails to parse, or has
-/// validation errors (duplicate ports, etc.).
+/// Returns an error if the file cannot be read, fails to parse, or has hard
+/// validation errors (duplicate ports, etc.). Advisory findings (e.g. a
+/// still-valid cert nearing expiry, issue #191; an unenforced
+/// `cache.maxSizeMb`, issue #508) are logged but must not block the initial
+/// load or a hot-reload — only `cli::serve`/`admin::api`'s `/reload` handler
+/// partitioned by severity this way; this function used to reject on *any*
+/// non-empty `validate()` result, silently refusing to (re)load an otherwise
+/// valid config the moment it set an advisory-only field.
 pub fn load_and_validate(path: &Path) -> Result<AppConfig> {
     let cfg = load_config(path)?;
     let errors = validate::validate(&cfg);
-    if !errors.is_empty() {
-        let msgs: Vec<String> = errors
+    let (warnings, hard_errors) = validate::partition_by_severity(errors);
+    for w in &warnings {
+        tracing::warn!("config: {}: {}", w.path, w.message);
+    }
+    if !hard_errors.is_empty() {
+        let msgs: Vec<String> = hard_errors
             .iter()
             .map(|e| format!("{}: {}", e.path, e.message))
             .collect();
@@ -316,6 +326,25 @@ mod tests {
     #[test]
     fn load_and_validate_rejects_missing_file() {
         assert!(load_and_validate(Path::new("/nonexistent.json")).is_err());
+    }
+
+    #[test]
+    fn load_and_validate_accepts_config_with_only_advisory_warning() {
+        // cache.maxSizeMb (issue #508) is an advisory Severity::Warning, not
+        // a hard error — load_and_validate used to call validate::validate()
+        // directly and bail on ANY non-empty result, so a config that merely
+        // triggered this warning would fail to (re)load entirely, even
+        // though cli::serve and admin::api's /reload handler both correctly
+        // tolerate it. This proves the bug is fixed.
+        let (_f, path) = write_config(
+            r#"{"global":{"admin":{"bind":"127.0.0.1:0"}},"sites":[{"port":0,
+               "proxy":{"/api":{"targets":["http://b:4000"],
+               "cache":{"store":"memory","maxSizeMb":256}}}}]}"#,
+        );
+        assert!(
+            load_and_validate(&path).is_ok(),
+            "a config with only an advisory warning must still load"
+        );
     }
 
     #[test]
