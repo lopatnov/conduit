@@ -42,7 +42,7 @@ RAM:   64 GB DDR4-3600
 Disk:  NVMe SSD (Samsung 980 Pro)
 ```
 
-### Container CI (binary size measurement — this session)
+### Container CI (binary size measurement, 2026-10-03)
 
 Build-size measurements in the Build Sizes table below are from two environments:
 
@@ -52,13 +52,16 @@ Build-size measurements in the Build Sizes table below are from two environments
 - Windows MSVC (unstripped): native PE build
 ```
 
-**This measurement (Container CI environment):**
+**Container CI, 2026-10-03** (`x86_64-unknown-linux-gnu`, glibc, dynamically linked):
 ```
 4 vCPU, 15 GB RAM allocated to this job
 (host CPU: Intel Xeon Processor @ 2.10GHz)
 Linux 6.18.44-fc-v64 x86_64
-Binaries unstripped (for comparison with historical unstripped Windows PE)
 ```
+Built with the workspace's default `cargo build --release` profile, which sets
+`strip = true` — verified directly (`file target/release/conduit` reports
+`stripped`) rather than assumed. **Stripped, but glibc-dynamic, not musl-static** —
+not the same artifact class as either other column; see the per-row note below.
 
 **Conduit:** release build, `lto = true`, `codegen-units = 1`, `strip = true`
 
@@ -80,20 +83,20 @@ target — the production deployment target used by the Docker images.
 > the same level of dead-code elimination as ELF + `strip`, and because
 > Cranelift (wasmtime JIT) emits larger Windows unwind tables.
 
-| Build                | Linux musl (stripped) | Windows MSVC (unstr.) | Container CI (unstr.) | Features included                                                                                                                                                |
-| -------------------- | --------------------: | --------------------: | --------------------: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `default` (minimal) |           **14.3 MB** |               17.0 MB |             **17.7 MB** | Core proxy, routing, static files, TLS, auth (basic + API-key), rate limiting, compression, redirect, health, metrics, hot-reload                               |
-| `--features standard` |             ~17.8 MB ¹ |               21.2 MB |             **20.9 MB** | Core (above) + JWT, consumers, forward-auth, response cache, ACME — matches published "standard" binaries/images                                                 |
-| `--features full`    |           **28.6 MB** |               40.0 MB |  not measured ² | All of the above + JWT, consumers, forward-auth, Rhai, **WASM** (wasmtime ~11 MB), TCP proxy, upload, Redis, disk-cache, ACME, fault-injection, OTLP, Kubernetes |
+| Build                | Linux musl (stripped) | Windows MSVC (unstripped) | Linux gnu (stripped, 2026-10-03) | Features included                                                                                                                                                |
+| -------------------- | --------------------: | -------------------------: | --------------------------------: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `default` (minimal) |           **14.3 MB** |                      17.0 MB |                       **17.7 MB** | Core proxy, routing, static files, TLS, auth (basic + API-key), rate limiting, compression, redirect, health, metrics, hot-reload                               |
+| `--features standard` |             ~17.8 MB ¹ |                      21.2 MB |                       **20.9 MB** | Core (above) + JWT, consumers, forward-auth, response cache, ACME — matches published "standard" binaries/images                                                 |
+| `--features full`    |           **28.6 MB** |                      40.0 MB |                       **41.2 MB** | All of the above + JWT, consumers, forward-auth, Rhai, **WASM** (wasmtime ~11 MB), TCP proxy, upload, Redis, disk-cache, ACME, fault-injection, OTLP, Kubernetes |
 
-> **Measurement context:** Linux musl (stripped) numbers are from the production Docker image
-> target. Windows MSVC and Container CI columns show unstripped binaries for size comparison
-> purposes; production Windows releases are also unstripped (PE format limitations).
->
-> ² Container CI full build was not completed in this measurement session (WASM compilation
-> with `wasmtime` takes significant time). The historical Linux musl and Windows MSVC values
-> remain the most recent direct measurements. Container CI default and standard are measured
-> and labeled above.
+> **Measurement context:** the "Linux musl (stripped)" column is the production Docker image
+> target (static musl libc). The "Linux gnu" column is a *different* target
+> (`x86_64-unknown-linux-gnu`, glibc, dynamically linked) measured on this session's own
+> container, 2026-10-03 — it is also genuinely stripped (verified with `file`, not assumed),
+> but musl-vs-glibc and static-vs-dynamic linking both move binary size independently of
+> stripping, so it is not directly comparable to the musl column despite both being stripped.
+> It's included to give every build-size cell a real, dated measurement rather than leaving
+> gaps; "Windows MSVC" remains unstripped (PE format has no ELF-equivalent strip support).
 
 > **wasmtime dominates the size delta.** The full build without `--features wasm`
 > is ~17 MB (Linux musl) / ~20 MB (Windows). If you need JWT, scripting, or OTLP

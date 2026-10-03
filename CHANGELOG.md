@@ -24,6 +24,19 @@ which needs wasmtime 48+); CI proves the publish would succeed
 behavior fixes below landed alongside the migration and apply to 2.0.0
 regardless of which feature crates a given build pulls in.
 
+### Changed
+
+- **The npm package (`@lopatnov/conduit`) now installs the `full` feature-bundle
+  binary instead of `standard`** (issue #239). Redis-backed rate limiting/caching,
+  WASM plugin middleware, Rhai scripting, OpenTelemetry OTLP tracing, and TCP
+  proxy mode all work immediately after `npm install` — no separate full-binary
+  download needed. The download is correspondingly larger. A smaller binary is
+  still available by building from source (`cargo install lopatnov-conduit
+  --features standard`). This is npm-specific: the unsuffixed GitHub Release
+  assets and the default `:latest`/`:2.0.0` GHCR Docker image are unchanged and
+  still ship the `standard` bundle — only the `-full`-suffixed release assets
+  and `:latest-full` Docker tag match what npm now installs.
+
 ### Security
 
 - **`global.admin.token: ""` is now a validation error** (issue #480). The Admin API compares the
