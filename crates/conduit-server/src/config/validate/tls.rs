@@ -27,6 +27,22 @@ pub(super) fn validate_tls(tls: &TlsConfig, prefix: &str, errors: &mut Vec<Valid
         ));
     }
 
+    // Issue #509: an incomplete `tls: {}` block (no cert/key and no acme) used
+    // to pass validation and then silently fall back to a plain TCP listener
+    // at runtime — a "TLS looks configured, traffic is actually plaintext"
+    // trap for a copy-paste placeholder or a typo that dropped the
+    // cert/key/acme sub-keys. Rejecting it here (hard error, matching the
+    // `tls.versions`/`tls.ciphers` precedent above) is safer than a runtime
+    // warning the operator could miss.
+    if !has_acme && !has_cert && !has_key {
+        errors.push(ValidationError::new(
+            prefix,
+            "TLS is configured but neither 'cert'/'key' nor 'acme' is set — this would \
+             silently fall back to a plain TCP listener. Remove the 'tls' block entirely for \
+             plaintext, or set 'cert'+'key' / 'acme'.",
+        ));
+    }
+
     if let Some(ref ca) = tls.client_auth {
         validate_tls_client_auth(ca, prefix, has_cert, has_acme, errors);
     }

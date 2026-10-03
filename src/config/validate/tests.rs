@@ -2025,12 +2025,32 @@ fn mtls_empty_ca_path_rejected() {
 
 #[test]
 fn mtls_without_tls_rejected() {
-    // clientAuth without cert+key or acme must be rejected.
+    // clientAuth without cert+key or acme must be rejected — specifically
+    // by validate_tls_client_auth's own clientAuth-specific error, not
+    // merely by the separate empty-TLS check (#509) that also happens to
+    // fire here. A loose "contains cert, or path contains clientAuth"
+    // assertion would keep passing even if the clientAuth-specific rule
+    // broke, since the empty-TLS error's path is "tls" (a substring of
+    // "tls.clientAuth") and its message mentions "cert" too.
     let e = errs(r#"{ "port": 8080, "tls": { "clientAuth": { "ca": "ca.pem" } } }"#);
     assert!(
+        e.iter().any(|err| {
+            err.path.ends_with(".clientAuth")
+                && err
+                    .message
+                    .contains("tls.clientAuth requires tls.cert+tls.key or tls.acme")
+        }),
+        "clientAuth without cert/key must produce a clientAuth-specific error: {e:?}"
+    );
+}
+
+#[test]
+fn tls_empty_block_is_rejected() {
+    let e = errs(r#"{ "port": 443, "tls": {} }"#);
+    assert!(
         e.iter()
-            .any(|err| err.message.contains("cert") || err.path.contains("clientAuth")),
-        "clientAuth without cert/key must be rejected: {e:?}"
+            .any(|err| err.message.contains("neither 'cert'/'key' nor 'acme'")),
+        "empty tls block must be rejected: {e:?}"
     );
 }
 

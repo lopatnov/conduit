@@ -1806,6 +1806,11 @@ faultInjection:
 > **Requires** `cargo build --features cache`
 > For Redis-backed cache also add `--features redis`; for disk cache add `--features disk-cache`.
 
+> **Note:** `cache.maxSizeMb` is parsed and validated, but not yet enforced — no eviction
+> policy is implemented, so the cache can grow unbounded past this limit. `conduit validate`
+> emits an advisory warning when it's set. See [issue #520](https://github.com/lopatnov/conduit/issues/520)
+> for status.
+
 ```yaml
 # YAML
 proxy:
@@ -1814,7 +1819,7 @@ proxy:
     cache:
       store: memory
       ttlSecs: 60
-      maxSizeMb: 256 # evict LRU entries after 256 MB
+      maxSizeMb: 256 # not yet enforced — see #520
       staleWhileRevalidateSecs: 300 # serve stale up to 5 min while refreshing
       staleIfErrorSecs: 600 # serve stale up to 10 min if upstream fails
       varyHeaders: [Accept-Language, Accept-Encoding]
@@ -1851,7 +1856,7 @@ proxy:
 | -------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------- |
 | `store`                    | string   | —             | `"memory"`, `"redis://..."` / `"rediss://..."` (`--features redis`), `"disk:/path"` (`--features disk-cache`) |
 | `ttlSecs`                  | number   | —             | Fresh cache TTL (seconds)                                                          |
-| `maxSizeMb`                | number   | —             | Memory budget; LRU eviction above this                                             |
+| `maxSizeMb`                | number   | —             | Memory budget; **not yet enforced** ([#520](https://github.com/lopatnov/conduit/issues/520)) |
 | `staleWhileRevalidateSecs` | number   | `0`           | Serve stale while refreshing in background (RFC 5861)                              |
 | `staleIfErrorSecs`         | number   | `0`           | Serve stale when upstream returns 5xx, including after retries are exhausted (RFC 5861) |
 | `earlyRefreshSecs`         | number   | `0`           | Refresh cache in the background when remaining TTL < this value (see below)        |

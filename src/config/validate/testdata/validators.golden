@@ -71,6 +71,7 @@
 [] error|sites[136].jwtAuth.jwksUrl|jwksUrl must be an http:// or https:// URL
 [] error|sites[137].jwtAuth.jwksRefreshSecs|jwtAuth.jwksRefreshSecs must be >= 60
 [] error|sites[139].tls.clientAuth.ca|tls.clientAuth.ca must be a path to a PEM CA file
+[] error|sites[140].tls|TLS is configured but neither 'cert'/'key' nor 'acme' is set — this would silently fall back to a plain TCP listener. Remove the 'tls' block entirely for plaintext, or set 'cert'+'key' / 'acme'.
 [] error|sites[140].tls.clientAuth|tls.clientAuth requires tls.cert+tls.key or tls.acme to be configured
 [] error|sites[142].proxy["/"].targets[0]|Invalid upstream URL 'backend:4000' — must start with http:// or https://
 [] error|sites[144].proxy["/"].rewrite[0].from|Invalid regex '[invalid': regex parse error:\n    [invalid\n    ^\nerror: unclosed character class
