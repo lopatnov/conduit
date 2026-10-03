@@ -698,22 +698,22 @@ The algorithm matters less than it looks — every strategy here already skips
 unhealthy/ejected upstreams (health checks, not the algorithm, are what keeps
 traffic off a broken backend). Pick based on your actual traffic shape:
 
-| Strategy | Family | Picks based on | Best for | Weak point |
-| --- | --- | --- | --- | --- |
-| [`round-robin`](#round-robin-default) (default) | Static | Rotation order | Homogeneous upstreams, simplest default | Ignores load — a slow request still gets the next slot |
-| [`weighted-round-robin`](#weighted-round-robin) | Static | Rotation + fixed weight | Heterogeneous capacity (big primary + small standby, canary %) | Weights are static — doesn't adapt to real-time load |
-| [`random`](#random) | Static | Uniform random pick | Very large pools where a counter is unnecessary overhead | Worse uniformity than round-robin at small N |
-| [`least-conn`](#least-conn) | Load-aware | Fewest active connections | Variable response times (mixed fast reads / slow writes) | O(N) scan of the pool on every request |
-| [`least-response-time`](#least-response-time) | Load-aware | Lowest probed latency | Upstreams with different hardware/geography | Needs `healthCheck` configured, or it's just round-robin |
-| [`p2c`](#p2c-power-of-two-choices) | Load-aware | 2 random samples, fewer conns wins | Large pools (10+) where `least-conn`'s full scan is too slow | Marginally less precise than true least-conn |
-| [`ip-hash`](#ip-hash) | Affinity | `hash(client IP) % N` | Soft per-IP affinity without a cookie | Remaps ~half of clients when pool size changes |
-| [`consistent-hash`](#consistent-hash) | Affinity | `hash(configurable key) % N` | Per-tenant/per-user routing, cache locality by URL | Same remap caveat as ip-hash — it's `% N`, not a hash ring |
+| Strategy | Family | Picks based on | Session affinity | Pool change impact | Best for | Weak point |
+| --- | --- | --- | :-: | :-: | --- | --- |
+| [`round-robin`](#round-robin-default) (default) | Static | Rotation order | ✗ | none | Homogeneous upstreams, simplest default | Ignores load — a slow request still gets the next slot |
+| [`weighted-round-robin`](#weighted-round-robin) | Static | Rotation + fixed weight | ✗ | none | Heterogeneous capacity (big primary + small standby, canary %) | Weights are static — doesn't adapt to real-time load |
+| [`random`](#random) | Static | Uniform random pick | ✗ | none | Very large pools where a counter is unnecessary overhead | Worse uniformity than round-robin at small N |
+| [`least-conn`](#least-conn) | Load-aware | Fewest active connections | ✗ | none | Variable response times (mixed fast reads / slow writes) | O(N) scan of the pool on every request |
+| [`least-response-time`](#least-response-time) | Load-aware | Lowest probed latency | ✗ | none | Upstreams with different hardware/geography | Needs `healthCheck` configured, or it's just round-robin |
+| [`p2c`](#p2c-power-of-two-choices) | Load-aware | 2 random samples, fewer conns wins | ✗ | none | Large pools (10+) where `least-conn`'s full scan is too slow | Marginally less precise than true least-conn |
+| [`ip-hash`](#ip-hash) | Affinity | `hash(client IP) % N` | by IP | remaps most clients (~N/(N+1)) whenever the *healthy* pool size changes, incl. health ejections | Soft per-IP affinity without a cookie | Remaps most of the pool on any healthy-count change, not just config changes |
+| [`consistent-hash`](#consistent-hash) | Affinity | `hash(configurable key) % N` | by key | same as ip-hash — `% N` on the healthy count, incl. health ejections | Per-tenant/per-user routing, cache locality by URL | Same remap caveat as ip-hash — it's `% N`, not a hash ring |
 
 Rule of thumb: start with `round-robin`. Move to `least-conn` or `p2c` once
 request cost varies noticeably. Reach for `ip-hash`/`consistent-hash` only for
 affinity, not performance — and prefer `sticky.cookie` over `ip-hash` when you
-control the client, since cookie-based affinity survives pool-size changes
-that `ip-hash`'s `% N` doesn't.
+control the client, since cookie-based affinity survives healthy-pool-size
+changes (including health ejections) that `ip-hash`'s `% N` doesn't.
 
 ```text
                          ┌─────────────┐
@@ -1006,21 +1006,6 @@ proxy:
   }
 }
 ```
-
----
-
-### Strategy comparison
-
-| Strategy               | Session affinity | Handles variable load | Pool change impact | Best for                                         |
-| ---------------------- | :--------------: | :-------------------: | :----------------: | ------------------------------------------------ |
-| `round-robin`          |        ✗         |           ✗           |        none        | Homogeneous, stateless services                  |
-| `weighted-round-robin` |        ✗         |           ✗           |        none        | Mixed-capacity pools, canary rollouts            |
-| `least-conn`           |        ✗         |           ✓           |        none        | Variable request duration (mixed workloads)      |
-| `least-response-time`  |        ✗         |           ✓           |        none        | Multi-region, geographically dispersed upstreams |
-| `ip-hash`              |      by IP       |           ✗           |    remaps ~50%     | Soft affinity without cookies                    |
-| `consistent-hash`      |      by key      |           ✗           |    remaps ~50%     | Per-tenant / per-key routing                     |
-| `random`               |        ✗         |           ✗           |        none        | Very large pools, simple distribution            |
-| `p2c`                  |        ✗         |           ✓           |        none        | Large pools, low-overhead load awareness         |
 
 ---
 
