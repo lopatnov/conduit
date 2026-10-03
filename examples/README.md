@@ -122,6 +122,9 @@ In-memory proxy cache with TTL, Vary headers, and cookie / path exclusions.
 
 **Features:** `cache.store: memory`, `cache.varyHeaders`, `cache.skipIfCookie`
 
+> **Note:** `cache.maxSizeMb` is validated but not yet enforced (no eviction policy exists
+> yet) — see [issue #520](https://github.com/lopatnov/conduit/issues/520).
+
 ---
 
 ### [api-gateway.yaml](api-gateway.yaml) / [api-gateway.json](api-gateway.json)
