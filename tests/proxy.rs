@@ -811,6 +811,37 @@ fn sticky_hmac_secret_sets_signed_cookie_and_pins_backend() {
             "a verified HMAC-signed cookie must keep pinning to the same backend"
         );
     }
+
+    // Negative control: a cookie whose HMAC doesn't verify (tampered, or
+    // simply forged by a client that never got a real signed cookie from
+    // this server) must NOT keep the pin — otherwise the whole point of
+    // signing the cookie (stopping a client from steering its own session
+    // to a specific upstream) would be void. A tampered value must fall
+    // through to plain load balancing across both backends, not stay
+    // pinned to `pinned_body`.
+    let mut forged = cookie_value.clone();
+    let last = forged.pop().expect("cookie value is non-empty");
+    forged.push(if last == 'A' { 'B' } else { 'A' });
+    assert_ne!(
+        forged, cookie_value,
+        "mutation must actually change the cookie"
+    );
+
+    let mut forged_hits = std::collections::HashSet::new();
+    for _ in 0..8 {
+        let resp = client
+            .get(srv.url("/"))
+            .header("cookie", format!("sid={forged}"))
+            .send()
+            .expect("GET / (forged cookie)");
+        assert_eq!(resp.status().as_u16(), 200);
+        forged_hits.insert(resp.text().unwrap());
+    }
+    assert!(
+        forged_hits.len() > 1,
+        "a cookie that fails HMAC verification must not stay pinned to one backend \
+         (fell through to plain load balancing instead) — got {forged_hits:?}"
+    );
 }
 
 /// `sticky.strict: true` must turn a stale pin (the cookie names a backend

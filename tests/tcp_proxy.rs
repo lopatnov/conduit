@@ -15,6 +15,29 @@ use std::time::Duration;
 
 use serial_test::serial;
 
+/// Read bytes from `stream` until a `\n` delimiter is seen or the peer
+/// closes the connection, returning everything read so far (delimiter
+/// included, if present). A single `read()` call can return fewer bytes
+/// than a complete message — this never assumes one call is enough, unlike
+/// a bare `read(&mut buf)` would.
+fn read_line(stream: &mut impl Read) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                out.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    out
+}
+
 /// Spawn a minimal TCP echo backend that tags every reply with `tag`, so a
 /// test can tell which backend actually handled a given proxied connection.
 /// Handles connections sequentially, one at a time, which is enough for the
@@ -27,14 +50,11 @@ fn spawn_tagged_echo_backend(tag: &'static str) -> SocketAddr {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let mut buf = [0u8; 256];
-            let Ok(n) = stream.read(&mut buf) else {
-                continue;
-            };
-            if n == 0 {
+            let request = read_line(&mut stream);
+            if request.is_empty() {
                 continue;
             }
-            let reply = format!("{tag}:{}", String::from_utf8_lossy(&buf[..n]));
+            let reply = format!("{tag}:{}", String::from_utf8_lossy(&request));
             let _ = stream.write_all(reply.as_bytes());
             let _ = stream.flush();
         }
@@ -51,9 +71,8 @@ fn roundtrip(port: u16, payload: &str) -> String {
         .expect("set_read_timeout");
     stream.write_all(payload.as_bytes()).expect("write");
     stream.flush().expect("flush");
-    let mut buf = [0u8; 256];
-    let n = stream.read(&mut buf).expect("read reply");
-    String::from_utf8_lossy(&buf[..n]).into_owned()
+    let reply = read_line(&mut stream);
+    String::from_utf8_lossy(&reply).into_owned()
 }
 
 /// A single-target `tcp:` site relays bytes bidirectionally to the real
@@ -116,11 +135,14 @@ fn tcp_proxy_round_robin_alternates_between_two_targets() {
         .collect();
 
     // The readiness probe in `TestServer::start_with_config` itself makes one
-    // bare TCP connect to prove the proxy is up (see `requires_raw_tcp` in
-    // tests/common/mod.rs) — that connect is a real accepted connection from
-    // the proxy's point of view, so it consumes one round-robin slot before
-    // the test's own first request. Which backend starts first is therefore
-    // not fixed; what must hold is pure alternation between exactly two tags.
+    // bare TCP connect to prove the proxy is up (see `requires_raw_tcp`/
+    // `probe_proxy`'s `raw_tcp` branch in tests/common/mod.rs, which skips
+    // the HTTP/HTTPS attempts entirely for a `tcp:` site and goes straight to
+    // a single bare connect) — that connect is a real accepted connection
+    // from the proxy's point of view, so it consumes one round-robin slot
+    // before the test's own first request. Which backend starts first is
+    // therefore not fixed; what must hold is pure alternation between
+    // exactly two tags.
     let tags: Vec<&str> = replies
         .iter()
         .map(|r| r.split(':').next().expect("tag prefix"))
@@ -146,9 +168,9 @@ fn tcp_proxy_round_robin_alternates_between_two_targets() {
     }
 }
 
-/// The Admin API stays reachable (and still enforces its own auth) even
-/// though the site's own port speaks raw TCP, not HTTP — the two must not
-/// be entangled by the `tcp:` wiring.
+/// The Admin API stays reachable, and still enforces its own token auth,
+/// even though the site's own port speaks raw TCP, not HTTP — the two must
+/// not be entangled by the `tcp:` wiring.
 #[test]
 #[serial]
 fn tcp_proxy_site_does_not_disable_admin_api() {
@@ -160,7 +182,12 @@ fn tcp_proxy_site_does_not_disable_admin_api() {
         port,
         admin_port,
         serde_json::json!({
-            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "global": {
+                "admin": {
+                    "bind": format!("127.0.0.1:{admin_port}"),
+                    "token": "tcp-site-admin-token"
+                }
+            },
             "sites": [{
                 "port": port,
                 "tcp": { "targets": [backend_addr.to_string()] }
@@ -168,9 +195,21 @@ fn tcp_proxy_site_does_not_disable_admin_api() {
         }),
     );
 
-    let resp = reqwest::blocking::get(server.admin_url("/status")).expect("GET /status");
+    let unauthenticated =
+        reqwest::blocking::get(server.admin_url("/status")).expect("GET /status (no token)");
+    assert_eq!(
+        unauthenticated.status().as_u16(),
+        401,
+        "Admin API must still require its token for a tcp-only site"
+    );
+
+    let authenticated = reqwest::blocking::Client::new()
+        .get(server.admin_url("/status"))
+        .header("authorization", "Bearer tcp-site-admin-token")
+        .send()
+        .expect("GET /status (with token)");
     assert!(
-        resp.status().is_success(),
-        "Admin API must stay reachable for a tcp-only site"
+        authenticated.status().is_success(),
+        "Admin API must stay reachable, with the right token, for a tcp-only site"
     );
 }
