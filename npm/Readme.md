@@ -41,26 +41,22 @@ conduit
 
 ## Standard vs Full binary
 
-The npm package installs the **standard** binary (`--features standard`). It
-covers the majority of production use cases: TLS, reverse proxying, static
-files, rate limiting, basic/API-key/JWT auth, the consumer model, ForwardAuth,
-response caching, auto-TLS (Let's Encrypt), compression, hot-reload, health
-checks, and Prometheus metrics.
+**Since 2.0.0, the npm package installs the `full` binary** (`--features
+full`, issue #239) — every feature is included: TLS, reverse proxying, static
+files, rate limiting (incl. Redis), basic/API-key/JWT auth, the consumer
+model, ForwardAuth, response caching (incl. Redis/disk), auto-TLS (Let's
+Encrypt), compression, hot-reload, health checks, Prometheus metrics, WASM
+plugin middleware, Rhai scripting middleware, OpenTelemetry OTLP tracing, and
+TCP proxy mode. There is nothing left to download separately.
 
-Features that require the `full` build are **not included** in the standard
-npm binary:
+(1.x shipped the smaller `standard` bundle by default and required a manual
+download of the `full` binary for Redis/WASM/Rhai/OTLP/TCP — if you're
+pinned to a 1.x version, see that version's npm Readme.)
 
-| Feature                     | Requires           | How to get it                                                          |
-| ---------------------------- | ------------------ | ---------------------------------------------------------------------- |
-| Redis rate limiting & caching | `--features redis` | [Download full binary ↗](https://github.com/lopatnov/conduit/releases) |
-| WASM plugin middleware        | `--features wasm`  | [Download full binary ↗](https://github.com/lopatnov/conduit/releases) |
-| Rhai scripting middleware     | `--features rhai`  | [Download full binary ↗](https://github.com/lopatnov/conduit/releases) |
-| OpenTelemetry OTLP tracing    | `--features otlp`  | [Download full binary ↗](https://github.com/lopatnov/conduit/releases) |
-| TCP proxy mode                | `--features tcp`   | [Download full binary ↗](https://github.com/lopatnov/conduit/releases) |
-
-**To get all features** download `conduit-*-full.tar.gz` from
-[GitHub Releases](https://github.com/lopatnov/conduit/releases), or
-build from source with `cargo install lopatnov-conduit --features full`.
+To build a smaller binary yourself (e.g. for a container image), build from
+source with `cargo install lopatnov-conduit --features standard` or any
+narrower feature set — see [docs/cli.md](https://github.com/lopatnov/conduit/blob/main/docs/cli.md#feature-flags)
+for the full list.
 
 ---
 
@@ -268,7 +264,9 @@ Admin commands connect to `127.0.0.1:2019` by default. Override with
 | **YAML config**            | `conduit.yaml` / `conduit.yml` — YAML recommended; JSON also supported                  |
 | **Kubernetes** ¹           | `ConduitSite` CRD config provider                                                       |
 
-> ¹ Not included in the standard npm binary — requires the [full binary](#standard-vs-full-binary).
+> ¹ Included in the npm package since 2.0.0 (full binary). Only missing if you
+> build from source with a narrower feature set than `full` — see
+> [Standard vs Full binary](#standard-vs-full-binary).
 
 ---
 
@@ -288,8 +286,8 @@ Unsupported platform? Build from source:
 
 ```bash
 cargo install lopatnov-conduit                      # minimal (default = [])
-cargo install lopatnov-conduit --features standard  # standard (matches published binaries)
-cargo install lopatnov-conduit --features full      # all features
+cargo install lopatnov-conduit --features standard  # standard (smaller binary)
+cargo install lopatnov-conduit --features full      # all features (matches npm since 2.0.0)
 ```
 
 ---

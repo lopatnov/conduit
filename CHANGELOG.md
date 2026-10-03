@@ -7,6 +7,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [2.0.0] — 2026-10-03
+
+Conduit 2.0 splits the single `lopatnov-conduit` crate into a Cargo workspace
+of one crate per feature (issue #114), so a build only compiles the code and
+dependencies a chosen feature set actually needs — no behavior, config shape,
+route, or CLI flag changed by the split itself. Issue #148 wires up real
+multi-crate publishing: every `lopatnov-conduit-*` member crate is
+`cargo publish --workspace`-able in dependency order (native cargo, not
+`cargo-workspaces`/`release-plz`), pinned at `2.0.0` in lockstep, with its own
+MSRV (`rust-version`, 1.89 workspace-wide / 1.95 for `conduit-plugin-wasm`
+which needs wasmtime 48+); CI proves the publish would succeed
+(`workspace-publish-dryrun`) on every PR. The security, correctness, and
+behavior fixes below landed alongside the migration and apply to 2.0.0
+regardless of which feature crates a given build pulls in.
+
+### Changed
+
+- **The npm package (`@lopatnov/conduit`) now installs the `full` feature-bundle
+  binary instead of `standard`** (issue #239). Redis-backed rate limiting/caching,
+  WASM plugin middleware, Rhai scripting, OpenTelemetry OTLP tracing, and TCP
+  proxy mode all work immediately after `npm install` — no separate full-binary
+  download needed. The download is correspondingly larger. A smaller binary is
+  still available by building from source (`cargo install lopatnov-conduit
+  --features standard`). This is npm-specific: the unsuffixed GitHub Release
+  assets and the default `:latest`/`:2.0.0` GHCR Docker image are unchanged and
+  still ship the `standard` bundle — only the `-full`-suffixed release assets
+  and `:latest-full` Docker tag match what npm now installs.
+
 ### Security
 
 - **`global.admin.token: ""` is now a validation error** (issue #480). The Admin API compares the
@@ -423,29 +453,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Consumer `rateLimit.limit`/`windowSecs` of `0` is now rejected at
   config-validation time**, instead of silently locking the consumer out of
   every request at runtime.
-
----
-
-## [2.0.0] — in progress on `claude/cargo-workspace-features-23qxfr`
-
-Marks the start of the feature-driven Cargo workspace migration (see GitHub
-issue #114): splitting the single `lopatnov-conduit` crate into one crate per
-feature so a build only compiles the code and dependencies a chosen feature
-set actually needs. This is a long-lived migration branch, not a cut release —
-`main` and its `1.x` line are unaffected until the migration lands. The
-workspace version stays pinned at `2.0.0` for the whole migration (not bumped
-per PR — reverted 2026-08-17 after an earlier per-PR-bump convention had
-inflated it to `2.11.0` with nothing published); the branch is retired into a
-real `2.0.0` release once #114's sub-issues are all closed.
-
-Issue #148 (the epic's closing sub-issue) wires up real multi-crate
-publishing: every `lopatnov-conduit-*` member crate is now
-`cargo publish --workspace`-able in dependency order (native cargo, not
-`cargo-workspaces`/`release-plz` — see that issue's PR for why), gets its
-own MSRV (`rust-version`, 1.89 workspace-wide / 1.95 for
-`conduit-plugin-wasm`), and CI proves the publish would succeed
-(`workspace-publish-dryrun`) on every PR rather than only discovering a
-break on the real `v2.0.0` tag.
 
 ---
 

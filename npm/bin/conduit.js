@@ -19,12 +19,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 function getPlatformBinary() {
   const { platform, arch } = process;
 
+  // Issue #239: matches download.js's "-full" asset names (full feature
+  // bundle, shipped from the 2.0.0 line onward).
   const map = {
-    "linux-x64":   "conduit-x86_64-unknown-linux-gnu",
-    "linux-arm64": "conduit-aarch64-unknown-linux-gnu",
-    "darwin-x64":  "conduit-x86_64-apple-darwin",
-    "darwin-arm64":"conduit-aarch64-apple-darwin",
-    "win32-x64":   "conduit-x86_64-pc-windows-msvc.exe",
+    "linux-x64":   "conduit-x86_64-unknown-linux-gnu-full",
+    "linux-arm64": "conduit-aarch64-unknown-linux-gnu-full",
+    "darwin-x64":  "conduit-x86_64-apple-darwin-full",
+    "darwin-arm64":"conduit-aarch64-apple-darwin-full",
+    "win32-x64":   "conduit-x86_64-pc-windows-msvc-full.exe",
   };
 
   const key = `${platform}-${arch}`;
