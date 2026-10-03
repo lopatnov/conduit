@@ -480,7 +480,7 @@
           "required": ["store"],
           "properties": {
             "store":                    { "type": "string" },
-            "maxSizeMb":                { "type": "integer", "minimum": 1 },
+            "maxSizeMb":                { "type": "integer", "minimum": 1, "description": "Not currently enforced — parsed but no eviction/admission policy exists yet, so the cache can grow unbounded past this value. Setting it logs a startup/hot-reload warning. See issue #520." },
             "ttlSecs":                  { "type": "integer", "minimum": 0 },
             "staleWhileRevalidateSecs": { "type": "integer", "minimum": 0, "description": "Serve stale while refreshing in background (RFC 5861)." },
             "staleIfErrorSecs":         { "type": "integer", "minimum": 0, "description": "Serve stale when upstream returns 5xx, including after retries are exhausted (RFC 5861)." },

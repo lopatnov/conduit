@@ -1532,17 +1532,20 @@ fn validate_cache_config(
         }
     }
 
-    // Issue #508: maxSizeMb is parsed and stored but has no enforcement code
-    // anywhere — no LRU/eviction policy is implemented, so the cache can grow
-    // unbounded past this value. Surface it as an advisory warning (not a
-    // hard error — the field itself is harmless to leave set) so an operator
-    // relying on it for a memory budget isn't silently unprotected.
+    // Issue #508 (closed by this fix — the warning path is the alternative
+    // scope #508 itself proposed) found that maxSizeMb is parsed and stored
+    // but has no enforcement code anywhere — no LRU/eviction/admission policy
+    // is implemented, so the cache can grow unbounded past this value. The
+    // remaining enforcement work is tracked separately at #520 (still open).
+    // Surface it as an advisory warning (not a hard error — the field itself
+    // is harmless to leave set) so an operator relying on it for a memory
+    // budget isn't silently unprotected.
     if cache.max_size_mb.is_some() {
         errors.push(ValidationError::warning(
             format!("{prefix}.maxSizeMb"),
             "cache.maxSizeMb is configured but not currently enforced — no eviction policy \
              is implemented, so the cache may grow unbounded past this limit. See \
-             https://github.com/lopatnov/conduit/issues/508 for status.",
+             https://github.com/lopatnov/conduit/issues/520 for status.",
         ));
     }
 }
@@ -2875,7 +2878,7 @@ mod tests {
         );
     }
 
-    // ── cache.maxSizeMb unenforced (issue #508) ──────────────────────────────
+    // ── cache.maxSizeMb unenforced (issue #508, enforcement tracked at #520) ─
 
     #[test]
     fn warning_for_cache_max_size_mb_unenforced() {
@@ -2885,7 +2888,7 @@ mod tests {
         );
         assert!(
             e.iter()
-                .any(|x| x.message.contains("maxSizeMb") && x.message.contains("issues/508")),
+                .any(|x| x.message.contains("maxSizeMb") && x.message.contains("issues/520")),
             "cache.maxSizeMb must warn that it's unenforced: {e:?}"
         );
         assert!(

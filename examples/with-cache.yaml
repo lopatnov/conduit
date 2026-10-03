@@ -14,7 +14,9 @@ proxy:
 
     cache:
       store: memory        # in-process DashMap cache
-      maxSizeMb: 256       # evict LRU entries when over 256 MB
+      # Not currently enforced — parsed but no eviction policy exists yet (issue #520).
+      # Setting this logs a startup warning and makes `conduit validate` exit non-zero.
+      maxSizeMb: 256
       ttlSecs: 300         # cache entries live for 5 minutes
 
       # Send separate cache entries for different client encodings / languages.
