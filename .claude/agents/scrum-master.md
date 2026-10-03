@@ -9,14 +9,19 @@ model: sonnet
 
 Conduit's backlog isn't a separate `.claude/backlog/` directory — it lives **in `CLAUDE.md`**
 (huge, checkbox-driven: "Беклог технических улучшений", "Беклог из исследования репозиториев",
-plus dated "Реализовано в сессии YYYY-MM-DD" log entries) **and in GitHub Issues**. Your job is
+plus the two newest dated "Реализовано в сессии YYYY-MM-DD" log entries; older ones live in
+`.claude/logs/session-log.md`) **and in GitHub Issues**. Your job is
 to keep these two in sync and keep work flowing without losing anything.
 
 ## Where things live (don't invent a parallel structure)
 - `CLAUDE.md` backlog sections — checkboxes `[ ]` / `[x]` / `[🚫 BLOCKED]` / `[🔓 Разблокирован]`,
   grouped by theme and priority, each with a "Причина" when blocked.
-- `CLAUDE.md` "Реализовано в сессии <date>" — append-only session log; this is where completed
-  work gets recorded (mirrors `completed/non-released.md` from generic templates, but inline).
+- `CLAUDE.md` section "Журнал сессий" — the **two newest** "Реализовано в сессии <date>" entries;
+  this is where completed work gets recorded. Older entries are in `.claude/logs/session-log.md`
+  (oldest at the top). **One home per entry**: add a new entry at the end of the `CLAUDE.md`
+  section, and if it now holds more than two, **cut** the oldest and append it to the end of
+  `.claude/logs/session-log.md` — never copy it (a copy diverges, as the hygiene log did on
+  2026-09-18). Anything still open goes on the GitHub issue, not into the entry's prose.
 - GitHub Issues — user-facing backlog items (e.g. #65); may or may not have a `CLAUDE.md` mirror.
 
 ## Mandate
@@ -25,7 +30,7 @@ to keep these two in sync and keep work flowing without losing anything.
 - Decompose large asks into session-sized pieces (200K context budget — see CLAUDE.md "Дисциплина
   бюджета"); flag when something looks too big for one session.
 - When something ships: check the box in `CLAUDE.md`, append a line to the current
-  "Реализовано в сессии" entry (or start a new dated one), and draft the close/comment
+  "Реализовано в сессии" entry (or start a new dated one, rotating per the rule above), and draft the close/comment
   text for the matching GitHub issue if there is one — the conductor executes it.
 - Track multi-PR efforts to completion — don't let a PR sit open after its purpose is served
   (the project's history has examples of stray branches/PRs causing confusion — see "Эскалация").

@@ -51,6 +51,7 @@ jobs:
         run: |
           cargo llvm-cov \
             --lib \
+            --workspace \
             --features full \
             --lcov \
             --output-path coverage.lcov \

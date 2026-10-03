@@ -1,0 +1,40 @@
+[package]
+name        = "lopatnov-conduit-admin"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+description = "Admin API for conduit's feature-driven workspace (issue #114/#146) — the axum server, bearer-token authentication and the endpoint handlers"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_admin"
+path = "src/lib.rs"
+
+[features]
+# `DELETE /cache/purge` needs the `url` crate to parse the URL it is given; without the feature the route stays
+# registered and answers 501. Mirrors the root crate's `cache` feature (which forwards to this one) and is pinned by a
+# compile-time assert in `src/admin/api.rs` — see `features` in `src/lib.rs`.
+cache = ["dep:url"]
+
+[dependencies]
+# `AppState` and the runtime's `proxy::{health, cache, service}` / `filter::rate_limit` (Layer 3).
+lopatnov-conduit-runtime = { workspace = true }
+# The config schema types the upstream listing walks (`SiteConfig`, `ProxyConfig`, ...) and, in tests, the parser.
+lopatnov-conduit-config  = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+axum        = { workspace = true }
+pingora-core  = { workspace = true }
+pingora-cache = { workspace = true }
+anyhow         = { workspace = true }
+rustls         = { workspace = true }
+rustls-pemfile = { workspace = true }
+subtle         = { workspace = true }
+url            = { workspace = true, optional = true }
+
+[dev-dependencies]
+indexmap = { workspace = true }
+tempfile = { workspace = true }

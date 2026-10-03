@@ -14,8 +14,4 @@ pub mod rate_limit_redis;
 pub mod redirects;
 pub mod response_chain;
 pub mod response_time;
-#[cfg(feature = "rhai")]
-pub mod script;
 pub mod security_headers;
-#[cfg(feature = "wasm")]
-pub mod wasm;

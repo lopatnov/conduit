@@ -29,11 +29,16 @@ canonical example PR #71):
   if it drifted)
 - `npm/package.json` → `"version": "x.y.z"`
 - `docs/benchmarks.md`, `docs/cli.md`, `docs/deployment.md` → version strings in prose/examples
+- **Since the workspace migration (#114/#148): every `lopatnov-conduit-*` entry's own
+  `version = "..."` string in `[workspace.dependencies]` (~32 lines) must match
+  `[workspace.package].version` too — run `./scripts/check-workspace-versions.sh` (also
+  the CI job `workspace-publish-dryrun`) rather than grepping these by hand.
 
 ```bash
 # quick grep across the lockstep set
 grep -n "version" Cargo.toml npm/package.json | head -5
 grep -rn "1\.1\.[0-9]" docs/*.md   # adjust pattern to the current/target version
+./scripts/check-workspace-versions.sh
 ```
 
 If anything is out of step, fix it on its own small PR (or as part of the version-bump PR,
@@ -73,10 +78,19 @@ name, missing `v` prefix on the Trivy version pin — all three real regressions
   ```
 - **npm package** (if published as part of this release): `npm view lopatnov-conduit version`
   matches the tag.
+- **crates.io: since the workspace migration (#114/#148), one release publishes ~33
+  packages, not just `lopatnov-conduit`.** The `publish-crates` job
+  (`scripts/publish-workspace.sh`) can take hours the first time due to crates.io's
+  new-crate rate limit — it's designed to be safely re-run (it skips anything already at
+  the target version), so a run that times out or gets interrupted is not itself a
+  failure; re-trigger the job rather than re-tagging. Spot-check a few member crates
+  landed, not just the root: `curl -s https://crates.io/api/v1/crates/lopatnov-conduit-core
+  | jq .crate.newest_version`.
 
 ## Step 5 — close the loop
 
-- `scrum-master`: append a "Реализовано в сессии <date>" entry to `CLAUDE.md` if the release
+- `scrum-master`: append a "Реализовано в сессии <date>" entry to `CLAUDE.md`'s "Журнал сессий"
+  section (rotating the oldest to `.claude/logs/session-log.md`, per `scrum-master.md`) if the release
   itself is worth logging (usually the *features* in it are logged when they land, not the
   release act — but note the version bump).
 - Close/comment any GitHub issues this release resolves.

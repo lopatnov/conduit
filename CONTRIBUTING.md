@@ -6,6 +6,7 @@ Thank you for your interest in contributing! This document explains how to get s
 
 - [Development Setup](#development-setup)
 - [Project Structure](#project-structure)
+- [Cargo Workspace Crate Extraction Recipe](#cargo-workspace-crate-extraction-recipe)
 - [Running Tests](#running-tests)
 - [Code Style](#code-style)
 - [Submitting Changes](#submitting-changes)
@@ -41,55 +42,59 @@ cargo run -- -c examples/minimal.json
 
 ```text
 src/
-├── main.rs              entry point — CLI dispatch
+├── main.rs              entry point (~10 lines): init tracing, Cli::parse(), dispatch_command() — everything
+│                        else moved to crates/conduit-cli (#147)
 ├── cli/
-│   ├── args.rs          clap CLI definitions
-│   └── init.rs          conduit init wizard
+│   └── mod.rs           facade: every item re-exported from crates/conduit-cli (args.rs, dispatch.rs,
+│                        init.rs, serve.rs, validate.rs, and the rest) — see crates/conduit-cli/src/lib.rs
 ├── config/
-│   ├── schema.rs        all config types (serde)
-│   ├── parse.rs         load_config(), from_str(), normalize()
-│   ├── validate.rs      semantic validation + TLS cert expiry
+│   ├── schema/          facade: mod.rs re-exports every config type from crates/conduit-config (#222)
+│   ├── parse.rs         facade: load_config(), from_str(), normalize() live in crates/conduit-config
+│   ├── validate/        facade: mod.rs re-exports validate()/feature_warnings() from crates/conduit-server
+│   │                    (#147) and keeps the root-vs-feature-crate compile-time parity asserts (cfg!() is
+│   │                    always crate-relative, so those stay here); tests.rs/golden_tests.rs/testdata/ stay
+│   │                    here too, since they pin the ROOT's own compiled feature set
+│   ├── provider.rs      facade: FileProvider/Provider live in crates/conduit-server (#147)
+│   ├── kubernetes.rs    facade: KubernetesProvider/CRD types live in crates/conduit-server (#147)
 │   ├── env.rs           $VAR interpolation
-│   └── defaults.rs      Default impls
-├── server/
-│   ├── builder.rs       Pingora bootstrap
-│   ├── tls.rs           TLS settings (rustls)
-│   ├── acme.rs          Auto-TLS via instant-acme (Let's Encrypt)
-│   ├── redirect.rs      HTTP→HTTPS redirect proxy
-│   └── shutdown.rs      graceful shutdown
-├── proxy/
-│   ├── service.rs       ConduitProxy (ProxyHttp impl)
-│   ├── router.rs        host + path routing, route table
+│   └── defaults.rs      facade: the constants live in crates/conduit-server (#147)
+├── server.rs            no facade — just the ten root-vs-`conduit-server` compile-time parity asserts
+│                        (run_server()/AdminApiService/config::validate/the providers all moved there, #147)
+├── proxy/               (the modules marked * are facades over crates/conduit-runtime since #145 — see below)
+│   ├── service.rs *     ConduitProxy (ProxyHttp impl), AppState
+│   ├── router.rs *      host + path routing, route table
 │   ├── routes.rs        RouteConfig / MatchConfig (glob, method, header, query)
-│   ├── ctx.rs           RequestCtx, UpstreamTarget, GuardCtx
+│   ├── ctx.rs *         RequestCtx, UpstreamTarget, GuardCtx
 │   ├── upstream.rs      load balancer, URL parsing, health registry
 │   ├── health.rs        background health checks, UpstreamRegistry
 │   ├── cache.rs         build_cache_key(), in-memory storage singleton
-│   ├── cache_redis.rs   Redis-backed pingora-cache Storage impl
+│   ├── cache_redis.rs * Redis proxy-cache registry glue
 │   └── cache_disk.rs    Disk-backed pingora-cache Storage impl
 ├── handler/
 │   ├── response.rs      write_local_response() helper
 │   ├── static_files.rs  ETag, Range, Cache-Control, streaming compression
-│   ├── health.rs        /__health__ with optional upstream status
+│   ├── health.rs *      /__health__ with optional upstream status
 │   ├── metrics.rs       /__metrics__ (Prometheus)
 │   ├── hot_reload.rs    SSE browser hot reload + notify watcher
 │   └── fallback.rs      fallback responses (byAccept, file, body)
 ├── filter/
-│   ├── auth.rs          Basic Auth, API key, skip-paths
+│   ├── auth.rs *        Basic Auth, API key, skip-paths
 │   ├── compression.rs   gzip / brotli negotiation + streaming
 │   ├── cors.rs          CORS + preflight (bypasses auth)
 │   ├── headers.rs       custom response headers
 │   ├── ip_filter.rs     CIDR allow/deny, X-Forwarded-For
 │   ├── limits.rs        maxBodyBytes (413), maxHeaderBytes (431)
-│   ├── logging.rs       5 log formats, atomic file switching
-│   ├── rate_limit.rs    token-bucket, in-memory or Redis
+│   ├── logging.rs *     5 log formats, atomic file switching
+│   ├── rate_limit.rs *  token-bucket, in-memory or Redis
 │   ├── rate_limit_redis.rs  Redis fixed-window counter with fallback
 │   ├── redirects.rs     path redirects with :param captures
-│   ├── response_time.rs X-Response-Time header
-│   ├── script.rs        Rhai scripting middleware (Phase 4)
+│   ├── response_time.rs * X-Response-Time header
 │   └── security_headers.rs  HSTS, CSP, X-Frame-Options, etc.
-├── admin/
-│   └── api.rs           Admin API (Axum) — status, reload, upstream management
+│   (Rhai scripting middleware moved to crates/conduit-script-rhai, WASM
+│    plugin middleware to crates/conduit-plugin-wasm, and the
+│    MiddlewareGuard/MiddlewareResponseFilter dispatch to
+│    crates/conduit-middleware — issue #114/#141; formerly filter/script.rs
+│    and filter/wasm.rs here)
 ├── upload/
 │   └── server.rs        upload server (Axum loopback, port 0)
 └── util/
@@ -98,6 +103,126 @@ src/
     ├── path.rs          path utilities
     └── net.rs           network utilities
 ```
+
+---
+
+## Cargo Workspace Crate Extraction Recipe
+
+Conduit 2.0 (issue [#114](https://github.com/lopatnov/conduit/issues/114)) moves each
+Cargo feature into its own workspace member crate under `crates/`. Every extraction —
+`conduit-otlp`, `conduit-acme`, `conduit-auth-jwt`, ... — follows the same recipe, derived
+from how `conduit-core` ([#126](https://github.com/lopatnov/conduit/issues/126)) and
+`conduit-config-core` ([#127](https://github.com/lopatnov/conduit/issues/127)) were
+actually built and independently audited. Read this before extracting a new crate,
+whether by hand or via the `crate-extractor` agent.
+
+### The five rules
+
+1. **Re-export at the original location.** Every relocated item gets a `pub use` at its
+   original file (and, where practical, its original line) in the root crate — e.g.
+   `crate::config::schema::CONFIG_VERSION` still resolves — `src/config/schema/mod.rs` (formerly
+   `schema.rs`, split into a directory in #314) has it as
+   `pub use conduit_config_core::parse::CONFIG_VERSION;`. This is what keeps
+   `conduit::`-prefixed paths — and therefore every existing integration test — compiling
+   unchanged. Never do one blanket top-level re-export (`pub use conduit_x as x;` in
+   `lib.rs`) — if the root already has a real module at that name (e.g. `conduit::config`
+   holding `AppConfig`/`SiteConfig`), a blanket re-export conflicts with it instead of
+   extending it.
+
+2. **Generic-in-crate, bound-by-type-alias-in-root.** If the extracted item became generic
+   over the config payload type (because the member crate can't know about `AppConfig`),
+   root binds it: `pub type X = crate_x::X<AppConfig>;` plus a constructor that injects any
+   root-only policy (a validator closure, etc.). See `Provider<C>`/`FileProvider<C>` in
+   `crates/README.md` for the worked example. Path preserved; signature intentionally
+   changed — record that as a deliberate break, don't pretend it's transparent.
+
+3. **Schema-bound wrapper, same name and signature.** If the extracted item is generic
+   *and* root's version does extra schema-specific work on top, keep a wrapper in root with
+   the **identical pre-migration name and signature** that calls the generic version and
+   then does the schema step — e.g. `src/config/parse.rs`'s `load_config`/`from_str`/
+   `from_yaml` call `conduit_config_core::parse::{load_file, from_json_str, from_yaml_str}`
+   and then `normalize()` into `AppConfig`.
+
+4. **Anything not re-exported must be `pub(crate)`, not `pub`.** A member crate's `pub` API
+   is a semver commitment once these crates start publishing to crates.io (see the
+   `crates.io publishing` risk in [#114](https://github.com/lopatnov/conduit/issues/114)).
+   Before merging an extraction, grep the new crate for `pub fn`/`pub struct`/`pub enum`
+   and confirm each either has a re-export site in root or is genuinely meant to be public
+   API — don't leave something `pub` just because it compiles. (This rule exists because
+   `conduit_core::filter::path::path_matches` was accidentally hoisted from `pub(crate)` to
+   `pub` during the `conduit-core` extraction and caught only in a later audit — see
+   `crates/conduit-core/src/filter/path.rs`.)
+
+5. **Extracting the aggregate itself (`AppConfig`/`SiteConfig`, #222) is all-or-nothing.** A
+   struct's fields must name types from crates it depends on, so every type a `SiteConfig`
+   field points at has to move with it (or already live in a crate it can depend on) — it cannot
+   be cut into slices the way a leaf can. Do the module split as a separate earlier step
+   (#314), then move the whole directory with `git mv`. Rule 1's "original location" for an
+   aggregate is a *module path*: a facade whose body is an explicit `pub use conduit_config::schema::{…}`
+   (not a glob) satisfies it, and keeps every existing `crate::config::schema::X` call site unedited.
+
+### Two things that are *not* part of the recipe (deliberately)
+
+- **`conduit-core` dependency is opt-in, not automatic.** Only depend on
+  `lopatnov-conduit-core` if the new crate implements a chain trait (`RequestFilter`,
+  `ResponseFilter`) and therefore needs `&mut Session`/pingora types. A crate with no
+  request-lifecycle behavior (like `conduit-otlp`'s tracer init) takes primitives
+  (`&str`, `u16`, ...) instead and has no pingora dependency at all.
+- **Chain assembly and ordering live in `conduit-runtime`, never in a feature crate.**
+  `crates/conduit-runtime/src/filter/chain.rs` decides guard order (see `CLAUDE.md`
+  decision #20; `src/filter/chain.rs` in the root is a facade); a feature crate exports a
+  filter implementation and a constructor, never a chain position.
+
+### Watch for name collisions during extraction
+
+Two functions can share a name and *look* like duplication candidates without being
+duplicates — e.g. `conduit_core::filter::path::path_matches` (exact-only fallback) vs.
+`src/proxy/cache.rs`'s private `path_matches` (prefix-matches even without `/**`). Check
+behavior, not just the signature, before "deduplicating" anything found this way.
+
+### A config struct's implementation backends can live in their own crates
+
+`conduit-middleware` (issue #114/#141) is the first extraction where a config struct
+(`MiddlewareEntry`) and its feature-gated implementation backends land in **three**
+different crates rather than one: `conduit-middleware` owns `MiddlewareEntry` plus the
+dispatcher (`MiddlewareGuard`/`MiddlewareResponseFilter`, moved verbatim — still a closed
+`match` on `entry.r#type`, not a new plugin trait/registry), while the two backends it
+dispatches to (`run_script`/`run_script_response` for Rhai, `run_wasm`/`run_wasm_response`
+for WASM) live in their own sibling crates (`conduit-script-rhai`, `conduit-plugin-wasm`)
+and are pulled in as `conduit-middleware`'s *own* optional path-dependencies, gated behind
+its own `rhai`/`wasm` Cargo features. The root crate's `rhai`/`wasm` features simply
+forward into `conduit-middleware`'s features — this is the only crate that depends on
+either backend crate directly. Worth this shape specifically when a dispatcher's backends
+are large/independent enough to be their own crates (bringing their own dependency trees —
+`wasmtime`, `rhai` — that nothing else in the workspace needs) but the dispatcher itself
+still needs to be always-compiled for the same config-parses-everywhere reason every other
+`MiddlewareEntry`-shaped struct is (`CLAUDE.md` decision-#20a-style `feature_warnings()`).
+
+### A feature crate owns its config validation and its feature-off warning
+
+The crate that owns a config block also owns what `config::validate` says about it (issue
+[#316](https://github.com/lopatnov/conduit/issues/316)). Up to two always-compiled modules, next to the config types:
+
+- **`src/validate.rs`** — the block's validator, `pub fn validate_x(cfg, prefix, errors)`, reporting through
+  `conduit_config_core::validation::ValidationError` (so the crate depends on `lopatnov-conduit-config-core`).
+  The root's `src/config/validate/site.rs` calls it. A check that needs the whole `SiteConfig`/`AppConfig` (a
+  combination of two blocks, proxy-loop detection, the Redis cross-site check) stays in the root: the
+  `layer-boundaries` CI job rejects those types in a member crate.
+- **`src/warnings.rs`** — `pub const COMPILED: bool = cfg!(feature = "<this crate's feature>")` and
+  `pub fn feature_warning(i, cfg) -> Option<String>`, which is `None` when the feature is compiled in or the block is
+  absent. The message text lives here, not in the root. A test that needs the whole site (`redis`, `cache`) is
+  evaluated in the root and handed over as a `bool`. Add a text-pin test for the message.
+
+The root then needs exactly two lines per feature in `src/config/validate/warnings.rs`: a flat call in
+`check_site_simple_feature_warnings` (its position is the position of the warning in `feature_warnings()`'s output),
+and a `const _: () = assert!(<crate>::warnings::COMPILED == cfg!(feature = "<root feature>"), ..)` next to the others.
+The assert is what keeps the two features in step: if a crate feature is ever enabled without the root feature (or the
+reverse), the build fails instead of the warning silently disappearing. Cargo features are unified per build, so it
+cannot be checked from the crate alone.
+
+The golden tests (`src/config/validate/golden_tests.rs`, fixtures in `testdata/`) pin the exact ordered output of
+`validate()` and `feature_warnings()` in every feature combination; a new feature-off warning has to be added to the
+fixture, and the baseline is regenerated only for a deliberate behaviour change (see that file's module comment).
 
 ---
 
@@ -119,6 +244,36 @@ cargo test -- --nocapture
 # Benchmarks
 cargo bench
 ```
+
+### Verifying a refactor or an extraction
+
+`cargo test` does not show a feature that silently stopped being compiled or a test that
+silently stopped running. For a PR that moves code between crates or changes the feature graph,
+run the whole chain once on the final head:
+
+```bash
+scripts/verify-local.sh --base <rev-before-the-change>      # ~1 h; --quick skips tests, goldens and cargo hack
+scripts/verify-local.sh --moved-to lopatnov-conduit-config:config:: --also-pkg lopatnov-conduit-config
+```
+
+It checks CI's dependency-leak rule, that the set of third-party crates and the list of tests are
+unchanged against the base (tests that moved into another package must reappear there), clippy
+`-D warnings` on eight profiles, the tests, the validation golden tests in every feature set, and
+`cargo hack --each-feature`. See the header of the script for the options; it writes
+`target/verify-local/summary.txt` and exits non-zero on any FAIL. Do not commit while its
+`cargo hack` step runs (cargo-hack rewrites the manifests until it exits).
+
+### Reading everything said on a pull request
+
+```bash
+scripts/pr-comments.sh <pr> [--since 2026-09-26T19:00:00Z] [--full]
+```
+
+Prints the PR's head SHA and state, every check that is not green (a bot whose check is still
+pending has not commented yet), and all three comment streams from every author — issue comments,
+reviews and inline review comments. The PR page folds resolved and outdated threads and a green
+check list says nothing about comments, so use this before merging (a review a bot posts on a
+later commit is easy to miss otherwise).
 
 ### Integration tests
 
@@ -220,7 +375,7 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`
 
 | Crate                                                           | Role                       |
 | --------------------------------------------------------------- | -------------------------- |
-| [Cloudflare Pingora 0.8](https://github.com/cloudflare/pingora) | Async HTTP proxy framework |
+| [Cloudflare Pingora 0.9](https://github.com/cloudflare/pingora) | Async HTTP proxy framework |
 | [Tokio](https://tokio.rs)                                       | Async runtime              |
 | [Axum 0.8](https://github.com/tokio-rs/axum)                    | Admin API HTTP server      |
 

@@ -163,6 +163,18 @@ Transfer/sec:    212.12 MB
 
 Go echo upstream: `200 OK`, fixed 200-byte JSON body, keep-alive.
 
+> **Reproducibility note (2026-09-27, issue #475).** The Conduit figures in this section could not be
+> reproduced. On the same class of machine (Ryzen 9 5950X, WSL2, `oha -c 50`, a fixed-body keep-alive
+> upstream, processes on separate cores), with the configuration below — **one worker thread, the
+> default** — Conduit serves about **10–12k req/s** (p50 ≈ 4 ms), about **31k req/s with
+> `global.workers: 8`**; the smallest possible Pingora proxy serves about 15k req/s per worker thread and a
+> raw single-thread TCP relay about 42k, so ~84k needs several workers even before Conduit's own work.
+> Per request Conduit spends about 80 µs of CPU with one worker (Pingora's own floor ≈ 67 µs, the loopback
+> syscalls ≈ 22 µs). The rows below are kept for the comparison between them and must be re-measured;
+> when quoting a number, state `global.workers`, the load generator, its connection count and the command
+> (see [Running Benchmarks Yourself](#running-benchmarks-yourself)). The CI "Performance report" runs
+> with the default single worker on a shared 4-vCPU runner and is only a trend signal.
+
 ### Config
 
 ```yaml
@@ -393,6 +405,12 @@ proxy:
 ---
 
 ## Running Benchmarks Yourself
+
+> **State `global.workers` with every number.** Pingora's default is **one** worker thread, and one worker serves
+> roughly 10–15k req/s of passthrough traffic on this class of hardware (see the reproducibility note above); throughput
+> scales with the worker count up to the machine's limit. For requests per second *and* CPU cost per request, for
+> Conduit and for the floors (a raw TCP relay, the smallest Pingora proxy), use the scripts in
+> [`scripts/bench/`](../scripts/bench/README.md) instead of (or next to) `wrk`.
 
 ### Prerequisites
 

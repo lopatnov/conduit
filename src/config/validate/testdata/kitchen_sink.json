@@ -1,0 +1,101 @@
+{
+  "global": { "otlp": { "endpoint": "http://otel:4317" }, "workers": 0 },
+  "sites": [
+    {
+      "port": 8000,
+      "jwtAuth": { "secret": "short" },
+      "forwardAuth": { "url": "http://127.0.0.1:2019/verify" },
+      "metrics": { "path": "/__metrics__" }
+    },
+    {
+      "port": 8001,
+      "tls": { "cert": "no-such-file.pem", "key": "no-such-file.key", "acme": { "email": "a@b.com" } }
+    },
+    {
+      "port": 8002,
+      "tcp": { "targets": ["db:5432"] }
+    },
+    {
+      "port": 8003,
+      "rateLimit": { "windowSecs": 60, "limit": 100, "store": "redis://user:secret@cache:6379" }
+    },
+    {
+      "port": 8004,
+      "proxy": {
+        "/api": {
+          "targets": ["http://backend:4000"],
+          "cache": { "store": "memory", "ttlSecs": 60 },
+          "rateLimit": { "windowSecs": 60, "limit": 10, "store": "redis://route:6379" }
+        },
+        "/loop": "http://127.0.0.1:8003"
+      }
+    },
+    {
+      "port": 8005,
+      "consumers": {
+        "consumers": [
+          { "username": "a", "apiKey": "k" },
+          {
+            "username": "b",
+            "jwt": { "secret": "tiny" },
+            "rateLimit": { "windowSecs": 60, "limit": 5, "store": "redis://cons:6379" }
+          }
+        ],
+        "sharedJwt": { "jwksUrl": "http://idp.example/jwks.json", "usernameClaim": "sub" }
+      }
+    },
+    {
+      "port": 8006,
+      "upload": { "path": "/upload", "dir": "./uploads" },
+      "faultInjection": { "abort": { "percent": 50, "status": 503 } },
+      "compression": true,
+      "static": "./dist",
+      "fallback": { "status": 404 },
+      "hotReload": true
+    },
+    {
+      "port": 8007,
+      "middleware": [
+        { "type": "wasm", "path": "a.wasm" },
+        { "type": "script", "path": "a.rhai" },
+        { "type": "wasm", "path": "b.wasm" },
+        { "type": "headers" }
+      ]
+    },
+    {
+      "port": 8008,
+      "routes": [
+        { "match": { "path": "/a/**" }, "static": "./dist" },
+        { "match": { "path": "/b/**" }, "proxy": "http://other:4000" }
+      ],
+      "jwtAuht": { "secret": "x" }
+    },
+    {
+      "port": 8009,
+      "proxy": "http://backend:4000",
+      "rateLimit": { "windowSecs": 60, "limit": 100 }
+    },
+    {
+      "port": 8009
+    },
+    {
+      "port": 8002
+    },
+    {
+      "port": 8002,
+      "tcp": { "targets": ["x:1"] }
+    },
+    {
+      "port": 8443,
+      "tls": { "cert": "no-such-file.pem", "key": "no-such-file.key", "httpRedirectPort": 8080 }
+    },
+    {
+      "port": 8444,
+      "tls": { "cert": "no-such-file.pem", "key": "no-such-file.key", "httpRedirectPort": 8080 }
+    },
+    {
+      "port": 8015,
+      "bad\nkey": true
+    }
+  ]
+}
