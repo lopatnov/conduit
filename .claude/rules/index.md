@@ -46,9 +46,10 @@ are tracked but excluded from the published crate (`[package] exclude`).
 ## Branches and other tools' files
 - Branches can carry different `.claude/` tooling. Before saying "this command/skill/log exists" or copying `.claude/` content
   between branches, check the **target** branch (`git show origin/<branch>:<path>`).
-- Untracked or unfamiliar files (`.codex/`, `.agents/`, `AGENTS.md`) may belong to another tool the owner runs: confirm they
-  are not yours and leave them. `AGENTS.md` (133 KB, header "v1.1.0"), `.agents/` and `.codex/` are **tracked, stale mirrors** of
-  old instructions; do not edit them to follow these rules — their fate is part of #512.
+- Untracked or unfamiliar files may belong to another AI tool the owner runs: confirm they are not yours and leave them.
+  `AGENTS.md` is a short **pointer** to `CLAUDE.md` and `.claude/` (owner, 2026-10-03: one source of truth, compatible with other
+  tools, fewer files); never copy instructions into it or generate tool-specific mirrors — the old 133 KB copy, `.agents/` and
+  `.codex/agents/` went stale and misled tools (#512). `.codex/hooks.json` (cargo fmt after an edit) stays.
 
 ## `.reference/<name>` — persistent source cache
 Clone dependency and reference sources there on demand (gitignored), at the tag pinned in `Cargo.lock`
