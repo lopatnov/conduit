@@ -190,7 +190,9 @@ cargo install lopatnov-conduit --features full       # all features
 | `acme`          | Auto-TLS via Let's Encrypt (`tls.acme`)                                    |
 | `fault-injection` | Fault injection for chaos testing                                        |
 | `otlp`          | OpenTelemetry OTLP distributed tracing (`global.otlp`)                     |
+| `tokio-metrics` | `conduit_eventloop_lag_ms` Prometheus gauge (no config key)                |
 | `kubernetes`    | Kubernetes CRD config provider (`--kubernetes-namespace`)                  |
+| `standard`      | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` — matches the published "standard" binaries/images |
 | `static-server` | Bundle for `--no-default-features`: `static` + `compression` + `hotreload` — the default set minus `proxy` |
 | `gateway`       | Bundle for `--no-default-features`: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `acme` + `compression` |
 | `full`          | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) |

@@ -247,6 +247,31 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   and guard ordering stay in the root crate's `src/filter/chain.rs`
   (`CLAUDE.md` decision #20).
 
+- **`conduit-tcp`**, **`conduit-upload`** (Phase 3.5/3.6, [#131](https://github.com/lopatnov/conduit/issues/131))
+  — two independent handler/server-shaped extractions, same config-always-on
+  rationale as `conduit-otlp`/`conduit-acme`/`conduit-faults` above.
+  - **`conduit-tcp`** owns `TcpConfig` (the `sites[].tcp` config struct) and
+    the real `proxy::TcpProxy` — a Pingora `ServerApp` relaying bytes
+    bidirectionally between a client and a chosen upstream address. Only
+    `proxy::TcpProxy` is gated behind this crate's own `tcp` Cargo feature;
+    the root crate's `tcp` feature forwards into it. `TcpProxy` implements
+    Pingora's own `ServerApp` trait directly, not a `conduit-core` chain
+    trait, so this crate has no dependency on `lopatnov-conduit-core` at all.
+  - **`conduit-upload`** owns `UploadConfig` (the `sites[].upload` config
+    struct) and the real Axum-based upload server (`server` —
+    `UploadService`, `make_upload_router`, `run_upload_server`,
+    `upload_handler`), gated behind this crate's own `upload` Cargo feature.
+    `UploadService` implements Pingora's own `BackgroundService` trait
+    directly, so this crate also has no `conduit-core` dependency. To avoid
+    a circular dependency on the root crate's `AppState`,
+    `server::UploadConfigSource` captures only the one thing the server
+    needs (looking up the active `UploadConfig` for a given site index), and
+    `UploadService`/`make_upload_router`/`run_upload_server` are generic
+    over it — the root crate implements the trait for its own `AppState` and
+    binds a concrete `UploadService` type alias (the same "generic-in-crate,
+    bound-by-type-alias-in-root" pattern as `conduit-config-core`'s
+    `Provider<C>`/`FileProvider<C>`, see that entry above).
+
 - **`conduit-cache`** (Phase 3.7, [#135](https://github.com/lopatnov/conduit/issues/135))
   — HTTP response caching. Owns `CacheConfig` (the `proxy.*.cache` config
   struct, `src/config.rs`), the always-compiled cache-key/policy logic

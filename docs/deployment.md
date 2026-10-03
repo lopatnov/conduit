@@ -37,7 +37,7 @@ Two image variants are published to the GitHub Container Registry on every relea
 | Variant  | Tags                                       | Includes                                                                                                                                                         |
 | -------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Standard | `:latest`, `:1.5.0`, `:1.5`                | `standard` feature bundle: `jwt`, `consumers`, `forward-auth`, `cache`, `acme` — covers the typical self-hosted reverse-proxy / API gateway                     |
-| Full     | `:latest-full`, `:1.5.0-full`, `:1.5-full` | All 14 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`, `otlp`, `kubernetes` |
+| Full     | `:latest-full`, `:1.5.0-full`, `:1.5-full` | All 15 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`, `otlp`, `tokio-metrics`, `kubernetes` |
 
 ```bash
 # Standard (jwt, consumers, forward-auth, cache, acme)

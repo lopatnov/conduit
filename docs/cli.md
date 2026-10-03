@@ -600,6 +600,7 @@ cargo build --release --features "jwt,rhai,redis"
 | `acme`            | Auto-TLS / Let's Encrypt (`tls.acme`)               | `instant-acme`, `rcgen` |
 | `fault-injection` | Fault injection for chaos testing                   | —                       |
 | `otlp`            | OpenTelemetry OTLP tracing                          | `opentelemetry` stack   |
+| `tokio-metrics`   | `conduit_eventloop_lag_ms` Prometheus gauge          | —                       |
 | `kubernetes`      | Kubernetes CRD config provider                      | `kube`, `k8s-openapi`   |
 | `standard`        | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` (typical self-hosted reverse-proxy / API-gateway set) — used by the published "standard" binaries/images | bundle, no extra deps of its own |
 | `static-server`   | Bundle for `--no-default-features` builds: `static` + `compression` + `hotreload` (the default set minus `proxy`) | bundle, no extra deps of its own |
