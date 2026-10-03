@@ -269,9 +269,13 @@ In the root `Cargo.toml`:
   `conventions.md`'s "Versioning"; `scripts/check-workspace-versions.sh` catches drift).
 - Add `lopatnov-conduit-<name>.workspace = true` under `[dependencies]` — mandatory if the
   config struct always parses, `optional = true` if the whole crate is feature-gated.
-- Add a forwarding feature: `<name> = ["lopatnov-conduit-<name>/<name>", "lopatnov-conduit-runtime/<name>"]`
-  (only the second arm if the chain/runtime crate needs to know about it too — a feature
-  with no request-pipeline behavior, like `otlp`'s tracer init, may not need it).
+- Add a forwarding feature: `<name> = ["lopatnov-conduit-<name>/<name>", ...]`, plus
+  `"lopatnov-conduit-runtime/<name>"` and/or `"lopatnov-conduit-server/<name>"` for each
+  downstream crate that has its own `#[cfg(feature = "<name>")]`-gated code for it — check
+  what the feature actually needs rather than assuming one fixed shape: `otlp` and
+  `tokio-metrics` forward into `runtime` (per-request span code, the lag gauge), `tcp`
+  forwards only into `server` (no runtime/chain involvement), and `acme`/`tokio-metrics`
+  forward into both (see those entries in the root `[features]` table).
 - Decide whether it belongs in a bundle (`standard`, `gateway`, `full` — see the
   `[features]` table's "Convenience bundles" comment) — a niche or heavyweight feature
   (chaos testing, a scripting/WASM engine) stays out of `standard`/`gateway` and only goes
@@ -298,7 +302,11 @@ produce a warning, not a silent no-op, when the build doesn't have it — this i
 `crates/conduit-acme/src/warnings.rs` for the worked example):
 
 - `src/validate.rs` — `pub fn validate_<name>(cfg, prefix, errors)`, reporting through
-  `conduit_config_core::validation::ValidationError`.
+  `conduit_config_core::validation::ValidationError`. **Call it from the per-site
+  validation in `crates/conduit-server/src/config/validate/site.rs`** (see how
+  `validate_tcp`/`validate_ip_filter` are already wired in there) — a validator that's
+  never called compiles cleanly and is dead code: invalid configs pass `conduit validate`
+  with no error.
 - `src/warnings.rs` — `pub const COMPILED: bool = cfg!(feature = "<name>")` and
   `pub fn feature_warning(i, cfg: Option<&YourConfig>) -> Option<String>`, `None` when
   compiled in or the block is absent. Pin the exact message text with a test.
