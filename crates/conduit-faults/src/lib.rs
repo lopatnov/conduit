@@ -23,7 +23,7 @@
 //!
 //! Unlike the handler/service-shaped `conduit-otlp`/`conduit-acme`
 //! extractions, `guard::FaultInjectionGuard` implements `conduit-core`'s
-//! [`RequestFilter`](conduit_core::filter::chain::RequestFilter) chain trait
+//! `RequestFilter` chain trait
 //! directly — the same trait every other in-chain guard implements — so per
 //! `CONTRIBUTING.md`'s crate extraction recipe ("conduit-core dependency is
 //! opt-in, not automatic"), this crate *does* depend on

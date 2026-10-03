@@ -21,7 +21,7 @@ description: Reply to and resolve CodeRabbit/reviewer inline comment threads on 
 
 ## Reply to an inline review comment
 
-```
+```text
 mcp__github__add_reply_to_pull_request_comment(
   owner: "lopatnov", repo: "conduit", pullNumber: <PR>,
   commentId: <numeric id from the #discussion_r... anchor, NOT the PRRT_... thread node id>,
@@ -34,7 +34,7 @@ mcp__github__add_reply_to_pull_request_comment(
 Resolving needs the thread's **GraphQL node ID** (`PRRT_...`), which is different from
 the comment's numeric ID used above. Get it from:
 
-```
+```text
 mcp__github__pull_request_read(method: "get_review_comments", owner: "lopatnov",
   repo: "conduit", pullNumber: <PR>)
 ```
@@ -42,7 +42,7 @@ mcp__github__pull_request_read(method: "get_review_comments", owner: "lopatnov",
 This returns review threads with `isResolved`/`isOutdated`/`isCollapsed` plus their
 comments — find the thread containing the comment you just replied to, then:
 
-```
+```text
 mcp__github__resolve_review_thread(owner: "lopatnov", repo: "conduit", threadId: "<PRRT_...>")
 ```
 
@@ -66,13 +66,21 @@ mutation {
   }
 }'
 
-# Find thread node ids + isResolved state for a PR
+# Find thread node ids + isResolved state for a PR — paginate reviewThreads (a PR like
+# #152 has 97+ threads, well past a `first: 20` page) and each thread's own comments
+# (a long-lived thread can have more than one), and request `databaseId` so a thread can
+# be matched to the numeric comment id used by `add_reply_to_pull_request_comment` above.
 gh api graphql -f query='
-query {
+query($cursor: String) {
   repository(owner: "lopatnov", name: "conduit") {
     pullRequest(number: <PR>) {
-      reviewThreads(first: 20) {
-        nodes { id isResolved comments(first: 1) { nodes { body } } }
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          comments(first: 10) { nodes { databaseId body } }
+        }
       }
     }
   }
@@ -103,7 +111,7 @@ finding was fixed, or declined with reasoning.
 GitHub can't anchor an inline reply to these (a platform limitation, not a tool
 limitation) — post a regular PR-level comment addressing the points instead:
 
-```
+```text
 mcp__github__add_issue_comment(owner: "lopatnov", repo: "conduit",
   issue_number: <PR number — PRs share the issue-comment endpoint>, body: "...")
 ```

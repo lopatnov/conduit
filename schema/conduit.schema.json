@@ -81,7 +81,8 @@
               "examples": ["memory", "redis://127.0.0.1:6379"]
             },
             "dryRun": { "type": "boolean", "description": "Log violations but allow requests through instead of returning 429. Site-level and per-consumer only — not a valid field on a per-route rateLimit." }
-          }
+          },
+          "additionalProperties": false
         },
         "basicAuth": {
           "type": "object",
@@ -217,7 +218,9 @@
             "then": { "required": ["path"] }
           }
         }
-      }
+      },
+      "additionalProperties": true,
+      "$comment": "additionalProperties is deliberately true (not the schema default's implicit true made explicit, but a documented choice): SiteConfig.extra (#[serde(flatten)] IndexMap<String, serde_json::Value>, see conduit-config's schema/site.rs) captures any top-level key this struct doesn't name — a typo, or a feature-gated field this binary wasn't compiled with (config::validate::feature_warnings() surfaces it as a warning, not a hard parse error). Rejecting unknown keys here would make the schema stricter than the real Rust parser."
     },
     "TlsConfig": {
       "type": "object",
@@ -436,7 +439,7 @@
             "healthyThreshold":   { "type": "integer", "minimum": 1 },
             "slowStartSecs":      { "type": "integer", "minimum": 0, "description": "Slow-start ramp-up window in seconds after recovery. Ignored for ipHash/consistentHash strategies and sticky sessions (see docs/configuration.md's 'Slow start' section)." },
             "maxConnectionsPerUpstream": { "type": "integer", "minimum": 1, "description": "Circuit breaker: max concurrent connections per upstream, enforced for every load-balance strategy. Skips at-capacity peers in favor of under-capacity ones; returns 503 when all upstreams are at this limit. Soft limit under concurrency (brief overshoot possible, self-corrects)." },
-            "prewarmConnections": { "type": "integer", "minimum": 0, "maximum": 8, "description": "BLOCKED, no effect: number of keepalive connections to pre-establish at startup (values above 8 are clamped). Warms a throwaway HTTP client, not the connection pool Pingora's proxy path actually reuses — Pingora 0.9 exposes no public API for that pool (issue #158). Accepted and validated so configs stay forward-compatible." }
+            "prewarmConnections": { "type": "integer", "minimum": 0, "description": "BLOCKED, no effect: number of keepalive connections to pre-establish at startup. Values above 8 are clamped to 8 at runtime (not rejected) — the schema deliberately has no 'maximum' so a config using a higher value still parses cleanly. Warms a throwaway HTTP client, not the connection pool Pingora's proxy path actually reuses — Pingora 0.9 exposes no public API for that pool (issue #158). Accepted and validated so configs stay forward-compatible." }
           }
         },
         "mirror": { "type": "string", "format": "uri", "description": "Fire-and-forget mirror URL. V1: headers only." },
@@ -463,6 +466,7 @@
               "examples": ["memory", "redis://127.0.0.1:6379"]
             }
           },
+          "additionalProperties": false,
           "description": "Per-route rate limit (in addition to site-level rateLimit). dryRun is a site/consumer-only field and has no effect here (the schema rejects it at this level)."
         },
         "priority": {
@@ -732,7 +736,8 @@
         "skipPaths":  { "type": "array", "items": { "type": "string" } },
         "store":      { "type": "string", "description": "Backend for this consumer's rate-limiter state (issue #322). \"memory\" (default) uses an in-process DashMap; a Redis URL uses a Redis fixed-window counter under the fixed scope \"consumer\", with the username as the client key (the consumer's quota stays global across sites, per its keyBy note above)." },
         "dryRun":     { "type": "boolean", "description": "Log violations but allow the request through instead of returning 429." }
-      }
+      },
+      "additionalProperties": false
     }
   }
 }

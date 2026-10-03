@@ -31,7 +31,12 @@ impl TokenBucket {
     /// `limit / window_secs` tokens per second.  This allows a burst of up to
     /// `limit + burst` requests, while sustained throughput remains at `limit`.
     pub fn new(limit: u64, burst: u64, window_secs: u64) -> Self {
-        let capacity = (limit + burst) as f64;
+        // Both are operator-configured and only `limit == 0` is rejected at
+        // validate() time — an operator pairing a huge limit with a huge
+        // burst must not overflow (panic in debug, wrap to a tiny/zero
+        // capacity in release, which would then reject every request for
+        // that key).
+        let capacity = limit.saturating_add(burst) as f64;
         let refill_rate = limit as f64 / window_secs.max(1) as f64;
         Self {
             tokens: capacity,
@@ -251,6 +256,18 @@ mod tests {
         let mut b = TokenBucket::new(2, 3, 60);
         let allowed = (0..10).filter(|_| b.try_consume()).count();
         assert_eq!(allowed, 5, "capacity must equal limit + burst");
+    }
+
+    #[test]
+    fn new_saturates_instead_of_overflowing_on_huge_limit_and_burst() {
+        // Both operator-configured; validate() only rejects limit == 0, so a
+        // near-u64::MAX pair must not panic/wrap — it must saturate to the
+        // maximum representable capacity instead.
+        let b = TokenBucket::new(u64::MAX, u64::MAX, 60);
+        assert!(
+            b.capacity > 0.0,
+            "saturated capacity must stay positive, not wrap to 0"
+        );
     }
 
     // ── check_key / MAX_BUCKETS cap (issue #305) ───────────────────────────────
