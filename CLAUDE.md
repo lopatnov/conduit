@@ -222,17 +222,20 @@ Integrity-аудит (Step 1c цикла) и Dependabot/branch hygiene веду�
 > `python scripts/health.py --line`, размер `--no-default-features` из Footprint-отчёта PR и одно честное предложение
 > на вопрос «выбрал бы я этот проект для другого начала?» (подробности — Step 8 цикла).
 
-### Реализовано в сессии 2026-09-27 (часть 5 — #475: лишний `block_in_place` на каждый ответ; приоритеты)
-
-- **PR #485** (squash `6c5e20d`; #475 закрыт вручную). Владелец: «8 700 req/s — очень мало». Замер на его WSL2-стенде (5950X, `oha -c 50`, процессы на разных ядрах): по умолчанию один рабочий поток Pingora; access-log не влияет; 84k из `docs/benchmarks.md` не воспроизводится (минимальный Pingora ≈ 15k req/s на поток, TCP-relay ≈ 42k). Причина: цепочка ответа шла через `tokio::task::block_in_place` на каждый ответ (~30 µs CPU, 11–12 потоков при `workers: 1`). Фикс: `ResponseFilter::may_block()` (по умолчанию `true`), 7 header-фильтров объявляют `false`, фильтр middleware — `true`, если запись способна выполниться в фазе ответа (общий предикат `skipped_in_response_phase`). A/B (ABBA, по 6 прогонов): 1 воркер 9,2→11,2 тыс. req/s (+22%), CPU 120→90 µs; CI-отчёт +29,9%.
-- **Правило владельца: безопасность → скорость → удобство** (с 2026-10-03 пять уровней, см. `rules/workflow.md`); быстрый путь — явное объявление, безопасное — по умолчанию.
-- Инструменты: `scripts/bench/` (matrix/ab/probe/size/bloatdiff и два «пола»). Ревью безопасности: полный проход + 4 дельты тем же агентом через `SendMessage`, без HOLD.
-- Follow-ups: #486 (профилирование ~12 µs), #487 (перемер `docs/benchmarks.md`), #488 (аллокатор), #477 (флак Windows, чаще чем записано).
-- Полный текст — `.claude/logs/session-log.md`.
-
 ### Реализовано в сессии 2026-09-27 (часть 6 — #147/#492: `conduit-server` + `conduit-cli`; builder.rs разбит)
 
 - **PR #493** (squash `8c67287`; #147, #492 закрыты вручную). Извлечены `crates/conduit-server` (`run_server()`, supervisor Admin API, `POST /reload`, валидация, file/Kubernetes providers) и `crates/conduit-cli` (dispatch и все команды) по плану `architect`, поправившему текст issue (`clap` всё равно тянет `pingora-core`; `builder.rs` не переносится в одиночку). Порядок admin → server → cli → root; 10 фич зеркалятся на `conduit-server` (10 compile-time assert'ов в корне), `kubernetes` — на `conduit-cli`; 16 assert'ов `validate` остались в корне (`cfg!()` крейт-относителен). Багфиксы отдельными коммитами: фоновые задачи Admin API останавливаются на shutdown; конфиг из Kubernetes CRD валидируется при старте и на каждом live-обновлении (#492). 272 теста переехали под теми же именами.
 - **PR #495** (squash `970fe1d`): `server/builder.rs` (431 строка кода) разбит на `listeners.rs`, `config_watch.rs`, `acme_certs.rs`, `redis_bootstrap.rs` — чистое перемещение, `run_server` остаётся единственным внешним символом; `cargo hack --each-feature` на `conduit-server` чисто.
 - Находки: #494 (K8s live-update не вызывает `detect_cold_changes`), Redis-логи печатают сырой `redis://` URL. `cargo hack` на время работы мутирует все `Cargo.toml` — ждать завершения, не коммитить; GitHub не закрывает issue при merge в не-default ветку.
+- Полный текст — `.claude/logs/session-log.md`.
+
+### Реализовано в сессии 2026-10-03 (часть 7 — /retro: диета инструкций, RAG, пять приоритетов, #516 admin-фича; PR не открыты)
+
+- **Измерено:** production Rust +22% (16,4 → 20,0 тыс. строк), ×2 выросли файлы, документы и `.claude/` (298 → 820 КБ); в сессию грузилось 207 КБ инструкций. 12,84 MiB `--no-default-features`: пол — минимальный Pingora 7,64 MiB; наши крейты 1,1 MiB `.text`, конфиг всех фич ~0,7, CLI ~0,5, Admin API ~0,3; сжатие Pingora 0.9 (~0,7) безусловно (#516).
+- **Диета (#512):** авто-загружаемое 207 → **49 КБ**; `CLAUDE.md` 125,7 → 28,6 КБ; история — в `.claude/archive/` (не `docs/`: она английская), ничего не удалено (проверено построчно). Находка: `AGENTS.md`/`.agents/`/`.codex/` — устаревшие копии старых инструкций (v1.1.0), решение за владельцем.
+- **Правила:** 5 приоритетов (+ код-практики, RFC); «Found while here» в PR; «Research before building»; строка «Здоровье» в журнале (`scripts/health.py`); `crate-extractor` → `crate-steward` + skill `new-feature-crate` (#259).
+- **RAG (#513):** qdrant + LM Studio запущены владельцем; `scripts/rag/rag.py` (docs 1 414 точек за 333 с, issues, code, `.reference`).
+- **#516, срез 1:** Admin API — Cargo-фича `admin` (default-on); из `--no-default-features` уходят 15 крейтов (axum, hyper, tower…); `default`/`full` без изменений; warning + golden `[!admin]` + 11-й parity-assert.
+- **Ждёт владельца:** push/PR (две ветки), пилот для #258 (рекомендую `conduit-ratelimit`), остальные срезы #516, `AGENTS.md`.
+- **Здоровье:** 20 042 строки, 32 крейта, инструкции 49 КБ (ok), `--no-default-features` 12,84 MiB. Выбрал бы Conduit для другого проекта? **Нет, пока** (ACME не продлевается #491, no-op поля #489/#490, 84k не воспроизводится, RFC не измерено #514; зато ниша «платишь за скомпилированное» настоящая) — что сделать: #514, #516, #487.
 - Полный текст — `.claude/logs/session-log.md`.
