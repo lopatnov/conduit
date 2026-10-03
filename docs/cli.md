@@ -486,7 +486,7 @@ mandb
 
 | Variable                  | Default          | Description                                                                                                                                                                          |
 | ------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `RUST_LOG`                | `warn`           | Log level for the server process. Format: `error\|warn\|info\|debug\|trace` or per-crate: `conduit=debug,pingora=warn`                                                               |
+| `RUST_LOG`                | `warn`           | Log level for the server process. Format: `error\|warn\|info\|debug\|trace` or per-crate: `conduit=debug,pingora=warn` (the crates split out of `conduit` log under their own names, e.g. `conduit_runtime=debug`)                                                               |
 | `CONDUIT_ADMIN`           | `127.0.0.1:2019` | Admin API address used by `reload`, `status`, `shutdown`, and `upstreams` commands                                                                                                   |
 | `CONDUIT_ADMIN_TOKEN`     | —                | Bearer token sent with every Admin API request from the CLI. Set when the server has `global.admin.token` configured.                                                                |
 | `CONDUIT_ACME_EXTRA_ROOT` | —                | Path to a PEM CA file trusted for ACME HTTP client. For CI environments using test ACME servers (e.g. [Pebble](https://github.com/letsencrypt/pebble)) with self-signed certificates |
@@ -548,10 +548,10 @@ for the CRD schema and `kubectl apply` instructions.
 
 Conduit uses compile-time feature flags to keep the binary lean and the
 attack surface small. `cargo build --release` with no flags produces the
-**minimal build** (`default = []`): core reverse proxy, TLS, static files,
-rate limiting, basic/API-key auth, compression, hot-reload, Prometheus
-metrics, health checks, and the Admin API. It's the right choice for
-embedding Conduit in a larger system or for the smallest footprint.
+**minimal build** (`default = ["proxy", "compression", "static", "hotreload"]`): core reverse proxy, TLS,
+static files, rate limiting, basic/API-key auth, compression, hot-reload,
+Prometheus metrics, health checks, and the Admin API. It's the right choice
+for embedding Conduit in a larger system or for the smallest footprint.
 
 The binaries and Docker images **published as "standard"** (the un-suffixed
 `conduit-<target>` downloads and the `:latest` image — see
@@ -560,8 +560,12 @@ that: `jwt` + `consumers` + `forward-auth` + `cache` + `acme`, the auth/cache/
 auto-TLS stack most self-hosted reverse-proxy / API-gateway deployments need.
 Reproduce it from source with `--features standard`.
 
+`--no-default-features` goes the other way and compiles reverse proxying itself
+out — see [Building without `proxy`](building.md#building-without-proxy) for the
+exact effect, including which config shapes change meaning.
+
 ```bash
-# Minimal build (default = []) — embed-friendly, smallest footprint
+# Minimal build (default = ["proxy", "compression", "static", "hotreload"]) — embed-friendly, smallest footprint
 cargo build --release
 
 # Standard build — matches the published "conduit-<target>" binaries
@@ -591,14 +595,16 @@ cargo build --release --features "jwt,rhai,redis"
 | `tcp`             | TCP passthrough proxy (`type: "tcp"` site)          | —                       |
 | `upload`          | File upload handler (`upload:` site config)         | `multer`                |
 | `redis`           | Redis-backed rate limiting & caching                | `redis`                 |
-| `cache`           | Response caching (`proxy.*.cache`)                  | —                       |
+| `cache`           | Response caching (`proxy.*.cache`); implies `proxy` | —                       |
 | `disk-cache`      | Disk-backed cache store (`cache.store: "disk:/…"`)  | —                       |
 | `acme`            | Auto-TLS / Let's Encrypt (`tls.acme`)               | `instant-acme`, `rcgen` |
 | `fault-injection` | Fault injection for chaos testing                   | —                       |
 | `otlp`            | OpenTelemetry OTLP tracing                          | `opentelemetry` stack   |
 | `kubernetes`      | Kubernetes CRD config provider                      | `kube`, `k8s-openapi`   |
 | `standard`        | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` (typical self-hosted reverse-proxy / API-gateway set) — used by the published "standard" binaries/images | bundle, no extra deps of its own |
-| `full`            | All of the above                                    | all of the above        |
+| `static-server`   | Bundle for `--no-default-features` builds: `static` + `compression` + `hotreload` (the default set minus `proxy`) | bundle, no extra deps of its own |
+| `gateway`         | Bundle for `--no-default-features` builds: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `acme` + `compression` (the `standard` set without static files and hot-reload) | bundle, no extra deps of its own |
+| `full`            | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) | all of the above        |
 
 When a feature is off but its config field is set, Conduit logs a warning at
 startup and continues with that feature disabled (fail-open, no crash).

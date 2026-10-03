@@ -1,0 +1,36 @@
+[package]
+name        = "lopatnov-conduit-plugin-wasm"
+version.workspace    = true
+edition.workspace    = true
+# Overrides the workspace default (1.89): wasmtime 48 (this crate's own reason
+# to exist) needs 1.95. Every other member/root inherits 1.89 via
+# `rust-version.workspace = true` — see issue #114/#148.
+rust-version = "1.95"
+description = "WASM plugin middleware backend for conduit's feature-driven workspace (issue #114/#141)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_plugin_wasm"
+path = "src/lib.rs"
+
+[dependencies]
+# No [features] table at all — unlike most sibling extractions, this crate's
+# entire reason to exist IS the "wasm" feature: whether it's compiled into
+# the dependency graph at all is controlled from conduit-middleware's own
+# Cargo.toml (`wasm = ["dep:lopatnov-conduit-plugin-wasm", ...]`), not from a
+# feature table here. So every dependency below is mandatory. No
+# `lopatnov-conduit-core` dependency either — this crate implements no chain
+# trait (`RequestFilter`/`ResponseFilter`); it takes only primitives
+# (`WasmRequest`/`WasmResponseContext` are plain structs) and hands back
+# outcome enums for conduit-middleware's guard/response-filter to interpret
+# (see CONTRIBUTING.md's "conduit-core dependency is opt-in, not automatic").
+wasmtime = { workspace = true }
+bytes    = { workspace = true }
+dashmap  = { workspace = true }
+anyhow   = { workspace = true }
+tracing  = { workspace = true }
+
+[dev-dependencies]
+wat      = { workspace = true }
+tempfile = { workspace = true }

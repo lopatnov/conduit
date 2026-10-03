@@ -214,7 +214,7 @@ fn probe_proxy(
 /// connect is accepted as a proxy-readiness signal in [`probe_proxy`].
 /// `clientAuth.optional` defaults to `false` when `clientAuth` is present at
 /// all but the field is omitted, matching `TlsClientAuth`'s own
-/// `#[serde(default)]` in `src/config/schema.rs`.
+/// `#[serde(default)]` in `src/config/schema/tls.rs`.
 fn requires_mtls(config: &serde_json::Value) -> bool {
     let sites = match config.get("sites").and_then(|s| s.as_array()) {
         Some(sites) => sites.as_slice(),

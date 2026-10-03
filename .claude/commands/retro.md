@@ -12,7 +12,7 @@ would have prevented or made faster?"*
 ## What to look for
 
 Scan back over this session's conversation (and, if relevant, recent entries in `CLAUDE.md`'s
-own session logs) for:
+"Журнал сессий" section, or older ones in `.claude/logs/session-log.md`) for:
 
 - **Repeated manual workarounds** — anything you had to figure out by trial and error that a
   documented rule/skill would have given you immediately (e.g. discovering `git push` doesn't

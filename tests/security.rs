@@ -223,6 +223,7 @@ fn static_dotfile_hidden_by_default() {
 
 /// CRLF sequences injected by the upstream must be stripped before they reach
 /// the client (ResponseFilterChain Phase 1: CrlfProtectionFilter).
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn crlf_in_upstream_header_is_stripped() {
@@ -328,6 +329,7 @@ fn rate_limiter_bucket_cap_prevents_memory_exhaustion() {
 
 /// When `maskErrors: true`, upstream 5xx responses have their body replaced
 /// with a generic JSON error — the upstream's internal error details are hidden.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn mask_errors_hides_upstream_5xx_body() {
@@ -381,6 +383,7 @@ fn mask_errors_hides_upstream_5xx_body() {
     );
 }
 
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn mask_errors_false_passes_upstream_body_through() {
@@ -431,6 +434,7 @@ fn mask_errors_false_passes_upstream_body_through() {
 
 /// When inflight requests are within the normal range, all routes are served
 /// regardless of priority.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn priority_routing_below_threshold_serves_all() {
@@ -466,6 +470,7 @@ fn priority_routing_below_threshold_serves_all() {
 }
 
 /// Low-priority routes are shed with 503 when inflight >= threshold * max.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn priority_routing_above_threshold_sheds_low_priority() {
@@ -567,6 +572,7 @@ fn max_request_headers_boundary_is_exact() {
 
 /// A client sending X-Priority: 100 must not bypass load shedding.
 /// The header must be stripped before the priority check.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn x_priority_header_from_client_does_not_bypass_load_shedding() {
@@ -610,6 +616,7 @@ fn x_priority_header_from_client_does_not_bypass_load_shedding() {
 }
 
 /// X-Priority must be stripped from the request before forwarding to upstream.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn x_priority_header_stripped_before_upstream() {
@@ -737,6 +744,7 @@ fn allowed_hosts_rejects_bad_host() {
 }
 
 /// When `allowedHosts` is configured, requests with an allowed Host pass through.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn allowed_hosts_passes_good_host() {
@@ -808,6 +816,7 @@ fn default_allowed_hosts_rejects_mismatched_host() {
 
 /// The default-fallback allowlist above must not break normal traffic:
 /// a request whose Host matches the site's configured `host:` passes through.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn default_allowed_hosts_passes_matching_host() {
@@ -845,6 +854,7 @@ fn default_allowed_hosts_passes_matching_host() {
 /// Clients that use chunked transfer encoding (no Content-Length) must not
 /// bypass `maxBodyBytes`.  Previously only the declared Content-Length was
 /// checked; actual body bytes were not enforced.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn max_body_bytes_enforced_without_content_length() {
@@ -941,6 +951,7 @@ fn max_body_bytes_enforced_without_content_length() {
 
 /// Responses to requests with an Authorization header must NEVER be served
 /// from cache — they are user-specific and would leak to other users.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn cache_does_not_serve_authorized_responses() {
@@ -1020,6 +1031,7 @@ fn cache_does_not_serve_authorized_responses() {
 
 /// POST requests must NOT be retried on 5xx to prevent double-mutations
 /// (double charges, duplicate emails, etc.).
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn post_requests_are_not_retried_on_5xx() {
@@ -1082,6 +1094,7 @@ fn post_requests_are_not_retried_on_5xx() {
 }
 
 /// GET requests ARE retried on 5xx (safe, idempotent method).
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn get_requests_are_retried_on_5xx() {
@@ -1146,6 +1159,7 @@ fn get_requests_are_retried_on_5xx() {
 
 /// With `burst` configured, clients can exceed the window rate briefly.
 /// Note: health/ACME endpoints bypass rate-limiting guards; use a proxied path.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn rate_limit_burst_allows_burst_requests() {
@@ -1192,6 +1206,7 @@ fn rate_limit_burst_allows_burst_requests() {
 /// requests through — mirrors `ip_filter_dry_run_logs_but_allows` in
 /// tests/ip_filter.rs. Found uncovered by the 2026-08-30 Step 1c integrity
 /// audit of rate_limit.rs.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn rate_limit_dry_run_logs_but_allows() {
@@ -1229,6 +1244,7 @@ fn rate_limit_dry_run_logs_but_allows() {
 
 /// Sanity check for the test above: with the same limit and `dryRun` absent
 /// (enforcement active), requests past the limit must actually 429.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 fn rate_limit_dry_run_false_still_enforces() {

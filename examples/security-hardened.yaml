@@ -29,8 +29,8 @@ sites:
       key:  /etc/tls/server.key
       # Redirect plain HTTP to HTTPS.
       httpRedirectPort: 80
-      # NOTE: tls.versions/tls.ciphers are NOT enforced (issue #189) — Pingora
-      # 0.8's rustls backend gives Conduit no API to restrict protocol
+      # NOTE: tls.versions/tls.ciphers are NOT enforced (issue #189) — Pingora's
+      # rustls backend gives Conduit no API to restrict protocol
       # versions or cipher suites (both TLS 1.2 and 1.3 are always enabled
       # with the default rustls suite set, regardless of config). Setting
       # either field is now a hard validation error rather than a silent
