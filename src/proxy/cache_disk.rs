@@ -509,4 +509,56 @@ mod tests {
             "different cache keys must produce different hashes"
         );
     }
+
+    #[tokio::test]
+    async fn purge_removes_existing_entry() {
+        let dir = TempDir::new().unwrap();
+        let storage: &'static DiskCacheStorage = Box::leak(Box::new(DiskCacheStorage::new(
+            dir.path().to_str().unwrap(),
+        )));
+        let key = CacheKey::new("purge-test.example\0https:/path", "");
+        let hash = DiskCacheStorage::hash(&key);
+        let path = storage.entry_path(&hash);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"dummy").unwrap();
+
+        let compact = key.to_compact();
+        let span = pingora_cache::trace::Span::inactive();
+        let outcome = storage
+            .purge(
+                PurgeTarget::Active(&compact),
+                PurgeType::Invalidation,
+                &span.handle(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, PurgeOutcome::Purged(_)),
+            "expected Purged, got {outcome:?}"
+        );
+        assert!(!path.exists(), "entry file should be removed after purge");
+    }
+
+    #[tokio::test]
+    async fn purge_missing_entry_returns_not_found() {
+        let dir = TempDir::new().unwrap();
+        let storage: &'static DiskCacheStorage = Box::leak(Box::new(DiskCacheStorage::new(
+            dir.path().to_str().unwrap(),
+        )));
+        let key = CacheKey::new("purge-missing.example\0https:/nope", "");
+        let compact = key.to_compact();
+        let span = pingora_cache::trace::Span::inactive();
+        let outcome = storage
+            .purge(
+                PurgeTarget::Active(&compact),
+                PurgeType::Invalidation,
+                &span.handle(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, PurgeOutcome::NotFound),
+            "expected NotFound for a never-written entry, got {outcome:?}"
+        );
+    }
 }
