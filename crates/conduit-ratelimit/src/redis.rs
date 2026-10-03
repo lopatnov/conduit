@@ -67,7 +67,7 @@ use redis::aio::ConnectionManager;
 
 use crate::bucket::{check_key, TokenBucket};
 
-// ── RedisRateLimiter ──────────────────────────────────────────────────────────
+// ── RedisRateLimiter ────────────────────────────────────────────────────────
 
 /// Redis-backed rate limiter with in-memory fallback.
 ///
@@ -117,7 +117,13 @@ impl RedisRateLimiter {
     /// default) reproduces the exact pre-#306 behavior.
     ///
     /// On Redis error or timeout the check falls back to the in-process
-    /// `TokenBucket` and a `WARN` trace is emitted (fail-open).
+    /// `TokenBucket` and a `WARN` trace is emitted (fail-open) *except* when
+    /// the shared `MAX_BUCKETS` cap on that fallback map has already been
+    /// reached — the capped admission point (`bucket::check_key`, issue
+    /// #305) then denies the request instead, so an operator relying on the
+    /// doc comment's "fail-open" claim mid-incident isn't misled: under a
+    /// Redis outage with enough distinct keys to fill the fallback map, new
+    /// keys past the cap are genuinely rejected, not admitted.
     pub async fn check(
         &self,
         scope_label: &str,
@@ -246,7 +252,7 @@ fn fallback_check_impl(
     check_key(fallback, &key, limit, burst, window_secs)
 }
 
-// ── Redis helper ──────────────────────────────────────────────────────────────
+// ── Redis helper ──────────────────────────────────────────────────────────
 
 /// Fixed-window counter check using a single atomic Lua script.
 ///
@@ -331,7 +337,7 @@ mod tests {
         assert!(result.is_err(), "connection to port 1 must fail");
     }
 
-    // ── build_redis_key (issue #350 regression coverage) ────────────────
+    // ── build_redis_key (issue #350 regression coverage) ───────────
 
     #[test]
     fn build_redis_key_disambiguates_a_verified_real_collision() {
@@ -360,7 +366,7 @@ mod tests {
         );
     }
 
-    // ── build_fallback_key (issue #384 regression coverage) ─────────────
+    // ── build_fallback_key (issue #384 regression coverage) ─────────
 
     #[test]
     fn build_fallback_key_disambiguates_a_verified_real_collision() {
@@ -426,7 +432,7 @@ mod tests {
         ));
     }
 
-    // ── fallback_check_impl (issue #317 regression coverage) ────────────
+    // ── fallback_check_impl (issue #317 regression coverage) ────────
 
     #[test]
     fn fallback_check_scopes_by_scope_label() {
@@ -462,7 +468,7 @@ mod tests {
         );
     }
 
-    // ── burst threading (issue #306 regression coverage) ────────────────
+    // ── burst threading (issue #306 regression coverage) ─────────
 
     #[test]
     fn fallback_check_burst_allows_extra_requests_above_limit() {

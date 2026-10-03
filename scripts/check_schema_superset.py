@@ -122,7 +122,11 @@ def extract_fields(body_lines: list[str], rename_all: str | None) -> set[str] | 
                 in_attr = False
             continue
         if stripped.startswith("#["):
-            pending_attr = line
+            # Accumulate every attribute line above the field, rather than
+            # overwriting on each new `#[...]` — a field can carry more than
+            # one attribute (e.g. `#[serde(skip)]` followed by
+            # `#[allow(dead_code)]`), and overwriting drops the serde one.
+            pending_attr = pending_attr + "\n" + line if pending_attr else line
             if not (stripped.endswith(")]") or stripped.endswith("]") and stripped.count("[") == stripped.count("]")):
                 in_attr = True
             continue
@@ -130,7 +134,18 @@ def extract_fields(body_lines: list[str], rename_all: str | None) -> set[str] | 
         if m:
             field_name = m.group(1)
             if "serde" in pending_attr:
-                if re.search(r"\bskip\b", pending_attr) and "skip_serializing_if" not in pending_attr:
+                # `skip` and `skip_deserializing` both mean the field is
+                # never populated from a deserialized config, so neither is
+                # schema-required. `\bskip\b` alone doesn't match
+                # `skip_deserializing` (no word boundary before the `_`),
+                # so match it explicitly. `skip_serializing_if` is a
+                # different attribute (skips serialization under a
+                # condition, not deserialization) and must NOT be treated
+                # as a skip here.
+                if (
+                    re.search(r"\bskip(_deserializing)?\b", pending_attr)
+                    and "skip_serializing_if" not in pending_attr
+                ):
                     pending_attr = ""
                     continue
                 if "flatten" in pending_attr:

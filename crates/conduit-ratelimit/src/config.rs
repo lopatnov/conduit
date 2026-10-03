@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 /// (`sites[].rateLimit`), route level (`proxy.*.routes[].rateLimit`), and
 /// consumer level (`consumers.consumers[].rateLimit`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RateLimitConfig {
     pub window_secs: u64,
     pub limit: u64,
@@ -45,4 +45,37 @@ pub struct RateLimitConfig {
     /// Default: `false` (enforcement active).
     #[serde(rename = "dryRun", skip_serializing_if = "Option::is_none")]
     pub dry_run: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A known field still deserializes fine — the positive control for
+    /// `unknown_field_is_rejected` below (confirms the test fixture itself
+    /// is a valid `RateLimitConfig`, not just that any input is rejected).
+    #[test]
+    fn known_fields_deserialize() {
+        let json = r#"{"windowSecs": 60, "limit": 10, "dryRun": true}"#;
+        let cfg: RateLimitConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.window_secs, 60);
+        assert_eq!(cfg.limit, 10);
+        assert_eq!(cfg.dry_run, Some(true));
+    }
+
+    /// Issue found on PR #152 review: without `deny_unknown_fields`, a typo'd
+    /// or misplaced field (e.g. `dryRun` accidentally nested one level too
+    /// deep, or a config author expecting a field this struct doesn't have)
+    /// was silently accepted and ignored — the rate limit still enforced
+    /// (429s) with no indication the extra field did nothing. Now it's a
+    /// hard parse error instead of a silent no-op.
+    #[test]
+    fn unknown_field_is_rejected() {
+        let json = r#"{"windowSecs": 60, "limit": 10, "unknownField": "oops"}"#;
+        let err = serde_json::from_str::<RateLimitConfig>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("unknownField") || err.to_string().contains("unknown field"),
+            "expected an unknown-field error, got: {err}"
+        );
+    }
 }

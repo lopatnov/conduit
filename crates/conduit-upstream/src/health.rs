@@ -424,6 +424,11 @@ impl UpstreamRegistry {
     pub fn conn_dec(&self, url: &str) {
         if let Some(c) = self.conn_count.get(url) {
             // fetch_update lets us implement saturating decrement atomically.
+            // It's deprecated in favor of try_update on current stable rustc, but
+            // try_update was only stabilized well after this project's declared
+            // rust-version (1.89) -- keep the MSRV-compatible API and silence the
+            // deprecation warning explicitly rather than breaking older toolchains.
+            #[allow(deprecated)]
             let _ = c.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 Some(n.saturating_sub(1))
             });

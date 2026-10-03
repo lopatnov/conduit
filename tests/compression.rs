@@ -32,7 +32,7 @@ fn compression_server(
     (srv, port, admin_port)
 }
 
-// ── gzip ──────────────────────────────────────────────────────────────────
+// ── gzip ───────────────────────────────────────────────
 
 #[test]
 #[serial]
@@ -93,7 +93,7 @@ fn gzip_body_starts_with_magic_bytes() {
     );
 }
 
-// ── brotli ────────────────────────────────────────────────────────────────
+// ── brotli ──────────────────────────────────────────────
 
 #[test]
 #[serial]
@@ -116,7 +116,7 @@ fn brotli_preferred_when_both_accepted() {
     assert_eq!(ce, "br", "brotli should be preferred over gzip");
 }
 
-// ── no compression ────────────────────────────────────────────────────────
+// ── no compression ───────────────────────────────────────
 
 #[test]
 #[serial]
@@ -177,7 +177,7 @@ fn no_compression_below_min_bytes() {
     );
 }
 
-// ── custom options ────────────────────────────────────────────────────────
+// ── custom options ──────────────────────────────────────────
 
 #[test]
 #[serial]
@@ -266,32 +266,73 @@ fn metrics_response_compressed_when_accepted() {
 fn metrics_response_respects_default_min_bytes_threshold() {
     // Documents the resolved behavior for issue #338's open question: the
     // default 1024-byte minBytes threshold applies to metrics exactly like
-    // everywhere else — no metrics-specific carve-out. Measure the real
-    // uncompressed size first (a plain request, no Accept-Encoding) so this
-    // doesn't guess at how large a freshly-started server's exposition is.
+    // everywhere else — no metrics-specific carve-out.
+    //
+    // Prometheus counters (e.g. request totals) grow with every single
+    // request, including the plain measurement request itself — so a single
+    // "measure uncompressed size, then separately request compressed" pair
+    // is flaky by construction: the exposition can be a few bytes larger by
+    // the time the second request lands, which can flip which side of the
+    // 1024-byte boundary it's on if the first measurement landed close to
+    // it. Bracket the compressed request between two plain (uncompressed)
+    // measurements instead — since the exposition only ever grows, the real
+    // size at compressed-request time is somewhere between `before` and
+    // `after`. When both land on the same side of the threshold, that's
+    // proof enough of which side the compressed request's real size was on
+    // too; on the rare chance they straddle it (the growth happened to
+    // cross exactly 1024 between calls), retry rather than assert on an
+    // ambiguous measurement.
     let srv = metrics_compression_server(serde_json::json!(true));
     let client = reqwest::blocking::Client::new();
 
-    let plain = client.get(srv.url("/__metrics__")).send().expect("send");
-    let uncompressed_len = plain.bytes().expect("bytes").len();
+    for attempt in 0..5 {
+        let before_len = client
+            .get(srv.url("/__metrics__"))
+            .send()
+            .expect("send")
+            .bytes()
+            .expect("bytes")
+            .len();
 
-    let resp = client
-        .get(srv.url("/__metrics__"))
-        .header("Accept-Encoding", "gzip")
-        .send()
-        .expect("send");
-    assert_eq!(resp.status(), 200);
-    let compressed = resp.headers().get("content-encoding").is_some();
+        let resp = client
+            .get(srv.url("/__metrics__"))
+            .header("Accept-Encoding", "gzip")
+            .send()
+            .expect("send");
+        assert_eq!(resp.status(), 200);
+        let compressed = resp.headers().get("content-encoding").is_some();
 
-    assert_eq!(
-        compressed,
-        uncompressed_len >= 1024,
-        "compression should trigger iff the real exposition ({uncompressed_len} bytes) \
-         is at/above the default 1024-byte minBytes threshold"
-    );
+        let after_len = client
+            .get(srv.url("/__metrics__"))
+            .send()
+            .expect("send")
+            .bytes()
+            .expect("bytes")
+            .len();
+
+        let both_below = after_len < 1024; // monotonic growth: before <= after
+        let both_at_or_above = before_len >= 1024;
+        if !both_below && !both_at_or_above {
+            // Straddles the boundary — the compressed request's real size is
+            // ambiguous from this bracket. Retry for a clean measurement.
+            assert!(
+                attempt < 4,
+                "exposition size kept straddling the 1024-byte boundary across 5 attempts"
+            );
+            continue;
+        }
+
+        assert_eq!(
+            compressed, both_at_or_above,
+            "compression should trigger iff the real exposition (bracketed between \
+             {before_len} and {after_len} bytes) is at/above the default 1024-byte \
+             minBytes threshold"
+        );
+        return;
+    }
 }
 
-// ── fallback body (issue #338) ──────────────────────────────────────────────
+// ── fallback body (issue #338) ──────────────────────────────
 
 fn fallback_compression_server(
     fallback: serde_json::Value,

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.file_path // empty' | { read -r f; case \"$f\" in *.rs) root=$(git -C \"$(dirname \"$f\")\" rev-parse --show-toplevel 2>/dev/null) && cd \"$root\" && cargo fmt;; esac; } 2>/dev/null || true",
+            "command": "jq -r '.tool_input.file_path // empty' | { read -r f; case \"$f\" in *.rs) root=$(git -C \"$(dirname \"$f\")\" rev-parse --show-toplevel 2>/dev/null) && cd \"$root\" && cargo fmt --all;; esac; }",
             "statusMessage": "Running cargo fmt"
           }
         ]

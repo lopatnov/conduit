@@ -319,6 +319,19 @@ async fn stream_field_to_file(
         file_bytes += chunk.len() as u64;
     }
 
+    // tokio::fs::File offloads writes to a blocking-pool task; write_all
+    // returning does not guarantee the last write actually landed. Flush
+    // and await it before reporting success, or the final chunk can be
+    // lost if the process shuts down before that background task runs.
+    tokio::io::AsyncWriteExt::flush(&mut file)
+        .await
+        .map_err(|e| {
+            err_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("flush error: {e}"),
+            )
+        })?;
+
     *total_bytes += file_bytes;
     Ok(file_bytes)
 }

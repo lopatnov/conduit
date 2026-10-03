@@ -3244,6 +3244,7 @@ dependencies = [
  "lopatnov-conduit-config-core",
  "redis",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]

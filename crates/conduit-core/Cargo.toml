@@ -21,6 +21,8 @@ bytes         = { workspace = true }
 # root crate's always-on Basic Auth / API-key guards and
 # crates/conduit-auth-consumers' consumer-credential checks (#114/#134).
 subtle        = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
 # O_NOFOLLOW for atomic symlink-safe log file open (Unix) — issue #280.
 libc          = { workspace = true }
 

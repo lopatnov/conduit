@@ -48,9 +48,11 @@ alongside the Dependabot hygiene check. Two independent passes — run whichever
    **Do not reach for `sudo`** (see "Commands needing a password/interactive auth" in
    `.claude/rules/index.md`) — Docker itself already runs as root, so a second throwaway
    container can delete what the first one wrote, with no host password needed:
+
    ```bash
    wsl -e bash -lc "docker run --rm -v <parent-dir>:/verify busybox sh -c 'rm -rf /verify/<subpath>'"
    ```
+
    Mount the *parent* of the directory you're deleting, not the directory itself — removing
    the bind-mount point itself fails with "Device or resource busy."
 3. **Docker images/containers**: `docker ps -a` / `docker images` / `docker system df` (via

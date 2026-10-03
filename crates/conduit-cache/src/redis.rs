@@ -174,6 +174,12 @@ impl Storage for RedisCacheStorage {
         match result {
             Ok((Some(m0), Some(m1), Some(body))) => match CacheMeta::deserialize(&m0, &m1) {
                 Ok(meta) => {
+                    // Evict if stale — a plain HMGET hit must not serve a
+                    // response whose freshness window has already passed
+                    // (matches the disk storage's lookup() check).
+                    if meta.fresh_until() <= SystemTime::now() {
+                        return Ok(None);
+                    }
                     let handler = Box::new(SimpleHitHandler::new(Bytes::from(body))) as HitHandler;
                     Ok(Some((meta, handler)))
                 }
@@ -196,10 +202,15 @@ impl Storage for RedisCacheStorage {
         meta: &CacheMeta,
         _trace: &SpanHandle,
     ) -> PingoraResult<MissHandler> {
+        // An already-past fresh_until means duration_since fails — floor at
+        // zero (not a 60s fallback, which used to hand an already-stale
+        // entry a 60s TTL floor) and bump to at least 1s so EXPIRE never
+        // sees 0 (which Redis treats as "expire immediately", silently
+        // discarding the entry we're about to write).
         let ttl = meta
             .fresh_until()
             .duration_since(SystemTime::now())
-            .unwrap_or(Duration::from_secs(60))
+            .unwrap_or(Duration::ZERO)
             .as_secs()
             .max(1);
 
@@ -249,17 +260,29 @@ impl Storage for RedisCacheStorage {
             .serialize()
             .map_err(|e| Error::because(ErrorType::InternalError, "cache meta serialize", e))?;
 
-        let res: redis::RedisResult<()> = redis::cmd("HMSET")
-            .arg(&redis_key)
-            .arg("m0")
-            .arg(m0)
-            .arg("m1")
-            .arg(m1)
-            .query_async(&mut conn)
-            .await;
+        // Only update m0/m1 on a key that already exists — a plain HSET
+        // would silently (re-)create a hash missing the "b" (body) field
+        // that `lookup` requires, left behind with no TTL. The existence
+        // check and the write must be atomic (a separate EXISTS followed by
+        // HSET still race against the key expiring in between), so this
+        // runs as a single Lua script — Redis executes scripts atomically.
+        let res: redis::RedisResult<bool> = redis::Script::new(
+            r"
+            if redis.call('EXISTS', KEYS[1]) == 1 then
+                redis.call('HSET', KEYS[1], 'm0', ARGV[1], 'm1', ARGV[2])
+                return 1
+            end
+            return 0
+            ",
+        )
+        .key(&redis_key)
+        .arg(m0)
+        .arg(m1)
+        .invoke_async(&mut conn)
+        .await;
 
         match res {
-            Ok(_) => Ok(true),
+            Ok(updated) => Ok(updated),
             Err(e) => {
                 tracing::warn!(key = %redis_key, "Redis cache update_meta error: {e}");
                 Ok(false)
@@ -294,8 +317,12 @@ impl HandleMiss for RedisMissHandler {
         let size = self.body.len();
         let mut conn = self.conn.clone();
 
-        // HSET + EXPIRE as a pipeline for atomicity and efficiency.
+        // HSET + EXPIRE as an atomic (MULTI/EXEC) pipeline — .atomic() makes
+        // the doc comment's existing "atomically" claim actually true (was a
+        // bare pipe() before, which batches commands but does not wrap them
+        // in MULTI/EXEC).
         let res: redis::RedisResult<()> = redis::pipe()
+            .atomic()
             .cmd("HSET")
             .arg(&self.redis_key)
             .arg("m0")

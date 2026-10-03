@@ -7,7 +7,7 @@ use reqwest::blocking::Client;
 #[cfg(feature = "jwt")]
 use serde_json::json;
 
-// ── helpers ────────────────────────────────────────────────────────────
+// ── helpers ────────────────────────────────────────
 
 fn plain_client() -> Client {
     Client::new()
@@ -19,7 +19,7 @@ fn basic_header(user: &str, pass: &str) -> String {
     format!("Basic {encoded}")
 }
 
-// ── Basic Auth tests ──────────────────────────────────────────────────────────
+// ── Basic Auth tests ────────────────────────────────────────────────
 
 fn server_with_basic_auth() -> common::TestServer {
     let port = common::free_port();
@@ -163,7 +163,7 @@ fn basic_auth_no_challenge_flag() {
     );
 }
 
-// ── API key tests ──────────────────────────────────────────────────────────────
+// ── API key tests ───────────────────────────────────────────
 
 fn server_with_api_key() -> common::TestServer {
     let port = common::free_port();
@@ -239,7 +239,7 @@ fn api_key_skip_path_bypasses_auth() {
     assert_eq!(resp.status().as_u16(), 200);
 }
 
-// ── Rate limiting tests ─────────────────────────────────────────────────────────
+// ── Rate limiting tests ────────────────────────────────────────
 
 fn server_with_rate_limit(limit: u64, window_secs: u64) -> common::TestServer {
     let port = common::free_port();
@@ -331,7 +331,7 @@ fn rate_limit_health_always_passes_at_handler_level() {
     }
 }
 
-// ── Combined: Basic Auth + Rate Limit ──────────────────────────────────
+// ── Combined: Basic Auth + Rate Limit ────────────────────────
 
 #[test]
 fn basic_auth_and_rate_limit_combined() {
@@ -389,7 +389,7 @@ fn basic_auth_and_rate_limit_combined() {
     assert_eq!(r_limited.status().as_u16(), 429);
 }
 
-// ── Rate limit keyBy: "header:..." ──────────────────────────────
+// ── Rate limit keyBy: "header:..." ────────────────────────
 
 #[test]
 fn rate_limit_key_by_header_separate_clients_have_independent_buckets() {
@@ -496,7 +496,7 @@ fn rate_limit_key_by_header_missing_header_falls_back_to_shared_bucket() {
     );
 }
 
-// ── JWT helpers (used by JWT and Consumer JWT tests) ───────────────────────
+// ── JWT helpers (used by JWT and Consumer JWT tests) ─────────────────
 // These live outside any mod so both jwt and consumers_tests can access them.
 #[cfg(feature = "jwt")]
 fn jwt_secret() -> &'static str {
@@ -516,7 +516,7 @@ fn make_jwt(secret: &str, exp_offset_secs: i64) -> String {
     encode(&Header::new(Algorithm::HS256), &claims, &key).unwrap()
 }
 
-// ── JWT Auth tests (require --features jwt) ──────────────────────────────
+// ── JWT Auth tests (require --features jwt) ─────────────────────
 #[cfg(feature = "jwt")]
 mod jwt {
     use super::*;
@@ -689,7 +689,7 @@ mod jwt {
         );
     }
 
-    // ── Per-route rate limit tests ─────────────────────────────────────
+    // ── Per-route rate limit tests ─────────────────────
 
     fn server_with_per_route_rate_limit() -> common::TestServer {
         use std::io::{Read, Write};
@@ -877,7 +877,7 @@ mod jwt {
         );
     }
 
-    // ── JWKS / RS256 / ES256 end-to-end (issue #164) ────────────────────────
+    // ── JWKS / RS256 / ES256 end-to-end (issue #164) ──────────────────
     //
     // RSA-2048 / P-256 test key material is generated fresh at test-run
     // time (not embedded as static PEM literals) — matches the `rcgen`
@@ -1103,7 +1103,7 @@ mod jwt {
     }
 } // mod jwt
 
-// ── Consumer model tests (require --features consumers) ──────────────────────────
+// ── Consumer model tests (require --features consumers) ──────────────────
 #[cfg(feature = "consumers")]
 mod consumers_tests {
     use super::*;
@@ -1499,17 +1499,25 @@ mod consumers_tests {
             }),
         );
 
-        // Exhaust the limit=1 budget on a non-exempt path.
-        plain_client()
-            .get(srv.url("/"))
-            .header("x-api-key", "limited-key")
-            .send()
-            .ok();
+        // Exhaust the limit=1 budget on a non-exempt path. Assert the first
+        // request actually passed through (not 429) — otherwise the second
+        // request's 429 could be coincidental (e.g. the first never reached
+        // the rate limiter at all) instead of proof the budget was consumed.
         let resp = plain_client()
             .get(srv.url("/"))
             .header("x-api-key", "limited-key")
             .send()
-            .expect("GET /");
+            .expect("GET / (1st)");
+        assert_ne!(
+            resp.status().as_u16(),
+            429,
+            "1st request must pass — it's within the limit=1 budget"
+        );
+        let resp = plain_client()
+            .get(srv.url("/"))
+            .header("x-api-key", "limited-key")
+            .send()
+            .expect("GET / (2nd)");
         assert_eq!(resp.status().as_u16(), 429, "budget must be exhausted");
 
         // The exempt path must still pass, even with the budget exhausted.
@@ -1548,18 +1556,26 @@ mod consumers_tests {
             }),
         );
 
-        // Exhaust the limit=1 budget.
-        plain_client()
+        // Exhaust the limit=1 budget. Assert the 1st request passed through
+        // too — otherwise a dropped/never-counted 1st request would make the
+        // 2nd request's pass-through prove nothing about dryRun at all (it
+        // would trivially stay under budget on its own).
+        let resp = plain_client()
             .get(srv.url("/"))
             .header("x-api-key", "limited-key")
             .send()
-            .ok();
+            .expect("GET / (1st)");
+        assert_ne!(
+            resp.status().as_u16(),
+            429,
+            "1st request must pass — it's within the limit=1 budget"
+        );
         // With dryRun, the 2nd request must still pass through (not 429).
         let resp = plain_client()
             .get(srv.url("/"))
             .header("x-api-key", "limited-key")
             .send()
-            .expect("GET /");
+            .expect("GET / (2nd)");
         assert_ne!(
             resp.status().as_u16(),
             429,
@@ -1567,7 +1583,7 @@ mod consumers_tests {
         );
     }
 
-    // ── Consumer JWT V2 tests (also require --features jwt) ──────────────────────────
+    // ── Consumer JWT V2 tests (also require --features jwt) ──────────────────
     // These tests use JWT tokens and require both consumers AND jwt features.
 
     #[cfg(feature = "jwt")]
@@ -1725,7 +1741,7 @@ mod consumers_tests {
         );
     }
 
-    // ── Consumer sharedJwt V3 tests (also require --features jwt) ────────────────
+    // ── Consumer sharedJwt V3 tests (also require --features jwt) ──────────────
 
     #[cfg(feature = "jwt")]
     fn server_with_shared_jwt(secret: &str) -> common::TestServer {
