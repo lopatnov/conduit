@@ -247,7 +247,7 @@ the root `Cargo.toml` via `<field>.workspace = true`.
   and guard ordering stay in the root crate's `src/filter/chain.rs`
   (`CLAUDE.md` decision #20).
 
-- **`conduit-tcp`**, **`conduit-upload`** (Phase 3.5/3.6, [#131](https://github.com/lopatnov/conduit/issues/131))
+- **`conduit-tcp`**, **`conduit-upload`** (Phase 3.3, [#131](https://github.com/lopatnov/conduit/issues/131))
   — two independent handler/server-shaped extractions, same config-always-on
   rationale as `conduit-otlp`/`conduit-acme`/`conduit-faults` above.
   - **`conduit-tcp`** owns `TcpConfig` (the `sites[].tcp` config struct) and
