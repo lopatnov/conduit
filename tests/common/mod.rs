@@ -57,7 +57,7 @@ impl TestServer {
             cfg_path: cfg_path.clone(),
             _dir: dir,
         };
-        server.wait_ready(requires_mtls(&config));
+        server.wait_ready(requires_mtls(&config), requires_raw_tcp(&config, port));
         server
     }
 
@@ -66,14 +66,22 @@ impl TestServer {
     /// Tries both `http://` and `https://` (with cert validation disabled) on
     /// the proxy port so TLS and non-TLS sites are handled transparently.
     ///
-    /// `mtls_required` narrows the proxy probe to accept a bare TCP connect
-    /// as evidence of readiness — see `probe_proxy`'s doc comment for why
-    /// this can't be a blanket fallback for every config.
+    /// `mtls_required`/`raw_tcp` narrow the proxy probe to accept a bare TCP
+    /// connect as evidence of readiness — see `probe_proxy`'s doc comment for
+    /// why this can't be a blanket fallback for every config, and why the two
+    /// cases are kept distinct rather than folded into one bool: an
+    /// mTLS-required site still answers *some* app-layer protocol (HTTPS,
+    /// just correctly rejected pre-handshake without a client cert) so it's
+    /// fine to still attempt the HTTP/HTTPS probes first, whereas a `tcp:`
+    /// site speaks no HTTP/TLS at all — issuing a `reqwest::blocking::get`
+    /// against it has no shorter timeout than the request itself and is a
+    /// real connection accepted by the TCP proxy (consuming a round-robin
+    /// slot), so that site skips straight to the bare connect instead.
     ///
     /// Also polls `child.try_wait()` on every iteration so that a server that
     /// exits prematurely (e.g. due to a port-bind failure) is detected
     /// immediately rather than after the full 15-second deadline.
-    fn wait_ready(&mut self, mtls_required: bool) {
+    fn wait_ready(&mut self, mtls_required: bool, raw_tcp: bool) {
         let health_http = format!("http://127.0.0.1:{}/__health__", self.port);
         let health_https = format!("https://127.0.0.1:{}/__health__", self.port);
         let admin_url = format!("http://127.0.0.1:{}/status", self.admin_port);
@@ -107,6 +115,7 @@ impl TestServer {
                     &insecure,
                     self.port,
                     mtls_required,
+                    raw_tcp,
                 )
             {
                 proxy_ok = true;
@@ -173,24 +182,43 @@ fn is_ready_status(r: reqwest::blocking::Response) -> bool {
 ///
 /// Returns `true` if either endpoint replies with a "ready" status.
 ///
-/// When `mtls_required` is `true`, also falls back to a bare TCP connect on
-/// `port` if both app-layer probes fail — needed for `tls.clientAuth.optional:
-/// false` sites, where this probe (no client cert) is correctly rejected at
-/// the TLS layer before any HTTP response exists, but the listener is
-/// nonetheless fully up. This fallback is deliberately NOT applied to every
-/// config: a bare TCP connect only proves the socket is listening, not that
-/// the HTTP/TLS/health-check path actually works, so applying it universally
-/// would risk masking a genuinely broken server as "ready" for any other
-/// test. Scoping it to the one case that needs it (detected via
-/// `requires_mtls`) keeps that guarantee intact everywhere else — see
-/// `mtls_required_*` in `tests/mtls.rs` for the scenario this unblocks.
+/// When `raw_tcp` is `true` (a `sites[].tcp` site on this exact port), skips
+/// the HTTP/HTTPS probes entirely and goes straight to a bare TCP connect —
+/// such a site speaks no HTTP/TLS at all, so a `reqwest::blocking::get`
+/// against it is a real connection the TCP proxy accepts and relays bytes
+/// for (consuming a round-robin slot) with no shorter timeout than the
+/// request itself, rather than a quick, harmless failure.
+///
+/// Otherwise, when `mtls_required` is `true`, falls back to a bare TCP
+/// connect on `port` if both app-layer probes fail — needed for
+/// `tls.clientAuth.optional: false` sites, where this probe (no client
+/// cert) is correctly rejected at the TLS layer before any HTTP response
+/// exists, but the listener is nonetheless fully up. This fallback is
+/// deliberately NOT applied to every config: a bare TCP connect only
+/// proves the socket is listening, not that the HTTP/TLS/health-check path
+/// actually works, so applying it universally would risk masking a
+/// genuinely broken server as "ready" for any other test. Scoping it to
+/// the cases that actually need it (`requires_mtls`/`requires_raw_tcp`)
+/// keeps that guarantee intact everywhere else — see `mtls_required_*` in
+/// `tests/mtls.rs` for the scenario the mTLS case unblocks.
 fn probe_proxy(
     http: &str,
     https: &str,
     insecure: &reqwest::blocking::Client,
     port: u16,
     mtls_required: bool,
+    raw_tcp: bool,
 ) -> bool {
+    let bare_connect = || {
+        std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            Duration::from_millis(200),
+        )
+        .is_ok()
+    };
+    if raw_tcp {
+        return bare_connect();
+    }
     let http_ok = reqwest::blocking::get(http)
         .map(is_ready_status)
         .unwrap_or(false);
@@ -199,14 +227,7 @@ fn probe_proxy(
         .send()
         .map(is_ready_status)
         .unwrap_or(false);
-    http_ok
-        || https_ok
-        || (mtls_required
-            && std::net::TcpStream::connect_timeout(
-                &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-                Duration::from_millis(200),
-            )
-            .is_ok())
+    http_ok || https_ok || (mtls_required && bare_connect())
 }
 
 /// Detects whether `config` has any site with `tls.clientAuth.optional`
@@ -226,6 +247,25 @@ fn requires_mtls(config: &serde_json::Value) -> bool {
                 .and_then(|o| o.as_bool())
                 .unwrap_or(false)
         })
+    })
+}
+
+/// Detects whether the site bound to `port` has `tcp` set — a raw-TCP-proxy
+/// site (`sites[].tcp`) speaks no HTTP at all on its port, so `probe_proxy`'s
+/// HTTP/HTTPS health check can never succeed there; a bare TCP connect is
+/// the only readiness signal available, same rationale as [`requires_mtls`].
+///
+/// Matched by `port`, not "any site has `tcp`" — a mixed multi-site config
+/// (an HTTP site on the probed port, a `tcp:` site on another) must not let
+/// the *other* site's raw-TCP-ness waive the HTTP health check on this one.
+fn requires_raw_tcp(config: &serde_json::Value, port: u16) -> bool {
+    let sites = match config.get("sites").and_then(|s| s.as_array()) {
+        Some(sites) => sites.as_slice(),
+        None => std::slice::from_ref(config), // single-site shorthand form
+    };
+    sites.iter().any(|site| {
+        site.get("tcp").is_some()
+            && site.get("port").and_then(|p| p.as_u64()) == Some(u64::from(port))
     })
 }
 
