@@ -420,8 +420,9 @@ impl UpstreamRegistry {
     /// Decrement the inflight count for `url`, saturating at 0.
     pub fn conn_dec(&self, url: &str) {
         if let Some(c) = self.conn_count.get(url) {
-            // fetch_update lets us implement saturating decrement atomically.
-            let _ = c.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            // try_update lets us implement saturating decrement atomically
+            // (renamed from fetch_update, deprecated by rustc for this).
+            let _ = c.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 Some(n.saturating_sub(1))
             });
         }
