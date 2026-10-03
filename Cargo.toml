@@ -212,9 +212,9 @@ wasmtime = { version = "48", features = ["cranelift"] }
 # Exports distributed traces to any OTLP-compatible backend:
 # Grafana Tempo, Jaeger, Honeycomb, OpenTelemetry Collector, etc.
 # Uses gRPC (tonic) transport; adds ~4 MB to binary.
-opentelemetry      = { version = "0.32" }
-opentelemetry_sdk  = { version = "0.32", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"] }
+opentelemetry      = { version = "0.33" }
+opentelemetry_sdk  = { version = "0.33", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.33", features = ["grpc-tonic"] }
 
 # --- Dev/test-only ---
 criterion   = { version = "0.8", features = ["html_reports"] }
