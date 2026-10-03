@@ -395,9 +395,13 @@ jobs:
           measure head
 
           if [ -n "$BASE_SHA" ]; then
+            head_sha=$(git rev-parse HEAD)
             git fetch --depth 1 origin "$BASE_SHA" 2>/dev/null || true
             git checkout --quiet "$BASE_SHA"
             measure base
+            # Back to the PR's own head — the next step runs scripts/ci/post_or_update_pr_comment.sh,
+            # which only exists from this PR onward and must not be read from the (older) base commit.
+            git checkout --quiet "$head_sha"
           fi
 
       - name: Post/update PR comment
