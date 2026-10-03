@@ -443,7 +443,7 @@ for genuinely idle firings, not a guaranteed periodic pass.)
   (`claude/cargo-workspace-features-23qxfr`), never off `main` directly for
   #114 work.
 - For a mechanical "extract conduit-X" sub-issue, delegate to
-  **`crate-extractor`** with the sub-issue's spec. For a seam refactor or
+  **`crate-steward`** (successor of `crate-extractor`) with the sub-issue's spec. For a seam refactor or
   anything needing judgment, implement it yourself.
 - Do **not** bump `[workspace.package] version` per PR. 2.0.0 hasn't
   shipped yet — the version stays pinned at `2.0.0` until an actual release
