@@ -42,7 +42,7 @@ def http(method, url, body=None, timeout=300):
         raise SystemExit(f"refusing non-HTTP URL {url!r} (QDRANT_URL / LM_URL must be http:// or https://)")
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"}
-    if os.environ.get("QDRANT_API_KEY") and url.startswith(QDRANT):
+    if os.environ.get("QDRANT_API_KEY") and (url == QDRANT or url.startswith(QDRANT + "/")):
         headers["api-key"] = os.environ["QDRANT_API_KEY"]
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
