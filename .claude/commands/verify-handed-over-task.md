@@ -22,7 +22,7 @@ gap long enough for the repo to move on (a usage-limit reset, a day). Arguments,
 ```bash
 git fetch origin
 git cat-file -e HEAD:<path> && echo "present at HEAD"
-git cat-file -e origin/<target-branch>:<path> && echo "present on target"
+MSYS_NO_PATHCONV=1 git cat-file -e origin/<target-branch>:<path> && echo "present on target"
 ```
 
 `<target-branch>` is the branch the PR will go into — for #114 work that is
@@ -61,7 +61,10 @@ user; do not edit another session's branch.
 
 ## Git Bash on Windows pitfalls
 
-- `git show origin/<branch-with-slashes>:<path>` is mangled by MSYS path conversion
-  (`ambiguous argument 'origin\claude\…;…'`) — prefix the command with `MSYS_NO_PATHCONV=1`.
+- Any `<rev>:<path>` argument containing a branch name with slashes — not just `git show`,
+  also `git cat-file -e`, `git log <rev> -- <path>`, anything of that shape — is mangled by
+  MSYS path conversion (`ambiguous argument 'origin\claude\…;…'`). Prefix the command with
+  `MSYS_NO_PATHCONV=1` (already applied to Step 1's `origin/<target-branch>:<path>` lookup
+  above — don't drop it if you edit that command).
 - Never pipe `git show` into `wc -l` unchecked: the error message counts as "1 line" (two
   failed lookups read as one-line files in the session that motivated this command).
