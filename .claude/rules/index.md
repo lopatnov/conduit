@@ -13,6 +13,14 @@
 - **`workflow.md`** — trigger table mapping "what's happening → which subagent to call",
   example walk-throughs (trivial fix / bug fix / feature / release), and session-budget
   discipline. Read this before deciding whether (and which) subagent to spawn.
+- **`best-practices.md`** — general development habits that apply to *any* work in this
+  repo, not just the (now-shipped) Conduit 2.0 migration: catching errors early via
+  periodic re-audits of shipped code, the unconditional secure-by-default stance, sizing a
+  batch of work to its risk, grouping related work into one coherent branch instead of
+  splitting for its own sake, and writing a process lesson down the moment it's found
+  rather than waiting for a retro. Extracted 2026-10-03 from
+  `.claude/commands/feature-workspace-cycle.md`, which remains as a concrete template for
+  running a similar large multi-PR effort again.
 
 ## Worktree persistence (don't strand uncommitted `.claude/` tooling)
 
