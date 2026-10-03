@@ -263,13 +263,14 @@ the root `Cargo.toml` via `<field>.workspace = true`.
     `upload_handler`), gated behind this crate's own `upload` Cargo feature.
     `UploadService` implements Pingora's own `BackgroundService` trait
     directly, so this crate also has no `conduit-core` dependency. To avoid
-    a circular dependency on the root crate's `AppState`,
-    `server::UploadConfigSource` captures only the one thing the server
-    needs (looking up the active `UploadConfig` for a given site index), and
+    a circular dependency on `AppState`, `server::UploadConfigSource`
+    captures only the one thing the server needs (looking up the active
+    `UploadConfig` for a given site index), and
     `UploadService`/`make_upload_router`/`run_upload_server` are generic
-    over it — the root crate implements the trait for its own `AppState` and
-    binds a concrete `UploadService` type alias (the same "generic-in-crate,
-    bound-by-type-alias-in-root" pattern as `conduit-config-core`'s
+    over it — `conduit-runtime` (which owns `AppState` since #145) implements
+    the trait for `AppState` and binds a concrete `UploadService` type alias
+    that the root crate re-exports (the same "generic-in-crate,
+    bound-by-type-alias-downstream" pattern as `conduit-config-core`'s
     `Provider<C>`/`FileProvider<C>`, see that entry above).
 
 - **`conduit-cache`** (Phase 3.7, [#135](https://github.com/lopatnov/conduit/issues/135))
