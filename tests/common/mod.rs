@@ -57,7 +57,7 @@ impl TestServer {
             cfg_path: cfg_path.clone(),
             _dir: dir,
         };
-        server.wait_ready(requires_mtls(&config));
+        server.wait_ready(requires_mtls(&config) || requires_raw_tcp(&config));
         server
     }
 
@@ -66,14 +66,16 @@ impl TestServer {
     /// Tries both `http://` and `https://` (with cert validation disabled) on
     /// the proxy port so TLS and non-TLS sites are handled transparently.
     ///
-    /// `mtls_required` narrows the proxy probe to accept a bare TCP connect
-    /// as evidence of readiness — see `probe_proxy`'s doc comment for why
-    /// this can't be a blanket fallback for every config.
+    /// `bare_tcp_connect_ok` narrows the proxy probe to accept a bare TCP
+    /// connect as evidence of readiness — see `probe_proxy`'s doc comment
+    /// for why this can't be a blanket fallback for every config. Set for
+    /// mTLS-required sites (no plaintext HTTP response possible) and for
+    /// `sites[].tcp` raw-TCP-proxy sites (no HTTP at all on that port).
     ///
     /// Also polls `child.try_wait()` on every iteration so that a server that
     /// exits prematurely (e.g. due to a port-bind failure) is detected
     /// immediately rather than after the full 15-second deadline.
-    fn wait_ready(&mut self, mtls_required: bool) {
+    fn wait_ready(&mut self, bare_tcp_connect_ok: bool) {
         let health_http = format!("http://127.0.0.1:{}/__health__", self.port);
         let health_https = format!("https://127.0.0.1:{}/__health__", self.port);
         let admin_url = format!("http://127.0.0.1:{}/status", self.admin_port);
@@ -106,7 +108,7 @@ impl TestServer {
                     &health_https,
                     &insecure,
                     self.port,
-                    mtls_required,
+                    bare_tcp_connect_ok,
                 )
             {
                 proxy_ok = true;
@@ -227,6 +229,18 @@ fn requires_mtls(config: &serde_json::Value) -> bool {
                 .unwrap_or(false)
         })
     })
+}
+
+/// Detects whether `config` has any site with `tcp` set — a raw-TCP-proxy
+/// site (`sites[].tcp`) speaks no HTTP at all on its port, so `probe_proxy`'s
+/// HTTP/HTTPS health check can never succeed there; a bare TCP connect is
+/// the only readiness signal available, same rationale as [`requires_mtls`].
+fn requires_raw_tcp(config: &serde_json::Value) -> bool {
+    let sites = match config.get("sites").and_then(|s| s.as_array()) {
+        Some(sites) => sites.as_slice(),
+        None => std::slice::from_ref(config), // single-site shorthand form
+    };
+    sites.iter().any(|site| site.get("tcp").is_some())
 }
 
 /// Poll the admin `/status` endpoint once.  Returns `true` on a 2xx response.

@@ -2,7 +2,7 @@ mod common;
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use serial_test::serial;
@@ -673,5 +673,251 @@ fn sticky_cookie_routes_same_client_to_same_backend() {
         all_same,
         "sticky sessions: all 10 requests with same cookie should hit the same backend \
          (got {hits_a}×A + {hits_b}×B)"
+    );
+}
+
+// ── Sticky sessions — HMAC-signed (`sticky.secret` + `sticky.strict`) ────────
+//
+// The test above only exercises the legacy no-secret mode, where the client
+// supplies its own opaque cookie value and conduit never sets a `Set-Cookie`
+// header at all (`make_sticky_cookie` returns `None` without a secret — see
+// `crates/conduit-proxy-http/src/sticky.rs`). The HMAC-signed mode (decision
+// #14 bis / Angie "Sticky HMAC secret + strict mode" in CLAUDE.md's backlog)
+// is a distinct, security-relevant code path — it protects against
+// session-pinning attacks by having conduit itself sign which upstream a
+// session is pinned to, so a client can't forge a cookie to steer traffic —
+// and had zero coverage above the unit level (`hmac_sign_sticky`/
+// `hmac_verify_sticky` are tested in isolation, but nothing proved the real
+// response actually carries a verifiable `Set-Cookie`, that resending it
+// pins reliably, or that `strict: true` actually turns into an HTTP 503 once
+// the pinned peer goes unhealthy).
+
+/// An upstream whose HTTP status can be flipped at runtime (`set_status`),
+/// so a test can first let it serve a sticky session, then make it fail
+/// active health checks without restarting the mock or the proxy.
+struct FlakyUpstream {
+    port: u16,
+    status: Arc<AtomicU16>,
+}
+
+impl FlakyUpstream {
+    fn start(body: &'static str, initial_status: u16) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind flaky upstream");
+        let port = listener.local_addr().unwrap().port();
+        let status = Arc::new(AtomicU16::new(initial_status));
+        let status_clone = status.clone();
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let status_inner = status_clone.clone();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 8192];
+                    let _ = stream.read(&mut buf);
+                    let code = status_inner.load(Ordering::SeqCst);
+                    let response = format!(
+                        "HTTP/1.1 {code} Status\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                });
+            }
+        });
+
+        FlakyUpstream { port, status }
+    }
+
+    fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    fn set_status(&self, status: u16) {
+        self.status.store(status, Ordering::SeqCst);
+    }
+}
+
+/// Extract the value of a cookie named `name` from a response's `Set-Cookie`
+/// header(s). Panics if the cookie is not present — callers use this only
+/// where the server is expected to have set it.
+fn extract_set_cookie(resp: &reqwest::blocking::Response, name: &str) -> String {
+    for raw in resp.headers().get_all("set-cookie") {
+        let raw = raw.to_str().expect("set-cookie header is valid UTF-8");
+        if let Some(rest) = raw.strip_prefix(&format!("{name}=")) {
+            return rest.split(';').next().unwrap_or(rest).to_owned();
+        }
+    }
+    panic!(
+        "no Set-Cookie for '{name}' found in response headers: {:?}",
+        resp.headers()
+    );
+}
+
+/// With `sticky.secret` set, the first response to a cookie-less client sets
+/// a `Set-Cookie` pinned to whichever backend was chosen, and resending that
+/// exact cookie keeps landing on the same backend — proving the HMAC-signed
+/// pin round-trips through a real client/server exchange, not just that the
+/// sign/verify functions agree with each other in isolation.
+#[test]
+#[serial]
+fn sticky_hmac_secret_sets_signed_cookie_and_pins_backend() {
+    let upstream_a = MockUpstream::start("backend-a");
+    let upstream_b = MockUpstream::start("backend-b");
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": {
+                    "/": {
+                        "targets": [ upstream_a.url(), upstream_b.url() ],
+                        "sticky": { "cookie": "sid", "secret": "test-sticky-secret" }
+                    }
+                }
+            }]
+        }),
+    );
+
+    let client = reqwest::blocking::Client::builder().build().unwrap();
+
+    // First request: no cookie — the server picks a backend and must set a
+    // signed Set-Cookie pinned to it.
+    let first = client.get(srv.url("/")).send().expect("GET / (no cookie)");
+    assert_eq!(first.status().as_u16(), 200);
+    let cookie_value = extract_set_cookie(&first, "sid");
+    let pinned_body = first.text().unwrap();
+    assert!(
+        pinned_body == "backend-a" || pinned_body == "backend-b",
+        "unexpected body: {pinned_body}"
+    );
+
+    // Resend the exact signed cookie 10 times — every response must come
+    // from the same backend the cookie was signed for.
+    for _ in 0..10 {
+        let resp = client
+            .get(srv.url("/"))
+            .header("cookie", format!("sid={cookie_value}"))
+            .send()
+            .expect("GET / (with signed cookie)");
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(
+            resp.text().unwrap(),
+            pinned_body,
+            "a verified HMAC-signed cookie must keep pinning to the same backend"
+        );
+    }
+}
+
+/// `sticky.strict: true` must turn a stale pin (the cookie names a backend
+/// that active health checks have since marked unhealthy) into an HTTP 503,
+/// per CLAUDE.md decision: "refuse with 503 rather than silently routing to
+/// a different upstream" — while a fresh, cookie-less request must still be
+/// served normally by the remaining healthy backend.
+#[test]
+#[serial]
+fn sticky_hmac_strict_mode_rejects_stale_pin_with_503() {
+    let upstream_a = MockUpstream::start("backend-a");
+    let upstream_b = FlakyUpstream::start("backend-b", 200);
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+
+    // Step 1: only B is a target, so the pin is deterministically B's URL.
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": {
+                    "/": {
+                        "targets": [ upstream_b.url() ],
+                        "sticky": { "cookie": "sid", "secret": "test-sticky-secret", "strict": true }
+                    }
+                }
+            }]
+        }),
+    );
+
+    let client = reqwest::blocking::Client::builder().build().unwrap();
+    let first = client.get(srv.url("/")).send().expect("GET / (pin to B)");
+    assert_eq!(first.status().as_u16(), 200);
+    let cookie_value = extract_set_cookie(&first, "sid");
+    assert_eq!(first.text().unwrap(), "backend-b");
+
+    // Step 2: add A as a second target, start active health checks, and
+    // make B start failing them — so B is a real, actively-detected
+    // unhealthy peer by the time we resend the stale pin.
+    upstream_b.set_status(500);
+    srv.rewrite_config(serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "proxy": {
+                "/": {
+                    "targets": [ upstream_a.url(), upstream_b.url() ],
+                    "sticky": { "cookie": "sid", "secret": "test-sticky-secret", "strict": true },
+                    "healthCheck": {
+                        "path": "/",
+                        "intervalSecs": 1,
+                        "unhealthyThreshold": 1,
+                        "healthyThreshold": 99
+                    }
+                }
+            }
+        }]
+    }));
+    srv.reload();
+
+    // Poll /upstreams until B is actually marked unhealthy, instead of a
+    // fixed sleep, to keep this robust under CI scheduling jitter.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let body: serde_json::Value = reqwest::blocking::get(srv.admin_url("/upstreams"))
+            .expect("GET /upstreams")
+            .json()
+            .expect("parse JSON");
+        let list = body["upstreams"].as_array().expect("array");
+        let b_unhealthy = list.iter().any(|e| {
+            e["url"].as_str() == Some(upstream_b.url().as_str())
+                && !e["healthy"].as_bool().unwrap_or(true)
+        });
+        if b_unhealthy {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("upstream B never became unhealthy within 10s: {list:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // Resending the stale pin (cookie signed for B, now unhealthy) must be
+    // rejected outright, not silently relocated to A.
+    let rejected = client
+        .get(srv.url("/"))
+        .header("cookie", format!("sid={cookie_value}"))
+        .send()
+        .expect("GET / (stale pin to unhealthy B)");
+    assert_eq!(
+        rejected.status().as_u16(),
+        503,
+        "strict mode must reject a pin to an unhealthy upstream with 503"
+    );
+
+    // A fresh request with no cookie at all must still be served normally —
+    // strict mode only rejects an actual stale pin, it doesn't take the
+    // whole route down.
+    let fresh = client.get(srv.url("/")).send().expect("GET / (no cookie)");
+    assert_eq!(fresh.status().as_u16(), 200);
+    assert_eq!(
+        fresh.text().unwrap(),
+        "backend-a",
+        "a cookie-less request must route to the healthy backend"
     );
 }
