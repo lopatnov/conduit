@@ -21,11 +21,11 @@ path = "src/lib.rs"
 
 [dependencies]
 # --- Pingora core ---
-pingora                = { version = "0.8", features = ["rustls"] }
-pingora-core           = { version = "0.8", features = ["rustls"] }
-pingora-proxy          = { version = "0.8", features = ["rustls"] }
-pingora-load-balancing = { version = "0.8", features = ["rustls"] }
-pingora-cache          = { version = "0.8", features = ["rustls"] }
+pingora                = { version = "0.9", features = ["rustls"] }
+pingora-core           = { version = "0.9", features = ["rustls"] }
+pingora-proxy          = { version = "0.9", features = ["rustls"] }
+pingora-load-balancing = { version = "0.9", features = ["rustls"] }
+pingora-cache          = { version = "0.9", features = ["rustls"] }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
@@ -44,7 +44,7 @@ indicatif     = "0.18"
 async-trait   = "0.1"
 
 # --- Pingora HTTP types ---
-pingora-http = "0.8"
+pingora-http = "0.9"
 
 # --- Async runtime & HTTP ---
 tokio = { version = "1", features = ["full"] }
