@@ -7,6 +7,7 @@ Thank you for your interest in contributing! This document explains how to get s
 - [Development Setup](#development-setup)
 - [Project Structure](#project-structure)
 - [Cargo Workspace Crate Extraction Recipe](#cargo-workspace-crate-extraction-recipe)
+- [Adding a New Feature](#adding-a-new-feature)
 - [Running Tests](#running-tests)
 - [Code Style](#code-style)
 - [Submitting Changes](#submitting-changes)
@@ -223,6 +224,137 @@ cannot be checked from the crate alone.
 The golden tests (`src/config/validate/golden_tests.rs`, fixtures in `testdata/`) pin the exact ordered output of
 `validate()` and `feature_warnings()` in every feature combination; a new feature-off warning has to be added to the
 fixture, and the baseline is regenerated only for a deliberate behaviour change (see that file's module comment).
+
+---
+
+## Adding a New Feature
+
+> Written 2026-10-03, closing issue [#259](https://github.com/lopatnov/conduit/issues/259).
+> The extraction recipe above covers moving **already-existing** code into its own crate.
+> This covers the other direction: designing and wiring up a genuinely **new**,
+> independently-compilable feature from scratch, in the shape the 2.0 workspace (#114,
+> merged into `main`) settled on. Derived from how real optional features — `acme`,
+> `fault-injection`, `tokio-metrics` — are actually built, not guessed upfront (per the
+> issue's own owner decision to wait until the migration's patterns had solidified).
+
+A new optional feature in this workspace is a new crate, a Cargo feature on it, a
+forwarding feature on the root crate, a config schema entry, a feature-off warning, and
+tests/docs — in that order. Skipping a step produces exactly the kind of silent gap
+`integrity-auditor` exists to catch later (see `.claude/rules/best-practices.md` §1), so
+do them all up front.
+
+### 1. New crate under `crates/`
+
+`cargo new --lib crates/conduit-<name>`, then shape its `Cargo.toml` like
+`crates/conduit-acme/Cargo.toml`:
+
+- Package name `lopatnov-conduit-<name>`, lib name `conduit_<name>` (the `lopatnov-`
+  prefix is the crates.io publishing name — `CLAUDE.md` decision #32 — the lib name is
+  what code actually imports).
+- If the feature's config struct should always parse (so `conduit validate` still gives a
+  precise error when the feature is compiled out — the config-always-parses invariant
+  every `SiteConfig`/`AppConfig` field relies on), keep the config type's own dependencies
+  (`serde`) mandatory and put everything the *real implementation* needs (the guard/filter,
+  any async runtime, any third-party client) behind `optional = true` so the crate compiles
+  with zero extra dependencies when the feature is off.
+- One Cargo feature on the new crate, named after the feature, listing every `dep:x` it
+  turns on (see `conduit-acme`'s `[features] acme = [...]`).
+
+### 2. Root crate wiring
+
+In the root `Cargo.toml`:
+
+- Add `lopatnov-conduit-<name> = { path = "crates/conduit-<name>", version = "2.0.0" }` to
+  `[workspace.dependencies]` (keep the version string in lockstep — see
+  `conventions.md`'s "Versioning"; `scripts/check-workspace-versions.sh` catches drift).
+- Add `lopatnov-conduit-<name>.workspace = true` under `[dependencies]` — mandatory if the
+  config struct always parses, `optional = true` if the whole crate is feature-gated.
+- Add a forwarding feature: `<name> = ["lopatnov-conduit-<name>/<name>", ...]`, plus
+  `"lopatnov-conduit-runtime/<name>"` and/or `"lopatnov-conduit-server/<name>"` for each
+  downstream crate that has its own `#[cfg(feature = "<name>")]`-gated code for it — check
+  what the feature actually needs rather than assuming one fixed shape: `otlp` and
+  `tokio-metrics` forward into `runtime` (per-request span code, the lag gauge), `tcp`
+  forwards only into `server` (no runtime/chain involvement), and `acme`/`tokio-metrics`
+  forward into both (see those entries in the root `[features]` table).
+- Decide whether it belongs in a bundle (`standard`, `gateway`, `full` — see the
+  `[features]` table's "Convenience bundles" comment) — a niche or heavyweight feature
+  (chaos testing, a scripting/WASM engine) stays out of `standard`/`gateway` and only goes
+  in `full`.
+- If the feature gates an integration test file, add `[[test]] name = "<name>"` +
+  `required-features = ["<name>"]` so `cargo test` without the feature doesn't even try
+  to compile it (see the `acme`/`cache` entries at the bottom of `Cargo.toml`).
+
+### 3. Config schema entry
+
+- Add the config struct's field to whichever `SiteConfig`/`AppConfig` (or nested struct)
+  it belongs under, in the owning crate if it's a leaf (not the aggregate — see Rule 5 of
+  the extraction recipe above for why the aggregate itself can't be touched piecemeal).
+- Update **`schema/conduit.schema.json`** by hand to match — it's hand-maintained, not
+  generated (see `CLAUDE.md` "Правила"). `scripts/check_schema_superset.py` (CI job
+  `schema-superset-check`) best-effort-checks named structs against it; validate the JSON
+  itself with `node -e "JSON.parse(fs.readFileSync('schema/conduit.schema.json','utf8'))"`.
+
+### 4. Feature-off warning (`feature_warnings()`)
+
+Every feature that can appear in a config but be compiled out needs its presence to
+produce a warning, not a silent no-op, when the build doesn't have it — this is the
+"config always parses" promise working end-to-end. Two files in the new crate (see
+`crates/conduit-acme/src/warnings.rs` for the worked example):
+
+- `src/validate.rs` — `pub fn validate_<name>(cfg, prefix, errors)`, reporting through
+  `conduit_config_core::validation::ValidationError`. **Call it from the per-site
+  validation in `crates/conduit-server/src/config/validate/site.rs`** (see how
+  `validate_tcp`/`validate_ip_filter` are already wired in there) — a validator that's
+  never called compiles cleanly and is dead code: invalid configs pass `conduit validate`
+  with no error.
+- `src/warnings.rs` — `pub const COMPILED: bool = cfg!(feature = "<name>")` and
+  `pub fn feature_warning(i, cfg: Option<&YourConfig>) -> Option<String>`, `None` when
+  compiled in or the block is absent. Pin the exact message text with a test.
+
+Then wire both into the root (now `crates/conduit-server/src/config/validate/`, facaded
+at `src/config/validate/mod.rs`):
+
+- One call in `check_site_simple_feature_warnings` (`crates/conduit-server/src/config/
+  validate/warnings.rs`) — its position in that function is the position of the warning
+  in `feature_warnings()`'s output, so place it where it reads naturally alongside its
+  siblings.
+- One compile-time assert in the **root** crate's `src/config/validate/mod.rs` (not the
+  `conduit-server` copy — see that file's own comment on why the split happened):
+  `const _: () = assert!(conduit_<name>::warnings::COMPILED == cfg!(feature = "<name>"), "...")`.
+  This is what fails the build if the crate's own feature and the root's forwarding
+  feature are ever enabled independently of each other — Cargo features are unified per
+  build, so this can only be checked from the root, never from the leaf crate alone.
+- If the config key can land in `SiteConfig.extra` when the feature is off, add it to
+  `DISABLED_KEY_OWNING_FEATURE` in `crates/conduit-server/src/config/validate/warnings.rs`
+  so the generic "unknown key" warning becomes a specific "recompile with --features x" one.
+- Update the golden tests (`src/config/validate/golden_tests.rs`, fixtures in `testdata/`)
+  — a new feature-off warning changes `feature_warnings()`'s pinned output in every feature
+  combination that doesn't have the feature on.
+
+### 5. Docs
+
+- `docs/configuration.md` — the new config block, with an example.
+- `README.md`'s feature table, `crates/README.md`'s crate inventory, `docs/building.md` if
+  it changes a bundle's contents — grep every changed feature name across all of these by
+  content, not by an expected keyword (a past PR's `--features`/"standard" grep missed a
+  plain feature table that used neither word — see `.claude/commands/
+  feature-workspace-cycle.md` Step 6's note).
+- `CLAUDE.md`'s "Беклог" if this closes a tracked backlog item, with the implementation's
+  actual shape (module path, config field names) — not just a checkbox flip.
+
+### 6. Tests
+
+See the `testing` skill for conduit's actual mocking idioms. At minimum: a unit test for
+the config struct's `Default`/deserialization, a validator test (both a valid and an
+invalid config), a `feature_warning` text-pin test, and — if the feature has real runtime
+behavior — an integration test gated by `required-features` as set up in step 2.
+
+### Verification
+
+Same bar as any PR (`conventions.md`'s PR checklist): `/build` on both default and
+`--features full`, `feature-matrix-runner` (mandatory — this is exactly the kind of PR
+that touches `[features]`), and `security-engineer` sign-off before merge if the feature
+touches auth/secrets/TLS/rate-limit/CORS/the guard chain.
 
 ---
 
