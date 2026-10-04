@@ -40,12 +40,15 @@ const NATIVE_DIR = join(__dirname, "native");
 function getAssetName() {
   const { platform, arch } = process;
 
+  // Issue #239: npm ships the `full` feature bundle from the 2.0.0 line
+  // onward (was `standard` through 1.x) — asset names gain a "-full" suffix,
+  // matching release.yml's full-build job names exactly.
   const map = {
-    "linux-x64":    "conduit-x86_64-unknown-linux-gnu",
-    "linux-arm64":  "conduit-aarch64-unknown-linux-gnu",
-    "darwin-x64":   "conduit-x86_64-apple-darwin",
-    "darwin-arm64": "conduit-aarch64-apple-darwin",
-    "win32-x64":    "conduit-x86_64-pc-windows-msvc.exe",
+    "linux-x64":    "conduit-x86_64-unknown-linux-gnu-full",
+    "linux-arm64":  "conduit-aarch64-unknown-linux-gnu-full",
+    "darwin-x64":   "conduit-x86_64-apple-darwin-full",
+    "darwin-arm64": "conduit-aarch64-apple-darwin-full",
+    "win32-x64":    "conduit-x86_64-pc-windows-msvc-full.exe",
   };
 
   const key = `${platform}-${arch}`;
