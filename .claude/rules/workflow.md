@@ -54,7 +54,9 @@ sub-issue PRs, the final migration merge.
 ## Proportionate process (owner, 2026-09-26)
 Every rule says "always"; none says what it costs. Before adding a step, ask what it catches that golden tests, `--list` identity,
 the clippy matrix or CI do not.
-- **One issue = one PR = one security pass.** Slices of an issue are commits. "Split into N PRs" is a *question* to the owner with
+- **One PR = one real feature (owner, 2026-10-09), one security pass.** Small tasks (fixes, refinements, docs, scripts, wording,
+  bugs in the same area) are bundled: several issues in one PR, one commit each, closed by hand. Own PR only for a feature or an item
+  too large/risky for one review pass. Slices of an issue are commits. Splitting a bundle into N PRs is a *question* to the owner with
   its price (N × CI + review + merge), never a plan item a single "yes" can accept.
 - **Proof scales with risk.** A pure move (golden tests + `--list` identity): one verifier per PR and one small set of mutation
   controls. New logic (a gate switch, a check): the full set. The chain is `scripts/verify-local.sh`; run it once on the final head.
