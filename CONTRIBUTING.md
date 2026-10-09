@@ -208,12 +208,13 @@ The crate that owns a config block also owns what `config::validate` says about 
 - **`src/validate.rs`** — the block's validator, `pub fn validate_x(cfg, prefix, errors)`, reporting through
   `conduit_config_core::validation::ValidationError` (so the crate depends on `lopatnov-conduit-config-core`).
   The server crate's `crates/conduit-server/src/config/validate/site.rs` calls it. A check that needs the whole `SiteConfig`/`AppConfig` (a
-  combination of two blocks, proxy-loop detection, the Redis cross-site check) stays in the root: the
-  `layer-boundaries` CI job rejects those types in a member crate.
+  combination of two blocks, proxy-loop detection, the Redis cross-site check) stays in `conduit-server`
+  (`crates/conduit-server/src/config/validate/{proxy_loop,cross_site}.rs`), not in a feature member: the
+  `layer-boundaries` CI job rejects those types outside the config/server crates.
 - **`src/warnings.rs`** — `pub const COMPILED: bool = cfg!(feature = "<this crate's feature>")` and
   `pub fn feature_warning(i, cfg) -> Option<String>`, which is `None` when the feature is compiled in or the block is
   absent. The message text lives here, not in the root. A test that needs the whole site (`redis`, `cache`) is
-  evaluated in the root and handed over as a `bool`. Add a text-pin test for the message.
+  evaluated in `conduit-server`'s `warnings.rs` (`site_uses_redis_store`, `site_has_cache_config`) and handed over as a `bool`. Add a text-pin test for the message.
 
 Two places then need one line each per feature: a flat call in `check_site_simple_feature_warnings` in
 `crates/conduit-server/src/config/validate/warnings.rs` (its position is the position of the warning in
