@@ -207,7 +207,7 @@ The crate that owns a config block also owns what `config::validate` says about 
 
 - **`src/validate.rs`** — the block's validator, `pub fn validate_x(cfg, prefix, errors)`, reporting through
   `conduit_config_core::validation::ValidationError` (so the crate depends on `lopatnov-conduit-config-core`).
-  The root's `src/config/validate/site.rs` calls it. A check that needs the whole `SiteConfig`/`AppConfig` (a
+  The server crate's `crates/conduit-server/src/config/validate/site.rs` calls it. A check that needs the whole `SiteConfig`/`AppConfig` (a
   combination of two blocks, proxy-loop detection, the Redis cross-site check) stays in the root: the
   `layer-boundaries` CI job rejects those types in a member crate.
 - **`src/warnings.rs`** — `pub const COMPILED: bool = cfg!(feature = "<this crate's feature>")` and
@@ -215,9 +215,11 @@ The crate that owns a config block also owns what `config::validate` says about 
   absent. The message text lives here, not in the root. A test that needs the whole site (`redis`, `cache`) is
   evaluated in the root and handed over as a `bool`. Add a text-pin test for the message.
 
-The root then needs exactly two lines per feature in `src/config/validate/warnings.rs`: a flat call in
-`check_site_simple_feature_warnings` (its position is the position of the warning in `feature_warnings()`'s output),
-and a `const _: () = assert!(<crate>::warnings::COMPILED == cfg!(feature = "<root feature>"), ..)` next to the others.
+Two places then need one line each per feature: a flat call in `check_site_simple_feature_warnings` in
+`crates/conduit-server/src/config/validate/warnings.rs` (its position is the position of the warning in
+`feature_warnings()`'s output), and, in the root, a `const _: () = assert!(<crate>::warnings::COMPILED ==
+cfg!(feature = "<root feature>"), ..)` next to the others in `src/config/validate/mod.rs` (`cfg!()` is crate-relative, so
+the assert has to live in the root).
 The assert is what keeps the two features in step: if a crate feature is ever enabled without the root feature (or the
 reverse), the build fails instead of the warning silently disappearing. Cargo features are unified per build, so it
 cannot be checked from the crate alone.
