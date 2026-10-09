@@ -1,0 +1,61 @@
+name: Publish crates (resume)
+
+# Manual fallback for the crates.io step of release.yml. crates.io rate-limits
+# new crates (a burst of about 5, then one per ~10 minutes), so publishing all
+# ~33 workspace crates for a new version can stop partway with HTTP 429. This
+# workflow publishes whatever is still missing from the given tag, sleeping
+# through the rate limit instead of failing on it. It checks out the tag for the
+# sources (so the published crates match the release) and runs the helper
+# scripts from the branch it was dispatched on.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Release tag to publish from (for example v2.0.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish-crates:
+    name: Publish remaining crates to crates.io
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    concurrency:
+      group: publish-crates
+      cancel-in-progress: false
+
+    steps:
+      - name: Require a release tag
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          if [[ ! "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ref must be a release tag like v2.0.0, got: $REF" >&2
+            exit 1
+          fi
+
+      - name: Check out the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.ref }}
+          path: src
+          persist-credentials: false
+
+      - name: Check out the retry helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: ci
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable
+        with:
+          toolchain: stable
+
+      - name: Publish workspace crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_TERM_COLOR: never
+        run: bash ci/scripts/publish-workspace-retry.sh src
