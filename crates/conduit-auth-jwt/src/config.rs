@@ -13,7 +13,9 @@ pub struct JwtAuthConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
     /// Remote JWKS URL for RS256 / ES256 tokens (e.g. Auth0, Google, Cognito).
-    /// Keys are fetched at startup and refreshed every `jwksRefreshSecs` seconds.
+    /// Keys are fetched on the first request that needs them and refreshed in the
+    /// background once they are `jwksRefreshSecs` old; the last good keys keep serving
+    /// through an IdP outage for up to 24 h past that (see `jwt::jwks_cache`).
     #[serde(rename = "jwksUrl", skip_serializing_if = "Option::is_none")]
     pub jwks_url: Option<String>,
     /// How often to re-fetch the JWKS (seconds).  Default: 3600 (1 hour).

@@ -4,8 +4,10 @@
 //!
 //! - **HS256** — shared HMAC-SHA256 secret (`jwtAuth.secret`).
 //! - **RS256 / ES256** — asymmetric keys from a remote JWKS URL
-//!   (`jwtAuth.jwksUrl`).  Keys are fetched once at startup and refreshed in
-//!   a background task every `jwksRefreshSecs` seconds (default 3600).
+//!   (`jwtAuth.jwksUrl`).  Keys are fetched on the first request that needs
+//!   them and refreshed in the background once they are `jwksRefreshSecs`
+//!   old (default 3600); see the `jwks_cache` module for the single-flight and
+//!   stale-fallback behaviour.
 //!
 //! The token must be present in the `Authorization: Bearer <token>` header.
 //! A missing or invalid token returns `401 Unauthorized`.
@@ -14,170 +16,16 @@
 //! `#![cfg(feature = "jwt")]` on this file pre-extraction, #133 — now
 //! applied to the `mod jwt;` declaration in `lib.rs` instead).
 
-use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, RwLock};
-use std::time::{Duration, Instant};
-
 use jsonwebtoken::{decode_header, Algorithm, DecodingKey, Validation};
-use serde::Deserialize;
 
 use conduit_core::filter::path::is_path_skipped;
 
 use crate::config::JwtAuthConfig;
 
-// ── JWKS key cache ────────────────────────────────────────────────────────────
-
-/// A cached JWKS response with the time it was last fetched.
-struct JwksCache {
-    /// Map from `kid` → base-64-encoded public key material.
-    keys: HashMap<String, CachedKey>,
-    fetched_at: Instant,
-}
-
-#[derive(Clone)]
-enum CachedKey {
-    Rsa {
-        n: String,
-        e: String,
-    },
-    Ec {
-        x: String,
-        y: String,
-        // Parsed from the JWK for completeness but not currently consulted —
-        // `DecodingKey::from_ec_components` infers the curve from the JWT's
-        // `alg` header (ES256 → P-256, ES384 → P-384), not from this field.
-        #[allow(dead_code)]
-        crv: String,
-    },
-}
-
-/// Global JWKS caches keyed by JWKS URL.
-static JWKS_CACHES: OnceLock<Arc<RwLock<HashMap<String, JwksCache>>>> = OnceLock::new();
-
-fn jwks_caches() -> &'static Arc<RwLock<HashMap<String, JwksCache>>> {
-    JWKS_CACHES.get_or_init(|| Arc::new(RwLock::new(HashMap::new())))
-}
-
-// ── Minimal JWKS JSON types ───────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-struct JwksResponse {
-    keys: Vec<Jwk>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Jwk {
-    #[serde(rename = "kty")]
-    key_type: String,
-    #[serde(default)]
-    kid: Option<String>,
-    // RSA
-    #[serde(default)]
-    n: Option<String>,
-    #[serde(default)]
-    e: Option<String>,
-    // EC
-    #[serde(default)]
-    x: Option<String>,
-    #[serde(default)]
-    y: Option<String>,
-    #[serde(default, rename = "crv")]
-    curve: Option<String>,
-}
-
-// ── JWKS fetch ────────────────────────────────────────────────────────────────
-
-/// Blocking-compatible JWKS fetch using `reqwest`.
-///
-/// Called at startup on a `current_thread` runtime (same pattern as ACME) so
-/// it doesn't block the Pingora worker thread pool.
-async fn fetch_jwks(url: &str) -> anyhow::Result<HashMap<String, CachedKey>> {
-    let resp = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()?
-        .get(url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<JwksResponse>()
-        .await?;
-
-    let mut map = HashMap::new();
-    for jwk in resp.keys {
-        let kid = jwk
-            .kid
-            .unwrap_or_else(|| format!("{}-default", jwk.key_type));
-        let cached = match jwk.key_type.as_str() {
-            "RSA" => {
-                if let (Some(n), Some(e)) = (jwk.n, jwk.e) {
-                    Some(CachedKey::Rsa { n, e })
-                } else {
-                    tracing::warn!(kid, "JWKS RSA key missing n or e — skipped");
-                    None
-                }
-            }
-            "EC" => {
-                if let (Some(x), Some(y), Some(crv)) = (jwk.x, jwk.y, jwk.curve) {
-                    Some(CachedKey::Ec { x, y, crv })
-                } else {
-                    tracing::warn!(kid, "JWKS EC key missing x, y, or crv — skipped");
-                    None
-                }
-            }
-            other => {
-                tracing::debug!(key_type = other, "JWKS key type not supported — skipped");
-                None
-            }
-        };
-        if let Some(c) = cached {
-            map.insert(kid, c);
-        }
-    }
-    Ok(map)
-}
-
-/// Load JWKS keys for `url`, using the cache when fresh enough.
-///
-/// `refresh_secs` is the maximum age before a refresh is attempted.
-/// Defaults to 3600 s (1 hour) when `None`.
-fn get_jwks_keys(url: &str, refresh_secs: u64) -> Option<Arc<HashMap<String, CachedKey>>> {
-    // Fast path: cache hit within TTL.
-    {
-        let cache = jwks_caches().read().unwrap();
-        if let Some(entry) = cache.get(url) {
-            if entry.fetched_at.elapsed().as_secs() < refresh_secs {
-                // Build a temporary Arc-wrapped copy of the keys.
-                return Some(Arc::new(entry.keys.clone()));
-            }
-        }
-    }
-
-    // Slow path: fetch synchronously in a temporary tokio current_thread runtime.
-    let url_owned = url.to_owned();
-    let result = std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .ok()?
-            .block_on(fetch_jwks(&url_owned))
-            .ok()
-    })
-    .join()
-    .ok()??;
-
-    let keys_arc: Arc<HashMap<String, CachedKey>> = Arc::new(result);
-    {
-        let mut cache = jwks_caches().write().unwrap();
-        cache.insert(
-            url.to_owned(),
-            JwksCache {
-                keys: (*keys_arc).clone(),
-                fetched_at: Instant::now(),
-            },
-        );
-    }
-    Some(keys_arc)
-}
+mod jwks_cache;
+#[cfg(test)]
+use jwks_cache::fetch_jwks;
+use jwks_cache::{get_jwks_keys, CachedKey};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 

@@ -2132,13 +2132,17 @@ jwtAuth:
 }
 ```
 
-JWKS keys are fetched on demand and cached for `jwksRefreshSecs` (minimum
-60s, enforced). If the JWKS endpoint is unreachable when the cache needs to
-refresh, requests fail closed — every JWT request returns 401 until the
-endpoint recovers, even for tokens signed with a key already in the (stale)
-cache. Plan JWKS endpoint availability accordingly. See
-[#163](https://github.com/lopatnov/conduit/issues/163) for planned
-background-refresh + stale-fallback behavior.
+JWKS keys are fetched on the first request that needs them (that request waits for
+the fetch; concurrent first requests share one fetch) and refreshed once they are
+`jwksRefreshSecs` old (minimum 60s, enforced). The refresh runs in the background:
+requests keep verifying against the last good keys and never wait for the network.
+
+If the JWKS endpoint is unreachable, the last good keys keep verifying tokens for up
+to 24 hours past the refresh interval, and a failed fetch is not retried for 30
+seconds. Beyond that window the keys are no longer trusted (a key the issuer has
+rotated out or revoked must not verify forever) and JWT requests return 401 until a
+fetch succeeds. If the very first fetch fails there are no keys to fall back on, so
+requests return 401 until the endpoint is reachable.
 
 ### Shared secret (HS256)
 
