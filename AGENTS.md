@@ -14,7 +14,7 @@ There is **one source of truth**; this file only points at it. Read these before
 
 Non-negotiables, in case you read nothing else:
 - Priorities: **security, performance, usability, code best practices, RFC compliance** — in that order.
-- Never push to `main`; branch + PR. One issue = one PR (slices are commits). Every PR gets a security review of its final head.
+- Never push to `main`; branch + PR. One PR = one feature; small tasks are bundled, one commit each (see `.claude/rules/workflow.md`). Every PR gets a security review of its final head.
 - Zero warnings (`cargo clippy -- -D warnings`), `cargo fmt`, tests for new behaviour; new features follow
   `.claude/skills/new-feature-crate/SKILL.md`.
 - Do not copy these instructions into other files or generate tool-specific mirrors (the old `AGENTS.md`, `.agents/` and
