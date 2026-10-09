@@ -60,7 +60,7 @@ pub fn cache_lock() -> &'static CacheKeyLockImpl {
 /// One LRU eviction manager per store (`"memory"`, a Redis URL or `disk:<dir>`), shared by every route that uses the
 /// store. Leaked on purpose, like the storage singletons: Pingora wants a `'static` reference and the set is bounded
 /// by the number of distinct `store` strings in the config.
-static EVICTION: OnceLock<DashMap<String, &'static LruManager>> = OnceLock::new();
+static EVICTION: OnceLock<DashMap<String, &LruManager>> = OnceLock::new();
 
 /// `maxSizeMb` as a byte count (1 MiB = 1 048 576 bytes), saturating on 32-bit targets.
 pub fn max_size_bytes(max_size_mb: u64) -> usize {
