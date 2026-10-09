@@ -264,10 +264,15 @@ fn spawn_refresh(url: &str, state: &Arc<UrlState>) {
 }
 
 /// Ask for a background refresh of `url`'s keys ahead of schedule, e.g. when a token names a `kid` the cache does not
-/// know (the IdP rotated its keys). It reuses [`spawn_refresh`], so it is single-flight and honours the retry backoff:
-/// a stream of forged `kid`s costs the IdP at most one fetch per [`RETRY_BACKOFF`] window.
+/// know (the IdP rotated its keys). It reuses [`spawn_refresh`] (single-flight, honours the failure backoff) and also
+/// does nothing while the cached keys are younger than [`RETRY_BACKOFF`], so a stream of forged `kid`s (the header
+/// is read before any signature check) costs the IdP at most one fetch per [`RETRY_BACKOFF`] window.
 pub(super) fn request_refresh(url: &str) {
-    spawn_refresh(url, &state_for(url));
+    let state = state_for(url);
+    if state.snapshot().is_some_and(|(_, age)| age < RETRY_BACKOFF) {
+        return;
+    }
+    spawn_refresh(url, &state);
 }
 
 /// The keys to verify with for `url`, fetching or refreshing as needed (see the module docs).

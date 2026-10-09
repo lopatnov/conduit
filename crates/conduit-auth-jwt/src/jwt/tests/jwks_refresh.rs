@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::super::jwks_cache::test_support::{age_cache, clear_backoff, is_refreshing};
-use super::super::jwks_cache::{get_jwks_keys, request_refresh, KeyMap, MAX_STALE};
+use super::super::jwks_cache::{get_jwks_keys, request_refresh, KeyMap, MAX_STALE, RETRY_BACKOFF};
 
 const REFRESH_SECS: u64 = 3600;
 
@@ -131,9 +131,17 @@ fn a_stale_cache_answers_at_once_and_refreshes_in_the_background() {
 fn an_early_refresh_request_is_single_flight() {
     let idp = MockIdp::start();
     idp.prime();
-    idp.delay_ms.store(300, Ordering::SeqCst);
 
-    // Many unknown-`kid` tokens at once start exactly one refresh, though the cache is still fresh.
+    // Keys fetched a moment ago: unknown-`kid` tokens (possibly forged) must not hit the IdP again.
+    for _ in 0..8 {
+        request_refresh(&idp.url);
+    }
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(idp.hits(), 1, "no refresh inside the cooldown");
+
+    // Once the keys are older than the cooldown, many unknown-`kid` tokens at once start exactly one refresh.
+    age_cache(&idp.url, RETRY_BACKOFF + Duration::from_secs(1));
+    idp.delay_ms.store(300, Ordering::SeqCst);
     for _ in 0..8 {
         request_refresh(&idp.url);
     }
