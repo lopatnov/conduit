@@ -12,11 +12,13 @@ say "cargo install cargo-bloat"
 cargo install cargo-bloat --locked >> "$P" 2>&1 || { say "cargo-bloat install FAILED"; }
 
 say "fetch tip + worktree"
-git -C ~/perf/conduit fetch -q origin claude/cargo-workspace-features-23qxfr >> "$P" 2>&1
+# REF defaults to origin/main; pass REF=<branch|sha> to measure something else (e.g. a PR head).
+REF="${REF:-origin/main}"
+git -C ~/perf/conduit fetch -q origin >> "$P" 2>&1
 if [ ! -d ~/perf/size ]; then
-  git -C ~/perf/conduit worktree add --detach ~/perf/size origin/claude/cargo-workspace-features-23qxfr >> "$P" 2>&1
+  git -C ~/perf/conduit worktree add --detach ~/perf/size "$REF" >> "$P" 2>&1
 else
-  git -C ~/perf/size checkout -q --detach origin/claude/cargo-workspace-features-23qxfr >> "$P" 2>&1
+  git -C ~/perf/size checkout -q --detach "$REF" >> "$P" 2>&1
 fi
 say "tip: $(git -C ~/perf/size log --oneline -1)"
 

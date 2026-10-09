@@ -225,12 +225,16 @@ def gh_json(*a):
 def index_issues():
     collection = "conduit-issues"
     ensure(collection)
-    items = []
+    items, truncated = [], False
     for kind, cmd in (("issue", "issue"), ("pr", "pr")):
-        for it in gh_json(cmd, "list", "--state", "all", "--limit", "1500", "--json",
-                          "number,title,body,state,url,updatedAt,comments"):
+        listed = gh_json(cmd, "list", "--state", "all", "--limit", "1500", "--json",
+                         "number,title,body,state,url,updatedAt,comments")
+        truncated = truncated or len(listed) >= 1500
+        for it in listed:
             it["kind"] = kind
             items.append(it)
+    if not truncated:  # a capped listing would make older items look deleted
+        prune(collection, [f"{it['kind']}#{it['number']}" for it in items])
     done = skipped = 0
     for it in items:
         key = f"{it['kind']}#{it['number']}"
