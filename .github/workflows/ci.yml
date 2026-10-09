@@ -58,7 +58,7 @@ jobs:
   # ── Declared MSRV (1.89) still compiles ─────────────────────────────────────
   # `rust-version = "1.89"` (workspace root) was only a claim until this job:
   # every other job builds on `stable`. This one `cargo check`s the default and
-  # `standard` builds on the floor (the floor is set by kube 4.2). Tests are not run here: a dev-dependency
+  # `standard`/`kubernetes` builds on the floor (the floor is set by kube 4.2). Tests are not run here: a dev-dependency
   # (`serial_test 4`) needs 1.93.1. `--features wasm`/`full` have a higher floor
   # (conduit-plugin-wasm's own `rust-version`) and are not covered.
   msrv:
@@ -81,6 +81,10 @@ jobs:
 
       - name: check (standard features)
         run: cargo check --locked -p lopatnov-conduit --features standard
+
+      # kube 4.2 is what sets the 1.89 floor; default/standard do not pull it in.
+      - name: check (kubernetes)
+        run: cargo check --locked -p lopatnov-conduit --features kubernetes
 
   # ── Build + test with all optional features enabled ─────────────────────────
   ci-features:
