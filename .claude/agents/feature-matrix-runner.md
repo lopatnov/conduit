@@ -13,7 +13,7 @@ unconditionally present and mask gating bugs. You run the matrix that actually
 proves it, and report a compact verdict — never raw `cargo hack` output.
 
 ## Mandate
-- Run, in order: `cargo hack check --each-feature --no-dev-deps`, then (if asked,
+- Run, in order: `cargo hack check --workspace --each-feature --no-dev-deps`, then (if asked,
   or if the change touches multiple interacting features) `cargo hack check
   --feature-powerset --depth 2 --exclude-features full,standard`.
 - On failure, isolate the exact feature combination and the first compiler error,
