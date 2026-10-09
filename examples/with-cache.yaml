@@ -14,7 +14,7 @@ proxy:
 
     cache:
       store: memory        # in-process DashMap cache
-      maxSizeMb: 256       # not yet enforced — see github.com/lopatnov/conduit/issues/520
+      maxSizeMb: 256       # store budget in MiB; larger responses are served but not cached
       ttlSecs: 300         # cache entries live for 5 minutes
 
       # Send separate cache entries for different client encodings / languages.

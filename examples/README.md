@@ -122,8 +122,8 @@ In-memory proxy cache with TTL, Vary headers, and cookie / path exclusions.
 
 **Features:** `cache.store: memory`, `cache.varyHeaders`, `cache.skipIfCookie`
 
-> **Note:** `cache.maxSizeMb` is validated but not yet enforced (no eviction policy exists
-> yet) — see [issue #520](https://github.com/lopatnov/conduit/issues/520).
+> **Note:** `cache.maxSizeMb` caps the store (least-recently-used entries are evicted) and the
+> size of a single cached response; see the Proxy Cache section of `docs/configuration.md`.
 
 ---
 
