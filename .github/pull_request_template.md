@@ -8,6 +8,14 @@
 
 Closes #
 
+## Found while here
+
+<!-- Every bug/oddity noticed in the code this PR touches, with what was done about it. Delete the section if none. -->
+
+| What | Disposition |
+|---|---|
+| | fixed in `<sha>` / deferred → #N / not a bug (why) |
+
 ## Type of Change
 
 - [ ] Bug fix

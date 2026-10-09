@@ -1,3 +1,8 @@
+---
+name: best-practices
+description: Repo-wide development habits for conduit - re-audit shipped code, secure by default, size a batch to its risk, one coherent branch per change, write process lessons down when found. Load before ordinary issue work (the /issue command leans on it).
+---
+
 # Development best practices (repo-wide, not migration-specific)
 
 > Extracted 2026-10-03 at the owner's explicit request from
