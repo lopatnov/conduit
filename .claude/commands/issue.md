@@ -13,7 +13,7 @@ argument-hint: "<issue-number> [issue-number ...]  (omit to pick up unfinished w
 > migration with its own frozen integration branch — but for ordinary issue work, this is
 > the command to run. The general habits either command leans on (early audits, secure
 > coding, batch sizing, branch grouping, writing a lesson down immediately) live in
-> `.claude/rules/best-practices.md`, not duplicated here.
+> `.claude/skills/best-practices/SKILL.md`, not duplicated here.
 
 Takes one or more issue numbers as arguments (`/issue 531`, `/issue 480 481` for two
 issues that genuinely belong in one PR). With no arguments, look for unfinished work first

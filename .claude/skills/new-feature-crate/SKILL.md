@@ -19,7 +19,7 @@ Moving **existing** code into a crate is a different job: `CONTRIBUTING.md` "Car
    `optional = true` behind the crate's own feature `<name>`. `warnings.rs`: `pub const COMPILED: bool = cfg!(feature = "<name>")`
    and `feature_warning(i, cfg) -> Option<String>`, with a unit test that pins the text. Lib name is `conduit_<name>`, package
    `lopatnov-conduit-<name>` (decision #32).
-2. **Root `Cargo.toml`** — `[workspace.dependencies]` entry (`path` + `version = "2.0.0"`), the mandatory dependency, the feature
+2. **Root `Cargo.toml`** — `crates/conduit-<name>` in `[workspace].members`, `[workspace.dependencies]` entry (`path` + `version = "2.0.0"`), the mandatory dependency, the feature
    `<name> = ["lopatnov-conduit-<name>/<name>", "lopatnov-conduit-runtime/<name>", …every crate that gates code on it]`, membership in
    `standard`/`full`/profile lists (a niche or heavy feature — chaos, scripting/WASM — goes in `full` only), `[[test]]
    required-features`. Keep the version string in lockstep: `scripts/check-workspace-versions.sh`.

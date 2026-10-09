@@ -13,7 +13,7 @@ argument-hint: "(none — reads state from GitHub: open PRs, #114's open sub-iss
 > work now, one or several issue numbers producing one PR.** The general habits this
 > command embodied — periodic integrity audits, unconditional security review, batch-sizing
 > work to its risk, grouping related work into one branch, writing a lesson down the instant
-> it's found — are extracted into `.claude/rules/best-practices.md`, which `/issue` leans on
+> it's found — are extracted into `.claude/skills/best-practices/SKILL.md`, which `/issue` leans on
 > and which applies to all work in this repo, not only a migration. This file stays as a
 > concrete, battle-tested *template* for running a similarly large multi-PR effort again (a
 > future major version, another big structural migration) — its step numbers and precedents
