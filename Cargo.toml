@@ -9,7 +9,7 @@ version    = "2.0.0"
 edition    = "2021"
 # MSRV for default/standard/kubernetes builds — the lowest floor set by a
 # mandatory dependency (kube 4.2 needs 1.89). `--features wasm` (and so
-# `full`) needs more: wasmtime 48 requires 1.95, overridden directly on
+# `full`) needs more: wasmtime 49 requires 1.96, overridden directly on
 # crates/conduit-plugin-wasm's own [package] (issue #114/#148).
 rust-version = "1.89"
 license    = "Apache-2.0"
