@@ -1,6 +1,6 @@
 # Previous full text of `.claude/rules/index.md` (2026-10-03, before the instruction diet #512)
 
-Kept for the origin stories (dates, incidents) that the compact rules no longer carry.
+Kept for the origin stories (dates, incidents) that the compact rules no longer carry. Verbatim except three edits made when archiving: `crate-extractor` entries renamed to `crate-steward` (two places), and the `verify-handed-over-task` entry (added on main after the diet branched) is not in this copy — it lives in the compact `index.md`.
 
 # Working rules for this session
 
