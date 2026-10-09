@@ -235,7 +235,7 @@ optional feature (crate + Cargo feature + forwarding features + config schema + 
 docs) is described once, in [`.claude/skills/new-feature-crate/SKILL.md`](.claude/skills/new-feature-crate/SKILL.md)
 (closes [#259](https://github.com/lopatnov/conduit/issues/259)); `crates/conduit-faults` is the smallest worked
 example. Same PR bar as everything else: `/build` on default and `--features full`, `feature-matrix-runner`
-(`cargo hack --each-feature`), and `security-engineer` sign-off before merge.
+(`cargo hack --workspace --each-feature --no-dev-deps`), and `security-engineer` sign-off before merge.
 
 ---
 

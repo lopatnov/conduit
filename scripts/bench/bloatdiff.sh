@@ -2,9 +2,11 @@
 # Per-crate .text difference between Conduit --no-default-features and the smallest Pingora proxy (same profile). Run after size.sh.
 set -uo pipefail
 export CARGO_PROFILE_RELEASE_STRIP=none
-cd ~/perf/size && cargo bloat --release --no-default-features -p lopatnov-conduit --crates -n 300 > ~/perf/bloat_conduit.txt 2>/dev/null
+cd ~/perf/size || exit 1
+cargo bloat --release --no-default-features -p lopatnov-conduit --crates -n 300 > ~/perf/bloat_conduit.txt || { echo "bloat conduit FAILED" >&2; exit 1; }
 export CARGO_PROFILE_RELEASE_LTO=true CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
-cd ~/perf/pp_fat && cargo bloat --release --crates -n 300 > ~/perf/bloat_pp.txt 2>/dev/null
+cd ~/perf/pp_fat || exit 1
+cargo bloat --release --crates -n 300 > ~/perf/bloat_pp.txt || { echo "bloat pp FAILED" >&2; exit 1; }
 python3 - <<'PY'
 import re, os
 def load(p):
@@ -20,6 +22,8 @@ def load(p):
     return d, total
 c, ct = load("~/perf/bloat_conduit.txt")
 p, pt = load("~/perf/bloat_pp.txt")
+if not c or not p or ct == 0 or pt == 0:
+    raise SystemExit("could not parse cargo-bloat output (format changed?)")
 print(f".text: conduit {ct/1024:.2f} MiB, smallest pingora proxy {pt/1024:.2f} MiB, diff {(ct-pt)/1024:.2f} MiB")
 own = sum(v for k, v in c.items() if k.startswith("conduit"))
 print(f"conduit_* crates (ours): {own/1024:.2f} MiB")

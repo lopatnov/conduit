@@ -3,7 +3,7 @@
 # strip so cargo-bloat can read symbols, (2) its stripped size, (3) the smallest Pingora proxy built with the SAME profile.
 # Output: ~/perf/size_report.txt (progress in ~/perf/size_progress.txt). Needs ~/perf/conduit (a clone) and ~/perf/pp (floors/pingora_min.rs as a crate).
 set -uo pipefail
-cd ~/perf
+cd ~/perf || exit 1
 P=~/perf/size_progress.txt; R=~/perf/size_report.txt
 : > "$P"; : > "$R"
 say() { echo "[$(date +%H:%M:%S)] $*" >> "$P"; }
@@ -14,16 +14,16 @@ cargo install cargo-bloat --locked >> "$P" 2>&1 || { say "cargo-bloat install FA
 say "fetch tip + worktree"
 # REF defaults to origin/main; pass REF=<branch|sha> to measure something else (e.g. a PR head).
 REF="${REF:-origin/main}"
-git -C ~/perf/conduit fetch -q origin >> "$P" 2>&1
+git -C ~/perf/conduit fetch -q origin >> "$P" 2>&1 || { say "fetch FAILED"; exit 1; }
 if [ ! -d ~/perf/size ]; then
-  git -C ~/perf/conduit worktree add --detach ~/perf/size "$REF" >> "$P" 2>&1
+  git -C ~/perf/conduit worktree add --detach ~/perf/size "$REF" >> "$P" 2>&1 || { say "worktree FAILED"; exit 1; }
 else
-  git -C ~/perf/size checkout -q --detach "$REF" >> "$P" 2>&1
+  git -C ~/perf/size checkout -q --detach "$REF" >> "$P" 2>&1 || { say "checkout $REF FAILED"; exit 1; }
 fi
 say "tip: $(git -C ~/perf/size log --oneline -1)"
 
 say "build no-default-features (profile: lto=true cgu=1, strip=none for symbols)"
-cd ~/perf/size
+cd ~/perf/size || { say "cd ~/perf/size FAILED"; exit 1; }
 export CARGO_PROFILE_RELEASE_STRIP=none
 cargo build --release --no-default-features -p lopatnov-conduit >> "$P" 2>&1 || say "conduit build FAILED"
 BIN=target/release/conduit

@@ -37,6 +37,16 @@ MAX_CHARS = 1400
 BATCH = 48
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would forward the api-key header and repository text to another origin; treat any 3xx as an error."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def http(method, url, body=None, timeout=300):
     if not url.startswith(("http://", "https://")):
         raise SystemExit(f"refusing non-HTTP URL {url!r} (QDRANT_URL / LM_URL must be http:// or https://)")
@@ -46,7 +56,7 @@ def http(method, url, body=None, timeout=300):
         headers["api-key"] = os.environ["QDRANT_API_KEY"]
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _OPENER.open(req, timeout=timeout) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
         raise SystemExit(f"{method} {url} -> {e.code}: {e.read()[:300]!r}")
