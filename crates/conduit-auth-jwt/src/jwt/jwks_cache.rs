@@ -275,9 +275,10 @@ pub(super) fn get_jwks_keys(url: &str, refresh_secs: u64) -> Option<Arc<KeyMap>>
         if age < refresh {
             return Some(keys);
         }
-        // Stale: refresh in the background, and keep serving the last good keys while that runs or fails.
-        spawn_refresh(url, &state);
+        // Stale but still within MAX_STALE: refresh in the background, and keep serving the last good keys while
+        // that runs or fails. Past MAX_STALE the blocking single-flight path below does the fetch (no second one).
         if age < refresh.saturating_add(MAX_STALE) {
+            spawn_refresh(url, &state);
             return Some(keys);
         }
     }

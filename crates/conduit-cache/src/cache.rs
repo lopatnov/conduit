@@ -79,6 +79,11 @@ pub fn eviction_manager(
 ) -> Option<&'static (dyn EvictionManager + Sync)> {
     let mb = max_size_mb?;
     let managers = EVICTION.get_or_init(DashMap::new);
+    // Hot path: a read lookup avoids the key allocation and the shard write lock once the manager exists.
+    if let Some(m) = managers.get(store) {
+        let manager: &'static LruManager = *m;
+        return Some(manager);
+    }
     let manager: &'static LruManager = *managers
         .entry(store.to_owned())
         .or_insert_with(|| Box::leak(Box::new(LruManager::new(max_size_bytes(mb)))));
