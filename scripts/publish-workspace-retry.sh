@@ -26,7 +26,7 @@ while true; do
         echo "All workspace crates are published."
         exit 0
     fi
-    if ! grep -q "429 Too Many Requests" "$log"; then
+    if ! grep -Eq "429 Too Many Requests|HTTP 429" "$log"; then
         echo "Publish failed for a reason other than the crates.io rate limit." >&2
         exit 1
     fi
@@ -37,9 +37,13 @@ while true; do
     if [[ -n "$retry_at" ]]; then
         target=$(date -u -d "$retry_at" +%s 2>/dev/null || true)
     fi
-    # No parsable time (or one already past): wait the documented 10 minutes.
+    # No parsable time (or one already past): the new-crate limit refills one
+    # crate per ~10 minutes; any other 429 (API crawler, new-version bucket) is
+    # much shorter, so retry sooner.
+    fallback=90
+    grep -q "new crates" "$log" && fallback=600
     if [[ -z "$target" || "$target" -le "$now" ]]; then
-        target=$((now + 600))
+        target=$((now + fallback))
     fi
     wait=$((target - now + 15))
     if (( now - start + wait > deadline_secs )); then

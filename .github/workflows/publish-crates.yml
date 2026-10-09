@@ -12,9 +12,8 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Release tag to publish from"
+        description: "Release tag to publish from (for example v2.0.0)"
         required: true
-        default: "v2.0.0"
 
 permissions:
   contents: read
@@ -29,6 +28,15 @@ jobs:
       cancel-in-progress: false
 
     steps:
+      - name: Require a release tag
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          if [[ ! "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ref must be a release tag like v2.0.0, got: $REF" >&2
+            exit 1
+          fi
+
       - name: Check out the release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -49,4 +57,5 @@ jobs:
       - name: Publish workspace crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_TERM_COLOR: never
         run: bash ci/scripts/publish-workspace-retry.sh src
