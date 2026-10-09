@@ -29,20 +29,12 @@ pub fn validate_cache_config(
         }
     }
 
-    // Issue #508 (closed by this fix — the warning path is the alternative
-    // scope #508 itself proposed) found that maxSizeMb is parsed and stored
-    // but has no enforcement code anywhere — no LRU/eviction/admission policy
-    // is implemented, so the cache can grow unbounded past this value. The
-    // remaining enforcement work is tracked separately at #520 (still open).
-    // Surface it as an advisory warning (not a hard error — the field itself
-    // is harmless to leave set) so an operator relying on it for a memory
-    // budget isn't silently unprotected.
-    if cache.max_size_mb.is_some() {
-        errors.push(ValidationError::warning(
+    // `maxSizeMb` is the size budget of the store (LRU eviction, #520); the JSON
+    // Schema already requires >= 1. A zero budget would admit nothing, so it is a mistake, not "unlimited".
+    if cache.max_size_mb == Some(0) {
+        errors.push(ValidationError::new(
             format!("{prefix}.maxSizeMb"),
-            "cache.maxSizeMb is configured but not currently enforced — no eviction policy \
-             is implemented, so the cache may grow unbounded past this limit. See \
-             https://github.com/lopatnov/conduit/issues/520 for status.",
+            "maxSizeMb must be at least 1 (omit it for no size limit)",
         ));
     }
 }
@@ -67,34 +59,30 @@ mod tests {
         }
     }
 
-    #[test]
-    fn warning_for_cache_max_size_mb_unenforced() {
+    fn max_size_findings(max_size_mb: Option<u64>) -> Vec<ValidationError> {
         let cache = CacheConfig {
-            max_size_mb: Some(256),
+            max_size_mb,
             ..minimal_cache()
         };
         let mut e = Vec::new();
         validate_cache_config(&cache, "sites[0].proxy.cache", &mut e);
-        assert!(
-            e.iter()
-                .any(|x| x.message.contains("maxSizeMb") && x.message.contains("issues/520")),
-            "cache.maxSizeMb must warn that it's unenforced: {e:?}"
-        );
-        assert!(
-            e.iter()
-                .filter(|x| x.message.contains("maxSizeMb"))
-                .all(|x| x.severity == conduit_config_core::validation::Severity::Warning),
-            "the maxSizeMb finding must be advisory, not a hard error: {e:?}"
+        e
+    }
+
+    #[test]
+    fn zero_max_size_mb_is_a_hard_error() {
+        let e = max_size_findings(Some(0));
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(e[0].path, "sites[0].proxy.cache.maxSizeMb");
+        assert_eq!(
+            e[0].severity,
+            conduit_config_core::validation::Severity::Error
         );
     }
 
     #[test]
-    fn no_warning_for_cache_without_max_size_mb() {
-        let mut e = Vec::new();
-        validate_cache_config(&minimal_cache(), "sites[0].proxy.cache", &mut e);
-        assert!(
-            !e.iter().any(|x| x.message.contains("maxSizeMb")),
-            "no maxSizeMb warning expected when field is unset: {e:?}"
-        );
+    fn a_positive_or_absent_max_size_mb_is_clean() {
+        assert!(max_size_findings(Some(256)).is_empty());
+        assert!(max_size_findings(None).is_empty());
     }
 }

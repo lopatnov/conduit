@@ -10,6 +10,9 @@ use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
 use conduit_core::util::host::host_without_port;
+use dashmap::DashMap;
+use pingora_cache::eviction::simple_lru::Manager as LruManager;
+use pingora_cache::eviction::EvictionManager;
 use pingora_cache::lock::{CacheKeyLockImpl, CacheLock};
 use pingora_cache::{CacheKey, CacheMeta, MemCache, NoCacheReason, RespCacheable};
 use pingora_http::ResponseHeader;
@@ -50,6 +53,49 @@ static CACHE_LOCK: OnceLock<CacheLock> = OnceLock::new();
 /// Return a `'static` reference to the shared [`CacheKeyLockImpl`].
 pub fn cache_lock() -> &'static CacheKeyLockImpl {
     CACHE_LOCK.get_or_init(|| CacheLock::new(Duration::from_secs(10)))
+}
+
+// ── Size budget (`maxSizeMb`) ─────────────────────────────────────────────────
+
+/// One LRU eviction manager per store (`"memory"`, a Redis URL or `disk:<dir>`), shared by every route that uses the
+/// store. Leaked on purpose, like the storage singletons: Pingora wants a `'static` reference and the set is bounded
+/// by the number of distinct `store` strings in the config.
+static EVICTION: OnceLock<DashMap<String, &LruManager>> = OnceLock::new();
+
+/// `maxSizeMb` as a byte count (1 MiB = 1 048 576 bytes), saturating on 32-bit targets.
+pub fn max_size_bytes(max_size_mb: u64) -> usize {
+    usize::try_from(max_size_mb.saturating_mul(1024 * 1024)).unwrap_or(usize::MAX)
+}
+
+/// The LRU eviction manager that enforces `maxSizeMb` on `store`, or `None` when neither this route nor an earlier one
+/// configured a budget for the store.
+///
+/// The capacity is fixed by the first route that uses the store: a later route with a different `maxSizeMb` on the same
+/// store shares that budget, and changing it needs a restart (a hot reload keeps the running manager). The manager
+/// tracks the entries admitted since the process started, so entries a persistent store (disk, Redis) already held
+/// before the restart do not count against the budget until they are rewritten.
+pub fn eviction_manager(
+    store: &str,
+    max_size_mb: Option<u64>,
+) -> Option<&'static (dyn EvictionManager + Sync)> {
+    let managers = EVICTION.get_or_init(DashMap::new);
+    // A route that sets no budget still shares the store with one that does: reuse the store's manager, so its
+    // writes stay accounted for (Pingora evicts only for writes made with a manager).
+    let Some(mb) = max_size_mb else {
+        return managers.get(store).map(|m| {
+            let manager: &'static LruManager = *m;
+            manager as &'static (dyn EvictionManager + Sync)
+        });
+    };
+    // Hot path: a read lookup avoids the key allocation and the shard write lock once the manager exists.
+    if let Some(m) = managers.get(store) {
+        let manager: &'static LruManager = *m;
+        return Some(manager);
+    }
+    let manager: &'static LruManager = *managers
+        .entry(store.to_owned())
+        .or_insert_with(|| Box::leak(Box::new(LruManager::new(max_size_bytes(mb)))));
+    Some(manager)
 }
 
 // ── Cache key ─────────────────────────────────────────────────────────────────
@@ -335,6 +381,46 @@ pub fn should_early_refresh(remaining_secs: u64, early_window_secs: u32) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn max_size_bytes_is_mebibytes_and_saturates() {
+        assert_eq!(max_size_bytes(1), 1_048_576);
+        assert_eq!(max_size_bytes(256), 256 * 1_048_576);
+        assert_eq!(max_size_bytes(u64::MAX), usize::MAX);
+    }
+
+    #[test]
+    fn no_eviction_manager_without_a_budget() {
+        assert!(eviction_manager("memory-no-budget", None).is_none());
+    }
+
+    #[test]
+    fn a_route_without_a_budget_reuses_the_stores_manager() {
+        let store = "disk:/tmp/conduit-eviction-shared";
+        assert!(eviction_manager(store, None).is_none(), "no manager yet");
+        let a = eviction_manager(store, Some(4)).expect("budget configured");
+        let b = eviction_manager(store, None).expect("the store already has a budget");
+        assert!(std::ptr::addr_eq(a, b));
+    }
+
+    #[test]
+    fn eviction_manager_is_shared_per_store_and_evicts_over_budget() {
+        let store = "disk:/tmp/conduit-eviction-test";
+        let a = eviction_manager(store, Some(1)).expect("budget configured");
+        // The same store string yields the same manager, even if a later route asks for a different budget.
+        let b = eviction_manager(store, Some(500)).expect("budget configured");
+        assert!(std::ptr::addr_eq(a, b));
+
+        let fresh_until = SystemTime::now() + Duration::from_secs(60);
+        let key = |n: u8| {
+            let ck = CacheKey::new(format!("host\0p{n}"), "");
+            pingora_cache::eviction::CacheEntryKey::from_entry_id(ck.to_compact(), None)
+        };
+        // 1 MiB budget: two 600 KiB entries cannot both stay, the least recently used one is evicted.
+        assert!(a.admit(key(1), 600 * 1024, fresh_until).is_empty());
+        let evicted = a.admit(key(2), 600 * 1024, fresh_until);
+        assert_eq!(evicted.len(), 1, "the first entry must be evicted");
+    }
 
     fn cfg(ttl_secs: u64) -> CacheConfig {
         CacheConfig {

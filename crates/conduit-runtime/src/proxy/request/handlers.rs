@@ -230,9 +230,9 @@ impl ConduitProxy {
                 // feature otherwise degrades to. Without `static`,
                 // `sites[i].fallback`'s configured behavior (custom body,
                 // byAccept, file serving) is unavailable — matching
-                // `feature_warnings()`'s own "fallback responses (including
-                // the site's default 404) will be disabled" wording — so
-                // this always serves the same bare 404 `FallbackHandler`
+                // `feature_warnings()`'s "customised fallback ... will be
+                // ignored and unmatched requests get the plain 404" wording
+                // — so this always serves the same bare 404 `FallbackHandler`
                 // already serves today when no `fallback:` is configured at
                 // all.
                 #[cfg(not(feature = "static"))]

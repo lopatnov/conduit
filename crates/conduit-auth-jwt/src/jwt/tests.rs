@@ -8,6 +8,7 @@ use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde_json::json;
 
 mod jwks;
+mod jwks_refresh;
 
 fn make_hs256_token(secret: &str, claims: serde_json::Value) -> String {
     let key = EncodingKey::from_secret(secret.as_bytes());

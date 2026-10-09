@@ -76,7 +76,7 @@ name, missing `v` prefix on the Trivy version pin — all three real regressions
   docker buildx imagetools inspect ghcr.io/lopatnov/conduit:<x.y.z>
   docker buildx imagetools inspect ghcr.io/lopatnov/conduit:<x.y.z>-full
   ```
-- **npm package** (if published as part of this release): `npm view lopatnov-conduit version`
+- **npm package** (if published as part of this release): `npm view @lopatnov/conduit version`
   matches the tag.
 - **crates.io: since the workspace migration (#114/#148), one release publishes ~33
   packages, not just `lopatnov-conduit`.** The `publish-crates` job

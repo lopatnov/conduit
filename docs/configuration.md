@@ -1830,10 +1830,14 @@ faultInjection:
 > **Requires** `cargo build --features cache`
 > For Redis-backed cache also add `--features redis`; for disk cache add `--features disk-cache`.
 
-> **Note:** `cache.maxSizeMb` is parsed and validated, but not yet enforced — no eviction
-> policy is implemented, so the cache can grow unbounded past this limit. `conduit validate`
-> emits an advisory warning when it's set. See [issue #520](https://github.com/lopatnov/conduit/issues/520)
-> for status.
+> **Size limit:** `cache.maxSizeMb` bounds the store with an LRU eviction manager
+> (least-recently-used entries are purged once the total exceeds the budget). There is no per-body
+> cap: a single response larger than the budget is written and then evicted again, because capping
+> bodies without a `Content-Length` would abort the client mid-transfer. Limits of the current
+> implementation: the budget of a store is fixed by the first route that
+> uses it (changing `maxSizeMb` needs a restart, not a reload), routes sharing a `store` share its
+> budget, and for `disk:`/`redis://` stores only entries admitted since the process started are
+> counted, so entries left over from a previous run are not included until they are rewritten.
 
 ```yaml
 # YAML
@@ -1843,7 +1847,7 @@ proxy:
     cache:
       store: memory
       ttlSecs: 60
-      maxSizeMb: 256 # not yet enforced — see #520
+      maxSizeMb: 256 # store budget (MiB), LRU eviction
       staleWhileRevalidateSecs: 300 # serve stale up to 5 min while refreshing
       staleIfErrorSecs: 600 # serve stale up to 10 min if upstream fails
       varyHeaders: [Accept-Language, Accept-Encoding]
@@ -1880,7 +1884,7 @@ proxy:
 | -------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------- |
 | `store`                    | string   | —             | `"memory"`, `"redis://..."` / `"rediss://..."` (`--features redis`), `"disk:/path"` (`--features disk-cache`) |
 | `ttlSecs`                  | number   | —             | Fresh cache TTL (seconds)                                                          |
-| `maxSizeMb`                | number   | —             | Memory budget; **not yet enforced** ([#520](https://github.com/lopatnov/conduit/issues/520)) |
+| `maxSizeMb`                | number   | —             | Size budget of the store in MiB (LRU eviction) (≥ 1; unset = unlimited) |
 | `staleWhileRevalidateSecs` | number   | `0`           | Serve stale while refreshing in background (RFC 5861)                              |
 | `staleIfErrorSecs`         | number   | `0`           | Serve stale when upstream returns 5xx, including after retries are exhausted (RFC 5861) |
 | `earlyRefreshSecs`         | number   | `0`           | Refresh cache in the background when remaining TTL < this value (see below)        |
@@ -2128,13 +2132,17 @@ jwtAuth:
 }
 ```
 
-JWKS keys are fetched on demand and cached for `jwksRefreshSecs` (minimum
-60s, enforced). If the JWKS endpoint is unreachable when the cache needs to
-refresh, requests fail closed — every JWT request returns 401 until the
-endpoint recovers, even for tokens signed with a key already in the (stale)
-cache. Plan JWKS endpoint availability accordingly. See
-[#163](https://github.com/lopatnov/conduit/issues/163) for planned
-background-refresh + stale-fallback behavior.
+JWKS keys are fetched on the first request that needs them (that request waits for
+the fetch; concurrent first requests share one fetch) and refreshed once they are
+`jwksRefreshSecs` old (minimum 60s, enforced). The refresh runs in the background:
+requests keep verifying against the last good keys and never wait for the network.
+
+If the JWKS endpoint is unreachable, the last good keys keep verifying tokens for up
+to 24 hours past the refresh interval, and a failed fetch is not retried for 30
+seconds. Beyond that window the keys are no longer trusted (a key the issuer has
+rotated out or revoked must not verify forever) and JWT requests return 401 until a
+fetch succeeds. If the very first fetch fails there are no keys to fall back on, so
+requests return 401 until the endpoint is reachable.
 
 ### Shared secret (HS256)
 

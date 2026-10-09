@@ -35,8 +35,8 @@ pub fn fallback_feature_warning(i: usize, config: Option<&FallbackConfig>) -> Op
 fn fallback_feature_warning_text(i: usize) -> String {
     format!(
         "sites[{i}].fallback is configured but Conduit was compiled without the `static` \
-         feature — fallback responses (including the site's default 404) will be \
-         disabled. \
+         feature — the customised fallback (static file, custom status or body) will \
+         be ignored and unmatched requests get the plain 404. \
          Recompile with `--features static` to enable."
     )
 }
@@ -56,8 +56,9 @@ mod tests {
         assert_eq!(
             fallback_feature_warning_text(3),
             "sites[3].fallback is configured but Conduit was compiled without the \
-             `static` feature — fallback responses (including the site's default 404) \
-             will be disabled. Recompile with `--features static` to enable."
+             `static` feature — the customised fallback (static file, custom status or \
+             body) will be ignored and unmatched requests get the plain 404. Recompile \
+             with `--features static` to enable."
         );
     }
 
