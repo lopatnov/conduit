@@ -18,8 +18,8 @@ route, or CLI flag changed by the split itself. Issue #148 wires up real
 multi-crate publishing: every `lopatnov-conduit-*` member crate is
 `cargo publish --workspace`-able in dependency order (native cargo, not
 `cargo-workspaces`/`release-plz`), pinned at `2.0.0` in lockstep, with its own
-MSRV (`rust-version`, 1.89 workspace-wide / 1.95 for `conduit-plugin-wasm`
-which needs wasmtime 48+); CI proves the publish would succeed
+MSRV (`rust-version`, 1.89 workspace-wide / 1.96 for `conduit-plugin-wasm`
+which needs wasmtime 49+); CI proves the publish would succeed
 (`workspace-publish-dryrun`) on every PR. The security, correctness, and
 behavior fixes below landed alongside the migration and apply to 2.0.0
 regardless of which feature crates a given build pulls in.
