@@ -210,7 +210,8 @@ The crate that owns a config block also owns what `config::validate` says about 
   The server crate's `crates/conduit-server/src/config/validate/site.rs` calls it. A check that needs the whole `SiteConfig`/`AppConfig` (a
   combination of two blocks, proxy-loop detection, the Redis cross-site check) stays in `conduit-server`
   (`crates/conduit-server/src/config/validate/{proxy_loop,cross_site}.rs`), not in a feature member: the
-  `layer-boundaries` CI job rejects those types outside the config/server crates.
+  `layer-boundaries` CI job rejects those types in feature crates (see `ALLOWED_CRATES` in
+  `scripts/check-layer-boundaries.sh`).
 - **`src/warnings.rs`** — `pub const COMPILED: bool = cfg!(feature = "<this crate's feature>")` and
   `pub fn feature_warning(i, cfg) -> Option<String>`, which is `None` when the feature is compiled in or the block is
   absent. The message text lives here, not in the root. A test that needs the whole site (`redis`, `cache`) is
