@@ -263,6 +263,13 @@ fn spawn_refresh(url: &str, state: &Arc<UrlState>) {
     }
 }
 
+/// Ask for a background refresh of `url`'s keys ahead of schedule, e.g. when a token names a `kid` the cache does not
+/// know (the IdP rotated its keys). It reuses [`spawn_refresh`], so it is single-flight and honours the retry backoff:
+/// a stream of forged `kid`s costs the IdP at most one fetch per [`RETRY_BACKOFF`] window.
+pub(super) fn request_refresh(url: &str) {
+    spawn_refresh(url, &state_for(url));
+}
+
 /// The keys to verify with for `url`, fetching or refreshing as needed (see the module docs).
 ///
 /// `refresh_secs` is the age after which a refresh is started. `None` means no usable keys: the fetch failed (or was

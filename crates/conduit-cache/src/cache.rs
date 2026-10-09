@@ -67,7 +67,8 @@ pub fn max_size_bytes(max_size_mb: u64) -> usize {
     usize::try_from(max_size_mb.saturating_mul(1024 * 1024)).unwrap_or(usize::MAX)
 }
 
-/// The LRU eviction manager that enforces `maxSizeMb` on `store`, or `None` when no budget is configured.
+/// The LRU eviction manager that enforces `maxSizeMb` on `store`, or `None` when neither this route nor an earlier one
+/// configured a budget for the store.
 ///
 /// The capacity is fixed by the first route that uses the store: a later route with a different `maxSizeMb` on the same
 /// store shares that budget, and changing it needs a restart (a hot reload keeps the running manager). The manager
@@ -77,8 +78,15 @@ pub fn eviction_manager(
     store: &str,
     max_size_mb: Option<u64>,
 ) -> Option<&'static (dyn EvictionManager + Sync)> {
-    let mb = max_size_mb?;
     let managers = EVICTION.get_or_init(DashMap::new);
+    // A route that sets no budget still shares the store with one that does: reuse the store's manager, so its
+    // writes stay accounted for (Pingora evicts only for writes made with a manager).
+    let Some(mb) = max_size_mb else {
+        return managers.get(store).map(|m| {
+            let manager: &'static LruManager = *m;
+            manager as &'static (dyn EvictionManager + Sync)
+        });
+    };
     // Hot path: a read lookup avoids the key allocation and the shard write lock once the manager exists.
     if let Some(m) = managers.get(store) {
         let manager: &'static LruManager = *m;
@@ -384,6 +392,15 @@ mod tests {
     #[test]
     fn no_eviction_manager_without_a_budget() {
         assert!(eviction_manager("memory-no-budget", None).is_none());
+    }
+
+    #[test]
+    fn a_route_without_a_budget_reuses_the_stores_manager() {
+        let store = "disk:/tmp/conduit-eviction-shared";
+        assert!(eviction_manager(store, None).is_none(), "no manager yet");
+        let a = eviction_manager(store, Some(4)).expect("budget configured");
+        let b = eviction_manager(store, None).expect("the store already has a budget");
+        assert!(std::ptr::addr_eq(a, b));
     }
 
     #[test]

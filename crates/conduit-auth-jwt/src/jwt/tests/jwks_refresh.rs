@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::super::jwks_cache::test_support::{age_cache, clear_backoff, is_refreshing};
-use super::super::jwks_cache::{get_jwks_keys, KeyMap, MAX_STALE};
+use super::super::jwks_cache::{get_jwks_keys, request_refresh, KeyMap, MAX_STALE};
 
 const REFRESH_SECS: u64 = 3600;
 
@@ -123,6 +123,23 @@ fn a_stale_cache_answers_at_once_and_refreshes_in_the_background() {
 
     // The refreshed keys are fresh again: no further fetch.
     assert!(get_jwks_keys(&idp.url, REFRESH_SECS).is_some());
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(idp.hits(), 2);
+}
+
+#[test]
+fn an_early_refresh_request_is_single_flight() {
+    let idp = MockIdp::start();
+    idp.prime();
+    idp.delay_ms.store(300, Ordering::SeqCst);
+
+    // Many unknown-`kid` tokens at once start exactly one refresh, though the cache is still fresh.
+    for _ in 0..8 {
+        request_refresh(&idp.url);
+    }
+    wait_until("the requested refresh to finish", || {
+        idp.hits() == 2 && !is_refreshing(&idp.url)
+    });
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(idp.hits(), 2);
 }

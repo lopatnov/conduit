@@ -25,7 +25,7 @@ use crate::config::JwtAuthConfig;
 mod jwks_cache;
 #[cfg(test)]
 use jwks_cache::fetch_jwks;
-use jwks_cache::{get_jwks_keys, CachedKey};
+use jwks_cache::{get_jwks_keys, request_refresh, CachedKey};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -197,7 +197,15 @@ fn validate_with_jwks(
     // if there's more than one (no way to know which one the token means).
     let header = decode_header(token).map_err(|_| "invalid JWT header")?;
     let key_material = match header.kid.as_deref() {
-        Some(kid) => keys.get(kid).ok_or("no matching JWKS key found for kid")?,
+        Some(kid) => match keys.get(kid) {
+            Some(k) => k,
+            None => {
+                // Probably a key rotation: fetch the new set in the background (single-flight, with backoff) so
+                // the next request can verify; this one is still rejected.
+                request_refresh(jwks_url);
+                return Err("no matching JWKS key found for kid");
+            }
+        },
         None => match keys.len() {
             1 => keys.values().next().expect("checked len == 1"),
             0 => return Err("no matching JWKS key found for kid"),
