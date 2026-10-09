@@ -119,6 +119,14 @@ pub fn validate_route_config(
     // passed silently. Now shares the same validation as site/consumer level.
     if let Some(rate_limit) = &cfg.rate_limit {
         validate_rate_limit(rate_limit, prefix, errors);
+        // `RateLimitConfig` is shared with the site and consumer levels, which honour `dryRun`; the per-route check
+        // never reads it, so accepting it here would silently enforce the limit (#521). The JSON Schema already omits it.
+        if rate_limit.dry_run.is_some() {
+            errors.push(ValidationError::new(
+                format!("{prefix}.rateLimit.dryRun"),
+                "dryRun is not supported on a route-level rateLimit (only site and consumer rate limits support it)",
+            ));
+        }
     }
 }
 
@@ -298,6 +306,36 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    fn route_dry_run_errors(dry_run: Option<bool>) -> Vec<String> {
+        let cfg = ProxyRouteConfig {
+            targets: vec![ProxyTarget::Simple("http://a:1".to_owned())],
+            rate_limit: Some(conduit_ratelimit::RateLimitConfig {
+                window_secs: 60,
+                limit: 10,
+                burst: None,
+                algorithm: None,
+                key_by: None,
+                skip_paths: None,
+                store: None,
+                dry_run,
+            }),
+            ..Default::default()
+        };
+        let mut errors = Vec::new();
+        validate_route_config(&cfg, "sites[0].proxy", &mut errors);
+        errors.into_iter().map(|e| e.path).collect()
+    }
+
+    #[test]
+    fn route_level_dry_run_is_rejected_not_silently_ignored() {
+        for dry_run in [Some(true), Some(false)] {
+            let errors = route_dry_run_errors(dry_run);
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert_eq!(errors[0], "sites[0].proxy.rateLimit.dryRun");
+        }
+        assert!(route_dry_run_errors(None).is_empty());
     }
 
     fn group(name: &str, strategy: Option<LoadBalanceStrategy>) -> UpstreamGroup {
