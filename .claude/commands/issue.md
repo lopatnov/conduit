@@ -13,7 +13,7 @@ argument-hint: "<issue-number> [issue-number ...]  (omit to pick up unfinished w
 > migration with its own frozen integration branch — but for ordinary issue work, this is
 > the command to run. The general habits either command leans on (early audits, secure
 > coding, batch sizing, branch grouping, writing a lesson down immediately) live in
-> `.claude/rules/best-practices.md`, not duplicated here.
+> `.claude/skills/best-practices/SKILL.md`, not duplicated here.
 
 Takes one or more issue numbers as arguments (`/issue 531`, `/issue 480 481` for two
 issues that genuinely belong in one PR). With no arguments, look for unfinished work first
@@ -32,7 +32,7 @@ check (`.claude/rules/index.md`) before asking the user what to pick up.
 
 ## Step 1 — scope and branch
 
-- **Confirm the issue(s) actually belong in one PR**, per `best-practices.md` §3/§4: one
+- **Confirm the issue(s) actually belong in one PR**, per the `best-practices` skill §3/§4: one
   issue is the default; naming several only makes sense when they share a root cause, the
   same code path, or are genuinely small independent leaves of one theme. If the named
   issues don't clearly meet that bar, say so and propose splitting rather than forcing a
@@ -40,7 +40,7 @@ check (`.claude/rules/index.md`) before asking the user what to pick up.
 - Check `CLAUDE.md`'s architectural decisions and open backlog for conflicts or
   duplication before writing code — call **`business-analyst`** if the ask is vague or its
   scope against existing decisions isn't obvious.
-- **Search for other open bugs in the files/functions this issue will touch** (best-practices.md
+- **Search for other open bugs in the files/functions this issue will touch** (`best-practices` skill
   §1) and say up front which you'll fix in the same PR as a separate "behaviour change" commit.
 - Branch off the current tip of the target branch (`main`, unless the issue says otherwise
   or an integration branch is explicitly in play) — never commit directly to it. Name per
@@ -53,10 +53,10 @@ check (`.claude/rules/index.md`) before asking the user what to pick up.
 
 - Do the work yourself for anything needing judgment; delegate only for genuine expertise,
   noisy-output isolation, or a bounded mechanical sub-task (`workflow.md`'s trigger table —
-  `crate-extractor` for a mechanical crate move, `prior-art-researcher` for "how do others
+  `crate-steward` for a mechanical crate move, `prior-art-researcher` for "how do others
   solve this" input, etc.).
 - Keep the branch to one coherent change. If the issue turns out to need slices, they're
-  separate verifiable **commits** on this one branch, not separate PRs (best-practices.md §4).
+  separate verifiable **commits** on this one branch, not separate PRs (`best-practices` skill §4).
 
 ## Step 3 — self-review and fix
 

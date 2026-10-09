@@ -1,132 +1,54 @@
 # Conventions — engineering conventions for conduit
 
-> Lean, observed-from-reality version (not the generic template). Codifies what this repo
-> actually does, so it stays consistent across sessions instead of drifting per-session.
+Observed-from-reality, not a generic template. Compacted in the 2026-10-03 diet (#512).
 
 ## Commits — Conventional Commits
-
-Format: `<type>(<scope>): <subject>` — matches the actual history (`feat:`, `fix:`, `chore:`,
-`ci:`, `docs:`).
-
-- **type:** `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`.
-- **subject** — imperative mood, no trailing period, short. English only (CLAUDE.md "Language").
-- Body explains *why*, not *what* — the diff already shows what changed.
-- Always end with the `Co-Authored-By:` trailer named in the **current** system-reminder's
-  attribution instructions — heredoc the message, never amend unless explicitly asked. Don't
-  hardcode a specific model name here or copy one from an old commit: this has genuinely
-  changed mid-project (seen switching between "Claude Sonnet 5" and "Claude Opus 5" within a
-  single conversation, tied to which model was actually driving the session at commit time),
-  so treat whatever the live instruction says as authoritative, never this file's memory of it.
+`<type>(<scope>): <subject>` — types `feat fix docs style refactor perf test build ci chore`; imperative, no trailing period,
+short, English only. The body says *why*. End with the `Co-Authored-By:` trailer from the **current** system-reminder's
+attribution instructions (never a model name copied from an old commit or from this file — it changes mid-project); pass the
+message by heredoc; never amend unless asked.
 
 ## Versioning — SemVer, and where it lives
-
-`MAJOR.MINOR.PATCH`. conduit ships three artifacts that must stay in lockstep on a version
-bump — **all four** of these need updating together (see PR #71 for the canonical example):
-- `Cargo.toml` (`version = "..."`) + `Cargo.lock` (`cargo update -p lopatnov-conduit --offline`)
-- `npm/package.json` (`"version": "..."`)
-- `docs/benchmarks.md`, `docs/cli.md`, `docs/deployment.md` — version strings in prose/examples
-
-**Since the Conduit 2.0 workspace migration (issue #114/#148): a fifth thing.** Every
-`lopatnov-conduit-*` member crate under `crates/*` is a real, independently-versioned
-crates.io package now — but this repo does NOT bump each crate's version independently
-(no per-crate semver policy yet, see issue #258). A version bump means:
-- `[workspace.package].version` in the root `Cargo.toml` — every member inherits it via
-  `version.workspace = true`.
-- **Every `lopatnov-conduit-*` entry's own `version = "..."` string** in
-  `[workspace.dependencies]` (~32 literal strings, one per member crate) — these are what a
-  real `cargo publish --workspace` resolves inter-crate dependencies through, and they do
-  NOT auto-update with the workspace version. `./scripts/check-workspace-versions.sh` (CI
-  job `workspace-publish-dryrun`) fails the build if any one of them drifts — run it
-  locally before opening a version-bump PR, don't rely on CI to catch it first.
-
-`release-engineer` drives this; confirm the *target* version with the user first — don't guess
-whether something is patch/minor/major.
+A bump touches, together: `[workspace.package].version` in the root `Cargo.toml` (every member inherits it) **and every
+`lopatnov-conduit-*` `version = "…"` string in `[workspace.dependencies]`** (~32 literals; `cargo publish --workspace` resolves
+inter-crate deps through them and they do not follow the workspace version — `./scripts/check-workspace-versions.sh`, CI job
+`workspace-publish-dryrun`, fails on drift; run it before opening the PR), `Cargo.lock`
+(`cargo update -p lopatnov-conduit --offline`), `npm/package.json`, and the version strings in `docs/benchmarks.md`,
+`docs/cli.md`, `docs/deployment.md`. No per-crate versioning yet (#258). `release-engineer` drives it; confirm the target
+version with the owner, never guess patch/minor/major.
 
 ## Branches
+`main` is always green and release-ready: never push to it, branch + PR. Names: `feat/ fix/ chore/ ci/ docs/<short>`. One branch =
+one coherent change; unrelated fixes get their own branch.
 
-- `main` — always green, always release-ready. **Never push directly to it** — branch + PR.
-- Working branches: `feat/<short>`, `fix/<short>`, `chore/<short>`, `ci/<short>`, `docs/<short>`.
-- One branch = one coherent change. Don't let unrelated fixes piggyback on a branch already
-  open as a PR — open a new branch+PR instead (keeps merge order clean, see `release-engineer`).
-
-## Push frequency & CI economy
-
-- `git push` no more than once per hour by default — avoids spamming CI / creating races
-  between PRs. More often only when the user explicitly asks (see `.claude/rules/index.md`).
-- Before pushing a fix to an open PR, check whether the *same* failure is transient
-  (network blip — see `release-engineer` "Transient vs real") before adding a new commit.
+## Push and CI economy
+Push a ready branch at once, but don't push WIP repeatedly — every push is a ~25-minute CI run (owner's rule, `rules/index.md`).
+Before adding a commit to fix a red check, find out whether the same failure is transient (`release-engineer` "Transient vs real").
 
 ## Code quality
-
-- Code matches its surroundings: same style, naming, comment density (`rustfmt` + `clippy`
-  enforce most of this — see `.github/workflows/ci.yml` job `ci`).
-- **Zero warnings** is the bar — both default and `--features full` builds (`-D warnings`).
-- English only — code, comments, commit messages, CLI output, errors, logs, docs
-  (CLAUDE.md "Language & Localization" — this overrides any default behavior).
-- **File length**: soft limit 400 lines, hard limit 1000 lines — **counts production code
-  only, not tests.** Crossing 400 lines of production code is a signal to split into
-  modules/helpers (see the `logging_phase.rs` / `request_phase.rs` phase-orchestrator
-  pattern from PR #91/#92); production code must never reach 1000 lines — split it before
-  that point, not after. When production code crosses the limit, call the **`architect`**
-  subagent (opus) for a concrete split plan before implementing it.
-  Test code is explicitly exempt from this count — an inline `#[cfg(test)] mod tests { ... }`
-  block (or a dedicated `tests.rs`/`tests/` submodule) can be as long as the feature genuinely
-  needs, and a large test module is not by itself a reason to split. (Clarified 2026-08-23 at
-  the user's explicit request, after a CI review bot flagged `src/filter/jwt.rs` for crossing
-  1000 total lines when its production code was ~365 lines and the rest was new JWKS test
-  coverage — the rule's intent was always about production code complexity, not test volume.)
-  If a test module genuinely gets unwieldy to navigate, splitting it into a logical
-  `tests/<topic>.rs` submodule (Rust's directory-module convention — `foo.rs` + `foo/tests.rs`)
-  is still fine as an organizational choice; it's just not *mandated* by this limit the way a
-  production-code split is.
-  **How it is measured** (added with #314): `scripts/check_file_length.py` counts *code lines* —
-  comments, blank lines and tests are excluded, and "tests" means every `#[cfg(test)]` item, every
-  item whose `cfg` requires `test` (e.g. `#[cfg(all(test, feature = "proxy"))]`) and every
-  `#[test]`/`#[tokio::test]` fn, cut by brace matching. Whole test files are excluded too: anything
-  under a `tests` directory, `tests.rs`, `*_tests.rs`. CI (job `code-length`) posts the result as a
-  PR comment showing which files are over 400/1000 and which of them the PR touched — where the
-  run's token can write; on a fork `pull_request` run GitHub forces the token read-only, so the POST
-  is rejected and the report stays in the job log. It is informational, not a merge gate (no `--fail-on-hard`; whether
-  the check is *required* is a repository-ruleset setting, not stated here). Use the script's
-  number, not `wc -l`, when deciding whether a file needs a split.
+- Match the surroundings (style, naming, comment density); **zero warnings** (`-D warnings`) on default and `--features full`;
+  English only for code, comments, commits, CLI output, errors, logs, `docs/` (`CLAUDE.md` and `.claude/**` are the owner's own
+  notes and stay Russian).
+- **File length: soft 400, hard 1000 lines of *production* code — tests are exempt.** Crossing 400 means split (phase-orchestrator
+  pattern, PR #91/#92) and ask `architect` for the plan first; never reach 1000. Measure with `scripts/check_file_length.py`
+  (code lines: no comments, blanks or tests — every `#[cfg(test)]`/test-only-`cfg` item, `#[test]` fn, and whole `tests/`,
+  `tests.rs`, `*_tests.rs` files are excluded), not `wc -l`. CI job `code-length` posts the report on the PR; it is informational.
+  A large test module is not by itself a reason to split (a `foo/tests.rs` split is fine as organisation).
 
 ## PR checklist (gate before merge)
-
-- [ ] `security-engineer` sign-off recorded — **mandatory on every PR, unconditional, not
-      a judgment call** (see `.claude/rules/workflow.md` "Security review is
-      unconditional"). Applies even to a routine Dependabot bump that looks completely
-      clean — the point of making it unconditional is that "this one looks safe" is
-      exactly the judgment a malicious PR/comment would try to manipulate. One pass, on
-      the final head (delta only if a commit lands afterwards) — `workflow.md`.
-- [ ] `/build` green — fmt, clippy (`-D warnings`), tests (default + `full` if feature-gated).
-- [ ] `mcp__github__pull_request_read` (`method: "get_check_runs"`) — all CI jobs pass (or
-      known-transient failures re-run via `mcp__github__actions_run_trigger` in a cloud
-      firing, or `gh pr checks`/`gh run rerun --failed` directly in a local session — see
-      `.claude/rules/index.md` "GitHub access differs by execution context").
-- [ ] **Every comment READ** (issue comments, inline review comments, reviews — all
-      authors, incl. the user's and the bots' on the tracking PR #152), each finding with
-      a recorded disposition. Checks green + zero unresolved threads is NOT the same thing
-      (see `feature-workspace-cycle.md` Step 7). Then CodeRabbit / reviewer threads
-      addressed — see the **`coderabbit-reply`** skill
-      (`.claude/skills/coderabbit-reply/SKILL.md`) for the reply-then-resolve mechanics
-      (don't leave threads dangling; "Outside diff range" comments need a regular PR
-      comment instead of an inline reply, since GitHub can't post inline on those).
-- [ ] Version-string consistency checked if this is a release-shaped change (see "Versioning").
-- [ ] Docs updated if behavior/config/features changed (`docs/configuration.md`, `building.md`,
-      `cli.md`, `deployment.md` as relevant — and `schema/conduit.schema.json` if schema changed).
-- [ ] `CLAUDE.md` backlog checkbox + session log updated if this closes a tracked item
-      (see `scrum-master`).
-- [ ] For a new regression test guarding a hash/modulo/ring/rotation-index bug: the negative
-      control was verified by re-reading the *patched source* before trusting the test
-      outcome (a `cargo fmt` reflow or an imprecise find-and-replace can make a scripted
-      negative-control edit silently no-op — see `.claude/skills/testing/SKILL.md` "Negative
-      controls need a fixture that can actually fail"), and the fixture values were chosen so
-      buggy and correct behavior genuinely disagree — not just the first small example that
-      happens to produce the right-looking answer. This bit this repo four times in two
-      adjacent PRs (#372, #373) before it was written down here.
-
-> The CodeRabbit reply/resolve recipe (PR #70) moved to the **`coderabbit-reply`** skill
-> (`.claude/skills/coderabbit-reply/SKILL.md`) 2026-08-28 — load it when actually working
-> PR review threads rather than carrying the mechanics in every session's context.
-
-> One `git push` ≤ once/hour without explicit user request (see `.claude/rules/index.md` — economy & CI races).
+- [ ] `security-engineer` sign-off recorded — **mandatory on every PR, unconditional** (`workflow.md`); one pass on the final
+      head, a delta pass after any later commit; the verdict is posted as a PR comment.
+- [ ] `/build` green: fmt, clippy `-D warnings`, tests (default and `full` if feature-gated).
+- [ ] All CI jobs pass (`gh pr checks`; known-transient failures re-run with `gh run rerun --failed`, or
+      `mcp__github__actions_run_trigger` in a cloud firing).
+- [ ] **Every comment READ** — issue comments, inline comments, reviews, all authors incl. the owner's and the bots' on #152
+      (`scripts/pr-comments.sh <pr>`) — each finding with a recorded disposition; green checks plus zero open threads is not the
+      same thing. Reply/resolve mechanics: the `coderabbit-reply` skill ("Outside diff range" comments need a regular PR comment).
+- [ ] The PR description has the **"Found while here"** table (every oddity noticed in touched code, with its disposition).
+- [ ] Version strings consistent if the change is release-shaped; docs updated if behaviour, config or features changed
+      (`docs/configuration.md`, `building.md`, `cli.md`, `deployment.md`, `schema/conduit.schema.json`).
+- [ ] Journal summary in `CLAUDE.md` (with its "Здоровье" line) and the issue comment written; closed issues closed by hand with the
+      measured result (a PR into the migration branch does not auto-close them).
+- [ ] A new regression test for a hash/modulo/ring/rotation-index bug: its negative control was verified by re-reading the
+      *patched source* (a `cargo fmt` reflow or an imprecise replace can make a scripted edit silently no-op), and the fixture makes
+      buggy and correct behaviour genuinely disagree (`.claude/skills/testing/SKILL.md`; it bit this repo four times, #372/#373).

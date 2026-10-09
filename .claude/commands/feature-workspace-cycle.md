@@ -13,7 +13,7 @@ argument-hint: "(none — reads state from GitHub: open PRs, #114's open sub-iss
 > work now, one or several issue numbers producing one PR.** The general habits this
 > command embodied — periodic integrity audits, unconditional security review, batch-sizing
 > work to its risk, grouping related work into one branch, writing a lesson down the instant
-> it's found — are extracted into `.claude/rules/best-practices.md`, which `/issue` leans on
+> it's found — are extracted into `.claude/skills/best-practices/SKILL.md`, which `/issue` leans on
 > and which applies to all work in this repo, not only a migration. This file stays as a
 > concrete, battle-tested *template* for running a similarly large multi-PR effort again (a
 > future major version, another big structural migration) — its step numbers and precedents
@@ -459,7 +459,7 @@ for genuinely idle firings, not a guaranteed periodic pass.)
   (`claude/cargo-workspace-features-23qxfr`), never off `main` directly for
   #114 work.
 - For a mechanical "extract conduit-X" sub-issue, delegate to
-  **`crate-extractor`** with the sub-issue's spec. For a seam refactor or
+  **`crate-steward`** (successor of `crate-extractor`) with the sub-issue's spec. For a seam refactor or
   anything needing judgment, implement it yourself.
 - Do **not** bump `[workspace.package] version` per PR. 2.0.0 hasn't
   shipped yet — the version stays pinned at `2.0.0` until an actual release
@@ -585,6 +585,14 @@ for genuinely idle firings, not a guaranteed periodic pass.)
   when the PR merges into the repository's *default* branch; every sub-issue PR here merges
   into the migration branch, so #316, #222, #447, #468 all stayed open until closed by hand.
   Close each with a comment giving the measured result (the acceptance numbers, not "done").
+- **End every journal entry with a "Здоровье" line** (owner's retro, 2026-10-03): the output of
+  `python scripts/health.py --line` (production code lines, crate count, auto-loaded instruction KB against its budget),
+  the stripped `--no-default-features` size from the PR's Footprint report, and one honest sentence answering
+  *"if I were starting another project today, would I choose this one?"* — yes/no and the single biggest reason.
+  A "no" is not a failure, it is the trigger: name what would turn it into a "yes" and file it as an issue the same
+  turn (a size regression, a dead config field, an unmeasured doc claim, a numbers drift against the last entry).
+  The full, researched version of the answer (compare with Pingap/River/nginx/Caddy, see `rules/workflow.md`
+  "Research before building") is done at every phase boundary comment on #114 and at every `/retro`.
 
 ## Step 9 — check the finish line
 
