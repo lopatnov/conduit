@@ -7,6 +7,7 @@ Thank you for your interest in contributing! This document explains how to get s
 - [Development Setup](#development-setup)
 - [Project Structure](#project-structure)
 - [Cargo Workspace Crate Extraction Recipe](#cargo-workspace-crate-extraction-recipe)
+- [Adding a New Feature](#adding-a-new-feature)
 - [Running Tests](#running-tests)
 - [Code Style](#code-style)
 - [Submitting Changes](#submitting-changes)
@@ -224,6 +225,17 @@ cannot be checked from the crate alone.
 The golden tests (`src/config/validate/golden_tests.rs`, fixtures in `testdata/`) pin the exact ordered output of
 `validate()` and `feature_warnings()` in every feature combination; a new feature-off warning has to be added to the
 fixture, and the baseline is regenerated only for a deliberate behaviour change (see that file's module comment).
+
+---
+
+## Adding a New Feature
+
+The extraction recipe above covers moving **existing** code into its own crate. Adding a genuinely **new**
+optional feature (crate + Cargo feature + forwarding features + config schema + feature-off warning + tests +
+docs) is described once, in [`.claude/skills/new-feature-crate/SKILL.md`](.claude/skills/new-feature-crate/SKILL.md)
+(closes [#259](https://github.com/lopatnov/conduit/issues/259)); `crates/conduit-faults` is the smallest worked
+example. Same PR bar as everything else: `/build` on default and `--features full`, `feature-matrix-runner`
+(`cargo hack --each-feature`), and `security-engineer` sign-off before merge.
 
 ---
 

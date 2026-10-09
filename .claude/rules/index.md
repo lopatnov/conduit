@@ -92,3 +92,6 @@ step; `coderabbit-reply` documents the reply-then-resolve mechanics (MCP tools i
 `verify-handed-over-task` (`.claude/commands/verify-handed-over-task.md`) runs before the first edit of a task handed over from
 another session (a `spawn_task` chip, a `/handoff` summary) and when resuming after a usage-limit reset — is it already done
 (e.g. the `builder.rs` split merged as #495 before the session started), and does the worktree's base branch contain the file.
+`/issue` (`.claude/commands/issue.md`) is the default command for ordinary work — one or more issues to one merged PR; it leans on
+`best-practices.md` (re-audit shipped code, size a batch to its risk, one coherent branch, write a lesson down when found).
+`feature-workspace-cycle` stays only as a template for another large multi-PR effort.
