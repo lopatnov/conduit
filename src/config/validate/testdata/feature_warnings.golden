@@ -17,7 +17,7 @@
 [!fault-injection] sites[6].faultInjection is configured but Conduit was compiled without the `fault-injection` feature — fault injection will be disabled. Recompile with `--features fault-injection` to enable.
 [!compression] sites[6].compression is configured but Conduit was compiled without the `compression` feature — response compression will be disabled. Recompile with `--features compression` to enable.
 [!static] sites[6].static is configured but Conduit was compiled without the `static` feature — static file serving will be disabled. Recompile with `--features static` to enable.
-[!static] sites[6].fallback is configured but Conduit was compiled without the `static` feature — fallback responses (including the site's default 404) will be disabled. Recompile with `--features static` to enable.
+[!static] sites[6].fallback is configured but Conduit was compiled without the `static` feature — the customised fallback (static file, custom status or body) will be ignored and unmatched requests get the plain 404. Recompile with `--features static` to enable.
 [!hotreload] sites[6].hotReload is configured but Conduit was compiled without the `hotreload` feature — browser hot-reload (the SSE stream and file watcher) will be disabled. Recompile with `--features hotreload` to enable.
 [!wasm] sites[7].middleware[0] has type "wasm" but Conduit was compiled without the `wasm` feature — this middleware entry will be ignored. Recompile with `--features wasm` to enable.
 [!rhai] sites[7].middleware[1] has type "script" but Conduit was compiled without the `rhai` feature — this entry will be ignored. Recompile with `--features rhai` to enable.
