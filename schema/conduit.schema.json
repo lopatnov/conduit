@@ -494,7 +494,7 @@
           "required": ["store"],
           "properties": {
             "store":                    { "type": "string" },
-            "maxSizeMb":                { "type": "integer", "minimum": 1, "description": "Size budget of the store in MiB (least-recently-used entries are evicted) and the largest single response body that is cached; larger responses are served uncached. Unset = unlimited." },
+            "maxSizeMb":                { "type": "integer", "minimum": 1, "description": "Size budget of the store in MiB (least-recently-used entries are evicted) Unset = unlimited." },
             "ttlSecs":                  { "type": "integer", "minimum": 0 },
             "staleWhileRevalidateSecs": { "type": "integer", "minimum": 0, "description": "Serve stale while refreshing in background (RFC 5861)." },
             "staleIfErrorSecs":         { "type": "integer", "minimum": 0, "description": "Serve stale when upstream returns 5xx, including after retries are exhausted (RFC 5861)." },

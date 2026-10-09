@@ -1830,11 +1830,11 @@ faultInjection:
 > **Requires** `cargo build --features cache`
 > For Redis-backed cache also add `--features redis`; for disk cache add `--features disk-cache`.
 
-> **Size limit:** `cache.maxSizeMb` is enforced two ways. The store is bounded by an LRU eviction
-> manager (least-recently-used entries are purged once the total exceeds the budget), and no single
-> response body may exceed the budget: a response whose `Content-Length` is larger, or whose streamed
-> body grows past it, is still served to the client but is not cached (nothing is buffered beyond the
-> limit). Limits of the current implementation: the budget of a store is fixed by the first route that
+> **Size limit:** `cache.maxSizeMb` bounds the store with an LRU eviction manager
+> (least-recently-used entries are purged once the total exceeds the budget). There is no per-body
+> cap: a single response larger than the budget is written and then evicted again, because capping
+> bodies without a `Content-Length` would abort the client mid-transfer. Limits of the current
+> implementation: the budget of a store is fixed by the first route that
 > uses it (changing `maxSizeMb` needs a restart, not a reload), routes sharing a `store` share its
 > budget, and for `disk:`/`redis://` stores only entries admitted since the process started are
 > counted, so entries left over from a previous run are not included until they are rewritten.
@@ -1847,7 +1847,7 @@ proxy:
     cache:
       store: memory
       ttlSecs: 60
-      maxSizeMb: 256 # store budget (MiB); also the largest single body that is cached
+      maxSizeMb: 256 # store budget (MiB), LRU eviction
       staleWhileRevalidateSecs: 300 # serve stale up to 5 min while refreshing
       staleIfErrorSecs: 600 # serve stale up to 10 min if upstream fails
       varyHeaders: [Accept-Language, Accept-Encoding]
@@ -1884,7 +1884,7 @@ proxy:
 | -------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------- |
 | `store`                    | string   | —             | `"memory"`, `"redis://..."` / `"rediss://..."` (`--features redis`), `"disk:/path"` (`--features disk-cache`) |
 | `ttlSecs`                  | number   | —             | Fresh cache TTL (seconds)                                                          |
-| `maxSizeMb`                | number   | —             | Size budget of the store in MiB (LRU eviction) and the largest single response body that is cached (≥ 1; unset = unlimited) |
+| `maxSizeMb`                | number   | —             | Size budget of the store in MiB (LRU eviction) (≥ 1; unset = unlimited) |
 | `staleWhileRevalidateSecs` | number   | `0`           | Serve stale while refreshing in background (RFC 5861)                              |
 | `staleIfErrorSecs`         | number   | `0`           | Serve stale when upstream returns 5xx, including after retries are exhausted (RFC 5861) |
 | `earlyRefreshSecs`         | number   | `0`           | Refresh cache in the background when remaining TTL < this value (see below)        |

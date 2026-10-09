@@ -29,7 +29,7 @@ pub fn validate_cache_config(
         }
     }
 
-    // `maxSizeMb` is the size budget of the store (LRU eviction) and the cap on a single cached body (#520); the JSON
+    // `maxSizeMb` is the size budget of the store (LRU eviction, #520); the JSON
     // Schema already requires >= 1. A zero budget would admit nothing, so it is a mistake, not "unlimited".
     if cache.max_size_mb == Some(0) {
         errors.push(ValidationError::new(

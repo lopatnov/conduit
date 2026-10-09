@@ -95,9 +95,9 @@ pub(crate) fn request_cache_filter(
         // only one request fetches from upstream; concurrent requests wait for
         // the cached response instead of all hitting the upstream at once.
         //
-        // `maxSizeMb` (#520) is enforced two ways: an LRU eviction manager bounds the total the store holds, and
-        // no single body may exceed the budget — Pingora checks `Content-Length` up front and counts streamed bytes,
-        // and stops caching (the response is still served, uncached) instead of buffering an unbounded body.
+        // `maxSizeMb` (#520) is enforced by an LRU eviction manager that bounds the total the store holds. There is
+        // deliberately no per-body cap (`set_max_file_size_bytes`): for a response without `Content-Length` Pingora
+        // aborts the client mid-transfer once the cap is exceeded instead of serving it uncached.
         let eviction = proxy_cache::eviction_manager(&cfg.store, cfg.max_size_mb);
         session.cache.enable(
             storage,
@@ -106,11 +106,6 @@ pub(crate) fn request_cache_filter(
             Some(proxy_cache::cache_lock()),
             None,
         );
-        if let Some(mb) = cfg.max_size_mb {
-            session
-                .cache
-                .set_max_file_size_bytes(proxy_cache::max_size_bytes(mb));
-        }
     }
     // Without --features cache the entire block above is absent and we fall through.
     #[cfg(not(feature = "cache"))]

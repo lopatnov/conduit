@@ -122,8 +122,7 @@ In-memory proxy cache with TTL, Vary headers, and cookie / path exclusions.
 
 **Features:** `cache.store: memory`, `cache.varyHeaders`, `cache.skipIfCookie`
 
-> **Note:** `cache.maxSizeMb` caps the store (least-recently-used entries are evicted) and the
-> size of a single cached response; see the Proxy Cache section of `docs/configuration.md`.
+> **Note:** `cache.maxSizeMb` caps the store (least-recently-used entries are evicted); see the Proxy Cache section of `docs/configuration.md`.
 
 ---
 
