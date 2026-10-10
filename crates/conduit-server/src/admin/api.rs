@@ -214,6 +214,36 @@ impl BackgroundService for AdminApiService {
             }
         }
 
+        // Spawn ACME certificate renewal tasks — check every 12 h, re-obtain if
+        // within 30 days of expiry.  The renewed files take effect at the next
+        // restart; zero-downtime hot-swap waits for #451.
+        #[cfg(feature = "acme")]
+        {
+            use crate::server::acme::spawn_renewal_task;
+            let config = self.state.config.load();
+            for site in &config.sites {
+                let Some(tls) = site.tls.as_ref() else {
+                    continue;
+                };
+                let Some(acme_cfg) = tls.acme.as_ref() else {
+                    continue;
+                };
+                let Some(domain) = site.host.as_deref() else {
+                    continue;
+                };
+                let storage_dir =
+                    std::path::PathBuf::from(acme_cfg.storage.as_deref().unwrap_or("./certs"));
+                let challenge_port = tls.http_redirect_port.unwrap_or(80);
+                spawn_renewal_task(
+                    acme_cfg.clone(),
+                    domain.to_string(),
+                    self.state.acme_challenges.clone(),
+                    storage_dir,
+                    challenge_port,
+                );
+            }
+        }
+
         // HTTP Admin server — only starts when global.admin.bind is configured.
         let bind_addr = match &self.bind {
             Some(addr) => addr.clone(),

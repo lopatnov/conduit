@@ -710,8 +710,10 @@ Requires `--features cache` (depends on `cache`).
 ### `acme` — Auto-TLS / Let's Encrypt
 
 Enables `tls.acme` site config for automatic certificate provisioning via the
-ACME protocol (Let's Encrypt). Certificates are fetched at startup, cached to
-disk, and renewed automatically 30 days before expiry.
+ACME protocol (Let's Encrypt). Certificates are fetched at startup and cached
+to disk. A background task checks every 12 hours and renews the certificate
+when it is within 30 days of expiry; the renewed certificate takes effect at
+the next process restart.
 
 The domain is taken from the site's `host` field — no separate `domain:` field exists.
 

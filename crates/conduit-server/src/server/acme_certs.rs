@@ -68,10 +68,8 @@ pub(super) fn obtain_acme_certs(
                         paths.key.to_string_lossy().into_owned(),
                     ),
                 );
-                // Spawn certificate renewal task (needs a running Tokio runtime —
-                // it will be started by Pingora's server.run_forever()).
-                // We schedule it in the admin service's start() instead.
-                // For now, store the acme config for later pickup.
+                // The renewal background task is spawned in AdminApiService::start()
+                // once Pingora's Tokio runtime is running — see admin/api.rs.
                 tracing::info!(domain, port, "ACME certificate ready");
             }
             Err(e) => {
