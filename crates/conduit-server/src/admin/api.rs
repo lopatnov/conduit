@@ -24,9 +24,10 @@ const _: () = assert!(
     "`lopatnov-conduit-admin`'s `cache` feature and this crate's `cache` feature must be enabled together"
 );
 
-/// Resolve `(healthCheck config, target URLs)` pairs for every `proxy: {}`
-/// route (the legacy map form) that has `healthCheck` configured, across
-/// every site.
+/// Resolve `(healthCheck config, target URLs)` pairs for every proxy route
+/// that has `healthCheck` configured, across every site: the `proxy: {}` map
+/// (legacy form) **and** the `routes[]` array (issue #376). A route whose
+/// targets live in `groups` is probed on the groups' URLs.
 ///
 /// Lives in the root crate, not `crates/conduit-upstream` — it needs
 /// `AppConfig`/`ProxyConfig`/`ProxyRouteTarget`, root-only types not yet
@@ -49,14 +50,19 @@ fn health_check_routes(
 ) -> Vec<(&crate::config::schema::UpstreamHealthCheck, Vec<String>)> {
     use crate::config::schema::{ProxyConfig, ProxyRouteTarget};
 
-    config
-        .sites
-        .iter()
-        .filter_map(|site| match &site.proxy {
+    let route_targets = config.sites.iter().flat_map(|site| {
+        let map_routes = match &site.proxy {
             Some(ProxyConfig::Routes(routes)) => Some(routes.values()),
             _ => None,
-        })
-        .flatten()
+        };
+        let array_routes = site
+            .routes
+            .iter()
+            .flatten()
+            .filter_map(|r| r.proxy.as_ref());
+        map_routes.into_iter().flatten().chain(array_routes)
+    });
+    route_targets
         .filter_map(|route_target| {
             let ProxyRouteTarget::Full(cfg) = route_target else {
                 return None;
@@ -577,6 +583,40 @@ mod tests {
     /// A plain site listed before a TLS site on the same port does not hide the TLS site's cert/key:
     /// the listener serves the first complete pair, so editing it is cold and removing the plain site
     /// is hot.
+    /// Issue #376: active probes were only planned for the `proxy` map; a `routes[]` entry and a
+    /// route whose targets live in `groups` got `healthCheck` settings that nothing acted on.
+    #[cfg(feature = "proxy")]
+    #[test]
+    fn health_check_routes_cover_the_map_the_routes_array_and_groups() {
+        let config = cfg(r#"{"sites":[{"port":8080,
+                "proxy":{"/m":{"targets":["http://map:1"],"healthCheck":{"intervalSecs":5}}},
+                "routes":[
+                  {"match":{"path":"/r/**"},
+                   "proxy":{"targets":["http://arr:1"],"healthCheck":{"intervalSecs":6}}},
+                  {"match":{"path":"/g/**"},
+                   "proxy":{"groups":[{"name":"blue","targets":["http://g1:1","http://g2:1"]}],
+                            "healthCheck":{"intervalSecs":7}}},
+                  {"match":{"path":"/none/**"},
+                   "proxy":{"targets":["http://nohc:1"]}}
+                ]}]}"#);
+        let found: Vec<(Option<u64>, Vec<String>)> = health_check_routes(&config)
+            .into_iter()
+            .map(|(hc, urls)| (hc.interval_secs, urls))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (Some(5), vec!["http://map:1".to_owned()]),
+                (Some(6), vec!["http://arr:1".to_owned()]),
+                (
+                    Some(7),
+                    vec!["http://g1:1".to_owned(), "http://g2:1".to_owned()]
+                ),
+            ],
+            "the route without healthCheck must not be probed"
+        );
+    }
+
     #[test]
     fn a_plain_site_before_a_tls_site_does_not_hide_its_cert() {
         let old = cfg(
