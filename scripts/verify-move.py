@@ -217,7 +217,9 @@ def collect(text, prefix="", outer_cfg=""):
         key, mod_rest = item_key(chunk)
         if key[0] == "mod" and mod_rest is not None and "{" in mod_rest and not mod_rest.lstrip().startswith(";"):
             name = key[1]
-            body = chunk[chunk.index("{", chunk.index(name)) + 1:chunk.rindex("}")]
+            lead = len(_leading(chunk))
+            open_ = next(lead + i for i, c in scan_code(chunk[lead:]) if c == "{")
+            body = chunk[open_ + 1:chunk.rindex("}")]
             inner_cfg = " ".join(filter(None, (outer_cfg, key[2])))
             for k, v in collect(textwrap.dedent(body), f"{prefix}{name}::", inner_cfg).items():
                 items.setdefault(k, []).extend(v)

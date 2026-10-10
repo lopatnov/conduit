@@ -116,6 +116,10 @@ class Verdicts(unittest.TestCase):
         lost, added, _, _ = vm.compare(old, new)
         self.assertEqual((len(lost), len(added)), (1, 1))
 
+    def test_a_brace_in_a_doc_comment_does_not_hide_the_module_body(self):
+        src = "/// The handlers for {id} routes\nmod handlers { fn f() {} }\n"
+        self.assertEqual(keys(src), ["fn handlers::f"])
+
     def test_allow_ignores_matching_items(self):
         lost, added, _, _ = vm.compare("fn a() {}\n", "fn z() {}\n", allow=["fn a", "fn z"])
         self.assertEqual((lost, added), ([], []))
