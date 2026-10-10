@@ -104,38 +104,29 @@ pub fn get(url: &str) -> Option<&'static RedisCacheStorage> {
 /// The server keeps running with caching disabled for that store; `get()`
 /// simply returns `None` for it.
 pub async fn connect_and_register(url: &str) -> bool {
-    if redis_stores().contains_key(url) {
-        return true;
-    }
-    // Reserve before connecting: `connect_all` runs these concurrently, so a bare "is there room?"
-    // check could pass for several new URLs at once and overshoot the cap, and two callers could open
-    // (and leak) two connections to one URL. A reservation is also counted against the cap.
-    if !pending_stores().insert(url.to_owned()) {
-        return false;
-    }
-    let result = register_reserved(url).await;
-    pending_stores().remove(url);
-    result
-}
-
-async fn register_reserved(url: &str) -> bool {
-    if redis_stores().len() + pending_stores().len() > MAX_REDIS_STORES {
-        tracing::error!(
-            url = %redact_url(url),
-            limit = MAX_REDIS_STORES,
-            "Redis proxy cache: too many distinct store URLs since startup — restart to change them; \
-             caching disabled for this store"
-        );
-        return false;
+    match reserve(url) {
+        Reservation::Registered => return true,
+        Reservation::InFlight => return false,
+        Reservation::Full => {
+            tracing::error!(
+                url = %redact_url(url),
+                limit = MAX_REDIS_STORES,
+                "Redis proxy cache: too many distinct store URLs since startup — restart to change them; \
+                 caching disabled for this store"
+            );
+            return false;
+        }
+        Reservation::Reserved => {}
     }
     match RedisCacheStorage::connect(url).await {
         Ok(storage) => {
             let leaked: &'static RedisCacheStorage = Box::leak(Box::new(storage));
-            redis_stores().insert(url.to_owned(), leaked);
+            finish(url, Some(leaked));
             tracing::info!(url = %redact_url(url), "Redis proxy cache connected");
             true
         }
         Err(e) => {
+            finish(url, None);
             tracing::error!(
                 url = %redact_url(url),
                 "Redis proxy cache connect failed: {e} — caching disabled for this store"
@@ -143,6 +134,47 @@ async fn register_reserved(url: &str) -> bool {
             false
         }
     }
+}
+
+/// Outcome of [`reserve`].
+enum Reservation {
+    /// Already connected: nothing to do.
+    Registered,
+    /// Another caller is connecting this URL right now.
+    InFlight,
+    /// Connecting it would exceed [`MAX_REDIS_STORES`].
+    Full,
+    /// The caller owns the slot and must call [`finish`].
+    Reserved,
+}
+
+/// Serialises the "registered?" / "in flight?" / "room left?" decision with the move from
+/// reserved to registered, so concurrent connects can neither overshoot the cap nor open (and
+/// leak) two connections to one URL. Never held across an `.await`.
+static REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn reserve(url: &str) -> Reservation {
+    let _guard = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if redis_stores().contains_key(url) {
+        return Reservation::Registered;
+    }
+    if pending_stores().contains(url) {
+        return Reservation::InFlight;
+    }
+    if redis_stores().len() + pending_stores().len() >= MAX_REDIS_STORES {
+        return Reservation::Full;
+    }
+    pending_stores().insert(url.to_owned());
+    Reservation::Reserved
+}
+
+/// Turn a reservation into a registered store (`Some`) or release it (`None`).
+fn finish(url: &str, storage: Option<&'static RedisCacheStorage>) {
+    let _guard = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(storage) = storage {
+        redis_stores().insert(url.to_owned(), storage);
+    }
+    pending_stores().remove(url);
 }
 
 // ── RedisCacheStorage ─────────────────────────────────────────────────────────
@@ -447,6 +479,37 @@ mod tests {
             !msg.contains("alice:s3cret@"),
             "connect() error must not leak raw userinfo: {msg}"
         );
+    }
+
+    #[test]
+    fn reserve_refuses_the_url_past_the_cap_and_frees_the_slot_on_finish() {
+        let urls: Vec<String> = (0..=MAX_REDIS_STORES)
+            .map(|i| format!("redis://127.0.0.1:1/cap-{i}"))
+            .collect();
+        let mut held = Vec::new();
+        let mut refused = None;
+        for url in &urls {
+            match reserve(url) {
+                Reservation::Reserved => held.push(url),
+                Reservation::Full => {
+                    refused = Some(url);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            refused.is_some(),
+            "a reservation past the cap must be refused"
+        );
+        assert!(held.len() <= MAX_REDIS_STORES);
+        assert!(matches!(reserve(held[0]), Reservation::InFlight));
+        finish(held[0], None);
+        assert!(matches!(reserve(refused.unwrap()), Reservation::Reserved));
+        finish(refused.unwrap(), None);
+        for url in held.into_iter().skip(1) {
+            finish(url, None);
+        }
     }
 
     #[tokio::test]
