@@ -16,10 +16,11 @@ argument-hint: "(none — reads GitHub issue state for lopatnov/conduit)"
 ## What counts as a fast-follow
 
 An issue filed **during work on some other task/PR**, describing something found or
-deferred along the way that couldn't be folded into the PR that spawned it — usually
-because it needs its own design decision (see the batch-sizing "1, always" tier in
-`feature-workspace-cycle.md`), not because it's unrelated work. Issue #357 (deferred from
-#356's review) is the canonical example.
+deferred along the way that wasn't folded into the PR that spawned it — because it needs its
+own design decision (the "1, always solo" tier in the `best-practices` skill §3), because a
+reviewer marked it non-blocking, or because it is a documented limitation. Since 2026-10-10
+**every** deferred item is one (`/issue` Step 6, best-practices §6): a deferral with no issue is
+a dropped item. Issue #357 (deferred from #356's review) is the canonical example.
 
 **Not** a fast-follow: a general backlog item, a Dependabot PR, a routine research/RFC
 issue, or anything filed independent of active PR work. Don't label those — the label

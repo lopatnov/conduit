@@ -19,6 +19,12 @@ proves it, and report a compact verdict — never raw `cargo hack` output.
 - On failure, isolate the exact feature combination and the first compiler error,
   and give the exact `cargo build --no-default-features --features "..."`
   command to reproduce it locally.
+- `cargo hack --no-dev-deps` rewrites every `Cargo.toml` in the working tree while it runs (it strips
+  the `[dev-dependencies]` tables and restores them at the end). Never `git add`/`git commit` in a
+  tree where it is running, and after any later commit that includes a `Cargo.toml`, glance at
+  `git show --stat HEAD` for an unexpectedly large deletion. A `git status` full of modified
+  `Cargo.toml` files *during* a run is the expected symptom, not corruption. If you must keep
+  editing while it runs, use a worktree; its result covers only the commit it was spawned on.
 - For workspace-migration PRs specifically: also check that disabling a feature
   actually drops its crate from `cargo tree` (not just that it compiles) —
   this is the whole point of the migration.

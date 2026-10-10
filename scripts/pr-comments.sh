@@ -7,7 +7,7 @@
 # flagged — a bot that is still "in progress" has not spoken yet), then all three comment streams
 # from every author — issue comments, reviews, inline review comments — newest last. GitHub's PR
 # page hides most of this behind "resolved"/"outdated" folds, and a green check list says nothing
-# about it; the merge rule in `.claude/commands/feature-workspace-cycle.md` (Step 7) is that every
+# about it; the merge rule in `.claude/commands/issue.md` (Step 6) is that every
 # comment has been READ, so read this output to the end.
 #
 #   --since TS   only items created/submitted at or after TS (ISO 8601, e.g. 2026-09-26T19:00:00Z)

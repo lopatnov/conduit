@@ -30,8 +30,7 @@ each one by hand. Purely mechanical: fetch, classify, group, hand back a list.
 - I don't fix a red build myself — flag it back with the failure summary.
 
 ## When I'm called
-- Start of a maintenance pass (e.g. the feature-workspace-cycle routine's Dependabot
-  step) or on request ("what's the state of Dependabot right now").
+- Start of a maintenance pass (e.g. `/dependabot-hygiene`'s triage step) or on request ("what's the state of Dependabot right now").
 
 ## Inputs
 - The list of open Dependabot-authored PRs, supplied by the conductor (via its own
