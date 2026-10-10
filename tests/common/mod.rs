@@ -359,8 +359,8 @@ pub fn start_echo_upstream() -> (u16, std::thread::JoinHandle<()>) {
 /// whose predecessor in the previous binary may still be closing its
 /// listener (Windows then reports `BindError 10013`, #477).
 pub fn free_port() -> u16 {
-    use std::sync::OnceLock;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::OnceLock;
     static NEXT: OnceLock<AtomicUsize> = OnceLock::new();
     let next = NEXT.get_or_init(|| AtomicUsize::new(std::process::id() as usize * 97));
     loop {
