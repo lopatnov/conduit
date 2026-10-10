@@ -369,8 +369,11 @@ mod tests {
             let (cert, key) = pair_paths(dir, domain).unwrap();
             assert_eq!(cert, dir.join(format!("{domain}.crt.pem")));
             assert_eq!(key, dir.join(format!("{domain}.key.pem")));
-            assert!(is_file_directly_in(dir, &cert), "{cert:?}");
-            assert!(is_file_directly_in(dir, &key), "{key:?}");
+            assert!(
+                is_file_directly_in(dir, &cert),
+                "certificate path of {domain}"
+            );
+            assert!(is_file_directly_in(dir, &key), "key path of {domain}");
         }
     }
 
