@@ -227,6 +227,68 @@ fn static_etag_and_last_modified_present() {
     );
 }
 
+/// Issue #401: `staticOptions.etag` / `lastModified` really switch the headers off, and a request
+/// that carries the (now meaningless) conditional headers is served in full.
+fn validators_server(options: serde_json::Value) -> (common::TestServer, tempfile::TempDir) {
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join("f.txt"), "data").unwrap();
+    let static_path = dir.path().to_str().unwrap().to_owned();
+    let server = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{ "port": port, "static": static_path, "staticOptions": options }]
+        }),
+    );
+    (server, dir)
+}
+
+#[test]
+#[serial]
+fn static_etag_false_omits_etag_and_ignores_if_none_match() {
+    let (server, _dir) = validators_server(serde_json::json!({ "etag": false }));
+    let resp = reqwest::blocking::get(server.url("/f.txt")).expect("GET");
+    assert_eq!(resp.status(), 200);
+    assert!(!resp.headers().contains_key("etag"), "etag must be off");
+    assert!(resp.headers().contains_key("last-modified"));
+
+    let resp = reqwest::blocking::Client::new()
+        .get(server.url("/f.txt"))
+        .header("if-none-match", "*")
+        .send()
+        .expect("GET");
+    assert_eq!(
+        resp.status(),
+        200,
+        "If-None-Match is ignored without an ETag"
+    );
+}
+
+#[test]
+#[serial]
+fn static_last_modified_false_omits_header_and_ignores_if_modified_since() {
+    let (server, _dir) = validators_server(serde_json::json!({ "lastModified": false }));
+    let resp = reqwest::blocking::get(server.url("/f.txt")).expect("GET");
+    assert_eq!(resp.status(), 200);
+    assert!(!resp.headers().contains_key("last-modified"));
+    assert!(resp.headers().contains_key("etag"));
+
+    let far_future = "Fri, 01 Jan 2100 00:00:00 GMT";
+    let resp = reqwest::blocking::Client::new()
+        .get(server.url("/f.txt"))
+        .header("if-modified-since", far_future)
+        .send()
+        .expect("GET");
+    assert_eq!(
+        resp.status(),
+        200,
+        "If-Modified-Since is ignored without Last-Modified"
+    );
+}
+
 // ── dotFiles policy tests ─────────────────────────────────────────────────
 
 /// Helper: start a server with a specific dotFiles policy and a `.hidden` file.

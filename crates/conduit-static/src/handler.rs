@@ -70,6 +70,39 @@ impl LocalHandlerImpl for StaticFileHandler {
     }
 }
 
+/// The response validators and the content-negotiation marker of one static response.
+///
+/// `etag` / `last_modified` are `None` when the site switched them off (`static.etag: false`,
+/// `static.lastModified: false`): the header is then neither sent nor consulted in `If-None-Match`,
+/// `If-Modified-Since` and `If-Range`. `vary_encoding` is true when the same URL can be answered with
+/// different `Content-Encoding`s (on-the-fly compression or pre-compressed siblings are enabled), so
+/// *every* representation, the uncompressed one and the `304`/`206` included, must say
+/// `Vary: Accept-Encoding` or a shared cache can hand a compressed body to a client that cannot
+/// decode it (RFC 9110 §12.5.5, RFC 9111 §4.1).
+struct Validators<'a> {
+    etag: Option<&'a str>,
+    last_modified: Option<&'a str>,
+    vary_encoding: bool,
+}
+
+impl Validators<'_> {
+    fn apply(&self, resp: &mut ResponseHeader) -> Result<()> {
+        if let Some(etag) = self.etag {
+            resp.insert_header("etag", etag)?;
+        }
+        if let Some(last_modified) = self.last_modified {
+            resp.insert_header("last-modified", last_modified)?;
+        }
+        if self.vary_encoding {
+            resp.insert_header("vary", "accept-encoding")?;
+        }
+        Ok(())
+    }
+
+    /// Header slots `apply` may fill, for `ResponseHeader::build`'s capacity hint.
+    const SLOTS: usize = 3;
+}
+
 /// Attempt to serve a static file.
 ///
 /// Returns `Ok(true)` when a response has been written (success, 304, 403, 206,
@@ -125,13 +158,30 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
         .as_secs();
     let etag = format!("\"{mtime_secs:x}-{file_size:x}\"");
     let last_modified = httpdate::fmt_http_date(mtime);
+    #[cfg(feature = "compression")]
+    let can_compress = compress_opts.is_some();
+    #[cfg(not(feature = "compression"))]
+    let can_compress = false;
+    let validators = Validators {
+        etag: options.etag.unwrap_or(true).then_some(etag.as_str()),
+        last_modified: options
+            .last_modified
+            .unwrap_or(true)
+            .then_some(last_modified.as_str()),
+        vary_encoding: can_compress || options.pre_compressed.unwrap_or(false),
+    };
     let cache_control = make_cache_control(options);
     let content_type = mime::content_type(&file_path).to_string();
 
     let hdrs = session.req_header().headers.clone();
 
-    if is_not_modified(&hdrs, &etag, mtime) {
-        write_not_modified(session, &etag, &last_modified, &cache_control, extra).await?;
+    if is_not_modified(
+        &hdrs,
+        validators.etag,
+        validators.last_modified.is_some(),
+        mtime,
+    ) {
+        write_not_modified(session, &validators, &cache_control, extra).await?;
         return Ok(true);
     }
 
@@ -144,7 +194,7 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
     let range_hdr = hdrs
         .get("range")
         .and_then(|v| v.to_str().ok())
-        .filter(|_| if_range_allows_range(&hdrs, &etag, &last_modified));
+        .filter(|_| if_range_allows_range(&hdrs, validators.etag, validators.last_modified));
     if let Some(range_hdr) = range_hdr {
         serve_range(
             session,
@@ -152,8 +202,7 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
             file_size,
             range_hdr.to_owned(),
             &content_type,
-            &etag,
-            &last_modified,
+            &validators,
             &cache_control,
             is_head,
             extra,
@@ -175,8 +224,7 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
                 pre_size,
                 &content_type,
                 encoding,
-                &etag,
-                &last_modified,
+                &validators,
                 &cache_control,
                 is_head,
                 extra,
@@ -207,8 +255,7 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
         &file_path,
         file_size,
         &content_type,
-        &etag,
-        &last_modified,
+        &validators,
         &cache_control,
         is_head,
         extra,
@@ -259,7 +306,11 @@ async fn open_no_follow(path: &Path) -> std::io::Result<tokio::fs::File> {
 /// No `If-Range` → yes. An entity-tag must match our (strong) ETag exactly — a weak tag never
 /// matches — and a date must equal `Last-Modified` exactly; anything else, or an unparsable value,
 /// means "the resource may have changed": ignore the `Range` and send the full file.
-fn if_range_allows_range(headers: &http::HeaderMap, etag: &str, last_modified: &str) -> bool {
+fn if_range_allows_range(
+    headers: &http::HeaderMap,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> bool {
     let Some(value) = headers.get("if-range") else {
         return true;
     };
@@ -267,10 +318,11 @@ fn if_range_allows_range(headers: &http::HeaderMap, etag: &str, last_modified: &
         return false;
     };
     let value = value.trim();
+    // A validator the site switched off was never sent, so it cannot match.
     if value.starts_with('"') {
-        value == etag
+        etag == Some(value)
     } else {
-        !value.starts_with("W/") && value == last_modified
+        !value.starts_with("W/") && last_modified == Some(value)
     }
 }
 
@@ -384,8 +436,7 @@ async fn serve_full(
     path: &Path,
     size: u64,
     content_type: &str,
-    etag: &str,
-    last_modified: &str,
+    validators: &Validators<'_>,
     cache_control: &str,
     is_head: bool,
     extra: &[(String, String)],
@@ -393,15 +444,13 @@ async fn serve_full(
 ) -> Result<()> {
     if let Some((encoding, level)) = compress {
         // Compressed response — no Content-Length (chunked transfer encoding).
-        let header_count = 6 + extra.len(); // no content-length, +2 for encoding+vary
+        let header_count = 4 + Validators::SLOTS + extra.len(); // no content-length
         let mut resp = ResponseHeader::build(200, Some(header_count))?;
         resp.insert_header("content-type", content_type)?;
-        resp.insert_header("etag", etag)?;
-        resp.insert_header("last-modified", last_modified)?;
+        validators.apply(&mut resp)?;
         resp.insert_header("cache-control", cache_control)?;
         resp.insert_header("accept-ranges", "bytes")?;
         resp.insert_header("content-encoding", encoding)?;
-        resp.insert_header("vary", "accept-encoding")?;
         insert_extra(&mut resp, extra)?;
 
         if is_head {
@@ -412,11 +461,10 @@ async fn serve_full(
         session.write_response_header(Box::new(resp), false).await?;
         stream_file_compressed(session, path, 0, size, encoding, level).await
     } else {
-        let mut resp = ResponseHeader::build(200, Some(6 + extra.len()))?;
+        let mut resp = ResponseHeader::build(200, Some(3 + Validators::SLOTS + extra.len()))?;
         resp.insert_header("content-type", content_type)?;
         resp.insert_header("content-length", size.to_string())?;
-        resp.insert_header("etag", etag)?;
-        resp.insert_header("last-modified", last_modified)?;
+        validators.apply(&mut resp)?;
         resp.insert_header("cache-control", cache_control)?;
         resp.insert_header("accept-ranges", "bytes")?;
         insert_extra(&mut resp, extra)?;
@@ -515,19 +563,16 @@ async fn serve_pre_compressed(
     pre_size: u64,
     content_type: &str,
     encoding: &'static str,
-    etag: &str,
-    last_modified: &str,
+    validators: &Validators<'_>,
     cache_control: &str,
     is_head: bool,
     extra: &[(String, String)],
 ) -> Result<()> {
-    let mut resp = ResponseHeader::build(200, Some(8 + extra.len()))?;
+    let mut resp = ResponseHeader::build(200, Some(5 + Validators::SLOTS + extra.len()))?;
     resp.insert_header("content-type", content_type)?;
     resp.insert_header("content-length", pre_size.to_string())?;
     resp.insert_header("content-encoding", encoding)?;
-    resp.insert_header("vary", "accept-encoding")?;
-    resp.insert_header("etag", etag)?;
-    resp.insert_header("last-modified", last_modified)?;
+    validators.apply(&mut resp)?;
     resp.insert_header("cache-control", cache_control)?;
     resp.insert_header("accept-ranges", "none")?; // ranges unsupported on pre-compressed
     insert_extra(&mut resp, extra)?;
@@ -673,8 +718,7 @@ async fn serve_range(
     total: u64,
     range_hdr: String,
     content_type: &str,
-    etag: &str,
-    last_modified: &str,
+    validators: &Validators<'_>,
     cache_control: &str,
     is_head: bool,
     extra: &[(String, String)],
@@ -689,12 +733,11 @@ async fn serve_range(
     };
 
     let length = end - start + 1;
-    let mut resp = ResponseHeader::build(206, Some(7 + extra.len()))?;
+    let mut resp = ResponseHeader::build(206, Some(5 + Validators::SLOTS + extra.len()))?;
     resp.insert_header("content-type", content_type)?;
     resp.insert_header("content-length", length.to_string())?;
     resp.insert_header("content-range", format!("bytes {start}-{end}/{total}"))?;
-    resp.insert_header("etag", etag)?;
-    resp.insert_header("last-modified", last_modified)?;
+    validators.apply(&mut resp)?;
     resp.insert_header("cache-control", cache_control)?;
     resp.insert_header("accept-ranges", "bytes")?;
     insert_extra(&mut resp, extra)?;
@@ -710,14 +753,12 @@ async fn serve_range(
 
 async fn write_not_modified(
     session: &mut Session,
-    etag: &str,
-    last_modified: &str,
+    validators: &Validators<'_>,
     cache_control: &str,
     extra: &[(String, String)],
 ) -> Result<()> {
-    let mut resp = ResponseHeader::build(304, Some(3 + extra.len()))?;
-    resp.insert_header("etag", etag)?;
-    resp.insert_header("last-modified", last_modified)?;
+    let mut resp = ResponseHeader::build(304, Some(1 + Validators::SLOTS + extra.len()))?;
+    validators.apply(&mut resp)?;
     resp.insert_header("cache-control", cache_control)?;
     insert_extra(&mut resp, extra)?;
     session.write_response_header(Box::new(resp), true).await
@@ -911,17 +952,36 @@ mod tests {
             h.insert("if-range", http::HeaderValue::from_str(v).unwrap());
             h
         };
-        assert!(if_range_allows_range(&http::HeaderMap::new(), etag, lm));
-        assert!(if_range_allows_range(&with(etag), etag, lm));
-        assert!(if_range_allows_range(&with(lm), etag, lm));
-        assert!(!if_range_allows_range(&with("\"other\""), etag, lm));
-        assert!(!if_range_allows_range(&with("W/\"65f-1a\""), etag, lm));
+        assert!(if_range_allows_range(
+            &http::HeaderMap::new(),
+            Some(etag),
+            Some(lm)
+        ));
+        assert!(if_range_allows_range(&with(etag), Some(etag), Some(lm)));
+        assert!(if_range_allows_range(&with(lm), Some(etag), Some(lm)));
+        assert!(!if_range_allows_range(
+            &with("\"other\""),
+            Some(etag),
+            Some(lm)
+        ));
+        assert!(!if_range_allows_range(
+            &with("W/\"65f-1a\""),
+            Some(etag),
+            Some(lm)
+        ));
         assert!(!if_range_allows_range(
             &with("Sat, 10 Oct 2026 00:59:59 GMT"),
-            etag,
-            lm
+            Some(etag),
+            Some(lm)
         ));
-        assert!(!if_range_allows_range(&with("garbage"), etag, lm));
+        // A validator the site switched off was never sent, so a matching-looking value is stale.
+        assert!(!if_range_allows_range(&with(etag), None, Some(lm)));
+        assert!(!if_range_allows_range(&with(lm), Some(etag), None));
+        assert!(!if_range_allows_range(
+            &with("garbage"),
+            Some(etag),
+            Some(lm)
+        ));
     }
 
     /// Issue #400: a directory symlink *inside* the path must not be followed — the final
@@ -1364,31 +1424,36 @@ mod tests_is_not_modified {
 
     #[test]
     fn no_conditional_headers_returns_false() {
-        assert!(!is_not_modified(&http::HeaderMap::new(), ETAG, MTIME));
+        assert!(!is_not_modified(
+            &http::HeaderMap::new(),
+            Some(ETAG),
+            true,
+            MTIME
+        ));
     }
 
     #[test]
     fn if_none_match_exact_returns_true() {
         let hdrs = headers_with("if-none-match", ETAG);
-        assert!(is_not_modified(&hdrs, ETAG, MTIME));
+        assert!(is_not_modified(&hdrs, Some(ETAG), true, MTIME));
     }
 
     #[test]
     fn if_none_match_wildcard_returns_true() {
         let hdrs = headers_with("if-none-match", "*");
-        assert!(is_not_modified(&hdrs, ETAG, MTIME));
+        assert!(is_not_modified(&hdrs, Some(ETAG), true, MTIME));
     }
 
     #[test]
     fn if_none_match_different_etag_returns_false() {
         let hdrs = headers_with("if-none-match", r#""different""#);
-        assert!(!is_not_modified(&hdrs, ETAG, MTIME));
+        assert!(!is_not_modified(&hdrs, Some(ETAG), true, MTIME));
     }
 
     #[test]
     fn if_none_match_list_with_match_returns_true() {
         let hdrs = headers_with("if-none-match", r#""other1", "abc123", "other2""#);
-        assert!(is_not_modified(&hdrs, ETAG, MTIME));
+        assert!(is_not_modified(&hdrs, Some(ETAG), true, MTIME));
     }
 
     #[test]
@@ -1397,7 +1462,7 @@ mod tests_is_not_modified {
         let ims = httpdate::fmt_http_date(SystemTime::now() + Duration::from_secs(3600));
         let hdrs = headers_with("if-modified-since", &ims);
         let mtime = SystemTime::now();
-        assert!(is_not_modified(&hdrs, ETAG, mtime));
+        assert!(is_not_modified(&hdrs, Some(ETAG), true, mtime));
     }
 
     #[test]
@@ -1406,7 +1471,7 @@ mod tests_is_not_modified {
         let ims = httpdate::fmt_http_date(UNIX_EPOCH);
         let hdrs = headers_with("if-modified-since", &ims);
         let mtime = SystemTime::now(); // very recent
-        assert!(!is_not_modified(&hdrs, ETAG, mtime));
+        assert!(!is_not_modified(&hdrs, Some(ETAG), true, mtime));
     }
 }
 
@@ -1415,11 +1480,26 @@ mod tests_is_not_modified {
 /// Checks `If-None-Match` first (taking precedence over `If-Modified-Since`
 /// per RFC 9110 §13.1).  Per RFC 9110 §13.1.2, `If-None-Match` may contain a
 /// comma-separated list of ETags; the server must match against any of them.
-fn is_not_modified(hdrs: &http::HeaderMap, etag: &str, mtime: std::time::SystemTime) -> bool {
-    if let Some(inm) = hdrs.get("if-none-match").and_then(|v| v.to_str().ok()) {
+///
+/// `etag` is `None` and `use_last_modified` false when the site switched that validator off; the
+/// matching precondition header is then ignored (RFC 9110 §13.1: a recipient ignores a condition it
+/// cannot evaluate), and the request is served in full.
+fn is_not_modified(
+    hdrs: &http::HeaderMap,
+    etag: Option<&str>,
+    use_last_modified: bool,
+    mtime: std::time::SystemTime,
+) -> bool {
+    if let (Some(etag), Some(inm)) = (
+        etag,
+        hdrs.get("if-none-match").and_then(|v| v.to_str().ok()),
+    ) {
         // A wildcard matches any ETag; otherwise check each comma-separated value.
         // Per RFC 9110 the list may look like: `"abc123", "def456"`.
         return inm == "*" || inm.split(',').any(|token| token.trim() == etag);
+    }
+    if !use_last_modified {
+        return false;
     }
     if let Some(ims) = hdrs.get("if-modified-since").and_then(|v| v.to_str().ok()) {
         if let Ok(ims_time) = httpdate::parse_http_date(ims) {
