@@ -12,8 +12,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use super::AcmeCertPaths;
-
 /// `<path>.tmp` — the staging file next to `path` (same directory, so the final
 /// `rename` never crosses a filesystem boundary).
 fn staging_path(path: &Path) -> PathBuf {
@@ -112,15 +110,11 @@ impl PendingPair {
     }
 
     /// Write both files, `fsync` them, then rename key → cert into place.
-    pub(super) fn commit(mut self, cert_pem: &str, key_pem: &str) -> io::Result<AcmeCertPaths> {
+    pub(super) fn commit(mut self, cert_pem: &str, key_pem: &str) -> io::Result<()> {
         write_and_sync(&mut self.key_file, key_pem.as_bytes())?;
         write_and_sync(&mut self.cert_file, cert_pem.as_bytes())?;
         std::fs::rename(&self.key_tmp, &self.key)?;
-        std::fs::rename(&self.cert_tmp, &self.cert)?;
-        Ok(AcmeCertPaths {
-            cert: self.cert.clone(),
-            key: self.key.clone(),
-        })
+        std::fs::rename(&self.cert_tmp, &self.cert)
     }
 }
 
@@ -271,14 +265,16 @@ mod tests {
     #[test]
     fn commit_writes_both_files_and_leaves_no_staging_files() {
         let dir = tempfile::TempDir::new().unwrap();
+        let cert = dir.path().join("example.com.crt.pem");
+        let key = dir.path().join("example.com.key.pem");
         let pending = PendingPair::create(dir.path(), "example.com").unwrap();
-        let paths = pending.commit("CERT", "KEY").unwrap();
-        assert_eq!(std::fs::read_to_string(&paths.cert).unwrap(), "CERT");
-        assert_eq!(std::fs::read_to_string(&paths.key).unwrap(), "KEY");
-        assert!(!staging_path(&paths.cert).exists());
-        assert!(!staging_path(&paths.key).exists());
+        pending.commit("CERT", "KEY").unwrap();
+        assert_eq!(std::fs::read_to_string(&cert).unwrap(), "CERT");
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), "KEY");
+        assert!(!staging_path(&cert).exists());
+        assert!(!staging_path(&key).exists());
         #[cfg(unix)]
-        assert_eq!(mode_of(&paths.key), 0o600);
+        assert_eq!(mode_of(&key), 0o600);
     }
 
     #[test]
@@ -313,10 +309,13 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let stale = staging_path(&dir.path().join("example.com.key.pem"));
         std::fs::write(&stale, "half-written garbage").unwrap();
-        let paths = PendingPair::create(dir.path(), "example.com")
+        PendingPair::create(dir.path(), "example.com")
             .unwrap()
             .commit("C", "K")
             .unwrap();
-        assert_eq!(std::fs::read_to_string(&paths.key).unwrap(), "K");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("example.com.key.pem")).unwrap(),
+            "K"
+        );
     }
 }

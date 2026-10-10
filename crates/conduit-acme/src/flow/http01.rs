@@ -25,7 +25,7 @@ pub(super) const CHALLENGE_SHUTDOWN_TIMEOUT_SECS: u64 = 10;
 // ── Per-port serialization lock ───────────────────────────────────────────────
 
 /// One `Mutex` per HTTP-01 challenge port, ensuring that concurrent
-/// `obtain_certificate` calls for different domains never race to bind the
+/// `run_acme_order` calls for different domains never race to bind the
 /// same port.
 static HTTP01_PORT_LOCKS: OnceLock<DashMap<u16, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
 
@@ -171,7 +171,9 @@ impl ChallengeServer {
                 abort_handle.abort();
                 tracing::warn!(
                     timeout_secs = CHALLENGE_SHUTDOWN_TIMEOUT_SECS,
-                    "ACME HTTP-01 challenge server did not shut down within the timeout                      (a peer likely held an active connection open); forcibly aborted the                      task to reclaim the port"
+                    "ACME HTTP-01 challenge server did not shut down within the timeout \
+                     (a peer likely held an active connection open); forcibly aborted the \
+                     task to reclaim the port"
                 );
             }
         }
@@ -258,7 +260,7 @@ mod tests {
         // Reproduces issue #352's premise: without a bounded wait, an
         // active (in-flight, not-yet-returned handler) connection keeps
         // graceful shutdown from ever completing. This is what
-        // obtain_certificate()'s CHALLENGE_SHUTDOWN_TIMEOUT_SECS wrapper
+        // ChallengeServer::stop()'s CHALLENGE_SHUTDOWN_TIMEOUT_SECS wrapper
         // guards against.
         let (addr, server_task, stop_tx) =
             spawn_slow_challenge_like_server(Duration::from_secs(5)).await;

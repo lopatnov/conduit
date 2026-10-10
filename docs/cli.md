@@ -719,10 +719,14 @@ or deploy does it) so the new certificate is picked up before the old one
 expires. Swapping the renewed certificate into the running listeners is not
 implemented yet.
 
-Files are written atomically (staged, `fsync`ed, renamed), a cached certificate
-is reused only when its key matches it, and if renewal fails while the cached
-certificate is still valid, the site keeps serving it instead of falling back
-to plain HTTP.
+Each file is written atomically (staged, `fsync`ed, renamed over the old one),
+so a crash never leaves a truncated key; the certificate and key are two files,
+so a crash between the two renames can leave a mismatched pair, which is
+detected on the next start (a cached certificate is reused only when its key
+matches it) and re-ordered. Every renewal creates new owner-only (`0600`) files,
+the public certificate included — a group or ACL set on the old files is not
+carried over. If renewal fails while the cached certificate is still valid, the
+site keeps serving it instead of falling back to plain HTTP.
 
 During renewal the HTTP-01 token is answered by the listener that already owns
 the challenge port (`httpRedirectPort`, else port 80): the redirect service, or

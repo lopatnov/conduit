@@ -2913,6 +2913,7 @@ dependencies = [
  "pingora-core",
  "pingora-proxy",
  "rcgen",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",

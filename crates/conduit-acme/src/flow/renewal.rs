@@ -185,4 +185,66 @@ mod tests {
         .await
         .expect("an empty job list must not park a task");
     }
+    fn expiring_job(dir: &std::path::Path) -> RenewalJob {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        fresh_pair(dir, "example.com", 5);
+        job(dir)
+    }
+
+    #[tokio::test]
+    async fn a_due_certificate_with_an_unreachable_ca_is_an_error_and_keeps_the_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let job = expiring_job(dir.path());
+        let before = std::fs::read(dir.path().join("example.com.key.pem")).unwrap();
+
+        let result = renew_if_due(&job, &Arc::new(DashMap::new())).await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(dir.path().join("example.com.key.pem")).unwrap(),
+            before,
+            "a failed renewal must leave the cached pair untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_loop_keeps_going_after_a_failed_renewal_and_stops_on_shutdown() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let job = expiring_job(dir.path());
+        let (tx, rx) = watch::channel(false);
+        let task = tokio::spawn(run_loop(
+            vec![job],
+            Arc::new(DashMap::new()),
+            rx,
+            Duration::from_millis(20),
+        ));
+        // Long enough for at least one tick and its failed renewal.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            !task.is_finished(),
+            "a failed renewal must not end the loop"
+        );
+        tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the loop must stop on shutdown")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_public_loop_entry_point_stops_on_shutdown() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fresh_pair(dir.path(), "example.com", 365);
+        let (tx, rx) = watch::channel(false);
+        let task = tokio::spawn(run_renewal_loop(
+            vec![job(dir.path())],
+            Arc::new(DashMap::new()),
+            rx,
+        ));
+        tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("the loop must stop on shutdown")
+            .unwrap();
+    }
 }

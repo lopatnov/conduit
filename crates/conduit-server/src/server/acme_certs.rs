@@ -241,4 +241,64 @@ mod tests {
         assert_eq!(jobs.len(), 1, "b's port cannot serve tokens: skipped");
         assert_eq!(jobs[0].domain, "a.example.com");
     }
+    // ── obtain_acme_certs ────────────────────────────────────────────────────
+
+    fn acme_config_json(host: &str, port: u16, storage: &std::path::Path) -> String {
+        serde_json::json!({
+            "sites": [{
+                "host": host,
+                "port": port,
+                "tls": { "acme": {
+                    "email": "o@example.com",
+                    "directory": "http://127.0.0.1:1/directory",
+                    "storage": storage.to_str().unwrap(),
+                } }
+            }]
+        })
+        .to_string()
+    }
+
+    /// Startup issuance with the CA down: a valid cached pair is used, so the
+    /// site keeps its TLS listener instead of falling back to plain HTTP.
+    #[test]
+    fn startup_uses_the_cached_pair_when_the_ca_is_unreachable() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = tempfile::TempDir::new().unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["a.example.com".to_owned()]).unwrap();
+        params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(5);
+        let cert = params.self_signed(&key).unwrap();
+        std::fs::write(dir.path().join("a.example.com.crt.pem"), cert.pem()).unwrap();
+        std::fs::write(
+            dir.path().join("a.example.com.key.pem"),
+            key.serialize_pem(),
+        )
+        .unwrap();
+
+        let config = cfg(&acme_config_json("a.example.com", 8443, dir.path()));
+        let certs =
+            obtain_acme_certs(&config, &Arc::new(dashmap::DashMap::new())).expect("startup");
+
+        let (cert_path, key_path) = certs.get(&8443).expect("the site keeps its TLS entry");
+        assert!(cert_path.ends_with("a.example.com.crt.pem"));
+        assert!(key_path.ends_with("a.example.com.key.pem"));
+    }
+
+    #[test]
+    fn startup_without_acme_sites_does_nothing() {
+        let config = cfg(r#"{"sites":[{"port":8080}]}"#);
+        let certs = obtain_acme_certs(&config, &Arc::new(dashmap::DashMap::new())).unwrap();
+        assert!(certs.is_empty());
+    }
+
+    #[test]
+    fn startup_survives_a_failed_issuance_without_a_cache() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = cfg(&acme_config_json("b.example.com", 8444, dir.path()));
+
+        let certs = obtain_acme_certs(&config, &Arc::new(dashmap::DashMap::new())).unwrap();
+
+        assert!(certs.is_empty(), "the site falls back to plain HTTP");
+    }
 }

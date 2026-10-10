@@ -125,10 +125,10 @@ pub async fn load_or_obtain_certificate(
             let cert = tokio::fs::read_to_string(&cert_path).await.ok();
             let key = tokio::fs::read_to_string(&key_path).await.ok();
             if cached_pair_is_valid_now(cert.as_deref(), key.as_deref()) {
-                tracing::warn!(
+                tracing::error!(
                     domain,
                     error = %e,
-                    "ACME renewal failed — continuing with the cached certificate until it expires"
+                    "ACME order failed — serving the cached certificate until it expires"
                 );
                 Ok(AcmeCertPaths {
                     cert: cert_path,
@@ -188,7 +188,8 @@ async fn load_or_obtain_with(
             }
             CacheState::Unusable => tracing::warn!(
                 domain,
-                "cached ACME certificate and key are unreadable or do not match —                  obtaining a new certificate"
+                "cached ACME certificate and key are unreadable or do not match — \
+                 obtaining a new certificate"
             ),
         }
     } else {
@@ -202,18 +203,23 @@ async fn load_or_obtain_with(
         .with_context(|| format!("preparing to write ACME files in {storage_dir:?}"))?;
 
     let (cert_pem, key_pem) =
-        obtain_certificate(acme_cfg, domain, &challenges, challenge_source).await?;
+        run_acme_order(acme_cfg, domain, &challenges, challenge_source).await?;
 
     // Synchronous and cancellation-safe: both files are written, `fsync`ed
     // and renamed into place without an `.await` in between. The key is
     // owner-only from creation (issue #278).
     pending
         .commit(&cert_pem, &key_pem)
-        .with_context(|| format!("writing ACME certificate and key in {storage_dir:?}"))
+        .with_context(|| format!("writing ACME certificate and key in {storage_dir:?}"))?;
+
+    Ok(AcmeCertPaths {
+        cert: cert_path,
+        key: key_path,
+    })
 }
 
 /// Run the complete ACME HTTP-01 flow and return `(cert_chain_pem, key_pem)`.
-async fn obtain_certificate(
+async fn run_acme_order(
     acme_cfg: &AcmeConfig,
     domain: &str,
     challenges: &Arc<DashMap<String, String>>,
@@ -514,5 +520,97 @@ mod tests {
         ));
         assert!(!cached_pair_is_valid_now(Some(&valid_cert), None));
         assert!(!cached_pair_is_valid_now(None, None));
+    }
+    /// instant-acme's HTTP client needs a process-level rustls provider; the
+    /// binary installs `ring` in `run_server`, tests that reach the CA do it
+    /// here.
+    fn install_crypto_provider() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
+    /// A directory nothing listens on: any order fails fast with a connect error.
+    fn unreachable_ca() -> AcmeConfig {
+        AcmeConfig {
+            email: "ops@example.com".to_string(),
+            directory: Some("http://127.0.0.1:1/directory".to_string()),
+            storage: None,
+            challenge: None,
+        }
+    }
+
+    fn write_pair(dir: &Path, not_after: time::OffsetDateTime) -> (String, String) {
+        let (cert, key) = self_signed_pair_with_not_after(not_after);
+        std::fs::write(dir.join("example.com.crt.pem"), &cert).unwrap();
+        std::fs::write(dir.join("example.com.key.pem"), &key).unwrap();
+        (cert, key)
+    }
+
+    /// Renewal starts 30 days ahead, so a CA outage inside that window must not
+    /// take the site down: the still-valid cached pair keeps being served.
+    #[tokio::test]
+    async fn failed_order_falls_back_to_a_still_valid_cached_pair() {
+        install_crypto_provider();
+        let dir = tempfile::TempDir::new().unwrap();
+        let (cert, key) = write_pair(
+            dir.path(),
+            time::OffsetDateTime::now_utc() + time::Duration::days(5),
+        );
+
+        let paths = load_or_obtain_certificate(
+            &unreachable_ca(),
+            "example.com",
+            Arc::new(DashMap::new()),
+            dir.path(),
+            0,
+        )
+        .await
+        .expect("a valid cached certificate must survive a failed renewal");
+
+        assert_eq!(std::fs::read_to_string(&paths.cert).unwrap(), cert);
+        assert_eq!(std::fs::read_to_string(&paths.key).unwrap(), key);
+        assert!(!dir.path().join("example.com.key.pem.tmp").exists());
+    }
+
+    #[tokio::test]
+    async fn failed_order_with_an_expired_cached_pair_is_an_error() {
+        install_crypto_provider();
+        let dir = tempfile::TempDir::new().unwrap();
+        write_pair(
+            dir.path(),
+            time::OffsetDateTime::now_utc() - time::Duration::days(1),
+        );
+
+        let result = load_or_obtain_certificate(
+            &unreachable_ca(),
+            "example.com",
+            Arc::new(DashMap::new()),
+            dir.path(),
+            0,
+        )
+        .await;
+
+        assert!(result.is_err(), "an expired certificate must not be served");
+        assert!(!dir.path().join("example.com.crt.pem.tmp").exists());
+        assert!(!dir.path().join("example.com.key.pem.tmp").exists());
+    }
+
+    #[tokio::test]
+    async fn an_unusable_storage_location_fails_before_any_order() {
+        // `create_dir_all` over an existing *file* fails before the CA (here a
+        // closed port, which would otherwise be the reported error) is tried.
+        let dir = tempfile::TempDir::new().unwrap();
+        let blocker = dir.path().join("certs");
+        std::fs::write(&blocker, "not a directory").unwrap();
+
+        let err = load_or_obtain_certificate(
+            &unreachable_ca(),
+            "example.com",
+            Arc::new(DashMap::new()),
+            &blocker,
+            0,
+        )
+        .await
+        .expect_err("storage dir is a file");
+        assert!(err.to_string().contains("creating ACME storage directory"));
     }
 }
