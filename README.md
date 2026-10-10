@@ -44,7 +44,6 @@ Details: [Installation](#installation).
 - [Benchmarks](#benchmarks)
 - [Limits you should know about](#limits-you-should-know-about)
 - [Editor integration (JSON Schema)](#editor-integration-json-schema)
-- [Documentation](#documentation)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -769,24 +768,6 @@ validation in JSON and YAML configs.
 **IntelliJ / WebStorm:** Settings → Languages & Frameworks → Schemas and DTDs → JSON Schema
 Mappings → add the URL `https://raw.githubusercontent.com/lopatnov/conduit/main/schema/conduit.schema.json`
 with the file pattern `conduit*.json, conduit*.yaml`.
-
-## Documentation
-
-Everything beyond this page lives in [`docs/`](docs/); this table says which file answers which
-question.
-
-| Read this                                | When you want to                                                  |
-| ---------------------------------------- | ----------------------------------------------------------------- |
-| [docs/configuration.md](docs/configuration.md) | look up any config field, in YAML and JSON                  |
-| [docs/recipes.md](docs/recipes.md)       | start from a working config for a common scenario                 |
-| [docs/cli.md](docs/cli.md)               | see every command, flag, exit code and build feature              |
-| [docs/admin.md](docs/admin.md)           | manage a running server over the Admin API                        |
-| [docs/deployment.md](docs/deployment.md) | run it in production: Docker, systemd, Kubernetes                 |
-| [docs/building.md](docs/building.md)     | build from source, pick features, cross-compile                   |
-| [docs/rhai.md](docs/rhai.md)             | write request and response logic as scripts                       |
-| [docs/wasm.md](docs/wasm.md)             | write plugins in Rust, C, Go, AssemblyScript or Zig               |
-| [docs/benchmarks.md](docs/benchmarks.md) | reproduce the CI measurement or run your own                      |
-| [examples/](examples/)                   | copy a complete, validated config                                 |
 
 ## Contributing
 
