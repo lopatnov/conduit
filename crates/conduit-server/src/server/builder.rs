@@ -11,7 +11,7 @@ use crate::admin::api::AdminApiService;
 // DEFAULT_ADMIN_BIND is still the default for CLI commands (conduit reload etc.)
 // but is no longer a fallback for the server-side HTTP binding.
 #[allow(unused_imports)]
-use crate::config::defaults::DEFAULT_ADMIN_BIND;
+use crate::config::defaults::{DEFAULT_ADMIN_BIND, DEFAULT_SHUTDOWN_TIMEOUT_SECS};
 use crate::config::schema::AppConfig;
 use conduit_runtime::proxy::service::{AppState, ConduitProxy};
 #[cfg(feature = "upload")]
@@ -60,9 +60,6 @@ fn bind_upload_listener_if_needed(
         Ok((Some(addr), Some(listener)))
     }
 }
-
-/// Documented default for `global.shutdownTimeoutSecs`.
-const DEFAULT_SHUTDOWN_TIMEOUT_SECS: u64 = 30;
 
 /// Build the Pingora `ServerConf` from `global.workers` (issue #226) and
 /// `global.shutdownTimeoutSecs` (issue #489).

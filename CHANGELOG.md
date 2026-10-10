@@ -25,7 +25,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **`global.shutdownTimeoutSecs` now takes effect** (issue #489). It is passed to Pingora's grace period (default 30 s;
-  Pingora used to wait its own 300 s). Pingora waits the whole period, it does not end early when connections drain.
+  Pingora used to wait its own 300 s, so operators with long-lived streams (uploads, SSE, WebSocket) should raise it).
+  Pingora waits the whole period, it does not end early when connections drain.
   Changing the value now needs a restart (cold field).
 - **`global.backlog` is reported as ignored** (issue #490). Pingora fixes the listen backlog at 65535; validation warns,
   and a change no longer counts as a cold-restart field.
