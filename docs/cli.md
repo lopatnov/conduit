@@ -874,6 +874,7 @@ faultInjection:
   delay:
     percent: 10     # 10% of requests are delayed
     ms: 500
+```
 
 ---
 

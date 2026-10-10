@@ -725,7 +725,8 @@ sites:
       cert: /etc/tls/server.crt
       key: /etc/tls/server.key
       httpRedirectPort: 80
-      versions: ["TLSv1.2", "TLSv1.3"]   # disable TLS 1.0/1.1
+      # TLS 1.2 and 1.3 are always enabled; tls.versions and tls.ciphers are
+      # rejected by validation (issue #189), so they are not set here.
 
     securityHeaders:
       hstsMaxAgeSecs: 63072000             # 2 years

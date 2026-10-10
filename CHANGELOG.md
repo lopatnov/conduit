@@ -28,7 +28,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `cargo install conduit-proxy`; they now say `cargo install lopatnov-conduit`.
 - **Docs: wrong config snippets and defaults.** A top-level `http2: true` does not parse (the
   setting is an object, `http2: {}` enables it) and appeared in the README, the npm README and
-  three recipes; a recipe set `tls.versions`, which `conduit validate` rejects; the config
+  three recipes; two recipes set `tls.versions`, which `conduit validate` rejects; a missing
+  closing fence in `docs/cli.md` made every section after "fault-injection" render with code
+  and prose swapped; the config
   reference said `global.workers` defaults to the CPU count when it defaults to one thread;
   `hotReload` was documented as watching the config file when it only watches the served `static`
   directories and reloads browsers (config changes need `conduit reload`); the
