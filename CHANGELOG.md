@@ -29,7 +29,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Docs: wrong config snippets and defaults.** A top-level `http2: true` does not parse (the
   setting is an object, `http2: {}` enables it) and appeared in the README, the npm README and
   three recipes; a recipe set `tls.versions`, which `conduit validate` rejects; the config
-  reference said `global.workers` defaults to the CPU count when it defaults to one thread; the
+  reference said `global.workers` defaults to the CPU count when it defaults to one thread;
+  `hotReload` was documented as watching the config file when it only watches the served `static`
+  directories and reloads browsers (config changes need `conduit reload`); the
   `conduit validate` example showed an error format the command does not print; the Linux release
   archive was said to unpack to `./conduit` (it unpacks to a file named like the archive). The
   README and the npm README were rewritten to match the code, and the benchmark page now gives the

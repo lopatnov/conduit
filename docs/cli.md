@@ -92,8 +92,9 @@ On startup, Conduit:
 3. Starts the Admin API on `global.admin.bind` (only if `global.admin` is configured)
 4. Begins serving traffic
 
-If `hotReload` is enabled, Conduit watches the config file and reloads it
-automatically when it changes — no restart needed.
+Conduit does not watch the config file. To apply an edit without restarting, run
+[`conduit reload`](#reload). (`hotReload` is a development feature: it watches the served `static`
+directories and reloads connected browsers when a file changes.)
 
 ---
 

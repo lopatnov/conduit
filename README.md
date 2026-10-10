@@ -180,7 +180,7 @@ The images are `FROM scratch` (a static musl binary, no shell, no OS userland) a
 ## Choose your build
 
 <p align="center">
-  <img src="docs/img/build-profiles.svg" alt="Four build layers, each including the ones below it. Always on: routing, TLS, filters, basic auth, metrics and the Admin API. Default adds reverse proxy, static files, compression and hot reload. Standard adds JWT, consumers, forward auth, caching and ACME. Full adds scripting, WebAssembly, TCP proxy, upload, Redis, disk cache, fault injection, OpenTelemetry and Kubernetes." width="900">
+  <img src="docs/img/build-profiles.svg" alt="Four build layers, each including the ones below it. Always on: routing, TLS, filters, basic auth, metrics and the Admin API. Default adds reverse proxy, static files, compression and browser live reload. Standard adds JWT, consumers, forward auth, caching and ACME. Full adds scripting, WebAssembly, TCP proxy, upload, Redis, disk cache, fault injection, OpenTelemetry and Kubernetes." width="900">
 </p>
 
 | You install with                    | You get                                            |
@@ -309,7 +309,7 @@ healthCheck: true
 port: 3000
 logging: dev
 cors: true
-hotReload: true
+hotReload: true            # reload the browser when a served file changes
 static: ./src
 proxy:
   /api: http://localhost:4000

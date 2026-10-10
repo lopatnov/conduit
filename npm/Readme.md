@@ -60,7 +60,7 @@ Redis-backed rate limiting, OpenTelemetry tracing, fault injection and the Kuber
 There is nothing to download separately.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/lopatnov/conduit/main/docs/img/build-profiles.svg" alt="Four build layers, each including the ones below it. Always on: routing, TLS, filters, basic auth, metrics and the Admin API. Default adds reverse proxy, static files, compression and hot reload. Standard adds JWT, consumers, forward auth, caching and ACME. Full adds scripting, WebAssembly, TCP proxy, upload, Redis, disk cache, fault injection, OpenTelemetry and Kubernetes." width="900">
+  <img src="https://raw.githubusercontent.com/lopatnov/conduit/main/docs/img/build-profiles.svg" alt="Four build layers, each including the ones below it. Always on: routing, TLS, filters, basic auth, metrics and the Admin API. Default adds reverse proxy, static files, compression and browser live reload. Standard adds JWT, consumers, forward auth, caching and ACME. Full adds scripting, WebAssembly, TCP proxy, upload, Redis, disk cache, fault injection, OpenTelemetry and Kubernetes." width="900">
 </p>
 
 (Through 1.x the package installed the smaller `standard` build. If you are pinned to a 1.x
@@ -124,12 +124,12 @@ fallback:
   file: ./dist/index.html
 ```
 
-### Dev server with hot reload
+### Dev server with live reload
 
 ```yaml
 port: 3000
 logging: dev
-hotReload: true
+hotReload: true   # reload the browser when a served file changes
 cors: true
 static: ./src
 proxy:
@@ -283,7 +283,7 @@ dropped by the next reload. The complete reference is
 | **CORS and security headers** | Origin allow-list, preflight, credentials mode; HSTS, CSP, X-Frame-Options, Referrer-Policy, allowed hosts |
 | **Transforms**        | Set or remove request and response headers; use JWT claims in headers (`{{ jwt.sub }}`)   |
 | **Scripting**         | Rhai scripts and WebAssembly plugins, in the request and response phases                  |
-| **Hot reload**        | `conduit reload` or a config file watch; connections stay open                            |
+| **Config reload**     | `conduit reload` applies most config changes without a restart; connections stay open     |
 | **Observability**     | Health endpoint with upstream status, Prometheus metrics, OpenTelemetry tracing, JSON access log |
 | **File upload**       | `multipart/form-data` with generated filenames, a MIME allow-list and size limits         |
 | **TCP proxy**         | Raw TCP passthrough for databases, SMTP and similar                                       |

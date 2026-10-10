@@ -78,7 +78,7 @@
 
   <!-- cross-cutting strip -->
   <rect x="248" y="364" width="432" height="38" rx="8" fill="#ffffff" stroke="#8c959f" stroke-dasharray="4 3"/>
-  <text x="464" y="380" text-anchor="middle" class="b">Hot reload · Admin API · Prometheus · tracing · access log</text>
+  <text x="464" y="380" text-anchor="middle" class="b">Config reload · Admin API · Prometheus · tracing · access log</text>
   <text x="464" y="395" text-anchor="middle" class="s">around every request, not a step in it</text>
 
   <!-- outgoing arrows -->

@@ -2833,7 +2833,10 @@ See [`examples/observability.yaml`](../examples/observability.yaml)
 
 ## Hot Reload
 
-Watch the config file for changes and reload without restarting.
+Live reload for development: when a file in a served `static` directory changes, connected
+browsers are told to reload. `hotReload` watches the `static` directories (limited to
+`extensions` if you set them); it does **not** watch the config file. To apply a config change
+without a restart, run `conduit reload` (or `POST /reload`, see [admin.md](admin.md)).
 
 ```yaml
 # YAML
@@ -2853,7 +2856,7 @@ hotReload:
 { "hotReload": { "extensions": ["html", "css", "js"] } }
 ```
 
-**Hot-reloadable** (no restart): `proxy`, `static`, `routes`, `rateLimit`,
+**Config fields applied by `conduit reload`** (no restart): `proxy`, `static`, `routes`, `rateLimit`,
 `basicAuth`, `apiKey`, `jwtAuth`, `forwardAuth`, `consumers`, `middleware`,
 `logging`, `cors`, `securityHeaders`, `cache`, `outlierDetection`, `limits`,
 `requestTransform`, `responseTransform`, `maskErrors`.

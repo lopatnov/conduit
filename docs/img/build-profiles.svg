@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 430" role="img" aria-labelledby="t d">
   <title id="t">Conduit build profiles</title>
-  <desc id="d">Four layers, each including everything below it. Always on: routing, TLS, filters, basic auth, metrics and the Admin API. Default adds reverse proxy, static files, compression and hot reload. Standard adds JWT, consumers, forward auth, caching and ACME. Full adds scripting, WebAssembly, TCP proxy, upload, Redis, disk cache, fault injection, OpenTelemetry and Kubernetes.</desc>
+  <desc id="d">Four layers, each including everything below it. Always on: routing, TLS, filters, basic auth, metrics and the Admin API. Default adds reverse proxy, static files, compression and browser live reload. Standard adds JWT, consumers, forward auth, caching and ACME. Full adds scripting, WebAssembly, TCP proxy, upload, Redis, disk cache, fault injection, OpenTelemetry and Kubernetes.</desc>
   <defs>
     <style>
       text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #1f2328; }
@@ -33,7 +33,7 @@
   <text x="44" y="277" class="m">cargo install lopatnov-conduit</text>
   <line x1="262" y1="240" x2="262" y2="294" stroke="#4ac26b" stroke-width="1"/>
   <text x="282" y="252" class="a">ADDS</text>
-  <text x="282" y="274" class="t">reverse proxy · static files and SPA fallback · compression · hot reload</text>
+  <text x="282" y="274" class="t">reverse proxy · static files and SPA fallback · compression · browser live reload</text>
   <rect x="24" y="314" width="912" height="78" rx="10" fill="#ddf4ff" stroke="#54aeff" stroke-width="1.4"/>
   <text x="44" y="344" class="h">always on</text>
   <text x="44" y="363" class="m">even with --no-default-features</text>
