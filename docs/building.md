@@ -49,6 +49,9 @@ Docker images.
 
 ## Optional features
 
+`conduit -c conduit.yaml features` prints the features a configuration needs and a ready-to-paste `cargo install`
+line (see [CLI reference](cli.md#features)).
+
 The default build (`default = ["proxy", "compression", "static", "hotreload"]`) is the minimal embed-friendly
 proxy. Add features with `--features`:
 

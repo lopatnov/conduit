@@ -12,16 +12,28 @@ argument-hint: "(none — reads GitHub state and this repo's own hygiene log)"
 >
 > Originally added 2026-08-01 after PR #101 (kube 3→4.0.0) sat "held for dedicated review"
 > for ~5 weeks and PR #151 (an all-actions Dependabot bump) went untriaged for a while —
-> both because the only routine check was the daily `/feature-workspace-cycle` firing, and
+> both because the only routine check was the daily `/feature-workspace-cycle` firing (a retired
+> command, deleted 2026-10-10), and
 > no other session touching this repo's GitHub state repeated the check in between.
 
-Any session that calls a GitHub tool against this repo for *any* reason — not just a
-`/feature-workspace-cycle` firing — should, as a cheap side effect, check whether this
+Any session that calls a GitHub tool against this repo for *any* reason should, as a cheap
+side effect, check whether this
 sweep has run in the last ~24h (see `.claude/logs/dependabot-hygiene.md`). If the newest
-row is older than that (or the log is still empty):
+row is within that window, skip it. If it is older (or the log is still empty):
 
+- **Fast path first:** if every open Dependabot PR is already logged as triaged **at its current
+  revision** (same head SHA and body — a PR that was force-pushed or had its body edited since is
+  not "already logged" even if its number is in the log), log "still clean" and move on; don't
+  spawn `dependency-steward` to manufacture work. A PR that is new, changed, or never
+  risk-classified (semver, changelog read) still needs it.
 - List open Dependabot PRs and triage/merge/hold each by the usual bar (green, clean, no
-  unaddressed finding) — same as `/feature-workspace-cycle` Step 1.
+  unaddressed finding, and the security-engineer gate before any merge).
+  - **A "held for a dedicated look" PR is overdue the second time you see it** (#101, a `kube` 3→4
+    major bump, sat held ~5 weeks; the real review was a companion `k8s-openapi` bump the release
+    notes called for). Check for an earlier holding comment (`get_comments`) and do the review now.
+  - If CI is red, fix a small in-scope break or say why not; the build stays green after every merge.
+  - If merges accumulate to something worth shipping, flag that a release looks due, but cut one
+    (`release-engineer`, `.claude/skills/release/SKILL.md`) only after the owner confirms the version.
 - List all branches and cross-reference against PRs in every state. A branch with **no
   PR at all** is a genuine orphan worth a one-line flag to the user (could be real
   unfinished work, not touched further without asking). A branch whose PR is merged or
@@ -42,6 +54,4 @@ row is older than that (or the log is still empty):
   `/retro`, backfilled the same day).
 
 This is a *cheap* reflex check (a couple of list calls), not a deep audit — skip it
-outright if the log shows it ran within the last ~24h. A `/feature-workspace-cycle`
-firing that completes its own Step 1 satisfies this for the day; it doesn't need to run
-the check twice.
+outright if the log shows it ran within the last ~24h.

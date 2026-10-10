@@ -22,6 +22,7 @@ conduit [OPTIONS] [COMMAND]
   - [shutdown](#shutdown)
   - [upstreams](#upstreams)
 - [Tooling](#tooling)
+  - [features](#features)
   - [completions](#completions)
   - [man](#man)
 - [Environment variables](#environment-variables)
@@ -437,6 +438,33 @@ conduit upstreams weight --route /api --target http://api-2:4000 --weight 1
 ---
 
 ## Tooling
+
+### features
+
+Print the Cargo features a configuration needs, and nothing more, so you can build (or pick) a binary that
+fits the config instead of guessing between the default build, `standard` and `full`.
+
+```console
+$ conduit -c conduit.yaml features
+required: forward-auth, jwt
+build:    cargo install lopatnov-conduit --no-default-features --features forward-auth,jwt
+bundle:   `--features gateway` also covers this configuration
+```
+
+| Option   | Meaning                                                                          |
+| -------- | -------------------------------------------------------------------------------- |
+| `--json` | Print `{"required": [...], "build": "...", "bundle": ..., "missing": [...]}` instead |
+
+- The set is minimal: a feature another listed one already enables is left out (`cache` enables `proxy`).
+  A config that uses no optional feature prints `required: (none)`.
+- `bundle` names the smallest published bundle (`static-server`, `gateway`, `standard`, `full`) that contains
+  the whole set, when there is one.
+- The command reads the config only. It does not start the server, touch the network or build anything.
+- It exits with `1` when **this** binary was built without a required feature (the same condition
+  `conduit validate` reports as a feature warning), so it can serve as a deploy-time check.
+- `missing` in the JSON lists the required features this binary lacks.
+
+---
 
 ### completions
 

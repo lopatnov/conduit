@@ -191,6 +191,23 @@ pub(super) async fn upstream_response_filter(
                 upstream_response.set_status(500)?;
             }
         }
+
+        ResponseFilterOutcome::ReplaceBody(bytes) => {
+            if let Some(req_ctx_mut) = ctx.as_mut() {
+                if body_can_be_replaced(upstream_response) {
+                    // The replacement is plain bytes of a known length: the upstream body's encoding,
+                    // framing and validators no longer describe it.
+                    upstream_response.remove_header("content-encoding");
+                    upstream_response.remove_header("transfer-encoding");
+                    upstream_response.remove_header("etag");
+                    upstream_response.remove_header("content-md5");
+                    upstream_response.insert_header("content-length", bytes.len().to_string())?;
+                    req_ctx_mut.replacement_body = Some(bytes);
+                } else {
+                    warn_body_not_replaceable(upstream_response.status.as_u16());
+                }
+            }
+        }
     }
 
     // Sticky-session Set-Cookie injection (#39): when `sticky.secret` is
@@ -211,6 +228,38 @@ pub(super) async fn upstream_response_filter(
     }
 
     Ok(())
+}
+
+/// `true` when a WASM `on_response` body replacement can be delivered for this response (issue #379).
+///
+/// The replacement is swapped in by `upstream_response_body_filter`, which Pingora only calls when a body
+/// follows the header. It does not for `1xx`, `204` and `304` (RFC 9110 §6.4.1: no content, and §8.6: a `204`
+/// must not carry `Content-Length`), nor for an upstream that already declared an empty body
+/// (`Content-Length: 0`). Advertising a `Content-Length` there would promise bytes that never come, so the
+/// response is left as the upstream sent it. (An HTTP/2 upstream that ends the stream on the HEADERS frame
+/// without a `Content-Length` cannot be told apart here and is a known limitation.)
+fn body_can_be_replaced(resp: &pingora_http::ResponseHeader) -> bool {
+    let status = resp.status.as_u16();
+    if status < 200 || status == 204 || status == 304 {
+        return false;
+    }
+    resp.headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        != Some("0")
+}
+
+/// Log, once per process, that a WASM plugin's body replacement was skipped because the response has no body.
+fn warn_body_not_replaceable(status: u16) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            status,
+            "WASM on_response called conduit_set_response_body, but this response has no body              (1xx, 204, 304 or an empty upstream body): it is sent as the upstream sent it (issue #379)"
+        );
+    }
 }
 
 /// Body of [`pingora_proxy::ProxyHttp::upstream_response_body_filter`].
@@ -234,6 +283,10 @@ pub(super) fn upstream_response_body_filter(
                 // Discard intermediate chunks — only send the replacement on eos.
                 *body = None;
             }
+        } else if let Some(replacement) = req_ctx.replacement_body.as_ref() {
+            // A WASM plugin replaced the body (#379): hold back the upstream chunks and send the
+            // replacement once, with the last one.
+            *body = end_of_stream.then(|| replacement.clone());
         }
     }
     Ok(None)
@@ -405,6 +458,29 @@ pub(super) async fn fire_early_refresh(upstream_url: &str, path_and_query: &str)
 
 #[cfg(test)]
 mod tests {
+    // ── WASM body replacement guard (#379) ───────────────────────────────────
+
+    fn resp_with(status: u16, content_length: Option<&str>) -> pingora_http::ResponseHeader {
+        let mut resp = pingora_http::ResponseHeader::build(status, None).unwrap();
+        if let Some(cl) = content_length {
+            resp.insert_header("content-length", cl).unwrap();
+        }
+        resp
+    }
+
+    #[test]
+    fn body_can_be_replaced_only_when_a_body_can_follow() {
+        use super::body_can_be_replaced;
+        assert!(body_can_be_replaced(&resp_with(200, Some("42"))));
+        assert!(body_can_be_replaced(&resp_with(200, None)));
+        assert!(body_can_be_replaced(&resp_with(404, Some("7"))));
+        for status in [100, 101, 103, 204, 304] {
+            assert!(!body_can_be_replaced(&resp_with(status, None)), "{status}");
+        }
+        assert!(!body_can_be_replaced(&resp_with(200, Some("0"))));
+        assert!(!body_can_be_replaced(&resp_with(200, Some(" 0 "))));
+    }
+
     // `compute_response_age` (the only item exercised from this module's scope)
     // is compiled only with --features cache; the 1xx tests below use full paths.
     #[cfg(feature = "cache")]

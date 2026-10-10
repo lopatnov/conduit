@@ -63,8 +63,10 @@ the clippy matrix or CI do not.
 - **Bugs in the code the issue touches ride along**, as separate last commits marked "behaviour change" (tests/golden updated),
   before the security pass. **Bugs found *while* working are not spun off at discovery** (owner, 2026-10-03): keep a "Found while
   here" list in a comment on the issue, finish the feature, put the list to the owner before the PR opens (one line each, with a
-  recommendation); agreed ones become commits in the same PR; the PR description lists *every* item with its disposition; an issue
-  is filed only for what the owner defers (linking the PR). Not covered: bugs in code the PR does not touch, and performance
+  recommendation); agreed ones become commits in the same PR; the PR description lists *every* item with its disposition.
+  **Every deferred item gets an issue, linked in the PR table, before the PR is merged** (owner, 2026-10-10: a deferral written
+  only in a PR comment or a note was silently dropped) — whoever defers it: the owner, a review round, a security finding.
+  "Deferred" with no issue number is a dropped item. Not covered: bugs in code the PR does not touch, and performance
   problems (next bullet).
 - **A performance problem becomes an issue at once** with the numbers and where they came from, what is unknown, suspects and a
   plan — even if the measurement must wait for a free machine. Never a chat remark.

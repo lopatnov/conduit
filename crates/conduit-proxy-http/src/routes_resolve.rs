@@ -635,8 +635,16 @@ mod tests {
     fn path_hashing_to_b() -> String {
         (0..256)
             .map(|i| format!("/p{i}"))
-            .find(|p| conduit_upstream::targets::fnv1a_hash(p) % 2 == 1)
-            .expect("some path in 0..256 hashes to index 1 of a 2-peer ring")
+            .find(|p| {
+                let ring = [RAMP_A.to_owned(), RAMP_B.to_owned()];
+                conduit_upstream::targets::pick_by_hash(
+                    &ring,
+                    conduit_upstream::targets::fnv1a_hash(p),
+                )
+                .as_deref()
+                    == Some(RAMP_B)
+            })
+            .expect("some path in 0..256 is picked by the hash for peer b of a 2-peer ring")
     }
 
     #[test]

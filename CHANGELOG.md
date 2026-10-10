@@ -75,10 +75,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (issue #476).
 - The Admin API and the metrics endpoint accept `bearer`/`BEARER` as well as `Bearer` (issue #484,
   RFC 9110 §11.1); the token itself is still compared exactly and in constant time.
-- **WASM `on_response` no longer leaks the replacement body as headers** (issue #379). A plugin that
-  called `conduit_set_response_body` there got two internal `x-conduit-wasm-body-*` headers on the
-  client response, one carrying the whole body in base64. They are gone. The body itself is still
-  **not** replaced in the response phase; Conduit logs one warning and `docs/wasm.md` says so.
+- **WASM `on_response` can replace the response body** (issue #379). A plugin that called
+  `conduit_set_response_body` there used to leave the upstream body untouched and leak the replacement
+  to the client as two internal `x-conduit-wasm-body-*` headers (one carrying the whole body in base64).
+  The headers are gone and the client now gets the replacement, with `Content-Length` set and the
+  upstream `Content-Encoding`, `Transfer-Encoding`, `ETag` and `Content-MD5` dropped. The last plugin
+  that sets a body wins. A response that cannot carry a body (`1xx`, `204`, `304`, `Content-Length: 0`) is
+  left as the upstream sent it, with one warning logged.
 - `docs/wasm.md` states what `conduit_get_header_names`/`_count` really return: distinct names, no
   guaranteed order, one value per repeated header (issue #380).
 - Failing over to a route's `backup` upstream keeps the route's own settings (issue #417): timeouts,
@@ -87,7 +90,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The Kubernetes provider rebuilds the config once per resync instead of on every `Init`/`InitApply`
   event (issue #408), which cut M+2 list-and-rebuild cycles to one at start-up and watch recovery.
 
+### Added
+
+- **`conduit features`** (issue #473) prints the Cargo features a configuration needs, a ready-to-paste
+  `cargo install` line and the smallest bundle that covers it (`--json` for scripts). It exits with `1`
+  when the running binary lacks one of them, so it doubles as a deploy-time check.
+
 ### Changed
+
+- **`ip-hash`, `consistent-hash` and the no-secret sticky mode are now actually consistent** (issue #377).
+  The upstream was picked with `hash % healthy-count`, so one upstream going unhealthy (or coming back)
+  moved almost every client. They now use rendezvous hashing: only the clients that were on the
+  affected upstream move. **On upgrade every client lands on a different upstream once**, then stays
+  stable; expect a one-time cold start of any per-upstream cache or session state. Capacity limits
+  (`maxConnectionsPerUpstream`) spill a key to its next-best upstream instead of the next list entry.
 
 - **JWT verification now uses the `aws-lc-rs` crypto backend instead of the pure-Rust `rsa` stack.**
   This removes the `rsa` crate (CVE-2023-49092, "Marvin", no upstream fix) from `Cargo.lock`; Conduit

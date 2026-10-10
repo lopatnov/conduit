@@ -2480,10 +2480,11 @@ mod tests {
             .or_default()
             .recovery_time_secs = Some(now_secs);
 
-        // "10.0.0.1" is deliberate, not arbitrary: fnv1a_hash("10.0.0.1") % 2
-        // == 1, so the *primary* pick lands on "b", not "a" -- unlike
-        // "127.0.0.1" (hashes to index 0 == "a"), which made this test
-        // tautological. `retry_state_for` unconditionally re-inserts
+        // "10.0.0.2" is deliberate, not arbitrary: the rendezvous hash of
+        // fnv1a_hash("10.0.0.2") over ["a", "b"] picks "b", so the *primary*
+        // pick lands on "b", not "a" -- unlike "127.0.0.1" (picks "a"), which
+        // made this test tautological. The sanity assert below fails loudly if
+        // the pick function ever changes and this client moves. `retry_state_for` unconditionally re-inserts
         // `chosen_url` at the front of the retry list whenever it's absent
         // from the (possibly ramp-filtered) candidates -- a real, correct
         // invariant for #367/#216 part 2, but it means that if the primary
@@ -2499,7 +2500,7 @@ mod tests {
             "GET",
             &http::HeaderMap::new(),
             None,
-            "10.0.0.1",
+            "10.0.0.2",
             80,
             &counters,
             &reg,

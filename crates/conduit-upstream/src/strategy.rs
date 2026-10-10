@@ -123,8 +123,8 @@ impl LoadBalancingStrategy for WeightedRoundRobin {
 
 /// Map each client (or URL) to a consistent backend via a hash.
 ///
-/// Used for both `ip-hash` and `consistent-hash` — both reduce to a modulo
-/// hash over the candidate list.
+/// Used for both `ip-hash` and `consistent-hash` — both reduce to a rendezvous
+/// hash over the candidate list (issue #377).
 pub struct HashBased;
 
 impl LoadBalancingStrategy for HashBased {

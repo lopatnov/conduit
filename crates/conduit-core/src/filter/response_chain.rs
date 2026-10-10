@@ -27,6 +27,12 @@ pub enum ResponseFilterOutcome {
     /// The caller sets `RequestCtx.mask_upstream_body = true` and updates
     /// the `Content-Type` / `Content-Length` headers.
     MaskBody,
+    /// The response body should be replaced with these bytes.
+    ///
+    /// Returned by a WASM `on_response` plugin that called `conduit_set_response_body` (issue #379).
+    /// The caller stores the bytes in `RequestCtx.replacement_body`, drops the upstream body's framing
+    /// and encoding headers and sets `Content-Length`.
+    ReplaceBody(bytes::Bytes),
 }
 
 /// Narrow read-only view of request context exposed to [`ResponseFilter::apply`].

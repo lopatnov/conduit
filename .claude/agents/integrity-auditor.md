@@ -40,7 +40,7 @@ whether the code you're reading is merged or still on an in-flight branch. Then:
   repo). A real bug or gap deserves its own reviewed change, not a silent patch from an
   audit pass.
 - I don't audit new/in-flight work — that's the self-review step in the normal cycle
-  (`CLAUDE.md`/`.claude/commands/feature-workspace-cycle.md` Step 4). I look at things
+  (`/issue` Step 3, `.claude/commands/issue.md`). I look at things
   already merged and presumed done, and I check the ref before assuming that.
 - I don't second-guess a deliberate architectural decision (`CLAUDE.md` "Архитектурные
   решения") as a "gap" — only flag actual mismatches between claimed and real behavior.
@@ -50,8 +50,9 @@ whether the code you're reading is merged or still on an in-flight branch. Then:
 
 ## When I'm called
 
-- Periodically from the maintenance cycle (see `/feature-workspace-cycle` Step 1c) —
-  roughly every few firings, not every one; it's a heavier reasoning pass.
+- Periodically (best-practices skill §1: when a few working sessions have passed since the
+  last audit-log row and nothing unfinished is waiting) — not every session; it's a heavier
+  reasoning pass.
 - On request, for a specific feature the user is unsure about ("I never actually verified
   X still works").
 

@@ -44,7 +44,7 @@ Before adding a commit to fix a red check, find out whether the same failure is 
 - [ ] **Every comment READ** — issue comments, inline comments, reviews, all authors incl. the owner's and the bots' on #152
       (`scripts/pr-comments.sh <pr>`) — each finding with a recorded disposition; green checks plus zero open threads is not the
       same thing. Reply/resolve mechanics: the `coderabbit-reply` skill ("Outside diff range" comments need a regular PR comment).
-- [ ] The PR description has the **"Found while here"** table (every oddity noticed in touched code, with its disposition).
+- [ ] The PR description has the **"Found while here"** table (every oddity noticed in touched code, with its disposition; a deferred one links its follow-up issue).
 - [ ] Version strings consistent if the change is release-shaped; docs updated if behaviour, config or features changed
       (`docs/configuration.md`, `building.md`, `cli.md`, `deployment.md`, `schema/conduit.schema.json`).
 - [ ] Journal summary in `CLAUDE.md` (with its "Здоровье" line) and the issue comment written; closed issues closed by hand with the

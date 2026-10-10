@@ -7,7 +7,8 @@ are in `.claude/archive/rules-index-2026-10-03.md`. Companions: `conventions.md`
 ## What belongs in `rules/` (and what does not)
 `rules/*.md` loads into **every** turn. Keep here only what must be impossible to forget (the security gate is the model). A
 procedure that runs occasionally is a `.claude/commands/<name>.md` or `.claude/skills/<name>/SKILL.md`, with a one-line pointer
-here at most. Append-only logs live in `.claude/logs/*.md`; `CLAUDE.md` keeps two journal summaries. `.claude/` and `CLAUDE.md`
+here at most. Append-only logs live in `.claude/logs/*.md`; `CLAUDE.md` keeps two journal summaries.
+A flawed rule, command, agent or skill is fixed the moment it is noticed, in the PR at hand — not noted for later (owner, 2026-10-10); the security gate is the exception and changes only on the owner's explicit decision. `.claude/` and `CLAUDE.md`
 are tracked but excluded from the published crate (`[package] exclude`).
 
 ## Worktrees and background agents
@@ -15,6 +16,8 @@ are tracked but excluded from the published crate (`[package] exclude`).
   worktrees and are safe).
 - An agent that writes several files, creates commits, **or runs `git checkout`/`git pull`** — including "read-only" validators
   such as `build-validator` — gets `isolation: "worktree"`. Without it: `git status` first and commit pending work.
+- A worktree agent validates what was committed at spawn time: commit what it must check *before* spawning, and read its result as
+  covering that commit only (a feature-matrix run once raced a conductor edit back to a stale commit, #116).
 - After resuming an agent with `SendMessage`, run `git worktree list`; no entry for it means it is working in the shared checkout
   (a race with your own git work), whatever isolation it was spawned with.
 - `git checkout -b <task-branch>` comes **before** the first `Edit`/`Write` on production source. The migration branch and `main`
@@ -94,4 +97,4 @@ another session (a `spawn_task` chip, a `/handoff` summary) and when resuming af
 (e.g. the `builder.rs` split merged as #495 before the session started), and does the worktree's base branch contain the file.
 `/issue` (`.claude/commands/issue.md`) is the default command for ordinary work — one or more issues to one merged PR; it leans on
 the `best-practices` skill (`.claude/skills/best-practices/SKILL.md`: re-audit shipped code, size a batch to its risk, one coherent branch, write a lesson down when found).
-`feature-workspace-cycle` stays only as a template for another large multi-PR effort.
+The template for another large multi-PR effort is `best-practices` §7 (the old `feature-workspace-cycle` command was deleted 2026-10-10).

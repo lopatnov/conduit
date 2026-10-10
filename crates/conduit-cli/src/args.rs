@@ -53,12 +53,21 @@ pub enum Command {
     Upstreams(UpstreamsArgs),
     /// Print shell completions to stdout
     Completions(CompletionsArgs),
+    /// Print the Cargo features a config needs (exit 1 if this binary lacks one)
+    Features(FeaturesArgs),
     /// Generate man page to stdout
     Man,
 }
 
 #[derive(Args)]
 pub struct ValidateArgs {}
+
+#[derive(Args)]
+pub struct FeaturesArgs {
+    /// Print the result as JSON
+    #[arg(long)]
+    pub json: bool,
+}
 
 #[derive(Args)]
 pub struct FmtArgs {
