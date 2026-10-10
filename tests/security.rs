@@ -656,6 +656,7 @@ fn x_priority_header_stripped_before_upstream() {
 /// A client forging X-Consumer-ID must not have it reach the upstream.
 /// ConsumersGuard strips the header first, then sets it to the real consumer.
 /// Requires `--features consumers`.
+#[cfg(feature = "proxy")]
 #[test]
 #[serial]
 #[cfg(feature = "consumers")]

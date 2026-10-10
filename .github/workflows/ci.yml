@@ -722,6 +722,14 @@ jobs:
       - name: Integration tests, --no-default-features --features static-server
         run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime --no-default-features --features static-server --tests
 
+      # The auth/scripting features without `proxy` (#449). Their integration
+      # tests mostly watch what reaches a proxied echo upstream, so the ones
+      # that need `proxy` carry a per-test `#[cfg(feature = "proxy")]`; this run
+      # keeps that gating honest -- a test that needs a proxy but is not gated
+      # fails here instead of only for someone who hand-picks these features.
+      - name: Integration tests, static-server + auth/scripting features without proxy
+        run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime --no-default-features --features static-server,jwt,consumers,forward-auth,rhai,fault-injection,upload,tcp --tests
+
       # The property #144 exists for: a build without `proxy` must not carry
       # proxy-only dependencies: the sticky-session stack (`hmac`, `sha2`), the
       # HTTP client used for mirroring/early refresh (`reqwest`, `tower-http`) and
