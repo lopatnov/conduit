@@ -7,6 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **A directory symlink inside a static path is no longer followed** (issue #400, CWE-59). Only the
+  last path component was checked, so `assets/secret.txt` with `assets -> /etc` read outside the
+  static root. Every directory between the root and the file is now checked.
+- **The `Host` header must carry a numeric port, or none** (issue #474). `allowed.example:80@evil.com`
+  used to pass `allowedHosts` and site routing as `allowed.example` while the value echoed into
+  `X-Forwarded-Host` named another host; it now matches nothing.
+- **`POST /certs/reload` keeps the key file's mode** (issue #481). Rotating a `0600` key no longer
+  leaves a world-readable one, and the temporary file is created exclusively under an unpredictable
+  name instead of following a planted `<path>.tmp` symlink.
+
+### Fixed
+
+- The Admin API and the metrics endpoint accept `bearer`/`BEARER` as well as `Bearer` (issue #484,
+  RFC 9110 §11.1); the token itself is still compared exactly and in constant time.
+
 ---
 
 ## [2.0.0] — 2026-10-03
