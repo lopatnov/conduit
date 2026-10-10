@@ -21,6 +21,19 @@ description: Step-by-step playbook for cutting a conduit release (v<x.y.z> tag â
 
 ## Step 1 â€” version consistency (4-artifact lockstep)
 
+**Do the bump with the script, not by hand:**
+
+```bash
+python3 scripts/bump-version.py minor --dry-run   # major | minor | patch | X.Y.Z[-pre]; prints the plan
+python3 scripts/bump-version.py minor             # edits, refreshes Cargo.lock, runs the checker
+```
+
+It moves `[workspace.package].version`, all `lopatnov-conduit-*` dependency literals, `Cargo.lock`,
+`npm/package.json` and the version strings (and `:MAJOR.MINOR` image tags) in `docs/benchmarks.md`,
+`docs/cli.md`, `docs/deployment.md`, then runs `scripts/check-workspace-versions.sh`. It does not touch
+`CHANGELOG.md` (move `[Unreleased]` yourself), commit, tag or push. Confirm the target version with the
+user first. Tests: `python3 scripts/test_bump_version.py`. The list below is what it covers, for reference.
+
 All of these must show the **same** target version (see `conventions.md` "Versioning",
 canonical example PR #71):
 

@@ -587,6 +587,9 @@ jobs:
       - name: Unit-test the report scripts
         run: python3 scripts/ci/test_report_scripts.py
 
+      - name: Unit-test the version bump script
+        run: python3 scripts/test_bump_version.py
+
       - name: Find associated PR and its base commit
         id: pr
         env:
