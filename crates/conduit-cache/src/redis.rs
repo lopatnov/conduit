@@ -482,6 +482,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(redis_registry)]
     fn reserve_refuses_the_url_past_the_cap_and_frees_the_slot_on_finish() {
         let urls: Vec<String> = (0..=MAX_REDIS_STORES)
             .map(|i| format!("redis://127.0.0.1:1/cap-{i}"))
@@ -513,6 +514,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(redis_registry)]
     async fn connect_and_register_skips_a_url_whose_connect_is_already_in_flight() {
         let url = "redis://127.0.0.1:1/in-flight";
         pending_stores().insert(url.to_owned());
@@ -525,6 +527,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(redis_registry)]
     async fn connect_and_register_unreachable_redis_returns_false_and_registers_nothing() {
         // Port 1 is reserved and never listening — connection is refused
         // immediately, no live Redis instance needed. Verifies fail-open:

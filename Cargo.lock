@@ -2943,6 +2943,7 @@ dependencies = [
  "redis",
  "serde",
  "serde_json",
+ "serial_test",
  "tempfile",
  "tokio",
  "tracing",
