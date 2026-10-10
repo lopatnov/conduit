@@ -339,22 +339,26 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
 }
 
 /// `port -> (tls.cert, tls.key)` for every HTTP listener the config binds. The first site on a port
-/// decides its TLS material, as `classify_ports` does; TCP-proxy sites manage their own listeners.
+/// with a complete manual cert/key pair decides its TLS material, even when a plain or ACME site
+/// comes earlier (as `classify_site_port` does); a port without one is `(None, None)`. TCP-proxy
+/// sites manage their own listeners.
 fn bound_listeners(
     cfg: &crate::config::schema::AppConfig,
 ) -> std::collections::BTreeMap<u16, (Option<String>, Option<String>)> {
-    let mut out = std::collections::BTreeMap::new();
+    let mut out: std::collections::BTreeMap<u16, (Option<String>, Option<String>)> =
+        std::collections::BTreeMap::new();
     for site in cfg.sites.iter().filter(|s| s.tcp.is_none()) {
         let port = site
             .port
             .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
-        let tls = site.tls.as_ref();
-        out.entry(port).or_insert_with(|| {
-            (
-                tls.and_then(|t| t.cert.clone()),
-                tls.and_then(|t| t.key.clone()),
-            )
-        });
+        let entry = out.entry(port).or_default();
+        if entry.0.is_none() {
+            if let Some(t) = site.tls.as_ref() {
+                if let (Some(cert), Some(key)) = (&t.cert, &t.key) {
+                    *entry = (Some(cert.clone()), Some(key.clone()));
+                }
+            }
+        }
     }
     out
 }
@@ -568,6 +572,31 @@ mod tests {
                 "{what} on a bound port must be hot: {cold:?}"
             );
         }
+    }
+
+    /// A plain site listed before a TLS site on the same port does not hide the TLS site's cert/key:
+    /// the listener serves the first complete pair, so editing it is cold and removing the plain site
+    /// is hot.
+    #[test]
+    fn a_plain_site_before_a_tls_site_does_not_hide_its_cert() {
+        let old = cfg(
+            r#"{"sites":[{"host":"a.test","port":8443},{"host":"b.test","port":8443,"tls":{"cert":"old.pem","key":"s.key"}}]}"#,
+        );
+        let new_cert = cfg(
+            r#"{"sites":[{"host":"a.test","port":8443},{"host":"b.test","port":8443,"tls":{"cert":"new.pem","key":"s.key"}}]}"#,
+        );
+        let cold = detect_cold_changes(&old, &new_cert);
+        assert!(
+            cold.iter().any(|f| f.contains("tls.cert")),
+            "the cert served on the port changed: {cold:?}"
+        );
+        let plain_removed = cfg(
+            r#"{"sites":[{"host":"b.test","port":8443,"tls":{"cert":"old.pem","key":"s.key"}}]}"#,
+        );
+        assert!(
+            detect_cold_changes(&old, &plain_removed).is_empty(),
+            "removing the plain site leaves the listener's cert unchanged"
+        );
     }
 
     #[test]
