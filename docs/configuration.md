@@ -732,8 +732,8 @@ traffic off a broken backend). Pick based on your actual traffic shape:
 | [`least-conn`](#least-conn) | Load-aware | Fewest active connections | ✗ | none | Variable response times (mixed fast reads / slow writes) | O(N) scan of the pool on every request |
 | [`least-response-time`](#least-response-time) | Load-aware | Lowest probed latency | ✗ | none | Upstreams with different hardware/geography | Needs `healthCheck` configured, or it's just round-robin |
 | [`p2c`](#p2c-power-of-two-choices) | Load-aware | 2 random samples, fewer conns wins | ✗ | none | Large pools (10+) where `least-conn`'s full scan is too slow | Marginally less precise than true least-conn |
-| [`ip-hash`](#ip-hash) | Affinity | `hash(client IP) % N` | by IP | remaps most clients (~N/(N+1)) whenever the *healthy* pool size changes, incl. health ejections | Soft per-IP affinity without a cookie | Remaps most of the pool on any healthy-count change, not just config changes |
-| [`consistent-hash`](#consistent-hash) | Affinity | `hash(configurable key) % N` | by key | same as ip-hash — `% N` on the healthy count, incl. health ejections | Per-tenant/per-user routing, cache locality by URL | Same remap caveat as ip-hash — it's `% N`, not a hash ring |
+| [`ip-hash`](#ip-hash) | Affinity | rendezvous hash of the client IP | by IP | only the clients on a peer that leaves (or joins) move; the rest stay put | Soft per-IP affinity without a cookie | Clients on an ejected peer move to their next-best peer |
+| [`consistent-hash`](#consistent-hash) | Affinity | rendezvous hash of the configured key | by key | same as ip-hash — only the keys on a peer that leaves (or joins) move | Per-tenant/per-user routing, cache locality by URL | Keys on an ejected peer move to their next-best peer |
 
 Rule of thumb: start with `round-robin`. Move to `least-conn` or `p2c` once
 request cost varies noticeably. Reach for `ip-hash`/`consistent-hash` only for
@@ -754,7 +754,7 @@ changes (including health ejections) that `ip-hash`'s `% N` doesn't.
 
    round-robin / weighted-rr / random  → pick by rotation or chance
    least-conn / least-response-time / p2c → pick by current load/latency
-   ip-hash / consistent-hash          → pick by hash(key) % healthy-count
+   ip-hash / consistent-hash          → pick by rendezvous hash of the key over the healthy set
 ```
 
 ---
@@ -889,17 +889,19 @@ proxy:
 
 ### `ip-hash`
 
-Hashes the **client IP address** (FNV-1a) and maps it to an upstream via
-`hash % pool_size`. The same IP always hits the same upstream — as long as the
-pool size doesn't change.
+Hashes the **client IP address** (FNV-1a) and maps it to an upstream by
+rendezvous (highest-random-weight) hashing: every upstream is scored against the
+hash and the highest score wins. The same IP always hits the same upstream while
+the set of healthy upstreams is unchanged.
 
 **Use when:** you need soft session affinity without a session cookie, e.g.
 legacy apps that store state per-IP, or to concentrate logs from one user on
 one backend.
 
-> **Caveat:** adding or removing an upstream changes `pool_size` and remaps
-> roughly half of all clients. This is `hash % N` (modulo), not a consistent
-> hash ring. Use `sticky.cookie` for stable, cookie-based affinity.
+> **Note:** when an upstream is removed (or ejected as unhealthy) only the
+> clients that were on it move, each to its next-best upstream; everyone else stays.
+> Adding an upstream takes over about `1/N` of the clients. Use `sticky.cookie` for
+> cookie-based affinity that also survives the client's own IP changing.
 
 ```yaml
 proxy:
@@ -926,7 +928,7 @@ proxy:
 ### `consistent-hash`
 
 Hashes a configurable **`hashKey`** (IP, URL, or any request header) and maps
-it to an upstream via `hash % pool_size`. Identical to `ip-hash` in
+it to an upstream by rendezvous hashing. Identical to `ip-hash` in
 implementation — the distinction is purely which value is hashed.
 
 **Use when:** you want to route requests by tenant, user, or any other
@@ -966,8 +968,7 @@ proxy:
 }
 ```
 
-> **Same caveat as ip-hash:** pool size changes remap a large fraction of keys.
-> This is `hash % N`, not a Karger consistent hash ring.
+> **Same behaviour as ip-hash:** removing an upstream moves only the keys that were on it.
 
 ---
 

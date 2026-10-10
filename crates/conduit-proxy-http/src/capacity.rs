@@ -95,28 +95,15 @@ impl Capacity {
     }
 }
 
-/// Hash-ring pick that honors capacity without shrinking the hash domain.
+/// Hash pick that honors capacity.
 ///
-/// Starts at `hash_val % ring.len()` — the same index
-/// [`conduit_upstream::targets::pick_by_hash`] would return — and walks the ring
-/// forward until an admissible peer is found. With [`Capacity::Unlimited`]
-/// this is byte-for-byte `pick_by_hash` (see the parity test below).
-///
-/// This deliberately does NOT filter `ring` down to the admissible subset
-/// first: `pick_by_hash` is a naive `hash % len`, not a hash ring with
-/// virtual nodes, so shrinking the domain by even one element remaps most
-/// clients, not just the ones pinned to the removed peer. Forward-probing
-/// keeps every other client's mapping unchanged and relocates only the
-/// client(s) whose preferred peer is currently at capacity.
+/// [`conduit_upstream::targets::pick_by_hash`] is rendezvous hashing (issue #377): the pick depends
+/// on the set of peers, and dropping one only moves the keys that were on it. A peer at capacity is
+/// skipped the same way, so the client(s) whose preferred peer is full fall to their next-best peer
+/// and every other client keeps its mapping. With [`Capacity::Unlimited`] this is exactly
+/// `pick_by_hash` (see the parity test below).
 pub(crate) fn hash_pick_bounded(ring: &[String], hash_val: u64, cap: &Capacity) -> Option<String> {
-    if ring.is_empty() {
-        return None;
-    }
-    let start = (hash_val as usize) % ring.len();
-    (0..ring.len())
-        .map(|i| &ring[(start + i) % ring.len()])
-        .find(|u| cap.admits(u))
-        .cloned()
+    upstream::pick_by_hash_where(ring, hash_val, |u| cap.admits(u))
 }
 
 /// Everything one capacity-aware pick needs. Bundled to stay under
@@ -336,39 +323,44 @@ mod tests {
     }
 
     #[test]
-    fn hash_pick_bounded_keeps_preferred_peer_and_spills_forward_to_next_index() {
+    fn hash_pick_bounded_keeps_preferred_peer_and_spills_to_next_best() {
         let reg = UpstreamRegistry::new();
         let ring = urls(3);
-        // hash_val = 0 prefers index 0.
         let preferred = upstream::pick_by_hash(&ring, 0).unwrap();
-        assert_eq!(preferred, ring[0]);
 
         // Under capacity: unchanged mapping.
         let cap = Capacity::evaluate(&ring, Some(1), "r", &reg);
-        assert_eq!(hash_pick_bounded(&ring, 0, &cap), Some(ring[0].clone()));
+        assert_eq!(hash_pick_bounded(&ring, 0, &cap), Some(preferred.clone()));
 
-        // Saturate the preferred peer: spill to the next ring index (1), not
-        // an arbitrary admissible peer.
-        reg.conn_inc(&ring[0]);
+        // Saturate the preferred peer: the key falls to its next-best peer, which is what the list
+        // without the preferred peer would give.
+        reg.conn_inc(&preferred);
         let cap = Capacity::evaluate(&ring, Some(1), "r", &reg);
-        assert_eq!(hash_pick_bounded(&ring, 0, &cap), Some(ring[1].clone()));
+        let rest: Vec<String> = ring.iter().filter(|u| **u != preferred).cloned().collect();
+        let spilled = hash_pick_bounded(&ring, 0, &cap);
+        assert_ne!(spilled, Some(preferred.clone()));
+        assert_eq!(spilled, upstream::pick_by_hash(&rest, 0));
 
         // Slot frees up: mapping returns to the preferred peer.
-        reg.conn_dec(&ring[0]);
+        reg.conn_dec(&preferred);
         let cap = Capacity::evaluate(&ring, Some(1), "r", &reg);
-        assert_eq!(hash_pick_bounded(&ring, 0, &cap), Some(ring[0].clone()));
+        assert_eq!(hash_pick_bounded(&ring, 0, &cap), Some(preferred));
     }
 
     #[test]
-    fn hash_pick_bounded_wraps_around_ring() {
+    fn hash_pick_bounded_with_one_admissible_peer_picks_it() {
         let reg = UpstreamRegistry::new();
         let ring = urls(3);
-        // hash_val = 2 prefers the last index; saturate it and the wrap
-        // target (index 0) too, leaving only index 1 admissible.
-        reg.conn_inc(&ring[2]);
+        // Saturate every peer but ring[1].
         reg.conn_inc(&ring[0]);
+        reg.conn_inc(&ring[2]);
         let cap = Capacity::evaluate(&ring, Some(1), "r", &reg);
-        assert_eq!(hash_pick_bounded(&ring, 2, &cap), Some(ring[1].clone()));
+        for hash_val in [0u64, 1, 2, 99] {
+            assert_eq!(
+                hash_pick_bounded(&ring, hash_val, &cap),
+                Some(ring[1].clone())
+            );
+        }
     }
 
     #[test]

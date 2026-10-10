@@ -164,16 +164,56 @@ pub fn pick_weighted_round_robin(
     Some(targets.last().unwrap().0.clone())
 }
 
-/// Pick a URL by mapping a precomputed hash value to a bucket index.
+/// Pick a URL for a precomputed key hash by rendezvous (highest-random-weight) hashing.
 ///
-/// Used for `ip-hash` and `consistent-hash` strategies.  Both strategies hash
-/// a key (client IP, request URL, etc.) outside this function and pass the
-/// result in; this function just does the modulo mapping.
+/// Used for `ip-hash`, `consistent-hash` and the no-secret sticky mode.  Those hash a key (client IP,
+/// request URL, cookie value) outside this function and pass the result in.  Every URL gets a score
+/// from the key hash and its own name, and the highest score wins, so the pick depends on the *set*
+/// of URLs, not on their order or count: when one peer drops out only the keys that were on it move
+/// (to their next-best peer), and every other key stays where it was (issue #377).  The old
+/// `hash % len` remapped almost every key whenever the list length changed.
+///
+/// Rendezvous hashing is exactly as consistent as a virtual-node ring, needs no ring to build or
+/// cache while the healthy set changes, and spreads keys evenly with no virtual-node tuning; the cost
+/// is O(peers) per pick, which is small for an upstream list.
 pub fn pick_by_hash(urls: &[String], hash_val: u64) -> Option<String> {
-    if urls.is_empty() {
-        return None;
+    pick_by_hash_where(urls, hash_val, |_| true)
+}
+
+/// [`pick_by_hash`] restricted to the URLs `admits` accepts.
+///
+/// A peer that is not admitted (at its connection cap) is skipped and the key falls to its next-best
+/// peer, so every other key keeps its mapping — the same property as removing the peer, without
+/// shrinking the list the scores are computed over.
+pub fn pick_by_hash_where(
+    urls: &[String],
+    hash_val: u64,
+    admits: impl Fn(&str) -> bool,
+) -> Option<String> {
+    urls.iter()
+        .filter(|u| admits(u))
+        // Ties (equal scores) go to the lexicographically smaller URL, so the pick never depends on
+        // the order of `urls`.
+        .max_by(|a, b| {
+            rendezvous_score(a, hash_val)
+                .cmp(&rendezvous_score(b, hash_val))
+                .then_with(|| b.cmp(a))
+        })
+        .cloned()
+}
+
+/// Score of `url` for a key hash: FNV-1a of the URL, mixed with the key hash through the splitmix64
+/// finaliser so near-identical keys (consecutive integers, nearby IPs) still land on different peers.
+fn rendezvous_score(url: &str, hash_val: u64) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in url.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
     }
-    Some(urls[(hash_val as usize) % urls.len()].clone())
+    let mut z = (h ^ hash_val).wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
 }
 
 /// Pick the URL with the lowest observed latency from the upstream registry.
@@ -433,12 +473,67 @@ mod tests {
         assert_eq!(pick_by_hash(&urls, 5), pick_by_hash(&urls, 5));
     }
 
+    fn peers(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("http://peer-{i}:4000")).collect()
+    }
+
     #[test]
-    fn hash_distributes_across_buckets() {
-        let urls = vec!["http://a:4000".to_string(), "http://b:4000".to_string()];
-        // Even hash → a, odd hash → b (with 2 buckets)
-        assert_eq!(pick_by_hash(&urls, 0), Some("http://a:4000".to_string()));
-        assert_eq!(pick_by_hash(&urls, 1), Some("http://b:4000".to_string()));
+    fn hash_distributes_across_peers() {
+        let urls = peers(4);
+        let mut counts = std::collections::HashMap::new();
+        for key in 0..4000u64 {
+            *counts
+                .entry(pick_by_hash(&urls, key).unwrap())
+                .or_insert(0usize) += 1;
+        }
+        assert_eq!(counts.len(), 4, "every peer receives keys");
+        for (url, n) in counts {
+            assert!((700..=1300).contains(&n), "{url} got {n} of 4000 keys");
+        }
+    }
+
+    #[test]
+    fn hash_ignores_the_order_of_the_list() {
+        let urls = peers(5);
+        let mut reversed = urls.clone();
+        reversed.reverse();
+        for key in 0..500u64 {
+            assert_eq!(pick_by_hash(&urls, key), pick_by_hash(&reversed, key));
+        }
+    }
+
+    /// #377: dropping one peer moves only the keys that were on it. The old `hash % len` moved about
+    /// (n-1)/n of all keys here, so with n = 5 this test fails on that code (roughly 80% moved).
+    #[test]
+    fn removing_a_peer_only_remaps_its_own_keys() {
+        let urls = peers(5);
+        let removed = urls[2].clone();
+        let remaining: Vec<String> = urls.iter().filter(|u| **u != removed).cloned().collect();
+        let mut moved_from_others = 0;
+        let mut was_on_removed = 0;
+        for key in 0..5000u64 {
+            let before = pick_by_hash(&urls, key).unwrap();
+            let after = pick_by_hash(&remaining, key).unwrap();
+            if before == removed {
+                was_on_removed += 1;
+            } else if before != after {
+                moved_from_others += 1;
+            }
+        }
+        assert!(was_on_removed > 0, "the removed peer owned some keys");
+        assert_eq!(moved_from_others, 0, "keys on healthy peers must not move");
+    }
+
+    #[test]
+    fn hash_where_skips_peers_that_are_not_admitted() {
+        let urls = peers(3);
+        let preferred = pick_by_hash(&urls, 7).unwrap();
+        let spilled = pick_by_hash_where(&urls, 7, |u| u != preferred).unwrap();
+        assert_ne!(spilled, preferred);
+        // The spill target is the best peer left, i.e. what a list without the preferred peer gives.
+        let without: Vec<String> = urls.iter().filter(|u| **u != preferred).cloned().collect();
+        assert_eq!(Some(spilled), pick_by_hash(&without, 7));
+        assert_eq!(pick_by_hash_where(&urls, 7, |_| false), None);
     }
 
     // ── pick_least_response_time ──────────────────────────────────────────────

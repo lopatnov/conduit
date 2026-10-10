@@ -91,6 +91,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`ip-hash`, `consistent-hash` and the no-secret sticky mode are now actually consistent** (issue #377).
+  The upstream was picked with `hash % healthy-count`, so one upstream going unhealthy (or coming back)
+  moved almost every client. They now use rendezvous hashing: only the clients that were on the
+  affected upstream move. **On upgrade every client lands on a different upstream once**, then stays
+  stable; expect a one-time cold start of any per-upstream cache or session state. Capacity limits
+  (`maxConnectionsPerUpstream`) spill a key to its next-best upstream instead of the next list entry.
+
 - **JWT verification now uses the `aws-lc-rs` crypto backend instead of the pure-Rust `rsa` stack.**
   This removes the `rsa` crate (CVE-2023-49092, "Marvin", no upstream fix) from `Cargo.lock`; Conduit
   only ever verified signatures with public keys, so it was not exploitable. The supported algorithms are
