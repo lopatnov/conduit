@@ -358,8 +358,8 @@ conduit shutdown
 conduit shutdown --admin 10.0.0.1:2019
 ```
 
-Conduit stops accepting new connections, keeps serving in-flight requests for
-`global.shutdownTimeoutSecs` (default 30 s), then exits. The period is always waited in full.
+Conduit waits for in-flight requests to finish, up to `global.shutdownTimeoutSecs` (default 30 s), then exits;
+it exits at once when nothing is in flight. (A SIGTERM goes through Pingora instead, which waits the whole period.)
 
 ---
 

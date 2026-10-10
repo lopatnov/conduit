@@ -3334,7 +3334,7 @@ sites:
 | --------------------- | ------ | --------------- | ------------------------------------------------------------------------------------ |
 | `workers`             | number | CPU count       | Worker threads — cold restart to change                                              |
 | `backlog`             | number | —               | **Ignored.** Pingora fixes the listen backlog at 65535; validation warns              |
-| `shutdownTimeoutSecs` | number | `30`            | Shutdown grace period; Pingora waits all of it. Cold restart to change                |
+| `shutdownTimeoutSecs` | number | `30`            | Shutdown grace period; SIGTERM waits all of it. Cold restart to change              |
 | `admin.bind`          | string | — (not started) | Admin API address. **Required to enable the Admin API.** Omit to disable it entirely |
 | `admin.token`         | string | —               | Bearer token required for every Admin API request (strongly recommended)             |
 | `otlp`                | object | —               | OpenTelemetry tracing config (`--features otlp` required — see [OpenTelemetry Tracing](#opentelemetry-tracing)) |

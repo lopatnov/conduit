@@ -10,7 +10,8 @@
 //!    it in `logging()` after the response is sent.
 //! 4. Pingora then sleeps for the whole `global.shutdownTimeoutSecs` period (default: 30 s)
 //!    before it shuts its runtimes down. It does not end early when the connections drain
-//!    (issue #489), and it does not consult `AppState.inflight`.
+//!    (issue #489), and it does not consult `AppState.inflight`. (`POST /shutdown` is the
+//!    exception: it polls `AppState.inflight` and exits at zero or at the deadline.)
 //!
 //! ## Admin API `/shutdown`
 //!

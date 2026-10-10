@@ -249,7 +249,7 @@ curl -X POST http://localhost:2019/shutdown
 { "status": "shutting_down" }
 ```
 
-The shutdown grace period is `global.shutdownTimeoutSecs` (default 30 s). Pingora waits the whole period before it stops; it does not end early when connections drain.
+The shutdown grace period is `global.shutdownTimeoutSecs` (default 30 s). `POST /shutdown` exits as soon as in-flight requests reach zero, or when the period expires. A SIGTERM goes through Pingora instead, which waits the whole period even when connections drain sooner.
 
 ---
 
