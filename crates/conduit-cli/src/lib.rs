@@ -23,6 +23,7 @@ pub mod admin_client;
 pub mod args;
 pub mod config_path;
 pub mod dispatch;
+pub mod feature_report;
 pub mod fmt;
 pub mod init;
 pub mod probe;

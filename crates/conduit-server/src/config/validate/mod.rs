@@ -3,6 +3,7 @@ pub use conduit_config_core::validation::{partition_by_severity, Severity, Valid
 mod auth;
 mod cross_site;
 mod proxy_loop;
+mod required_features;
 mod site;
 mod tls;
 mod warnings;
@@ -21,6 +22,7 @@ use self::warnings::{
 // The root crate's `src/config/validate/tests.rs` (which stays in the root — see this crate's own doc comment)
 // needs this to build its log-injection-protection test inputs; re-exported here rather than making the whole
 // `warnings` submodule `pub`.
+pub use self::required_features::{compiled_features, required_features, FEATURE_ORDER};
 pub use self::warnings::sanitize_for_log;
 
 use crate::config::schema::AppConfig;

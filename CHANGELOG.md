@@ -89,6 +89,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The Kubernetes provider rebuilds the config once per resync instead of on every `Init`/`InitApply`
   event (issue #408), which cut M+2 list-and-rebuild cycles to one at start-up and watch recovery.
 
+### Added
+
+- **`conduit features`** (issue #473) prints the Cargo features a configuration needs, a ready-to-paste
+  `cargo install` line and the smallest bundle that covers it (`--json` for scripts). It exits with `1`
+  when the running binary lacks one of them, so it doubles as a deploy-time check.
+
 ### Changed
 
 - **`ip-hash`, `consistent-hash` and the no-secret sticky mode are now actually consistent** (issue #377).

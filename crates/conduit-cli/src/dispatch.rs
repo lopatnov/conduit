@@ -6,7 +6,7 @@ use clap_complete::Shell as ClapShell;
 
 use crate::args::{Cli, Command, Shell, UpstreamsCommand};
 use crate::CliCommand;
-use crate::{admin_client, config_path, fmt, init, probe, serve, status, validate};
+use crate::{admin_client, config_path, feature_report, fmt, init, probe, serve, status, validate};
 
 /// Build the right [`CliCommand`] implementation from the parsed CLI and run it.
 ///
@@ -78,6 +78,11 @@ pub fn dispatch_command(cli: Cli) {
             .execute();
         }
         Some(Command::Completions(args)) => CompletionsCmd { shell: args.shell }.execute(),
+        Some(Command::Features(args)) => FeaturesCmd {
+            config_path: config,
+            json: args.json,
+        }
+        .execute(),
         Some(Command::Man) => ManCmd.execute(),
         Some(Command::Upstreams(args)) => {
             UpstreamsCmd {
@@ -106,6 +111,16 @@ struct ValidateCmd {
 impl CliCommand for ValidateCmd {
     fn execute(self) {
         validate::run(&self.config_path);
+    }
+}
+
+struct FeaturesCmd {
+    config_path: String,
+    json: bool,
+}
+impl CliCommand for FeaturesCmd {
+    fn execute(self) {
+        feature_report::run(&self.config_path, self.json);
     }
 }
 

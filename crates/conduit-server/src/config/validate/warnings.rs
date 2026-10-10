@@ -197,7 +197,7 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
 }
 
 /// Return `true` when any proxy route in the site has a `cache` config block.
-fn site_has_cache_config(site: &SiteConfig) -> bool {
+pub(super) fn site_has_cache_config(site: &SiteConfig) -> bool {
     match &site.proxy {
         Some(crate::config::schema::ProxyConfig::Routes(routes)) => routes.values().any(|t| {
             matches!(
@@ -215,7 +215,7 @@ fn site_has_cache_config(site: &SiteConfig) -> bool {
 /// find_redis_rate_limit_store`'s scan (issue #322), but only needs a yes/no
 /// answer here rather than the actual URL. Delegates to the shared
 /// [`crate::config::rate_limit_scan::iter_rate_limit_configs`] walk.
-fn site_uses_redis_store(site: &SiteConfig) -> bool {
+pub(super) fn site_uses_redis_store(site: &SiteConfig) -> bool {
     crate::config::rate_limit_scan::iter_rate_limit_configs(site)
         .filter_map(|rl| rl.store.as_deref())
         .any(is_redis_url)

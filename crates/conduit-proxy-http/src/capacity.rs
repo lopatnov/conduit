@@ -103,7 +103,7 @@ impl Capacity {
 /// and every other client keeps its mapping. With [`Capacity::Unlimited`] this is exactly
 /// `pick_by_hash` (see the parity test below).
 pub(crate) fn hash_pick_bounded(ring: &[String], hash_val: u64, cap: &Capacity) -> Option<String> {
-    upstream::pick_by_hash_where(ring, hash_val, |u| cap.admits(u))
+    conduit_upstream::targets::pick_by_hash_where(ring, hash_val, |u| cap.admits(u))
 }
 
 /// Everything one capacity-aware pick needs. Bundled to stay under
@@ -580,7 +580,8 @@ mod tests {
         // never be consulted on this path.
         let reg = UpstreamRegistry::new();
         let ring = urls(3);
-        mark_just_recovered(&reg, &ring[0]); // fraction 0.0, preferred by hash_val=0
+        let preferred = upstream::pick_by_hash(&ring, 0).expect("ring non-empty");
+        mark_just_recovered(&reg, &preferred); // fraction 0.0, preferred by hash_val=0
         let cap = Capacity::evaluate(&ring, None, "r", &reg);
         let counters = counters();
         let ramp = Ramp::new(Some(30), &reg);
@@ -597,7 +598,7 @@ mod tests {
         };
         let (url, _) = pick_bounded(&input).expect("ring non-empty");
         assert_eq!(
-            url, ring[0],
+            url, preferred,
             "hash-based strategies must ignore slow-start entirely"
         );
     }
