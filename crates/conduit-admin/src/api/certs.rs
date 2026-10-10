@@ -106,20 +106,46 @@ pub(super) async fn certs_reload_handler(
     })))
 }
 
-/// Write `data` to `path` atomically by writing to a sibling `.tmp` file
-/// and then renaming it into place.
+/// Write `data` to `path` atomically by writing to a sibling temporary file and then renaming it
+/// into place.
+///
+/// The temporary name is not predictable and is created with `create_new` (`O_EXCL`), so a
+/// pre-planted symlink or file under that name is never followed or truncated. On Unix the new file
+/// starts as `0600`, and when `path` already exists it takes over that file's permissions before the
+/// rename — rotating a `0600` private key must not leave a world-readable one behind (issue #481).
 pub(super) fn atomic_write(path: &str, data: &[u8]) -> std::io::Result<()> {
-    use std::fs;
+    use std::fs::{self, OpenOptions};
     use std::io::Write as _;
-    let tmp = format!("{path}.tmp");
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let tmp = format!("{path}.{}.{nanos}.tmp", std::process::id());
+
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
     {
-        let mut f = fs::File::create(&tmp)?;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+
+    let result = (|| {
+        let mut f = options.open(&tmp)?;
+        if let Ok(existing) = fs::metadata(path) {
+            f.set_permissions(existing.permissions())?;
+        }
         f.write_all(data)?;
         f.flush()?;
         f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    fs::rename(&tmp, path)?;
-    Ok(())
+    result
 }
 
 /// Validate a cert+key PEM pair without touching the disk.
@@ -179,4 +205,57 @@ pub fn validate_cert_key_pem(cert_pem: &str, key_pem: &str) -> anyhow::Result<()
         .map_err(|e| anyhow::anyhow!("cert/key validation failed: {e}"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod atomic_write_tests {
+    use super::atomic_write;
+
+    #[test]
+    fn replaces_the_file_and_leaves_no_temporary_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key.pem");
+        let path = path.to_str().unwrap();
+        std::fs::write(path, b"old").unwrap();
+        atomic_write(path, b"new").unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"new");
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["key.pem"], "no .tmp file may be left");
+    }
+
+    /// Issue #481: rotating a `0600` key must not produce a world-readable one.
+    #[cfg(unix)]
+    #[test]
+    fn keeps_the_mode_of_the_file_it_replaces_and_creates_new_files_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+
+        let existing = dir.path().join("existing.pem");
+        std::fs::write(&existing, b"old").unwrap();
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o640)).unwrap();
+        atomic_write(existing.to_str().unwrap(), b"new").unwrap();
+        assert_eq!(mode(&existing), 0o640);
+
+        let fresh = dir.path().join("fresh.pem");
+        atomic_write(fresh.to_str().unwrap(), b"data").unwrap();
+        assert_eq!(mode(&fresh), 0o600, "a new file must not follow the umask");
+    }
+
+    /// Issue #481: a pre-planted `<path>.tmp` symlink is neither followed nor truncated.
+    #[cfg(unix)]
+    #[test]
+    fn does_not_follow_a_planted_tmp_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"precious").unwrap();
+        let path = dir.path().join("cert.pem");
+        std::os::unix::fs::symlink(&victim, dir.path().join("cert.pem.tmp")).unwrap();
+        atomic_write(path.to_str().unwrap(), b"cert").unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        assert_eq!(std::fs::read(&path).unwrap(), b"cert");
+    }
 }

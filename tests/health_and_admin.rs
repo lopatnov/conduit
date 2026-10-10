@@ -69,6 +69,28 @@ fn admin_token_correct_allows_access() {
     );
 }
 
+/// Issue #484: the authentication scheme name is case-insensitive (RFC 9110 §11.1, RFC 6750 §2.1);
+/// the token is not, and another scheme is not Bearer.
+#[test]
+fn admin_token_scheme_is_case_insensitive() {
+    let srv = server_with_admin_token("my-secret-token");
+    for (auth, expected) in [
+        ("bearer my-secret-token", 200),
+        ("BEARER my-secret-token", 200),
+        ("Bearer MY-SECRET-TOKEN", 401),
+        ("bearer wrong-token", 401),
+        ("Basic my-secret-token", 401),
+        ("Bearermy-secret-token", 401),
+    ] {
+        let resp = Client::new()
+            .get(srv.admin_url("/status"))
+            .header("authorization", auth)
+            .send()
+            .expect("GET /status");
+        assert_eq!(resp.status().as_u16(), expected, "Authorization: {auth}");
+    }
+}
+
 #[test]
 fn admin_token_wrong_returns_401() {
     let srv = server_with_admin_token("correct-token");

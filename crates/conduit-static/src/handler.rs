@@ -268,8 +268,44 @@ async fn stat_no_symlink(path: &std::path::Path) -> Option<std::fs::Metadata> {
     Some(meta)
 }
 
+/// `true` when no directory *between* `root` and the last segment of `rel` is a symlink.
+///
+/// `stat_no_symlink`/`open_no_follow` only look at the final path component, so a directory symlink
+/// earlier in the path (`assets -> /etc`) would be followed by the OS and let a request read
+/// outside the root (CWE-59, issue #400). `rel` is already sanitised (no `..`, no empty or root
+/// segments). A single-segment path has nothing to check and costs nothing; otherwise the walk is
+/// one `symlink_metadata` call per intermediate directory on the blocking pool.
+async fn parent_dirs_are_not_symlinks(root: &Path, rel: &str) -> bool {
+    let parents: Vec<String> = {
+        let segments: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+        if segments.len() < 2 {
+            return true;
+        }
+        segments[..segments.len() - 1]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect()
+    };
+    let mut cur = root.to_owned();
+    tokio::task::spawn_blocking(move || {
+        for seg in parents {
+            cur.push(seg);
+            match std::fs::symlink_metadata(&cur) {
+                Ok(m) if !m.is_symlink() => {}
+                _ => return false,
+            }
+        }
+        true
+    })
+    .await
+    .unwrap_or(false)
+}
+
 async fn find_file(roots: &[PathBuf], rel: &str, options: &StaticOptions) -> Option<PathBuf> {
     for root in roots {
+        if !parent_dirs_are_not_symlinks(root, rel).await {
+            continue;
+        }
         let candidate = root.join(rel);
         match stat_no_symlink(&candidate).await {
             Some(m) if m.is_file() => return Some(candidate),
@@ -837,6 +873,28 @@ mod tests {
             stat_no_symlink(&real_file).await.is_some(),
             "regular file must be served"
         );
+    }
+
+    /// Issue #400: a directory symlink *inside* the path must not be followed — the final
+    /// component of `assets/secret.txt` is a regular file, but `assets` leads outside the root.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinked_directory_in_the_path_is_not_followed() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "top secret").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("assets")).unwrap();
+        std::fs::create_dir(root.path().join("real")).unwrap();
+        std::fs::write(root.path().join("real/ok.txt"), "fine").unwrap();
+        std::fs::write(root.path().join("top.txt"), "fine").unwrap();
+
+        let roots = vec![root.path().to_path_buf()];
+        let options = StaticOptions::default();
+        assert!(find_file(&roots, "assets/secret.txt", &options)
+            .await
+            .is_none());
+        assert!(find_file(&roots, "real/ok.txt", &options).await.is_some());
+        assert!(find_file(&roots, "top.txt", &options).await.is_some());
     }
 
     /// `open_no_follow` is the last line of defence against a symlink swapped in

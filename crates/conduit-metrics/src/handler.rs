@@ -65,7 +65,10 @@ pub async fn handle_metrics(
             .headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
+            // The scheme name is case-insensitive (RFC 9110 §11.1, RFC 6750 §2.1); the token is not.
+            .and_then(|v| v.split_once(' '))
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+            .map(|(_, token)| token)
             .unwrap_or("");
         // Constant-time comparison — same reasoning as admin API token.
         let ok = provided.len() == tok.len() && provided.as_bytes().ct_eq(tok.as_bytes()).into();
