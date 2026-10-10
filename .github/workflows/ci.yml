@@ -555,6 +555,9 @@ jobs:
       - name: Unit-test the counter
         run: python3 scripts/test_check_file_length.py
 
+      - name: Unit-test the move verifier
+        run: python3 scripts/test_verify_move.py
+
       - name: Find associated PR and its base commit
         id: pr
         env:
