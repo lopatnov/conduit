@@ -24,6 +24,71 @@ const _: () = assert!(
     "`lopatnov-conduit-admin`'s `cache` feature and this crate's `cache` feature must be enabled together"
 );
 
+/// One ACME renewal task to spawn: which site, where its files live, and how
+/// its HTTP-01 tokens reach the CA.
+#[cfg(feature = "acme")]
+struct AcmeRenewalJob<'a> {
+    acme: &'a crate::config::schema::AcmeConfig,
+    domain: &'a str,
+    storage_dir: std::path::PathBuf,
+    source: crate::server::acme::ChallengeSource,
+}
+
+/// Plan the renewal tasks for `config` (#491).
+///
+/// Mirrors how startup (`obtain_acme_certs`) derives domain, storage dir and
+/// challenge port. The difference is the challenge source: renewal runs while
+/// the listeners are up, so when a Pingora listener already owns the challenge
+/// port — the HTTP→HTTPS redirect service (`httpRedirectPort`) or a site whose
+/// effective port is that port — the token is only published to the shared map
+/// and that listener answers the CA (every proxy listener serves
+/// `/.well-known/acme-challenge/` before routing). Binding the port a second
+/// time would fail with `EADDRINUSE` on every attempt.
+///
+/// One job per distinct `(domain, storage dir)`; a second site with the same
+/// host would only redo the same order.
+#[cfg(feature = "acme")]
+fn acme_renewal_jobs(config: &crate::config::schema::AppConfig) -> Vec<AcmeRenewalJob<'_>> {
+    use crate::server::acme::ChallengeSource;
+
+    let site_port = |s: &crate::config::schema::SiteConfig| {
+        s.port.unwrap_or(if s.tls.is_some() { 443 } else { 80 })
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut jobs = Vec::new();
+    for site in &config.sites {
+        let Some(tls) = site.tls.as_ref() else {
+            continue;
+        };
+        let (Some(acme), Some(domain)) = (tls.acme.as_ref(), site.host.as_deref()) else {
+            continue;
+        };
+        let storage_dir = std::path::PathBuf::from(acme.storage.as_deref().unwrap_or("./certs"));
+        if !seen.insert((domain, storage_dir.clone())) {
+            continue;
+        }
+        let port = tls.http_redirect_port.unwrap_or(80);
+        let listener_owns_port = config.sites.iter().any(|s| {
+            site_port(s) == port
+                || s.tls
+                    .as_ref()
+                    .and_then(|t| t.http_redirect_port)
+                    .is_some_and(|p| p == port)
+        });
+        jobs.push(AcmeRenewalJob {
+            acme,
+            domain,
+            storage_dir,
+            source: if listener_owns_port {
+                ChallengeSource::Shared
+            } else {
+                ChallengeSource::Bind(port)
+            },
+        });
+    }
+    jobs
+}
+
 /// Resolve `(healthCheck config, target URLs)` pairs for every `proxy: {}`
 /// route (the legacy map form) that has `healthCheck` configured, across
 /// every site.
@@ -219,27 +284,14 @@ impl BackgroundService for AdminApiService {
         // restart; zero-downtime hot-swap waits for #451.
         #[cfg(feature = "acme")]
         {
-            use crate::server::acme::spawn_renewal_task;
             let config = self.state.config.load();
-            for site in &config.sites {
-                let Some(tls) = site.tls.as_ref() else {
-                    continue;
-                };
-                let Some(acme_cfg) = tls.acme.as_ref() else {
-                    continue;
-                };
-                let Some(domain) = site.host.as_deref() else {
-                    continue;
-                };
-                let storage_dir =
-                    std::path::PathBuf::from(acme_cfg.storage.as_deref().unwrap_or("./certs"));
-                let challenge_port = tls.http_redirect_port.unwrap_or(80);
-                spawn_renewal_task(
-                    acme_cfg.clone(),
-                    domain.to_string(),
+            for job in acme_renewal_jobs(&config) {
+                crate::server::acme::spawn_renewal_task(
+                    job.acme.clone(),
+                    job.domain.to_owned(),
                     self.state.acme_challenges.clone(),
-                    storage_dir,
-                    challenge_port,
+                    job.storage_dir,
+                    job.source,
                 );
             }
         }
@@ -575,6 +627,68 @@ mod tests {
         let cfg = Some(LoggingConfig::Options(opts));
         let result = log_file_path(&cfg);
         assert_eq!(result, Some("/var/log/conduit/access.log"));
+    }
+
+    // ── acme_renewal_jobs (#491) ─────────────────────────────────────────────
+
+    #[cfg(feature = "acme")]
+    fn acme_site(host: &str, tls_extra: &str) -> String {
+        format!(r#"{{"host":"{host}","tls":{{{tls_extra}"acme":{{"email":"o@example.com"}}}}}}"#)
+    }
+
+    #[cfg(feature = "acme")]
+    #[test]
+    fn renewal_shares_the_redirect_listener_instead_of_binding_its_port() {
+        use crate::server::acme::ChallengeSource;
+        // The redirect proxy owns :8080 in the running process — binding it
+        // again from the renewal task would fail with EADDRINUSE.
+        let c = cfg(&format!(
+            r#"{{"sites":[{}]}}"#,
+            acme_site("a.example.com", r#""httpRedirectPort":8080,"#)
+        ));
+        let jobs = acme_renewal_jobs(&c);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].source, ChallengeSource::Shared);
+    }
+
+    #[cfg(feature = "acme")]
+    #[test]
+    fn renewal_shares_a_plain_site_listening_on_the_challenge_port() {
+        use crate::server::acme::ChallengeSource;
+        let c = cfg(&format!(
+            r#"{{"sites":[{},{{"host":"plain.example.com","port":80}}]}}"#,
+            acme_site("a.example.com", "")
+        ));
+        let jobs = acme_renewal_jobs(&c);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].source, ChallengeSource::Shared);
+    }
+
+    #[cfg(feature = "acme")]
+    #[test]
+    fn renewal_binds_when_nothing_listens_on_the_challenge_port() {
+        use crate::server::acme::ChallengeSource;
+        let c = cfg(&format!(
+            r#"{{"sites":[{}]}}"#,
+            acme_site("a.example.com", "")
+        ));
+        let jobs = acme_renewal_jobs(&c);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].source, ChallengeSource::Bind(80));
+        assert_eq!(jobs[0].domain, "a.example.com");
+        assert_eq!(jobs[0].storage_dir, std::path::PathBuf::from("./certs"));
+    }
+
+    #[cfg(feature = "acme")]
+    #[test]
+    fn renewal_is_planned_once_per_domain_and_storage() {
+        let c = cfg(&format!(
+            r#"{{"sites":[{},{}]}}"#,
+            acme_site("a.example.com", ""),
+            acme_site("a.example.com", "")
+        ));
+        // Same host, same default storage → one order, not two.
+        assert_eq!(acme_renewal_jobs(&c).len(), 1);
     }
 
     #[test]

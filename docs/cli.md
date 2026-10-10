@@ -712,8 +712,15 @@ Requires `--features cache` (depends on `cache`).
 Enables `tls.acme` site config for automatic certificate provisioning via the
 ACME protocol (Let's Encrypt). Certificates are fetched at startup and cached
 to disk. A background task checks every 12 hours and renews the certificate
-when it is within 30 days of expiry; the renewed certificate takes effect at
-the next process restart.
+when it is within 30 days of expiry. The renewed files are written to the
+storage directory, but the running process keeps serving the certificate it
+loaded at startup — **restart Conduit within the 30-day window** (any restart
+or deploy does it) so the new certificate is picked up before the old one
+expires. Zero-downtime hot-swap is blocked on #451.
+
+During renewal the HTTP-01 token is served by the listener that already owns
+the challenge port (the `httpRedirectPort` redirect service, or a site on
+that port); only when nothing listens there does the task bind the port itself.
 
 The domain is taken from the site's `host` field — no separate `domain:` field exists.
 

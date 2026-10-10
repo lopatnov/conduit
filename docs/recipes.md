@@ -188,8 +188,9 @@ proxy:
 > **Requires** `cargo build --features acme`
 
 Conduit obtains certificates at startup. A background task renews them
-automatically when they approach expiry; the renewed certificate takes effect
-at the next process restart.
+automatically when they approach expiry (30 days before). The renewed files
+are written to disk, but the running process keeps serving the old certificate
+until it restarts — restart Conduit within that 30-day window.
 The domain must point to this server and port 80 must be reachable for the HTTP-01 challenge.
 
 ```yaml

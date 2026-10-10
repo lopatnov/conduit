@@ -110,6 +110,19 @@ fn http01_port_lock(port: u16) -> Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
+/// Where the HTTP-01 challenge tokens of an order are served from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChallengeSource {
+    /// Bind a temporary challenge server on this local port for the duration
+    /// of the order. Right at startup, before any listener exists.
+    Bind(u16),
+    /// A running Conduit listener (the HTTP→HTTPS redirect service or a site
+    /// on that port) already answers `/.well-known/acme-challenge/{token}`
+    /// from the shared challenge map, so binding the port again would fail
+    /// with `EADDRINUSE`. Tokens are only inserted into the map.
+    Shared,
+}
+
 /// On-disk paths to a site's TLS certificate and private key obtained via ACME.
 pub struct AcmeCertPaths {
     /// Path to the PEM-encoded certificate chain.
@@ -155,6 +168,24 @@ pub async fn load_or_obtain_certificate(
     storage_dir: &Path,
     http_challenge_port: u16,
 ) -> anyhow::Result<AcmeCertPaths> {
+    load_or_obtain_with(
+        acme_cfg,
+        domain,
+        challenges,
+        storage_dir,
+        ChallengeSource::Bind(http_challenge_port),
+    )
+    .await
+}
+
+/// [`load_or_obtain_certificate`] with an explicit [`ChallengeSource`].
+async fn load_or_obtain_with(
+    acme_cfg: &AcmeConfig,
+    domain: &str,
+    challenges: Arc<DashMap<String, String>>,
+    storage_dir: &Path,
+    challenge_source: ChallengeSource,
+) -> anyhow::Result<AcmeCertPaths> {
     tokio::fs::create_dir_all(storage_dir)
         .await
         .with_context(|| format!("creating ACME storage directory {storage_dir:?}"))?;
@@ -179,7 +210,7 @@ pub async fn load_or_obtain_certificate(
     }
 
     let (cert_pem, key_pem) =
-        obtain_certificate(acme_cfg, domain, &challenges, http_challenge_port).await?;
+        obtain_certificate(acme_cfg, domain, &challenges, challenge_source).await?;
 
     tokio::fs::write(&cert_path, &cert_pem)
         .await
@@ -199,7 +230,7 @@ async fn obtain_certificate(
     acme_cfg: &AcmeConfig,
     domain: &str,
     challenges: &Arc<DashMap<String, String>>,
-    http_challenge_port: u16,
+    challenge_source: ChallengeSource,
 ) -> anyhow::Result<(String, String)> {
     let directory_url = acme_cfg
         .directory
@@ -217,26 +248,37 @@ async fn obtain_certificate(
 
     // Acquire the per-port lock so concurrent ACME orders (multiple domains,
     // or an issuance overlapping a renewal) never race to bind the same port.
-    let _port_lock = http01_port_lock(http_challenge_port);
-    let _port_guard = _port_lock.lock().await;
+    // Not needed when a running listener serves the tokens (`Shared`).
+    let port_lock = match challenge_source {
+        ChallengeSource::Bind(port) => Some(http01_port_lock(port)),
+        ChallengeSource::Shared => None,
+    };
+    let _port_guard = match &port_lock {
+        Some(lock) => Some(lock.lock().await),
+        None => None,
+    };
 
     // Bind the HTTP-01 challenge server port *before* spawning the background
     // task so that port-bind failures are reported here as ACME errors rather
     // than being silently swallowed inside the spawned task.
-    let ch_listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{http_challenge_port}"))
-        .await
-        .with_context(|| {
-            format!("failed to bind ACME HTTP-01 challenge server on port {http_challenge_port}")
-        })?;
-    tracing::debug!(
-        port = http_challenge_port,
-        "ACME HTTP-01 challenge server bound"
-    );
+    let challenge_server = match challenge_source {
+        ChallengeSource::Bind(port) => {
+            let ch_listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+                .await
+                .with_context(|| {
+                    format!("failed to bind ACME HTTP-01 challenge server on port {port}")
+                })?;
+            tracing::debug!(port, "ACME HTTP-01 challenge server bound");
 
-    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-    let server_task = {
-        let ch_map = challenges.clone();
-        tokio::spawn(run_challenge_server(ch_listener, ch_map, stop_rx))
+            let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+            let ch_map = challenges.clone();
+            let server_task = tokio::spawn(run_challenge_server(ch_listener, ch_map, stop_rx));
+            Some((stop_tx, server_task))
+        }
+        ChallengeSource::Shared => {
+            tracing::debug!("ACME HTTP-01 tokens served by the running listener");
+            None
+        }
     };
 
     // Populate challenge tokens and notify the CA to begin validation.
@@ -287,33 +329,35 @@ async fn obtain_certificate(
 
     // Always shut down the temporary challenge server and clean up our
     // tokens, regardless of whether the flow above succeeded (#279).
-    let _ = stop_tx.send(());
-    // Bounded (issue #352): a peer holding an "active" (partial-request)
-    // connection open could otherwise keep this task -- and the port it
-    // holds -- alive indefinitely, since axum's graceful shutdown only
-    // closes idle connections promptly. Dropping the JoinHandle on timeout
-    // would NOT stop the spawned task (it keeps running detached) -- an
-    // explicit abort_handle().abort() is required to actually reclaim the
-    // port.
-    let abort_handle = server_task.abort_handle();
-    match tokio::time::timeout(
-        Duration::from_secs(CHALLENGE_SHUTDOWN_TIMEOUT_SECS),
-        server_task,
-    )
-    .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            tracing::warn!("ACME HTTP-01 challenge server task did not exit cleanly: {e}");
-        }
-        Err(_) => {
-            abort_handle.abort();
-            tracing::warn!(
-                timeout_secs = CHALLENGE_SHUTDOWN_TIMEOUT_SECS,
-                "ACME HTTP-01 challenge server did not shut down within the timeout \
-                 (a peer likely held an active connection open); forcibly aborted the \
-                 task to reclaim the port"
-            );
+    if let Some((stop_tx, server_task)) = challenge_server {
+        let _ = stop_tx.send(());
+        // Bounded (issue #352): a peer holding an "active" (partial-request)
+        // connection open could otherwise keep this task -- and the port it
+        // holds -- alive indefinitely, since axum's graceful shutdown only
+        // closes idle connections promptly. Dropping the JoinHandle on timeout
+        // would NOT stop the spawned task (it keeps running detached) -- an
+        // explicit abort_handle().abort() is required to actually reclaim the
+        // port.
+        let abort_handle = server_task.abort_handle();
+        match tokio::time::timeout(
+            Duration::from_secs(CHALLENGE_SHUTDOWN_TIMEOUT_SECS),
+            server_task,
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!("ACME HTTP-01 challenge server task did not exit cleanly: {e}");
+            }
+            Err(_) => {
+                abort_handle.abort();
+                tracing::warn!(
+                    timeout_secs = CHALLENGE_SHUTDOWN_TIMEOUT_SECS,
+                    "ACME HTTP-01 challenge server did not shut down within the timeout \
+                     (a peer likely held an active connection open); forcibly aborted the \
+                     task to reclaim the port"
+                );
+            }
         }
     }
     // Remove only the tokens we inserted, preserving any tokens that belong
@@ -463,13 +507,18 @@ async fn run_challenge_server(
 /// Spawn a background task that renews the certificate for `domain` when it is
 /// within [`RENEWAL_THRESHOLD_DAYS`] days of expiry.
 ///
-/// Checks every 12 hours.
+/// Checks every 12 hours. The renewed files are written to `storage_dir`; the
+/// running process keeps serving the certificate it loaded at startup.
+///
+/// Renewal runs while the proxy listeners are up, so pass
+/// [`ChallengeSource::Shared`] when a listener already owns the HTTP-01 port —
+/// [`ChallengeSource::Bind`] would then fail with `EADDRINUSE` every time.
 pub fn spawn_renewal_task(
     acme_cfg: AcmeConfig,
     domain: String,
     challenges: Arc<DashMap<String, String>>,
     storage_dir: PathBuf,
-    http_challenge_port: u16,
+    challenge_source: ChallengeSource,
 ) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(12 * 3600));
@@ -487,12 +536,12 @@ pub fn spawn_renewal_task(
             }
 
             tracing::info!(domain, "renewing ACME certificate");
-            match load_or_obtain_certificate(
+            match load_or_obtain_with(
                 &acme_cfg,
                 &domain,
                 challenges.clone(),
                 &storage_dir,
-                http_challenge_port,
+                challenge_source,
             )
             .await
             {

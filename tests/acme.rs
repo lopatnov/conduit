@@ -152,3 +152,58 @@ fn acme_challenge_endpoint_is_accessible() {
         "missing challenge token must return 404, not auth/error"
     );
 }
+
+/// Renewal while a listener already owns the HTTP-01 port (#491).
+///
+/// In a running proxy the HTTP→HTTPS redirect service (or a site on port 80)
+/// holds the challenge port, so the renewal task must publish its token to the
+/// shared map and let that listener answer — binding the port a second time
+/// fails with `EADDRINUSE` on every attempt. Here a plain `TcpListener` plays
+/// the owner: with `ChallengeSource::Shared` the order must still complete and
+/// write the certificate.
+#[cfg(feature = "acme")]
+#[test]
+#[serial]
+fn acme_renewal_completes_while_a_listener_holds_the_challenge_port() {
+    use conduit_acme::config::AcmeConfig;
+    use conduit_acme::flow::{spawn_renewal_task, ChallengeSource};
+
+    if !pebble_available() {
+        eprintln!("SKIP: Pebble not reachable on 127.0.0.1:14000");
+        return;
+    }
+
+    let held = std::net::TcpListener::bind("0.0.0.0:0").expect("hold a port");
+    let held_port = held.local_addr().unwrap().port();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let storage_dir = dir.path().join("certs");
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let _enter = rt.enter();
+    spawn_renewal_task(
+        AcmeConfig {
+            email: "test@example.com".to_owned(),
+            directory: Some("https://localhost:14000/dir".to_owned()),
+            storage: Some(storage_dir.to_str().unwrap().to_owned()),
+            challenge: None,
+        },
+        "renewal.example.com".to_owned(),
+        std::sync::Arc::new(dashmap::DashMap::new()),
+        storage_dir.clone(),
+        ChallengeSource::Shared,
+    );
+
+    let cert = storage_dir.join("renewal.example.com.crt.pem");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !cert.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    drop(held);
+    assert!(
+        cert.exists(),
+        "renewal must succeed without binding the port held on {held_port}"
+    );
+}

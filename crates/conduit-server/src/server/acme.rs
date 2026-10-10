@@ -7,4 +7,5 @@
 //! acme;` gate in `src/server/mod.rs`.
 pub use conduit_acme::flow::{
     cert_expires_within_days, load_or_obtain_certificate, spawn_renewal_task, AcmeCertPaths,
+    ChallengeSource,
 };
