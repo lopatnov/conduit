@@ -160,6 +160,13 @@ the glibc builds link the system C library dynamically.
 cargo install lopatnov-conduit                       # default build
 cargo install lopatnov-conduit --features standard   # + JWT, consumers, forward auth, cache, ACME
 cargo install lopatnov-conduit --features full       # everything
+
+# or pick the features you need
+cargo install lopatnov-conduit --features "jwt,cache,rhai"        # default build + JWT auth, caching, Rhai scripts
+cargo install lopatnov-conduit --features "tcp,redis,otlp"        # default build + TCP proxy, Redis, OpenTelemetry
+cargo install lopatnov-conduit --no-default-features --features proxy          # reverse proxy only
+cargo install lopatnov-conduit --no-default-features --features static-server  # static files only, no proxy
+cargo install lopatnov-conduit --no-default-features --features gateway        # proxy, auth, cache, ACME; no static files
 ```
 
 For build instructions, feature bundles, cross-compilation and troubleshooting see
