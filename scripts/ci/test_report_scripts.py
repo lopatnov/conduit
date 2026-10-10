@@ -67,9 +67,9 @@ class Performance(unittest.TestCase):
         self.assertNotIn("<script>", out)
 
     def test_runner_text_is_reduced_to_printable_ascii_and_cut(self):
-        out = perf.render(dict(self.ENV, HW="evil\x00‮" + "x" * 1000))
+        out = perf.render(dict(self.ENV, HW="evil\x00\u202e" + "x" * 1000))
         self.assertNotIn("\x00", out)
-        self.assertNotIn("‮", out)
+        self.assertNotIn("\u202e", out)
         self.assertLess(len(out), 2000)
 
     def test_a_regression_of_ten_percent_is_flagged(self):
