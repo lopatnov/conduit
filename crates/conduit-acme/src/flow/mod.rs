@@ -95,6 +95,10 @@ fn cache_state(cert_pem: Option<&str>, key_pem: Option<&str>) -> CacheState {
 ///
 /// `http_challenge_port` is the local TCP port on which the temporary HTTP-01
 /// challenge server listens during certificate procurement (typically 80).
+///
+/// When the order fails but the cached certificate is still valid (renewal
+/// starts 30 days ahead), the cached files are returned with a warning rather
+/// than an error.
 pub async fn load_or_obtain_certificate(
     acme_cfg: &AcmeConfig,
     domain: &str,
@@ -102,14 +106,50 @@ pub async fn load_or_obtain_certificate(
     storage_dir: &Path,
     http_challenge_port: u16,
 ) -> anyhow::Result<AcmeCertPaths> {
-    load_or_obtain_with(
+    let result = load_or_obtain_with(
         acme_cfg,
         domain,
         challenges,
         storage_dir,
         ChallengeSource::Bind(http_challenge_port),
     )
-    .await
+    .await;
+
+    // Renewal is attempted 30 days ahead, so a failed order (CA outage, rate
+    // limit) with a certificate that is still valid must not drop the site to
+    // plain HTTP on its TLS port: keep serving the cached one.
+    match result {
+        Err(e) => {
+            let cert_path = storage_dir.join(format!("{domain}.crt.pem"));
+            let key_path = storage_dir.join(format!("{domain}.key.pem"));
+            let cert = tokio::fs::read_to_string(&cert_path).await.ok();
+            let key = tokio::fs::read_to_string(&key_path).await.ok();
+            if cached_pair_is_valid_now(cert.as_deref(), key.as_deref()) {
+                tracing::warn!(
+                    domain,
+                    error = %e,
+                    "ACME renewal failed — continuing with the cached certificate until it expires"
+                );
+                Ok(AcmeCertPaths {
+                    cert: cert_path,
+                    key: key_path,
+                })
+            } else {
+                Err(e)
+            }
+        }
+        ok => ok,
+    }
+}
+
+/// A matching cert/key pair whose certificate has not expired yet.
+fn cached_pair_is_valid_now(cert_pem: Option<&str>, key_pem: Option<&str>) -> bool {
+    match (cert_pem, key_pem) {
+        (Some(cert), Some(key)) => {
+            cached_pair_matches(cert, key) && !cert_expires_within_days(cert, 0)
+        }
+        _ => false,
+    }
 }
 
 /// [`load_or_obtain_certificate`] with an explicit [`ChallengeSource`].
@@ -449,5 +489,30 @@ mod tests {
         );
         assert_eq!(cache_state(Some(&cert), None), CacheState::Unusable);
         assert_eq!(cache_state(None, Some(&key)), CacheState::Unusable);
+    }
+    #[test]
+    fn a_failed_renewal_may_fall_back_only_to_a_valid_matching_pair() {
+        let now = time::OffsetDateTime::now_utc();
+        let (valid_cert, valid_key) =
+            self_signed_pair_with_not_after(now + time::Duration::days(5));
+        let (expired_cert, expired_key) =
+            self_signed_pair_with_not_after(now - time::Duration::days(1));
+        let (_, other_key) = self_signed_pair_with_not_after(now + time::Duration::days(5));
+
+        // Inside the renewal window but not expired: still served.
+        assert!(cached_pair_is_valid_now(
+            Some(&valid_cert),
+            Some(&valid_key)
+        ));
+        assert!(!cached_pair_is_valid_now(
+            Some(&expired_cert),
+            Some(&expired_key)
+        ));
+        assert!(!cached_pair_is_valid_now(
+            Some(&valid_cert),
+            Some(&other_key)
+        ));
+        assert!(!cached_pair_is_valid_now(Some(&valid_cert), None));
+        assert!(!cached_pair_is_valid_now(None, None));
     }
 }
