@@ -890,7 +890,9 @@ mod tests {
 
         let roots = vec![root.path().to_path_buf()];
         let options = StaticOptions::default();
-        assert!(find_file(&roots, "assets/secret.txt", &options).await.is_none());
+        assert!(find_file(&roots, "assets/secret.txt", &options)
+            .await
+            .is_none());
         assert!(find_file(&roots, "real/ok.txt", &options).await.is_some());
         assert!(find_file(&roots, "top.txt", &options).await.is_some());
     }
