@@ -88,17 +88,17 @@ idle memory where the table has it.
 ## Output format (handoff to conductor)
 ```
 BENCHMARK: <feature set> — <build-size | throughput | both>
-ENVIRONMENT: <OS>, docker=<yes/no>, cross=<yes/no>, wrk=<yes/no>
+ENVIRONMENT: <OS>, docker=<yes/no>, cross=<yes/no>, load_generator=<wrk|oha>
 RESULTS:
   build size (musl stripped):  <X.X MB | NOT RUN: reason>
   build size (windows msvc):   <X.X MB | NOT RUN: reason>
-  throughput (wrk):            <Req/s, P50, P99 | NOT RUN: reason>
-NOTES: <anything the conductor must know — e.g. cross build failed, used release artifact, wrk unavailable>
+  throughput (<load generator>): <Req/s, P50, P99 | NOT RUN: reason>
+NOTES: <anything the conductor must know — e.g. cross build failed, used release artifact, load generator unavailable>
 ```
 
 ## Boundaries
 - Edit no files. Never touch `src/`, `Cargo.toml`, version strings or `docs/benchmarks.md`.
-- Never change the benchmark methodology (`wrk -t8 -c200 -d30s`, body sizes, upstream).
+- For `wrk` runs never change the methodology (`wrk -t8 -c200 -d30s`, body sizes, upstream). For `scripts/bench/` runs use the selected script as written (it drives `oha`) and report the script, its arguments and the exact command.
 - Don't commit, push, or open PRs — return to the conductor, who handles git.
 - If you can't run a measurement in this environment, say so plainly; never fabricate
   or guess a number (an estimate must say so and give its derivation).

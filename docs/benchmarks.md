@@ -75,8 +75,25 @@ Linux or macOS; needs Go, a Rust toolchain and `oha`:
 ```bash
 WORK=$(mktemp -d)   # a private scratch directory, not a predictable name in /tmp
 
-# 1. the upstream (main.go is the file above)
-cp main.go "$WORK"/
+# 1. the upstream: the same program as above, written to the scratch directory
+cat > "$WORK/main.go" <<'GOEOF'
+package main
+
+import (
+    "net/http"
+    "time"
+)
+
+func main() {
+    body := []byte(`{"status":"ok","ts":0}`)
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        w.Write(body)
+    })
+    srv := &http.Server{Addr: ":4000", ReadTimeout: 5 * time.Second}
+    srv.ListenAndServe()
+}
+GOEOF
 (cd "$WORK" && go mod init bench-upstream && go build -o bench-upstream .)
 "$WORK"/bench-upstream &
 
