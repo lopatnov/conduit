@@ -738,8 +738,8 @@ traffic off a broken backend). Pick based on your actual traffic shape:
 Rule of thumb: start with `round-robin`. Move to `least-conn` or `p2c` once
 request cost varies noticeably. Reach for `ip-hash`/`consistent-hash` only for
 affinity, not performance — and prefer `sticky.cookie` over `ip-hash` when you
-control the client, since cookie-based affinity survives healthy-pool-size
-changes (including health ejections) that `ip-hash`'s `% N` doesn't.
+control the client, since cookie-based affinity survives the client's own IP
+changing, which `ip-hash` does not.
 
 ```text
                          ┌─────────────┐

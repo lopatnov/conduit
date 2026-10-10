@@ -171,35 +171,19 @@ pub fn pick_weighted_round_robin(
 /// from the key hash and its own name, and the highest score wins, so the pick depends on the *set*
 /// of URLs, not on their order or count: when one peer drops out only the keys that were on it move
 /// (to their next-best peer), and every other key stays where it was (issue #377).  The old
-/// `hash % len` remapped almost every key whenever the list length changed.
+/// `hash % len` remapped almost every key whenever the list length changed.  A peer that is at its
+/// connection cap is dropped from the list by the caller before the pick, which is the same thing.
 ///
 /// Rendezvous hashing is exactly as consistent as a virtual-node ring, needs no ring to build or
 /// cache while the healthy set changes, and spreads keys evenly with no virtual-node tuning; the cost
 /// is O(peers) per pick, which is small for an upstream list.
 pub fn pick_by_hash(urls: &[String], hash_val: u64) -> Option<String> {
-    pick_by_hash_where(urls, hash_val, |_| true)
-}
-
-/// [`pick_by_hash`] restricted to the URLs `admits` accepts.
-///
-/// A peer that is not admitted (at its connection cap) is skipped and the key falls to its next-best
-/// peer, so every other key keeps its mapping — the same property as removing the peer, without
-/// shrinking the list the scores are computed over.
-pub fn pick_by_hash_where(
-    urls: &[String],
-    hash_val: u64,
-    admits: impl Fn(&str) -> bool,
-) -> Option<String> {
     urls.iter()
-        .filter(|u| admits(u))
+        .map(|u| (rendezvous_score(u, hash_val), u))
         // Ties (equal scores) go to the lexicographically smaller URL, so the pick never depends on
         // the order of `urls`.
-        .max_by(|a, b| {
-            rendezvous_score(a, hash_val)
-                .cmp(&rendezvous_score(b, hash_val))
-                .then_with(|| b.cmp(a))
-        })
-        .cloned()
+        .max_by(|(sa, a), (sb, b)| sa.cmp(sb).then_with(|| b.cmp(a)))
+        .map(|(_, u)| u.clone())
 }
 
 /// Score of `url` for a key hash: FNV-1a of the URL, mixed with the key hash through the splitmix64
@@ -525,15 +509,20 @@ mod tests {
     }
 
     #[test]
-    fn hash_where_skips_peers_that_are_not_admitted() {
+    fn a_dropped_peer_sends_its_keys_to_their_next_best_peer() {
         let urls = peers(3);
         let preferred = pick_by_hash(&urls, 7).unwrap();
-        let spilled = pick_by_hash_where(&urls, 7, |u| u != preferred).unwrap();
-        assert_ne!(spilled, preferred);
-        // The spill target is the best peer left, i.e. what a list without the preferred peer gives.
-        let without: Vec<String> = urls.iter().filter(|u| **u != preferred).cloned().collect();
-        assert_eq!(Some(spilled), pick_by_hash(&without, 7));
-        assert_eq!(pick_by_hash_where(&urls, 7, |_| false), None);
+        let rest: Vec<String> = urls.iter().filter(|u| **u != preferred).cloned().collect();
+        let next_best = pick_by_hash(&rest, 7).unwrap();
+        assert_ne!(next_best, preferred);
+        // Dropping any *other* peer leaves the key where it was.
+        for other in &rest {
+            let without: Vec<String> = urls.iter().filter(|u| *u != other).cloned().collect();
+            assert_eq!(
+                pick_by_hash(&without, 7).as_deref(),
+                Some(preferred.as_str())
+            );
+        }
     }
 
     // ── pick_least_response_time ──────────────────────────────────────────────

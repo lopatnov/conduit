@@ -103,7 +103,7 @@ impl Capacity {
 /// and every other client keeps its mapping. With [`Capacity::Unlimited`] this is exactly
 /// `pick_by_hash` (see the parity test below).
 pub(crate) fn hash_pick_bounded(ring: &[String], hash_val: u64, cap: &Capacity) -> Option<String> {
-    conduit_upstream::targets::pick_by_hash_where(ring, hash_val, |u| cap.admits(u))
+    conduit_upstream::targets::pick_by_hash(cap.candidates(ring)?, hash_val)
 }
 
 /// Everything one capacity-aware pick needs. Bundled to stay under
