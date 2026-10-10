@@ -575,7 +575,7 @@ automatically — no restart needed.
 
 When `--kubernetes-namespace` is set, the `-c` flag is ignored.
 
-See [deployment.md — ConduitSite CRD](deployment.md#conduitsite-crd----features-kubernetes)
+See [deployment.md — ConduitSite CRD](deployment.md#conduitsite-crd---features-kubernetes)
 for the CRD schema and `kubectl apply` instructions.
 
 ---

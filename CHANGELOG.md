@@ -37,8 +37,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `conduit validate` example showed an error format the command does not print; the Linux release
   archive was said to unpack to `./conduit` (it unpacks to a file named like the archive). The
   README and the npm README were rewritten to match the code (the README has its table of contents
-  back, ten SVG diagrams that work in light and dark themes, and a configuration example for each
-  feature), and the benchmark page now gives the exact setup the CI performance report uses; the
+  back, eleven SVG diagrams that work in light and dark themes, a configuration example for each
+  feature, Kubernetes `ConduitSite` mode included), the `serverTiming` option is now documented,
+  and the benchmark page now gives the exact setup the CI performance report uses; the
   old per-feature throughput tables, the nginx/Traefik comparison and the build-size table were
   removed: they were one-off measurements, some could not be reproduced (issues #475, #487).
 - **`global.shutdownTimeoutSecs` now takes effect** (issue #489). It is passed to Pingora's grace period (default 30 s;

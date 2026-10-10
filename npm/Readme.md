@@ -11,10 +11,12 @@ authentication, limits and caching in one YAML or JSON file and run one executab
 
 Put it in front of your apps to terminate TLS, route requests, authenticate and rate-limit
 clients, cache responses and run your own scripted logic — or serve a single-page app and its API
-from one port — without gluing together a proxy, an auth sidecar and a plugin system.
+from one port — without gluing together a proxy, an auth sidecar and a plugin system. It also
+proxies raw TCP, and on Kubernetes it can read its sites from `ConduitSite` resources instead of a
+file.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/lopatnov/conduit/main/docs/img/hero.svg" alt="Clients reach Conduit over HTTP/1.1, HTTP/2, WebSocket or TCP. Inside Conduit, listeners feed an ordered chain of guards and a router that picks a handler: reverse proxy, TCP proxy, static files or upload. Handlers use your services and files on disk. Redis and an identity provider are optional." width="900">
+  <img src="https://raw.githubusercontent.com/lopatnov/conduit/main/docs/img/hero.svg" alt="Clients reach Conduit over HTTP/1.1, HTTP/2, WebSocket or TCP. Inside Conduit, listeners feed an ordered chain of guards and a router that picks a handler: reverse proxy, TCP proxy, static files or upload. Handlers use your services and files on disk. Configuration comes from a YAML or JSON file or from Kubernetes ConduitSite resources. Redis and an identity provider are optional." width="900">
 </p>
 
 This npm package is a convenience wrapper: it downloads the native Conduit binary for your
@@ -268,7 +270,7 @@ dropped by the next reload. The complete reference is
 ## What it does
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/lopatnov/conduit/main/docs/img/feature-map.svg" alt="Twelve feature groups: routing; proxy and balancing; resilience; caching; static files; TLS; authentication; traffic control; scripting; observability; operations; deployment. Items marked with an asterisk need an optional build feature." width="900">
+  <img src="https://raw.githubusercontent.com/lopatnov/conduit/main/docs/img/feature-map.svg" alt="Sixteen feature groups: routing; proxy and balancing; resilience; caching; static files; TCP and uploads; response shaping; TLS; authentication; traffic control; scripting; observability; operations; developer tools; packaging; Kubernetes. Items marked with an asterisk need an optional build feature." width="900">
 </p>
 
 | Area                  | Details                                                                                   |
@@ -276,7 +278,7 @@ dropped by the next reload. The complete reference is
 | **Reverse proxy**     | Balancing (round-robin, least-connections, IP hash, consistent hash, power of two choices and more), health checks, outlier detection, circuit breaker, retries, sticky sessions, traffic mirroring |
 | **Static files**      | ETag, Last-Modified, Range, optional pre-compressed `.br` / `.gz` files, SPA fallback     |
 | **TLS**               | Your own certificates, HTTP→HTTPS redirect, mTLS client certificates                      |
-| **Automatic TLS**     | Let's Encrypt through ACME: issue and renewal                                             |
+| **Automatic TLS**     | Let's Encrypt through ACME: certificates are issued at start and renewed on disk; restart to serve a renewed one |
 | **HTTP/2**            | Negotiated through ALPN on TLS ports, optional h2c (cleartext), HTTP/2 to upstreams       |
 | **Compression**       | gzip, Brotli, Zstd and deflate, with a content-type filter                                |
 | **WebSocket**         | Upgrade requests are proxied                                                              |
@@ -284,16 +286,16 @@ dropped by the next reload. The complete reference is
 | **IP filtering**      | CIDR allow and deny lists, `X-Forwarded-For` trust, runtime deny-list through the Admin API |
 | **Rate limiting**     | Token bucket per client IP or header, bursts, per-route and per-consumer limits, optional Redis backend |
 | **Auth**              | Basic, API key, JWT (HS256 with a shared secret; RS256/ES256 through a JWKS URL), forward auth, consumers |
-| **CORS and security headers** | Origin allow-list, preflight, credentials mode; HSTS, CSP, X-Frame-Options, Referrer-Policy, allowed hosts |
+| **CORS and security headers** | Origin allow-list, preflight, credentials mode; HSTS, CSP, X-Frame-Options, Referrer-Policy, allowed hosts; 5xx error masking |
 | **Transforms**        | Set or remove request and response headers; use JWT claims in headers (`{{ jwt.sub }}`)   |
 | **Scripting**         | Rhai scripts and WebAssembly plugins, in the request and response phases                  |
 | **Config reload**     | `conduit reload` applies most config changes without a restart; connections stay open     |
-| **Observability**     | Health endpoint with upstream status, Prometheus metrics, OpenTelemetry tracing, JSON access log |
+| **Observability**     | Health endpoint with upstream status, Prometheus metrics, OpenTelemetry tracing, JSON access log, `X-Response-Time` and `Server-Timing` headers |
 | **File upload**       | `multipart/form-data` with generated filenames, a MIME allow-list and size limits         |
 | **TCP proxy**         | Raw TCP passthrough for databases, SMTP and similar                                       |
 | **Redirects**         | Named parameters (`:slug`) with 301, 302, 307 or 308                                      |
 | **Routing**           | Virtual hosts; path glob, method, header regex, query and cookie predicates               |
-| **Kubernetes**        | `ConduitSite` CRD config provider                                                         |
+| **Kubernetes**        | Sites come from `ConduitSite` resources (`--kubernetes-namespace`, full build); changes apply live |
 
 ### Limits you should know about
 

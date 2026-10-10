@@ -61,6 +61,7 @@ See [docs/cli.md — Build features](cli.md#build-features) for binary sizes and
 - [HTTP/2](#http2)
 - [Compression](#compression)
 - [Response time header](#response-time-header)
+- [Server-Timing header](#server-timing-header)
 
 **Routing**
 
@@ -491,6 +492,35 @@ responseTime:
 // JSON
 { "responseTime": { "digits": 3 } }
 ```
+
+---
+
+## Server-Timing Header
+
+Add a [W3C `Server-Timing`](https://www.w3.org/TR/server-timing/) header to proxied responses so
+that browser DevTools (Network → Timing) can show where the time went.
+
+```yaml
+# YAML
+serverTiming: true
+```
+
+```json
+// JSON
+{ "serverTiming": true }
+```
+
+```text
+server-timing: total;dur=12.4, upstream;dur=11.8
+```
+
+- `total;dur=<ms>` is the time from receiving the request to getting the response headers back.
+- `upstream;dur=<ms>` is the time the upstream took to return its response headers.
+
+The header is added to responses that come back from an upstream. A response Conduit produces
+itself (a static file, a redirect, a rejection by a guard) does not carry it; use `responseTime` if
+you also want a timing header there. The header is visible to every client, so leave it off if you
+do not want to expose timings.
 
 ---
 

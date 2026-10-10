@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 612" role="img" aria-labelledby="t d">
   <title id="t">Where Conduit sits</title>
-  <desc id="d">Clients connect to Conduit over HTTP/1.1, HTTP/2, WebSocket or raw TCP. Inside one Conduit process, listeners hand each request to an ordered chain of guards and a router, which picks a handler: reverse proxy, TCP proxy, static files or upload. The proxy handlers forward to your services and the file handlers use files on disk. Redis and an identity provider are optional. Logs, Prometheus metrics, OpenTelemetry traces, the Admin API and hot reload sit alongside the request path.</desc>
+  <desc id="d">Clients connect to Conduit over HTTP/1.1, HTTP/2, WebSocket or raw TCP. Inside one Conduit process, listeners hand each request to an ordered chain of guards and a router, which picks a handler: reverse proxy, TCP proxy, static files or upload. The proxy handlers forward to your services and the file handlers use files on disk. Redis and an identity provider are optional. Logs, Prometheus metrics, OpenTelemetry traces, the Admin API and hot reload sit alongside the request path. Configuration comes from a YAML or JSON file or from Kubernetes ConduitSite resources.</desc>
   <defs>
     <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/></marker>
     <marker id="ar-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--blue)"/></marker>
@@ -73,9 +73,27 @@ text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fil
   <g class="gray"><rect class="chip" x="34" y="358" width="140" height="20" rx="10"/><text class="chipt" x="104.0" y="372.0">WebSocket</text></g>
   <g class="gray"><rect class="chip" x="34" y="384" width="140" height="20" rx="10"/><text class="chipt" x="104.0" y="398.0">TCP (raw)</text></g>
   <g class="blue"><path class="lnA" d="M190 250 L222 250" marker-end="url(#ar-blue)" marker-start="url(#ar-blue)"/></g>
+  <g class="purple"><rect class="zone" x="20" y="446" width="168" height="146" rx="14"/>
+  <text class="cap" x="36" y="468">CONFIGURATION</text>
+  </g>
+  <g class="purple">
+  <rect class="card" x="30" y="474" width="148" height="50" rx="9"/>
+  <rect class="acc" x="30" y="484" width="3.4" height="30" rx="1.7"/>
+  <g class="None" transform="translate(44 484) scale(0.833)"><g class="ico"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></g></g>
+  <text class="b" x="72" y="499">Config file</text>
+  <text class="m" x="44" y="519">YAML or JSON</text>
+  </g>
+  <g class="purple">
+  <rect class="card" x="30" y="532" width="148" height="50" rx="9"/>
+  <rect class="acc" x="30" y="542" width="3.4" height="30" rx="1.7"/>
+  <g class="None" transform="translate(44 542) scale(0.833)"><g class="ico"><path d="M12 3L2.500 8 12 13 21.500 8z"/><path d="M2.500 12.500L12 17.500l9.500-5M2.500 16.500L12 21.500l9.500-5"/></g></g>
+  <text class="b" x="72" y="557">Kubernetes *</text>
+  <text class="m" x="44" y="577">ConduitSite CRDs</text>
+  </g>
+  <g class="purple"><path class="lnA" d="M190 519 L222 519" marker-end="url(#ar-purple)"/></g>
   <g class="blue"><rect class="zone" x="224" y="20" width="548" height="572" rx="14"/>
   <text class="cap" x="240" y="42">CONDUIT</text>
-  <text class="s" x="756" y="42" text-anchor="end">one executable · one config file</text>
+  <text class="s" x="756" y="42" text-anchor="end">one executable</text>
   </g>
   <g class="blue">
   <rect class="card" x="240" y="56" width="214" height="64" rx="9"/>
@@ -173,8 +191,8 @@ text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fil
   <rect class="acc" x="598" y="466" width="3.4" height="92" rx="1.7"/>
   <g class="None" transform="translate(612 466) scale(0.833)"><g class="ico"><path d="M20 11a8 8 0 0 0-14.500-4M4 13a8 8 0 0 0 14.500 4"/><path d="M5.500 3v4h4M18.500 21v-4h-4"/></g></g>
   <text class="b" x="640" y="481">Hot reload</text>
-  <text class="m" x="612" y="501">edit the file,</text>
-  <text class="m" x="612" y="517">conduit reload,</text>
+  <text class="m" x="612" y="501">edit file + reload,</text>
+  <text class="m" x="612" y="517">or kubectl apply,</text>
   <text class="m" x="612" y="533">no dropped connections</text>
   </g>
   <g class="green">

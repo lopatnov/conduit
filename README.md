@@ -11,11 +11,12 @@
 [Cloudflare Pingora](https://github.com/cloudflare/pingora).** You describe your sites, routes,
 authentication, limits and caching in one YAML or JSON file and run one executable. Conduit
 terminates TLS, balances and protects your upstreams, serves a single-page app next to its API,
-lets you add your own logic with scripts and plugins, and picks up configuration changes without
-dropping connections.
+proxies raw TCP, lets you add your own logic with scripts and plugins, and picks up configuration
+changes without dropping connections. It runs from a config file, from a Docker image, or on
+Kubernetes, where every `ConduitSite` resource becomes a site and changes apply on their own.
 
 <p align="center">
-  <img src="docs/img/hero.svg" alt="Clients reach Conduit over HTTP/1.1, HTTP/2, WebSocket or TCP. Inside Conduit, listeners feed an ordered chain of guards and a router that picks a handler: reverse proxy, TCP proxy, static files or upload. Handlers use your services and files on disk. Redis and an identity provider are optional." width="900">
+  <img src="docs/img/hero.svg" alt="Clients reach Conduit over HTTP/1.1, HTTP/2, WebSocket or TCP. Inside Conduit, listeners feed an ordered chain of guards and a router that picks a handler: reverse proxy, TCP proxy, static files or upload. Handlers use your services and files on disk. Configuration comes from a YAML or JSON file or from Kubernetes ConduitSite resources. Redis and an identity provider are optional." width="900">
 </p>
 
 ```bash
@@ -23,12 +24,18 @@ npx @lopatnov/conduit init   # write a starter conduit.yaml
 npx @lopatnov/conduit        # run it
 ```
 
+Other ways to run it: `npm install -g @lopatnov/conduit` · [pre-built binaries](#pre-built-binaries) for
+Linux, macOS and Windows · the Docker image `ghcr.io/lopatnov/conduit` · `cargo install lopatnov-conduit` ·
+[Kubernetes](#kubernetes-one-conduitsite-per-site-needs-kubernetes) with `ConduitSite` resources.
+Details: [Installation](#installation).
+
 ## Table of Contents
 
 - [Quick start](#quick-start)
 - [What Conduit does](#what-conduit-does)
 - [How a request flows](#how-a-request-flows)
-- [Features by example](#features-by-example)
+- [Features by example](#features-by-example), including
+  [Kubernetes](#kubernetes-one-conduitsite-per-site-needs-kubernetes)
 - [Installation](#installation)
 - [Choose your build](#choose-your-build)
 - [CLI commands](#cli-commands)
@@ -75,7 +82,7 @@ curl http://localhost:8080/__health__
 ## What Conduit does
 
 <p align="center">
-  <img src="docs/img/feature-map.svg" alt="Twelve feature groups: routing; proxy and balancing; resilience; caching; static files; TLS; authentication; traffic control; scripting; observability; operations; deployment. Items marked with an asterisk need an optional build feature." width="900">
+  <img src="docs/img/feature-map.svg" alt="Sixteen feature groups: routing; proxy and balancing; resilience; caching; static files; TCP and uploads; response shaping; TLS; authentication; traffic control; scripting; observability; operations; developer tools; packaging; Kubernetes. Items marked with an asterisk need an optional build feature." width="900">
 </p>
 
 Where each group is documented in detail:
@@ -83,17 +90,20 @@ Where each group is documented in detail:
 | Group | Read |
 | --- | --- |
 | Routing, redirects, path rewrite | [Routes](docs/configuration.md#routes) · [Redirects](docs/configuration.md#redirects) · [URL rewriting](docs/configuration.md#url-rewriting) |
-| Proxy and balancing | [Proxy](docs/configuration.md#proxy) · [Load balancing](docs/configuration.md#load-balancing) · [Sticky sessions](docs/configuration.md#sticky-sessions) |
+| Proxy and balancing | [Proxy](docs/configuration.md#proxy) · [Load balancing](docs/configuration.md#load-balancing) · [Sticky sessions](docs/configuration.md#sticky-sessions) · [Mirroring](docs/configuration.md#traffic-mirroring) · [Upstream TLS](docs/configuration.md#upstream-tls-verification) · [Connection pool](docs/configuration.md#connection-pool) |
 | Resilience | [Health checks](docs/configuration.md#health-checks) · [Circuit breaker](docs/configuration.md#circuit-breaker) · [Retry](docs/configuration.md#retry) · [Outlier detection](docs/configuration.md#outlier-detection) |
 | Caching | [Proxy cache](docs/configuration.md#proxy-cache) |
-| Static files | [Static files](docs/configuration.md#static-files) · [Fallback](docs/configuration.md#fallback) · [Compression](docs/configuration.md#compression) |
+| Static files | [Static files](docs/configuration.md#static-files) · [Fallback](docs/configuration.md#fallback) |
+| TCP and uploads | [TCP proxy](docs/configuration.md#tcp-proxy) · [Upload](docs/configuration.md#upload) |
+| Response shaping | [Compression](docs/configuration.md#compression) · [Security headers](docs/configuration.md#security-headers) · [CORS](docs/configuration.md#cors) · [Error masking](docs/configuration.md#error-masking) · [Response transform](docs/configuration.md#request--response-transform) |
 | TLS | [TLS / HTTPS](docs/configuration.md#tls--https) · [mTLS](docs/configuration.md#mtls--client-certificate-authentication) · [HTTP/2](docs/configuration.md#http2) |
 | Authentication | [Basic](docs/configuration.md#basic-auth) · [API key](docs/configuration.md#api-key) · [JWT](docs/configuration.md#jwt-auth) · [Forward auth](docs/configuration.md#forward-auth) · [Consumers](docs/configuration.md#consumers) |
 | Traffic control | [Rate limiting](docs/configuration.md#rate-limiting) · [Limits](docs/configuration.md#limits) · [Priority routing](docs/configuration.md#priority-routing) · [IP filter](docs/configuration.md#ip-filter) |
 | Scripting | [Rhai guide](docs/rhai.md) · [WebAssembly guide](docs/wasm.md) |
-| Observability | [Logging](docs/configuration.md#logging) · [Metrics](docs/configuration.md#metrics) · [OpenTelemetry](docs/configuration.md#opentelemetry-tracing) |
-| Operations | [Hot reload](docs/configuration.md#hot-reload) · [Admin API](docs/admin.md) · [CLI](docs/cli.md) |
-| Deployment | [Deployment guide](docs/deployment.md) · [Building](docs/building.md) |
+| Observability | [Logging](docs/configuration.md#logging) · [Metrics](docs/configuration.md#metrics) · [OpenTelemetry](docs/configuration.md#opentelemetry-tracing) · [Response time](docs/configuration.md#response-time-header) · [Server-Timing](docs/configuration.md#server-timing-header) |
+| Operations | [Hot reload](docs/configuration.md#hot-reload) · [Admin API](docs/admin.md) |
+| Developer tools | [CLI](docs/cli.md) · [JSON Schema for editors](#editor-integration-json-schema) |
+| Packaging and Kubernetes | [Deployment guide](docs/deployment.md) · [ConduitSite resources](docs/deployment.md#conduitsite-crd---features-kubernetes) · [Building](docs/building.md) |
 
 An asterisk on the map means the feature is optional at build time. [Choose your
 build](#choose-your-build) shows which build has what.
@@ -139,6 +149,25 @@ outlierDetection: { consecutive5xx: 5 }   # eject a target that keeps failing re
 [Health checks](docs/configuration.md#health-checks) ·
 [Circuit breaker](docs/configuration.md#circuit-breaker) · [Retry](docs/configuration.md#retry)
 
+### More proxy options
+
+```yaml
+port: 8080
+proxy:
+  /api:
+    targets: [https://api-1.internal:8443, https://api-2.internal:8443]
+    backup: https://api-standby.internal:8443    # used while every target is unhealthy
+    upstreamTls: { verify: true, serverName: api.internal }   # check the upstream's certificate
+    http2: true                                  # HTTP/2 to the upstream
+    mirror: http://api-v2:4000                   # shadow copy of each request (headers only); the reply is dropped
+    websocket: true                              # allow WebSocket upgrades on this route
+```
+
+**→ Details:** [Backup targets](docs/configuration.md#proxy-route-field-reference) ·
+[Upstream TLS](docs/configuration.md#upstream-tls-verification) ·
+[Mirroring](docs/configuration.md#traffic-mirroring) ·
+[Connection pool](docs/configuration.md#connection-pool)
+
 ### Static files and single-page apps
 
 ```yaml
@@ -153,6 +182,27 @@ proxy:
 **→ Details:** [Static files](docs/configuration.md#static-files) ·
 [Fallback](docs/configuration.md#fallback) · [Compression](docs/configuration.md#compression)
 
+### Headers, compression and error masking
+
+```yaml
+port: 8080
+static: ./dist
+compression: true                  # br, zstd or gzip: static files, fallback pages and metrics
+securityHeaders: true              # nosniff, frame, referrer and XSS headers; HSTS is opt-in
+cors: { origins: ["https://app.example.com"] }
+maskErrors: true                   # 5xx bodies from upstreams become a generic JSON error
+responseTransform:
+  setHeaders: { X-Served-By: conduit }
+  removeHeaders: [Server]
+proxy:
+  /api: http://localhost:4000
+```
+
+**→ Details:** [Compression](docs/configuration.md#compression) ·
+[Security headers](docs/configuration.md#security-headers) · [CORS](docs/configuration.md#cors) ·
+[Error masking](docs/configuration.md#error-masking) ·
+[Response transform](docs/configuration.md#request--response-transform)
+
 ### HTTPS with automatic certificates *(needs `acme`)*
 
 ```yaml
@@ -166,6 +216,9 @@ proxy: http://localhost:4000
 ```
 
 Bring your own certificate instead with `tls: { cert: ./fullchain.pem, key: ./privkey.pem }`.
+Conduit renews ACME certificates in the background and writes them to disk, but a running process
+keeps serving the certificate it loaded at start, so restart it within 30 days of expiry (any
+deploy does it).
 **→ Details:** [TLS / HTTPS](docs/configuration.md#tls--https) ·
 [mTLS](docs/configuration.md#mtls--client-certificate-authentication)
 
@@ -201,10 +254,13 @@ rateLimit: { windowSecs: 60, limit: 300 }          # per client IP, for the whol
 proxy:
   /api/payments:
     targets: [http://payments:4000]
-    rateLimit: { windowSecs: 60, limit: 10, keyBy: "header:X-User-ID" }   # a stricter, per-user limit
+    rateLimit: { windowSecs: 60, limit: 10 }       # a stricter limit for this route, also per client IP
 ```
 
-Add `store: "redis://host:6379"` to share counters between instances *(needs `redis`)*.
+Limits are counted per client IP unless you set `keyBy: "header:X-Name"`. A header is chosen by the
+client and can be forged, so only key on one that a trusted proxy in front of Conduit sets. For
+quotas per authenticated client use [consumers](docs/configuration.md#consumers). Add
+`store: "redis://host:6379"` to share counters between instances *(needs `redis`)*.
 **→ Details:** [Rate limiting](docs/configuration.md#rate-limiting)
 
 ### Caching *(needs `cache`)*
@@ -266,13 +322,17 @@ sites:
   - port: 8080
     logging: json                      # structured access log; every request gets an X-Request-ID
     metrics: { path: /__metrics__, token: "$METRICS_TOKEN" }   # Prometheus
+    responseTime: true                 # X-Response-Time: <ms> on every response
+    serverTiming: true                 # Server-Timing: total and upstream, for browser DevTools
     proxy: http://localhost:4000
 global:
   otlp: { endpoint: "http://tempo:4317", serviceName: my-api, sampleRate: 0.1 }   # needs otlp
 ```
 
 **→ Details:** [Logging](docs/configuration.md#logging) · [Metrics](docs/configuration.md#metrics) ·
-[OpenTelemetry](docs/configuration.md#opentelemetry-tracing)
+[OpenTelemetry](docs/configuration.md#opentelemetry-tracing) ·
+[Response time](docs/configuration.md#response-time-header) ·
+[Server-Timing](docs/configuration.md#server-timing-header)
 
 ### Several sites in one process
 
@@ -291,15 +351,63 @@ sites:
     proxy: http://admin-backend:5000
 ```
 
-### Raw TCP *(needs `tcp`)*
+### Kubernetes: one `ConduitSite` per site *(needs `kubernetes`)*
+
+<p align="center">
+  <img src="docs/img/kubernetes.svg" alt="You apply a ConduitSite resource with kubectl. The Kubernetes API stores it next to the other ConduitSite resources. Conduit watches the namespace, builds one configuration from every resource, checks it and swaps it in without a restart; an invalid update is rejected. Requests go to the services each site names." width="900">
+</p>
+
+Instead of a config file, Conduit can read its sites from Kubernetes custom resources. Each
+`ConduitSite` is one virtual site, and its `spec` takes the same fields as a site in `conduit.yaml`.
+
+```yaml
+# site.yaml
+apiVersion: conduit.io/v1
+kind: ConduitSite
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  port: 8080
+  host: app.example.com
+  proxy:
+    /api:
+      targets: [http://my-svc:4000]
+      healthCheck: { path: /health }
+  rateLimit: { windowSecs: 60, limit: 500 }
+```
+
+```bash
+kubectl apply -f contrib/k8s/conduitsite-crd.yaml    # once per cluster: the ConduitSite definition
+kubectl apply -f site.yaml                           # add or change a site
+conduit --kubernetes-namespace default               # in the Conduit pod; '*' watches all namespaces
+```
+
+Conduit watches the namespace, combines the resources into one config, checks it and swaps it in
+without a restart; an update that fails validation is rejected and the running config stays. Use
+the `:latest-full` image (or a build with `--features kubernetes`) and give the pod a service
+account that may `get`, `list` and `watch` `conduitsites`.
+**→ CRD, RBAC and Deployment manifests:**
+[docs/deployment.md](docs/deployment.md#conduitsite-crd---features-kubernetes)
+
+### Raw TCP *(needs `tcp`)* and file upload *(needs `upload`)*
 
 ```yaml
 sites:
-  - port: 3306
+  - port: 3306                          # raw passthrough with no auth layer: restrict who can reach this port
     tcp:
       targets: ["mysql-primary:3306", "mysql-replica:3306"]
-      strategy: round-robin
+      strategy: round-robin             # or random
+
+  - port: 8080
+    upload:
+      path: /upload                     # multipart POST; files get generated names
+      dir: ./uploads
+      maxFileSizeBytes: 5242880
+      allowedMimeTypes: [image/png, application/pdf]
 ```
+
+**→ Details:** [TCP proxy](docs/configuration.md#tcp-proxy) · [Upload](docs/configuration.md#upload)
 
 **→ More scenarios:** [docs/recipes.md](docs/recipes.md) covers HTTPS, load balancing, failover,
 circuit breaker, caching, security hardening, observability and Kubernetes, and
@@ -386,7 +494,9 @@ docker run -p 8080:8080 \
 ```
 
 The images are `FROM scratch` (a static musl binary, no shell, no OS userland) and run as UID
-65534. **→ docker-compose, systemd, Kubernetes and a production checklist:**
+65534. On Kubernetes, use the `:latest-full` image and `ConduitSite` resources:
+[see the example above](#kubernetes-one-conduitsite-per-site-needs-kubernetes).
+**→ docker-compose, systemd, Kubernetes and a production checklist:**
 [docs/deployment.md](docs/deployment.md)
 
 ## Choose your build
@@ -443,6 +553,7 @@ by default.
 
 ```text
 conduit [-c FILE]                       start the server (default config: conduit.json, conduit.yaml or conduit.yml)
+conduit --kubernetes-namespace NS       start from ConduitSite resources instead of a file ('*' = all namespaces; needs kubernetes)
 conduit validate [-c FILE]              validate the config — exit 0 = ok, exit 1 = errors
 conduit features [-c FILE] [--json]     which Cargo features this config needs
 conduit fmt [-c FILE] [--write]         pretty-print / normalise the config
@@ -599,6 +710,9 @@ proxy fairly.
   rejected by `conduit validate` because the TLS layer offers no way to apply them.
 - **Some settings need a restart:** `port`, `tls.cert` / `tls.key`, `workers`,
   `global.shutdownTimeoutSecs` and `global.admin.bind`. Everything else reloads in place.
+- **Certificates are loaded at start.** ACME renewals and files written through the Admin API
+  reach the disk but are only served after a restart, so restart before the loaded certificate
+  expires.
 - **One worker thread by default.** Set `global.workers` to use more cores.
 - **Scripts and plugins fail open.** If a Rhai script or a WASM plugin cannot be loaded or errors
   at run time, the problem is logged and the request continues. Do not rely on a script or plugin
