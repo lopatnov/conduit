@@ -360,10 +360,15 @@ An optional management server, off unless you configure `global.admin.bind`. Bin
 interface is possible, but only do that behind a VPN or an SSH tunnel and always with a token.
 
 ```yaml
+# conduit.yaml — `global` sits next to `sites:`; in a single-site config it is ignored
 global:
   admin:
     bind: "127.0.0.1:2019"
     token: "$ADMIN_TOKEN"    # Bearer token, strongly recommended
+
+sites:
+  - port: 8080
+    proxy: http://localhost:4000
 ```
 
 ```bash
