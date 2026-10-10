@@ -710,8 +710,32 @@ Requires `--features cache` (depends on `cache`).
 ### `acme` — Auto-TLS / Let's Encrypt
 
 Enables `tls.acme` site config for automatic certificate provisioning via the
-ACME protocol (Let's Encrypt). Certificates are fetched at startup, cached to
-disk, and renewed automatically 30 days before expiry.
+ACME protocol (Let's Encrypt). Certificates are fetched at startup and cached
+to disk. A background task checks every 12 hours and renews the certificate
+when it is within 30 days of expiry. The renewed files are written to the
+storage directory, but the running process keeps serving the certificate it
+loaded at startup — **restart Conduit within the 30-day window** (any restart
+or deploy does it) so the new certificate is picked up before the old one
+expires. Swapping the renewed certificate into the running listeners is not
+implemented yet.
+
+Each file is written atomically (staged, `fsync`ed, renamed over the old one),
+so a crash never leaves a truncated key; the certificate and key are two files,
+so a crash between the two renames can leave a mismatched pair, which is
+detected on the next start (a cached certificate is reused only when its key
+matches it) and re-ordered. Every renewal creates new owner-only (`0600`) files,
+the public certificate included — a group or ACL set on the old files is not
+carried over. If renewal fails while the cached certificate is still valid, the
+site keeps serving it instead of falling back to plain HTTP.
+
+During renewal the HTTP-01 token is answered by the listener that already owns
+the challenge port (`httpRedirectPort`, else port 80): the redirect service, or
+a plain-HTTP site on that port; only when nothing listens there does the task
+bind the port itself. A site on that port goes through its normal guard chain,
+so an `ipFilter` that does not admit the CA's validation servers also blocks
+the challenge — prefer a dedicated `httpRedirectPort`. If the challenge port is
+held by a TLS site or a raw TCP proxy, renewal is disabled and an error is
+logged at startup.
 
 The domain is taken from the site's `host` field — no separate `domain:` field exists.
 
