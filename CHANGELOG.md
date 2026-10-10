@@ -9,6 +9,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **Two kid-less keys in a JWKS are no longer collapsed into one** (issue #351). The second used to
+  replace the first under the same synthesized id, so a kid-less token was checked against whichever
+  key survived instead of being rejected as ambiguous.
 - **A directory symlink inside a static path is no longer followed** (issue #400, CWE-59). Only the
   last path component was checked, so `assets/secret.txt` with `assets -> /etc` read outside the
   static root. Every directory between the root and the file is now checked.
@@ -21,6 +24,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `Range` requests honour `If-Range` (issue #402, RFC 9110 §13.1.5): a stale validator now gets `200`
+  with the whole file instead of a `206` splice of two versions.
+- A route with `groups` no longer gets a false "slowStartSecs is ignored on this route" warning from a
+  leftover `strategy`/`sticky` it never reads (issue #483).
+- The log targets in `docs/rhai.md`, `docs/wasm.md` and `docs/cli.md` match the crates that emit them
+  (issue #476).
 - The Admin API and the metrics endpoint accept `bearer`/`BEARER` as well as `Bearer` (issue #484,
   RFC 9110 §11.1); the token itself is still compared exactly and in constant time.
 
