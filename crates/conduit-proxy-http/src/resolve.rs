@@ -48,7 +48,7 @@ pub fn resolve_proxy_routes(
     let (route_key, route_target) = find_route(routes, ctx.path)?;
     let (route_rate_limit, route_priority) = route_limits_from_target(route_target, route_key);
 
-    let mut resolution = resolve_target(route_key, route_target, ctx);
+    let mut resolution = resolve_target(route_key, None, route_target, ctx);
     resolution.state.route_rate_limit = route_rate_limit;
     resolution.state.route_priority = route_priority;
     Some(resolution)
@@ -61,15 +61,22 @@ pub fn resolve_proxy_routes(
 /// [`ProxyResolution`] rather than a bare `None`, so #415's fix
 /// (`resolve_proxy_routes` above) has a real stamp to apply regardless of
 /// which phase bailed out.
-fn resolve_target(
+///
+/// `strip_base` is the prefix `stripPrefix` removes when it is not `route_key` (see
+/// [`RouteOptions::strip_base`]): `None` for the `proxy` map, the `match.path` literal prefix for a
+/// `routes[]` entry, which shares this function so both mechanisms honour the same route options
+/// (issue #412).
+pub(crate) fn resolve_target(
     route_key: &str,
+    strip_base: Option<&str>,
     route_target: &ProxyRouteTarget,
     ctx: &ProxyCtx<'_>,
 ) -> ProxyResolution {
     // ── Two-level (grouped) routing ─────────────────────────────────────────
     // When the route config has `groups`, bypass flat-target logic and
     // resolve via pick_group → pick_within_group.
-    let opts = RouteOptions::from_target(route_target);
+    let mut opts = RouteOptions::from_target(route_target);
+    opts.strip_base = strip_base;
 
     if let ProxyRouteTarget::Full(cfg) = route_target {
         if let Some(groups) = &cfg.groups {
@@ -95,9 +102,7 @@ fn resolve_target(
         Err(resolution) => return *resolution,
     };
 
-    let strip = opts
-        .strip_prefix
-        .then(|| route_key.trim_end_matches('/').to_string());
+    let strip = opts.strip_value(route_key);
 
     // url_to_proxy_upstream may return None for a malformed URL. If
     // least-conn already incremented the inflight counter, build_proxy_upstream
@@ -273,9 +278,7 @@ fn resolve_backup(
     // No conn_count slot is taken (`is_least_conn = false`, `upstream_conn_slot = false`);
     // `proxy_upstream_url` is set so passive-health attribution (#155) covers backup traffic.
     // Retry and sticky pinning stay off: the backup is a single fixed peer.
-    let strip = opts
-        .strip_prefix
-        .then(|| route_key.trim_end_matches('/').to_string());
+    let strip = opts.strip_value(route_key);
     let Some(upstream) = build_proxy_upstream(backup, strip, opts, false, upstream_health) else {
         return Some(ProxyResolution::unresolved(ProxyReqState::default()));
     };

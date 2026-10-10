@@ -128,8 +128,13 @@ pub(crate) fn pick_peer_with_retry(
     };
 
     // Priority: sticky cookie > hash_key config > client IP.
-    let hash_val =
-        sticky::selection_hash_val(sticky_hash_input, opts.hash_key, ctx.path, ctx.client_ip);
+    let hash_val = sticky::selection_hash_val(
+        sticky_hash_input,
+        opts.hash_key,
+        ctx.path,
+        ctx.client_ip,
+        ctx.req_headers,
+    );
     // When sticky is active, override strategy to consistent-hash so the
     // cookie value is always used for backend selection.
     let strategy = sticky::effective_strategy(sticky_hash_input.is_some(), opts.strategy);

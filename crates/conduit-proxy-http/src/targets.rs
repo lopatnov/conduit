@@ -17,18 +17,25 @@ use crate::config::{ProxyConfig, ProxyRouteTarget};
 use conduit_upstream::ProxyTarget;
 
 /// Collect all target URLs from a route target (Url / RoundRobin / Full).
+///
+/// A `Full` route with `groups` serves from the groups' targets and ignores its flat `targets`
+/// (see `ProxyRouteConfig::groups`), so those are the URLs reported — otherwise active probes and
+/// the health report would cover an upstream list the route never uses (issue #376).
 pub fn target_urls(route_target: &ProxyRouteTarget) -> Vec<String> {
+    let url_of = |t: &ProxyTarget| match t {
+        ProxyTarget::Simple(url) => url.clone(),
+        ProxyTarget::Weighted(w) => w.url.clone(),
+    };
     match route_target {
         ProxyRouteTarget::Url(url) => vec![url.clone()],
         ProxyRouteTarget::RoundRobin(urls) => urls.clone(),
-        ProxyRouteTarget::Full(cfg) => cfg
-            .targets
-            .iter()
-            .map(|t| match t {
-                ProxyTarget::Simple(url) => url.clone(),
-                ProxyTarget::Weighted(w) => w.url.clone(),
-            })
-            .collect(),
+        ProxyRouteTarget::Full(cfg) => match &cfg.groups {
+            Some(groups) => groups
+                .iter()
+                .flat_map(|g| g.targets.iter().map(url_of))
+                .collect(),
+            None => cfg.targets.iter().map(url_of).collect(),
+        },
     }
 }
 
@@ -93,6 +100,33 @@ mod tests {
         assert_eq!(
             target_urls(&ProxyRouteTarget::Full(Box::new(cfg))),
             vec!["http://a:4000", "http://b:4000"]
+        );
+    }
+
+    #[test]
+    fn target_urls_full_with_groups_reports_the_group_targets_only() {
+        use crate::config::ProxyRouteConfig;
+        use conduit_upstream::UpstreamGroup;
+        let group = |name: &str, urls: &[&str]| UpstreamGroup {
+            name: name.to_owned(),
+            targets: urls
+                .iter()
+                .map(|u| ProxyTarget::Simple((*u).to_owned()))
+                .collect(),
+            strategy: None,
+        };
+        let cfg = ProxyRouteConfig {
+            // Ignored by the router once `groups` is set.
+            targets: vec![ProxyTarget::Simple("http://ignored:4000".to_string())],
+            groups: Some(vec![
+                group("blue", &["http://b1:4000", "http://b2:4000"]),
+                group("green", &["http://g1:4000"]),
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(
+            target_urls(&ProxyRouteTarget::Full(Box::new(cfg))),
+            vec!["http://b1:4000", "http://b2:4000", "http://g1:4000"]
         );
     }
 
