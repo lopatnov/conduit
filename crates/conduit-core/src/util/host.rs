@@ -9,18 +9,25 @@
 /// After a closing bracket only nothing or a `:port` may follow. Anything else — `[::1]junk`,
 /// `[::1]@evil.com` — is malformed, and so is an unterminated bracket: both are returned as is, so
 /// they match no site and no `allowedHosts` entry instead of passing as the literal in front of them.
-/// What comes after the `:` is not checked here, for a bracketed literal or a plain host alike:
-/// `example.com:80@evil.com` is `example.com` (issue #474).
+/// What follows the `:` must be a port — ASCII digits or nothing (RFC 3986 §3.2.3), for a bracketed
+/// literal or a plain host alike. `example.com:80@evil.com` and `[::1]:80@evil.com` are returned as
+/// is, so they match no site and no `allowedHosts` entry; cutting them at the first `:` would let
+/// them pass as `example.com` while the header itself, which is later echoed into
+/// `X-Forwarded-Host`, names another host (issue #474).
 pub fn host_without_port(host: &str) -> &str {
+    let is_port = |p: &str| p.bytes().all(|b| b.is_ascii_digit());
     if host.starts_with('[') {
         return match host.find(']') {
-            Some(end) if host[end + 1..].is_empty() || host[end + 1..].starts_with(':') => {
-                &host[..=end]
-            }
+            Some(end) if host[end + 1..].is_empty() => &host[..=end],
+            Some(end) if host[end + 1..].strip_prefix(':').is_some_and(is_port) => &host[..=end],
             _ => host,
         };
     }
-    host.split(':').next().unwrap_or(host)
+    match host.split_once(':') {
+        None => host,
+        Some((name, port)) if is_port(port) => name,
+        Some(_) => host,
+    }
 }
 
 #[cfg(test)]
@@ -67,10 +74,26 @@ mod tests {
         }
     }
 
-    /// The port itself is not validated here (`example.com:junk` is `example.com` as well).
+    /// An empty port is legal (RFC 3986 §3.2.3); anything that is not digits is not a port.
     #[test]
-    fn does_not_validate_the_port() {
-        assert_eq!(host_without_port("[::1]:not-a-port"), "[::1]");
+    fn accepts_an_empty_port_and_rejects_a_non_numeric_one() {
         assert_eq!(host_without_port("[::1]:"), "[::1]");
+        assert_eq!(host_without_port("example.com:"), "example.com");
+        for bad in ["[::1]:not-a-port", "example.com:junk", "example.com:80a"] {
+            assert_eq!(host_without_port(bad), bad);
+        }
+    }
+
+    /// Issue #474: text after the port must not let a foreign host pass as the allowed one.
+    #[test]
+    fn does_not_let_userinfo_after_the_port_pass_as_the_host() {
+        for bad in [
+            "allowed.example:80@evil.com",
+            "[::1]:80@evil.com",
+            "example.com:80:81",
+            "example.com:80/evil",
+        ] {
+            assert_eq!(host_without_port(bad), bad);
+        }
     }
 }
