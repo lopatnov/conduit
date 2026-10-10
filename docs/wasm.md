@@ -115,9 +115,14 @@ truncated (no error). If the value does not exist (e.g. header not found),
 | `conduit_get_client_ip(buf: i32, buf_len: i32) -> i32`                            | Remote client IP address                                            |
 | `conduit_get_request_id(buf: i32, buf_len: i32) -> i32`                           | `X-Request-ID` header value                                         |
 | `conduit_get_header(name_ptr: i32, name_len: i32, buf: i32, buf_len: i32) -> i32` | Named header value; `-1` if absent. Look-up is **case-insensitive** |
-| `conduit_get_header_count() -> i32`                                               | Number of request headers                                           |
-| `conduit_get_header_names(buf: i32, buf_len: i32) -> i32`                         | All header names, newline-separated                                 |
+| `conduit_get_header_count() -> i32`                                               | Number of **distinct** request header names (see the note below)    |
+| `conduit_get_header_names(buf: i32, buf_len: i32) -> i32`                         | Distinct header names, newline-separated, in **no guaranteed order** |
 | `conduit_get_plugin_config(buf: i32, buf_len: i32) -> i32`                        | JSON bytes from `middleware[].config`; empty when not set           |
+
+> **Repeated headers (issue #380):** the plugin sees each request header name once. If a
+> client sends the same name twice (two `Cookie` lines, say), only one value reaches
+> `conduit_get_header`, and the name is counted and listed once. Header order is not
+> preserved.
 
 ### Host functions — mutate request
 
@@ -848,21 +853,26 @@ In `on_response`, seven host functions are available:
 | `conduit_get_response_header(name_ptr, name_len, buf, buf_len) -> i32` | Read upstream response header; `-1` if absent |
 | `conduit_set_response_header(name_ptr, name_len, val_ptr, val_len)`    | Add/overwrite header on client response       |
 | `conduit_remove_response_header(name_ptr, name_len)`                   | Remove header from client response            |
-| `conduit_set_response_body(body_ptr, body_len)`                        | Replace response body                         |
+| `conduit_set_response_body(body_ptr, body_len)`                        | **Not applied yet** (see the note below)      |
 | `conduit_get_plugin_config(buf, buf_len) -> i32`                       | Same as request phase                         |
 | `conduit_log(level, msg_ptr, msg_len)`                                 | Same as request phase                         |
 
 > Request-phase functions (`conduit_get_method`, `conduit_get_header`, etc.)
 > are **not** available in `on_response`.
 
-### Example in Rust — add header on error
+> **Known limitation (issue #379):** `conduit_set_response_body` is accepted in
+> `on_response` but the response body is **not** replaced yet — the upstream body
+> is sent unchanged, and Conduit logs one warning per process. Use `on_request`
+> with `conduit_set_response_status` + `conduit_set_response_body` to answer a
+> request yourself, or `maskErrors` to hide upstream 5xx bodies.
+
+### Example in Rust — tag error responses
 
 ```rust
 // src/lib.rs
 unsafe extern "C" {
     fn conduit_get_response_status() -> i32;
     fn conduit_set_response_header(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32);
-    fn conduit_set_response_body(body_ptr: i32, body_len: i32);
 }
 
 // on_request is still required even if you only need on_response
@@ -873,15 +883,14 @@ pub extern "C" fn on_request() -> i32 { 0 }
 pub extern "C" fn on_response(_status: i32) -> i32 {
     let status = unsafe { conduit_get_response_status() };
     if status >= 500 {
-        // Replace error body with a clean JSON message
-        let body = b"{\"error\":\"Internal Server Error\"}";
+        // Tag the response. (Replacing the body with `conduit_set_response_body`
+        // is not applied in `on_response` yet — see the limitation above.)
         unsafe {
-            conduit_set_response_body(body.as_ptr() as i32, body.len() as i32);
-            let ct = b"content-type";
-            let ctv = b"application/json";
+            let name = b"x-error-handled";
+            let val = b"1";
             conduit_set_response_header(
-                ct.as_ptr() as i32, ct.len() as i32,
-                ctv.as_ptr() as i32, ctv.len() as i32,
+                name.as_ptr() as i32, name.len() as i32,
+                val.as_ptr() as i32, val.len() as i32,
             );
         }
     }
@@ -895,7 +904,7 @@ pub extern "C" fn on_response(_status: i32) -> i32 {
 # conduit.yaml — no extra config needed, on_response runs automatically
 middleware:
   - type: wasm
-    path: ./plugins/error_handler.wasm
+    path: ./plugins/error_tagger.wasm
 proxy:
   /api: "http://backend:4000"
 ```
@@ -903,7 +912,7 @@ proxy:
 ```json
 // conduit.json
 {
-  "middleware": [{ "type": "wasm", "path": "./plugins/error_handler.wasm" }],
+  "middleware": [{ "type": "wasm", "path": "./plugins/error_tagger.wasm" }],
   "proxy": { "/api": "http://backend:4000" }
 }
 ```

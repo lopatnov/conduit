@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use futures::StreamExt as _;
-use kube::runtime::watcher::{watcher, Config as WatcherConfig};
+use kube::runtime::watcher::{watcher, Config as WatcherConfig, Event};
 use kube::{Api, Client};
 
 use conduit_config_core::provider::Provider;
@@ -87,13 +87,14 @@ impl<B: CrdConfigBuilder> Provider<B::Config> for KubernetesProvider<B> {
         let mut stream = watcher(api, WatcherConfig::default()).boxed();
         while let Some(event) = stream.next().await {
             match event {
-                Ok(_) => {
+                Ok(event) if triggers_rebuild(&event) => {
                     if !handle_watch_event::<B>(&client, &self.namespace, &self.admin_bind, &tx)
                         .await
                     {
                         return Ok(());
                     }
                 }
+                Ok(_) => {}
                 Err(e) => {
                     tracing::warn!(error = %e, "ConduitSite watch error");
                 }
@@ -105,6 +106,15 @@ impl<B: CrdConfigBuilder> Provider<B::Config> for KubernetesProvider<B> {
 }
 
 // ── Internal watch helpers ────────────────────────────────────────────────────
+
+/// Whether a watch event should trigger a re-list and config rebuild.
+///
+/// A (re)start of the watch streams `Init`, one `InitApply` per existing object, then
+/// `InitDone`. Only `InitDone` marks a complete resync, so rebuilding on `Init`/`InitApply`
+/// would run the list+rebuild+send cycle M+2 times for M sites at every start and recovery (#408).
+fn triggers_rebuild<K>(event: &Event<K>) -> bool {
+    matches!(event, Event::Apply(_) | Event::Delete(_) | Event::InitDone)
+}
 
 /// Create a typed API client scoped to the given namespace.
 /// Use `"*"` to watch all namespaces.
@@ -196,6 +206,17 @@ pub fn build_app_config<'a, B: CrdConfigBuilder>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #408: a resync's `Init` and per-object `InitApply` events must not each trigger a
+    /// full re-list; only the events that change state, or complete the resync, do.
+    #[test]
+    fn only_state_changes_and_the_end_of_a_resync_trigger_a_rebuild() {
+        assert!(triggers_rebuild(&Event::Apply(1)));
+        assert!(triggers_rebuild(&Event::Delete(1)));
+        assert!(triggers_rebuild::<u8>(&Event::InitDone));
+        assert!(!triggers_rebuild::<u8>(&Event::Init));
+        assert!(!triggers_rebuild(&Event::InitApply(1)));
+    }
 
     /// Minimal `CrdConfigBuilder` binding used only by this crate's own
     /// tests — proves the generic mechanism works for *some* schema without

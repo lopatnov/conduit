@@ -20,8 +20,8 @@
 //! | `conduit_get_client_ip(buf, buf_len) -> i32` | Remote IP address |
 //! | `conduit_get_request_id(buf, buf_len) -> i32` | X-Request-ID header value |
 //! | `conduit_get_header(name, nlen, buf, buf_len) -> i32` | Named header value; -1 if absent |
-//! | `conduit_get_header_count() -> i32` | Number of request headers |
-//! | `conduit_get_header_names(buf, buf_len) -> i32` | Newline-separated header names |
+//! | `conduit_get_header_count() -> i32` | Number of distinct request header names |
+//! | `conduit_get_header_names(buf, buf_len) -> i32` | Newline-separated distinct header names, unspecified order |
 //! | `conduit_get_plugin_config(buf, buf_len) -> i32` | JSON from `MiddlewareEntry.config` |
 //!
 //! ### Request mutation

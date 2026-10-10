@@ -81,7 +81,7 @@ fn resolve_target(
 
     // Failover: when a backup URL is configured and all primary upstreams
     // are unhealthy, route to the backup instead.
-    if let Some(resolution) = resolve_backup(&all_urls, opts.backup, ctx.upstream_health) {
+    if let Some(resolution) = resolve_backup(&all_urls, route_key, &opts, ctx.upstream_health) {
         return resolution;
     }
 
@@ -257,7 +257,8 @@ fn effective_targets(
 /// carried through fallthrough) covers this trigger too.
 fn resolve_backup(
     all_urls: &[String],
-    backup: Option<&str>,
+    route_key: &str,
+    opts: &RouteOptions<'_>,
     upstream_health: &UpstreamRegistry,
 ) -> Option<ProxyResolution> {
     let all_unhealthy =
@@ -265,13 +266,33 @@ fn resolve_backup(
     if !all_unhealthy {
         return None;
     }
-    let backup = backup?;
+    let backup = opts.backup?;
     tracing::info!(backup = %backup, "all primary upstreams unhealthy — routing to backup");
-    let resolution = match outcome::url_to_proxy_upstream(backup, None) {
-        Some(upstream) => ProxyResolution::upstream(upstream, ProxyReqState::default()),
-        None => ProxyResolution::unresolved(ProxyReqState::default()),
+    // The backup carries the route's own settings (#417): timeouts, pool, HTTP/2, cache,
+    // WebSocket permission, passive-health thresholds and strip/rewrite/mirror/upstream TLS.
+    // No conn_count slot is taken (`is_least_conn = false`, `upstream_conn_slot = false`);
+    // `proxy_upstream_url` is set so passive-health attribution (#155) covers backup traffic.
+    // Retry and sticky pinning stay off: the backup is a single fixed peer.
+    let strip = opts
+        .strip_prefix
+        .then(|| route_key.trim_end_matches('/').to_string());
+    let Some(upstream) = build_proxy_upstream(backup, strip, opts, false, upstream_health) else {
+        return Some(ProxyResolution::unresolved(ProxyReqState::default()));
     };
-    Some(resolution)
+    Some(ProxyResolution::upstream(
+        upstream,
+        ProxyReqState {
+            proxy_timeout: opts.timeout.cloned(),
+            proxy_pool: opts.pool.cloned(),
+            proxy_http2: opts.http2,
+            proxy_upstream_url: Some(backup.to_owned()),
+            proxy_cache_cfg: opts.cache.cloned(),
+            passive_unhealthy_status: opts.unhealthy_status.to_vec(),
+            passive_unhealthy_latency_ms: opts.unhealthy_latency_ms,
+            websocket_allowed: opts.websocket,
+            ..Default::default()
+        },
+    ))
 }
 
 /// Build the final `ProxyUpstream`, attaching per-route rewrite/mirror/
@@ -338,6 +359,7 @@ fn find_route<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outcome::ProxyOutcome;
 
     // ── find_route ────────────────────────────────────────────────────────────
 
@@ -382,5 +404,105 @@ mod tests {
             ProxyRouteTarget::Url("http://api:4000".to_string()),
         );
         assert!(find_route(&routes, "/other").is_none());
+    }
+
+    // ── resolve_backup (#417) ─────────────────────────────────────────────────
+
+    /// A failed-over request keeps the route's own settings and is attributed to the backup
+    /// for passive health. With the old `ProxyReqState::default()` every assertion below
+    /// fails: timeout/pool/cache/websocket were dropped and `proxy_upstream_url` was `None`.
+    #[test]
+    fn backup_failover_keeps_the_routes_own_settings() {
+        use crate::config::{ConnectionPoolConfig, ProxyRouteConfig, ProxyTimeout, RewriteRule};
+        use conduit_upstream::health::UpstreamEntry;
+        use conduit_upstream::{ProxyTarget, UpstreamHealthCheck, UpstreamTlsConfig};
+
+        let registry = UpstreamRegistry::new();
+        registry.statuses.insert(
+            "http://primary:4000".to_string(),
+            UpstreamEntry {
+                healthy: false,
+                ..Default::default()
+            },
+        );
+        let target = ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+            targets: vec![ProxyTarget::Simple("http://primary:4000".to_string())],
+            backup: Some("https://backup.example:8443".to_string()),
+            http2: Some(true),
+            websocket: Some(true),
+            strip_prefix: Some(true),
+            timeout: Some(ProxyTimeout {
+                read_ms: Some(1234),
+                ..Default::default()
+            }),
+            pool: Some(ConnectionPoolConfig {
+                max_idle: Some(7),
+                ..Default::default()
+            }),
+            cache: Some(
+                serde_json::from_value(serde_json::json!({ "store": "memory", "ttlSecs": 60 }))
+                    .expect("cache config"),
+            ),
+            health_check: Some(UpstreamHealthCheck {
+                unhealthy_status: Some(vec![502, 503]),
+                unhealthy_latency_ms: Some(900),
+                ..Default::default()
+            }),
+            rewrite: Some(vec![RewriteRule {
+                from: "^/api/(.*)".to_string(),
+                to: "/v2/$1".to_string(),
+            }]),
+            mirror: Some("http://mirror.example:9000".to_string()),
+            upstream_tls: Some(UpstreamTlsConfig {
+                verify: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        let opts = RouteOptions::from_target(&target);
+        let all_urls = vec!["http://primary:4000".to_string()];
+
+        let resolution = resolve_backup(&all_urls, "/api/", &opts, &registry)
+            .expect("all primaries unhealthy and a backup is set");
+
+        let ProxyOutcome::Upstream(up) = &resolution.outcome else {
+            panic!("expected an upstream, got {:?}", resolution.outcome);
+        };
+        assert_eq!(up.addr, "backup.example:8443");
+        assert!(up.tls);
+        assert_eq!(up.strip_prefix.as_deref(), Some("/api"));
+        let state = &resolution.state;
+        assert_eq!(
+            state.proxy_timeout.as_ref().and_then(|t| t.read_ms),
+            Some(1234)
+        );
+        assert!(state.proxy_http2);
+        assert!(state.websocket_allowed);
+        assert_eq!(state.proxy_pool.as_ref().and_then(|p| p.max_idle), Some(7));
+        assert_eq!(
+            state.proxy_cache_cfg.as_ref().and_then(|c| c.ttl_secs),
+            Some(60)
+        );
+        assert_eq!(state.passive_unhealthy_status, vec![502, 503]);
+        assert_eq!(state.passive_unhealthy_latency_ms, Some(900));
+        assert_eq!(up.rewrite.as_ref().map(Vec::len), Some(1));
+        assert_eq!(up.mirror_url.as_deref(), Some("http://mirror.example:9000"));
+        assert_eq!(up.upstream_tls.as_ref().and_then(|t| t.verify), Some(false));
+        assert_eq!(
+            state.proxy_upstream_url.as_deref(),
+            Some("https://backup.example:8443")
+        );
+        assert!(
+            !state.upstream_conn_slot,
+            "backup failover must not claim a conn_count slot"
+        );
+    }
+
+    #[test]
+    fn backup_failover_does_not_apply_while_a_primary_is_healthy() {
+        let target = ProxyRouteTarget::Url("http://primary:4000".to_string());
+        let opts = RouteOptions::from_target(&target);
+        let all_urls = vec!["http://primary:4000".to_string()];
+        assert!(resolve_backup(&all_urls, "/", &opts, &UpstreamRegistry::new()).is_none());
     }
 }

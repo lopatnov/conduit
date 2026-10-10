@@ -3200,7 +3200,6 @@ name = "lopatnov-conduit-middleware"
 version = "2.0.0"
 dependencies = [
  "async-trait",
- "base64 0.23.1",
  "bytes",
  "http",
  "lopatnov-conduit-config-core",
@@ -3211,8 +3210,10 @@ dependencies = [
  "pingora-http",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
+ "wat",
 ]
 
 [[package]]
@@ -3258,6 +3259,7 @@ dependencies = [
  "lopatnov-conduit-upstream",
  "regex",
  "serde",
+ "serde_json",
  "sha2 0.11.0",
  "subtle",
  "tracing",
