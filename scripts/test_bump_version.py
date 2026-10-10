@@ -37,7 +37,7 @@ class NextVersion(unittest.TestCase):
         self.assertEqual(bv.next_version("2.0.0", "2.1.0-rc.1"), "2.1.0-rc.1")
 
     def test_rejects_garbage_and_no_ops(self):
-        for bad in ("2.0", "v2.0.0", "two", ""):
+        for bad in ("2.0", "v2.0.0", "two", "", "2.01.0", "2.1.0-rc..1", "2.1.0-rc.01", "2.1.0-"):
             with self.assertRaises(ValueError):
                 bv.next_version("2.0.0", bad)
         with self.assertRaises(ValueError):
@@ -86,13 +86,24 @@ class Docs(unittest.TestCase):
         self.assertEqual(bv.bump_doc(text, "2.0.0", "2.1.0"), "Conduit 2.1.0 and 12.0.0 and 2.0.01 and 2.0.0.1")
 
     def test_image_tag_aliases(self):
-        text = "`:latest`, `:2.0.0`, `:2.0` / `:2.0.0-full`, `:2.0-full`, `:2.01`, `:12.0`"
+        text = "`:latest`, `:2.0.0`, `:2.0` / `:2.0.0-full`, `:2.0-full`"
         out = bv.bump_doc(text, "2.0.0", "3.4.0", with_tag_aliases=True)
-        self.assertEqual(out, "`:latest`, `:3.4.0`, `:3.4` / `:3.4.0-full`, `:3.4-full`, `:2.01`, `:12.0`")
+        self.assertEqual(out, "`:latest`, `:3.4.0`, `:3.4` / `:3.4.0-full`, `:3.4-full`")
 
     def test_aliases_do_not_move_for_a_prerelease_target(self):
         out = bv.bump_doc("`:2.0.0`, `:2.0`, `:2.0-full`", "2.0.0", "2.1.0-rc.1", with_tag_aliases=True)
         self.assertEqual(out, "`:2.1.0-rc.1`, `:2.0`, `:2.0-full`")
+
+    def test_stable_prerelease_stable_sequence_ends_on_the_new_alias(self):
+        text = "`:2.0.0`, `:2.0`, `:2.0-full`"
+        rc = bv.bump_doc(text, "2.0.0", "2.1.0-rc.1", with_tag_aliases=True)
+        self.assertEqual(rc, "`:2.1.0-rc.1`, `:2.0`, `:2.0-full`")
+        final = bv.bump_doc(rc, "2.1.0-rc.1", "2.1.0", with_tag_aliases=True)
+        self.assertEqual(final, "`:2.1.0`, `:2.1`, `:2.1-full`")
+
+    def test_valid_prerelease_versions_are_accepted(self):
+        for ok in ("2.1.0-rc.1", "2.1.0-alpha", "2.1.0-0", "2.1.0-x-y.7"):
+            self.assertEqual(bv.next_version("2.0.0", ok), ok)
 
     def test_aliases_are_left_alone_without_the_flag(self):
         self.assertEqual(bv.bump_doc("`:2.0`", "2.0.0", "2.1.0"), "`:2.0`")

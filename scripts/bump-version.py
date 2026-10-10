@@ -23,7 +23,9 @@ import subprocess
 import sys
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?$")
+_NUM = r"(0|[1-9]\d*)"
+_PRE = r"(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"  # SemVer 2.0.0 item 9: no leading zeroes, no empty identifier
+SEMVER = re.compile(rf"^{_NUM}\.{_NUM}\.{_NUM}(-{_PRE}(?:\.{_PRE})*)?$")
 DOC_FILES = ["docs/benchmarks.md", "docs/cli.md", "docs/deployment.md"]
 
 
@@ -84,9 +86,9 @@ def bump_doc(text, old, new, with_tag_aliases=False):
     for stable versions only, so an rc bump must not point the docs at tags that do not exist."""
     text = re.sub(r"(?<![\d.])" + re.escape(old) + r"(?!\d|\.\d)", new, text)
     if with_tag_aliases and not parse(new)[3]:
-        o_major, o_minor = parse(old)[:2]
+        # Whatever alias is in the docs now (it stays on the previous stable line after an rc bump), not one derived from `old`.
         n_major, n_minor = parse(new)[:2]
-        text = re.sub(rf":{o_major}\.{o_minor}(?=(?:-full)?(?![\d.]))", f":{n_major}.{n_minor}", text)
+        text = re.sub(r"(?<=`):\d+\.\d+(?=(?:-full)?`)", f":{n_major}.{n_minor}", text)
     return text
 
 

@@ -48,9 +48,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **JWT verification now uses the `aws-lc-rs` crypto backend instead of the pure-Rust `rsa` stack.**
   This removes the `rsa` crate (CVE-2023-49092, "Marvin", no upstream fix) from `Cargo.lock`; Conduit
-  only ever verified signatures with public keys, so it was not exploitable. HS256/384/512, RS/PS256/384/512,
-  ES256/384 and EdDSA keep working. **RSA keys must be 2048 to 8192 bits**: a JWKS or PEM that still
-  publishes a smaller RSA key is now rejected (fails closed) instead of verifying.
+  only ever verified signatures with public keys, so it was not exploitable. The supported algorithms are
+  unchanged (HS256 for `secret`; RS256/384/512 and ES256/384 for `jwksUrl`). **RSA keys must be 2048 to
+  8192 bits**: the `aws-lc-rs` verifier rejects a JWKS or PEM key outside that range (fails closed)
+  instead of verifying with it.
 
 ---
 
