@@ -413,9 +413,9 @@ mod tests {
     /// fails: timeout/pool/cache/websocket were dropped and `proxy_upstream_url` was `None`.
     #[test]
     fn backup_failover_keeps_the_routes_own_settings() {
-        use crate::config::{ProxyRouteConfig, ProxyTimeout};
+        use crate::config::{ConnectionPoolConfig, ProxyRouteConfig, ProxyTimeout, RewriteRule};
         use conduit_upstream::health::UpstreamEntry;
-        use conduit_upstream::ProxyTarget;
+        use conduit_upstream::{ProxyTarget, UpstreamHealthCheck, UpstreamTlsConfig};
 
         let registry = UpstreamRegistry::new();
         registry.statuses.insert(
@@ -433,6 +433,28 @@ mod tests {
             strip_prefix: Some(true),
             timeout: Some(ProxyTimeout {
                 read_ms: Some(1234),
+                ..Default::default()
+            }),
+            pool: Some(ConnectionPoolConfig {
+                max_idle: Some(7),
+                ..Default::default()
+            }),
+            cache: Some(
+                serde_json::from_value(serde_json::json!({ "store": "memory", "ttlSecs": 60 }))
+                    .expect("cache config"),
+            ),
+            health_check: Some(UpstreamHealthCheck {
+                unhealthy_status: Some(vec![502, 503]),
+                unhealthy_latency_ms: Some(900),
+                ..Default::default()
+            }),
+            rewrite: Some(vec![RewriteRule {
+                from: "^/api/(.*)".to_string(),
+                to: "/v2/$1".to_string(),
+            }]),
+            mirror: Some("http://mirror.example:9000".to_string()),
+            upstream_tls: Some(UpstreamTlsConfig {
+                verify: Some(false),
                 ..Default::default()
             }),
             ..Default::default()
@@ -456,6 +478,16 @@ mod tests {
         );
         assert!(state.proxy_http2);
         assert!(state.websocket_allowed);
+        assert_eq!(state.proxy_pool.as_ref().and_then(|p| p.max_idle), Some(7));
+        assert_eq!(
+            state.proxy_cache_cfg.as_ref().and_then(|c| c.ttl_secs),
+            Some(60)
+        );
+        assert_eq!(state.passive_unhealthy_status, vec![502, 503]);
+        assert_eq!(state.passive_unhealthy_latency_ms, Some(900));
+        assert_eq!(up.rewrite.as_ref().map(Vec::len), Some(1));
+        assert_eq!(up.mirror_url.as_deref(), Some("http://mirror.example:9000"));
+        assert_eq!(up.upstream_tls.as_ref().and_then(|t| t.verify), Some(false));
         assert_eq!(
             state.proxy_upstream_url.as_deref(),
             Some("https://backup.example:8443")

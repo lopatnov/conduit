@@ -58,3 +58,4 @@ lopatnov-conduit-static = { workspace = true }
 [dev-dependencies]
 # Captures the `tracing::warn!` lines of `validate.rs`'s slow-start warnings in a test.
 tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }

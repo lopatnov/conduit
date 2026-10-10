@@ -866,14 +866,13 @@ In `on_response`, seven host functions are available:
 > with `conduit_set_response_status` + `conduit_set_response_body` to answer a
 > request yourself, or `maskErrors` to hide upstream 5xx bodies.
 
-### Example in Rust — add header on error (body replacement is not applied yet, see above)
+### Example in Rust — tag error responses
 
 ```rust
 // src/lib.rs
 unsafe extern "C" {
     fn conduit_get_response_status() -> i32;
     fn conduit_set_response_header(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32);
-    fn conduit_set_response_body(body_ptr: i32, body_len: i32);
 }
 
 // on_request is still required even if you only need on_response
@@ -884,15 +883,14 @@ pub extern "C" fn on_request() -> i32 { 0 }
 pub extern "C" fn on_response(_status: i32) -> i32 {
     let status = unsafe { conduit_get_response_status() };
     if status >= 500 {
-        // Replace error body with a clean JSON message
-        let body = b"{\"error\":\"Internal Server Error\"}";
+        // Tag the response. (Replacing the body with `conduit_set_response_body`
+        // is not applied in `on_response` yet — see the limitation above.)
         unsafe {
-            conduit_set_response_body(body.as_ptr() as i32, body.len() as i32);
-            let ct = b"content-type";
-            let ctv = b"application/json";
+            let name = b"x-error-handled";
+            let val = b"1";
             conduit_set_response_header(
-                ct.as_ptr() as i32, ct.len() as i32,
-                ctv.as_ptr() as i32, ctv.len() as i32,
+                name.as_ptr() as i32, name.len() as i32,
+                val.as_ptr() as i32, val.len() as i32,
             );
         }
     }
@@ -906,7 +904,7 @@ pub extern "C" fn on_response(_status: i32) -> i32 {
 # conduit.yaml — no extra config needed, on_response runs automatically
 middleware:
   - type: wasm
-    path: ./plugins/error_handler.wasm
+    path: ./plugins/error_tagger.wasm
 proxy:
   /api: "http://backend:4000"
 ```
@@ -914,7 +912,7 @@ proxy:
 ```json
 // conduit.json
 {
-  "middleware": [{ "type": "wasm", "path": "./plugins/error_handler.wasm" }],
+  "middleware": [{ "type": "wasm", "path": "./plugins/error_tagger.wasm" }],
   "proxy": { "/api": "http://backend:4000" }
 }
 ```
