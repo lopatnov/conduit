@@ -15,10 +15,10 @@
 //!
 //! ## Admin API `/shutdown`
 //!
-//! `POST /shutdown` triggers a graceful shutdown via `std::process::exit(0)`,
-//! allowing Pingora's drop handlers and the OS to clean up resources.  This
-//! endpoint is intentionally simple — coordinated multi-worker draining is
-//! delegated to Pingora.
+//! `POST /shutdown` does not go through Pingora's shutdown sequence. Its handler polls
+//! `AppState.inflight` every 50 ms and calls `std::process::exit(0)` once it reaches zero or
+//! `global.shutdownTimeoutSecs` has passed, so Pingora's own drain and runtime shutdown never
+//! run. This endpoint is intentionally simple.
 //!
 //! ## Future work
 //!
