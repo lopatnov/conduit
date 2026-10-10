@@ -1,7 +1,9 @@
 //! HTTP-01 challenge serving: the temporary challenge server bound during an
 //! order, and the per-port lock that serialises orders sharing a port.
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
+use anyhow::Context;
 use dashmap::DashMap;
 
 /// How long to wait for the HTTP-01 challenge server to shut down gracefully
@@ -99,6 +101,80 @@ pub(super) async fn run_challenge_server(
         .await
     {
         tracing::error!(error = %e, "ACME HTTP-01 challenge server accept loop failed");
+    }
+}
+
+/// The temporary HTTP-01 server of one order, or nothing when a running
+/// listener already serves the tokens ([`ChallengeSource::Shared`]).
+pub(super) struct ChallengeServer {
+    stop_tx: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+    /// Held until the port is released again (see [`ChallengeServer::stop`]).
+    _port_guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl ChallengeServer {
+    /// `Bind(port)`: take the per-port lock (concurrent orders — several
+    /// domains, or an issuance overlapping a renewal — must never race to bind
+    /// the same port), bind, and serve `challenges`. The bind happens here,
+    /// *before* any task is spawned, so a failure is reported as an ACME error
+    /// instead of being swallowed in a background task.
+    ///
+    /// `Shared`: no lock, no bind — returns `None`.
+    pub(super) async fn start(
+        source: ChallengeSource,
+        challenges: &Arc<DashMap<String, String>>,
+    ) -> anyhow::Result<Option<Self>> {
+        let ChallengeSource::Bind(port) = source else {
+            tracing::debug!("ACME HTTP-01 tokens served by the running listener");
+            return Ok(None);
+        };
+        let port_guard = http01_port_lock(port).lock_owned().await;
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+            .await
+            .with_context(|| {
+                format!("failed to bind ACME HTTP-01 challenge server on port {port}")
+            })?;
+        tracing::debug!(port, "ACME HTTP-01 challenge server bound");
+
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(run_challenge_server(listener, challenges.clone(), stop_rx));
+        Ok(Some(Self {
+            stop_tx,
+            task,
+            _port_guard: port_guard,
+        }))
+    }
+
+    /// Shut the server down and release the port (and its lock).
+    pub(super) async fn stop(self) {
+        let _ = self.stop_tx.send(());
+        // Bounded (issue #352): a peer holding an "active" (partial-request)
+        // connection open could otherwise keep this task -- and the port it
+        // holds -- alive indefinitely, since axum's graceful shutdown only
+        // closes idle connections promptly. Dropping the JoinHandle on timeout
+        // would NOT stop the spawned task (it keeps running detached) -- an
+        // explicit abort_handle().abort() is required to actually reclaim the
+        // port.
+        let abort_handle = self.task.abort_handle();
+        match tokio::time::timeout(
+            Duration::from_secs(CHALLENGE_SHUTDOWN_TIMEOUT_SECS),
+            self.task,
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!("ACME HTTP-01 challenge server task did not exit cleanly: {e}");
+            }
+            Err(_) => {
+                abort_handle.abort();
+                tracing::warn!(
+                    timeout_secs = CHALLENGE_SHUTDOWN_TIMEOUT_SECS,
+                    "ACME HTTP-01 challenge server did not shut down within the timeout                      (a peer likely held an active connection open); forcibly aborted the                      task to reclaim the port"
+                );
+            }
+        }
     }
 }
 
@@ -303,5 +379,48 @@ mod tests {
 
         let (status, _body) = raw_get(addr, "/.well-known/acme-challenge/no-such-token").await;
         assert_eq!(status, 404);
+    }
+    // ── ChallengeServer: which source binds ──────────────────────────────────
+
+    /// The bug behind #491's review: renewal runs while a listener owns the
+    /// HTTP-01 port, and re-binding it fails with EADDRINUSE on every attempt.
+    #[tokio::test]
+    async fn shared_never_binds_but_bind_fails_on_a_held_port() {
+        let held = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        let challenges = Arc::new(DashMap::new());
+
+        let shared = ChallengeServer::start(ChallengeSource::Shared, &challenges).await;
+        assert!(matches!(shared, Ok(None)), "Shared must not bind anything");
+
+        let bind = ChallengeServer::start(ChallengeSource::Bind(port), &challenges).await;
+        let err = bind.err().expect("binding a held port must fail");
+        assert!(
+            err.to_string().contains("failed to bind"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bind_serves_tokens_and_releases_the_port_on_stop() {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let challenges = Arc::new(DashMap::new());
+        challenges.insert("tok".to_owned(), "tok.key-auth".to_owned());
+
+        let server = ChallengeServer::start(ChallengeSource::Bind(port), &challenges)
+            .await
+            .unwrap()
+            .expect("Bind must start a server");
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let (status, body) = raw_get(addr, "/.well-known/acme-challenge/tok").await;
+        assert_eq!((status, body.as_str()), (200, "tok.key-auth"));
+
+        server.stop().await;
+        assert!(
+            std::net::TcpListener::bind(addr).is_ok(),
+            "the port must be free again after stop()"
+        );
     }
 }

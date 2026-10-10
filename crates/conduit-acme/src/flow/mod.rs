@@ -9,7 +9,6 @@
 //! (owner-only secret writes), [`renewal`] (the background renewal task).
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context;
 use dashmap::DashMap;
@@ -25,15 +24,16 @@ mod renewal;
 mod storage;
 
 pub use http01::ChallengeSource;
-pub use renewal::spawn_renewal_task;
+pub use renewal::{renew_if_due, run_renewal_loop, RenewalJob};
 
-use http01::{http01_port_lock, run_challenge_server, CHALLENGE_SHUTDOWN_TIMEOUT_SECS};
+use http01::ChallengeServer;
 use storage::{cached_pair_matches, write_secret_atomic, PendingPair};
 
 /// How many days before certificate expiry to trigger automatic renewal.
 const RENEWAL_THRESHOLD_DAYS: i64 = 30;
 
 /// On-disk paths to a site's TLS certificate and private key obtained via ACME.
+#[derive(Debug, Clone)]
 pub struct AcmeCertPaths {
     /// Path to the PEM-encoded certificate chain.
     pub cert: PathBuf,
@@ -193,40 +193,10 @@ async fn obtain_certificate(
         .await
         .context("ACME new-order request failed")?;
 
-    // Acquire the per-port lock so concurrent ACME orders (multiple domains,
-    // or an issuance overlapping a renewal) never race to bind the same port.
-    // Not needed when a running listener serves the tokens (`Shared`).
-    let port_lock = match challenge_source {
-        ChallengeSource::Bind(port) => Some(http01_port_lock(port)),
-        ChallengeSource::Shared => None,
-    };
-    let _port_guard = match &port_lock {
-        Some(lock) => Some(lock.lock().await),
-        None => None,
-    };
-
-    // Bind the HTTP-01 challenge server port *before* spawning the background
-    // task so that port-bind failures are reported here as ACME errors rather
-    // than being silently swallowed inside the spawned task.
-    let challenge_server = match challenge_source {
-        ChallengeSource::Bind(port) => {
-            let ch_listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
-                .await
-                .with_context(|| {
-                    format!("failed to bind ACME HTTP-01 challenge server on port {port}")
-                })?;
-            tracing::debug!(port, "ACME HTTP-01 challenge server bound");
-
-            let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-            let ch_map = challenges.clone();
-            let server_task = tokio::spawn(run_challenge_server(ch_listener, ch_map, stop_rx));
-            Some((stop_tx, server_task))
-        }
-        ChallengeSource::Shared => {
-            tracing::debug!("ACME HTTP-01 tokens served by the running listener");
-            None
-        }
-    };
+    // `Bind`: take the per-port lock and bind the challenge port before
+    // anything else, so a failure is an ACME error. `Shared`: a running
+    // listener serves the tokens, nothing to start.
+    let challenge_server = ChallengeServer::start(challenge_source, challenges).await?;
 
     // Populate challenge tokens and notify the CA to begin validation.
     // Track every token we insert so we can remove only our own entries later,
@@ -236,7 +206,7 @@ async fn obtain_certificate(
     // `?` directly, which skipped the cleanup further down (shutdown signal,
     // awaiting the server task, removing our tokens) on any early return —
     // leaking the bound port (the spawned task keeps holding it even though
-    // `_port_guard` gets dropped) and leaving stale challenge tokens in the
+    // the port lock gets dropped) and leaving stale challenge tokens in the
     // shared map. Captured into `flow_result` instead so cleanup always runs,
     // then propagated via `?` only after cleanup completes.
     let mut our_tokens: Vec<String> = Vec::new();
@@ -276,36 +246,8 @@ async fn obtain_certificate(
 
     // Always shut down the temporary challenge server and clean up our
     // tokens, regardless of whether the flow above succeeded (#279).
-    if let Some((stop_tx, server_task)) = challenge_server {
-        let _ = stop_tx.send(());
-        // Bounded (issue #352): a peer holding an "active" (partial-request)
-        // connection open could otherwise keep this task -- and the port it
-        // holds -- alive indefinitely, since axum's graceful shutdown only
-        // closes idle connections promptly. Dropping the JoinHandle on timeout
-        // would NOT stop the spawned task (it keeps running detached) -- an
-        // explicit abort_handle().abort() is required to actually reclaim the
-        // port.
-        let abort_handle = server_task.abort_handle();
-        match tokio::time::timeout(
-            Duration::from_secs(CHALLENGE_SHUTDOWN_TIMEOUT_SECS),
-            server_task,
-        )
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                tracing::warn!("ACME HTTP-01 challenge server task did not exit cleanly: {e}");
-            }
-            Err(_) => {
-                abort_handle.abort();
-                tracing::warn!(
-                    timeout_secs = CHALLENGE_SHUTDOWN_TIMEOUT_SECS,
-                    "ACME HTTP-01 challenge server did not shut down within the timeout \
-                     (a peer likely held an active connection open); forcibly aborted the \
-                     task to reclaim the port"
-                );
-            }
-        }
+    if let Some(server) = challenge_server {
+        server.stop().await;
     }
     // Remove only the tokens we inserted, preserving any tokens that belong
     // to concurrent ACME operations for other domains.
