@@ -1,3 +1,7 @@
+// Tests that proxy real traffic are compiled out without the `proxy` feature
+// (`#[cfg(feature = "proxy")]` on each, #449), which leaves their helpers
+// unused in that build.
+#![cfg_attr(not(feature = "proxy"), allow(dead_code))]
 /// Integration tests for Forward Auth and Header Transform features.
 mod common;
 
@@ -190,6 +194,7 @@ fn forward_auth_unreachable_denies() {
 /// client-supplied value for a configured (but not returned) header name
 /// completely untouched — an attacker could set `X-User-ID: admin` and have
 /// it forwarded to the upstream as if the auth service had vouched for it.
+#[cfg(feature = "proxy")]
 #[test]
 fn forward_auth_strips_forged_header_when_auth_omits_it() {
     let auth_addr = spawn_mock_auth_server_no_headers();
@@ -228,6 +233,7 @@ fn forward_auth_strips_forged_header_when_auth_omits_it() {
 /// The legitimate case still works: when the auth service *does* return the
 /// configured header, its value reaches the upstream (overwriting whatever
 /// the client sent, if anything).
+#[cfg(feature = "proxy")]
 #[test]
 fn forward_auth_injects_header_the_auth_service_returns() {
     let auth_addr = spawn_mock_auth_server(200); // echoes X-User-ID: mock-user
@@ -265,6 +271,7 @@ fn forward_auth_injects_header_the_auth_service_returns() {
 
 // ── Header Transform tests ────────────────────────────────────────────────────
 
+#[cfg(feature = "proxy")]
 #[test]
 fn response_transform_injects_custom_header() {
     use std::io::{Read, Write};

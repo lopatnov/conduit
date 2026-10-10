@@ -353,13 +353,19 @@ pub fn start_echo_upstream() -> (u16, std::thread::JoinHandle<()>) {
 /// server binding it, causing flaky "Address already in use" failures.
 ///
 /// An atomic counter gives each call within the same process a different
-/// starting point, further reducing intra-binary conflicts.
+/// starting point, further reducing intra-binary conflicts. The counter is
+/// seeded from the process id, so the ~40 test binaries of one `cargo test`
+/// run do not all start at 10000 and hand the same first ports to servers
+/// whose predecessor in the previous binary may still be closing its
+/// listener (Windows then reports `BindError 10013`, #477).
 pub fn free_port() -> u16 {
-    use std::sync::atomic::{AtomicU16, Ordering};
-    static NEXT: AtomicU16 = AtomicU16::new(10000);
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::OnceLock;
+    static NEXT: OnceLock<AtomicUsize> = OnceLock::new();
+    let next = NEXT.get_or_init(|| AtomicUsize::new(std::process::id() as usize * 97));
     loop {
         // Wrap monotonically within 10000–19999.
-        let p = NEXT.fetch_add(1, Ordering::Relaxed) % 10000 + 10000;
+        let p = (next.fetch_add(1, Ordering::Relaxed) % 10000 + 10000) as u16;
         if TcpListener::bind(format!("127.0.0.1:{p}")).is_ok() {
             return p;
         }

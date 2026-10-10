@@ -20,6 +20,9 @@
 # tests in 10 named sets + every single feature + a depth-2 powerset), hack (`cargo hack --workspace --each-feature`
 # and a depth-2 powerset over the interacting features).
 #
+# For a PR that claims to be a pure code move, also run `scripts/verify-move.py OLD_REV --from OLD_FILE... --to NEW_FILE...`
+# (#479): it proves every moved item is byte-identical to its text at OLD_REV apart from a printed allow-list.
+#
 # Do not `git add`/commit while the hack step runs: cargo-hack rewrites Cargo.toml files until it exits.
 # The baseline (--base) is built in a temporary worktree under target/verify-local/ and cached per revision.
 set -uo pipefail

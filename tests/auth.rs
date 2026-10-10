@@ -1,3 +1,7 @@
+// Tests that proxy real traffic are compiled out without the `proxy` feature
+// (`#[cfg(feature = "proxy")]` on each, #449), which leaves their helpers
+// unused in that build.
+#![cfg_attr(not(feature = "proxy"), allow(dead_code))]
 mod common;
 
 use base64::Engine as _;
@@ -605,6 +609,7 @@ mod jwt {
     /// arbitrary claim values (e.g. spoof `{{ jwt.sub }}` into an
     /// upstream-trusted identity header) simply by hitting a path the
     /// operator intentionally exempted from JWT auth.
+    #[cfg(feature = "proxy")]
     #[test]
     fn jwt_skip_path_does_not_trust_forged_claims_in_templates() {
         use std::io::{Read, Write};
@@ -726,6 +731,7 @@ mod jwt {
         )
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn per_route_rate_limit_within_limit_passes() {
         let srv = server_with_per_route_rate_limit();
@@ -738,6 +744,7 @@ mod jwt {
         }
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn per_route_rate_limit_exceeded_returns_429() {
         let srv = server_with_per_route_rate_limit();
@@ -756,6 +763,7 @@ mod jwt {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn per_route_rate_limit_skip_path_not_counted() {
         // #307: rateLimit.skipPaths was silently ignored at the route level.
@@ -821,6 +829,7 @@ mod jwt {
     /// scanned the legacy `proxy` map, so this config parsed and validated
     /// fine but was completely inert at runtime for any request resolved via
     /// `routes[]`.
+    #[cfg(feature = "proxy")]
     #[test]
     fn routes_array_rate_limit_exceeded_returns_429() {
         use std::io::{Read, Write};
@@ -1185,6 +1194,7 @@ mod consumers_tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn consumers_x_consumer_id_injected() {
         use std::io::{Read, Write};
@@ -1292,6 +1302,7 @@ mod consumers_tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn consumers_basic_auth_x_consumer_id_injected() {
         use std::io::{Read, Write};
@@ -1350,6 +1361,7 @@ mod consumers_tests {
         );
     }
 
+    #[cfg(feature = "proxy")]
     #[test]
     fn consumers_custom_headers_injected() {
         use std::io::{Read, Write};
@@ -1668,6 +1680,7 @@ mod consumers_tests {
     }
 
     #[cfg(feature = "jwt")]
+    #[cfg(feature = "proxy")]
     #[test]
     fn consumers_jwt_x_consumer_id_injected() {
         use std::io::{Read, Write};
@@ -1871,6 +1884,7 @@ mod consumers_tests {
     }
 
     #[cfg(feature = "jwt")]
+    #[cfg(feature = "proxy")]
     #[test]
     fn consumers_shared_jwt_x_consumer_id_injected() {
         use std::io::{Read, Write};

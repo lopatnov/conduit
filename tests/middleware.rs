@@ -1,3 +1,7 @@
+// Tests that proxy real traffic are compiled out without the `proxy` feature
+// (`#[cfg(feature = "proxy")]` on each, #449), which leaves their helpers
+// unused in that build.
+#![cfg_attr(not(feature = "proxy"), allow(dead_code))]
 //! Integration tests for the Rhai scripting middleware (Phase 4.1).
 
 mod common;
@@ -286,6 +290,7 @@ fn demo_rhai_api_gate_wrong_key_returns_403() {
 
 /// Correct API key passes through to upstream — echo returns 200.
 #[cfg(feature = "rhai")]
+#[cfg(feature = "proxy")]
 #[test]
 fn demo_rhai_api_gate_correct_key_reaches_upstream() {
     let dir = tempfile::tempdir().unwrap();
@@ -322,6 +327,7 @@ fn demo_rhai_api_gate_correct_key_reaches_upstream() {
 
 /// Response enricher adds X-Served-By to upstream responses.
 #[cfg(feature = "rhai")]
+#[cfg(feature = "proxy")]
 #[test]
 fn demo_rhai_response_enricher_adds_served_by() {
     let dir = tempfile::tempdir().unwrap();
@@ -492,6 +498,7 @@ fn rhai_infinite_loop_aborts_gracefully() {
 /// A Rhai script allocating a huge string is bounded by the engine's
 /// max_string_size limit and must not exhaust process memory.
 #[cfg(feature = "rhai")]
+#[cfg(feature = "proxy")]
 #[test]
 fn rhai_string_allocation_is_bounded() {
     let dir = tempfile::tempdir().unwrap();

@@ -259,7 +259,13 @@ mod tests {
     #[test]
     fn fraction_zero_peer_is_excluded_across_many_seeds() {
         let reg = UpstreamRegistry::new();
-        set_recovered(&reg, "http://just-recovered:80", 0); // fraction 0.0
+        // A recovery time in the future pins `elapsed` at 0 (it saturates), so
+        // the fraction stays 0.0 even if a wall-clock second ticks over while
+        // the loop runs (#420); `now - 0` would flip to ~0.033 on the boundary.
+        reg.statuses
+            .entry("http://just-recovered:80".to_owned())
+            .or_default()
+            .recovery_time_secs = Some(now_secs() + 3600);
         for seed in 0..1000u64 {
             let ramp = Ramp::with_seed(Some(30), &reg, seed);
             assert!(
