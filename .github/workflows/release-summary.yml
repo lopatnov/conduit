@@ -1,0 +1,45 @@
+name: Release summary
+
+# Adds a "Summary" section above "What's Changed" in a published GitHub Release.
+# Only the release text changes; nothing is rebuilt or re-published. Safe to run
+# twice: a release whose text already starts with "## Summary" is left alone.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (for example v2.0.0)"
+        required: true
+      summary:
+        description: "Summary text (Markdown); use \\n for line breaks"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  summary:
+    name: Add summary to release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Add the summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          SUMMARY: ${{ inputs.summary }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag must look like v2.0.0, got: $TAG" >&2
+            exit 1
+          fi
+          body=$(gh release view "$TAG" --json body --jq .body)
+          if [[ "$body" == "## Summary"* ]]; then
+            echo "Release $TAG already has a summary; nothing to do."
+            exit 0
+          fi
+          summary=${SUMMARY//\\n/$'\n'}
+          printf '## Summary\n\n%s\n\n%s\n' "$summary" "$body" > notes.md
+          gh release edit "$TAG" --notes-file notes.md
