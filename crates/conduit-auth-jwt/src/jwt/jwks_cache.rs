@@ -166,6 +166,21 @@ struct Jwk {
 
 // ── JWKS fetch ────────────────────────────────────────────────────────────────
 
+/// The cache identifier for a key that carries no `kid`: `"{key_type}-default"`, and for a second, third, ...
+/// kid-less key of the same type `"{key_type}-default-2"`, ... — never one already taken. A single shared
+/// identifier let the later key silently overwrite the earlier one, so a JWKS with two kid-less keys looked
+/// like it held one and a kid-less token was verified against whichever survived instead of being rejected as
+/// ambiguous (issue #351).
+fn kidless_id(map: &KeyMap, key_type: &str) -> String {
+    let mut id = format!("{key_type}-default");
+    let mut n = 1;
+    while map.contains_key(&id) {
+        n += 1;
+        id = format!("{key_type}-default-{n}");
+    }
+    id
+}
+
 /// Fetch and parse the JWKS document at `url`. Errors never carry the URL (it may hold a secret).
 pub(super) async fn fetch_jwks(url: &str) -> anyhow::Result<KeyMap> {
     let resp = reqwest::Client::builder()
@@ -184,15 +199,14 @@ pub(super) async fn fetch_jwks(url: &str) -> anyhow::Result<KeyMap> {
 
     let mut map = HashMap::new();
     for jwk in resp.keys {
-        let kid = jwk
-            .kid
-            .unwrap_or_else(|| format!("{}-default", jwk.key_type));
+        let kid = jwk.kid.clone();
+        let log_kid = kid.as_deref().unwrap_or("<none>");
         let cached = match jwk.key_type.as_str() {
             "RSA" => {
                 if let (Some(n), Some(e)) = (jwk.n, jwk.e) {
                     Some(CachedKey::Rsa { n, e })
                 } else {
-                    tracing::warn!(kid, "JWKS RSA key missing n or e — skipped");
+                    tracing::warn!(kid = log_kid, "JWKS RSA key missing n or e — skipped");
                     None
                 }
             }
@@ -200,7 +214,7 @@ pub(super) async fn fetch_jwks(url: &str) -> anyhow::Result<KeyMap> {
                 if let (Some(x), Some(y), Some(crv)) = (jwk.x, jwk.y, jwk.curve) {
                     Some(CachedKey::Ec { x, y, crv })
                 } else {
-                    tracing::warn!(kid, "JWKS EC key missing x, y, or crv — skipped");
+                    tracing::warn!(kid = log_kid, "JWKS EC key missing x, y, or crv — skipped");
                     None
                 }
             }
@@ -210,7 +224,7 @@ pub(super) async fn fetch_jwks(url: &str) -> anyhow::Result<KeyMap> {
             }
         };
         if let Some(c) = cached {
-            map.insert(kid, c);
+            map.insert(kid.unwrap_or_else(|| kidless_id(&map, &jwk.key_type)), c);
         }
     }
     Ok(map)

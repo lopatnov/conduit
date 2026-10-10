@@ -1026,7 +1026,7 @@ execute (trap), the error is logged and the request passes through as if the
 plugin returned `0` (continue).
 
 ```
-WARN conduit::filter::wasm: WASM plugin error — request passes through (fail-open)
+WARN conduit_plugin_wasm::wasm: WASM plugin error — request passes through (fail-open)
   plugin="./plugins/auth-check.wasm"
   error="WASM module missing 'on_request' export"
 ```

@@ -386,6 +386,47 @@ fn validate_with_jwks_kidless_token_and_multiple_keys_rejected_as_ambiguous() {
     );
 }
 
+/// Issue #351: two kid-less keys of the same type used to share one synthesized identifier, so the
+/// second silently replaced the first and the JWKS looked like it held a single key.
+fn two_kidless_rsa_keys_body() -> String {
+    let (a, b) = (primary_rsa_key(), other_rsa_key());
+    format!(
+        r#"{{"keys":[{{"kty":"RSA","n":"{}","e":"{}"}},{{"kty":"RSA","n":"{}","e":"{}"}}]}}"#,
+        a.n, a.e, b.n, b.e
+    )
+}
+
+#[tokio::test]
+async fn fetch_jwks_keeps_every_kidless_key() {
+    let base = spawn_mock_http_server("HTTP/1.1 200 OK", &two_kidless_rsa_keys_body());
+    let keys = fetch_jwks(&format!("{base}/jwks")).await.unwrap();
+    assert_eq!(
+        keys.len(),
+        2,
+        "the second kid-less key must not overwrite the first"
+    );
+}
+
+#[test]
+fn validate_with_jwks_kidless_token_and_two_kidless_keys_rejected_as_ambiguous() {
+    // Signed by the *second* key: with the old overwrite bug that is the one that survived, so the
+    // token would have verified — the test can only pass when the JWKS is rejected as ambiguous.
+    let rsa = other_rsa_key();
+    let jwks_url = format!(
+        "{}/jwks",
+        spawn_mock_http_server("HTTP/1.1 200 OK", &two_kidless_rsa_keys_body())
+    );
+    let cfg = JwtAuthConfig {
+        jwks_url: Some(jwks_url.clone()),
+        ..Default::default()
+    };
+    let token = make_rs256_token_no_kid(&rsa.pem, json!({ "sub": "u", "exp": exp_future() }));
+    assert!(
+        validate_with_jwks(&cfg, &token, &jwks_url).is_err(),
+        "two kid-less keys are ambiguous for a kid-less token, whichever one signed it"
+    );
+}
+
 #[test]
 fn validate_with_jwks_kidless_token_and_sole_kidless_ec_key_succeeds() {
     let ec = ec_key();

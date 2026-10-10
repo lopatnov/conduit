@@ -142,6 +142,42 @@ fn static_206_range_suffix() {
     assert_eq!(resp.text().unwrap(), "789");
 }
 
+/// Issue #402 (RFC 9110 §13.1.5): a current `If-Range` validator keeps the `206`, a stale one
+/// turns the request into a plain `200` with the whole file.
+#[test]
+#[serial]
+fn static_if_range_decides_between_206_and_200() {
+    let (server, _dir) = make_static_server(&[("range.txt", "0123456789")]);
+    let client = reqwest::blocking::Client::new();
+    let etag = client
+        .get(server.url("/range.txt"))
+        .send()
+        .expect("GET")
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .expect("etag")
+        .to_owned();
+
+    let resp = client
+        .get(server.url("/range.txt"))
+        .header("range", "bytes=2-5")
+        .header("if-range", &etag)
+        .send()
+        .expect("GET with current If-Range");
+    assert_eq!(resp.status(), 206);
+    assert_eq!(resp.text().unwrap(), "2345");
+
+    let resp = client
+        .get(server.url("/range.txt"))
+        .header("range", "bytes=2-5")
+        .header("if-range", "\"stale\"")
+        .send()
+        .expect("GET with stale If-Range");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().unwrap(), "0123456789");
+}
+
 #[test]
 #[serial]
 fn static_416_invalid_range() {

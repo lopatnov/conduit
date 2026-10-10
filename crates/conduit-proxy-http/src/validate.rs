@@ -149,11 +149,16 @@ fn warn_slow_start_ignored(cfg: &ProxyRouteConfig, prefix: &str) {
     if window == 0 {
         return;
     }
+    // A route with `groups` never reads its own `strategy` or `sticky` (`resolve_grouped` picks the
+    // group by `groupStrategy` and the target by each group's strategy; groups have no sticky
+    // sessions), so judging it by them would warn about a leftover field that changes nothing
+    // (issue #483). The groups are judged below.
+    let has_groups = cfg.groups.as_ref().is_some_and(|g| !g.is_empty());
     let hash_based = matches!(
         cfg.strategy,
         Some(LoadBalanceStrategy::IpHash | LoadBalanceStrategy::ConsistentHash)
     );
-    if hash_based || cfg.sticky.is_some() {
+    if !has_groups && (hash_based || cfg.sticky.is_some()) {
         tracing::warn!(
             "{prefix}.healthCheck.slowStartSecs is ignored on this route: hash-based \
              strategies and sticky sessions map each client to a fixed upstream, so a \
@@ -394,21 +399,28 @@ mod tests {
         );
     }
 
+    /// Issue #483: with `groups`, the route-level `strategy` / `sticky` are not used, so only the
+    /// groups are judged — a leftover `strategy: ip-hash` must not produce a false route warning.
     #[test]
-    fn route_and_group_warnings_are_both_emitted_in_that_order() {
+    fn a_route_with_groups_is_judged_by_its_groups_not_its_own_strategy() {
         let mut cfg = route(Some(LoadBalanceStrategy::IpHash), Some(5));
+        cfg.sticky = Some(StickyConfig {
+            cookie: "sid".to_owned(),
+            secret: None,
+            strict: None,
+        });
+        cfg.groups = Some(vec![group("plain", Some(LoadBalanceStrategy::RoundRobin))]);
+        assert!(warnings_for(&cfg).is_empty());
+
         cfg.groups = Some(vec![group(
             "pinned",
             Some(LoadBalanceStrategy::ConsistentHash),
         )]);
+        cfg.group_strategy = Some(LoadBalanceStrategy::IpHash);
         let warnings = warnings_for(&cfg);
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(
-            warnings[0].contains("is ignored on this route"),
-            "{warnings:?}"
-        );
-        assert!(
-            warnings[1].contains("is ignored for group 'pinned'"),
+            warnings[0].contains("is ignored for group 'pinned'"),
             "{warnings:?}"
         );
     }

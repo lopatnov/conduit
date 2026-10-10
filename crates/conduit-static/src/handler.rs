@@ -139,7 +139,13 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
 
     // Range requests bypass compression — byte ranges are incompatible with
     // Content-Encoding transforms.
-    if let Some(range_hdr) = hdrs.get("range").and_then(|v| v.to_str().ok()) {
+    // `If-Range` (RFC 9110 §13.1.5): a stale validator turns the range request into a plain 200 with
+    // the whole current file, so a resumed download never splices bytes of two different versions.
+    let range_hdr = hdrs
+        .get("range")
+        .and_then(|v| v.to_str().ok())
+        .filter(|_| if_range_allows_range(&hdrs, &etag, &last_modified));
+    if let Some(range_hdr) = range_hdr {
         serve_range(
             session,
             &file_path,
@@ -245,6 +251,26 @@ async fn open_no_follow(path: &Path) -> std::io::Result<tokio::fs::File> {
     #[cfg(not(unix))]
     {
         tokio::fs::File::open(path).await
+    }
+}
+
+/// Whether a `Range` request may be answered with `206` given its `If-Range` header (RFC 9110 §13.1.5).
+///
+/// No `If-Range` → yes. An entity-tag must match our (strong) ETag exactly — a weak tag never
+/// matches — and a date must equal `Last-Modified` exactly; anything else, or an unparsable value,
+/// means "the resource may have changed": ignore the `Range` and send the full file.
+fn if_range_allows_range(headers: &http::HeaderMap, etag: &str, last_modified: &str) -> bool {
+    let Some(value) = headers.get("if-range") else {
+        return true;
+    };
+    let Ok(value) = value.to_str() else {
+        return false;
+    };
+    let value = value.trim();
+    if value.starts_with('"') {
+        value == etag
+    } else {
+        !value.starts_with("W/") && value == last_modified
     }
 }
 
@@ -873,6 +899,29 @@ mod tests {
             stat_no_symlink(&real_file).await.is_some(),
             "regular file must be served"
         );
+    }
+
+    /// Issue #402 (RFC 9110 §13.1.5): `If-Range` decides whether `Range` may be honoured.
+    #[test]
+    fn if_range_only_allows_a_range_when_the_validator_is_current() {
+        let etag = "\"65f-1a\"";
+        let lm = "Sat, 10 Oct 2026 01:00:00 GMT";
+        let with = |v: &str| {
+            let mut h = http::HeaderMap::new();
+            h.insert("if-range", http::HeaderValue::from_str(v).unwrap());
+            h
+        };
+        assert!(if_range_allows_range(&http::HeaderMap::new(), etag, lm));
+        assert!(if_range_allows_range(&with(etag), etag, lm));
+        assert!(if_range_allows_range(&with(lm), etag, lm));
+        assert!(!if_range_allows_range(&with("\"other\""), etag, lm));
+        assert!(!if_range_allows_range(&with("W/\"65f-1a\""), etag, lm));
+        assert!(!if_range_allows_range(
+            &with("Sat, 10 Oct 2026 00:59:59 GMT"),
+            etag,
+            lm
+        ));
+        assert!(!if_range_allows_range(&with("garbage"), etag, lm));
     }
 
     /// Issue #400: a directory symlink *inside* the path must not be followed — the final

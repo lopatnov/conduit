@@ -480,11 +480,11 @@ This means a broken script will never take down your server, but it also means
 errors can silently bypass auth checks. Monitor your logs.
 
 ```
-WARN conduit::filter::script: Rhai compile error: Variable not found: undefined_var
-WARN conduit::filter::script: Rhai runtime error: Division by zero
+WARN conduit_script_rhai::script: Rhai compile error: Variable not found: undefined_var
+WARN conduit_script_rhai::script: Rhai runtime error: Division by zero
 ```
 
-Set `RUST_LOG=conduit=debug` to see the full error context.
+Set `RUST_LOG=conduit_script_rhai=debug` to see the full error context.
 
 ---
 
