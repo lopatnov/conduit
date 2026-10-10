@@ -902,21 +902,26 @@ mod jwt {
     }
 
     fn gen_jwks_test_rsa_key() -> JwksTestRsaKey {
-        use rsa::pkcs1::EncodeRsaPrivateKey;
-        use rsa::traits::PublicKeyParts;
-        let private_key =
-            rsa::RsaPrivateKey::new(&mut rand_core::OsRng, 2048).expect("RSA-2048 keygen");
-        let pem = private_key
-            .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
-            .expect("RSA PKCS#1 PEM encode")
-            .to_string();
-        let public_key = private_key.to_public_key();
+        use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der};
+        use aws_lc_rs::rsa::{KeyPair, KeySize, PublicKeyComponents};
+        use aws_lc_rs::signature::KeyPair as _;
+        let key_pair = KeyPair::generate(KeySize::Rsa2048).expect("RSA-2048 keygen");
+        let der: Pkcs8V1Der = key_pair.as_der().expect("RSA PKCS#8 DER encode");
+        let components = PublicKeyComponents::<Vec<u8>>::from(key_pair.public_key());
+        let b64 = base64::engine::general_purpose::STANDARD.encode(der.as_ref());
+        let body: Vec<&str> = b64
+            .as_bytes()
+            .chunks(64)
+            .map(|c| std::str::from_utf8(c).expect("base64 is ASCII"))
+            .collect();
+        let pem = format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+            body.join("\n")
+        );
         JwksTestRsaKey {
             pem,
-            n: base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .encode(public_key.n().to_bytes_be()),
-            e: base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .encode(public_key.e().to_bytes_be()),
+            n: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&components.n),
+            e: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&components.e),
         }
     }
 

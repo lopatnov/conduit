@@ -46,41 +46,30 @@ Pingora 0.8 removed the default cache key implementation to force explicit opt-i
 also dropped the separate `namespace` argument of `CacheKey`, so Conduit frames the host into
 the key itself (the host, a NUL byte, then `scheme:path?query`).
 
-## Known Unfixable Transitive Vulnerabilities
+## Transitive Advisories
 
-These advisories affect transitive dependencies that Conduit cannot upgrade without waiting for
-an upstream project to update first. Each entry explains why it cannot be fixed and what the
-actual risk is. Nothing is suppressed in `.cargo/audit.toml` or `osv-scanner.toml`.
+An entry here is either resolved, or accepted with a written reason and a date to re-check it.
 
-### RUSTSEC-2023-0071 — rsa 0.9.10: Marvin Attack (CVE-2023-49092)
+### Accepted: RUSTSEC-2026-0249 — smartstring 1.0.1 is unmaintained
 
 | Field | Value |
 |---|---|
-| Advisory | [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071) |
-| Affected crate | `rsa 0.9.10` (latest stable release as of 2026-09; the `0.10` release candidates are affected too) |
-| Fix requires | No patched release exists |
-| Status | **Acknowledged — no fix available upstream; left open, not suppressed** |
+| Advisory | [RUSTSEC-2026-0249](https://rustsec.org/advisories/RUSTSEC-2026-0249) (an *unmaintained* notice, not a vulnerability) |
+| Chain | `rhai 1.26.1` → `smartstring 1.0.1` (unconditional dependency of `rhai`) |
+| Fix requires | A `rhai` release that stops using `smartstring`; `1.26.1` is the latest release |
+| Status | **Accepted, suppressed in `osv-scanner.toml` until 2027-01-10** |
 
-**Root cause chain:**
+Only builds with the `rhai` feature contain it. The crate has no known vulnerability; the notice says
+it will not receive fixes. Replacing it means replacing the Rhai engine itself, which is out of
+proportion to an unmaintained notice. The suppression expires so the decision is re-checked.
 
-```text
-conduit → jsonwebtoken 11 (rust_crypto backend) → rsa 0.9.10
-```
+### Resolved: RUSTSEC-2023-0071 — rsa 0.9.10: Marvin Attack (CVE-2023-49092)
 
-Only builds with the `jwt` feature contain it (that feature is part of `standard` and `full`,
-not of `default`).
-
-**Why Conduit is not at risk:**
-
-The Marvin attack is a timing side channel on RSA *private-key* operations. The `rsa` crate is
-linked only for JWT verification: Conduit **verifies** RS256/RS384/RS512 token signatures with
-public keys taken from a JWKS endpoint. TLS private keys, RSA ones included, are handled by
-rustls's crypto provider, not by the `rsa` crate. The only signing calls that use the `rsa`
-crate are in tests.
-
-**Blocked by:** no fixed `rsa` release exists (per the advisory, the `0.10` release candidates
-are affected too). Avoiding the `rsa` crate altogether, for example through a `jsonwebtoken`
-backend that does not use it, has not been evaluated.
+`rsa` was pulled in only by `jsonwebtoken`'s `rust_crypto` backend, and Conduit only ever
+**verified** RS256/RS384/RS512 signatures with it (public keys; the Marvin attack is a timing
+side channel on private-key operations), so it was not exploitable. It is nevertheless gone:
+`jsonwebtoken` now uses its `aws_lc_rs` backend, and `aws-lc-rs` was already in the tree for
+rustls. `rsa` is no longer in `Cargo.lock`.
 
 ### Resolved: RUSTSEC-2024-0437 — protobuf 2.28.0: Uncontrolled Recursion / Crash
 
