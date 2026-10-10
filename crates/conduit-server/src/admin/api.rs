@@ -116,6 +116,10 @@ pub struct AdminApiService {
     /// the internal background tasks (health checks, rate-limiter cleanup,
     /// hot-reload watcher) still run, but no HTTP endpoint is exposed.
     pub bind: Option<String>,
+    /// ACME certificates to keep fresh while the process runs, planned at
+    /// startup from the listeners that were bound (#491).
+    #[cfg(feature = "acme")]
+    pub acme_renewals: Vec<crate::server::acme::RenewalJob>,
 }
 
 #[async_trait]
@@ -212,6 +216,18 @@ impl BackgroundService for AdminApiService {
                     dirs, extensions, reload_tx,
                 ));
             }
+        }
+
+        // ACME renewal: one sequential loop, checked every 12 h, stops on
+        // shutdown. The renewed files take effect at the next restart; hot-swap
+        // is not implemented yet.
+        #[cfg(feature = "acme")]
+        if !self.acme_renewals.is_empty() {
+            tokio::spawn(crate::server::acme::run_renewal_loop(
+                self.acme_renewals.clone(),
+                self.state.acme_challenges.clone(),
+                shutdown.clone(),
+            ));
         }
 
         // HTTP Admin server — only starts when global.admin.bind is configured.

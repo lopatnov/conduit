@@ -18,7 +18,7 @@ use conduit_runtime::proxy::service::{AppState, ConduitProxy};
 use conduit_runtime::upload::UploadService;
 
 #[cfg(feature = "acme")]
-use super::acme_certs::obtain_acme_certs;
+use super::acme_certs::{obtain_acme_certs, plan_acme_renewals};
 use super::config_watch::spawn_config_update_watcher;
 use super::listeners::{add_tls_listeners, build_http_server_options, classify_ports};
 #[cfg(feature = "redis")]
@@ -188,14 +188,39 @@ pub fn run_server(
 
     // Raw TCP proxy services.
     #[cfg(feature = "tcp")]
-    register_tcp_proxy_services(&config, &mut server);
+    let tcp_ports = register_tcp_proxy_services(&config, &mut server);
+    #[cfg(not(feature = "tcp"))]
+    let tcp_ports: Vec<u16> = Vec::new();
 
     // HTTP → HTTPS redirect services.
-    register_http_redirect_services(&config, &state, &mut server);
+    let redirect_ports = register_http_redirect_services(&config, &state, &mut server);
+
+    // ACME renewal is planned from what was actually bound. Plain proxy and
+    // redirect listeners answer `/.well-known/acme-challenge/` from the shared
+    // challenge map; TLS and raw TCP listeners cannot answer the CA at all.
+    #[cfg(feature = "acme")]
+    let acme_renewals = {
+        let token_ports: std::collections::HashSet<u16> = port_plain
+            .iter()
+            .copied()
+            .filter(|p| !port_tls.contains_key(p))
+            .chain(redirect_ports.iter().copied())
+            .collect();
+        let other_ports: std::collections::HashSet<u16> = port_tls
+            .keys()
+            .copied()
+            .chain(tcp_ports.iter().copied())
+            .collect();
+        plan_acme_renewals(&config, &token_ports, &other_ports)
+    };
+    #[cfg(not(feature = "acme"))]
+    let _ = (&redirect_ports, &tcp_ports);
 
     let admin = AdminApiService {
         state: state.clone(),
         bind: admin_bind,
+        #[cfg(feature = "acme")]
+        acme_renewals,
     };
     server.add_service(background_service("admin-api", admin));
 
@@ -211,7 +236,10 @@ pub fn run_server(
 
 /// Register raw TCP proxy services for sites with `tcp` config.
 #[cfg(feature = "tcp")]
-fn register_tcp_proxy_services(config: &AppConfig, server: &mut Server) {
+///
+/// Returns the ports that were bound.
+fn register_tcp_proxy_services(config: &AppConfig, server: &mut Server) -> Vec<u16> {
+    let mut bound = Vec::new();
     for site in &config.sites {
         let Some(ref tcp_cfg) = site.tcp else {
             continue;
@@ -225,16 +253,25 @@ fn register_tcp_proxy_services(config: &AppConfig, server: &mut Server) {
         let mut tcp_svc = ListeningService::new(format!("Conduit TCP Proxy :{port}"), proxy);
         tcp_svc.add_tcp(&format!("0.0.0.0:{port}"));
         server.add_service(tcp_svc);
+        bound.push(port);
         tracing::info!(
             port,
             targets = tcp_cfg.targets.join(", "),
             "TCP proxy service registered"
         );
     }
+    bound
 }
 
 /// Register HTTP → HTTPS redirect services for sites with `tls.httpRedirectPort`.
-fn register_http_redirect_services(config: &AppConfig, state: &Arc<AppState>, server: &mut Server) {
+///
+/// Returns the ports that were bound.
+fn register_http_redirect_services(
+    config: &AppConfig,
+    state: &Arc<AppState>,
+    server: &mut Server,
+) -> Vec<u16> {
+    let mut bound = Vec::new();
     for site in &config.sites {
         let tls_port = site
             .port
@@ -245,8 +282,10 @@ fn register_http_redirect_services(config: &AppConfig, state: &Arc<AppState>, se
             let mut redirect_svc = http_proxy_service(&server.configuration, redirect);
             redirect_svc.add_tcp(&format!("0.0.0.0:{http_port}"));
             server.add_service(redirect_svc);
+            bound.push(http_port);
         }
     }
+    bound
 }
 
 #[cfg(test)]

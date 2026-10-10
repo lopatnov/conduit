@@ -593,7 +593,8 @@ and reports success without the new certificate ever being loaded.
 > certificate resolver that could swap it at runtime (Pingora 0.9 exposes the
 > `ResolvesServerCert` hook this needs; wiring it in is a planned follow-up).
 > Writing the files here is the safe atomic step; until then a restart applies
-> them. For Let's Encrypt, use `tls.acme` instead — renewals are fully automatic.
+> them. For Let's Encrypt, use `tls.acme` instead — certificates are renewed on
+> disk automatically, but the renewed files also take effect at the next restart.
 
 **Request body:**
 
