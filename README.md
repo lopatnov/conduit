@@ -157,12 +157,14 @@ proxy:
   /api:
     targets: [https://api-1.internal:8443, https://api-2.internal:8443]
     backup: https://api-standby.internal:8443    # used while every target is unhealthy
-    upstreamTls: { verify: true, serverName: api.internal }   # check the upstream's certificate
+    upstreamTls: { verify: true, serverName: api.internal }   # verification is on by default; serverName adds an accepted name
     http2: true                                  # HTTP/2 to the upstream
     mirror: http://api-v2:4000                   # shadow copy of each request (headers only); the reply is dropped
     websocket: true                              # allow WebSocket upgrades on this route
 ```
 
+The mirror receives a copy of the request headers, `Authorization` and cookies included, so mirror
+only to a service you trust.
 **→ Details:** [Backup targets](docs/configuration.md#proxy-route-field-reference) ·
 [Upstream TLS](docs/configuration.md#upstream-tls-verification) ·
 [Mirroring](docs/configuration.md#traffic-mirroring) ·
@@ -322,7 +324,7 @@ sites:
   - port: 8080
     logging: json                      # structured access log; every request gets an X-Request-ID
     metrics: { path: /__metrics__, token: "$METRICS_TOKEN" }   # Prometheus
-    responseTime: true                 # X-Response-Time: <ms> on every response
+    responseTime: true                 # adds an X-Response-Time header (milliseconds)
     serverTiming: true                 # Server-Timing: total and upstream, for browser DevTools
     proxy: http://localhost:4000
 global:
@@ -386,7 +388,9 @@ conduit --kubernetes-namespace default               # in the Conduit pod; '*' w
 Conduit watches the namespace, combines the resources into one config, checks it and swaps it in
 without a restart; an update that fails validation is rejected and the running config stays. Use
 the `:latest-full` image (or a build with `--features kubernetes`) and give the pod a service
-account that may `get`, `list` and `watch` `conduitsites`.
+account that may `get`, `list` and `watch` `conduitsites`. Write access to `ConduitSite` objects is
+deploy access: `spec` takes any site field, file paths such as `static` and `upload.dir` included, so
+grant it only to people who may deploy to the Conduit pod.
 **→ CRD, RBAC and Deployment manifests:**
 [docs/deployment.md](docs/deployment.md#conduitsite-crd---features-kubernetes)
 
@@ -407,6 +411,8 @@ sites:
       allowedMimeTypes: [image/png, application/pdf]
 ```
 
+Uploads are open to anyone who can reach the port unless the site also has an auth guard
+(`basicAuth`, `apiKey` or `jwtAuth`).
 **→ Details:** [TCP proxy](docs/configuration.md#tcp-proxy) · [Upload](docs/configuration.md#upload)
 
 **→ More scenarios:** [docs/recipes.md](docs/recipes.md) covers HTTPS, load balancing, failover,

@@ -518,9 +518,8 @@ server-timing: total;dur=12.4, upstream;dur=11.8
 - `upstream;dur=<ms>` is the time the upstream took to return its response headers.
 
 The header is added to responses that come back from an upstream. A response Conduit produces
-itself (a static file, a redirect, a rejection by a guard) does not carry it; use `responseTime` if
-you also want a timing header there. The header is visible to every client, so leave it off if you
-do not want to expose timings.
+itself (a static file, a redirect, a rejection by a guard) does not carry it. The header is visible
+to every client, so leave it off if you do not want to expose timings.
 
 ---
 
@@ -3149,8 +3148,8 @@ proxy:
 
 | Field        | Type   | Default  | Description                                  |
 | ------------ | ------ | -------- | -------------------------------------------- |
-| `verify`     | bool   | `false`  | Verify upstream cert against system CA store |
-| `serverName` | string | from URL | Override SNI hostname                        |
+| `verify`     | bool   | `true`   | Verify the upstream certificate against the system CA store; `false` turns the check off |
+| `serverName` | string | from URL | Extra name the upstream certificate is accepted for, besides the host in the URL |
 
 ---
 
