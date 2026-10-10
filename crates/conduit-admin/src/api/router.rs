@@ -79,7 +79,12 @@ pub fn build_router(state: Arc<AppState>, extra: Router<Arc<AppState>>) -> Route
                         .get("authorization")
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or("");
-                    let provided = auth.strip_prefix("Bearer ").map(str::trim).unwrap_or("");
+                    // The scheme name is case-insensitive (RFC 9110 §11.1, RFC 6750 §2.1); the token is not.
+                    let provided = auth
+                        .split_once(' ')
+                        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+                        .map(|(_, token)| token.trim())
+                        .unwrap_or("");
                     // Constant-time comparison prevents timing-based brute force.
                     if subtle_eq(provided.as_bytes(), token.as_bytes()) {
                         Ok(next.run(request).await)

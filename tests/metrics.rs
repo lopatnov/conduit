@@ -108,6 +108,30 @@ fn metrics_with_token_correct_bearer_returns_200() {
     assert_eq!(resp.status(), 200);
 }
 
+/// Issue #484: the scheme name is case-insensitive (RFC 9110 §11.1); the token is not.
+#[test]
+#[serial]
+fn metrics_bearer_scheme_is_case_insensitive() {
+    let srv = metrics_server(serde_json::json!({
+        "path": "/__metrics__",
+        "token": "my-secret"
+    }));
+    let client = reqwest::blocking::Client::new();
+    for (auth, expected) in [
+        ("bearer my-secret", 200),
+        ("BEARER my-secret", 200),
+        ("Bearer MY-SECRET", 401),
+        ("Basic my-secret", 401),
+    ] {
+        let resp = client
+            .get(srv.url("/__metrics__"))
+            .header("Authorization", auth)
+            .send()
+            .expect("send");
+        assert_eq!(resp.status(), expected, "Authorization: {auth}");
+    }
+}
+
 #[test]
 #[serial]
 fn metrics_401_has_www_authenticate_header() {
