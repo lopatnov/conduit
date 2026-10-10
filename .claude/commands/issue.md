@@ -42,6 +42,10 @@ check (`.claude/rules/index.md`) before asking the user what to pick up.
   scope against existing decisions isn't obvious.
 - **Search for other open bugs in the files/functions this issue will touch** (`best-practices` skill
   §1) and say up front which you'll fix in the same PR as a separate "behaviour change" commit.
+- **Keep a deferred-items list from the start** (a comment on the issue, or a scratch file): everything you
+  decide not to do in this PR — an oddity found while working, a review finding you won't fix here, a
+  limitation you document instead of removing, a security note the reviewer marks non-blocking. Nothing
+  leaves this list except by being fixed in the PR or by getting an issue (Step 6).
 - Branch off the current tip of the target branch (`main`, unless the issue says otherwise
   or an integration branch is explicitly in play) — never commit directly to it. Name per
   `conventions.md` (`feat/`, `fix/`, `chore/`, `ci/`, `docs/` + short slug).
@@ -89,6 +93,13 @@ check (`.claude/rules/index.md`) before asking the user what to pick up.
   user) — not that checks are green or the unresolved-thread count is 0. Give every finding
   a recorded disposition: fixed, deferred with an issue (`fast-follow` label), or rejected
   with the reason.
+- **Every deferred item gets a follow-up issue before you merge** (owner, 2026-10-10 — he could not
+  tell whether deferred work was being resolved or skipped). For each entry on the deferred-items
+  list: search existing issues first (its own call), then open the issue (what, why it matters, a
+  suggested fix, label `fast-follow`), and put `#N` next to the item in the PR's "Found while
+  here" table. A deferral with no issue number is a dropped item, so do not merge with one. If the
+  gap is already tracked, link that issue instead of filing a duplicate; if it is already fixed, say
+  so in the table. The final report to the owner lists the issues opened.
 - **`security-engineer` sign-off before every merge, unconditionally** — no PR is "too
   small" or "too obviously safe" to skip this (`workflow.md` "Security review is
   unconditional"). One pass on the final head; re-run only the delta if a commit lands
