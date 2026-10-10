@@ -208,18 +208,22 @@ def item_key(chunk):
     return (kind, name, cfg), (rest if kind == "mod" else None)
 
 
-def collect(text, prefix=""):
-    """Map key -> list of normalised-ready item texts, recursing into inline `mod name { .. }` bodies."""
+def collect(text, prefix="", outer_cfg=""):
+    """Map key -> list of normalised-ready item texts, recursing into inline `mod name { .. }` bodies.
+
+    The cfg attributes of an inline module are part of the key of every item inside it."""
     items = {}
     for chunk in split_items(text):
         key, mod_rest = item_key(chunk)
         if key[0] == "mod" and mod_rest is not None and "{" in mod_rest and not mod_rest.lstrip().startswith(";"):
             name = key[1]
             body = chunk[chunk.index("{", chunk.index(name)) + 1:chunk.rindex("}")]
-            for k, v in collect(textwrap.dedent(body), f"{prefix}{name}::").items():
+            inner_cfg = " ".join(filter(None, (outer_cfg, key[2])))
+            for k, v in collect(textwrap.dedent(body), f"{prefix}{name}::", inner_cfg).items():
                 items.setdefault(k, []).extend(v)
             continue
-        full = (key[0], prefix + key[1], *key[2:])
+        cfg = " ".join(filter(None, (outer_cfg, key[2]))) if len(key) > 2 else outer_cfg
+        full = (key[0], prefix + key[1], cfg)
         items.setdefault(full, []).append(chunk)
     return items
 
@@ -249,6 +253,8 @@ def label(key):
 
 
 def compare(old_text, new_text, renames=(), allow=()):
+    for a, b in renames:
+        old_text = old_text.replace(a, b)
     old, new = collect(old_text), collect(new_text)
     allow_res = [re.compile(a) for a in allow]
 
@@ -261,7 +267,7 @@ def compare(old_text, new_text, renames=(), allow=()):
     for k in sorted(set(old) & set(new), key=label):
         if skipped(k):
             continue
-        o = [normalise(c, renames) for c in old[k]]
+        o = [normalise(c) for c in old[k]]
         n = [normalise(c) for c in new[k]]
         # Repeated keys (several `impl X` blocks) are matched as multisets of texts.
         for text in list(o):

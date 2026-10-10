@@ -50,7 +50,7 @@ class Splitting(unittest.TestCase):
 
     def test_inline_mod_bodies_are_recursed_with_a_prefix(self):
         src = "#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn t() {}\n}\n"
-        self.assertEqual(keys(src), ["fn tests::t", "use tests::super::*"])
+        self.assertEqual(keys(src), ["fn tests::t  #[cfg(test)]", "use tests::super::*  #[cfg(test)]"])
 
     def test_cfg_variants_of_one_function_have_distinct_keys(self):
         src = '#[cfg(unix)]\nfn f() {}\n#[cfg(windows)]\nfn f() {}\n'
@@ -104,6 +104,17 @@ class Verdicts(unittest.TestCase):
         new = "fn f() { crate::new::g() }\n"
         self.assertEqual(vm.compare(old, new)[2] != [], True)
         self.assertEqual(vm.compare(old, new, renames=[("old::", "new::")])[:3], ([], [], []))
+
+    def test_rename_applies_to_module_names_before_keys_are_built(self):
+        old = "mod old { fn f() {} }\n"
+        new = "mod new { fn f() {} }\n"
+        self.assertEqual(vm.compare(old, new, renames=[("mod old", "mod new")])[:3], ([], [], []))
+
+    def test_cfg_of_an_inline_module_is_part_of_the_keys_inside_it(self):
+        old = '#[cfg(feature = "a")]\nmod m { fn f() {} }\n'
+        new = 'mod m { fn f() {} }\n'
+        lost, added, _, _ = vm.compare(old, new)
+        self.assertEqual((len(lost), len(added)), (1, 1))
 
     def test_allow_ignores_matching_items(self):
         lost, added, _, _ = vm.compare("fn a() {}\n", "fn z() {}\n", allow=["fn a", "fn z"])
