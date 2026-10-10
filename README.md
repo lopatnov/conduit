@@ -147,9 +147,11 @@ curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86
   | tar xz && ./conduit-x86_64-unknown-linux-gnu --version
 ```
 
-Every release also carries `SHA256SUMS.txt` and GitHub build-provenance attestations for the
-binaries (`gh attestation verify <file> --repo lopatnov/conduit`). The musl builds are statically
-linked; the glibc builds link the system C library dynamically.
+Every release also carries `SHA256SUMS.txt` (it lists every file attached to the release,
+archives included) and GitHub build-provenance attestations for the bare binaries, which are
+attached next to the archives (`gh attestation verify <binary> --repo lopatnov/conduit`; the
+archives themselves are covered by the checksums only). The musl builds are statically linked;
+the glibc builds link the system C library dynamically.
 
 ### cargo install
 

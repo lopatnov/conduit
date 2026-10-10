@@ -130,14 +130,17 @@ func main() {
 **Reproduce it on your machine** (Linux or macOS; needs Go, a Rust toolchain and `oha`):
 
 ```bash
-# 1. the upstream
-mkdir -p /tmp/bench-upstream && cp main.go /tmp/bench-upstream/ && cd /tmp/bench-upstream
-go mod init bench-upstream && go build -o /tmp/bench-upstream-bin . && /tmp/bench-upstream-bin &
+WORK=$(mktemp -d)   # a private scratch directory, not a predictable name in /tmp
+
+# 1. the upstream (main.go is the file above)
+cp main.go "$WORK"/
+(cd "$WORK" && go mod init bench-upstream && go build -o bench-upstream .)
+"$WORK"/bench-upstream &
 
 # 2. Conduit, built and configured exactly as in CI
 cd /path/to/conduit && cargo build --release
-printf '{ "port": 8080, "proxy": "http://127.0.0.1:4000" }' > /tmp/bench-conduit.json
-./target/release/conduit -c /tmp/bench-conduit.json &
+printf '{ "port": 8080, "proxy": "http://127.0.0.1:4000" }' > "$WORK/conduit.json"
+./target/release/conduit -c "$WORK/conduit.json" &
 curl -sf http://127.0.0.1:8080/__health__   # wait until this answers
 
 # 3. the load

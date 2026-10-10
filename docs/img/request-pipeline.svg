@@ -29,13 +29,13 @@
   <text x="165" y="118" class="s">IP allow / deny</text>
   <text x="165" y="140" class="s">CORS preflight</text>
   <text x="165" y="162" class="s">health check</text>
-  <text x="165" y="184" class="s">allowed hosts</text>
   <path class="ln" d="M273 145 H285" marker-end="url(#arr)"/>
   <rect x="287" y="62" width="118" height="166" rx="10" fill="#fff1e5" stroke="#f5a35c" stroke-width="1.4"/>
   <circle cx="304" cy="82" r="10" fill="#57606a"/><text x="304" y="86.5" text-anchor="middle" class="n">3</text>
   <text x="320" y="87" class="h">Protect</text>
-  <text x="299" y="118" class="s">request limits</text>
-  <text x="299" y="140" class="s">rate limit</text>
+  <text x="299" y="118" class="s">allowed hosts</text>
+  <text x="299" y="140" class="s">request limits</text>
+  <text x="299" y="162" class="s">rate limit</text>
   <path class="ln" d="M407 145 H419" marker-end="url(#arr)"/>
   <rect x="421" y="62" width="118" height="166" rx="10" fill="#fff1e5" stroke="#f5a35c" stroke-width="1.4"/>
   <circle cx="438" cy="82" r="10" fill="#57606a"/><text x="438" y="86.5" text-anchor="middle" class="n">4</text>
@@ -72,5 +72,5 @@
   <text x="835" y="206" class="s">log, metrics</text>
   <text x="480" y="36" text-anchor="middle" class="h">Request to response, in this order</text>
   <text x="480" y="258" text-anchor="middle" class="m">A guard that rejects a request answers it right there (403, 401, 429 …); the stages after it do not run.</text>
-  <text x="480" y="278" text-anchor="middle" class="m">Health checks (/__health__) are answered after stage 2, before limits, auth and everything that follows.</text>
+  <text x="480" y="278" text-anchor="middle" class="m">Health checks (/__health__) are answered at the end of stage 2, before the host check, limits, auth and the rest.</text>
 </svg>
