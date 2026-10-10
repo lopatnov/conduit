@@ -2,7 +2,7 @@
 
 Scripts for measuring reverse-proxy **passthrough** — one HTTP request through Conduit to a fixed-body keep-alive upstream —
 and for finding out where the CPU time of a request goes. They were written to investigate why the CI "Performance report"
-showed ~8.7k req/s and are what the numbers in [`docs/benchmarks.md`](../../docs/benchmarks.md)'s reproducibility note come from.
+showed ~8.7k req/s. [`docs/benchmarks.md`](../../docs/benchmarks.md) describes how that CI report is produced and how to reproduce it.
 Linux only (they read `/proc`, pin processes with `taskset`); on Windows run them inside WSL2 on the WSL file system.
 
 | Script | What it answers |
