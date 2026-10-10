@@ -10,7 +10,43 @@
 //! what turns that into a re-order instead of a failed start.
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
+/// The certificate and private-key file for `domain` inside `storage_dir`:
+/// `<domain>.crt.pem` and `<domain>.key.pem` (issue #554).
+///
+/// Every place that reads or writes these files gets the names from here. `domain` is the site's
+/// `host`, which a config author (a Kubernetes tenant, in CRD mode) controls, so it is checked
+/// twice: it must be a plain DNS name ([`crate::domain::validate_domain`], the same check config
+/// validation runs), and each resulting path must be a single file name directly inside
+/// `storage_dir`. The second check cannot fail for a name the first one accepts; it is there so
+/// that a change to either can never move a key file out of the storage directory unnoticed.
+pub(super) fn pair_paths(storage_dir: &Path, domain: &str) -> io::Result<(PathBuf, PathBuf)> {
+    crate::domain::validate_domain(domain).map_err(|why| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("refusing to use the ACME domain as a file name: {why}"),
+        )
+    })?;
+    let cert = storage_dir.join(format!("{domain}.crt.pem"));
+    let key = storage_dir.join(format!("{domain}.key.pem"));
+    for path in [&cert, &key] {
+        if !is_file_directly_in(storage_dir, path) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to use an ACME file path outside the storage directory",
+            ));
+        }
+    }
+    Ok((cert, key))
+}
+
+/// `true` when `path` is one file name placed directly inside `dir`: its parent is `dir` itself
+/// (not `dir/..` or a subdirectory) and its last component is a normal name (not `..`).
+fn is_file_directly_in(dir: &Path, path: &Path) -> bool {
+    path.parent() == Some(dir)
+        && matches!(path.components().next_back(), Some(Component::Normal(_)))
+}
 
 /// `<path>.tmp` — the staging file next to `path` (same directory, so the final
 /// `rename` never crosses a filesystem boundary).
@@ -86,8 +122,7 @@ pub(super) struct PendingPair {
 
 impl PendingPair {
     pub(super) fn create(storage_dir: &Path, domain: &str) -> io::Result<Self> {
-        let cert = storage_dir.join(format!("{domain}.crt.pem"));
-        let key = storage_dir.join(format!("{domain}.key.pem"));
+        let (cert, key) = pair_paths(storage_dir, domain)?;
         let cert_tmp = staging_path(&cert);
         let key_tmp = staging_path(&key);
         let cert_file = create_staging_file(&cert_tmp)?;
@@ -317,5 +352,77 @@ mod tests {
             std::fs::read_to_string(dir.path().join("example.com.key.pem")).unwrap(),
             "K"
         );
+    }
+
+    // ── file names from the site host (issue #554) ───────────────────────────
+
+    #[test]
+    fn pair_paths_puts_both_files_directly_inside_the_storage_dir() {
+        let dir = Path::new("storage/certs");
+        for domain in [
+            "example.com",
+            "a.example.com",
+            "*.example.com",
+            "localhost",
+            "xn--bcher-kva.example",
+        ] {
+            let (cert, key) = pair_paths(dir, domain).unwrap();
+            assert_eq!(cert, dir.join(format!("{domain}.crt.pem")));
+            assert_eq!(key, dir.join(format!("{domain}.key.pem")));
+            assert!(
+                is_file_directly_in(dir, &cert),
+                "certificate path of {domain}"
+            );
+            assert!(is_file_directly_in(dir, &key), "key path of {domain}");
+        }
+    }
+
+    #[test]
+    fn pair_paths_refuses_names_that_could_leave_the_storage_dir() {
+        let dir = Path::new("storage/certs");
+        for domain in [
+            "..",
+            "../x",
+            "../../etc/cron.d/x",
+            "a/b",
+            "/abs",
+            "a\\b",
+            "..\\x",
+            "a/../../b",
+            "x\0y",
+            ".hidden.example.com",
+            "",
+            "*",
+        ] {
+            let err = pair_paths(dir, domain).expect_err(domain);
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{domain:?}");
+        }
+    }
+
+    /// The second line of defence, tested on its own because no name that passes the DNS check
+    /// can trigger it.
+    #[test]
+    fn a_path_is_inside_the_dir_only_as_one_plain_file_name() {
+        let dir = Path::new("storage/certs");
+        assert!(is_file_directly_in(dir, &dir.join("a.example.com.crt.pem")));
+        assert!(!is_file_directly_in(dir, &dir.join("../a.crt.pem")));
+        assert!(!is_file_directly_in(dir, &dir.join("sub/a.crt.pem")));
+        assert!(!is_file_directly_in(dir, &dir.join("..")));
+        assert!(!is_file_directly_in(dir, Path::new("/etc/a.crt.pem")));
+        assert!(!is_file_directly_in(dir, Path::new("a.crt.pem")));
+    }
+
+    #[test]
+    fn staging_files_for_an_invalid_name_are_never_created() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let storage = dir.path().join("certs");
+        std::fs::create_dir(&storage).unwrap();
+        let err = PendingPair::create(&storage, "../escape")
+            .err()
+            .expect("refused");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        // Before the fix the staging files landed next to `certs`, outside it.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(&storage).unwrap().count(), 0);
     }
 }

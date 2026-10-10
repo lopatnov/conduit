@@ -18,7 +18,7 @@ use conduit_tcp::validate::validate_tcp;
 use conduit_upload::validate::validate_upload;
 
 use super::auth::validate_api_key;
-use super::tls::validate_tls;
+use super::tls::{validate_acme_host, validate_tls};
 
 use crate::config::schema::{ProxyRouteTarget, SiteConfig, TcpConfig};
 
@@ -40,6 +40,7 @@ pub(super) fn validate_site(
 fn validate_site_transport(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
     if let Some(tls) = &site.tls {
         validate_tls(tls, &format!("{prefix}.tls"), errors);
+        validate_acme_host(site.host.as_deref(), tls, prefix, errors);
     }
     if let Some(tcp) = &site.tcp {
         validate_tcp_site(tcp, site, prefix, errors);

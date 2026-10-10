@@ -765,7 +765,11 @@ the challenge — prefer a dedicated `httpRedirectPort`. If the challenge port i
 held by a TLS site or a raw TCP proxy, renewal is disabled and an error is
 logged at startup.
 
-The domain is taken from the site's `host` field — no separate `domain:` field exists.
+The domain is taken from the site's `host` field — no separate `domain:` field exists. The
+certificate and key are stored as `<storage>/<host>.crt.pem` and `<storage>/<host>.key.pem`, so
+`conduit validate` rejects a `host` that is not a plain DNS name (no `/`, `\`, `..`, empty label
+or other character that does not belong in a host name), and the flow checks the name again
+before it touches the disk.
 
 ```yaml
 host: api.example.com   # ← domain used for the certificate

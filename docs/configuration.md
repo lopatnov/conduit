@@ -330,6 +330,13 @@ tls:
 }
 ```
 
+The certificate is ordered for the site's `host`, and the files are stored as
+`<storage>/<host>.crt.pem` and `<storage>/<host>.key.pem`. Because the host becomes part of a
+file name, `conduit validate` rejects a `host` that is not a plain DNS name: labels of ASCII
+letters, digits and hyphens separated by dots (international names in punycode, `xn--…`), with
+no `/`, `\`, `..`, empty label or other character. A leading `*.` is accepted, but a CA
+validating over HTTP-01, the only challenge Conduit implements, normally refuses wildcards.
+
 A background task renews the certificate on disk when it is within 30 days of
 expiry; the running process keeps serving the one it loaded, so restart Conduit
 within that window. Details: [`acme` in the CLI reference](cli.md#acme--auto-tls--lets-encrypt).

@@ -13,11 +13,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
 use dashmap::DashMap;
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 
-use super::{cache_state, load_or_obtain_with, AcmeCertPaths, CacheState, ChallengeSource};
+use super::{
+    cache_state, load_or_obtain_with, pair_paths, AcmeCertPaths, CacheState, ChallengeSource,
+};
 use crate::config::AcmeConfig;
 
 /// How often the certificates are checked.
@@ -44,12 +47,10 @@ pub async fn renew_if_due(
     job: &RenewalJob,
     challenges: &Arc<DashMap<String, String>>,
 ) -> anyhow::Result<Option<AcmeCertPaths>> {
-    let cert = tokio::fs::read_to_string(job.storage_dir.join(format!("{}.crt.pem", job.domain)))
-        .await
-        .ok();
-    let key = tokio::fs::read_to_string(job.storage_dir.join(format!("{}.key.pem", job.domain)))
-        .await
-        .ok();
+    let (cert_path, key_path) = pair_paths(&job.storage_dir, &job.domain)
+        .with_context(|| format!("invalid ACME domain for site host {:?}", job.domain))?;
+    let cert = tokio::fs::read_to_string(&cert_path).await.ok();
+    let key = tokio::fs::read_to_string(&key_path).await.ok();
     if cache_state(cert.as_deref(), key.as_deref()) == CacheState::Reusable {
         return Ok(None);
     }
@@ -246,5 +247,25 @@ mod tests {
             .await
             .expect("the loop must stop on shutdown")
             .unwrap();
+    }
+
+    /// Issue #554: renewal reads the cached pair by the same names, so a path-like host must not
+    /// make it look at (and report "nothing to do" for) a pair outside the storage directory.
+    #[tokio::test]
+    async fn a_path_like_host_is_an_error_not_a_pair_found_outside_the_storage_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let storage = dir.path().join("certs");
+        std::fs::create_dir(&storage).unwrap();
+        fresh_pair(dir.path(), "x", 365);
+        let mut job = job(&storage);
+        job.domain = "../x".to_owned();
+
+        let err = renew_if_due(&job, &Arc::new(DashMap::new()))
+            .await
+            .expect_err("refused");
+        assert!(
+            format!("{err:#}").contains("invalid ACME domain"),
+            "got: {err:#}"
+        );
     }
 }

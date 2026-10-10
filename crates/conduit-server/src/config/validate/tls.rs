@@ -90,6 +90,32 @@ pub(super) fn validate_tls(tls: &TlsConfig, prefix: &str, errors: &mut Vec<Valid
     }
 }
 
+/// `tls.acme` keeps its certificate and key in files named after the site `host` (issue #554), so
+/// that host must be a plain DNS name: no path separators, no `..`, no NUL. A site without a
+/// `host` is skipped here (the ACME flow skips it too).
+pub(super) fn validate_acme_host(
+    host: Option<&str>,
+    tls: &TlsConfig,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    if tls.acme.is_none() {
+        return;
+    }
+    let Some(host) = host else {
+        return;
+    };
+    if let Err(why) = conduit_acme::domain::validate_domain(host) {
+        errors.push(ValidationError::new(
+            format!("{prefix}.host"),
+            format!(
+                "tls.acme needs a plain DNS host name, because the certificate and key files \
+                 are named after it: {why}"
+            ),
+        ));
+    }
+}
+
 /// Validate the `tls.clientAuth` (mTLS) configuration block.
 fn validate_tls_client_auth(
     ca: &TlsClientAuth,
