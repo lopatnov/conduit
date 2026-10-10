@@ -326,7 +326,7 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
 ///
 /// Cold fields: `global.workers`, `global.backlog`, `global.admin.bind`,
 /// `sites[N].port`, `sites[N].tls.cert`, `sites[N].tls.key`.
-fn detect_cold_changes(
+pub(crate) fn detect_cold_changes(
     old: &crate::config::schema::AppConfig,
     new: &crate::config::schema::AppConfig,
 ) -> Vec<String> {
