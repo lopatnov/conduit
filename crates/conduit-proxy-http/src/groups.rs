@@ -83,6 +83,7 @@ fn pick_url_by_strategy(
 /// Group selection keys:
 /// - `hash_key = "ip"` → hash client IP across groups (sticky per client)
 /// - `hash_key = "url"` → hash request path across groups
+/// - `hash_key = "header:<Name>"` → hash that request header across groups
 /// - Other strategies (round-robin, random, least-conn, …) work as usual.
 pub(crate) fn resolve_grouped(
     group_strategy: Option<&LoadBalanceStrategy>,
@@ -98,12 +99,13 @@ pub(crate) fn resolve_grouped(
     // Outer pick: choose which group handles this request. Group selection
     // itself is not capacity-aware — see the inner pick below for that.
     let group_key = format!("{route_key}__group");
-    let hash_input = if opts.hash_key == "url" || ctx.client_ip.is_empty() {
-        ctx.path
-    } else {
-        ctx.client_ip
-    };
-    let hash_val = conduit_upstream::targets::fnv1a_hash(hash_input);
+    let hash_val = crate::sticky::selection_hash_val(
+        None,
+        opts.hash_key,
+        ctx.path,
+        ctx.client_ip,
+        ctx.req_headers,
+    );
 
     let group_names: Vec<String> = groups.iter().map(|g| g.name.clone()).collect();
     let picked_name = {
@@ -198,9 +200,7 @@ pub(crate) fn resolve_grouped(
     // Parse BEFORE acquiring the circuit_tracking slot below — matches the
     // flat-route path's ordering (#156) so a malformed URL can never leak a
     // slot nothing will release.
-    let strip = opts
-        .strip_prefix
-        .then(|| route_key.trim_end_matches('/').to_string());
+    let strip = opts.strip_value(route_key);
     let upstream: ProxyUpstream = match outcome::url_to_proxy_upstream(&chosen_url, strip) {
         Some(base) => ProxyUpstream {
             rewrite: opts.rewrite.map(<[_]>::to_vec),

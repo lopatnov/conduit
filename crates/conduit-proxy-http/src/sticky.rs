@@ -80,15 +80,28 @@ pub(crate) fn resolve_sticky(
 }
 
 /// Hash key for ip-hash / consistent-hash / sticky selection.
-/// Priority: sticky cookie > `hashKey: "url"` (or empty client IP) > client IP.
+/// Priority: sticky cookie > `hashKey: "header:<Name>"` (when the request carries that header) >
+/// `hashKey: "url"` (or empty client IP) > client IP.
+///
+/// A `header:<Name>` key whose header is absent (or not valid UTF-8) falls back to the client IP,
+/// so such a request is still spread per client rather than all landing on one peer. The header is
+/// client-controlled: like `ipHash` behind a proxy that trusts `X-Forwarded-For`, it steers the
+/// request, it does not authenticate it.
 pub(crate) fn selection_hash_val(
     sticky_override: Option<&str>,
     hash_key: &str,
     path: &str,
     client_ip: &str,
+    req_headers: &http::HeaderMap,
 ) -> u64 {
+    let header_value = hash_key
+        .strip_prefix("header:")
+        .and_then(|name| req_headers.get(name.trim()))
+        .and_then(|v| v.to_str().ok());
     let hash_input = if let Some(cookie_val) = sticky_override {
         cookie_val
+    } else if let Some(value) = header_value {
+        value
     } else if hash_key == "url" || client_ip.is_empty() {
         path
     } else {
@@ -175,6 +188,50 @@ pub fn hmac_verify_sticky(upstream_url: &str, cookie_value: &str, secret: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── selection_hash_val: hashKey ───────────────────────────────────────────
+
+    fn hash(hash_key: &str, ip: &str, headers: &http::HeaderMap) -> u64 {
+        selection_hash_val(None, hash_key, "/p", ip, headers)
+    }
+
+    #[test]
+    fn header_hash_key_hashes_the_header_value_not_the_ip() {
+        let mut h = http::HeaderMap::new();
+        h.insert("x-tenant", "acme".parse().unwrap());
+        assert_eq!(
+            hash("header:X-Tenant", "198.51.100.1", &h),
+            hash("header:X-Tenant", "198.51.100.2", &h),
+            "same header, different IPs: same key"
+        );
+        assert_eq!(
+            hash("header:X-Tenant", "198.51.100.1", &h),
+            conduit_upstream::targets::fnv1a_hash("acme")
+        );
+    }
+
+    #[test]
+    fn header_hash_key_without_the_header_falls_back_to_the_client_ip() {
+        let h = http::HeaderMap::new();
+        assert_eq!(
+            hash("header:X-Tenant", "198.51.100.1", &h),
+            hash("ip", "198.51.100.1", &h)
+        );
+        assert_ne!(
+            hash("header:X-Tenant", "198.51.100.1", &h),
+            hash("header:X-Tenant", "198.51.100.2", &h)
+        );
+    }
+
+    #[test]
+    fn sticky_cookie_outranks_a_header_hash_key() {
+        let mut h = http::HeaderMap::new();
+        h.insert("x-tenant", "acme".parse().unwrap());
+        assert_eq!(
+            selection_hash_val(Some("pin"), "header:X-Tenant", "/p", "198.51.100.1", &h),
+            conduit_upstream::targets::fnv1a_hash("pin")
+        );
+    }
 
     // ── extract_cookie ────────────────────────────────────────────────────────
 

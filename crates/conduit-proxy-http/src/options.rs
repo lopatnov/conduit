@@ -62,6 +62,10 @@ pub(crate) struct RouteOptions<'a> {
     pub(crate) backup: Option<&'a str>,
     pub(crate) sticky: Option<&'a StickyConfig>,
     pub(crate) strip_prefix: bool,
+    /// The prefix `stripPrefix` removes, when it is not the route key itself: a `routes[]` entry has
+    /// no path-prefix key, so the caller passes the literal prefix of its `match.path` glob. `None`
+    /// (the `proxy` map) means the route key is the prefix.
+    pub(crate) strip_base: Option<&'a str>,
 }
 
 #[cfg(feature = "proxy")]
@@ -92,7 +96,18 @@ impl<'a> RouteOptions<'a> {
             backup: cfg.backup.as_deref(),
             sticky: cfg.sticky.as_ref(),
             strip_prefix: cfg.strip_prefix.unwrap_or(false),
+            strip_base: None,
         }
+    }
+
+    /// The prefix to hand to the upstream request filter when `stripPrefix` is on.
+    pub(crate) fn strip_value(&self, route_key: &str) -> Option<String> {
+        self.strip_prefix.then(|| {
+            self.strip_base
+                .unwrap_or(route_key)
+                .trim_end_matches('/')
+                .to_string()
+        })
     }
 
     fn shorthand() -> Self {
@@ -115,6 +130,7 @@ impl<'a> RouteOptions<'a> {
             backup: None,
             sticky: None,
             strip_prefix: false,
+            strip_base: None,
         }
     }
 }
