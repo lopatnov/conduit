@@ -149,7 +149,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         fresh_pair(dir.path(), "example.com", 365);
         let result = renew_if_due(&job(dir.path()), &Arc::new(DashMap::new())).await;
-        assert!(matches!(result, Ok(None)), "got {result:?}");
+        assert!(matches!(result, Ok(None)));
     }
 
     #[tokio::test]
