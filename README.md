@@ -24,6 +24,25 @@ npx @lopatnov/conduit init   # write a starter conduit.yaml
 npx @lopatnov/conduit        # run it
 ```
 
+## Table of Contents
+
+- [Why Conduit](#why-conduit)
+- [Quick start](#quick-start)
+- [How a request flows](#how-a-request-flows)
+- [What Conduit does](#what-conduit-does)
+- [Installation](#installation)
+- [Choose your build](#choose-your-build)
+- [CLI commands](#cli-commands)
+- [Configuration](#configuration)
+- [Recipes](#recipes)
+- [Admin API](#admin-api)
+- [Benchmarks](#benchmarks)
+- [Limits you should know about](#limits-you-should-know-about)
+- [Editor integration (JSON Schema)](#editor-integration-json-schema)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## Why Conduit
 
 - **One file, checked before it runs.** `conduit validate` reports problems with the path of the
@@ -392,11 +411,10 @@ curl -X POST http://localhost:2019/ip-deny -d '{"cidr":"1.2.3.0/24"}'
 
 Every pull request runs a **Performance report** in CI that measures reverse-proxy passthrough
 for the PR head and for its base commit, back to back on the same runner, and posts the
-difference. It is a trend signal that catches regressions, not a lab measurement, and this README
-quotes no throughput figure for that reason: GitHub-hosted runners land on different CPUs from
-one run to the next, and earlier figures in the docs could not be reproduced (see
-[issue #475](https://github.com/lopatnov/conduit/issues/475)). If you quote a number, quote its
-setup too. This is the setup CI uses:
+difference. It is a trend signal that catches regressions, not a lab measurement, so this README
+quotes no throughput figure: GitHub-hosted runners land on different CPUs from one run to the
+next, and throughput depends on the hardware and on `global.workers`. If you quote a number,
+quote its setup too. This is the setup CI uses:
 
 | | |
 | --- | --- |
@@ -420,7 +438,8 @@ proxy: http://127.0.0.1:4000
 Throughput grows with `global.workers`, up to what the machine can give. For scripts that
 measure requests per second and CPU cost per request on your own hardware, see
 [`scripts/bench/`](scripts/bench/README.md); [docs/benchmarks.md](docs/benchmarks.md) has the
-step-by-step setup and the historical per-feature measurements.
+step-by-step reproduction, the reason CI uses one worker, and how to compare Conduit with another
+proxy fairly.
 
 ## Limits you should know about
 
@@ -481,6 +500,9 @@ with the file pattern `conduit*.json, conduit*.yaml`.
 
 ## Documentation
 
+Everything beyond this page lives in [`docs/`](docs/); this table says which file answers which
+question.
+
 | Read this                                | When you want to                                                  |
 | ---------------------------------------- | ----------------------------------------------------------------- |
 | [docs/configuration.md](docs/configuration.md) | look up any config field, in YAML and JSON                  |
@@ -491,7 +513,7 @@ with the file pattern `conduit*.json, conduit*.yaml`.
 | [docs/building.md](docs/building.md)     | build from source, pick features, cross-compile                   |
 | [docs/rhai.md](docs/rhai.md)             | write request and response logic as scripts                       |
 | [docs/wasm.md](docs/wasm.md)             | write plugins in Rust, C, Go, AssemblyScript or Zig               |
-| [docs/benchmarks.md](docs/benchmarks.md) | reproduce a measurement or read the historical ones               |
+| [docs/benchmarks.md](docs/benchmarks.md) | reproduce the CI measurement or run your own                      |
 | [examples/](examples/)                   | copy a complete, validated config                                 |
 
 ## Contributing

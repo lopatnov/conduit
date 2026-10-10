@@ -34,8 +34,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   directories and reloads browsers (config changes need `conduit reload`); the
   `conduit validate` example showed an error format the command does not print; the Linux release
   archive was said to unpack to `./conduit` (it unpacks to a file named like the archive). The
-  README and the npm README were rewritten to match the code, and the benchmark page now gives the
-  exact setup the CI performance report uses.
+  README and the npm README were rewritten to match the code (the README has its table of contents
+  back), and the benchmark page now gives the exact setup the CI performance report uses; the
+  old per-feature throughput tables, the nginx/Traefik comparison and the build-size table were
+  removed: they were one-off measurements, some could not be reproduced (issues #475, #487).
 - **`global.shutdownTimeoutSecs` now takes effect** (issue #489). It is passed to Pingora's grace period (default 30 s;
   Pingora used to wait its own 300 s, so operators with long-lived streams (uploads, SSE, WebSocket) should raise it).
   On SIGTERM Pingora waits the whole period and does not end early when connections drain; `POST /shutdown` still exits at zero in-flight.

@@ -11,7 +11,7 @@
 | [wasm.md](wasm.md)                   | WASM plugin middleware — ABI, host functions, Rust/C/Go examples           |
 | [node-python-workers.md](node-python-workers.md) | Recipe — Node.js/Python worker pool behind Conduit via the dynamic-upstream Admin API |
 | [deployment.md](deployment.md)       | Running in production — Docker, systemd, Kubernetes, production checklist  |
-| [benchmarks.md](benchmarks.md)       | How the CI measures performance, how to reproduce it, historical results   |
+| [benchmarks.md](benchmarks.md)       | How the CI measures performance and how to reproduce it on your machine    |
 | [live-demo.md](live-demo.md)         | Local demo — two virtual sites, load balancing, caching, auth              |
 
 ---

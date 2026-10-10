@@ -280,18 +280,16 @@ jobs:
   # nothing in this repo's branch ruleset names this job), since a single
   # shared CI runner's wrk/oha numbers are inherently noisier run-to-run than
   # a binary-size measurement; a hard gate here would produce false-positive
-  # reds. Runs one scenario (reverse-proxy passthrough, matching
-  # docs/benchmarks.md's own "Reverse Proxy Passthrough" table) against the
-  # `default` feature profile — the one most users actually run, and the one
-  # under discussion when this job was added (a Step 1c-style investigation
+  # reds. Runs one scenario (reverse-proxy passthrough, the setup described in
+  # docs/benchmarks.md) against the `default` feature profile — the one most
+  # users actually run, and the one under discussion when this job was added (a Step 1c-style investigation
   # found `default`'s footprint had grown ~21% for identical functionality
   # since before the Conduit 2.0 workspace migration, #114 — this job exists
   # so a distributed regression like that gets caught per-PR instead of only
   # by an occasional manual audit).
   #
-  # `oha` (https://github.com/hatoo/oha) instead of `wrk` (which the docs'
-  # manual methodology uses): a single pinned static Linux binary needs no
-  # apt/luarocks build step, and its `--output-format json` `metrics` object
+  # `oha` (https://github.com/hatoo/oha) instead of `wrk`: a single pinned
+  # static Linux binary needs no apt/luarocks build step, and its `--output-format json` `metrics` object
   # is explicitly documented as "CI friendly statistics" — stable field names
   # (`requests_per_sec`, `latency_ms.p50/p95/p99`, `success_rate`) instead of
   # regex-scraping wrk's human-oriented text output. The binary is verified

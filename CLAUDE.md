@@ -127,10 +127,8 @@ i.e. bypasses *all* guards, which contradicts the pipeline order two paragraphs 
 Живой беклог — **GitHub Project #5** (`@lopatnov/conduit`) и issues. Всё выполненное и заметки исследований (h2o, Angie, freenginx, Tokio, ранее проверенные «блокировки») — в `.claude/archive/backlog.md`. Ниже только то, что открыто или заблокировано (на 2026-10-03); причины блокировок и перепроверка на Pingora 0.9 — #451.
 
 ### Открыто
-- Re-benchmark `--features standard`
 - Middleware Stack
 - Полностью feature-driven архитектура с CoR-сборкой по компиляции и именованными бандлами (V2; фактически идёт как #114)
-- 3. CLI: минимальный набор Cargo-фич для конфигурации (#473)
 - Graceful upstream drain
 - External processing filter (ext_proc)
 - Lua скрипты
