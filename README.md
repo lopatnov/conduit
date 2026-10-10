@@ -9,14 +9,13 @@
 
 **Conduit is a reverse proxy, API gateway and static file server written in Rust, built on
 [Cloudflare Pingora](https://github.com/cloudflare/pingora).** You describe your sites, routes,
-authentication, limits and caching in one YAML or JSON file and run one executable.
-
-Put it in front of your apps to terminate TLS, route requests, authenticate and rate-limit
-clients, cache responses and run your own scripted logic — or serve a single-page app and its API
-from one port — without gluing together a proxy, an auth sidecar and a plugin system.
+authentication, limits and caching in one YAML or JSON file and run one executable. Conduit
+terminates TLS, balances and protects your upstreams, serves a single-page app next to its API,
+lets you add your own logic with scripts and plugins, and picks up configuration changes without
+dropping connections.
 
 <p align="center">
-  <img src="docs/img/architecture.svg" alt="Clients talk to Conduit over HTTP/1.1, HTTP/2, WebSocket or TCP. Inside Conduit, listeners feed an ordered set of guards and a router, which picks a handler: reverse proxy, TCP proxy, static files or upload. Handlers talk to your services and to files on disk. Redis and an auth service are optional." width="900">
+  <img src="docs/img/hero.svg" alt="Clients reach Conduit over HTTP/1.1, HTTP/2, WebSocket or TCP. Inside Conduit, listeners feed an ordered chain of guards and a router that picks a handler: reverse proxy, TCP proxy, static files or upload. Handlers use your services and files on disk. Redis and an identity provider are optional." width="900">
 </p>
 
 ```bash
@@ -27,14 +26,14 @@ npx @lopatnov/conduit        # run it
 ## Table of Contents
 
 - [Quick start](#quick-start)
-- [How a request flows](#how-a-request-flows)
 - [What Conduit does](#what-conduit-does)
+- [How a request flows](#how-a-request-flows)
+- [Features by example](#features-by-example)
 - [Installation](#installation)
 - [Choose your build](#choose-your-build)
 - [CLI commands](#cli-commands)
 - [Configuration](#configuration)
-- [Recipes](#recipes)
-- [Admin API](#admin-api)
+- [Hot reload and the Admin API](#hot-reload-and-the-admin-api)
 - [Benchmarks](#benchmarks)
 - [Limits you should know about](#limits-you-should-know-about)
 - [Editor integration (JSON Schema)](#editor-integration-json-schema)
@@ -61,11 +60,9 @@ proxy:
   /api: http://localhost:4000
 ```
 
-```text
-GET /          → ./dist/index.html
-GET /logo.png  → ./dist/logo.png
-GET /api/users → http://localhost:4000/api/users
-```
+<p align="center">
+  <img src="docs/img/one-port.svg" alt="The three-line config serves ./dist for GET / and GET /logo.png and proxies GET /api/users to http://localhost:4000/api/users." width="900">
+</p>
 
 ```bash
 curl http://localhost:8080/__health__
@@ -73,35 +70,240 @@ curl http://localhost:8080/__health__
 ```
 
 **→ Ready-to-run configs:** [`examples/`](examples/) · **→ Every field:** [docs/configuration.md](docs/configuration.md)
+· **→ Other ways to install:** [Installation](#installation)
+
+## What Conduit does
+
+<p align="center">
+  <img src="docs/img/feature-map.svg" alt="Twelve feature groups: routing; proxy and balancing; resilience; caching; static files; TLS; authentication; traffic control; scripting; observability; operations; deployment. Items marked with an asterisk need an optional build feature." width="900">
+</p>
+
+Where each group is documented in detail:
+
+| Group | Read |
+| --- | --- |
+| Routing, redirects, path rewrite | [Routes](docs/configuration.md#routes) · [Redirects](docs/configuration.md#redirects) · [URL rewriting](docs/configuration.md#url-rewriting) |
+| Proxy and balancing | [Proxy](docs/configuration.md#proxy) · [Load balancing](docs/configuration.md#load-balancing) · [Sticky sessions](docs/configuration.md#sticky-sessions) |
+| Resilience | [Health checks](docs/configuration.md#health-checks) · [Circuit breaker](docs/configuration.md#circuit-breaker) · [Retry](docs/configuration.md#retry) · [Outlier detection](docs/configuration.md#outlier-detection) |
+| Caching | [Proxy cache](docs/configuration.md#proxy-cache) |
+| Static files | [Static files](docs/configuration.md#static-files) · [Fallback](docs/configuration.md#fallback) · [Compression](docs/configuration.md#compression) |
+| TLS | [TLS / HTTPS](docs/configuration.md#tls--https) · [mTLS](docs/configuration.md#mtls--client-certificate-authentication) · [HTTP/2](docs/configuration.md#http2) |
+| Authentication | [Basic](docs/configuration.md#basic-auth) · [API key](docs/configuration.md#api-key) · [JWT](docs/configuration.md#jwt-auth) · [Forward auth](docs/configuration.md#forward-auth) · [Consumers](docs/configuration.md#consumers) |
+| Traffic control | [Rate limiting](docs/configuration.md#rate-limiting) · [Limits](docs/configuration.md#limits) · [Priority routing](docs/configuration.md#priority-routing) · [IP filter](docs/configuration.md#ip-filter) |
+| Scripting | [Rhai guide](docs/rhai.md) · [WebAssembly guide](docs/wasm.md) |
+| Observability | [Logging](docs/configuration.md#logging) · [Metrics](docs/configuration.md#metrics) · [OpenTelemetry](docs/configuration.md#opentelemetry-tracing) |
+| Operations | [Hot reload](docs/configuration.md#hot-reload) · [Admin API](docs/admin.md) · [CLI](docs/cli.md) |
+| Deployment | [Deployment guide](docs/deployment.md) · [Building](docs/building.md) |
+
+An asterisk on the map means the feature is optional at build time. [Choose your
+build](#choose-your-build) shows which build has what.
 
 ## How a request flows
 
 <p align="center">
-  <img src="docs/img/request-pipeline.svg" alt="A request passes through seven stages in order: accept, gate, protect, auth, shape, serve and respond. A guard that rejects the request answers it immediately." width="900">
+  <img src="docs/img/request-flow.svg" alt="A request passes through seven stages in order: accept, gate, protect, auth, shape, serve and respond. A guard that rejects the request answers it immediately with 403, 400, 429, 503 or 401. After routing, the proxy checks per-route limits and the circuit breaker, picks an upstream, rewrites the request and handles the response." width="900">
 </p>
 
 Guards run in a fixed order, so you can reason about what happens first: a client blocked by the IP
 filter never reaches rate limiting or auth, and a request that fails auth never reaches your
 scripts or your upstream. Routing then picks the first matching route, and a handler serves it.
+`/__health__` is answered at the end of the gate stage, before the host check, limits and auth.
 
-## What Conduit does
+## Features by example
 
-<table>
-<tr><td><b>Proxying</b></td><td>Reverse proxy with round-robin, weighted round-robin, random, least-connections, least-response-time, IP-hash, consistent-hash and power-of-two-choices balancing; health checks, outlier detection, circuit breaker, sticky sessions, upstream groups</td></tr>
-<tr><td><b>Static files</b></td><td>ETag, Last-Modified, Range, optional pre-compressed <code>.br</code>/<code>.gz</code> files, <code>Cache-Control</code>, SPA fallback</td></tr>
-<tr><td><b>TLS</b></td><td>Your own certificates, automatic certificates from Let's Encrypt (ACME), mTLS client certificates, HTTP→HTTPS redirect, HTTP/2</td></tr>
-<tr><td><b>Auth</b></td><td>Basic, API key, JWT (HS256 with a shared secret, RS256/ES256 through a JWKS URL), forward auth to your own service, named consumers with their own credentials and quotas</td></tr>
-<tr><td><b>Rate limiting</b></td><td>Token bucket per client IP or header, burst capacity, per-route and per-consumer limits, optional Redis backend for several instances</td></tr>
-<tr><td><b>Caching</b></td><td>Cache for proxied responses in memory, Redis or on disk; stale-while-revalidate, stale-if-error, request coalescing</td></tr>
-<tr><td><b>Reliability</b></td><td>Retries with a budget and jitter, per-try timeouts, priority load shedding, traffic mirroring</td></tr>
-<tr><td><b>Routing</b></td><td>Virtual hosts, path globs, methods, header regex, cookies and query parameters in an ordered route table</td></tr>
-<tr><td><b>Middleware</b></td><td>Rhai scripts and WebAssembly plugins (Wasmtime), request and response header transforms, CORS, security headers, compression, fault injection</td></tr>
-<tr><td><b>Observability</b></td><td>Prometheus metrics, OpenTelemetry (OTLP) tracing, structured JSON access log, <code>X-Request-ID</code></td></tr>
-<tr><td><b>Operations</b></td><td>Hot config reload, Admin API, runtime IP deny-list, TCP proxy mode, multipart file upload, Kubernetes CRD provider</td></tr>
-<tr><td><b>Deployment</b></td><td>One executable, a <code>FROM scratch</code> Docker image, systemd and Kubernetes examples, secrets from environment variables</td></tr>
-</table>
+Each block is a complete config you can save as `conduit.yaml` and check with `conduit validate`.
+Features marked *(needs `x`)* are optional at build time; see [Choose your build](#choose-your-build).
 
-Some of these are optional at build time. [Choose your build](#choose-your-build) shows which.
+### Reverse proxy and load balancing
+
+<p align="center">
+  <img src="docs/img/balancing.svg" alt="A balancer picks an upstream with one of eight strategies. Unhealthy and ejected upstreams are skipped, upstreams at their connection cap are skipped, and a failed attempt is retried on another target within a retry budget." width="900">
+</p>
+
+```yaml
+port: 8080
+proxy:
+  /api:
+    targets:
+      - http://api-1:4000
+      - http://api-2:4000
+      - http://api-3:4000
+    strategy: least-conn               # also round-robin, p2c, ip-hash, consistent-hash …
+    healthCheck: { path: /health, intervalSecs: 10 }
+    maxConnectionsPerUpstream: 200     # 503 instead of queueing when every target is full
+    retry: { attempts: 2, conditions: [connection_error, 5xx] }
+outlierDetection: { consecutive5xx: 5 }   # eject a target that keeps failing real requests
+```
+
+**→ Details:** [Load balancing](docs/configuration.md#load-balancing) ·
+[Health checks](docs/configuration.md#health-checks) ·
+[Circuit breaker](docs/configuration.md#circuit-breaker) · [Retry](docs/configuration.md#retry)
+
+### Static files and single-page apps
+
+```yaml
+port: 8080
+static: ./dist
+fallback: { file: ./dist/index.html, status: 200 }   # unknown paths get the app shell
+compression: true
+proxy:
+  /api: http://localhost:4000
+```
+
+**→ Details:** [Static files](docs/configuration.md#static-files) ·
+[Fallback](docs/configuration.md#fallback) · [Compression](docs/configuration.md#compression)
+
+### HTTPS with automatic certificates *(needs `acme`)*
+
+```yaml
+host: example.com
+port: 443
+http2: {}
+tls:
+  acme: { email: admin@example.com }   # Let's Encrypt; it validates over port 80
+  httpRedirectPort: 80                 # plain HTTP is redirected to HTTPS
+proxy: http://localhost:4000
+```
+
+Bring your own certificate instead with `tls: { cert: ./fullchain.pem, key: ./privkey.pem }`.
+**→ Details:** [TLS / HTTPS](docs/configuration.md#tls--https) ·
+[mTLS](docs/configuration.md#mtls--client-certificate-authentication)
+
+### Authentication
+
+<p align="center">
+  <img src="docs/img/security-layers.svg" alt="Four layers: network (IP filter, TLS and mTLS, allowed hosts), abuse control (request limits, rate limits, load shedding), identity (consumers, Basic auth, API keys, JWT, forward auth) and hardening (security headers, CORS, header hygiene, error masking)." width="900">
+</p>
+
+```yaml
+port: 8080
+jwtAuth:                               # needs jwt
+  jwksUrl: https://auth.example.com/.well-known/jwks.json
+  audience: [my-api]
+requestTransform:
+  setHeaders:
+    X-User-ID: "{{ jwt.sub }}"         # pass a claim on to your service
+proxy:
+  /api: http://localhost:4000
+```
+
+Prefer something simpler? `basicAuth: { users: { alice: "$ALICE_PASSWORD" } }` and
+`apiKey: { keys: ["$API_KEY"], header: X-API-Key }` work the same way, and `forwardAuth` hands the
+decision to your own service. **→ Details:** [Basic](docs/configuration.md#basic-auth) ·
+[API key](docs/configuration.md#api-key) · [JWT](docs/configuration.md#jwt-auth) ·
+[Forward auth](docs/configuration.md#forward-auth) · [Consumers](docs/configuration.md#consumers)
+
+### Rate limiting
+
+```yaml
+port: 8080
+rateLimit: { windowSecs: 60, limit: 300 }          # per client IP, for the whole site
+proxy:
+  /api/payments:
+    targets: [http://payments:4000]
+    rateLimit: { windowSecs: 60, limit: 10, keyBy: "header:X-User-ID" }   # a stricter, per-user limit
+```
+
+Add `store: "redis://host:6379"` to share counters between instances *(needs `redis`)*.
+**→ Details:** [Rate limiting](docs/configuration.md#rate-limiting)
+
+### Caching *(needs `cache`)*
+
+<p align="center">
+  <img src="docs/img/caching.svg" alt="A request is looked up by host, scheme, path and query. A fresh hit is served from the store, a stale entry is served while one background fetch refreshes it, and a miss goes to the upstream and is stored." width="900">
+</p>
+
+```yaml
+port: 8080
+proxy:
+  /api:
+    targets: [http://backend:4000]
+    cache:
+      store: memory                    # or redis://… or disk:/path
+      ttlSecs: 60
+      staleWhileRevalidateSecs: 300    # serve a stale copy while refreshing in the background
+      staleIfErrorSecs: 600            # and when the upstream is down
+      skipIfCookie: true               # never cache requests that carry a cookie
+```
+
+**→ Details:** [Proxy cache](docs/configuration.md#proxy-cache)
+
+### Your own logic: Rhai scripts and WebAssembly plugins
+
+<p align="center">
+  <img src="docs/img/middleware.svg" alt="Scripts and plugins run after the built-in guards and again on the response. Rhai needs no build step; WebAssembly plugins can be written in Rust, C, Go or AssemblyScript and can also read the client IP and change the headers sent upstream. Both fail open." width="900">
+</p>
+
+```yaml
+port: 8080
+middleware:
+  - type: script                       # Rhai, needs rhai
+    path: ./scripts/auth-check.rhai
+  - type: wasm                         # WebAssembly, needs wasm
+    path: ./plugins/my-plugin.wasm
+proxy:
+  /api: http://localhost:4000
+```
+
+```rhai
+// scripts/auth-check.rhai: deny requests without an Authorization header
+let token = request.header("Authorization");
+if token == "" {
+    response.status = 401;
+    response.body   = "Unauthorized";
+    return false;
+}
+true
+```
+
+Scripts and plugins fail open, so keep your real access checks in the auth guards.
+**→ Guides:** [Rhai](docs/rhai.md) · [WebAssembly](docs/wasm.md)
+
+### Observability
+
+```yaml
+sites:
+  - port: 8080
+    logging: json                      # structured access log; every request gets an X-Request-ID
+    metrics: { path: /__metrics__, token: "$METRICS_TOKEN" }   # Prometheus
+    proxy: http://localhost:4000
+global:
+  otlp: { endpoint: "http://tempo:4317", serviceName: my-api, sampleRate: 0.1 }   # needs otlp
+```
+
+**→ Details:** [Logging](docs/configuration.md#logging) · [Metrics](docs/configuration.md#metrics) ·
+[OpenTelemetry](docs/configuration.md#opentelemetry-tracing)
+
+### Several sites in one process
+
+```yaml
+sites:
+  - host: app.example.com
+    port: 443
+    tls: { acme: { email: admin@example.com } }
+    static: ./dist
+    proxy: { /api: http://api:4000 }
+
+  - host: admin.example.com
+    port: 443
+    tls: { acme: { email: admin@example.com } }
+    basicAuth: { users: { admin: "$ADMIN_PASSWORD" } }
+    proxy: http://admin-backend:5000
+```
+
+### Raw TCP *(needs `tcp`)*
+
+```yaml
+sites:
+  - port: 3306
+    tcp:
+      targets: ["mysql-primary:3306", "mysql-replica:3306"]
+      strategy: round-robin
+```
+
+**→ More scenarios:** [docs/recipes.md](docs/recipes.md) covers HTTPS, load balancing, failover,
+circuit breaker, caching, security hardening, observability and Kubernetes, and
+[`examples/`](examples/) has a validated config for each.
 
 ## Installation
 
@@ -311,59 +513,18 @@ healthCheck: true
 **→ All fields with examples:** [docs/configuration.md](docs/configuration.md)  
 **→ Ready-to-run configs:** [examples/](examples/)
 
-## Recipes
+## Hot reload and the Admin API
 
-### Local dev server
+<p align="center">
+  <img src="docs/img/operations.svg" alt="Edit the config, check it with conduit validate, apply it with conduit reload. Most settings apply live without dropping connections; the port, certificate files, worker count and admin bind need a restart and reload refuses them. While running, the CLI and the Admin API show status and upstream health, change targets in memory and shut the server down gracefully." width="900">
+</p>
 
-```yaml
-port: 3000
-logging: dev
-cors: true
-hotReload: true            # reload the browser when a served file changes
-static: ./src
-proxy:
-  /api: http://localhost:4000
-fallback: { file: ./src/index.html, status: 200 }
-```
+Changing the config does not mean restarting the server: edit the file, run `conduit validate`, then
+`conduit reload`. Most settings apply live, without dropping connections. Settings that need a
+restart (the port, certificate files, `global.workers`, `global.admin.bind`,
+`global.shutdownTimeoutSecs`) are refused by reload with a 400 that names the field.
 
-### JWT API gateway
-
-```yaml
-port: 8080
-jwtAuth:                              # --features jwt
-  jwksUrl: https://auth.example.com/.well-known/jwks.json
-requestTransform:
-  setHeaders:
-    X-User-ID: "{{ jwt.sub }}"        # copy a claim into the upstream request
-proxy:
-  /users: http://users-svc:4001
-  /orders: http://orders-svc:4002
-rateLimit: { windowSecs: 60, limit: 500 }
-maskErrors: true
-metrics: { path: /__metrics__, token: "$METRICS_TOKEN" }
-```
-
-### Multi-site (one process, several domains)
-
-```yaml
-sites:
-  - host: app.example.com
-    port: 443
-    tls: { acme: { email: admin@example.com } }
-    static: ./dist
-    proxy: { /api: http://api:4000 }
-
-  - host: admin.example.com
-    port: 443
-    tls: { acme: { email: admin@example.com } }
-    basicAuth: { users: { admin: "$ADMIN_PASSWORD" } }
-    proxy: http://admin-backend:5000
-```
-
-**→ More scenarios:** [docs/recipes.md](docs/recipes.md) — HTTPS, load balancing, failover,
-circuit breaker, caching, security hardening, observability, Kubernetes.
-
-## Admin API
+### Admin API
 
 An optional management server, off unless you configure `global.admin.bind`. Bind it to loopback
 (`127.0.0.1:2019`, which is also where the CLI commands look by default). Binding it to another

@@ -1,0 +1,221 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 612" role="img" aria-labelledby="t d">
+  <title id="t">Where Conduit sits</title>
+  <desc id="d">Clients connect to Conduit over HTTP/1.1, HTTP/2, WebSocket or raw TCP. Inside one Conduit process, listeners hand each request to an ordered chain of guards and a router, which picks a handler: reverse proxy, TCP proxy, static files or upload. The proxy handlers forward to your services and the file handlers use files on disk. Redis and an identity provider are optional. Logs, Prometheus metrics, OpenTelemetry traces, the Admin API and hot reload sit alongside the request path.</desc>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/></marker>
+    <marker id="ar-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--blue)"/></marker>
+    <marker id="ar-green" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--green)"/></marker>
+    <marker id="ar-orange" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--orange)"/></marker>
+    <marker id="ar-purple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--purple)"/></marker>
+    <marker id="ar-red" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--red)"/></marker>
+    <marker id="ar-gray" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--gray)"/></marker>
+    <style>
+svg { --bg:#f6f8fa; --card:#ffffff; --line:#d0d7de; --text:#1f2328; --muted:#59636e; --faint:#8c959f;
+  --blue:#0969da; --blue-s:#ddf4ff; --green:#1a7f37; --green-s:#dafbe1; --orange:#bc4c00; --orange-s:#fff1e5;
+  --purple:#8250df; --purple-s:#fbefff; --red:#cf222e; --red-s:#ffebe9; --gray:#59636e; --gray-s:#eaeef2; }
+@media (prefers-color-scheme: dark) {
+  svg { --bg:#0d1117; --card:#161b22; --line:#3d444d; --text:#f0f6fc; --muted:#9198a1; --faint:#6e7681;
+    --blue:#4493f8; --blue-s:#10233f; --green:#3fb950; --green-s:#102a1a; --orange:#e3893b; --orange-s:#33200d;
+    --purple:#ab7df8; --purple-s:#241b3d; --red:#f85149; --red-s:#3a1618; --gray:#9198a1; --gray-s:#21262d; }
+}
+text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--text); }
+.m { font-size: 12.5px; fill: var(--muted); }
+.s { font-size: 11.5px; fill: var(--muted); }
+.b { font-size: 14px; font-weight: 600; }
+.h { font-size: 15.5px; font-weight: 700; }
+.xl { font-size: 22px; font-weight: 700; }
+.k { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.ka { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; fill: var(--a); font-weight: 600; }
+.acc { fill: var(--a); }
+.cap { font-size: 11px; font-weight: 700; letter-spacing: .06em; fill: var(--a); }
+.panel { fill: var(--bg); stroke: var(--line); }
+.card { fill: var(--card); stroke: var(--line); }
+.cardA { fill: var(--card); stroke: var(--a); }
+.soft { fill: var(--s); stroke: var(--a); }
+.fillS { fill: var(--s); stroke: none; }
+.zone { fill: var(--s); stroke: var(--a); stroke-dasharray: none; opacity: 1; }
+.zoneD { fill: none; stroke: var(--faint); stroke-dasharray: 5 4; }
+.ln { fill: none; stroke: var(--muted); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.lnA { fill: none; stroke: var(--a); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.dash { stroke-dasharray: 5 4; }
+.ico { fill: none; stroke: var(--a); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.icoF { fill: var(--a); stroke: var(--a); stroke-width: 1.2; stroke-linejoin: round; }
+.num { fill: var(--a); }
+.numt { font-size: 12px; font-weight: 700; fill: #ffffff; text-anchor: middle; }
+.chip { fill: var(--s); stroke: var(--a); }
+.chipt { font-size: 11.5px; font-weight: 600; fill: var(--a); text-anchor: middle; }
+.blue { --a: var(--blue); --s: var(--blue-s); }
+.green { --a: var(--green); --s: var(--green-s); }
+.orange { --a: var(--orange); --s: var(--orange-s); }
+.purple { --a: var(--purple); --s: var(--purple-s); }
+.red { --a: var(--red); --s: var(--red-s); }
+.gray { --a: var(--gray); --s: var(--gray-s); }
+</style>
+  </defs>
+  <rect class="panel" x="0.5" y="0.5" width="959" height="611" rx="16"/>
+  <g class="gray"><rect class="zone" x="20" y="70" width="168" height="360" rx="14"/>
+  <text class="cap" x="36" y="92">CLIENTS</text>
+  </g>
+  <rect class="card" x="34" y="108" width="140" height="38" rx="9"/>
+  <g class="gray" transform="translate(44 116) scale(0.917)"><g class="ico"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c3 3 3 15 0 18c-3-3-3-15 0-18z"/></g></g>
+  <text x="76" y="132" class="b">Browsers</text>
+  <rect class="card" x="34" y="156" width="140" height="38" rx="9"/>
+  <g class="gray" transform="translate(44 164) scale(0.917)"><g class="ico"><path d="M12 3l8.500 4.500v9L12 21l-8.500-4.500v-9z"/><path d="M3.500 7.500L12 12l8.500-4.500M12 12v9"/></g></g>
+  <text x="76" y="180" class="b">Mobile apps</text>
+  <rect class="card" x="34" y="204" width="140" height="38" rx="9"/>
+  <g class="gray" transform="translate(44 212) scale(0.917)"><g class="ico"><rect x="3" y="4.500" width="18" height="15" rx="2.500"/><path d="M7.500 10l3 2.500-3 2.500M13 15h4"/></g></g>
+  <text x="76" y="228" class="b">API clients</text>
+  <rect class="card" x="34" y="252" width="140" height="38" rx="9"/>
+  <g class="gray" transform="translate(44 260) scale(0.917)"><g class="ico"><path d="M9 3v5M15 3v5M6.500 8h11v3.500a5.500 5.500 0 0 1-11 0zM12 17v4"/></g></g>
+  <text x="76" y="276" class="b">Webhooks</text>
+  <text x="104" y="322" class="s" text-anchor="middle">over</text>
+  <g class="gray"><rect class="chip" x="34" y="332" width="140" height="20" rx="10"/><text class="chipt" x="104.0" y="346.0">HTTP/1.1 · HTTP/2</text></g>
+  <g class="gray"><rect class="chip" x="34" y="358" width="140" height="20" rx="10"/><text class="chipt" x="104.0" y="372.0">WebSocket</text></g>
+  <g class="gray"><rect class="chip" x="34" y="384" width="140" height="20" rx="10"/><text class="chipt" x="104.0" y="398.0">TCP (raw)</text></g>
+  <g class="blue"><path class="lnA" d="M190 250 L222 250" marker-end="url(#ar-blue)" marker-start="url(#ar-blue)"/></g>
+  <g class="blue"><rect class="zone" x="224" y="20" width="548" height="572" rx="14"/>
+  <text class="cap" x="240" y="42">CONDUIT</text>
+  <text class="s" x="756" y="42" text-anchor="end">one executable · one config file</text>
+  </g>
+  <g class="blue">
+  <rect class="card" x="240" y="56" width="214" height="64" rx="9"/>
+  <rect class="acc" x="240" y="66" width="3.4" height="44" rx="1.7"/>
+  <g class="None" transform="translate(254 66) scale(0.833)"><g class="ico"><rect x="5" y="11" width="14" height="9.5" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></g></g>
+  <text class="b" x="282" y="81">Listeners</text>
+  <text class="m" x="254" y="102">TLS · ACME · mTLS · HTTP/2</text>
+  </g>
+  <g class="blue"><path class="lnA" d="M347.0 122 L347.0 136" marker-end="url(#ar-blue)"/></g>
+  <g class="blue"><rect class="cardA" x="240" y="138" width="214" height="196" rx="9"/></g>
+  <g class="blue" transform="translate(254 148) scale(0.833)"><g class="ico"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 7.7-7.5 9.5C7.700 19.200 4.500 16.100 4.500 11.500V6z"/><path d="M8.800 12l2.200 2.200 4.200-4.400"/></g></g>
+  <text x="282" y="163" class="b">Guards, in order</text>
+  <g class="blue"><circle class="acc" cx="258" cy="186" r="2.6"/></g>
+  <text x="268" y="190" class="m">IP allow / deny</text>
+  <g class="blue"><circle class="acc" cx="258" cy="207" r="2.6"/></g>
+  <text x="268" y="211" class="m">CORS · request limits</text>
+  <g class="blue"><circle class="acc" cx="258" cy="228" r="2.6"/></g>
+  <text x="268" y="232" class="m">rate limiting</text>
+  <g class="blue"><circle class="acc" cx="258" cy="249" r="2.6"/></g>
+  <text x="268" y="253" class="m">Basic · API key · JWT</text>
+  <g class="blue"><circle class="acc" cx="258" cy="270" r="2.6"/></g>
+  <text x="268" y="274" class="m">forward auth · redirects</text>
+  <g class="blue"><circle class="acc" cx="258" cy="291" r="2.6"/></g>
+  <text x="268" y="295" class="m">fault injection</text>
+  <g class="blue"><circle class="acc" cx="258" cy="312" r="2.6"/></g>
+  <text x="268" y="316" class="m">Rhai scripts · WASM plugins</text>
+  <g class="blue"><path class="lnA" d="M347.0 336 L347.0 350" marker-end="url(#ar-blue)"/></g>
+  <g class="blue">
+  <rect class="card" x="240" y="352" width="214" height="82" rx="9"/>
+  <rect class="acc" x="240" y="362" width="3.4" height="62" rx="1.7"/>
+  <g class="None" transform="translate(254 362) scale(0.833)"><g class="ico"><circle cx="6" cy="6" r="2.500"/><circle cx="18" cy="18" r="2.500"/><path d="M8.500 6H15a3 3 0 0 1 0 6H9a3 3 0 0 0 0 6h6.500"/></g></g>
+  <text class="b" x="282" y="377">Router</text>
+  <text class="m" x="254" y="398">host · path · method</text>
+  <text class="m" x="254" y="415">headers · cookies</text>
+  </g>
+  <g class="green">
+  <rect class="card" x="490" y="56" width="266" height="118" rx="9"/>
+  <rect class="acc" x="490" y="66" width="3.4" height="98" rx="1.7"/>
+  <g class="None" transform="translate(504 66) scale(0.833)"><g class="ico"><path d="M12 21v-8M12 13L5 6M12 13l7-7"/><path d="M5 10V6h4M19 10V6h-4"/></g></g>
+  <text class="b" x="532" y="81">Reverse proxy</text>
+  <text class="m" x="504" y="102">8 balancing strategies · health checks</text>
+  <text class="m" x="504" y="119">retries · circuit breaker · cache</text>
+  <text class="m" x="504" y="136">request and response transforms</text>
+  </g>
+  <g class="green">
+  <rect class="card" x="490" y="186" width="266" height="66" rx="9"/>
+  <rect class="acc" x="490" y="196" width="3.4" height="46" rx="1.7"/>
+  <g class="None" transform="translate(504 196) scale(0.833)"><g class="ico"><path d="M4 8h14l-3.500-3.500M20 16H6l3.500 3.500"/></g></g>
+  <text class="b" x="532" y="211">TCP proxy</text>
+  <text class="m" x="504" y="232">raw TCP passthrough (MySQL, SMTP …)</text>
+  </g>
+  <g class="green">
+  <rect class="card" x="490" y="264" width="266" height="84" rx="9"/>
+  <rect class="acc" x="490" y="274" width="3.4" height="64" rx="1.7"/>
+  <g class="None" transform="translate(504 274) scale(0.833)"><g class="ico"><path d="M3 7.5a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></g></g>
+  <text class="b" x="532" y="289">Static files</text>
+  <text class="m" x="504" y="310">ETag · Range · pre-compressed files</text>
+  <text class="m" x="504" y="327">SPA fallback · live reload in dev</text>
+  </g>
+  <g class="green">
+  <rect class="card" x="490" y="360" width="266" height="66" rx="9"/>
+  <rect class="acc" x="490" y="370" width="3.4" height="46" rx="1.7"/>
+  <g class="None" transform="translate(504 370) scale(0.833)"><g class="ico"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></g></g>
+  <text class="b" x="532" y="385">File upload</text>
+  <text class="m" x="504" y="406">multipart, UUID names, MIME allowlist</text>
+  </g>
+  <g class="blue"><path class="lnA" d="M454 393 H472 V115"/></g>
+  <g class="blue"><path class="lnA" d="M472 115 L488 115" marker-end="url(#ar-blue)"/></g>
+  <g class="blue"><path class="lnA" d="M472 219 L488 219" marker-end="url(#ar-blue)"/></g>
+  <g class="blue"><path class="lnA" d="M472 306 L488 306" marker-end="url(#ar-blue)"/></g>
+  <g class="blue"><path class="lnA" d="M472 393 L488 393" marker-end="url(#ar-blue)"/></g>
+  <g class="blue"><path class="lnA" d="M472 115 V393"/></g>
+  <g class="orange">
+  <rect class="card" x="242" y="456" width="168" height="112" rx="9"/>
+  <rect class="acc" x="242" y="466" width="3.4" height="92" rx="1.7"/>
+  <g class="None" transform="translate(256 466) scale(0.833)"><g class="ico"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></g></g>
+  <text class="b" x="284" y="481">Observability</text>
+  <text class="m" x="256" y="501">JSON access log</text>
+  <text class="m" x="256" y="517">Prometheus metrics</text>
+  <text class="m" x="256" y="533">OpenTelemetry traces</text>
+  <text class="m" x="256" y="549">X-Request-ID</text>
+  </g>
+  <g class="purple">
+  <rect class="card" x="420" y="456" width="168" height="112" rx="9"/>
+  <rect class="acc" x="420" y="466" width="3.4" height="92" rx="1.7"/>
+  <g class="None" transform="translate(434 466) scale(0.833)"><g class="ico"><rect x="3" y="4.500" width="18" height="15" rx="2.500"/><path d="M7.500 10l3 2.500-3 2.500M13 15h4"/></g></g>
+  <text class="b" x="462" y="481">Admin API + CLI</text>
+  <text class="m" x="434" y="501">status · reload</text>
+  <text class="m" x="434" y="517">upstream health</text>
+  <text class="m" x="434" y="533">add / remove targets</text>
+  <text class="m" x="434" y="549">graceful shutdown</text>
+  </g>
+  <g class="purple">
+  <rect class="card" x="598" y="456" width="168" height="112" rx="9"/>
+  <rect class="acc" x="598" y="466" width="3.4" height="92" rx="1.7"/>
+  <g class="None" transform="translate(612 466) scale(0.833)"><g class="ico"><path d="M20 11a8 8 0 0 0-14.500-4M4 13a8 8 0 0 0 14.500 4"/><path d="M5.500 3v4h4M18.500 21v-4h-4"/></g></g>
+  <text class="b" x="640" y="481">Hot reload</text>
+  <text class="m" x="612" y="501">edit the file,</text>
+  <text class="m" x="612" y="517">conduit reload,</text>
+  <text class="m" x="612" y="533">no dropped connections</text>
+  </g>
+  <g class="green">
+  <rect class="card" x="790" y="56" width="150" height="198" rx="9"/>
+  <rect class="acc" x="790" y="66" width="3.4" height="178" rx="1.7"/>
+  <g class="None" transform="translate(804 66) scale(0.833)"><g class="ico"><rect x="3" y="4" width="18" height="6.5" rx="1.8"/><rect x="3" y="13.5" width="18" height="6.5" rx="1.8"/><circle cx="7" cy="7.25" r=".9" class="icoF"/><circle cx="7" cy="16.75" r=".9" class="icoF"/></g></g>
+  <text class="b" x="832" y="81">Your services</text>
+  <text class="m" x="804" y="102">app servers,</text>
+  <text class="m" x="804" y="119">APIs, databases,</text>
+  <text class="m" x="804" y="136">any language or</text>
+  <text class="m" x="804" y="153">framework (HTTP,</text>
+  <text class="m" x="804" y="170">HTTPS or TCP)</text>
+  </g>
+  <g class="green"><path class="lnA" d="M758 115 L788 115" marker-end="url(#ar-green)"/></g>
+  <g class="green"><path class="lnA" d="M758 219 L788 219" marker-end="url(#ar-green)"/></g>
+  <g class="green">
+  <rect class="card" x="790" y="268" width="150" height="160" rx="9"/>
+  <rect class="acc" x="790" y="278" width="3.4" height="140" rx="1.7"/>
+  <g class="None" transform="translate(804 278) scale(0.833)"><g class="ico"><path d="M3 7.5a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></g></g>
+  <text class="b" x="832" y="293">Files on disk</text>
+  <text class="m" x="804" y="314">static sites,</text>
+  <text class="m" x="804" y="331">uploaded files,</text>
+  <text class="m" x="804" y="348">disk cache</text>
+  <text class="m" x="804" y="365">(optional)</text>
+  </g>
+  <g class="green"><path class="lnA" d="M758 306 L788 306" marker-end="url(#ar-green)"/></g>
+  <g class="green"><path class="lnA" d="M758 393 L788 393" marker-end="url(#ar-green)"/></g>
+  <g class="gray"><text class="cap" x="790" y="452">OPTIONAL PARTS</text></g>
+  <g class="gray"><rect class="zoneD" x="790" y="460" width="150" height="132" rx="12"/></g>
+  <g class="orange">
+  <rect class="card" x="798" y="468" width="134" height="56" rx="9"/>
+  <rect class="acc" x="798" y="478" width="3.4" height="36" rx="1.7"/>
+  <g class="None" transform="translate(812 478) scale(0.833)"><g class="ico"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.700 3.600 3 8 3s8-1.300 8-3V6"/><path d="M4 12v6c0 1.700 3.600 3 8 3s8-1.300 8-3v-6"/></g></g>
+  <text class="b" x="840" y="493">Redis</text>
+  <text class="m" x="812" y="513">shared limits, cache</text>
+  </g>
+  <g class="purple">
+  <rect class="card" x="798" y="530" width="134" height="56" rx="9"/>
+  <rect class="acc" x="798" y="540" width="3.4" height="36" rx="1.7"/>
+  <g class="None" transform="translate(812 540) scale(0.833)"><g class="ico"><circle cx="8" cy="12" r="3.8"/><path d="M11.800 12H21M17 12v3M20 12v2.200"/></g></g>
+  <text class="b" x="840" y="555">Identity</text>
+  <text class="m" x="812" y="575">JWKS, forward auth</text>
+  </g>
+</svg>

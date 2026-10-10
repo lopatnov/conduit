@@ -1,0 +1,177 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 498" role="img" aria-labelledby="t d">
+  <title id="t">What Conduit does</title>
+  <desc id="d">A map of Conduit&#x27;s feature groups: routing, proxy and balancing, resilience, caching, static files, TLS, authentication, traffic control, scripting, observability, operations and deployment. Items marked with an asterisk need an optional build feature.</desc>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/></marker>
+    <marker id="ar-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--blue)"/></marker>
+    <marker id="ar-green" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--green)"/></marker>
+    <marker id="ar-orange" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--orange)"/></marker>
+    <marker id="ar-purple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--purple)"/></marker>
+    <marker id="ar-red" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--red)"/></marker>
+    <marker id="ar-gray" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--gray)"/></marker>
+    <style>
+svg { --bg:#f6f8fa; --card:#ffffff; --line:#d0d7de; --text:#1f2328; --muted:#59636e; --faint:#8c959f;
+  --blue:#0969da; --blue-s:#ddf4ff; --green:#1a7f37; --green-s:#dafbe1; --orange:#bc4c00; --orange-s:#fff1e5;
+  --purple:#8250df; --purple-s:#fbefff; --red:#cf222e; --red-s:#ffebe9; --gray:#59636e; --gray-s:#eaeef2; }
+@media (prefers-color-scheme: dark) {
+  svg { --bg:#0d1117; --card:#161b22; --line:#3d444d; --text:#f0f6fc; --muted:#9198a1; --faint:#6e7681;
+    --blue:#4493f8; --blue-s:#10233f; --green:#3fb950; --green-s:#102a1a; --orange:#e3893b; --orange-s:#33200d;
+    --purple:#ab7df8; --purple-s:#241b3d; --red:#f85149; --red-s:#3a1618; --gray:#9198a1; --gray-s:#21262d; }
+}
+text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--text); }
+.m { font-size: 12.5px; fill: var(--muted); }
+.s { font-size: 11.5px; fill: var(--muted); }
+.b { font-size: 14px; font-weight: 600; }
+.h { font-size: 15.5px; font-weight: 700; }
+.xl { font-size: 22px; font-weight: 700; }
+.k { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.ka { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; fill: var(--a); font-weight: 600; }
+.acc { fill: var(--a); }
+.cap { font-size: 11px; font-weight: 700; letter-spacing: .06em; fill: var(--a); }
+.panel { fill: var(--bg); stroke: var(--line); }
+.card { fill: var(--card); stroke: var(--line); }
+.cardA { fill: var(--card); stroke: var(--a); }
+.soft { fill: var(--s); stroke: var(--a); }
+.fillS { fill: var(--s); stroke: none; }
+.zone { fill: var(--s); stroke: var(--a); stroke-dasharray: none; opacity: 1; }
+.zoneD { fill: none; stroke: var(--faint); stroke-dasharray: 5 4; }
+.ln { fill: none; stroke: var(--muted); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.lnA { fill: none; stroke: var(--a); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.dash { stroke-dasharray: 5 4; }
+.ico { fill: none; stroke: var(--a); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.icoF { fill: var(--a); stroke: var(--a); stroke-width: 1.2; stroke-linejoin: round; }
+.num { fill: var(--a); }
+.numt { font-size: 12px; font-weight: 700; fill: #ffffff; text-anchor: middle; }
+.chip { fill: var(--s); stroke: var(--a); }
+.chipt { font-size: 11.5px; font-weight: 600; fill: var(--a); text-anchor: middle; }
+.blue { --a: var(--blue); --s: var(--blue-s); }
+.green { --a: var(--green); --s: var(--green-s); }
+.orange { --a: var(--orange); --s: var(--orange-s); }
+.purple { --a: var(--purple); --s: var(--purple-s); }
+.red { --a: var(--red); --s: var(--red-s); }
+.gray { --a: var(--gray); --s: var(--gray-s); }
+</style>
+  </defs>
+  <rect class="panel" x="0.5" y="0.5" width="959" height="497" rx="16"/>
+  <g class="blue">
+  <rect class="card" x="20.0" y="20" width="221.0" height="138" rx="9"/>
+  <rect class="acc" x="20.0" y="30" width="3.4" height="118" rx="1.7"/>
+  <g class="None" transform="translate(34.0 30) scale(0.833)"><g class="ico"><circle cx="6" cy="6" r="2.500"/><circle cx="18" cy="18" r="2.500"/><path d="M8.500 6H15a3 3 0 0 1 0 6H9a3 3 0 0 0 0 6h6.500"/></g></g>
+  <text class="b" x="62.0" y="45">Routing</text>
+  <text class="m" x="34.0" y="69">virtual hosts, many sites</text>
+  <text class="m" x="34.0" y="89">path globs and methods</text>
+  <text class="m" x="34.0" y="109">header, cookie, query rules</text>
+  <text class="m" x="34.0" y="129">redirects, path rewrite</text>
+  </g>
+  <g class="green">
+  <rect class="card" x="253.0" y="20" width="221.0" height="138" rx="9"/>
+  <rect class="acc" x="253.0" y="30" width="3.4" height="118" rx="1.7"/>
+  <g class="None" transform="translate(267.0 30) scale(0.833)"><g class="ico"><path d="M12 21v-8M12 13L5 6M12 13l7-7"/><path d="M5 10V6h4M19 10V6h-4"/></g></g>
+  <text class="b" x="295.0" y="45">Proxy and balancing</text>
+  <text class="m" x="267.0" y="69">8 balancing strategies</text>
+  <text class="m" x="267.0" y="89">sticky sessions</text>
+  <text class="m" x="267.0" y="109">upstream groups, weights</text>
+  <text class="m" x="267.0" y="129">WebSocket upgrades</text>
+  </g>
+  <g class="orange">
+  <rect class="card" x="486.0" y="20" width="221.0" height="138" rx="9"/>
+  <rect class="acc" x="486.0" y="30" width="3.4" height="118" rx="1.7"/>
+  <g class="None" transform="translate(500.0 30) scale(0.833)"><g class="ico"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 7.7-7.5 9.5C7.700 19.200 4.500 16.100 4.500 11.500V6z"/><path d="M8.800 12l2.200 2.200 4.200-4.400"/></g></g>
+  <text class="b" x="528.0" y="45">Resilience</text>
+  <text class="m" x="500.0" y="69">active health checks</text>
+  <text class="m" x="500.0" y="89">outlier ejection</text>
+  <text class="m" x="500.0" y="109">circuit breaker, retries</text>
+  <text class="m" x="500.0" y="129">priority load shedding</text>
+  </g>
+  <g class="orange">
+  <rect class="card" x="719.0" y="20" width="221.0" height="138" rx="9"/>
+  <rect class="acc" x="719.0" y="30" width="3.4" height="118" rx="1.7"/>
+  <g class="None" transform="translate(733.0 30) scale(0.833)"><g class="ico"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.700 3.600 3 8 3s8-1.300 8-3V6"/><path d="M4 12v6c0 1.700 3.600 3 8 3s8-1.300 8-3v-6"/></g></g>
+  <text class="b" x="761.0" y="45">Caching</text>
+  <text class="m" x="733.0" y="69">memory store</text>
+  <text class="m" x="733.0" y="89">Redis, disk stores *</text>
+  <text class="m" x="733.0" y="109">stale-while-revalidate</text>
+  <text class="m" x="733.0" y="129">stale-if-error</text>
+  </g>
+  <g class="green">
+  <rect class="card" x="20.0" y="170" width="221.0" height="138" rx="9"/>
+  <rect class="acc" x="20.0" y="180" width="3.4" height="118" rx="1.7"/>
+  <g class="None" transform="translate(34.0 180) scale(0.833)"><g class="ico"><path d="M3 7.5a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></g></g>
+  <text class="b" x="62.0" y="195">Static files</text>
+  <text class="m" x="34.0" y="219">ETag, Last-Modified, Range</text>
+  <text class="m" x="34.0" y="239">pre-compressed .br / .gz</text>
+  <text class="m" x="34.0" y="259">SPA fallback</text>
+  <text class="m" x="34.0" y="279">live reload in dev</text>
+  </g>
+  <g class="blue">
+  <rect class="card" x="253.0" y="170" width="221.0" height="138" rx="9"/>
+  <rect class="acc" x="253.0" y="180" width="3.4" height="118" rx="1.7"/>
+  <g class="None" transform="translate(267.0 180) scale(0.833)"><g class="ico"><rect x="5" y="11" width="14" height="9.5" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></g></g>
+  <text class="b" x="295.0" y="195">TLS</text>
+  <text class="m" x="267.0" y="219">your own certificates</text>
+  <text class="m" x="267.0" y="239">Let&#x27;s Encrypt (ACME) *</text>
+  <text class="m" x="267.0" y="259">mTLS client certificates</text>
+  <text class="m" x="267.0" y="279">HTTP to HTTPS redirect</text>
+  </g>
+  <g class="red">
+  <rect class="card" x="486.0" y="170" width="221.0" height="138" rx="9"/>
+  <rect class="acc" x="486.0" y="180" width="3.4" height="118" rx="1.7"/>
+  <g class="None" transform="translate(500.0 180) scale(0.833)"><g class="ico"><circle cx="8" cy="12" r="3.8"/><path d="M11.800 12H21M17 12v3M20 12v2.200"/></g></g>
+  <text class="b" x="528.0" y="195">Authentication</text>
+  <text class="m" x="500.0" y="219">Basic auth, API keys</text>
+  <text class="m" x="500.0" y="239">JWT with JWKS *</text>
+  <text class="m" x="500.0" y="259">forward auth *</text>
+  <text class="m" x="500.0" y="279">named consumers *</text>
+  </g>
+  <g class="orange">
+  <rect class="card" x="719.0" y="170" width="221.0" height="138" rx="9"/>
+  <rect class="acc" x="719.0" y="180" width="3.4" height="118" rx="1.7"/>
+  <g class="None" transform="translate(733.0 180) scale(0.833)"><g class="ico"><path d="M4.500 17a8.500 8.500 0 1 1 15 0"/><path d="M12 13.500l4-4.500"/><circle cx="12" cy="14" r="1.2" class="icoF"/></g></g>
+  <text class="b" x="761.0" y="195">Traffic control</text>
+  <text class="m" x="733.0" y="219">rate limits per IP or key</text>
+  <text class="m" x="733.0" y="239">per-route and per-consumer</text>
+  <text class="m" x="733.0" y="259">shared through Redis *</text>
+  <text class="m" x="733.0" y="279">IP allow / deny lists</text>
+  </g>
+  <g class="purple">
+  <rect class="card" x="20.0" y="320" width="221.0" height="138" rx="9"/>
+  <rect class="acc" x="20.0" y="330" width="3.4" height="118" rx="1.7"/>
+  <g class="None" transform="translate(34.0 330) scale(0.833)"><g class="ico"><path d="M8.500 7L3.500 12l5 5M15.500 7l5 5-5 5M13.500 5l-3 14"/></g></g>
+  <text class="b" x="62.0" y="345">Scripting</text>
+  <text class="m" x="34.0" y="369">Rhai scripts *</text>
+  <text class="m" x="34.0" y="389">WebAssembly plugins *</text>
+  <text class="m" x="34.0" y="409">header transforms</text>
+  <text class="m" x="34.0" y="429">fault injection *</text>
+  </g>
+  <g class="gray">
+  <rect class="card" x="253.0" y="320" width="221.0" height="138" rx="9"/>
+  <rect class="acc" x="253.0" y="330" width="3.4" height="118" rx="1.7"/>
+  <g class="None" transform="translate(267.0 330) scale(0.833)"><g class="ico"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></g></g>
+  <text class="b" x="295.0" y="345">Observability</text>
+  <text class="m" x="267.0" y="369">JSON access log</text>
+  <text class="m" x="267.0" y="389">Prometheus metrics</text>
+  <text class="m" x="267.0" y="409">OpenTelemetry traces *</text>
+  <text class="m" x="267.0" y="429">X-Request-ID</text>
+  </g>
+  <g class="purple">
+  <rect class="card" x="486.0" y="320" width="221.0" height="138" rx="9"/>
+  <rect class="acc" x="486.0" y="330" width="3.4" height="118" rx="1.7"/>
+  <g class="None" transform="translate(500.0 330) scale(0.833)"><g class="ico"><rect x="3" y="4.500" width="18" height="15" rx="2.500"/><path d="M7.500 10l3 2.500-3 2.500M13 15h4"/></g></g>
+  <text class="b" x="528.0" y="345">Operations</text>
+  <text class="m" x="500.0" y="369">hot config reload</text>
+  <text class="m" x="500.0" y="389">Admin API and CLI</text>
+  <text class="m" x="500.0" y="409">validate, fmt, probe</text>
+  <text class="m" x="500.0" y="429">graceful shutdown</text>
+  </g>
+  <g class="gray">
+  <rect class="card" x="719.0" y="320" width="221.0" height="138" rx="9"/>
+  <rect class="acc" x="719.0" y="330" width="3.4" height="118" rx="1.7"/>
+  <g class="None" transform="translate(733.0 330) scale(0.833)"><g class="ico"><path d="M12 3l8.500 4.500v9L12 21l-8.500-4.500v-9z"/><path d="M3.500 7.500L12 12l8.500-4.500M12 12v9"/></g></g>
+  <text class="b" x="761.0" y="345">Deployment</text>
+  <text class="m" x="733.0" y="369">one executable</text>
+  <text class="m" x="733.0" y="389">scratch Docker image</text>
+  <text class="m" x="733.0" y="409">Kubernetes provider *</text>
+  <text class="m" x="733.0" y="429">secrets from env vars</text>
+  </g>
+  <text x="24" y="480" class="s">* needs an optional build feature: see “Choose your build”.</text>
+</svg>

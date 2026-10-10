@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" role="img" aria-labelledby="t d">
+  <title id="t">How the proxy cache answers</title>
+  <desc id="d">A request for a cacheable proxied response is looked up by host, scheme, path and query. A fresh hit is served from the store without touching the upstream. A miss goes to the upstream and the response is stored. A stale entry is served immediately while one background fetch refreshes it, and is also served if the upstream fails. The store is memory, Redis or disk.</desc>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/></marker>
+    <marker id="ar-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--blue)"/></marker>
+    <marker id="ar-green" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--green)"/></marker>
+    <marker id="ar-orange" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--orange)"/></marker>
+    <marker id="ar-purple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--purple)"/></marker>
+    <marker id="ar-red" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--red)"/></marker>
+    <marker id="ar-gray" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--gray)"/></marker>
+    <style>
+svg { --bg:#f6f8fa; --card:#ffffff; --line:#d0d7de; --text:#1f2328; --muted:#59636e; --faint:#8c959f;
+  --blue:#0969da; --blue-s:#ddf4ff; --green:#1a7f37; --green-s:#dafbe1; --orange:#bc4c00; --orange-s:#fff1e5;
+  --purple:#8250df; --purple-s:#fbefff; --red:#cf222e; --red-s:#ffebe9; --gray:#59636e; --gray-s:#eaeef2; }
+@media (prefers-color-scheme: dark) {
+  svg { --bg:#0d1117; --card:#161b22; --line:#3d444d; --text:#f0f6fc; --muted:#9198a1; --faint:#6e7681;
+    --blue:#4493f8; --blue-s:#10233f; --green:#3fb950; --green-s:#102a1a; --orange:#e3893b; --orange-s:#33200d;
+    --purple:#ab7df8; --purple-s:#241b3d; --red:#f85149; --red-s:#3a1618; --gray:#9198a1; --gray-s:#21262d; }
+}
+text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--text); }
+.m { font-size: 12.5px; fill: var(--muted); }
+.s { font-size: 11.5px; fill: var(--muted); }
+.b { font-size: 14px; font-weight: 600; }
+.h { font-size: 15.5px; font-weight: 700; }
+.xl { font-size: 22px; font-weight: 700; }
+.k { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.ka { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; fill: var(--a); font-weight: 600; }
+.acc { fill: var(--a); }
+.cap { font-size: 11px; font-weight: 700; letter-spacing: .06em; fill: var(--a); }
+.panel { fill: var(--bg); stroke: var(--line); }
+.card { fill: var(--card); stroke: var(--line); }
+.cardA { fill: var(--card); stroke: var(--a); }
+.soft { fill: var(--s); stroke: var(--a); }
+.fillS { fill: var(--s); stroke: none; }
+.zone { fill: var(--s); stroke: var(--a); stroke-dasharray: none; opacity: 1; }
+.zoneD { fill: none; stroke: var(--faint); stroke-dasharray: 5 4; }
+.ln { fill: none; stroke: var(--muted); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.lnA { fill: none; stroke: var(--a); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.dash { stroke-dasharray: 5 4; }
+.ico { fill: none; stroke: var(--a); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.icoF { fill: var(--a); stroke: var(--a); stroke-width: 1.2; stroke-linejoin: round; }
+.num { fill: var(--a); }
+.numt { font-size: 12px; font-weight: 700; fill: #ffffff; text-anchor: middle; }
+.chip { fill: var(--s); stroke: var(--a); }
+.chipt { font-size: 11.5px; font-weight: 600; fill: var(--a); text-anchor: middle; }
+.blue { --a: var(--blue); --s: var(--blue-s); }
+.green { --a: var(--green); --s: var(--green-s); }
+.orange { --a: var(--orange); --s: var(--orange-s); }
+.purple { --a: var(--purple); --s: var(--purple-s); }
+.red { --a: var(--red); --s: var(--red-s); }
+.gray { --a: var(--gray); --s: var(--gray-s); }
+</style>
+  </defs>
+  <rect class="panel" x="0.5" y="0.5" width="959" height="469" rx="16"/>
+  <rect class="card" x="20" y="170" width="120" height="60" rx="10"/>
+  <g class="gray" transform="translate(32 182) scale(0.917)"><g class="ico"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c3 3 3 15 0 18c-3-3-3-15 0-18z"/></g></g>
+  <text x="62" y="198" class="k">GET /api/x</text>
+  <text x="62" y="216" class="s">from a client</text>
+  <g class="blue"><path class="lnA" d="M142 200 L190 200" marker-end="url(#ar-blue)"/></g>
+  <g class="blue"><rect class="soft" x="192" y="130" width="196" height="140" rx="12"/></g>
+  <g class="blue" transform="translate(208 144) scale(0.917)"><g class="ico"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.700 3.600 3 8 3s8-1.300 8-3V6"/><path d="M4 12v6c0 1.700 3.600 3 8 3s8-1.300 8-3v-6"/></g></g>
+  <text x="238" y="161" class="h">Cache lookup</text>
+  <text x="208" y="188" class="s">key =</text>
+  <text x="208" y="206" class="k">host + scheme +</text>
+  <text x="208" y="224" class="k">path + query</text>
+  <text x="208" y="252" class="s">proxied responses only</text>
+  <g class="blue"><path class="lnA" d="M390 200 H414 M414 62 V340"/></g>
+  <g class="green"><path class="lnA" d="M414 62 L440 62" marker-end="url(#ar-green)"/></g>
+  <g class="green">
+  <rect class="card" x="442" y="30" width="300" height="70" rx="9"/>
+  <rect class="acc" x="442" y="40" width="3.4" height="50" rx="1.7"/>
+  <g class="None" transform="translate(456 40) scale(0.833)"><g class="ico"><circle cx="12" cy="12" r="9"/><path d="M7.800 12.200l3 3 5.400-6"/></g></g>
+  <text class="b" x="484" y="55">Fresh hit</text>
+  <text class="m" x="456" y="75">served from the store;</text>
+  <text class="m" x="456" y="91">the upstream is not asked</text>
+  </g>
+  <g class="orange"><path class="lnA" d="M414 202 L440 202" marker-end="url(#ar-orange)"/></g>
+  <g class="orange">
+  <rect class="card" x="442" y="170" width="300" height="70" rx="9"/>
+  <rect class="acc" x="442" y="180" width="3.4" height="50" rx="1.7"/>
+  <g class="None" transform="translate(456 180) scale(0.833)"><g class="ico"><path d="M20 11a8 8 0 0 0-14.500-4M4 13a8 8 0 0 0 14.500 4"/><path d="M5.500 3v4h4M18.500 21v-4h-4"/></g></g>
+  <text class="b" x="484" y="195">Stale, still usable</text>
+  <text class="m" x="456" y="215">served at once while one</text>
+  <text class="m" x="456" y="231">background fetch refreshes it</text>
+  </g>
+  <g class="red"><path class="lnA" d="M414 342 L440 342" marker-end="url(#ar-red)"/></g>
+  <g class="red">
+  <rect class="card" x="442" y="310" width="300" height="70" rx="9"/>
+  <rect class="acc" x="442" y="320" width="3.4" height="50" rx="1.7"/>
+  <g class="None" transform="translate(456 320) scale(0.833)"><g class="ico"><circle cx="12" cy="12" r="9"/><path d="M8.800 8.800l6.400 6.400M15.200 8.800l-6.400 6.400"/></g></g>
+  <text class="b" x="484" y="335">Miss</text>
+  <text class="m" x="456" y="355">asks the upstream, answers</text>
+  <text class="m" x="456" y="371">the client, stores the reply</text>
+  </g>
+  <g class="green">
+  <rect class="card" x="790" y="150" width="150" height="100" rx="9"/>
+  <rect class="acc" x="790" y="160" width="3.4" height="80" rx="1.7"/>
+  <g class="None" transform="translate(804 160) scale(0.833)"><g class="ico"><rect x="3" y="4" width="18" height="6.5" rx="1.8"/><rect x="3" y="13.5" width="18" height="6.5" rx="1.8"/><circle cx="7" cy="7.25" r=".9" class="icoF"/><circle cx="7" cy="16.75" r=".9" class="icoF"/></g></g>
+  <text class="b" x="832" y="175">Upstream</text>
+  <text class="m" x="804" y="195">only on a miss, a</text>
+  <text class="m" x="804" y="211">background refresh</text>
+  <text class="m" x="804" y="227">or a probe</text>
+  </g>
+  <g class="green"><path class="lnA" d="M744 345 L770 345 L770 232 L788 232" marker-end="url(#ar-green)"/></g>
+  <g class="green"><path class="lnA dash" d="M744 205 L768 205 L788 205" marker-end="url(#ar-green)"/></g>
+  <g class="gray"><rect class="card" x="192" y="296" width="196" height="98" rx="10" style="stroke:var(--a)"/></g>
+  <g class="gray" transform="translate(206 308) scale(0.833)"><g class="ico"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.700 3.600 3 8 3s8-1.300 8-3V6"/><path d="M4 12v6c0 1.700 3.600 3 8 3s8-1.300 8-3v-6"/></g></g>
+  <text x="234" y="323" class="b">Store</text>
+  <g class="gray"><rect class="chip" x="206" y="340" width="54" height="20" rx="10"/><text class="chipt" x="233.0" y="354.0">memory</text></g>
+  <g class="gray"><rect class="chip" x="266" y="340" width="54" height="20" rx="10"/><text class="chipt" x="293.0" y="354.0">Redis *</text></g>
+  <g class="gray"><rect class="chip" x="326" y="340" width="54" height="20" rx="10"/><text class="chipt" x="353.0" y="354.0">disk *</text></g>
+  <text x="206" y="382" class="s">bounded by maxSizeMb, LRU</text>
+  <g class="gray"><path class="ln" d="M290 272 L290 294" marker-end="url(#ar-gray)" marker-start="url(#ar-gray)"/></g>
+  <g class="gray"><rect class="soft" x="20" y="404" width="920" height="48" rx="10"/></g>
+  <g class="gray" transform="translate(36 416) scale(1.000)"><g class="ico"><circle cx="12" cy="12" r="9"/><path d="M12 7v5.500l3.500 2"/></g></g>
+  <text x="72" y="424" class="b">You choose how long an entry is fresh, how long it may be served stale, and which paths and cookies skip the cache.</text>
+  <text x="72" y="441" class="s">A built-in cache lock lets only one background fetch reach the upstream at a time.  * needs the redis or disk-cache build feature.</text>
+</svg>

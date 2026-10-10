@@ -14,7 +14,7 @@ clients, cache responses and run your own scripted logic — or serve a single-p
 from one port — without gluing together a proxy, an auth sidecar and a plugin system.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/lopatnov/conduit/main/docs/img/architecture.svg" alt="Clients talk to Conduit over HTTP/1.1, HTTP/2, WebSocket or TCP. Inside Conduit, listeners feed an ordered set of guards and a router, which picks a handler: reverse proxy, TCP proxy, static files or upload. Handlers talk to your services and to files on disk. Redis and an auth service are optional." width="900">
+  <img src="https://raw.githubusercontent.com/lopatnov/conduit/main/docs/img/hero.svg" alt="Clients reach Conduit over HTTP/1.1, HTTP/2, WebSocket or TCP. Inside Conduit, listeners feed an ordered chain of guards and a router that picks a handler: reverse proxy, TCP proxy, static files or upload. Handlers use your services and files on disk. Redis and an identity provider are optional." width="900">
 </p>
 
 This npm package is a convenience wrapper: it downloads the native Conduit binary for your
@@ -222,7 +222,7 @@ Kubernetes) are in the
 ## How a request flows
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/lopatnov/conduit/main/docs/img/request-pipeline.svg" alt="A request passes through seven stages in order: accept, gate, protect, auth, shape, serve and respond. A guard that rejects the request answers it immediately." width="900">
+  <img src="https://raw.githubusercontent.com/lopatnov/conduit/main/docs/img/request-flow.svg" alt="A request passes through seven stages in order: accept, gate, protect, auth, shape, serve and respond. A guard that rejects the request answers it immediately with 403, 400, 429, 503 or 401. After routing, the proxy checks per-route limits and the circuit breaker, picks an upstream, rewrites the request and handles the response." width="900">
 </p>
 
 Guards run in a fixed order: a client blocked by the IP filter never reaches rate limiting or
@@ -266,6 +266,10 @@ dropped by the next reload. The complete reference is
 ---
 
 ## What it does
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/lopatnov/conduit/main/docs/img/feature-map.svg" alt="Twelve feature groups: routing; proxy and balancing; resilience; caching; static files; TLS; authentication; traffic control; scripting; observability; operations; deployment. Items marked with an asterisk need an optional build feature." width="900">
+</p>
 
 | Area                  | Details                                                                                   |
 | --------------------- | ----------------------------------------------------------------------------------------- |
