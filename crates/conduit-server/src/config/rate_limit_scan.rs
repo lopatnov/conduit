@@ -13,7 +13,9 @@
 //! `routes[]` level for free instead of needing three matching hand-edits
 //! that can (and did) drift out of sync with each other.
 
-use crate::config::schema::{ProxyConfig, ProxyRouteTarget, RateLimitConfig, SiteConfig};
+use crate::config::schema::{
+    AppConfig, ProxyConfig, ProxyRouteTarget, RateLimitConfig, SiteConfig,
+};
 
 /// Yield every [`RateLimitConfig`] configured anywhere on `site`, in this
 /// fixed order: site-level, then each `proxy` map route's `Full` target (in
@@ -45,6 +47,48 @@ pub(crate) fn iter_rate_limit_configs(site: &SiteConfig) -> impl Iterator<Item =
         .chain(proxy_map)
         .chain(routes_array)
         .chain(consumer_rate_limits(site))
+}
+
+/// Find the first `redis://`/`rediss://` `rateLimit.store` configured anywhere
+/// in `config` — site-level, per-route (`proxy.*.rateLimit` AND
+/// `routes[*].proxy.rateLimit`, issue #360), or per-consumer
+/// (`consumers.consumers[].rateLimit`) — so a Redis backend is connected at
+/// startup even when Redis is used *only* at the route/consumer layer (issue
+/// #322: previously only the site level was scanned, so a route/consumer-only
+/// Redis config silently fell back to the in-memory limiter forever, since
+/// `AppState.redis_rate_limiter` was never populated in the first place).
+///
+/// Scan order (site → `proxy` map → `routes[]` → consumer, across sites in
+/// declaration order) is shared with `config::validate`'s Redis-consistency
+/// checks via [`iter_rate_limit_configs`] —
+/// see that module for why the walk lives in exactly one place.
+pub(crate) fn find_redis_rate_limit_store(config: &AppConfig) -> Option<String> {
+    config
+        .sites
+        .iter()
+        .flat_map(iter_rate_limit_configs)
+        .filter_map(|rl| rl.store.as_deref())
+        .find(|store| conduit_config_core::scheme::is_redis_url(store))
+        .map(str::to_owned)
+}
+
+/// A warning when `new` names a different Redis rate-limit store than `old`, or none where `old` had
+/// one. The connection is made once at startup (issue #358) and never re-scanned, so a hot reload
+/// that changes it leaves the old connection (or the in-memory fallback) in use; saying so beats
+/// silently ignoring the edit.
+pub(crate) fn redis_rate_limit_change_warning(old: &AppConfig, new: &AppConfig) -> Option<String> {
+    let (old_url, new_url) = (
+        find_redis_rate_limit_store(old),
+        find_redis_rate_limit_store(new),
+    );
+    if old_url == new_url {
+        return None;
+    }
+    Some(
+        "rateLimit.store: the Redis rate-limit connection is made at startup only; this change \
+         takes effect after a restart (the previous connection, or the in-memory limiter, stays in use)"
+            .to_owned(),
+    )
 }
 
 /// `Full(cfg)` route targets carry their own optional `rateLimit`; the
@@ -218,5 +262,55 @@ mod tests {
         // module still passing under `--no-default-features`.
         let site = SiteConfig::default();
         assert_eq!(iter_rate_limit_configs(&site).count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod redis_change_tests {
+    use super::*;
+
+    fn cfg(store: Option<&str>) -> AppConfig {
+        AppConfig {
+            sites: vec![SiteConfig {
+                port: Some(8080),
+                rate_limit: store.map(|s| RateLimitConfig {
+                    window_secs: 60,
+                    limit: 10,
+                    burst: None,
+                    algorithm: None,
+                    key_by: None,
+                    skip_paths: None,
+                    store: Some(s.to_owned()),
+                    dry_run: None,
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn unchanged_store_is_silent() {
+        let c = cfg(Some("redis://a:6379"));
+        assert!(redis_rate_limit_change_warning(&c, &c).is_none());
+        assert!(redis_rate_limit_change_warning(&cfg(None), &cfg(None)).is_none());
+    }
+
+    #[test]
+    fn added_changed_or_removed_store_warns() {
+        let (none, a, b) = (
+            cfg(None),
+            cfg(Some("redis://a:6379")),
+            cfg(Some("redis://b:6379")),
+        );
+        assert!(
+            redis_rate_limit_change_warning(&none, &a).is_some(),
+            "added"
+        );
+        assert!(redis_rate_limit_change_warning(&a, &b).is_some(), "changed");
+        assert!(
+            redis_rate_limit_change_warning(&a, &none).is_some(),
+            "removed"
+        );
     }
 }

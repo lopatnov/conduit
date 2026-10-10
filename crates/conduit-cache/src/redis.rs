@@ -63,6 +63,11 @@ use crate::common::{bytes_to_hex, purge_target_key, SimpleHitHandler};
 
 static REDIS_STORES: OnceLock<DashMap<String, &RedisCacheStorage>> = OnceLock::new();
 
+/// Pingora's `Storage` needs `&'static self`, so every connected store is leaked for the process
+/// lifetime and a URL dropped by a hot reload is never reclaimed (issue #349). Capping how many
+/// distinct URLs a process will ever connect bounds that growth; a reload past the cap needs a restart.
+const MAX_REDIS_STORES: usize = 16;
+
 fn redis_stores() -> &'static DashMap<String, &'static RedisCacheStorage> {
     REDIS_STORES.get_or_init(DashMap::new)
 }
@@ -94,6 +99,15 @@ pub fn get(url: &str) -> Option<&'static RedisCacheStorage> {
 pub async fn connect_and_register(url: &str) -> bool {
     if redis_stores().contains_key(url) {
         return true;
+    }
+    if redis_stores().len() >= MAX_REDIS_STORES {
+        tracing::error!(
+            url = %redact_url(url),
+            limit = MAX_REDIS_STORES,
+            "Redis proxy cache: too many distinct store URLs since startup — restart to change them; \
+             caching disabled for this store"
+        );
+        return false;
     }
     match RedisCacheStorage::connect(url).await {
         Ok(storage) => {

@@ -40,6 +40,8 @@ fn check_config_update(
         .map(|w| format!("config: {}: {}", w.path, w.message))
         .collect();
     messages.extend(crate::config::validate::feature_warnings(new_cfg));
+    messages
+        .extend(crate::config::rate_limit_scan::redis_rate_limit_change_warning(current, new_cfg));
     Ok(messages)
 }
 

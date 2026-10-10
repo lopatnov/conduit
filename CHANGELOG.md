@@ -24,6 +24,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A live config update that changes a cold field is rejected** (issue #494), as `POST /reload` already
+  did. A Kubernetes CRD edit to a port or TLS cert path used to be swapped into the config while the
+  listeners kept the old ones.
+- **A hot reload that changes the Redis rate-limit store now warns that a restart is needed** (issue #358).
+  The connection is made once at startup; the edit was silently ignored. The warning is in the log and in
+  the `warnings` of the `/reload` response.
+- **The Redis proxy cache connects at most 16 distinct store URLs per process** (issue #349). Pingora's
+  `Storage` needs `&'static self`, so each connected store is kept for the process lifetime; URL churn
+  across reloads (e.g. a rotated ConfigMap) used to grow without bound. A reload past the cap logs an
+  error and needs a restart.
 - **The proxy cache key includes the site's listener port** (issue #482). Two sites that share a `host`
   and differ in `port` used to share cache entries, so one site could serve the other's cached
   response. `DELETE /cache/purge` now purges the listener named by the URL's port, or every served
