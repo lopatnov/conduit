@@ -450,9 +450,11 @@ Invalidate a specific URL from the in-memory proxy cache.
 curl -X DELETE "http://localhost:2019/cache/purge?url=https://api.example.com/v1/products"
 ```
 
-**Query parameter:** `url` — the full URL to purge (scheme + host + path + query). A port in the
-URL is ignored, the same way the cache ignores the port of a request's `Host` header:
-`http://example.com:8080/x` and `http://example.com/x` are one entry.
+**Query parameter:** `url` — the full URL to purge (scheme + host + path + query). The cache keys an
+entry by the request's `Host` (without its port) **and the port of the site's listener**, so two sites
+that share a `host` and differ in `port` never share an entry. A port in the URL picks that listener
+(`http://example.com:8080/x` purges the entry of the site on 8080); a URL without a port purges the
+entry on every listener port the server serves, which is what you want behind a port mapping.
 
 **Response:**
 

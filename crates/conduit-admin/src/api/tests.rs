@@ -34,9 +34,12 @@ async fn not_implemented_is_501_with_error_body() {
 #[cfg(not(feature = "cache"))]
 #[tokio::test]
 async fn cache_purge_without_cache_feature_answers_501() {
-    let err = cache_purge_handler(Query(CachePurgeParams {
-        url: "http://example.com/x".to_owned(),
-    }))
+    let err = cache_purge_handler(
+        State(app_state_for_ip_deny()),
+        Query(CachePurgeParams {
+            url: "http://example.com/x".to_owned(),
+        }),
+    )
     .await
     .expect_err("there is no response cache to purge in this build");
     assert_eq!(err.into_response().status(), StatusCode::NOT_IMPLEMENTED);
@@ -47,48 +50,81 @@ async fn cache_purge_without_cache_feature_answers_501() {
 #[cfg(feature = "cache")]
 #[tokio::test]
 async fn cache_purge_with_cache_feature_reports_not_purged_for_unknown_url() {
-    let Json(v) = cache_purge_handler(Query(CachePurgeParams {
-        url: "http://example.com/never-cached".to_owned(),
-    }))
+    let Json(v) = cache_purge_handler(
+        State(app_state_for_ip_deny()),
+        Query(CachePurgeParams {
+            url: "http://example.com/never-cached".to_owned(),
+        }),
+    )
     .await
     .expect("a well-formed http URL is accepted");
     assert_eq!(v["status"], "ok");
     assert_eq!(v["purged"], false);
 }
 
-/// Issue #444: a purge URL with an explicit port must target the key the request path stores
-/// under. That path keys on the `Host` header *without* its port, so `example.com:8080` and
-/// `example.com` are one entry and one purge target; the purge used to look in the namespace
-/// `example.com:8080` and answer `purged:false` while the stale entry survived.
+/// Issues #444 and #482: the purge must target the keys the request path stores. That path keys on
+/// the `Host` header *without its port* plus the **listener port** the site serves on, so a URL's
+/// own port is only a way to pick the listener, never part of the host.
 #[cfg(feature = "cache")]
 #[test]
-fn purge_key_of_a_url_with_a_port_is_the_key_the_request_path_stores() {
-    let key = |url: &str| {
-        purge_cache_key(url)
+fn purge_keys_of_a_url_are_the_keys_the_request_path_stores() {
+    let keys = |url: &str, ports: &[u16]| -> Vec<_> {
+        purge_cache_keys(url, ports)
             .expect("valid url")
+            .iter()
+            .map(|k| k.to_compact().primary)
+            .collect()
+    };
+    let stored = |host: &str, port: u16, path: &str, query: Option<&str>| {
+        conduit_runtime::proxy::cache::build_cache_key(host, port, "http", path, query, None, None)
             .to_compact()
             .primary
     };
-    let stored = |host: &str, path: &str, query: Option<&str>| {
-        conduit_runtime::proxy::cache::build_cache_key(host, "http", path, query, None, None)
-            .to_compact()
-            .primary
-    };
+    // an explicit URL port picks that one listener, whatever the configured ports are
     assert_eq!(
-        key("http://example.com:8080/x?a=1"),
-        stored("example.com", "/x", Some("a=1"))
+        keys("http://example.com:8080/x?a=1", &[80, 9090]),
+        vec![stored("example.com", 8080, "/x", Some("a=1"))]
     );
+    // no port in the URL: every configured listener port (a port mapping hides the real one)
     assert_eq!(
-        key("http://example.com/x?a=1"),
-        stored("example.com", "/x", Some("a=1"))
+        keys("http://example.com/x?a=1", &[8080, 9090]),
+        vec![
+            stored("example.com", 8080, "/x", Some("a=1")),
+            stored("example.com", 9090, "/x", Some("a=1")),
+        ]
     );
     // the `url` crate lowercases the host, and the stored key is lowercase for a lowercase Host
     assert_eq!(
-        key("http://EXAMPLE.com:8080/x"),
-        stored("example.com", "/x", None)
+        keys("http://EXAMPLE.com:8080/x", &[]),
+        vec![stored("example.com", 8080, "/x", None)]
     );
     // a bracketed IPv6 literal keeps its brackets and loses its port, like the request side
-    assert_eq!(key("http://[::1]:8080/x"), stored("[::1]", "/x", None));
+    assert_eq!(
+        keys("http://[::1]:8080/x", &[]),
+        vec![stored("[::1]", 8080, "/x", None)]
+    );
+}
+
+/// The listener ports a purge fans out over follow `classify_ports`: `site.port`, else 443 with
+/// `tls` and 80 without, 8080 for an empty site list, TCP-proxy sites excluded, duplicates folded.
+#[cfg(feature = "cache")]
+#[test]
+fn listener_ports_follow_the_servers_defaults() {
+    use conduit_config::schema::SiteConfig;
+    let site = |port: Option<u16>| SiteConfig {
+        port,
+        ..Default::default()
+    };
+    assert_eq!(listener_ports(&[]), vec![8080]);
+    assert_eq!(
+        listener_ports(&[
+            site(Some(9090)),
+            site(None),
+            site(Some(9090)),
+            site(Some(8080))
+        ]),
+        vec![80, 8080, 9090]
+    );
 }
 
 /// With the feature, a non-http(s) scheme is rejected as a bad request
@@ -96,9 +132,12 @@ fn purge_key_of_a_url_with_a_port_is_the_key_the_request_path_stores() {
 #[cfg(feature = "cache")]
 #[tokio::test]
 async fn cache_purge_with_cache_feature_rejects_non_http_scheme() {
-    let err = cache_purge_handler(Query(CachePurgeParams {
-        url: "ftp://example.com/x".to_owned(),
-    }))
+    let err = cache_purge_handler(
+        State(app_state_for_ip_deny()),
+        Query(CachePurgeParams {
+            url: "ftp://example.com/x".to_owned(),
+        }),
+    )
     .await
     .expect_err("ftp is not a cacheable scheme");
     assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);

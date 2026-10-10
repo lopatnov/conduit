@@ -24,6 +24,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The proxy cache key includes the site's listener port** (issue #482). Two sites that share a `host`
+  and differ in `port` used to share cache entries, so one site could serve the other's cached
+  response. `DELETE /cache/purge` now purges the listener named by the URL's port, or every served
+  listener port when the URL has none. Persistent caches (disk/redis) start cold once after the upgrade.
 - `Range` requests honour `If-Range` (issue #402, RFC 9110 §13.1.5): a stale validator now gets `200`
   with the whole file instead of a `206` splice of two versions.
 - A route with `groups` no longer gets a false "slowStartSecs is ignored on this route" warning from a

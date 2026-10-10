@@ -19,6 +19,15 @@ impl MockUpstream {
     /// long before sending its response — this lets concurrent requests pile
     /// up so that the cache lock can be exercised.
     fn start_with_delay(delay_ms: u64) -> Self {
+        Self::start_full(delay_ms, "hello from upstream")
+    }
+
+    /// A mock upstream that answers every request with `body`.
+    fn start_with_body(body: &'static str) -> Self {
+        Self::start_full(0, body)
+    }
+
+    fn start_full(delay_ms: u64, body: &'static str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock upstream");
         let port = listener.local_addr().unwrap().port();
         let hits = Arc::new(AtomicUsize::new(0));
@@ -35,7 +44,7 @@ impl MockUpstream {
                     if delay_ms > 0 {
                         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
                     }
-                    let body = b"hello from upstream";
+                    let body = body.as_bytes();
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n",
                         body.len()
@@ -235,6 +244,69 @@ fn cache_second_request_served_from_memory() {
         upstream.hit_count(),
         1,
         "second request must be served from cache, not from upstream"
+    );
+}
+
+/// Issue #482: two sites that share a `host` and differ in `port` are separate sites with separate
+/// upstreams, so the same path must not be answered from the other site's cache entry.
+#[test]
+#[serial]
+fn cache_is_not_shared_between_sites_with_the_same_host_and_different_ports() {
+    let upstream_a = MockUpstream::start_with_body("body from site A");
+    let upstream_b = MockUpstream::start_with_body("body from site B");
+
+    let port_a = common::free_port();
+    let port_b = common::free_port();
+    let admin_port = common::free_port();
+    let site = |port: u16, upstream: &MockUpstream| {
+        serde_json::json!({
+            "host": "example.com",
+            "port": port,
+            "proxy": {
+                "/cached": {
+                    "targets": [upstream.url()],
+                    "strategy": "round-robin",
+                    "cache": { "store": "memory", "ttlSecs": 30 }
+                }
+            }
+        })
+    };
+    let srv = common::TestServer::start_with_config(
+        port_a,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [site(port_a, &upstream_a), site(port_b, &upstream_b)]
+        }),
+    );
+    let _keep_alive = &srv;
+
+    let get = |port: u16| {
+        reqwest::blocking::Client::new()
+            .get(format!("http://127.0.0.1:{port}/cached/item"))
+            .header("host", "example.com")
+            .send()
+            .expect("GET")
+            .text()
+            .expect("body")
+    };
+    assert_eq!(get(port_a), "body from site A");
+    // Same host, same path, other listener: must reach upstream B, not replay A's entry.
+    assert_eq!(get(port_b), "body from site B");
+    assert_eq!(upstream_a.hit_count(), 1);
+    assert_eq!(upstream_b.hit_count(), 1);
+    // And each site still caches its own entry.
+    assert_eq!(get(port_a), "body from site A");
+    assert_eq!(get(port_b), "body from site B");
+    assert_eq!(
+        upstream_a.hit_count(),
+        1,
+        "site A's second request is a hit"
+    );
+    assert_eq!(
+        upstream_b.hit_count(),
+        1,
+        "site B's second request is a hit"
     );
 }
 

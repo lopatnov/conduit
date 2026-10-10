@@ -191,8 +191,17 @@ pub(crate) fn cache_key_callback(
         })
     };
 
+    // The listener port the request arrived on: the router matched the site by (host, this port), so
+    // it is what tells apart two sites that share a `host` (issue #482). Same fallback as the router.
+    let port = session
+        .server_addr()
+        .and_then(|a| a.as_inet())
+        .map(|a| a.port())
+        .unwrap_or(80);
+
     Ok(proxy_cache::build_cache_key(
         host,
+        port,
         scheme,
         path,
         query,
