@@ -329,15 +329,15 @@ cargo install lopatnov-conduit --features full      # everything (what npm insta
 
 ## Links
 
-- 📦 [npm package](https://www.npmjs.com/package/@lopatnov/conduit)
-- 🦀 [crates.io package](https://crates.io/crates/lopatnov-conduit)
-- 🐳 [Docker image](https://github.com/lopatnov/conduit/pkgs/container/conduit) (`ghcr.io/lopatnov/conduit`)
-- 📖 [Full documentation](https://github.com/lopatnov/conduit/tree/main/docs)
-- ⚙️ [Configuration reference](https://github.com/lopatnov/conduit/blob/main/docs/configuration.md)
-- 🚀 [Deployment guide](https://github.com/lopatnov/conduit/blob/main/docs/deployment.md)
-- 📊 [Benchmarks and the CI measurement setup](https://github.com/lopatnov/conduit/blob/main/docs/benchmarks.md)
-- 🐛 [Report a bug](https://github.com/lopatnov/conduit/issues)
-- 💬 [Discussions](https://github.com/lopatnov/conduit/discussions)
+- [npm package](https://www.npmjs.com/package/@lopatnov/conduit)
+- [crates.io package](https://crates.io/crates/lopatnov-conduit)
+- [Docker image](https://github.com/lopatnov/conduit/pkgs/container/conduit) (`ghcr.io/lopatnov/conduit`)
+- [Full documentation](https://github.com/lopatnov/conduit/tree/main/docs)
+- [Configuration reference](https://github.com/lopatnov/conduit/blob/main/docs/configuration.md)
+- [Deployment guide](https://github.com/lopatnov/conduit/blob/main/docs/deployment.md)
+- [Benchmarks and the CI measurement setup](https://github.com/lopatnov/conduit/blob/main/docs/benchmarks.md)
+- [Report a bug](https://github.com/lopatnov/conduit/issues)
+- [Discussions](https://github.com/lopatnov/conduit/discussions)
 
 ---
 
@@ -349,7 +349,7 @@ pull request.
 
 Bug reports → [GitHub Issues](https://github.com/lopatnov/conduit/issues).  
 Security vulnerabilities → [GitHub Security Advisories](https://github.com/lopatnov/conduit/security/advisories).  
-Found it useful? A ⭐ on GitHub helps others discover the project.
+Found it useful? A star on GitHub helps others discover the project.
 
 ---
 

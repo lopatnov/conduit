@@ -512,7 +512,7 @@ Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before openin
 - **Bug reports** → [GitHub Issues](https://github.com/lopatnov/conduit/issues)
 - **Security vulnerabilities** → [GitHub Security Advisories](https://github.com/lopatnov/conduit/security/advisories) (not public issues)
 - **Questions and ideas** → [GitHub Discussions](https://github.com/lopatnov/conduit/discussions)
-- **Found it useful?** A ⭐ helps others discover the project
+- **Found it useful?** A star on GitHub helps others discover the project
 
 ## License
 
