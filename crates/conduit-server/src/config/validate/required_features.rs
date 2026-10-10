@@ -217,23 +217,36 @@ mod tests {
                 .copied()
                 .filter(|f| !compiled.contains(f))
                 .collect();
-            let warnings = super::super::feature_warnings(&cfg).join("\n");
-            for feature in FEATURE_ORDER {
+            let warnings = super::super::feature_warnings(&cfg);
+            // The features the warnings name, exactly: every feature-off warning ends in
+            // "Recompile with `--features X` to enable."
+            let named: Vec<&str> = warnings
+                .iter()
+                .filter_map(|w| {
+                    let rest = w.split("`--features ").nth(1)?;
+                    rest.split('`').next()
+                })
+                .collect();
+            for feature in &missing {
                 // Consumers that use JWT need `jwt`, but the "consumers need jwt" warning only fires
                 // in a build that has `consumers`; without it the `consumers` warning is the one shown.
                 if *feature == "jwt" && missing.contains(&"consumers") {
                     continue;
                 }
-                let named = warnings.contains(&format!("`--features {feature}`"))
-                    || warnings.contains(&format!("`{feature}` feature"))
-                    || warnings.contains(&format!("`{feature}`"));
-                if missing.contains(feature) {
-                    assert!(
-                        named,
-                        "{}: `{feature}` is required but missing, yet feature_warnings() is silent:\n{warnings}",
-                        path.display()
-                    );
-                }
+                assert!(
+                    named.contains(feature),
+                    "{}: `{feature}` is required but missing, yet feature_warnings() does not name it: {warnings:?}",
+                    path.display()
+                );
+            }
+            // The other direction: a feature the warnings name must be one `required_features` reports,
+            // or `conduit features` would exit 0 for a config that the server warns about.
+            for feature in &named {
+                assert!(
+                    required.contains(feature) || (*feature == "proxy" && required.contains(&"cache")),
+                    "{}: feature_warnings() names `{feature}` but required_features() does not report it ({required:?})",
+                    path.display()
+                );
             }
             checked += 1;
         }
