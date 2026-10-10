@@ -679,6 +679,18 @@ Each route entry has exactly three top-level fields: `match`, `proxy`, and `stat
 Auth, rate limiting, and other policies come from the site-level config and apply
 to all routes uniformly.
 
+A `proxy` action takes the same route options as an entry of the `proxy: {}` map
+(see [Proxy route field reference](#proxy-route-field-reference)): `groups`,
+`strategy`, `hashKey`, `sticky`, `backup`, `retry`, `rewrite`, `mirror`,
+`upstreamTls`, `healthCheck` and the rest behave identically in both forms. Two
+things differ because a `routes[]` entry has no path-prefix key:
+
+- `stripPrefix` removes the literal prefix of `match.path` (`/api/**` strips
+  `/api`; an exact path such as `/health` strips the whole path). Without a
+  `match.path` there is nothing to strip.
+- `ipHash` / `consistentHash` follow `hashKey` (default: the client IP) exactly as in
+  the `proxy` map. Before this change a `routes[]` entry hashed the request path instead.
+
 | `match` field | Type     | Description                                                       |
 | ------------- | -------- | ----------------------------------------------------------------- |
 | `path`        | glob     | Path glob — see [`skipPaths` glob syntax](#skippaths-glob-syntax) |
@@ -1536,7 +1548,8 @@ window elapses). This applies to every load-balance strategy **except**
 Recovery is recorded both when an active health-check probe flips an
 upstream back to healthy, and when a half-open outlier-detection probe
 succeeds — the latter is the *only* recovery signal available for upstreams
-configured via `routes[]`/`groups`, since active probes aren't spawned there.
+configured on a route that has no `healthCheck` block (active probes run for the
+`proxy: {}` map, the `routes[]` array and `groups`; without a `healthCheck` there is no probe).
 
 ```yaml
 # YAML — pairs well with least-conn, since that's the strategy slow-start
