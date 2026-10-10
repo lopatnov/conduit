@@ -12,11 +12,12 @@
 use super::*;
 use std::sync::OnceLock;
 
+use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der};
+use aws_lc_rs::rsa::{KeyPair as RsaKeyPair, KeySize, PublicKeyComponents};
+use aws_lc_rs::signature::KeyPair as _;
 use base64::Engine as _;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::pkcs8::EncodePrivateKey;
-use rsa::pkcs1::EncodeRsaPrivateKey;
-use rsa::traits::PublicKeyParts;
 
 fn b64url(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -29,18 +30,28 @@ struct RsaTestKey {
 }
 
 fn gen_rsa_test_key() -> RsaTestKey {
-    let private_key =
-        rsa::RsaPrivateKey::new(&mut rand_core::OsRng, 2048).expect("RSA-2048 keygen");
-    let pem = private_key
-        .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
-        .expect("RSA PKCS#1 PEM encode")
-        .to_string();
-    let public_key = private_key.to_public_key();
+    let key_pair = RsaKeyPair::generate(KeySize::Rsa2048).expect("RSA-2048 keygen");
+    let der: Pkcs8V1Der = key_pair.as_der().expect("RSA PKCS#8 DER encode");
+    let components = PublicKeyComponents::<Vec<u8>>::from(key_pair.public_key());
     RsaTestKey {
-        pem,
-        n: b64url(&public_key.n().to_bytes_be()),
-        e: b64url(&public_key.e().to_bytes_be()),
+        pem: pkcs8_pem(der.as_ref()),
+        n: b64url(&components.n),
+        e: b64url(&components.e),
     }
+}
+
+/// PKCS#8 DER -> PEM ("PRIVATE KEY" label, 64-column base64 lines).
+fn pkcs8_pem(der: &[u8]) -> String {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(der);
+    let body: Vec<&str> = b64
+        .as_bytes()
+        .chunks(64)
+        .map(|c| std::str::from_utf8(c).expect("base64 is ASCII"))
+        .collect();
+    format!(
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+        body.join("\n")
+    )
 }
 
 /// The primary RSA test key, generated once and shared read-only across

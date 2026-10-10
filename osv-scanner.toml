@@ -2,12 +2,17 @@
 # Each entry is a documented risk-acceptance, not a permanent suppression.
 # Re-evaluate when the conditions in "reason" change.
 #
-# No vulnerabilities are ignored at the moment.
+# smartstring: an "unmaintained" notice (no vulnerability) for a hard dependency of
+# rhai 1.26.1, the latest release. Re-check when the date below passes. See SECURITY.md.
 #
-# Real CVEs (rsa@0.9.10 / CVE-2023-49092) are intentionally NOT listed here —
-# left open in the Security tab until an upstream fix is available. See
-# .claude/logs/session-log.md (2026-06-12 entry) for the risk analysis.
-#
+# The rsa@0.9.10 / CVE-2023-49092 alert is gone, not suppressed: jsonwebtoken now uses
+# its aws_lc_rs backend, so rsa left Cargo.lock.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0249"
+ignoreUntil = 2027-01-10
+reason = "smartstring is unmaintained (no vulnerability); hard dependency of rhai 1.26.1 (latest). Only builds with the rhai feature. Re-check at expiry."
+
 # History: RUSTSEC-2025-0069 (daemonize unmaintained) was ignored while
 # pingora-core 0.8.1 depended on it; Pingora 0.9 replaced it with daemonix, so
 # the entry was removed. protobuf@2.28.0 / CVE-2025-53605 left the dependency
