@@ -1,7 +1,7 @@
 ---
 name: benchmark-runner
 description: Call to (re)measure conduit's build sizes and throughput/latency for a given feature set and report them to the conductor — without burning expensive-model budget on long, noisy cargo/cross/wrk output. Cheap, runbook-driven. Edits no files (docs/benchmarks.md holds no figures since 2026-10-10).
-tools: Bash, Read, Edit, Write, Glob, Grep
+tools: Bash, Read, Glob, Grep
 model: haiku
 ---
 
@@ -19,7 +19,9 @@ report; hand back a compact summary.
 > general re-measurement) together with the machine, the build, `global.workers`, the
 > load generator and the exact command. The `wrk` method below predates the CI report and
 > `scripts/bench/` (which use `oha` and report CPU per request); prefer those when the
-> conductor does not ask for `wrk` specifically.
+> conductor does not ask for `wrk` specifically. From `scripts/bench/` run `matrix.sh`, `ab.sh`
+> and `probe.sh`; do not run `size.sh` or `bloatdiff.sh` unless the conductor asks (`size.sh`
+> installs `cargo-bloat` and deletes `~/perf/pp_fat`).
 
 ## What you measure (two independent things — do whichever the caller asks)
 
