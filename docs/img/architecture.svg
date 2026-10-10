@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 440" role="img" aria-labelledby="t d">
+  <title id="t">Where Conduit sits</title>
+  <desc id="d">Clients connect to Conduit over HTTP/1.1, HTTP/2, WebSocket or raw TCP. Inside one Conduit process, listeners hand each request to a fixed sequence of guards and a router, which picks a handler: reverse proxy, TCP proxy, static files or upload. The proxy handlers forward to your services and the file handlers use files on disk. Redis and an identity provider are optional.</desc>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#57606a"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #1f2328; }
+      .h { font-size: 15px; font-weight: 600; }
+      .s { font-size: 12.5px; fill: #57606a; }
+      .b { font-size: 13.5px; font-weight: 600; }
+      .big { font-size: 20px; font-weight: 700; fill: #0550ae; }
+      .ln { stroke: #57606a; stroke-width: 1.7; fill: none; }
+    </style>
+  </defs>
+  <rect x="0.5" y="0.5" width="959" height="439" rx="14" fill="#f6f8fa" stroke="#d0d7de"/>
+
+  <!-- Clients -->
+  <rect x="26" y="130" width="150" height="180" rx="10" fill="#ffffff" stroke="#8c959f"/>
+  <text x="101" y="162" text-anchor="middle" class="h">Clients</text>
+  <text x="101" y="192" text-anchor="middle" class="s">Browsers</text>
+  <text x="101" y="212" text-anchor="middle" class="s">Mobile apps</text>
+  <text x="101" y="232" text-anchor="middle" class="s">API clients</text>
+  <text x="101" y="252" text-anchor="middle" class="s">Webhooks</text>
+  <text x="101" y="284" text-anchor="middle" class="s">HTTP/1.1 · HTTP/2</text>
+  <text x="101" y="300" text-anchor="middle" class="s">WebSocket · TCP</text>
+  <path class="ln" d="M178 220 H226" marker-end="url(#arr)" marker-start="url(#arr)"/>
+
+  <!-- Conduit -->
+  <rect x="228" y="22" width="474" height="396" rx="14" fill="#ddf4ff" stroke="#0969da" stroke-width="1.5"/>
+  <text x="248" y="52" class="big">Conduit</text>
+  <text x="682" y="51" text-anchor="end" class="s">one process · one config file</text>
+
+  <!-- left column: request flow -->
+  <rect x="248" y="68" width="222" height="58" rx="8" fill="#ffffff" stroke="#54aeff"/>
+  <text x="262" y="90" class="b">Listeners</text>
+  <text x="262" y="108" class="s">TLS · HTTP/1.1 · HTTP/2</text>
+  <path class="ln" d="M359 128 V142" marker-end="url(#arr)"/>
+
+  <rect x="248" y="144" width="222" height="130" rx="8" fill="#ffffff" stroke="#54aeff"/>
+  <text x="262" y="166" class="b">Guards, in a fixed order</text>
+  <text x="262" y="186" class="s">IP filter · CORS · limits</text>
+  <text x="262" y="203" class="s">rate limit · consumers</text>
+  <text x="262" y="220" class="s">Basic / API key / JWT</text>
+  <text x="262" y="237" class="s">forward auth · redirects</text>
+  <text x="262" y="254" class="s">fault injection · Rhai / WASM</text>
+  <path class="ln" d="M359 276 V290" marker-end="url(#arr)"/>
+
+  <rect x="248" y="292" width="222" height="58" rx="8" fill="#ffffff" stroke="#54aeff"/>
+  <text x="262" y="314" class="b">Router</text>
+  <text x="262" y="332" class="s">host · path · method · headers</text>
+
+  <!-- router bus to handlers -->
+  <path class="ln" d="M470 321 H484 V97" />
+  <path class="ln" d="M484 97 H494" marker-end="url(#arr)"/>
+  <path class="ln" d="M484 163 H494" marker-end="url(#arr)"/>
+  <path class="ln" d="M484 229 H494" marker-end="url(#arr)"/>
+  <path class="ln" d="M484 295 H494" marker-end="url(#arr)"/>
+
+  <!-- right column: handlers -->
+  <rect x="496" y="68" width="184" height="58" rx="8" fill="#fff8c5" stroke="#d4a72c"/>
+  <text x="510" y="88" class="b">Reverse proxy</text>
+  <text x="510" y="105" class="s">balance · retry · health</text>
+  <text x="510" y="120" class="s">circuit breaker · cache</text>
+  <rect x="496" y="134" width="184" height="58" rx="8" fill="#fff8c5" stroke="#d4a72c"/>
+  <text x="510" y="154" class="b">TCP proxy</text>
+  <text x="510" y="171" class="s">raw TCP passthrough</text>
+  <text x="510" y="186" class="s">(database, SMTP, …)</text>
+  <rect x="496" y="200" width="184" height="58" rx="8" fill="#dafbe1" stroke="#4ac26b"/>
+  <text x="510" y="220" class="b">Static files</text>
+  <text x="510" y="237" class="s">ETag · Range · .br / .gz</text>
+  <text x="510" y="252" class="s">SPA fallback</text>
+  <rect x="496" y="266" width="184" height="58" rx="8" fill="#dafbe1" stroke="#4ac26b"/>
+  <text x="510" y="286" class="b">Upload</text>
+  <text x="510" y="303" class="s">multipart/form-data</text>
+  <text x="510" y="318" class="s">size and type limits</text>
+
+  <!-- cross-cutting strip -->
+  <rect x="248" y="364" width="432" height="38" rx="8" fill="#ffffff" stroke="#8c959f" stroke-dasharray="4 3"/>
+  <text x="464" y="380" text-anchor="middle" class="b">Hot reload · Admin API · Prometheus · tracing · access log</text>
+  <text x="464" y="395" text-anchor="middle" class="s">around every request, not a step in it</text>
+
+  <!-- outgoing arrows -->
+  <path class="ln" d="M680 97 H778" marker-end="url(#arr)"/>
+  <path class="ln" d="M680 163 H778" marker-end="url(#arr)"/>
+  <path class="ln" d="M680 229 H778" marker-end="url(#arr)"/>
+  <path class="ln" d="M680 295 H778" marker-end="url(#arr)"/>
+
+  <!-- right: what Conduit talks to -->
+  <rect x="780" y="68" width="156" height="130" rx="10" fill="#ffffff" stroke="#8c959f"/>
+  <text x="858" y="108" text-anchor="middle" class="h">Your services</text>
+  <text x="858" y="130" text-anchor="middle" class="s">apps, APIs and pools</text>
+  <text x="858" y="146" text-anchor="middle" class="s">of backends, over</text>
+  <text x="858" y="162" text-anchor="middle" class="s">HTTP, HTTPS or TCP</text>
+
+  <rect x="780" y="200" width="156" height="130" rx="10" fill="#ffffff" stroke="#8c959f"/>
+  <text x="858" y="240" text-anchor="middle" class="h">Files on disk</text>
+  <text x="858" y="262" text-anchor="middle" class="s">your site and built</text>
+  <text x="858" y="278" text-anchor="middle" class="s">assets, the upload</text>
+  <text x="858" y="294" text-anchor="middle" class="s">directory</text>
+
+  <path d="M702 357 H778" class="ln" stroke-dasharray="4 3" marker-end="url(#arr)" marker-start="url(#arr)"/>
+  <rect x="780" y="340" width="156" height="34" rx="8" fill="#ffffff" stroke="#8c959f" stroke-dasharray="4 3"/>
+  <text x="858" y="361" text-anchor="middle" class="b">Redis</text>
+  <path d="M702 395 H778" class="ln" stroke-dasharray="4 3" marker-end="url(#arr)" marker-start="url(#arr)"/>
+  <rect x="780" y="380" width="156" height="34" rx="8" fill="#ffffff" stroke="#8c959f" stroke-dasharray="4 3"/>
+  <text x="858" y="401" text-anchor="middle" class="b">Auth service</text>
+  <text x="858" y="431" text-anchor="middle" class="s">dashed = optional</text>
+</svg>
