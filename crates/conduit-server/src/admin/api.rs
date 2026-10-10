@@ -274,7 +274,8 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
         )));
     }
     // Collect config warnings once — used for both logging and the response body.
-    let fw: Vec<String> = validate::feature_warnings(&new_config);
+    let mut fw: Vec<String> = validate::feature_warnings(&new_config);
+    fw.extend(crate::config::rate_limit_scan::redis_rate_limit_change_warning(&new_config));
     for w in &fw {
         tracing::warn!("{w}");
     }
@@ -337,12 +338,37 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
     Ok(Json(resp))
 }
 
+/// `port -> (tls.cert, tls.key)` for every HTTP listener the config binds. The first site on a port
+/// with a complete manual cert/key pair decides its TLS material, even when a plain or ACME site
+/// comes earlier (as `classify_site_port` does); a port without one is `(None, None)`. TCP-proxy
+/// sites manage their own listeners.
+fn bound_listeners(
+    cfg: &crate::config::schema::AppConfig,
+) -> std::collections::BTreeMap<u16, (Option<String>, Option<String>)> {
+    let mut out: std::collections::BTreeMap<u16, (Option<String>, Option<String>)> =
+        std::collections::BTreeMap::new();
+    for site in cfg.sites.iter().filter(|s| s.tcp.is_none()) {
+        let port = site
+            .port
+            .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
+        let entry = out.entry(port).or_default();
+        if entry.0.is_none() {
+            if let Some(t) = site.tls.as_ref() {
+                if let (Some(cert), Some(key)) = (&t.cert, &t.key) {
+                    *entry = (Some(cert.clone()), Some(key.clone()));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Return the list of field paths that changed between `old` and `new` and
 /// require a server restart (cold fields).
 ///
 /// Cold fields: `global.workers`, `global.backlog`, `global.admin.bind`,
-/// `sites[N].port`, `sites[N].tls.cert`, `sites[N].tls.key`.
-fn detect_cold_changes(
+/// the set of bound listener ports, and each port's `tls.cert`/`tls.key`.
+pub(crate) fn detect_cold_changes(
     old: &crate::config::schema::AppConfig,
     new: &crate::config::schema::AppConfig,
 ) -> Vec<String> {
@@ -367,35 +393,27 @@ fn detect_cold_changes(
         cold.push("global.admin.bind".to_string());
     }
 
-    // per-site cold fields: port, tls.cert, tls.key
-    let old_sites = &old.sites;
-    let new_sites = &new.sites;
-    let n = old_sites.len().max(new_sites.len());
-    for i in 0..n {
-        let o = old_sites.get(i);
-        let nw = new_sites.get(i);
-        // port
-        if o.and_then(|s| s.port) != nw.and_then(|s| s.port) {
-            cold.push(format!("sites[{i}].port"));
-        }
-        // tls.cert / tls.key (manual cert, not ACME)
-        let old_cert = o
-            .and_then(|s| s.tls.as_ref())
-            .and_then(|t| t.cert.as_deref());
-        let new_cert = nw
-            .and_then(|s| s.tls.as_ref())
-            .and_then(|t| t.cert.as_deref());
-        if old_cert != new_cert {
-            cold.push(format!("sites[{i}].tls.cert"));
-        }
-        let old_key = o
-            .and_then(|s| s.tls.as_ref())
-            .and_then(|t| t.key.as_deref());
-        let new_key = nw
-            .and_then(|s| s.tls.as_ref())
-            .and_then(|t| t.key.as_deref());
-        if old_key != new_key {
-            cold.push(format!("sites[{i}].tls.key"));
+    // Listeners: the set of bound ports and each port's TLS cert/key. Sites are matched by listener,
+    // not by position, so adding, removing or reordering sites on already-bound ports is hot (a
+    // Kubernetes list is sorted by name, so a position-based check rejected every CRD add/delete).
+    let old_l = bound_listeners(old);
+    let new_l = bound_listeners(new);
+    for port in old_l
+        .keys()
+        .chain(new_l.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        match (old_l.get(port), new_l.get(port)) {
+            (Some(_), None) | (None, Some(_)) => cold.push(format!("listeners[{port}].port")),
+            (Some((oc, ok)), Some((nc, nk))) => {
+                if oc != nc {
+                    cold.push(format!("listeners[{port}].tls.cert"));
+                }
+                if ok != nk {
+                    cold.push(format!("listeners[{port}].tls.key"));
+                }
+            }
+            (None, None) => {}
         }
     }
 
@@ -521,15 +539,73 @@ mod tests {
     }
 
     #[test]
-    fn adding_a_new_site_detects_port_change() {
-        // Old: 1 site; New: 2 sites — the new site's port would be detected.
+    fn adding_a_site_on_a_new_port_is_cold() {
         let old = cfg(r#"{"sites":[{"port":8080}]}"#);
         let new = cfg(r#"{"sites":[{"port":8080},{"port":9090}]}"#);
         let cold = detect_cold_changes(&old, &new);
         assert!(
-            cold.iter().any(|f| f.contains("sites[1]")),
-            "extra site should produce cold change: {cold:?}"
+            cold.iter().any(|f| f.contains("9090")),
+            "a new listener port needs a restart: {cold:?}"
         );
+    }
+
+    /// Issue #494 review: sites are matched by listener, not position. A Kubernetes list is sorted by
+    /// name, so adding, removing or reordering a site on an already-bound port must stay hot.
+    #[test]
+    fn adding_removing_or_reordering_sites_on_bound_ports_is_hot() {
+        let two = cfg(r#"{"sites":[{"host":"a.test","port":8080},{"host":"c.test","port":8080}]}"#);
+        let inserted = cfg(
+            r#"{"sites":[{"host":"a.test","port":8080},{"host":"b.test","port":8080},{"host":"c.test","port":8080}]}"#,
+        );
+        let reordered =
+            cfg(r#"{"sites":[{"host":"c.test","port":8080},{"host":"a.test","port":8080}]}"#);
+        let one = cfg(r#"{"sites":[{"host":"a.test","port":8080}]}"#);
+        for (old, new, what) in [
+            (&two, &inserted, "insert"),
+            (&inserted, &two, "delete"),
+            (&two, &reordered, "reorder"),
+            (&two, &one, "delete one of two"),
+        ] {
+            let cold = detect_cold_changes(old, new);
+            assert!(
+                cold.is_empty(),
+                "{what} on a bound port must be hot: {cold:?}"
+            );
+        }
+    }
+
+    /// A plain site listed before a TLS site on the same port does not hide the TLS site's cert/key:
+    /// the listener serves the first complete pair, so editing it is cold and removing the plain site
+    /// is hot.
+    #[test]
+    fn a_plain_site_before_a_tls_site_does_not_hide_its_cert() {
+        let old = cfg(
+            r#"{"sites":[{"host":"a.test","port":8443},{"host":"b.test","port":8443,"tls":{"cert":"old.pem","key":"s.key"}}]}"#,
+        );
+        let new_cert = cfg(
+            r#"{"sites":[{"host":"a.test","port":8443},{"host":"b.test","port":8443,"tls":{"cert":"new.pem","key":"s.key"}}]}"#,
+        );
+        let cold = detect_cold_changes(&old, &new_cert);
+        assert!(
+            cold.iter().any(|f| f.contains("tls.cert")),
+            "the cert served on the port changed: {cold:?}"
+        );
+        let plain_removed = cfg(
+            r#"{"sites":[{"host":"b.test","port":8443,"tls":{"cert":"old.pem","key":"s.key"}}]}"#,
+        );
+        assert!(
+            detect_cold_changes(&old, &plain_removed).is_empty(),
+            "removing the plain site leaves the listener's cert unchanged"
+        );
+    }
+
+    #[test]
+    fn removing_the_only_site_on_a_port_is_cold() {
+        let old = cfg(r#"{"sites":[{"port":8080},{"port":9090}]}"#);
+        let new = cfg(r#"{"sites":[{"port":8080}]}"#);
+        assert!(detect_cold_changes(&old, &new)
+            .iter()
+            .any(|f| f.contains("9090")));
     }
 
     // ── log_file_path ─────────────────────────────────────────────────────────

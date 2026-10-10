@@ -11,7 +11,12 @@ use conduit_runtime::proxy::service::AppState;
 /// A config sourced from `ConduitSite` CRDs is just as capable of having duplicate host:port
 /// pairs, bad TLS config, etc. as a file-based one, and [`spawn_config_update_watcher`] used to
 /// swap every update in unconditionally, with no validation at all (issue #492).
+///
+/// A change to a cold field (port, tls cert/key, workers, backlog, admin bind) is rejected as
+/// `POST /reload` rejects it: the running listeners cannot follow it, so swapping it in would leave
+/// the config describing a server that is not the one running (issue #494).
 fn check_config_update(
+    current: &AppConfig,
     new_cfg: &AppConfig,
 ) -> Result<Vec<String>, Vec<conduit_config_core::validation::ValidationError>> {
     let errors = crate::config::validate::validate(new_cfg);
@@ -19,11 +24,23 @@ fn check_config_update(
     if !hard_errors.is_empty() {
         return Err(hard_errors);
     }
+    let cold = crate::admin::api::detect_cold_changes(current, new_cfg);
+    if !cold.is_empty() {
+        return Err(cold
+            .into_iter()
+            .map(|path| conduit_config_core::validation::ValidationError {
+                path,
+                message: "cold field changed — restart required".to_owned(),
+                severity: conduit_config_core::validation::Severity::Error,
+            })
+            .collect());
+    }
     let mut messages: Vec<String> = warnings
         .iter()
         .map(|w| format!("config: {}: {}", w.path, w.message))
         .collect();
     messages.extend(crate::config::validate::feature_warnings(new_cfg));
+    messages.extend(crate::config::rate_limit_scan::redis_rate_limit_change_warning(new_cfg));
     Ok(messages)
 }
 
@@ -45,7 +62,7 @@ pub(super) fn spawn_config_update_watcher(
                         sites = new_cfg.sites.len(),
                         "live config update received — hot-swapping"
                     );
-                    let warnings = match check_config_update(&new_cfg) {
+                    let warnings = match check_config_update(&state.config.load(), &new_cfg) {
                         Ok(warnings) => warnings,
                         Err(hard_errors) => {
                             for e in &hard_errors {
@@ -111,7 +128,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            check_config_update(&cfg).is_ok(),
+            check_config_update(&cfg, &cfg).is_ok(),
             "a config with no validation errors must be accepted"
         );
     }
@@ -119,7 +136,7 @@ mod tests {
     #[test]
     fn check_config_update_rejects_a_config_with_hard_errors() {
         let cfg = duplicate_host_port_config();
-        let result = check_config_update(&cfg);
+        let result = check_config_update(&AppConfig::default(), &cfg);
         assert!(
             result.is_err(),
             "duplicate host:port must be rejected, not silently swapped in: {result:?}"
@@ -132,7 +149,7 @@ mod tests {
         // ABOUT the duplicate host:port, not just any non-empty error list — otherwise this
         // test would also pass for a config rejected for the wrong reason.
         let cfg = duplicate_host_port_config();
-        let Err(hard_errors) = check_config_update(&cfg) else {
+        let Err(hard_errors) = check_config_update(&AppConfig::default(), &cfg) else {
             panic!("expected a hard-error rejection");
         };
         assert!(
@@ -140,6 +157,39 @@ mod tests {
                 || e.message.contains("port")
                 || e.message.contains("duplicate")),
             "hard errors should describe the duplicate host:port problem: {hard_errors:?}"
+        );
+    }
+
+    // ── cold fields (issue #494) ────────────────────────────────────────────
+
+    fn one_site(port: u16) -> AppConfig {
+        AppConfig {
+            sites: vec![SiteConfig {
+                port: Some(port),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn check_config_update_rejects_a_cold_port_change() {
+        let Err(errors) = check_config_update(&one_site(8080), &one_site(9090)) else {
+            panic!("a port change needs a restart and must be rejected");
+        };
+        assert!(
+            errors.iter().any(|e| e.path.contains("9090")),
+            "the rejection must name the cold field: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn check_config_update_accepts_a_hot_only_change() {
+        let mut new = one_site(8080);
+        new.sites[0].host = Some("renamed.example.com".to_owned());
+        assert!(
+            check_config_update(&one_site(8080), &new).is_ok(),
+            "a host change is hot and must be swapped in"
         );
     }
 }

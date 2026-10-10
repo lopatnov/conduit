@@ -4,28 +4,7 @@ use crate::config::schema::AppConfig;
 use conduit_config_core::redact::redact_url;
 use conduit_ratelimit::redis::RedisRateLimiter;
 
-/// Find the first `redis://`/`rediss://` `rateLimit.store` configured anywhere
-/// in `config` — site-level, per-route (`proxy.*.rateLimit` AND
-/// `routes[*].proxy.rateLimit`, issue #360), or per-consumer
-/// (`consumers.consumers[].rateLimit`) — so a Redis backend is connected at
-/// startup even when Redis is used *only* at the route/consumer layer (issue
-/// #322: previously only the site level was scanned, so a route/consumer-only
-/// Redis config silently fell back to the in-memory limiter forever, since
-/// `AppState.redis_rate_limiter` was never populated in the first place).
-///
-/// Scan order (site → `proxy` map → `routes[]` → consumer, across sites in
-/// declaration order) is shared with `config::validate`'s Redis-consistency
-/// checks via [`crate::config::rate_limit_scan::iter_rate_limit_configs`] —
-/// see that module for why the walk lives in exactly one place.
-fn find_redis_rate_limit_store(config: &AppConfig) -> Option<String> {
-    config
-        .sites
-        .iter()
-        .flat_map(crate::config::rate_limit_scan::iter_rate_limit_configs)
-        .filter_map(|rl| rl.store.as_deref())
-        .find(|store| conduit_config_core::scheme::is_redis_url(store))
-        .map(str::to_owned)
-}
+use crate::config::rate_limit_scan::find_redis_rate_limit_store;
 
 /// Connect to Redis for rate limiting if any site, route, or consumer has a
 /// `redis://` store configured.
@@ -36,6 +15,7 @@ fn find_redis_rate_limit_store(config: &AppConfig) -> Option<String> {
 pub(super) fn connect_redis_rate_limiter_if_configured(
     config: &AppConfig,
 ) -> anyhow::Result<Option<Arc<RedisRateLimiter>>> {
+    crate::config::rate_limit_scan::record_startup_redis_store(config);
     let url_opt = find_redis_rate_limit_store(config);
     let Some(ref url) = url_opt else {
         return Ok(None);

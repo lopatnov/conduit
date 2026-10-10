@@ -102,9 +102,14 @@ pub fn eviction_manager(
 
 /// Build a deterministic [`CacheKey`] from the request coordinates.
 ///
-/// The `host` is part of the key so that different virtual-hosts with the
+/// The `host` and the listener `port` are part of the key so that different virtual-hosts with the
 /// same path are stored independently.  The rest of the key is
 /// `scheme:path` (with `?query` appended when present).
+///
+/// `port` is the **local port the request arrived on**, the one the router matches `sites[].port`
+/// against, not the port in the `Host` header: two sites that share a `host` and differ in `port`
+/// are separate sites (different upstreams, auth, headers), so they must not share one cache
+/// namespace (issue #482). A key change, so a persistent (disk/Redis) cache starts cold once.
 ///
 /// The host is the host **without a port** (`example.com:8080` and `example.com` are one
 /// namespace, a bracketed IPv6 literal keeps its brackets): the request path derives it from the
@@ -127,6 +132,7 @@ pub fn eviction_manager(
 /// `Accept-Language: fr` produce different cache entries for the same URL.
 pub fn build_cache_key(
     host: &str,
+    port: u16,
     scheme: &str,
     path: &str,
     query: Option<&str>,
@@ -163,7 +169,7 @@ pub fn build_cache_key(
     // The second argument is Pingora's `user_tag` (identifies a user for
     // per-user storage quotas; it is not part of the hash). Conduit has no
     // per-user cache quota, so it stays empty.
-    CacheKey::new(format!("{host}\0{primary}"), "")
+    CacheKey::new(format!("{host}\0{port}\0{primary}"), "")
 }
 
 // ── Request-side policy ───────────────────────────────────────────────────────
@@ -441,25 +447,46 @@ mod tests {
 
     #[test]
     fn cache_key_without_query() {
-        let k = build_cache_key("example.com", "https", "/api/data", None, None, None);
-        assert_eq!(k.primary_key(), b"example.com\0https:/api/data");
+        let k = build_cache_key("example.com", 80, "https", "/api/data", None, None, None);
+        assert_eq!(k.primary_key(), b"example.com\080\0https:/api/data");
     }
 
     /// Issue #444: the Admin API's purge builds the key from a URL (`http://example.com:8080/x`), the
     /// request path from the `Host` header; both must land in the namespace `example.com`.
     #[test]
     fn cache_key_ignores_the_port_of_the_host() {
-        let bare = build_cache_key("example.com", "http", "/x", None, None, None);
-        let with_port = build_cache_key("example.com:8080", "http", "/x", None, None, None);
-        assert_eq!(with_port.primary_key(), b"example.com\0http:/x");
+        let bare = build_cache_key("example.com", 80, "http", "/x", None, None, None);
+        let with_port = build_cache_key("example.com:8080", 80, "http", "/x", None, None, None);
+        assert_eq!(with_port.primary_key(), b"example.com\080\0http:/x");
         assert_eq!(with_port.to_compact().primary, bare.to_compact().primary);
+    }
+
+    /// Issue #482: sites that share a `host` and differ in `port` are different sites, so the same
+    /// path must land in different cache entries; the port is the listener's, not the `Host` header's.
+    #[test]
+    fn cache_key_separates_sites_that_differ_only_in_listener_port() {
+        let a = build_cache_key("example.com", 8080, "http", "/x", None, None, None);
+        let b = build_cache_key("example.com", 9090, "http", "/x", None, None, None);
+        assert_ne!(a.to_compact().primary, b.to_compact().primary);
+        assert_eq!(a.primary_key(), b"example.com\08080\0http:/x");
+        // the `Host` header's own port changes nothing: it is the *listener* that identifies the site
+        let c = build_cache_key("example.com:9090", 8080, "http", "/x", None, None, None);
+        assert_eq!(a.to_compact().primary, c.to_compact().primary);
+    }
+
+    /// Host and port are framed by `\0`, so a host that ends in digits cannot swallow the port.
+    #[test]
+    fn cache_key_frames_the_port_apart_from_the_host() {
+        let a = build_cache_key("a", 12, "http", "/x", None, None, None);
+        let b = build_cache_key("a1", 2, "http", "/x", None, None, None);
+        assert_ne!(a.to_compact().primary, b.to_compact().primary);
     }
 
     #[test]
     fn cache_key_keeps_the_brackets_of_an_ipv6_host_and_drops_its_port() {
-        let bare = build_cache_key("[::1]", "http", "/x", None, None, None);
-        let with_port = build_cache_key("[::1]:8080", "http", "/x", None, None, None);
-        assert_eq!(with_port.primary_key(), b"[::1]\0http:/x");
+        let bare = build_cache_key("[::1]", 80, "http", "/x", None, None, None);
+        let with_port = build_cache_key("[::1]:8080", 80, "http", "/x", None, None, None);
+        assert_eq!(with_port.primary_key(), b"[::1]\080\0http:/x");
         assert_eq!(with_port.to_compact().primary, bare.to_compact().primary);
     }
 
@@ -467,9 +494,10 @@ mod tests {
     #[test]
     fn cache_key_host_stripping_is_idempotent() {
         for host in ["example.com", "sub.example.com", "[::1]", "127.0.0.1"] {
-            let once = build_cache_key(host, "https", "/p", Some("q=1"), None, None);
+            let once = build_cache_key(host, 80, "https", "/p", Some("q=1"), None, None);
             let twice = build_cache_key(
                 host_without_port(host),
+                80,
                 "https",
                 "/p",
                 Some("q=1"),
@@ -487,21 +515,30 @@ mod tests {
     #[test]
     fn cache_key_with_empty_query() {
         // An empty query string is treated as no query at all.
-        let k = build_cache_key("example.com", "https", "/api/data", Some(""), None, None);
-        assert_eq!(k.primary_key(), b"example.com\0https:/api/data");
+        let k = build_cache_key(
+            "example.com",
+            80,
+            "https",
+            "/api/data",
+            Some(""),
+            None,
+            None,
+        );
+        assert_eq!(k.primary_key(), b"example.com\080\0https:/api/data");
     }
 
     #[test]
     fn cache_key_with_query() {
         let k = build_cache_key(
             "example.com",
+            80,
             "https",
             "/search",
             Some("q=hello"),
             None,
             None,
         );
-        assert_eq!(k.primary_key(), b"example.com\0https:/search?q=hello");
+        assert_eq!(k.primary_key(), b"example.com\080\0https:/search?q=hello");
     }
 
     #[test]
@@ -512,18 +549,18 @@ mod tests {
         // boundary between host and primary key — which Pingora 0.9 no longer
         // provides — they would hash identically and two virtual-hosts would
         // share a cache entry.
-        let k1 = build_cache_key("a", "bhttps", "/x", None, None, None);
-        let k2 = build_cache_key("ab", "https", "/x", None, None, None);
+        let k1 = build_cache_key("a", 80, "bhttps", "/x", None, None, None);
+        let k2 = build_cache_key("ab", 80, "https", "/x", None, None, None);
         assert_ne!(k1.to_compact().primary, k2.to_compact().primary);
-        assert_eq!(k2.primary_key(), b"ab\0https:/x");
+        assert_eq!(k2.primary_key(), b"ab\080\0https:/x");
     }
 
     #[test]
     fn cache_key_vary_headers_with_no_request_headers_ignores_vary() {
         // vary supplied but request_headers is None → treated as base key only.
         let vary = vec!["accept-language".to_string()];
-        let k1 = build_cache_key("h.com", "https", "/", None, Some(&vary), None);
-        let k2 = build_cache_key("h.com", "https", "/", None, None, None);
+        let k1 = build_cache_key("h.com", 80, "https", "/", None, Some(&vary), None);
+        let k2 = build_cache_key("h.com", 80, "https", "/", None, None, None);
         // Both produce the same key (vary cannot be applied without header values).
         assert_eq!(k1.to_compact().primary, k2.to_compact().primary);
     }
@@ -536,8 +573,8 @@ mod tests {
         h2.insert("accept-language", "fr".parse().unwrap());
 
         let vary = vec!["accept-language".to_string()];
-        let k1 = build_cache_key("h.com", "https", "/", None, Some(&vary), Some(&h1));
-        let k2 = build_cache_key("h.com", "https", "/", None, Some(&vary), Some(&h2));
+        let k1 = build_cache_key("h.com", 80, "https", "/", None, Some(&vary), Some(&h1));
+        let k2 = build_cache_key("h.com", 80, "https", "/", None, Some(&vary), Some(&h2));
         // Different header values must produce different keys.
         assert_ne!(k1.to_compact().primary, k2.to_compact().primary);
     }
@@ -547,8 +584,8 @@ mod tests {
         let mut h = http::HeaderMap::new();
         h.insert("accept-language", "en".parse().unwrap());
         let vary = vec!["accept-language".to_string()];
-        let k1 = build_cache_key("h.com", "https", "/", None, Some(&vary), Some(&h));
-        let k2 = build_cache_key("h.com", "https", "/", None, Some(&vary), Some(&h));
+        let k1 = build_cache_key("h.com", 80, "https", "/", None, Some(&vary), Some(&h));
+        let k2 = build_cache_key("h.com", 80, "https", "/", None, Some(&vary), Some(&h));
         // Same header value must produce the same key.
         assert_eq!(k1.to_compact().primary, k2.to_compact().primary);
     }
@@ -564,8 +601,8 @@ mod tests {
         let vary_upper = vec!["Accept-Language".to_string()];
         let vary_lower = vec!["accept-language".to_string()];
 
-        let k_upper = build_cache_key("h.com", "https", "/", None, Some(&vary_upper), Some(&h));
-        let k_lower = build_cache_key("h.com", "https", "/", None, Some(&vary_lower), Some(&h));
+        let k_upper = build_cache_key("h.com", 80, "https", "/", None, Some(&vary_upper), Some(&h));
+        let k_lower = build_cache_key("h.com", 80, "https", "/", None, Some(&vary_lower), Some(&h));
 
         assert_eq!(
             k_upper.to_compact().primary,
@@ -748,7 +785,7 @@ mod tests {
                 .unwrap_or_default()
                 .subsec_nanos()
         );
-        let key = build_cache_key("lock-test.example", "https", &unique, None, None, None);
+        let key = build_cache_key("lock-test.example", 80, "https", &unique, None, None, None);
         let lock = cache_lock();
         let locked = lock.lock(&key, false);
         assert!(

@@ -136,6 +136,46 @@ fn no_compression_without_accept_encoding() {
     );
 }
 
+/// Issue #403: the uncompressed answer of a site that *can* compress must say `Vary: Accept-Encoding`,
+/// otherwise a shared cache that stored it for a client without `Accept-Encoding` serves it to
+/// everyone (and, the other way round, a stored compressed body to a client that cannot decode it).
+#[test]
+#[serial]
+fn uncompressed_static_response_still_varies_on_accept_encoding() {
+    let (_dir, static_dir) = make_static_dir_with_large_file();
+    let (srv, _, _) = compression_server(&static_dir, serde_json::json!(true));
+
+    for accept in [None, Some("identity")] {
+        let mut req = reqwest::blocking::Client::new().get(srv.url("/data.txt"));
+        if let Some(accept) = accept {
+            req = req.header("Accept-Encoding", accept);
+        }
+        let resp = req.send().expect("send");
+        assert_eq!(resp.status(), 200);
+        assert!(resp.headers().get("content-encoding").is_none());
+        let vary = resp
+            .headers()
+            .get("vary")
+            .map(|v| v.to_str().unwrap().to_lowercase());
+        assert!(
+            vary.as_deref()
+                .is_some_and(|v| v.contains("accept-encoding")),
+            "Accept-Encoding {accept:?}: Vary missing on the uncompressed response, got {vary:?}"
+        );
+    }
+}
+
+/// Counterpart: a site without compression has one representation, so no `Vary` is added.
+#[test]
+#[serial]
+fn static_response_has_no_vary_when_compression_is_off() {
+    let (_dir, static_dir) = make_static_dir_with_large_file();
+    let (srv, _, _) = compression_server(&static_dir, serde_json::json!(false));
+    let resp = reqwest::blocking::get(srv.url("/data.txt")).expect("GET");
+    assert_eq!(resp.status(), 200);
+    assert!(resp.headers().get("vary").is_none());
+}
+
 #[test]
 #[serial]
 fn no_compression_when_disabled() {

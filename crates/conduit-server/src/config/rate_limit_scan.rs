@@ -13,7 +13,9 @@
 //! `routes[]` level for free instead of needing three matching hand-edits
 //! that can (and did) drift out of sync with each other.
 
-use crate::config::schema::{ProxyConfig, ProxyRouteTarget, RateLimitConfig, SiteConfig};
+use crate::config::schema::{
+    AppConfig, ProxyConfig, ProxyRouteTarget, RateLimitConfig, SiteConfig,
+};
 
 /// Yield every [`RateLimitConfig`] configured anywhere on `site`, in this
 /// fixed order: site-level, then each `proxy` map route's `Full` target (in
@@ -45,6 +47,62 @@ pub(crate) fn iter_rate_limit_configs(site: &SiteConfig) -> impl Iterator<Item =
         .chain(proxy_map)
         .chain(routes_array)
         .chain(consumer_rate_limits(site))
+}
+
+/// Find the first `redis://`/`rediss://` `rateLimit.store` configured anywhere
+/// in `config` — site-level, per-route (`proxy.*.rateLimit` AND
+/// `routes[*].proxy.rateLimit`, issue #360), or per-consumer
+/// (`consumers.consumers[].rateLimit`) — so a Redis backend is connected at
+/// startup even when Redis is used *only* at the route/consumer layer (issue
+/// #322: previously only the site level was scanned, so a route/consumer-only
+/// Redis config silently fell back to the in-memory limiter forever, since
+/// `AppState.redis_rate_limiter` was never populated in the first place).
+///
+/// Scan order (site → `proxy` map → `routes[]` → consumer, across sites in
+/// declaration order) is shared with `config::validate`'s Redis-consistency
+/// checks via [`iter_rate_limit_configs`] —
+/// see that module for why the walk lives in exactly one place.
+pub(crate) fn find_redis_rate_limit_store(config: &AppConfig) -> Option<String> {
+    config
+        .sites
+        .iter()
+        .flat_map(iter_rate_limit_configs)
+        .filter_map(|rl| rl.store.as_deref())
+        .find(|store| conduit_config_core::scheme::is_redis_url(store))
+        .map(str::to_owned)
+}
+
+/// The Redis rate-limit store the connection was made for at startup (`None` = none configured).
+/// Set once by the bootstrap; later reloads are compared against it, not against the previous
+/// reload, so the warning repeats until the process restarts (issue #358).
+static STARTUP_REDIS_STORE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+#[cfg(feature = "redis")]
+pub(crate) fn record_startup_redis_store(config: &AppConfig) {
+    let _ = STARTUP_REDIS_STORE.set(find_redis_rate_limit_store(config));
+}
+
+/// A warning when `new` names a different Redis rate-limit store than the startup connection, or
+/// none where startup had one. The connection is made once at startup (issue #358) and never
+/// re-scanned, so a hot reload that changes it leaves the old connection (or the in-memory fallback)
+/// in use; saying so beats silently ignoring the edit.
+pub(crate) fn redis_rate_limit_change_warning(new: &AppConfig) -> Option<String> {
+    let startup = STARTUP_REDIS_STORE.get()?;
+    redis_store_change_warning(
+        startup.as_deref(),
+        find_redis_rate_limit_store(new).as_deref(),
+    )
+}
+
+fn redis_store_change_warning(startup: Option<&str>, new: Option<&str>) -> Option<String> {
+    if startup == new {
+        return None;
+    }
+    Some(
+        "rateLimit.store: the Redis rate-limit connection is made at startup only; this change \
+         takes effect after a restart (the startup connection, or the in-memory limiter, stays in use)"
+            .to_owned(),
+    )
 }
 
 /// `Full(cfg)` route targets carry their own optional `rateLimit`; the
@@ -218,5 +276,35 @@ mod tests {
         // module still passing under `--no-default-features`.
         let site = SiteConfig::default();
         assert_eq!(iter_rate_limit_configs(&site).count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod redis_change_tests {
+    use super::*;
+
+    #[test]
+    fn unchanged_store_is_silent() {
+        assert!(
+            redis_store_change_warning(Some("redis://a:6379"), Some("redis://a:6379")).is_none()
+        );
+        assert!(redis_store_change_warning(None, None).is_none());
+    }
+
+    #[test]
+    fn added_changed_or_removed_store_warns() {
+        let (a, b) = (Some("redis://a:6379"), Some("redis://b:6379"));
+        assert!(redis_store_change_warning(None, a).is_some(), "added");
+        assert!(redis_store_change_warning(a, b).is_some(), "changed");
+        assert!(redis_store_change_warning(a, None).is_some(), "removed");
+    }
+
+    /// The warning compares with the startup store, so it keeps firing on the reload after a change.
+    #[test]
+    fn a_second_reload_with_the_same_changed_store_still_warns() {
+        let startup = Some("redis://a:6379");
+        let changed = Some("redis://b:6379");
+        assert!(redis_store_change_warning(startup, changed).is_some());
+        assert!(redis_store_change_warning(startup, changed).is_some());
     }
 }
