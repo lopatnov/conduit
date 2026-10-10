@@ -366,7 +366,7 @@ fn bound_listeners(
 /// Return the list of field paths that changed between `old` and `new` and
 /// require a server restart (cold fields).
 ///
-/// Cold fields: `global.workers`, `global.backlog`, `global.admin.bind`,
+/// Cold fields: `global.workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`,
 /// the set of bound listener ports, and each port's `tls.cert`/`tls.key`.
 pub(crate) fn detect_cold_changes(
     old: &crate::config::schema::AppConfig,
@@ -374,14 +374,14 @@ pub(crate) fn detect_cold_changes(
 ) -> Vec<String> {
     let mut cold = Vec::new();
 
-    // global.workers / global.backlog / global.admin.bind
+    // global.workers / global.shutdownTimeoutSecs / global.admin.bind
     let old_g = old.global.as_ref();
     let new_g = new.global.as_ref();
     if old_g.and_then(|g| g.workers) != new_g.and_then(|g| g.workers) {
         cold.push("global.workers".to_string());
     }
-    if old_g.and_then(|g| g.backlog) != new_g.and_then(|g| g.backlog) {
-        cold.push("global.backlog".to_string());
+    if old_g.and_then(|g| g.shutdown_timeout_secs) != new_g.and_then(|g| g.shutdown_timeout_secs) {
+        cold.push("global.shutdownTimeoutSecs".to_string());
     }
     let old_bind = old_g
         .and_then(|g| g.admin.as_ref())
@@ -517,14 +517,21 @@ mod tests {
     }
 
     #[test]
-    fn backlog_change_is_cold() {
-        let old = cfg(r#"{"global":{"backlog":128},"sites":[{"port":8080}]}"#);
-        let new = cfg(r#"{"global":{"backlog":256},"sites":[{"port":8080}]}"#);
+    fn shutdown_timeout_change_is_cold() {
+        let old = cfg(r#"{"global":{"shutdownTimeoutSecs":10},"sites":[{"port":8080}]}"#);
+        let new = cfg(r#"{"global":{"shutdownTimeoutSecs":20},"sites":[{"port":8080}]}"#);
         let cold = detect_cold_changes(&old, &new);
         assert!(
-            cold.iter().any(|f| f.contains("backlog")),
-            "backlog change must be cold: {cold:?}"
+            cold.iter().any(|f| f.contains("shutdownTimeoutSecs")),
+            "shutdownTimeoutSecs change must be cold: {cold:?}"
         );
+    }
+
+    #[test]
+    fn backlog_change_is_not_cold() {
+        let old = cfg(r#"{"global":{"backlog":128},"sites":[{"port":8080}]}"#);
+        let new = cfg(r#"{"global":{"backlog":256},"sites":[{"port":8080}]}"#);
+        assert!(detect_cold_changes(&old, &new).is_empty());
     }
 
     #[test]

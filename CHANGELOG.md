@@ -24,6 +24,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`global.shutdownTimeoutSecs` now takes effect** (issue #489). It is passed to Pingora's grace period (default 30 s;
+  Pingora used to wait its own 300 s). Pingora waits the whole period, it does not end early when connections drain.
+  Changing the value now needs a restart (cold field).
+- **`global.backlog` is reported as ignored** (issue #490). Pingora fixes the listen backlog at 65535; validation warns,
+  and a change no longer counts as a cold-restart field.
+- **`conduit man` on a terminal prints a hint** instead of raw roff, and the description no longer uses non-ASCII bullets.
+  Piped or redirected output is unchanged.
 - **A live config update that changes a cold field is rejected** (issue #494), as `POST /reload` already
   did. A Kubernetes CRD edit to a port or TLS cert path used to be swapped into the config while the
   listeners kept the old ones. Cold fields are now compared per listener port, not per site position, so

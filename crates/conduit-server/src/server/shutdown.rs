@@ -8,8 +8,9 @@
 //! 3. In-flight requests are tracked by `AppState.inflight: Arc<AtomicUsize>`.
 //!    Each request increments this counter in `request_filter` and decrements
 //!    it in `logging()` after the response is sent.
-//! 4. Pingora waits for all active connections to drain before the process exits.
-//!    The timeout is controlled by `global.shutdownTimeoutSecs` (default: 30 s).
+//! 4. Pingora then sleeps for the whole `global.shutdownTimeoutSecs` period (default: 30 s)
+//!    before it shuts its runtimes down. It does not end early when the connections drain
+//!    (issue #489), and it does not consult `AppState.inflight`.
 //!
 //! ## Admin API `/shutdown`
 //!
@@ -21,5 +22,5 @@
 //! ## Future work
 //!
 //! - Expose inflight counter in `/status` for operational visibility (done ✓).
-//! - Hook `AppState.inflight` into Pingora's shutdown signal so the server waits
-//!   for zero inflight before exiting (currently Pingora's built-in drain is used).
+//! - Hook `AppState.inflight` into Pingora's shutdown signal so the server can exit as soon
+//!   as it reaches zero instead of sleeping the whole period.

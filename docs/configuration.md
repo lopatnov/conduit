@@ -2844,7 +2844,7 @@ hotReload:
 `logging`, `cors`, `securityHeaders`, `cache`, `outlierDetection`, `limits`,
 `requestTransform`, `responseTransform`, `maskErrors`.
 
-**Requires cold restart:** `port`, `tls.cert/key`, `workers`, `backlog`,
+**Requires cold restart:** `port`, `tls.cert/key`, `workers`, `global.shutdownTimeoutSecs`,
 `global.admin.bind`. (`tls.versions`/`tls.ciphers` are not listed here
 because they're rejected at validate-time — see [TLS field reference]
 (#tls-field-reference) — not merely cold-restart-only.)
@@ -3284,7 +3284,6 @@ Run multiple virtual hosts from one process.
 # YAML
 global:
   workers: 4
-  backlog: 1024
   shutdownTimeoutSecs: 30
   admin:
     bind: "127.0.0.1:2019"
@@ -3334,8 +3333,8 @@ sites:
 | Field                 | Type   | Default         | Description                                                                          |
 | --------------------- | ------ | --------------- | ------------------------------------------------------------------------------------ |
 | `workers`             | number | CPU count       | Worker threads — cold restart to change                                              |
-| `backlog`             | number | `1024`          | TCP accept backlog                                                                   |
-| `shutdownTimeoutSecs` | number | —               | Grace period for in-flight requests on shutdown                                      |
+| `backlog`             | number | —               | **Ignored.** Pingora fixes the listen backlog at 65535; validation warns              |
+| `shutdownTimeoutSecs` | number | `30`            | Shutdown grace period; Pingora waits all of it. Cold restart to change                |
 | `admin.bind`          | string | — (not started) | Admin API address. **Required to enable the Admin API.** Omit to disable it entirely |
 | `admin.token`         | string | —               | Bearer token required for every Admin API request (strongly recommended)             |
 | `otlp`                | object | —               | OpenTelemetry tracing config (`--features otlp` required — see [OpenTelemetry Tracing](#opentelemetry-tracing)) |

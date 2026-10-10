@@ -22,8 +22,8 @@
       "type": "object",
       "properties": {
         "workers":             { "type": "integer", "minimum": 1 },
-        "backlog":             { "type": "integer", "minimum": 1 },
-        "shutdownTimeoutSecs": { "type": "integer", "minimum": 0 },
+        "backlog":             { "type": "integer", "minimum": 1, "deprecated": true, "description": "Ignored: Pingora fixes the listen backlog at 65535. Validation warns." },
+        "shutdownTimeoutSecs": { "type": "integer", "minimum": 0, "default": 30, "description": "Grace period before shutdown completes. Pingora waits the whole period; it does not end early when connections drain." },
         "admin": {
           "type": "object",
           "properties": {

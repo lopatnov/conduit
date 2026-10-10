@@ -12,7 +12,7 @@ use conduit_runtime::proxy::service::AppState;
 /// pairs, bad TLS config, etc. as a file-based one, and [`spawn_config_update_watcher`] used to
 /// swap every update in unconditionally, with no validation at all (issue #492).
 ///
-/// A change to a cold field (port, tls cert/key, workers, backlog, admin bind) is rejected as
+/// A change to a cold field (port, tls cert/key, workers, shutdownTimeoutSecs, admin bind) is rejected as
 /// `POST /reload` rejects it: the running listeners cannot follow it, so swapping it in would leave
 /// the config describing a server that is not the one running (issue #494).
 fn check_config_update(

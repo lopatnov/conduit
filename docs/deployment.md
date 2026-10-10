@@ -642,9 +642,10 @@ sudo mv /usr/local/bin/conduit.new /usr/local/bin/conduit
 sudo systemctl restart conduit
 ```
 
-> Conduit's graceful shutdown (`shutdownTimeoutSecs`) ensures in-flight
-> requests complete before the process exits. Set
-> `global.shutdownTimeoutSecs: 30` in your config to allow up to 30 s.
+> Conduit's graceful shutdown waits `global.shutdownTimeoutSecs` (default 30 s)
+> before the process exits, so in-flight requests get that long to finish. The
+> period is waited in full even when everything drains sooner; size it below your
+> orchestrator's kill timeout.
 
 ### Rolling update (Kubernetes)
 

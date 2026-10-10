@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::process;
 
 use clap::CommandFactory;
@@ -222,6 +223,15 @@ impl CliCommand for CompletionsCmd {
 struct ManCmd;
 impl CliCommand for ManCmd {
     fn execute(self) {
+        // Raw roff on a terminal is unreadable (notably on Windows, which has no `man`): print a hint instead.
+        // Redirected or piped output is unchanged.
+        if std::io::stdout().is_terminal() {
+            eprintln!(
+                "conduit man writes the manual in roff format. Pipe it to a viewer, e.g. `conduit man | man -l -`, \
+                 or redirect it to a file. Use `conduit --help` for the same information as plain text."
+            );
+            return;
+        }
         let cmd = Cli::command();
         let man = clap_mangen::Man::new(cmd);
         man.render(&mut std::io::stdout()).unwrap_or_else(|e| {

@@ -209,6 +209,15 @@ pub(super) fn validate_global(config: &AppConfig, errors: &mut Vec<ValidationErr
             ));
         }
     }
+    // Pingora hard-codes the listen backlog (65535, `pingora-core` `l4.rs`) and exposes no setting, so the
+    // field has no effect. A warning, not an error, so existing configs keep starting (issue #490).
+    if config.global.as_ref().is_some_and(|g| g.backlog.is_some()) {
+        errors.push(ValidationError::warning(
+            "global.backlog",
+            "global.backlog is ignored: Pingora fixes the listen backlog at 65535 and offers no way to change it. \
+             Remove the field.",
+        ));
+    }
     // An empty token string is not "no token" (`None`, the unauthenticated case): the bearer layer compares in
     // constant time and a request without an `Authorization` header is an empty `provided` string, so
     // `token: ""` matches it and authenticates every request — which is exactly what an unresolved `$ADMIN_TOKEN`
