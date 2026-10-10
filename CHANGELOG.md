@@ -24,6 +24,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **ACME certificates are renewed while the process runs** (issue #491). `spawn_renewal_task` had no
+  caller, so a certificate was obtained at startup and never renewed. One background loop now checks
+  every 12 h, answers the HTTP-01 challenge through the listener that already owns the port (a bind
+  would fail with `EADDRINUSE`), and stops on shutdown. The renewed files take effect at the next
+  restart. Certificate, key and account credentials are written atomically; a cached certificate is
+  reused only when its key matches; and if renewal fails while the cached certificate is still valid
+  the site keeps serving it instead of falling back to plain HTTP.
 - `Range` requests honour `If-Range` (issue #402, RFC 9110 §13.1.5): a stale validator now gets `200`
   with the whole file instead of a `206` splice of two versions.
 - A route with `groups` no longer gets a false "slowStartSecs is ignored on this route" warning from a
