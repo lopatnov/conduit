@@ -7,8 +7,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
     long_about = "High-performance reverse proxy and static file server built on Cloudflare Pingora.\n\
                   \n\
                   Created by Oleksandr Lopatnov\n\
-                  \u{2022} GitHub:   https://github.com/lopatnov\n\
-                  \u{2022} LinkedIn: https://linkedin.com/in/lopatnov",
+                  - GitHub:   https://github.com/lopatnov\n\
+                  - LinkedIn: https://linkedin.com/in/lopatnov",
     version
 )]
 pub struct Cli {

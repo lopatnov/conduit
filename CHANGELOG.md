@@ -24,6 +24,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`global.shutdownTimeoutSecs` now takes effect** (issue #489). It is passed to Pingora's grace period (default 30 s;
+  Pingora used to wait its own 300 s, so operators with long-lived streams (uploads, SSE, WebSocket) should raise it).
+  On SIGTERM Pingora waits the whole period and does not end early when connections drain; `POST /shutdown` still exits at zero in-flight.
+  Changing the value now needs a restart (cold field).
+- **`global.backlog` is reported as ignored** (issue #490). Pingora fixes the listen backlog at 65535; validation warns,
+  and a change no longer counts as a cold-restart field.
+- **`conduit man` on a terminal prints a hint** instead of raw roff, and the description no longer uses non-ASCII bullets.
+  Piped or redirected output is unchanged.
 - **A `routes[]` entry honours the same route options as a `proxy` map route** (issue #412). It used
   to resolve through its own, smaller resolver, so `groups` (the route did not work at all), `hashKey`,
   `sticky`, `backup`, `rewrite`, `mirror` and `upstreamTls` were accepted and silently ignored. Both

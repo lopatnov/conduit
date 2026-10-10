@@ -11,7 +11,7 @@ use crate::admin::api::AdminApiService;
 // DEFAULT_ADMIN_BIND is still the default for CLI commands (conduit reload etc.)
 // but is no longer a fallback for the server-side HTTP binding.
 #[allow(unused_imports)]
-use crate::config::defaults::DEFAULT_ADMIN_BIND;
+use crate::config::defaults::{DEFAULT_ADMIN_BIND, DEFAULT_SHUTDOWN_TIMEOUT_SECS};
 use crate::config::schema::AppConfig;
 use conduit_runtime::proxy::service::{AppState, ConduitProxy};
 #[cfg(feature = "upload")]
@@ -61,7 +61,8 @@ fn bind_upload_listener_if_needed(
     }
 }
 
-/// Build the Pingora `ServerConf` from `global.workers` (issue #226).
+/// Build the Pingora `ServerConf` from `global.workers` (issue #226) and
+/// `global.shutdownTimeoutSecs` (issue #489).
 ///
 /// Previously `global.workers` was parsed and tracked as a cold-reload
 /// field but never threaded into the actual server construction, so it had
@@ -76,6 +77,15 @@ fn build_server_conf(config: &AppConfig) -> ServerConf {
             .as_ref()
             .and_then(|g| g.workers)
             .unwrap_or_else(|| ServerConf::default().threads),
+        // Pingora sleeps this whole period on a graceful terminate before it shuts the
+        // runtimes down; it does not end early once connections drain (issue #489).
+        grace_period_seconds: Some(
+            config
+                .global
+                .as_ref()
+                .and_then(|g| g.shutdown_timeout_secs)
+                .unwrap_or(DEFAULT_SHUTDOWN_TIMEOUT_SECS),
+        ),
         ..Default::default()
     }
 }
@@ -305,6 +315,22 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(build_server_conf(&config).threads, 8);
+    }
+
+    #[test]
+    fn build_server_conf_applies_shutdown_timeout_secs() {
+        let config = AppConfig {
+            global: Some(GlobalConfig {
+                shutdown_timeout_secs: Some(7),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(build_server_conf(&config).grace_period_seconds, Some(7));
+        assert_eq!(
+            build_server_conf(&AppConfig::default()).grace_period_seconds,
+            Some(DEFAULT_SHUTDOWN_TIMEOUT_SECS)
+        );
     }
 
     #[test]

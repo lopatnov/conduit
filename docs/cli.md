@@ -304,7 +304,7 @@ workers) are ignored — the server logs a warning for each one.
 middleware, logging, cache, CORS, security headers, transforms, fault injection.
 
 **Not hot-reloadable (restart required):** `port`, `tls.cert/key`,
-`tls.versions/ciphers`, `workers`, `backlog`, `global.admin.bind`.
+`tls.versions/ciphers`, `workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`.
 
 ---
 
@@ -358,8 +358,8 @@ conduit shutdown
 conduit shutdown --admin 10.0.0.1:2019
 ```
 
-Conduit stops accepting new connections, waits for all in-flight requests to
-complete (up to `global.shutdownTimeoutSecs`), then exits.
+Conduit waits for in-flight requests to finish, up to `global.shutdownTimeoutSecs` (default 30 s), then exits;
+it exits at once when nothing is in flight. (A SIGTERM goes through Pingora instead, which waits the whole period.)
 
 ---
 

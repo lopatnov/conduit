@@ -103,6 +103,15 @@ fn global_workers_positive_is_accepted() {
     assert!(errs(r#"{ "global": { "workers": 4 }, "sites": [{ "port": 8080 }] }"#).is_empty());
 }
 
+/// Issue #490: Pingora hard-codes the listen backlog, so the field is ignored; it warns but must not block startup.
+#[test]
+fn global_backlog_is_a_warning_not_an_error() {
+    let e = errs(r#"{ "global": { "backlog": 512 }, "sites": [{ "port": 8080 }] }"#);
+    assert_eq!(e.len(), 1, "got: {e:?}");
+    assert_eq!(e[0].path, "global.backlog");
+    assert_eq!(e[0].severity, Severity::Warning);
+}
+
 #[test]
 fn global_workers_absent_is_accepted() {
     assert!(errs(r#"{ "sites": [{ "port": 8080 }] }"#).is_empty());

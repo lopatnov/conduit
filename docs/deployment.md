@@ -642,9 +642,12 @@ sudo mv /usr/local/bin/conduit.new /usr/local/bin/conduit
 sudo systemctl restart conduit
 ```
 
-> Conduit's graceful shutdown (`shutdownTimeoutSecs`) ensures in-flight
-> requests complete before the process exits. Set
-> `global.shutdownTimeoutSecs: 30` in your config to allow up to 30 s.
+> On SIGTERM Conduit waits `global.shutdownTimeoutSecs` (default 30 s) before the
+> process exits, so in-flight requests get that long to finish. Pingora waits the
+> period in full even when everything drains sooner, then spends up to 5 more seconds
+> shutting its runtimes down; size the total below your orchestrator's kill timeout.
+> (`conduit shutdown` / `POST /shutdown` exits as
+> soon as nothing is in flight.)
 
 ### Rolling update (Kubernetes)
 

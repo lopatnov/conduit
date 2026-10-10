@@ -8,18 +8,20 @@
 //! 3. In-flight requests are tracked by `AppState.inflight: Arc<AtomicUsize>`.
 //!    Each request increments this counter in `request_filter` and decrements
 //!    it in `logging()` after the response is sent.
-//! 4. Pingora waits for all active connections to drain before the process exits.
-//!    The timeout is controlled by `global.shutdownTimeoutSecs` (default: 30 s).
+//! 4. Pingora then sleeps for the whole `global.shutdownTimeoutSecs` period (default: 30 s)
+//!    before it shuts its runtimes down. It does not end early when the connections drain
+//!    (issue #489), and it does not consult `AppState.inflight`. (`POST /shutdown` is the
+//!    exception: it polls `AppState.inflight` and exits at zero or at the deadline.)
 //!
 //! ## Admin API `/shutdown`
 //!
-//! `POST /shutdown` triggers a graceful shutdown via `std::process::exit(0)`,
-//! allowing Pingora's drop handlers and the OS to clean up resources.  This
-//! endpoint is intentionally simple — coordinated multi-worker draining is
-//! delegated to Pingora.
+//! `POST /shutdown` does not go through Pingora's shutdown sequence. Its handler polls
+//! `AppState.inflight` every 50 ms and calls `std::process::exit(0)` once it reaches zero or
+//! `global.shutdownTimeoutSecs` has passed, so Pingora's own drain and runtime shutdown never
+//! run. This endpoint is intentionally simple.
 //!
 //! ## Future work
 //!
 //! - Expose inflight counter in `/status` for operational visibility (done ✓).
-//! - Hook `AppState.inflight` into Pingora's shutdown signal so the server waits
-//!   for zero inflight before exiting (currently Pingora's built-in drain is used).
+//! - Hook `AppState.inflight` into Pingora's shutdown signal so the server can exit as soon
+//!   as it reaches zero instead of sleeping the whole period.

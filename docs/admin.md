@@ -220,7 +220,7 @@ not via `POST /reload`.
 `maskErrors`.
 
 **What requires a cold restart:**  
-`port`, `tls.cert/key`, `workers`, `backlog`, `global.admin.bind`. Sites are matched by listener, not by
+`port`, `tls.cert/key`, `workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`. Sites are matched by listener, not by
 position: adding, removing or reordering sites on a port that is already bound is hot; a port that appears or
 disappears, or a changed `tls.cert/key` on a bound port, needs a restart.
 (`tls.versions`/`tls.ciphers` are rejected at validate-time — see
@@ -249,7 +249,7 @@ curl -X POST http://localhost:2019/shutdown
 { "status": "shutting_down" }
 ```
 
-The shutdown timeout is controlled by `global.shutdownTimeoutSecs`.
+The shutdown grace period is `global.shutdownTimeoutSecs` (default 30 s). `POST /shutdown` exits as soon as in-flight requests reach zero, or when the period expires. A SIGTERM goes through Pingora instead, which waits the whole period even when connections drain sooner.
 
 ---
 
