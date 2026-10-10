@@ -103,7 +103,7 @@ tls:
   key: /etc/tls/key.pem
   httpRedirectPort: 80     # redirect port 80 → 443 automatically
 
-http2: true
+http2: {}
 securityHeaders: true
 compression: true
 
@@ -172,8 +172,7 @@ tls:
   cert: /etc/tls/fullchain.pem
   key: /etc/tls/privkey.pem
   httpRedirectPort: 80      # redirect port 80 → 443 automatically
-  versions: ["TLSv1.2", "TLSv1.3"]
-http2: true
+http2: {}
 securityHeaders: true
 proxy:
   /: "http://localhost:4000"
@@ -204,7 +203,7 @@ tls:
     # Use staging for testing — no rate limits:
     # directory: "https://acme-staging-v02.api.letsencrypt.org/directory"
   httpRedirectPort: 80
-http2: true
+http2: {}
 securityHeaders: true
 proxy:
   /: "http://localhost:4000"

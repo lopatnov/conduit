@@ -115,14 +115,21 @@ Config is valid — 2 sites, 5 routes.
 **On failure** (exit 1):
 
 ```
-error at proxy./api.retry.attempts: must be > 0
-error at rateLimit.windowSecs: missing required field
+error at sites[0].proxy["/api"]: Invalid upstream URL 'not-a-url' — must start with http:// or https://
+error at sites[0].rateLimit.windowSecs: windowSecs must be greater than 0
 
 2 errors found.
 ```
 
-Error messages include the exact JSON path to the invalid field, making it
-easy to locate the problem even in large config files.
+Validation errors name the path of the invalid field (a single-site config is reported as
+`sites[0]`), so the problem is easy to locate even in a large file. Keys Conduit does not
+recognise are reported as warnings (`… is not a recognized configuration key and will be
+ignored — check for a typo.`) and do not change the exit code.
+
+> A value of the wrong *type* (for example `windowSecs: "soon"`) is reported less precisely.
+> The command prints only `error loading config: Cannot parse config file: <file>`, without the
+> field, because the cause underneath (the config is a few alternative shapes tried in turn) is
+> not printed and does not name a field. This is a known gap.
 
 **Use in CI:**
 

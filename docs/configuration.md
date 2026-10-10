@@ -3346,7 +3346,7 @@ sites:
 
 | Field                 | Type   | Default         | Description                                                                          |
 | --------------------- | ------ | --------------- | ------------------------------------------------------------------------------------ |
-| `workers`             | number | CPU count       | Worker threads — cold restart to change                                              |
+| `workers`             | number | `1`             | Worker threads per service. Pingora's default is one thread, **not** one per CPU core; raise it to use more cores. Cold restart to change |
 | `backlog`             | number | —               | **Ignored.** Pingora fixes the listen backlog at 65535; validation warns              |
 | `shutdownTimeoutSecs` | number | `30`            | Shutdown grace period; SIGTERM waits all of it. Cold restart to change              |
 | `admin.bind`          | string | — (not started) | Admin API address. **Required to enable the Admin API.** Omit to disable it entirely |
