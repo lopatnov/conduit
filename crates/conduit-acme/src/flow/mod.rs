@@ -28,7 +28,7 @@ pub use http01::ChallengeSource;
 pub use renewal::spawn_renewal_task;
 
 use http01::{http01_port_lock, run_challenge_server, CHALLENGE_SHUTDOWN_TIMEOUT_SECS};
-use storage::write_secret_file;
+use storage::{cached_pair_matches, write_secret_atomic, PendingPair};
 
 /// How many days before certificate expiry to trigger automatic renewal.
 const RENEWAL_THRESHOLD_DAYS: i64 = 30;
@@ -57,6 +57,30 @@ pub fn cert_expires_within_days(cert_pem: &str, days: i64) -> bool {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     not_after < now + days * 86_400
+}
+
+/// What the files already on disk are good for.
+#[derive(Debug, PartialEq, Eq)]
+enum CacheState {
+    /// A matching pair, not within the renewal threshold.
+    Reusable,
+    /// A matching pair that should be renewed.
+    Expiring,
+    /// Unreadable, unparseable, or the key is not the certificate's own.
+    Unusable,
+}
+
+fn cache_state(cert_pem: Option<&str>, key_pem: Option<&str>) -> CacheState {
+    match (cert_pem, key_pem) {
+        (Some(cert), Some(key)) if cached_pair_matches(cert, key) => {
+            if cert_expires_within_days(cert, RENEWAL_THRESHOLD_DAYS) {
+                CacheState::Expiring
+            } else {
+                CacheState::Reusable
+            }
+        }
+        _ => CacheState::Unusable,
+    }
 }
 
 /// Load a cached certificate from `storage_dir`, or run the full ACME flow to
@@ -103,36 +127,49 @@ async fn load_or_obtain_with(
     let cert_path = storage_dir.join(format!("{domain}.crt.pem"));
     let key_path = storage_dir.join(format!("{domain}.key.pem"));
 
-    // Reuse the cached certificate when it is not about to expire.
+    // Reuse the cached certificate when it is not about to expire *and* the
+    // key on disk is the one it was issued for. A crash between the two
+    // renames of a previous write (or a hand-edited file) can leave a
+    // mismatched pair, which Pingora's rustls setup would turn into a panic
+    // at start; re-ordering heals it instead.
     if cert_path.exists() && key_path.exists() {
-        if let Ok(pem) = tokio::fs::read_to_string(&cert_path).await {
-            if !cert_expires_within_days(&pem, RENEWAL_THRESHOLD_DAYS) {
+        let cert_pem = tokio::fs::read_to_string(&cert_path).await.ok();
+        let key_pem = tokio::fs::read_to_string(&key_path).await.ok();
+        match cache_state(cert_pem.as_deref(), key_pem.as_deref()) {
+            CacheState::Reusable => {
                 tracing::info!(domain, "reusing cached ACME certificate");
                 return Ok(AcmeCertPaths {
                     cert: cert_path,
                     key: key_path,
                 });
             }
+            CacheState::Expiring => {
+                tracing::info!(domain, "ACME certificate expires soon — renewing");
+            }
+            CacheState::Unusable => tracing::warn!(
+                domain,
+                "cached ACME certificate and key are unreadable or do not match —                  obtaining a new certificate"
+            ),
         }
-        tracing::info!(domain, "ACME certificate expires soon — renewing");
     } else {
         tracing::info!(domain, "obtaining ACME certificate for the first time");
     }
 
+    // Stage the output files *before* contacting the CA: an unwritable
+    // storage directory must fail here, not after an order was issued and
+    // thrown away (each such order counts against the CA's rate limits).
+    let pending = PendingPair::create(storage_dir, domain)
+        .with_context(|| format!("preparing to write ACME files in {storage_dir:?}"))?;
+
     let (cert_pem, key_pem) =
         obtain_certificate(acme_cfg, domain, &challenges, challenge_source).await?;
 
-    tokio::fs::write(&cert_path, &cert_pem)
-        .await
-        .with_context(|| format!("writing cert to {cert_path:?}"))?;
-    // Owner-only permissions: this is a private key (issue #278).
-    write_secret_file(&key_path, key_pem.as_bytes())
-        .with_context(|| format!("writing key to {key_path:?}"))?;
-
-    Ok(AcmeCertPaths {
-        cert: cert_path,
-        key: key_path,
-    })
+    // Synchronous and cancellation-safe: both files are written, `fsync`ed
+    // and renamed into place without an `.await` in between. The key is
+    // owner-only from creation (issue #278).
+    pending
+        .commit(&cert_pem, &key_pem)
+        .with_context(|| format!("writing ACME certificate and key in {storage_dir:?}"))
 }
 
 /// Run the complete ACME HTTP-01 flow and return `(cert_chain_pem, key_pem)`.
@@ -353,7 +390,7 @@ async fn load_or_create_account(
     let json = serde_json::to_string_pretty(&credentials)?;
     // Owner-only permissions: this file holds the ACME account's private
     // key material (issue #278).
-    write_secret_file(&creds_path, json.as_bytes())
+    write_secret_atomic(&creds_path, json.as_bytes())
         .with_context(|| format!("saving ACME credentials to {creds_path:?}"))?;
     tracing::info!("new ACME account created and saved to {creds_path:?}");
 
@@ -364,18 +401,20 @@ async fn load_or_create_account(
 mod tests {
     use super::*;
 
-    /// Build a self-signed cert PEM with a caller-controlled `not_after`, so
-    /// tests can exercise both "far from expiry" and "expiring soon"
-    /// branches of `cert_expires_within_days` deterministically.
-    fn self_signed_cert_with_not_after(not_after: time::OffsetDateTime) -> String {
+    /// Build a self-signed cert + key PEM pair with a caller-controlled
+    /// `not_after`, so tests can exercise both "far from expiry" and
+    /// "expiring soon" branches of `cert_expires_within_days` deterministically.
+    fn self_signed_pair_with_not_after(not_after: time::OffsetDateTime) -> (String, String) {
         let key_pair = rcgen::KeyPair::generate().expect("keygen");
         let mut params =
             rcgen::CertificateParams::new(vec!["example.com".to_string()]).expect("params");
         params.not_after = not_after;
-        params
-            .self_signed(&key_pair)
-            .expect("self-signed cert")
-            .pem()
+        let cert = params.self_signed(&key_pair).expect("self-signed cert");
+        (cert.pem(), key_pair.serialize_pem())
+    }
+
+    fn self_signed_cert_with_not_after(not_after: time::OffsetDateTime) -> String {
+        self_signed_pair_with_not_after(not_after).0
     }
 
     #[test]
@@ -420,11 +459,11 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let storage_dir = dir.path().join("certs");
         std::fs::create_dir_all(&storage_dir).unwrap();
-        let cert_pem = self_signed_cert_with_not_after(
+        let (cert_pem, key_pem) = self_signed_pair_with_not_after(
             time::OffsetDateTime::now_utc() + time::Duration::days(365),
         );
         std::fs::write(storage_dir.join("example.com.crt.pem"), &cert_pem).unwrap();
-        std::fs::write(storage_dir.join("example.com.key.pem"), "placeholder key").unwrap();
+        std::fs::write(storage_dir.join("example.com.key.pem"), &key_pem).unwrap();
 
         let cfg = AcmeConfig {
             email: "ops@example.com".to_string(),
@@ -444,5 +483,29 @@ mod tests {
 
         assert_eq!(paths.cert, storage_dir.join("example.com.crt.pem"));
         assert_eq!(paths.key, storage_dir.join("example.com.key.pem"));
+    }
+    /// A cached cert whose key does not belong to it (a crash between the two
+    /// renames of an earlier write) must not be handed to the TLS stack: it is
+    /// re-ordered instead.
+    #[test]
+    fn cache_state_classifies_the_files_on_disk() {
+        let far = time::OffsetDateTime::now_utc() + time::Duration::days(365);
+        let soon = time::OffsetDateTime::now_utc() + time::Duration::days(5);
+        let (cert, key) = self_signed_pair_with_not_after(far);
+        let (_, other_key) = self_signed_pair_with_not_after(far);
+        let (expiring_cert, expiring_key) = self_signed_pair_with_not_after(soon);
+
+        assert_eq!(cache_state(Some(&cert), Some(&key)), CacheState::Reusable);
+        assert_eq!(
+            cache_state(Some(&expiring_cert), Some(&expiring_key)),
+            CacheState::Expiring
+        );
+        assert_eq!(
+            cache_state(Some(&cert), Some(&other_key)),
+            CacheState::Unusable,
+            "a mismatched pair must be re-ordered, not reused"
+        );
+        assert_eq!(cache_state(Some(&cert), None), CacheState::Unusable);
+        assert_eq!(cache_state(None, Some(&key)), CacheState::Unusable);
     }
 }
