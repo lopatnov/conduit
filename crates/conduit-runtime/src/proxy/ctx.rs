@@ -37,6 +37,9 @@ pub struct RequestCtx {
     /// `upstream_response_body_filter` hook replaces the body with a generic
     /// JSON error so internal stack traces don't leak to clients.
     pub mask_upstream_body: bool,
+    /// Set by `upstream_response_filter` when a WASM `on_response` plugin replaced the response body
+    /// (issue #379). `upstream_response_body_filter` swaps every upstream chunk for these bytes.
+    pub replacement_body: Option<bytes::Bytes>,
     /// Static header transform applied to every upstream response.
     /// Populated from `SiteConfig.response_transform`.
     pub response_transform: Option<HeaderTransformConfig>,
@@ -106,6 +109,7 @@ impl RequestCtx {
             proxy,
             extra_headers: Vec::new(),
             mask_upstream_body: false,
+            replacement_body: None,
             response_transform,
             body_buffer: Vec::new(),
             body_too_large: false,

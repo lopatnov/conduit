@@ -52,6 +52,8 @@ impl ResponseFilter for MiddlewareResponseFilter {
             })
             .collect();
 
+        #[cfg(feature = "wasm")]
+        let mut replacement: Option<Vec<u8>> = None;
         for entry in &self.middleware {
             match entry.r#type.as_str() {
                 // ── Rhai response scripts ─────────────────────────────────────
@@ -87,13 +89,11 @@ impl ResponseFilter for MiddlewareResponseFilter {
                     };
                     let outcome = conduit_plugin_wasm::run_wasm_response(ctx, path);
                     apply_response_mutations(resp, outcome.added_headers, outcome.removed_headers);
+                    // `conduit_set_response_body` in `on_response` (#379): the last plugin to set
+                    // a body wins. Before this was wired the replacement leaked to the client as two
+                    // internal `x-conduit-wasm-body-*` headers (one carrying the whole body, base64).
                     if outcome.body.is_some() {
-                        // `conduit_set_response_body` in `on_response` is not wired to the
-                        // response body yet (#379): the upstream body still reaches the
-                        // client. Before this, the replacement leaked to the client as two
-                        // internal `x-conduit-wasm-body-*` headers (one carrying the whole
-                        // body, base64). Warn once per process instead.
-                        warn_response_body_unsupported(path);
+                        replacement = outcome.body.map(|b| b.to_vec());
                     }
                 }
 
@@ -101,22 +101,11 @@ impl ResponseFilter for MiddlewareResponseFilter {
             }
         }
 
+        #[cfg(feature = "wasm")]
+        if let Some(body) = replacement {
+            return Ok(ResponseFilterOutcome::ReplaceBody(body));
+        }
         Ok(ResponseFilterOutcome::Continue)
-    }
-}
-
-/// Warn, once per process, that a WASM plugin tried to replace the response body in
-/// `on_response` (not supported yet, #379).
-#[cfg(feature = "wasm")]
-fn warn_response_body_unsupported(path: &str) {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static WARNED: AtomicBool = AtomicBool::new(false);
-    if !WARNED.swap(true, Ordering::Relaxed) {
-        tracing::warn!(
-            plugin = %path,
-            "WASM on_response called conduit_set_response_body, which is not supported yet: \
-             the upstream body is sent unchanged (issue #379)"
-        );
     }
 }
 
@@ -198,9 +187,9 @@ mod tests {
         assert!(matches!(outcome, ResponseFilterOutcome::Continue));
     }
 
-    /// #379: a plugin that calls `conduit_set_response_body` in `on_response` must not leak the
-    /// replacement to the client as internal `x-conduit-wasm-body-*` headers (the old behaviour,
-    /// one of them carrying the whole body in base64).
+    /// #379: a plugin that calls `conduit_set_response_body` in `on_response` replaces the body and
+    /// must not leak the replacement to the client as internal `x-conduit-wasm-body-*` headers (the
+    /// old behaviour, one of them carrying the whole body in base64).
     #[test]
     #[cfg(feature = "wasm")]
     fn wasm_response_body_override_does_not_leak_internal_headers() {
@@ -233,7 +222,10 @@ mod tests {
         };
         let mut resp = make_resp(500);
         let outcome = filter.apply(&mut resp, &dummy_ctx()).unwrap();
-        assert!(matches!(outcome, ResponseFilterOutcome::Continue));
+        match outcome {
+            ResponseFilterOutcome::ReplaceBody(body) => assert_eq!(body, b"rewritten body"),
+            _ => panic!("expected ReplaceBody"),
+        }
         for (name, _) in resp.headers.iter() {
             assert!(
                 !name.as_str().starts_with("x-conduit-"),

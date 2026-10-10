@@ -516,6 +516,50 @@ fn demo_wasm_response_tagger_adds_processed_by() {
     );
 }
 
+/// A WASM `on_response` plugin that calls `conduit_set_response_body` replaces the body the client
+/// receives, with a matching `Content-Length` and no internal `x-conduit-*` headers (issue #379).
+/// Requires `--features wasm`.
+#[test]
+#[cfg(feature = "wasm")]
+fn wasm_on_response_replaces_the_body() {
+    const REPLACER: &str = r#"(module
+      (import "conduit" "conduit_set_response_body" (func $set_body (param i32 i32)))
+      (memory (export "memory") 1)
+      (data (i32.const 0) "rewritten body")
+      (func (export "on_request") (result i32) i32.const 0)
+      (func (export "on_response") (param i32) (result i32)
+        (call $set_body (i32.const 0) (i32.const 14))
+        i32.const 0))"#;
+    let dir = tempfile::tempdir().unwrap();
+    let wasm_path = compile_wat_to_file(&dir, "replacer.wasm", REPLACER);
+    let (echo_port, _echo) = common::start_echo_upstream();
+
+    let port = free_port();
+    let admin_port = free_port();
+    let cfg = serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "middleware": [{ "type": "wasm", "path": wasm_path }],
+            "proxy": { "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] } }
+        }]
+    });
+    let srv = common::TestServer::start_with_config(port, admin_port, cfg);
+    let resp = reqwest::blocking::get(srv.url("/")).unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(resp
+        .headers()
+        .keys()
+        .all(|k| !k.as_str().starts_with("x-conduit-")));
+    assert_eq!(
+        resp.headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok()),
+        Some("14")
+    );
+    assert_eq!(resp.text().unwrap(), "rewritten body");
+}
+
 // ── Rhai resource-limit tests ─────────────────────────────────────────────────
 
 /// A Rhai script with an infinite loop must NOT hang the server forever.

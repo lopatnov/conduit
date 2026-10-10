@@ -853,18 +853,17 @@ In `on_response`, seven host functions are available:
 | `conduit_get_response_header(name_ptr, name_len, buf, buf_len) -> i32` | Read upstream response header; `-1` if absent |
 | `conduit_set_response_header(name_ptr, name_len, val_ptr, val_len)`    | Add/overwrite header on client response       |
 | `conduit_remove_response_header(name_ptr, name_len)`                   | Remove header from client response            |
-| `conduit_set_response_body(body_ptr, body_len)`                        | **Not applied yet** (see the note below)      |
+| `conduit_set_response_body(body_ptr, body_len)`                        | Replace the response body (see the note below) |
 | `conduit_get_plugin_config(buf, buf_len) -> i32`                       | Same as request phase                         |
 | `conduit_log(level, msg_ptr, msg_len)`                                 | Same as request phase                         |
 
 > Request-phase functions (`conduit_get_method`, `conduit_get_header`, etc.)
 > are **not** available in `on_response`.
 
-> **Known limitation (issue #379):** `conduit_set_response_body` is accepted in
-> `on_response` but the response body is **not** replaced yet — the upstream body
-> is sent unchanged, and Conduit logs one warning per process. Use `on_request`
-> with `conduit_set_response_status` + `conduit_set_response_body` to answer a
-> request yourself, or `maskErrors` to hide upstream 5xx bodies.
+> `conduit_set_response_body` in `on_response` replaces the body the client receives (issue #379).
+> Conduit drops the upstream `Content-Encoding`, `Transfer-Encoding`, `ETag` and `Content-MD5`
+> headers and sets `Content-Length` to the new length. If several plugins set a body, the last one wins.
+> The upstream body is still read from the upstream; only what the client gets changes.
 
 ### Example in Rust — tag error responses
 

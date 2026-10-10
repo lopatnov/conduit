@@ -191,6 +191,19 @@ pub(super) async fn upstream_response_filter(
                 upstream_response.set_status(500)?;
             }
         }
+
+        ResponseFilterOutcome::ReplaceBody(bytes) => {
+            if let Some(req_ctx_mut) = ctx.as_mut() {
+                // The replacement is plain bytes of a known length: the upstream body's encoding, framing
+                // and validators no longer describe it.
+                upstream_response.remove_header("content-encoding");
+                upstream_response.remove_header("transfer-encoding");
+                upstream_response.remove_header("etag");
+                upstream_response.remove_header("content-md5");
+                upstream_response.insert_header("content-length", bytes.len().to_string())?;
+                req_ctx_mut.replacement_body = Some(bytes::Bytes::from(bytes));
+            }
+        }
     }
 
     // Sticky-session Set-Cookie injection (#39): when `sticky.secret` is
@@ -234,6 +247,10 @@ pub(super) fn upstream_response_body_filter(
                 // Discard intermediate chunks — only send the replacement on eos.
                 *body = None;
             }
+        } else if let Some(replacement) = req_ctx.replacement_body.as_ref() {
+            // A WASM plugin replaced the body (#379): hold back the upstream chunks and send the
+            // replacement once, with the last one.
+            *body = end_of_stream.then(|| replacement.clone());
         }
     }
     Ok(None)

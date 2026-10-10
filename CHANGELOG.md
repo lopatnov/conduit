@@ -75,10 +75,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (issue #476).
 - The Admin API and the metrics endpoint accept `bearer`/`BEARER` as well as `Bearer` (issue #484,
   RFC 9110 §11.1); the token itself is still compared exactly and in constant time.
-- **WASM `on_response` no longer leaks the replacement body as headers** (issue #379). A plugin that
-  called `conduit_set_response_body` there got two internal `x-conduit-wasm-body-*` headers on the
-  client response, one carrying the whole body in base64. They are gone. The body itself is still
-  **not** replaced in the response phase; Conduit logs one warning and `docs/wasm.md` says so.
+- **WASM `on_response` can replace the response body** (issue #379). A plugin that called
+  `conduit_set_response_body` there used to leave the upstream body untouched and leak the replacement
+  to the client as two internal `x-conduit-wasm-body-*` headers (one carrying the whole body in base64).
+  The headers are gone and the client now gets the replacement, with `Content-Length` set and the
+  upstream `Content-Encoding`, `Transfer-Encoding`, `ETag` and `Content-MD5` dropped. The last plugin
+  that sets a body wins.
 - `docs/wasm.md` states what `conduit_get_header_names`/`_count` really return: distinct names, no
   guaranteed order, one value per repeated header (issue #380).
 - Failing over to a route's `backup` upstream keeps the route's own settings (issue #417): timeouts,
