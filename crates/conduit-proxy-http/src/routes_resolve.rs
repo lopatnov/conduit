@@ -27,7 +27,9 @@ pub(crate) fn resolve_route_target(
     // Site-scoped: the round-robin/least-conn counters are process-wide and keyed by this string,
     // so two sites' `routes[0]` must not share one.
     let route_key = format!("{}#routes[{index}]", ctx.site_label);
-    let strip_base = route.r#match.path.as_deref().map(literal_prefix);
+    // No `match.path` (header/method/query-only route): nothing to strip. Falling back to the synthetic
+    // route key would send every request upstream as `/`.
+    let strip_base = Some(route.r#match.path.as_deref().map_or("", literal_prefix));
     resolve::resolve_target(&route_key, strip_base, target, ctx)
 }
 
@@ -869,6 +871,36 @@ mod tests {
             .sticky_set_cookie
             .expect("a sticky route must hand out its cookie");
         assert_eq!(name, "srv");
+    }
+
+    #[test]
+    fn strip_prefix_without_match_path_strips_nothing() {
+        let target = full(ProxyRouteConfig {
+            targets: simple(&["http://a:4000"]),
+            strip_prefix: Some(true),
+            ..Default::default()
+        });
+        let headers = http::HeaderMap::new();
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let registry = UpstreamRegistry::new();
+        let ctx = ProxyCtx {
+            path: "/api/users",
+            client_ip: "203.0.113.1",
+            req_headers: &headers,
+            counters: &counters,
+            upstream_health: &registry,
+            site_label: "test:80",
+        };
+        let route = RouteConfig {
+            proxy: Some(target.clone()),
+            ..Default::default()
+        };
+        let ProxyOutcome::Upstream(pu) =
+            super::resolve_route_target(0, &route, &target, &ctx).outcome
+        else {
+            panic!("expected an upstream");
+        };
+        assert_eq!(pu.strip_prefix.as_deref(), Some(""));
     }
 
     #[test]
