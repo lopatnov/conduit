@@ -151,27 +151,33 @@ jobs:
   # (strip = true already set in [profile.release]) and
   # `cargo tree ... -e normal | wc -l` as the dependency-count proxy. See #114/#119.
   #
-  # Deliberately posts via a plain `curl` + the automatically-provided
-  # GITHUB_TOKEN rather than adding a new third-party Action — keeps this
-  # workflow's supply-chain surface to only the pins already vetted elsewhere
-  # in this file. GITHUB_TOKEN is read-only-forced by GitHub itself on
-  # pull_request runs from forks, so `pull-requests: write` here can't be
-  # abused cross-repo.
+  # Split in two jobs (#461) so that no token with write scope shares a job with
+  # code from the repository. `footprint` builds the workspace -- which runs the
+  # `build.rs` and proc-macros of every dependency, including a bumped one in a
+  # Dependabot PR -- with `contents: read` / `pull-requests: read` only, and hands
+  # the table over as a job output. `footprint-comment` has `pull-requests: write`
+  # and executes nothing from the pull request: it checks out only `scripts/ci`
+  # from the DEFAULT branch, receives the table through `env:` (never through
+  # `${{ }}` inside a `run:` script), works out the PR number itself and posts.
+  # The cost: a change to scripts/ci/ takes effect for these comments only after
+  # it is merged. Fork PRs get a read-only token from GitHub, so the comment job's
+  # POST is rejected there and the report stays in the `footprint` job log.
   #
-  # Sub-issue PRs in this migration target `claude/cargo-workspace-features-
-  # 23qxfr`, not `main`, and the `pull_request` trigger above is scoped to
-  # `branches: [main]` — so those PRs' CI actually runs via the `push` trigger,
-  # where `github.event.pull_request` doesn't exist. The "find associated PR"
-  # step below covers both cases: use the event context on an actual
-  # `pull_request` run, otherwise look up the open PR for this branch via the
-  # API. No open PR (e.g. a bare push) means no comment target — the
-  # measurement step still runs so a break here is still caught in CI logs.
+  # Posting is a plain `curl` + the automatically-provided GITHUB_TOKEN rather
+  # than a third-party Action, keeping this workflow's supply-chain surface to the
+  # pins already vetted elsewhere in this file.
+  #
+  # Branches with a PR whose CI runs through the `push` trigger (no
+  # `github.event.pull_request`) are handled by scripts/ci/resolve_pr.sh, which
+  # looks up the open PR for the branch. No open PR (a bare push) means no comment
+  # target -- the measurement still runs so a break here is caught in CI logs.
   footprint:
     name: Footprint report
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
+    outputs:
+      report: ${{ steps.measure.outputs.report }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -188,6 +194,7 @@ jobs:
         continue-on-error: true  # transient cache failures must not abort the build
 
       - name: Measure footprint per profile
+        id: measure
         run: |
           set -euo pipefail
           {
@@ -213,8 +220,36 @@ jobs:
           measure "--features standard" "\`standard\`"
           measure "--features full" "\`full\`"
 
+          # Multi-line job output with a random delimiter, written after the
+          # last repository-controlled command of this step has finished.
+          delim="REPORT_$(openssl rand -hex 16)"
+          {
+            echo "report<<$delim"
+            cat /tmp/footprint-table.md
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+  footprint-comment:
+    name: Footprint report comment
+    needs: footprint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read        # the sparse checkout of scripts/ci
+      pull-requests: write  # the comment
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      # `hashFiles` guards the one-off case of the PR that introduces these scripts:
+      # the default branch does not have them yet, so that PR gets no comment
+      # instead of a red job. From the next PR on they are there.
       - name: Find associated PR number
         id: pr
+        if: hashFiles('scripts/ci/resolve_pr.sh') != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -222,16 +257,7 @@ jobs:
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO_OWNER: ${{ github.repository_owner }}
           REF_NAME: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            echo "number=$EVENT_PR_NUMBER" >> "$GITHUB_OUTPUT"
-          else
-            number=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/pulls?head=$REPO_OWNER:$REF_NAME&state=open" \
-              | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['number'] if d else '')")
-            echo "number=$number" >> "$GITHUB_OUTPUT"
-          fi
+        run: ./scripts/ci/resolve_pr.sh >> "$GITHUB_OUTPUT"
 
       - name: Post/update PR comment
         if: steps.pr.outputs.number != ''
@@ -240,9 +266,11 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           MARKER: "<!-- footprint-report -->"
+          HEADING: "## 📦 Footprint report"
+          REPORT: ${{ needs.footprint.outputs.report }}
         run: |
           set -euo pipefail
-          { echo "$MARKER"; echo; echo "## 📦 Footprint report"; echo; cat /tmp/footprint-table.md; } > /tmp/comment-body.md
+          python3 scripts/ci/build_report_body.py /tmp/comment-body.md
           ./scripts/ci/post_or_update_pr_comment.sh /tmp/comment-body.md
 
   # ── Performance report: informational throughput/latency, one profile ───────
@@ -266,19 +294,35 @@ jobs:
   # apt/luarocks build step, and its `--output-format json` `metrics` object
   # is explicitly documented as "CI friendly statistics" — stable field names
   # (`requests_per_sec`, `latency_ms.p50/p95/p99`, `success_rate`) instead of
-  # regex-scraping wrk's human-oriented text output.
+  # regex-scraping wrk's human-oriented text output. The binary is verified
+  # against a pinned SHA-256 before it is made executable (#461).
   #
   # Builds and benchmarks the PR head, then (same job, sequential — avoids a
   # second full matrix job just for one extra data point) checks out and
-  # benchmarks the PR's base commit for a head-vs-base delta. Posts via the
-  # same plain-curl + GITHUB_TOKEN pattern as the footprint job, own comment
-  # (own marker) so the two reports don't collide.
+  # benchmarks the PR's base commit for a head-vs-base delta.
+  #
+  # Split like the footprint job (#461): `performance` runs repository code
+  # (cargo build, then the freshly built binary) with read-only scopes and hands
+  # the numbers over as job outputs; `performance-comment` holds the write token,
+  # runs nothing from the pull request and formats the comment with
+  # scripts/ci/performance_report.py from the default branch. Own marker, so the
+  # reports do not collide.
   performance:
     name: Performance report
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read  # base-SHA lookup on `push` runs (scripts/ci/resolve_pr.sh)
+    outputs:
+      head_rps: ${{ steps.bench.outputs.head_rps }}
+      head_p50: ${{ steps.bench.outputs.head_p50 }}
+      head_p99: ${{ steps.bench.outputs.head_p99 }}
+      head_ok: ${{ steps.bench.outputs.head_ok }}
+      base_rps: ${{ steps.bench.outputs.base_rps }}
+      base_p50: ${{ steps.bench.outputs.base_p50 }}
+      base_p99: ${{ steps.bench.outputs.base_p99 }}
+      base_ok: ${{ steps.bench.outputs.base_ok }}
+      hw: ${{ steps.hw.outputs.summary }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -302,9 +346,10 @@ jobs:
       - name: Install oha (load generator)
         run: |
           set -euo pipefail
-          curl -sSL -o /usr/local/bin/oha \
+          curl -sSL -o /tmp/oha \
             https://github.com/hatoo/oha/releases/download/v1.16.0/oha-linux-amd64
-          chmod +x /usr/local/bin/oha
+          echo "620bb9e16fb53eabc9a3fc45f88bdb41fefa3fee5c05e75892011ce320391716  /tmp/oha" | sha256sum -c -
+          sudo install -m 0755 /tmp/oha /usr/local/bin/oha
           oha --version
 
       # GitHub-hosted runners land on different CPU generations from one run
@@ -350,10 +395,9 @@ jobs:
           GOEOF
           cd /tmp/bench-upstream && go mod init bench-upstream && go build -o /tmp/bench-upstream-bin .
 
-      # Same "find associated PR" reasoning as the footprint job above (#114
-      # sub-issue PRs target the migration branch via `push`, not
-      # `pull_request`) — additionally resolves the PR's base SHA so the
-      # measurement step below has something to diff the head build against.
+      # #114 sub-issue PRs run through the `push` trigger, not `pull_request`;
+      # resolve_pr.sh gives the PR's base SHA either way, so the measurement
+      # step below has something to diff the head build against.
       - name: Find associated PR + base SHA
         id: pr
         env:
@@ -364,17 +408,7 @@ jobs:
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           REPO_OWNER: ${{ github.repository_owner }}
           REF_NAME: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            echo "number=$EVENT_PR_NUMBER" >> "$GITHUB_OUTPUT"
-            echo "base_sha=$EVENT_BASE_SHA" >> "$GITHUB_OUTPUT"
-          else
-            pr_json=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/pulls?head=$REPO_OWNER:$REF_NAME&state=open")
-            echo "number=$(echo "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['number'] if d else '')")" >> "$GITHUB_OUTPUT"
-            echo "base_sha=$(echo "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['base']['sha'] if d else '')")" >> "$GITHUB_OUTPUT"
-          fi
+        run: ./scripts/ci/resolve_pr.sh >> "$GITHUB_OUTPUT"
 
       - name: Measure PR head and base
         id: bench
@@ -404,6 +438,10 @@ jobs:
             echo "conduit never became ready" >&2; exit 1
           }
 
+          # The numbers are collected into /tmp/bench-outputs and written to
+          # $GITHUB_OUTPUT once, at the very end, after the last binary built
+          # from repository code has stopped.
+          : > /tmp/bench-outputs
           measure() {
             local label="$1"
             cargo build --release -q
@@ -420,7 +458,7 @@ jobs:
           print(f'${label}_p50={round(m[\"latency_ms\"][\"p50\"], 2)}')
           print(f'${label}_p99={round(m[\"latency_ms\"][\"p99\"], 2)}')
           print(f'${label}_ok={round(m[\"success_rate\"] * 100, 1)}')
-          " >> "$GITHUB_OUTPUT"
+          " >> /tmp/bench-outputs
           }
 
           measure head
@@ -430,10 +468,38 @@ jobs:
             git fetch --depth 1 origin "$BASE_SHA" 2>/dev/null || true
             git checkout --quiet "$BASE_SHA"
             measure base
-            # Back to the PR's own head — the next step runs scripts/ci/post_or_update_pr_comment.sh,
-            # which only exists from this PR onward and must not be read from the (older) base commit.
             git checkout --quiet "$head_sha"
           fi
+
+          cat /tmp/bench-outputs >> "$GITHUB_OUTPUT"
+
+  performance-comment:
+    name: Performance report comment
+    needs: performance
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read        # the sparse checkout of scripts/ci
+      pull-requests: write  # the comment
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      # See the note on the same step in `footprint-comment`.
+      - name: Find associated PR number
+        id: pr
+        if: hashFiles('scripts/ci/resolve_pr.sh') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REF_NAME: ${{ github.ref_name }}
+        run: ./scripts/ci/resolve_pr.sh >> "$GITHUB_OUTPUT"
 
       - name: Post/update PR comment
         if: steps.pr.outputs.number != ''
@@ -442,65 +508,18 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           MARKER: "<!-- performance-report -->"
-          HEAD_RPS: ${{ steps.bench.outputs.head_rps }}
-          HEAD_P50: ${{ steps.bench.outputs.head_p50 }}
-          HEAD_P99: ${{ steps.bench.outputs.head_p99 }}
-          HEAD_OK: ${{ steps.bench.outputs.head_ok }}
-          BASE_RPS: ${{ steps.bench.outputs.base_rps }}
-          BASE_P50: ${{ steps.bench.outputs.base_p50 }}
-          BASE_P99: ${{ steps.bench.outputs.base_p99 }}
-          BASE_OK: ${{ steps.bench.outputs.base_ok }}
-          HW: ${{ steps.hw.outputs.summary }}
+          HEAD_RPS: ${{ needs.performance.outputs.head_rps }}
+          HEAD_P50: ${{ needs.performance.outputs.head_p50 }}
+          HEAD_P99: ${{ needs.performance.outputs.head_p99 }}
+          HEAD_OK: ${{ needs.performance.outputs.head_ok }}
+          BASE_RPS: ${{ needs.performance.outputs.base_rps }}
+          BASE_P50: ${{ needs.performance.outputs.base_p50 }}
+          BASE_P99: ${{ needs.performance.outputs.base_p99 }}
+          BASE_OK: ${{ needs.performance.outputs.base_ok }}
+          HW: ${{ needs.performance.outputs.hw }}
         run: |
           set -euo pipefail
-          python3 -c "
-          import json, os
-
-          def f(name):
-              v = os.environ.get(name, '')
-              return float(v) if v else None
-
-          head = {'rps': f('HEAD_RPS'), 'p50': f('HEAD_P50'), 'p99': f('HEAD_P99'), 'ok': f('HEAD_OK')}
-          base = {'rps': f('BASE_RPS'), 'p50': f('BASE_P50'), 'p99': f('BASE_P99'), 'ok': f('BASE_OK')}
-          hw = ' '.join(os.environ.get('HW', '').split())
-
-          def delta(k, higher_is_better):
-              if base[k] is None or base[k] == 0:
-                  return '—'
-              pct = (head[k] - base[k]) / base[k] * 100
-              arrow = '▲' if pct > 0 else ('▼' if pct < 0 else '—')
-              good = (pct > 0) == higher_is_better
-              sign = '+' if pct > 0 else ''
-              flag = ' ⚠️' if abs(pct) >= 10 and not good else ''
-              return f'{arrow} {sign}{pct:.1f}%{flag}'
-
-          lines = ['<!-- performance-report -->', '', '## ⚡ Performance report', '',
-                   '_Reverse-proxy passthrough, \`default\` feature profile, **one worker thread (the default; \`global.workers\` unset)**, \`oha -z 10s -c 50\` — informational only, not a merge gate; single shared CI runner, treat as a trend signal, not a lab measurement (see #475 and \`docs/benchmarks.md\`)._', '']
-
-          if base['rps'] is None:
-              lines += ['Metric | PR head', '---|---',
-                        f\"Requests/sec | {head['rps']:.0f}\",
-                        f\"p50 latency | {head['p50']:.2f} ms\",
-                        f\"p99 latency | {head['p99']:.2f} ms\",
-                        f\"Success rate | {head['ok']:.1f}%\",
-                        '', '_No base commit measured (couldn'\"'\"'t resolve this PR'\"'\"'s base SHA) — nothing to diff against._']
-          else:
-              lines += ['Metric | Base | PR head | Δ', '---|---|---|---',
-                        f\"Requests/sec | {base['rps']:.0f} | {head['rps']:.0f} | {delta('rps', True)}\",
-                        f\"p50 latency | {base['p50']:.2f} ms | {head['p50']:.2f} ms | {delta('p50', False)}\",
-                        f\"p99 latency | {base['p99']:.2f} ms | {head['p99']:.2f} ms | {delta('p99', False)}\",
-                        f\"Success rate | {base['ok']:.1f}% | {head['ok']:.1f}% | {delta('ok', True)}\"]
-
-          if hw:
-              if base['rps'] is not None:
-                  note = 'GitHub-hosted runner hardware varies between runs, so read the Δ column (base and head are measured back-to-back on this same machine) rather than comparing absolute numbers across PRs.'
-              else:
-                  note = 'GitHub-hosted runner hardware varies between runs, so absolute numbers are not comparable across PRs.'
-              lines += ['', f'**Runner:** {hw}. ' + note]
-
-          with open('/tmp/comment-body.md', 'w') as fh:
-              fh.write('\n'.join(lines) + '\n')
-          "
+          python3 scripts/ci/performance_report.py /tmp/comment-body.md
           ./scripts/ci/post_or_update_pr_comment.sh /tmp/comment-body.md
 
   # ── Feature-gating isolation check (cargo-hack) ──────────────────────────────
@@ -535,16 +554,23 @@ jobs:
   # `.claude/rules/conventions.md` ("File length"), and which touched files got
   # longer. Informational, like the footprint/performance reports: a file being
   # over a limit does NOT fail the job (it is listed in the report), only a
-  # broken counter does — its own unit tests run first. Posting uses the same plain `curl` + GITHUB_TOKEN mechanism, and the
-  # same PR lookup for `push`-triggered migration-branch PRs, as the footprint
-  # job above; on a fork `pull_request` run GitHub forces the token read-only, so
-  # the POST is simply rejected and the report stays in the job log.
+  # broken counter does — its own unit tests run first.
+  #
+  # Split like the footprint job (#461): `code-length` runs the repository's
+  # Python scripts with read-only scopes and hands the report over as a job
+  # output; `code-length-comment` holds the write token, runs nothing from the
+  # pull request and posts it (same sparse checkout of scripts/ci from the
+  # default branch, same PR lookup for `push`-triggered runs). On a fork
+  # `pull_request` run GitHub forces the token read-only, so the POST is simply
+  # rejected and the report stays in the job log.
   code-length:
     name: Code length report
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read  # base-SHA lookup on `push` runs (scripts/ci/resolve_pr.sh)
+    outputs:
+      report: ${{ steps.measure.outputs.report }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -558,6 +584,9 @@ jobs:
       - name: Unit-test the move verifier
         run: python3 scripts/test_verify_move.py
 
+      - name: Unit-test the report scripts
+        run: python3 scripts/ci/test_report_scripts.py
+
       - name: Find associated PR and its base commit
         id: pr
         env:
@@ -568,19 +597,10 @@ jobs:
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           REPO_OWNER: ${{ github.repository_owner }}
           REF_NAME: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            echo "number=$EVENT_PR_NUMBER" >> "$GITHUB_OUTPUT"
-            echo "base_sha=$EVENT_BASE_SHA" >> "$GITHUB_OUTPUT"
-          else
-            pr_json=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/pulls?head=$REPO_OWNER:$REF_NAME&state=open" || true)
-            echo "number=$(echo "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['number'] if isinstance(d, list) and d else '')" 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
-            echo "base_sha=$(echo "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['base']['sha'] if isinstance(d, list) and d else '')" 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
-          fi
+        run: ./scripts/ci/resolve_pr.sh >> "$GITHUB_OUTPUT"
 
       - name: Measure code lines
+        id: measure
         env:
           BASE_SHA: ${{ steps.pr.outputs.base_sha }}
         run: |
@@ -590,6 +610,40 @@ jobs:
           else
             python3 scripts/check_file_length.py --markdown /tmp/length-report.md
           fi
+          delim="REPORT_$(openssl rand -hex 16)"
+          {
+            echo "report<<$delim"
+            cat /tmp/length-report.md
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+  code-length-comment:
+    name: Code length report comment
+    needs: code-length
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read        # the sparse checkout of scripts/ci
+      pull-requests: write  # the comment
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      # See the note on the same step in `footprint-comment`.
+      - name: Find associated PR number
+        id: pr
+        if: hashFiles('scripts/ci/resolve_pr.sh') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REF_NAME: ${{ github.ref_name }}
+        run: ./scripts/ci/resolve_pr.sh >> "$GITHUB_OUTPUT"
 
       - name: Post/update PR comment
         if: steps.pr.outputs.number != ''
@@ -598,9 +652,11 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           MARKER: "<!-- code-length-report -->"
+          REPORT: ${{ needs.code-length.outputs.report }}
         run: |
           set -euo pipefail
-          ./scripts/ci/post_or_update_pr_comment.sh /tmp/length-report.md
+          python3 scripts/ci/build_report_body.py /tmp/comment-body.md
+          ./scripts/ci/post_or_update_pr_comment.sh /tmp/comment-body.md
 
   ci-hack:
     name: Feature isolation (cargo-hack)
