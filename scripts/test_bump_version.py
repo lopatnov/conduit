@@ -90,6 +90,10 @@ class Docs(unittest.TestCase):
         out = bv.bump_doc(text, "2.0.0", "3.4.0", with_tag_aliases=True)
         self.assertEqual(out, "`:latest`, `:3.4.0`, `:3.4` / `:3.4.0-full`, `:3.4-full`, `:2.01`, `:12.0`")
 
+    def test_aliases_do_not_move_for_a_prerelease_target(self):
+        out = bv.bump_doc("`:2.0.0`, `:2.0`, `:2.0-full`", "2.0.0", "2.1.0-rc.1", with_tag_aliases=True)
+        self.assertEqual(out, "`:2.1.0-rc.1`, `:2.0`, `:2.0-full`")
+
     def test_aliases_are_left_alone_without_the_flag(self):
         self.assertEqual(bv.bump_doc("`:2.0`", "2.0.0", "2.1.0"), "`:2.0`")
 

@@ -78,9 +78,12 @@ def bump_package_json(text, old, new):
 
 
 def bump_doc(text, old, new, with_tag_aliases=False):
-    """Replace the old full version; optionally also the `:MAJOR.MINOR` image tag aliases (`:2.0`, `:2.0-full`)."""
+    """Replace the old full version; optionally also the `:MAJOR.MINOR` image tag aliases (`:2.0`, `:2.0-full`).
+
+    The aliases move only for a stable target: the release workflow publishes `{{major}}.{{minor}}` tags
+    for stable versions only, so an rc bump must not point the docs at tags that do not exist."""
     text = re.sub(r"(?<![\d.])" + re.escape(old) + r"(?!\d|\.\d)", new, text)
-    if with_tag_aliases:
+    if with_tag_aliases and not parse(new)[3]:
         o_major, o_minor = parse(old)[:2]
         n_major, n_minor = parse(new)[:2]
         text = re.sub(rf":{o_major}\.{o_minor}(?=(?:-full)?(?![\d.]))", f":{n_major}.{n_minor}", text)
