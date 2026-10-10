@@ -716,11 +716,22 @@ when it is within 30 days of expiry. The renewed files are written to the
 storage directory, but the running process keeps serving the certificate it
 loaded at startup — **restart Conduit within the 30-day window** (any restart
 or deploy does it) so the new certificate is picked up before the old one
-expires. Zero-downtime hot-swap is blocked on #451.
+expires. Swapping the renewed certificate into the running listeners is not
+implemented yet.
 
-During renewal the HTTP-01 token is served by the listener that already owns
-the challenge port (the `httpRedirectPort` redirect service, or a site on
-that port); only when nothing listens there does the task bind the port itself.
+Files are written atomically (staged, `fsync`ed, renamed), a cached certificate
+is reused only when its key matches it, and if renewal fails while the cached
+certificate is still valid, the site keeps serving it instead of falling back
+to plain HTTP.
+
+During renewal the HTTP-01 token is answered by the listener that already owns
+the challenge port (`httpRedirectPort`, else port 80): the redirect service, or
+a plain-HTTP site on that port; only when nothing listens there does the task
+bind the port itself. A site on that port goes through its normal guard chain,
+so an `ipFilter` that does not admit the CA's validation servers also blocks
+the challenge — prefer a dedicated `httpRedirectPort`. If the challenge port is
+held by a TLS site or a raw TCP proxy, renewal is disabled and an error is
+logged at startup.
 
 The domain is taken from the site's `host` field — no separate `domain:` field exists.
 
