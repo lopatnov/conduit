@@ -32,7 +32,7 @@ pub enum ResponseFilterOutcome {
     /// Returned by a WASM `on_response` plugin that called `conduit_set_response_body` (issue #379).
     /// The caller stores the bytes in `RequestCtx.replacement_body`, drops the upstream body's framing
     /// and encoding headers and sets `Content-Length`.
-    ReplaceBody(Vec<u8>),
+    ReplaceBody(bytes::Bytes),
 }
 
 /// Narrow read-only view of request context exposed to [`ResponseFilter::apply`].

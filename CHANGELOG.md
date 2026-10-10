@@ -80,7 +80,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to the client as two internal `x-conduit-wasm-body-*` headers (one carrying the whole body in base64).
   The headers are gone and the client now gets the replacement, with `Content-Length` set and the
   upstream `Content-Encoding`, `Transfer-Encoding`, `ETag` and `Content-MD5` dropped. The last plugin
-  that sets a body wins.
+  that sets a body wins. A response that cannot carry a body (`1xx`, `204`, `304`, `Content-Length: 0`) is
+  left as the upstream sent it, with one warning logged.
 - `docs/wasm.md` states what `conduit_get_header_names`/`_count` really return: distinct names, no
   guaranteed order, one value per repeated header (issue #380).
 - Failing over to a route's `backup` upstream keeps the route's own settings (issue #417): timeouts,

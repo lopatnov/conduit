@@ -53,7 +53,7 @@ impl ResponseFilter for MiddlewareResponseFilter {
             .collect();
 
         #[cfg(feature = "wasm")]
-        let mut replacement: Option<Vec<u8>> = None;
+        let mut replacement = None;
         for entry in &self.middleware {
             match entry.r#type.as_str() {
                 // ── Rhai response scripts ─────────────────────────────────────
@@ -93,7 +93,7 @@ impl ResponseFilter for MiddlewareResponseFilter {
                     // a body wins. Before this was wired the replacement leaked to the client as two
                     // internal `x-conduit-wasm-body-*` headers (one carrying the whole body, base64).
                     if outcome.body.is_some() {
-                        replacement = outcome.body.map(|b| b.to_vec());
+                        replacement = outcome.body;
                     }
                 }
 
@@ -223,7 +223,7 @@ mod tests {
         let mut resp = make_resp(500);
         let outcome = filter.apply(&mut resp, &dummy_ctx()).unwrap();
         match outcome {
-            ResponseFilterOutcome::ReplaceBody(body) => assert_eq!(body, b"rewritten body"),
+            ResponseFilterOutcome::ReplaceBody(body) => assert_eq!(&body[..], b"rewritten body"),
             _ => panic!("expected ReplaceBody"),
         }
         for (name, _) in resp.headers.iter() {
