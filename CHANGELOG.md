@@ -21,6 +21,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`POST /certs/reload` keeps the key file's mode** (issue #481). Rotating a `0600` key no longer
   leaves a world-readable one, and the temporary file is created exclusively under an unpredictable
   name instead of following a planted `<path>.tmp` symlink.
+- **A `tls.acme` site's `host` can no longer name a file outside the storage directory** (issue #554,
+  CWE-22). The certificate and key are stored as `<host>.crt.pem` and `<host>.key.pem`, and a host
+  such as `../../etc/x` made the ACME flow write a private key (and read a cached pair) outside
+  `tls.acme.storage`, which matters where less-trusted people can write sites (Kubernetes
+  `ConduitSite` objects). Validation now rejects a `tls.acme` host that is not a plain DNS name
+  (letters, digits and `-` in dot-separated labels, optionally a leading `*.`), and the flow
+  re-checks the name and that the path stays directly inside the storage directory before touching
+  the disk or the CA. Behaviour change: a host with `_`, a port suffix, a trailing dot or non-ASCII
+  characters used to fail later with an error log and fall back to plain HTTP; with `tls.acme`
+  set it is now a validation error. A private CA (`acme.directory`) with such internal names needs
+  a plain DNS name for the site. The directory itself (`tls.acme.storage`) is not constrained yet
+  (issue #580), and Windows device names such as `con.example.com` are tracked in #579.
 
 ### Fixed
 
