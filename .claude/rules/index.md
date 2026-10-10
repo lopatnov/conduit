@@ -8,7 +8,7 @@ are in `.claude/archive/rules-index-2026-10-03.md`. Companions: `conventions.md`
 `rules/*.md` loads into **every** turn. Keep here only what must be impossible to forget (the security gate is the model). A
 procedure that runs occasionally is a `.claude/commands/<name>.md` or `.claude/skills/<name>/SKILL.md`, with a one-line pointer
 here at most. Append-only logs live in `.claude/logs/*.md`; `CLAUDE.md` keeps two journal summaries.
-A flawed rule, command, agent or skill is fixed the moment it is noticed, in the PR at hand — not noted for later (owner, 2026-10-10). `.claude/` and `CLAUDE.md`
+A flawed rule, command, agent or skill is fixed the moment it is noticed, in the PR at hand — not noted for later (owner, 2026-10-10); the security gate is the exception and changes only on the owner's explicit decision. `.claude/` and `CLAUDE.md`
 are tracked but excluded from the published crate (`[package] exclude`).
 
 ## Worktrees and background agents

@@ -19,15 +19,15 @@ argument-hint: "(none — reads GitHub state and this repo's own hygiene log)"
 Any session that calls a GitHub tool against this repo for *any* reason should, as a cheap
 side effect, check whether this
 sweep has run in the last ~24h (see `.claude/logs/dependabot-hygiene.md`). If the newest
-row is older than that (or the log is still empty):
+row is within that window, skip it. If it is older (or the log is still empty):
 
+- **Fast path first:** if every open Dependabot PR is already logged as triaged **at its current
+  revision** (same head SHA and body — a PR that was force-pushed or had its body edited since is
+  not "already logged" even if its number is in the log), log "still clean" and move on; don't
+  spawn `dependency-steward` to manufacture work. A PR that is new, changed, or never
+  risk-classified (semver, changelog read) still needs it.
 - List open Dependabot PRs and triage/merge/hold each by the usual bar (green, clean, no
   unaddressed finding, and the security-engineer gate before any merge).
-  - **Fast path:** if the log's newest row is within ~24 h and every open Dependabot PR is already
-    logged as triaged **at its current revision** (same head SHA and body — a PR that was
-    force-pushed or had its body edited since is not "already logged" even if its number is in the
-    log), log "still clean" and stop; don't spawn `dependency-steward` to manufacture work. A PR
-    that is new, changed, or never risk-classified (semver, changelog read) still needs it.
   - **A "held for a dedicated look" PR is overdue the second time you see it** (#101, a `kube` 3→4
     major bump, sat held ~5 weeks; the real review was a companion `k8s-openapi` bump the release
     notes called for). Check for an earlier holding comment (`get_comments`) and do the review now.
