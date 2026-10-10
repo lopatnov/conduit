@@ -26,7 +26,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **A live config update that changes a cold field is rejected** (issue #494), as `POST /reload` already
   did. A Kubernetes CRD edit to a port or TLS cert path used to be swapped into the config while the
-  listeners kept the old ones.
+  listeners kept the old ones. Cold fields are now compared per listener port, not per site position, so
+  adding, removing or reordering sites on an already-bound port stays hot (also for `/reload`).
 - **A hot reload that changes the Redis rate-limit store now warns that a restart is needed** (issue #358).
   The connection is made once at startup; the edit was silently ignored. The warning is in the log and in
   the `warnings` of the `/reload` response.

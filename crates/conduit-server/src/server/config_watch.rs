@@ -179,7 +179,7 @@ mod tests {
             panic!("a port change needs a restart and must be rejected");
         };
         assert!(
-            errors.iter().any(|e| e.path == "sites[0].port"),
+            errors.iter().any(|e| e.path.contains("9090")),
             "the rejection must name the cold field: {errors:?}"
         );
     }

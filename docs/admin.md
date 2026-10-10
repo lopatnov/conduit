@@ -206,7 +206,7 @@ curl -X POST http://localhost:2019/reload
 ```json
 {
   "status": "error",
-  "message": "cold fields changed — restart required: sites[0].tls.cert"
+  "message": "cold fields changed — restart required: listeners[443].tls.cert"
 }
 ```
 
@@ -220,7 +220,9 @@ not via `POST /reload`.
 `maskErrors`.
 
 **What requires a cold restart:**  
-`port`, `tls.cert/key`, `workers`, `backlog`, `global.admin.bind`.
+`port`, `tls.cert/key`, `workers`, `backlog`, `global.admin.bind`. Sites are matched by listener, not by
+position: adding, removing or reordering sites on a port that is already bound is hot; a port that appears or
+disappears, or a changed `tls.cert/key` on a bound port, needs a restart.
 (`tls.versions`/`tls.ciphers` are rejected at validate-time — see
 [configuration.md — TLS field reference](configuration.md#tls-field-reference)
 — not merely cold-restart-only; issue #189.)
