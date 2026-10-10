@@ -48,6 +48,12 @@ impl RequestFilter for MiddlewareGuard {
         #[cfg_attr(not(any(feature = "rhai", feature = "wasm")), allow(unused_variables))]
         ctx: &mut FilterContext<'a>,
     ) -> Result<FilterOutcome> {
+        // The header view the next entry sees. A WASM entry's added/removed request headers are
+        // folded in as it returns, so a later Rhai or WASM entry reads what the earlier one
+        // left, not the original request (issue #395).
+        #[cfg(any(feature = "rhai", feature = "wasm"))]
+        #[cfg_attr(not(feature = "wasm"), allow(unused_mut))]
+        let mut headers = self.headers.clone();
         for entry in &self.middleware {
             match entry.r#type.as_str() {
                 // ── Rhai scripting ────────────────────────────────────────────
@@ -57,7 +63,7 @@ impl RequestFilter for MiddlewareGuard {
                         continue;
                     }
                     let Some(ref path) = entry.path else { continue };
-                    if apply_rhai_entry(self, path, entry, ctx).await? {
+                    if apply_rhai_entry(self, &headers, path, entry, ctx).await? {
                         return Ok(FilterOutcome::Handled);
                     }
                 }
@@ -66,7 +72,7 @@ impl RequestFilter for MiddlewareGuard {
                 #[cfg(feature = "wasm")]
                 "wasm" => {
                     let Some(ref path) = entry.path else { continue };
-                    if apply_wasm_entry(self, path, entry, ctx).await? {
+                    if apply_wasm_entry(self, &mut headers, path, entry, ctx).await? {
                         return Ok(FilterOutcome::Handled);
                     }
                 }
@@ -92,6 +98,7 @@ impl RequestFilter for MiddlewareGuard {
 #[cfg(feature = "rhai")]
 async fn apply_rhai_entry<'a>(
     guard: &MiddlewareGuard,
+    headers: &std::collections::HashMap<String, String>,
     path: &str,
     entry: &MiddlewareEntry,
     ctx: &mut FilterContext<'a>,
@@ -105,7 +112,7 @@ async fn apply_rhai_entry<'a>(
             &guard.req_path,
             &guard.method,
             &guard.query,
-            guard.headers.clone(),
+            headers.clone(),
             entry.config.as_ref(),
         )
     });
@@ -136,6 +143,7 @@ async fn apply_rhai_entry<'a>(
 #[cfg(feature = "wasm")]
 async fn apply_wasm_entry<'a>(
     guard: &MiddlewareGuard,
+    headers: &mut std::collections::HashMap<String, String>,
     path: &str,
     entry: &MiddlewareEntry,
     ctx: &mut FilterContext<'a>,
@@ -145,7 +153,7 @@ async fn apply_wasm_entry<'a>(
         .as_ref()
         .and_then(|v| serde_json::to_vec(v).ok())
         .unwrap_or_default();
-    let header_names: Vec<String> = guard.headers.keys().cloned().collect();
+    let header_names: Vec<String> = headers.keys().cloned().collect();
     let request_id = ctx
         .session
         .req_header()
@@ -160,7 +168,7 @@ async fn apply_wasm_entry<'a>(
         path: guard.req_path.clone(),
         query: guard.query.clone(),
         client_ip: guard.client_ip.clone(),
-        headers: guard.headers.clone(),
+        headers: headers.clone(),
         header_names,
         request_id,
         plugin_config,
@@ -175,9 +183,11 @@ async fn apply_wasm_entry<'a>(
             removed_headers,
         } => {
             for (name, val) in added_headers {
+                headers.insert(name.to_ascii_lowercase(), val.clone());
                 let _ = ctx.session.req_header_mut().insert_header(name, val);
             }
             for name in removed_headers {
+                headers.remove(&name.to_ascii_lowercase());
                 ctx.session.req_header_mut().remove_header(&name);
             }
             Ok(false)

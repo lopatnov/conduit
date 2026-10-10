@@ -419,6 +419,65 @@ fn demo_wasm_header_injector_injects_x_wasm_plugin() {
     );
 }
 
+/// A later WASM entry reads the request headers an earlier entry just set (issue #395): the first
+/// entry injects `x-wasm-plugin`, the second sets `x-saw-plugin: 1` only when it can read that header.
+#[test]
+#[cfg(feature = "wasm")]
+fn wasm_entry_sees_headers_set_by_an_earlier_entry() {
+    const READER: &str = r#"(module
+      (import "conduit" "conduit_get_header" (func $get (param i32 i32 i32 i32) (result i32)))
+      (import "conduit" "conduit_set_request_header" (func $set (param i32 i32 i32 i32)))
+      (memory (export "memory") 1)
+      (data (i32.const 0) "x-wasm-plugin")
+      (data (i32.const 16) "x-saw-plugin")
+      (data (i32.const 32) "1")
+      (func (export "on_request") (result i32)
+        i32.const 0 i32.const 13 i32.const 256 i32.const 64 call $get
+        i32.const 0 i32.le_s
+        (if (then) (else
+          i32.const 16 i32.const 12 i32.const 32 i32.const 1 call $set))
+        i32.const 0))"#;
+    let dir = tempfile::tempdir().unwrap();
+    let injector = compile_wat_to_file(
+        &dir,
+        "header-injector.wasm",
+        include_str!("../examples/middleware-demo/header-injector.wat"),
+    );
+    let reader = compile_wat_to_file(&dir, "reader.wasm", READER);
+    let (echo_port, _echo) = common::start_echo_upstream();
+    let port = free_port();
+    let admin_port = free_port();
+    let cfg = serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "middleware": [
+                { "type": "wasm", "path": injector },
+                { "type": "wasm", "path": reader }
+            ],
+            "proxy": { "/": { "targets": [format!("http://127.0.0.1:{echo_port}")] } }
+        }]
+    });
+    let srv = common::TestServer::start_with_config(port, admin_port, cfg);
+    let resp = reqwest::blocking::Client::new()
+        .get(srv.url("/"))
+        .send()
+        .unwrap();
+    let body: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
+    let headers = body
+        .get("headers")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    assert_eq!(
+        headers
+            .get("x-saw-plugin")
+            .or_else(|| headers.get("X-Saw-Plugin"))
+            .and_then(|v| v.as_str()),
+        Some("1"),
+        "the second entry must see x-wasm-plugin set by the first; got headers: {headers}"
+    );
+}
+
 // ── WASM response-tagger demo ─────────────────────────────────────────────────
 
 /// WASM response-tagger adds X-Processed-By: wasm to upstream responses.
