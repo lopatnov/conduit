@@ -26,7 +26,6 @@ npx @lopatnov/conduit        # run it
 
 ## Table of Contents
 
-- [Why Conduit](#why-conduit)
 - [Quick start](#quick-start)
 - [How a request flows](#how-a-request-flows)
 - [What Conduit does](#what-conduit-does)
@@ -42,23 +41,6 @@ npx @lopatnov/conduit        # run it
 - [Documentation](#documentation)
 - [Contributing](#contributing)
 - [License](#license)
-
-## Why Conduit
-
-- **One file, checked before it runs.** `conduit validate` reports problems with the path of the
-  field (`error at sites[0].rateLimit.windowSecs: windowSecs must be greater than 0`), warns about
-  keys it does not recognise (usually a typo) and exits non-zero on errors, so it fits in CI. A
-  [JSON Schema](schema/conduit.schema.json) gives your editor completion and inline errors.
-- **A proven engine underneath.** HTTP/1.1, HTTP/2, TLS (via rustls) and connection pooling come
-  from Pingora, the Rust framework Cloudflare built for its own proxies. Conduit adds the
-  configuration, guards, routing, caching and tooling on top.
-- **You compile what you use.** Optional capabilities are Cargo features. The prebuilt binaries
-  ship in a `standard` and a `full` flavour, and `conduit features` tells you which features a
-  given config needs, so you can build something smaller.
-- **Change it while it runs.** Most of the configuration reloads without a restart and without
-  dropping connections (see [what needs a restart](#limits-you-should-know-about)).
-- **Extend it without forking.** Write request and response logic as [Rhai](docs/rhai.md) scripts
-  or [WebAssembly](docs/wasm.md) plugins in any language that compiles to WASM.
 
 ## Quick start
 
