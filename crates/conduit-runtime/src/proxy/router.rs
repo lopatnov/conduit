@@ -207,6 +207,7 @@ fn route_site(
         method,
         req_headers,
         query,
+        client_ip,
         counters,
         upstream_health,
     ) {
@@ -306,6 +307,7 @@ fn resolve_routes_array(
     method: &str,
     req_headers: &http::HeaderMap,
     query: Option<&str>,
+    #[cfg_attr(not(feature = "proxy"), allow(unused_variables))] client_ip: &str,
     #[cfg_attr(not(feature = "proxy"), allow(unused_variables))] counters: &DashMap<
         String,
         AtomicUsize,
@@ -314,15 +316,18 @@ fn resolve_routes_array(
 ) -> Option<RouteResult> {
     let routes_cfg = site.routes.as_ref()?;
     #[cfg(feature = "proxy")]
-    let route_match = routes::match_routes(
-        routes_cfg,
-        path,
-        method,
-        req_headers,
-        query,
-        counters,
-        upstream_health,
-    )?;
+    let route_match = {
+        let site_label = crate::proxy::health::site_label(&site.host, site.port);
+        let proxy_ctx = ProxyCtx {
+            path,
+            client_ip,
+            req_headers,
+            counters,
+            upstream_health,
+            site_label: &site_label,
+        };
+        routes::match_routes(routes_cfg, &proxy_ctx, method, query)?
+    };
     // Without `proxy`, matching is unchanged but a `proxy` action is never
     // resolved: the entry comes back as a terminal `Unresolved` (-> the
     // fallback below) that still carries the route's rate-limit/priority

@@ -32,6 +32,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and a change no longer counts as a cold-restart field.
 - **`conduit man` on a terminal prints a hint** instead of raw roff, and the description no longer uses non-ASCII bullets.
   Piped or redirected output is unchanged.
+- **A `routes[]` entry honours the same route options as a `proxy` map route** (issue #412). It used
+  to resolve through its own, smaller resolver, so `groups` (the route did not work at all), `hashKey`,
+  `sticky`, `backup`, `rewrite`, `mirror` and `upstreamTls` were accepted and silently ignored. Both
+  mechanisms now share one resolver. Two behaviour changes follow: `ipHash`/`consistentHash` on
+  `routes[]` hash the `hashKey` (default: client IP) instead of the request path, and `stripPrefix`
+  removes the literal prefix of `match.path` instead of the whole request path.
+- **`hashKey: "header:<Name>"` hashes that header** (issue #412). It was documented but treated as
+  the client IP everywhere; a request without the header still falls back to the client IP.
+- **Active health checks run for `routes[]` entries and `groups`** (issue #376). `healthCheck`
+  settings (`intervalSecs`, `path`, thresholds) were only acted on for the `proxy` map with flat
+  `targets`; elsewhere only passive health applied. The `/__health__?full=1` upstream list now
+  includes a group route's targets too.
 - **A live config update that changes a cold field is rejected** (issue #494), as `POST /reload` already
   did. A Kubernetes CRD edit to a port or TLS cert path used to be swapped into the config while the
   listeners kept the old ones. Cold fields are now compared per listener port, not per site position, so

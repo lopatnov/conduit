@@ -9,18 +9,17 @@
 //! predicates, query predicates) plus an action (`proxy` or `static`).
 //! Routes are evaluated in declaration order; the first match wins.
 //!
-//! Proxy-target resolution itself lives in `crate::routes_resolve` — this
-//! file owns matching only.
+//! Proxy-target resolution itself lives in `crate::routes_resolve`, a thin
+//! adapter over the `proxy` map's resolver (issue #412) — this file owns
+//! matching only.
 
-use std::sync::atomic::AtomicUsize;
 use std::sync::OnceLock;
 
 use dashmap::DashMap;
 use regex::Regex;
 
-use conduit_upstream::health::UpstreamRegistry;
-
 use crate::config::{MatchConfig, ProxyRouteTarget, RouteConfig};
+use crate::options::ProxyCtx;
 use crate::outcome::ProxyResolution;
 #[cfg(feature = "proxy")]
 use crate::routes_resolve;
@@ -55,22 +54,26 @@ pub enum RouteMatch {
 /// Try to match the request against the site's `routes` list.
 ///
 /// Returns the first matching [`RouteMatch`] or `None` when no route matches.
+/// `ctx` carries the request path, headers and client IP, which the matched
+/// route's resolution needs (sticky cookie, `hashKey`) exactly like a `proxy`
+/// map route does.
 ///
 /// `pub` (not `pub(crate)`): called cross-crate from the root crate's
 /// `router.rs::resolve_routes_array`.
-#[allow(clippy::too_many_arguments)]
 pub fn match_routes(
     routes: &[RouteConfig],
-    path: &str,
+    ctx: &ProxyCtx<'_>,
     method: &str,
-    req_headers: &http::HeaderMap,
     query: Option<&str>,
-    counters: &DashMap<String, AtomicUsize>,
-    upstream_health: &UpstreamRegistry,
 ) -> Option<RouteMatch> {
-    match_routes_with(routes, path, method, req_headers, query, |i, target| {
-        resolve_proxy_action(i, target, path, counters, upstream_health)
-    })
+    match_routes_with(
+        routes,
+        ctx.path,
+        method,
+        ctx.req_headers,
+        query,
+        |i, route, target| resolve_proxy_action(i, route, target, ctx),
+    )
 }
 
 /// Same matching as [`match_routes`], but a matched `proxy` action is **never
@@ -101,7 +104,7 @@ pub fn match_routes_unproxied(
         method,
         req_headers,
         query,
-        unresolved_proxy_action,
+        |i, _route, target| unresolved_proxy_action(i, target),
     )
 }
 
@@ -114,7 +117,7 @@ fn match_routes_with(
     method: &str,
     req_headers: &http::HeaderMap,
     query: Option<&str>,
-    resolve_proxy: impl FnOnce(usize, &ProxyRouteTarget) -> ProxyResolution,
+    resolve_proxy: impl FnOnce(usize, &RouteConfig, &ProxyRouteTarget) -> ProxyResolution,
 ) -> Option<RouteMatch> {
     for (i, route) in routes.iter().enumerate() {
         if route_matches(&route.r#match, path, method, req_headers, query) {
@@ -123,7 +126,7 @@ fn match_routes_with(
             };
             return Some(RouteMatch::Proxy {
                 index: i,
-                resolution: Box::new(resolve_proxy(i, target)),
+                resolution: Box::new(resolve_proxy(i, route, target)),
             });
         }
     }
@@ -134,13 +137,11 @@ fn match_routes_with(
 #[cfg(feature = "proxy")]
 fn resolve_proxy_action(
     i: usize,
+    route: &RouteConfig,
     target: &ProxyRouteTarget,
-    path: &str,
-    counters: &DashMap<String, AtomicUsize>,
-    upstream_health: &UpstreamRegistry,
+    ctx: &ProxyCtx<'_>,
 ) -> ProxyResolution {
-    let mut resolution =
-        routes_resolve::resolve_route_target(target, path, counters, upstream_health);
+    let mut resolution = routes_resolve::resolve_route_target(i, route, target, ctx);
     // Applied regardless of which of `resolve_route_target`'s internal
     // outcomes (proxy/overloaded/unresolved) actually returned.
     stamp_route_limits(&mut resolution, i, target);
@@ -162,10 +163,9 @@ fn resolve_proxy_action(
 #[cfg(not(feature = "proxy"))]
 fn resolve_proxy_action(
     i: usize,
+    _route: &RouteConfig,
     target: &ProxyRouteTarget,
-    _path: &str,
-    _counters: &DashMap<String, AtomicUsize>,
-    _upstream_health: &UpstreamRegistry,
+    _ctx: &ProxyCtx<'_>,
 ) -> ProxyResolution {
     unresolved_proxy_action(i, target)
 }
@@ -432,6 +432,27 @@ fn query_param_value<'a>(qs: &'a str, key: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// `match_routes` for a client at `203.0.113.1` with no headers or query.
+    fn match_routes_for(
+        routes: &[RouteConfig],
+        path: &str,
+        method: &str,
+        counters: &DashMap<String, std::sync::atomic::AtomicUsize>,
+        registry: &conduit_upstream::health::UpstreamRegistry,
+    ) -> Option<RouteMatch> {
+        let headers = http::HeaderMap::new();
+        let ctx = ProxyCtx {
+            path,
+            client_ip: "203.0.113.1",
+            req_headers: &headers,
+            counters,
+            upstream_health: registry,
+            site_label: "test:80",
+        };
+        match_routes(routes, &ctx, method, None)
+    }
     use indexmap::IndexMap;
 
     // ── glob_match ────────────────────────────────────────────────────────────
@@ -664,15 +685,7 @@ mod tests {
     fn match_routes_empty_list_returns_none() {
         let counters: DashMap<String, std::sync::atomic::AtomicUsize> = DashMap::new();
         let registry = conduit_upstream::health::UpstreamRegistry::new();
-        let result = match_routes(
-            &[],
-            "/api/v1",
-            "GET",
-            &http::HeaderMap::new(),
-            None,
-            &counters,
-            &registry,
-        );
+        let result = match_routes_for(&[], "/api/v1", "GET", &counters, &registry);
         assert!(result.is_none());
     }
 
@@ -689,15 +702,7 @@ mod tests {
             proxy: Some(ProxyRouteTarget::Url("http://api:4000".to_string())),
             static_files: None,
         }];
-        let result = match_routes(
-            &routes,
-            "/other",
-            "GET",
-            &http::HeaderMap::new(),
-            None,
-            &counters,
-            &registry,
-        );
+        let result = match_routes_for(&routes, "/other", "GET", &counters, &registry);
         assert!(result.is_none());
     }
 
@@ -718,15 +723,7 @@ mod tests {
             proxy: None,
             static_files: Some(conduit_static::StaticConfig::Single("./dist".to_string())),
         }];
-        let result = match_routes(
-            &routes,
-            "/assets/app.js",
-            "GET",
-            &http::HeaderMap::new(),
-            None,
-            &counters,
-            &registry,
-        );
+        let result = match_routes_for(&routes, "/assets/app.js", "GET", &counters, &registry);
         assert!(matches!(result, Some(RouteMatch::NonProxy { index: 0 })));
     }
 
@@ -747,16 +744,8 @@ mod tests {
             proxy: Some(ProxyRouteTarget::Url("http://backend:4000".to_string())),
             static_files: None,
         }];
-        let route_match = match_routes(
-            &routes,
-            "/api/users",
-            "GET",
-            &http::HeaderMap::new(),
-            None,
-            &counters,
-            &registry,
-        )
-        .expect("the route still matches");
+        let route_match = match_routes_for(&routes, "/api/users", "GET", &counters, &registry)
+            .expect("the route still matches");
         let RouteMatch::Proxy { resolution, .. } = route_match else {
             panic!("expected a Proxy match");
         };
@@ -784,16 +773,8 @@ mod tests {
             proxy: Some(ProxyRouteTarget::Url("http://backend:4000".to_string())),
             static_files: Some(conduit_static::StaticConfig::Single("./secret".to_string())),
         }];
-        let route_match = match_routes(
-            &routes,
-            "/anything",
-            "GET",
-            &http::HeaderMap::new(),
-            None,
-            &counters,
-            &registry,
-        )
-        .expect("the route still matches");
+        let route_match = match_routes_for(&routes, "/anything", "GET", &counters, &registry)
+            .expect("the route still matches");
         assert!(
             matches!(route_match, RouteMatch::Proxy { .. }),
             "a proxy+static route must stay a Proxy match, never degrade to NonProxy"
@@ -931,16 +912,8 @@ mod tests {
         let counters: DashMap<String, AtomicUsize> = DashMap::new();
         let registry = conduit_upstream::health::UpstreamRegistry::new();
         let routes = vec![stamped_route("/limited/**")];
-        let route_match = match_routes(
-            &routes,
-            "/limited/x",
-            "GET",
-            &http::HeaderMap::new(),
-            None,
-            &counters,
-            &registry,
-        )
-        .expect("the route still matches");
+        let route_match = match_routes_for(&routes, "/limited/x", "GET", &counters, &registry)
+            .expect("the route still matches");
         let RouteMatch::Proxy { resolution, .. } = route_match else {
             panic!("expected a Proxy match");
         };
@@ -980,15 +953,7 @@ mod tests {
                 static_files: None,
             },
         ];
-        let result = match_routes(
-            &routes,
-            "/api/users",
-            "GET",
-            &http::HeaderMap::new(),
-            None,
-            &counters,
-            &registry,
-        );
+        let result = match_routes_for(&routes, "/api/users", "GET", &counters, &registry);
         let route_match = result.expect("must match");
         let RouteMatch::Proxy { resolution, .. } = route_match else {
             panic!("expected a Proxy match");

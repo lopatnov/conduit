@@ -1,305 +1,102 @@
-//! `routes[]` array proxy-target resolution (issue #143) — split out of the
-//! root crate's `routes.rs`'s former `full_cfg_to_result` (~186 lines) the
-//! same way `crate::resolve` splits `router.rs`'s equivalent function, but
-//! WITHOUT sharing helpers with it: this path has no sticky/backup/groups
-//! support, and uses the request path (not client IP) as its hash input
-//! since client IP isn't threaded through route-array matching — a real
-//! semantic difference from the `proxy`-map path, not an oversight to unify
-//! (see `resolve_full_target`'s own hash-input comment). Split out in PR A2
-//! (issue #419), moved into this crate in PR B (issue #143 itself).
+//! `routes[]` array proxy-target resolution (issue #143, #412).
+//!
+//! A matched `routes[]` entry is resolved by the same engine as a `proxy` map
+//! route ([`crate::resolve`]): the two mechanisms used to have separate
+//! resolvers, and the `routes[]` one silently ignored `groups`, `hashKey`,
+//! `sticky`, `backup`, `rewrite`, `mirror` and `upstreamTls` (#412). Sharing
+//! the engine means a route option cannot work in one mechanism and be inert
+//! in the other.
+//!
+//! The only things that differ are what a `routes[]` entry does not have: a
+//! path-prefix key. It gets a synthetic, site-scoped key for counters and
+//! runtime overrides (`<site>#routes[<i>]`), and the prefix `stripPrefix`
+//! removes is the literal prefix of its `match.path` glob.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::config::{ProxyRouteTarget, RouteConfig};
+use crate::options::ProxyCtx;
+use crate::outcome::ProxyResolution;
+use crate::resolve;
 
-use dashmap::DashMap;
-
-use conduit_upstream::health::UpstreamRegistry;
-use conduit_upstream::ProxyTarget;
-
-use crate::capacity;
-use crate::config::{ProxyRouteConfig, ProxyRouteTarget};
-use crate::outcome::{self, ProxyResolution, ProxyUpstream};
-use crate::slow_start::Ramp;
-use crate::state::{ProxyReqState, RetryState};
-
-/// Convert a matched [`ProxyRouteTarget`] to a [`ProxyResolution`].
+/// Convert the matched `routes[index]` entry's `proxy` action to a [`ProxyResolution`].
 pub(crate) fn resolve_route_target(
+    index: usize,
+    route: &RouteConfig,
     target: &ProxyRouteTarget,
-    path: &str,
-    counters: &DashMap<String, AtomicUsize>,
-    upstream_health: &UpstreamRegistry,
+    ctx: &ProxyCtx<'_>,
 ) -> ProxyResolution {
-    match target {
-        ProxyRouteTarget::Url(url) => resolve_url_target(url),
-        ProxyRouteTarget::RoundRobin(urls) => resolve_round_robin_target(urls, counters),
-        ProxyRouteTarget::Full(cfg) => resolve_full_target(cfg, path, counters, upstream_health),
-    }
+    // Site-scoped: the round-robin/least-conn counters are process-wide and keyed by this string,
+    // so two sites' `routes[0]` must not share one.
+    let route_key = format!("{}#routes[{index}]", ctx.site_label);
+    // No `match.path` (header/method/query-only route): nothing to strip. Falling back to the synthetic
+    // route key would send every request upstream as `/`.
+    let strip_base = Some(route.r#match.path.as_deref().map_or("", literal_prefix));
+    resolve::resolve_target(&route_key, strip_base, target, ctx)
 }
 
-/// Convert a single-URL `ProxyRouteTarget::Url` to a [`ProxyResolution`].
-fn resolve_url_target(url: &str) -> ProxyResolution {
-    match outcome::url_to_proxy_upstream(url, None) {
-        Some(upstream) => ProxyResolution::upstream(upstream, ProxyReqState::default()),
-        None => ProxyResolution::unresolved(ProxyReqState::default()),
+/// The part of a path glob that is the same for every request it matches, cut back to a whole
+/// segment: `/api/**` -> `/api/`, `/api/us*` -> `/api/`, `/health` -> `/health`.
+fn literal_prefix(glob: &str) -> &str {
+    let end = glob.find(['*', '?', '[']).unwrap_or(glob.len());
+    let literal = &glob[..end];
+    if end == glob.len() {
+        literal
+    } else {
+        literal.rfind('/').map_or("", |slash| &literal[..=slash])
     }
-}
-
-/// Rotate through `urls` round-robin and convert the chosen URL to a [`ProxyResolution`].
-fn resolve_round_robin_target(
-    urls: &[String],
-    counters: &DashMap<String, AtomicUsize>,
-) -> ProxyResolution {
-    let key = urls.join(",");
-    let counter = counters.entry(key).or_insert_with(|| AtomicUsize::new(0));
-    let idx = counter.fetch_add(1, Ordering::Relaxed) % urls.len();
-    match outcome::url_to_proxy_upstream(&urls[idx], None) {
-        Some(upstream) => ProxyResolution::upstream(upstream, ProxyReqState::default()),
-        None => ProxyResolution::unresolved(ProxyReqState::default()),
-    }
-}
-
-/// Handle the `Full` form of a proxy route target (strategy selection, health
-/// filtering, capacity, retry). No sticky/backup/groups support — see this
-/// module's own doc comment for why this doesn't share phases with
-/// `crate::resolve`'s equivalent.
-fn resolve_full_target(
-    cfg: &ProxyRouteConfig,
-    path: &str,
-    counters: &DashMap<String, AtomicUsize>,
-    upstream_health: &UpstreamRegistry,
-) -> ProxyResolution {
-    let all_urls: Vec<String> = cfg
-        .targets
-        .iter()
-        .map(|t| match t {
-            ProxyTarget::Simple(u) => u.clone(),
-            ProxyTarget::Weighted(w) => w.url.clone(),
-        })
-        .collect();
-    let all_weighted: Vec<(String, u32)> = cfg
-        .targets
-        .iter()
-        .map(|t| match t {
-            ProxyTarget::Simple(u) => (u.clone(), 1),
-            ProxyTarget::Weighted(w) => (w.url.clone(), w.weight),
-        })
-        .collect();
-
-    // Filter to healthy upstreams; fail-open when all are down.
-    let (healthy, _fail_open) = upstream_health.filter_healthy(&all_urls);
-    let urls: Vec<String> = healthy.iter().cloned().cloned().collect();
-
-    if urls.is_empty() {
-        return ProxyResolution::unresolved(ProxyReqState::default());
-    }
-
-    // Circuit breaker: per-upstream capacity filtering (#156), shared with
-    // the legacy `proxy` map and `groups` paths via `capacity::pick_bounded`.
-    let max_conns = cfg
-        .health_check
-        .as_ref()
-        .and_then(|h| h.max_connections_per_upstream);
-    let slow_start_secs = cfg.health_check.as_ref().and_then(|h| h.slow_start_secs);
-    let route_key = path; // stable key for round-robin counters
-    let capacity = capacity::Capacity::evaluate(&urls, max_conns, route_key, upstream_health);
-    if matches!(capacity, capacity::Capacity::Exhausted) {
-        // Distinct from `ProxyOutcome::Unresolved`: capacity exhaustion is a
-        // 503, not "no route matched" — matches the legacy `proxy` map path.
-        return ProxyResolution::overloaded(ProxyReqState::default());
-    }
-
-    let weighted: Vec<(String, u32)> = all_weighted
-        .iter()
-        .filter(|(u, _)| urls.contains(u))
-        .cloned()
-        .collect();
-
-    // Use path as the hash input since client IP is not available at
-    // route-match time (the routes array doesn't carry it through).
-    let hash_val = conduit_upstream::targets::fnv1a_hash(path);
-    let strategy = cfg.strategy.as_ref();
-
-    // Slow start (#157): ramp traffic to a recently-recovered upstream.
-    // `Ramp::new` is a true no-op when `slowStartSecs` is unset; hash-based
-    // strategies are exempt for free via `pick_bounded`'s own early return.
-    let ramp = Ramp::new(slow_start_secs, upstream_health);
-
-    let input = capacity::BoundedPick {
-        strategy,
-        healthy: &urls,
-        capacity: &capacity,
-        weighted: &weighted,
-        route_key,
-        hash_val,
-        counters,
-        health: upstream_health,
-        ramp: &ramp,
-    };
-    let Some((chosen_url, is_least_conn)) = capacity::pick_bounded(&input) else {
-        return ProxyResolution::unresolved(ProxyReqState::default());
-    };
-
-    let strip = cfg.strip_prefix.unwrap_or(false).then(|| path.to_string());
-
-    // url_to_proxy_upstream may return None for a malformed URL. Parse
-    // BEFORE acquiring the circuit_tracking slot below (matches the
-    // ordering invariant in router.rs's resolve_proxy_routes) so a
-    // malformed-URL request can never leak a slot nothing will release.
-    let Some(upstream) = build_target_upstream(&chosen_url, strip, is_least_conn, upstream_health)
-    else {
-        return ProxyResolution::unresolved(ProxyReqState::default());
-    };
-
-    // Same accounting shape as the legacy `proxy` map path (#155/#156): a
-    // slot is only acquired when least-conn didn't already track it but a
-    // cap is configured, so the capacity check above stays fed for every
-    // strategy.
-    let circuit_tracking = max_conns.is_some() && !is_least_conn;
-    if circuit_tracking {
-        upstream_health.conn_inc(&chosen_url);
-    }
-
-    let retry = build_retry_state(
-        cfg,
-        &capacity,
-        &ramp,
-        &urls,
-        &chosen_url,
-        is_least_conn,
-        circuit_tracking,
-        max_conns,
-    );
-
-    // proxy_upstream_url is populated unconditionally (#155) so passive-health
-    // attribution works for every strategy; upstream_conn_slot tracks whether
-    // this request actually holds a conn_count slot to release.
-    let proxy_upstream_url = Some(chosen_url.clone());
-
-    ProxyResolution::upstream(
-        upstream,
-        ProxyReqState {
-            retry,
-            proxy_timeout: cfg.timeout.clone(),
-            proxy_pool: cfg.pool.clone(),
-            proxy_http2: cfg.http2.unwrap_or(false),
-            proxy_upstream_url,
-            upstream_conn_slot: is_least_conn || circuit_tracking,
-            proxy_cache_cfg: cfg.cache.clone(),
-            passive_unhealthy_status: cfg
-                .health_check
-                .as_ref()
-                .and_then(|hc| hc.unhealthy_status.clone())
-                .unwrap_or_default(),
-            passive_unhealthy_latency_ms: cfg
-                .health_check
-                .as_ref()
-                .and_then(|hc| hc.unhealthy_latency_ms),
-            websocket_allowed: cfg.websocket.unwrap_or(false),
-            sticky_set_cookie: None, // routes.rs path: sticky is handled in router.rs
-            ..Default::default()
-        },
-    )
-}
-
-/// Parse `chosen_url` into a [`ProxyUpstream`], releasing the least-conn
-/// inflight slot if it's malformed — `logging()` will not run for this
-/// request. No rewrite/mirror/upstream-TLS overlay here: unlike
-/// `crate::resolve::build_proxy_upstream`, `routes[]` targets never carry
-/// those fields (`ProxyRouteConfig` has no `rewrite`/`mirror`/`upstreamTls`
-/// handling on this path today — preserved exactly, not a gap this PR fixes).
-fn build_target_upstream(
-    chosen_url: &str,
-    strip: Option<String>,
-    is_least_conn: bool,
-    upstream_health: &UpstreamRegistry,
-) -> Option<ProxyUpstream> {
-    let Some(upstream) = outcome::url_to_proxy_upstream(chosen_url, strip) else {
-        if is_least_conn {
-            upstream_health.conn_dec(chosen_url);
-        }
-        return None;
-    };
-    Some(upstream)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_retry_state(
-    cfg: &ProxyRouteConfig,
-    capacity: &capacity::Capacity,
-    ramp: &Ramp<'_>,
-    urls: &[String],
-    chosen_url: &str,
-    is_least_conn: bool,
-    circuit_tracking: bool,
-    max_conns: Option<u64>,
-) -> Option<RetryState> {
-    // Fixed (#217): retry.urls now comes from the same health/capacity-
-    // filtered candidate list used to pick chosen_url above, matching
-    // router.rs's resolve_proxy_routes — a retry can no longer rotate into a
-    // peer already known unhealthy or at its connection cap. `capacity` was
-    // evaluated against `urls` (the health-filtered list) by the caller, and
-    // the `Exhausted` case already returned before this point, so
-    // `candidates()` is always `Some` here; `unwrap_or(&urls)` is just a
-    // defensive fallback, not an expected path.
-    cfg.retry.as_ref().map(|r| {
-        // Slow start (#157): this retry list is its own routing decision that
-        // never goes through `pick_bounded` -- without wrapping it here, a
-        // route with `retry` configured would keep ignoring `slowStartSecs`
-        // for its fallback rotation, mirroring the same gap fixed in
-        // router.rs's `resolve_proxy_routes` retry-bypass branch.
-        //
-        // Hash-based strategies are exempt (#375, #436): a mid-ramp peer is
-        // fully eligible for their primary pick, so it must stay in the retry
-        // list too. This path has no sticky support, so the configured
-        // strategy is the effective one (unlike `peer_pick`, which forces
-        // sticky routes onto consistent-hash first).
-        let mut retry_urls: Vec<String> = capacity::ramp_filter_retry_candidates(
-            cfg.strategy.as_ref(),
-            ramp,
-            capacity.candidates(urls).unwrap_or(urls),
-        )
-        .into_owned();
-        // Anchor attempt 1 to the peer actually chosen above (#367) — this
-        // list used to be the unrotated candidate list, so attempt 1 always
-        // connected to `retry_urls[0]` regardless of which peer `chosen_url`
-        // (round-robin/least-conn/etc.) actually was, defeating round-robin
-        // and misattributing conn_count/EWMA/access-log stats to the wrong
-        // peer. Mirrors router.rs's `pick_with_retry`, which builds
-        // `chosen_url` and `retry.urls` from the same rotation so the
-        // invariant holds by construction; here the two are picked
-        // separately (via `pick_bounded` vs. this list's own ramp/capacity
-        // filter), so restore it explicitly instead. `chosen_url` can be
-        // absent from this list for a hash-based strategy — exempt from
-        // ramp filtering during its own pick_bounded pick, but not from this
-        // separate list's filter (see #366's analogous gap in router.rs) —
-        // in that case prepend it rather than leaving the invariant broken.
-        match retry_urls.iter().position(|u| u == chosen_url) {
-            Some(pos) => retry_urls.rotate_left(pos),
-            None => retry_urls.insert(0, chosen_url.to_owned()),
-        }
-        RetryState {
-            urls: retry_urls,
-            attempt: 0,
-            max_attempts: r.attempts as usize,
-            conditions: r.conditions.clone(),
-            backoff_ms: r.backoff_ms,
-            backoff_jitter: r.backoff_jitter.unwrap_or(false),
-            budget_percent: r.budget_percent,
-            is_retrying: false,
-            // #216 part 2: mirrors upstream_conn_slot's own formula a few
-            // lines below (is_least_conn || circuit_tracking) -- unlike
-            // router.rs's retry-bypass branch, this path goes through
-            // pick_bounded, so is_least_conn can genuinely be true here.
-            max_conns_per_upstream: max_conns,
-            tracks_conn_slot: is_least_conn || circuit_tracking,
-        }
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use dashmap::DashMap;
+
+    use crate::config::ProxyRouteConfig;
     use crate::outcome::ProxyOutcome;
-    use conduit_upstream::LoadBalanceStrategy;
+    use conduit_upstream::health::UpstreamRegistry;
+    use conduit_upstream::{LoadBalanceStrategy, ProxyTarget};
+
+    /// Resolve `target` as `routes[0]` of a site matching exactly `path`, for a client at
+    /// `203.0.113.1` with no headers. Shim over the production entry point so the
+    /// strategy/health/capacity/retry tests below read as they did before the resolver was shared.
+    fn resolve_route_target(
+        target: &ProxyRouteTarget,
+        path: &str,
+        counters: &DashMap<String, AtomicUsize>,
+        registry: &UpstreamRegistry,
+    ) -> ProxyResolution {
+        resolve_for_client(target, path, "203.0.113.1", counters, registry)
+    }
+
+    fn resolve_for_client(
+        target: &ProxyRouteTarget,
+        path: &str,
+        client_ip: &str,
+        counters: &DashMap<String, AtomicUsize>,
+        registry: &UpstreamRegistry,
+    ) -> ProxyResolution {
+        let headers = http::HeaderMap::new();
+        let ctx = ProxyCtx {
+            path,
+            client_ip,
+            req_headers: &headers,
+            counters,
+            upstream_health: registry,
+            site_label: "test:80",
+        };
+        let route = RouteConfig {
+            r#match: crate::config::MatchConfig {
+                path: Some(path.to_owned()),
+                ..Default::default()
+            },
+            proxy: Some(target.clone()),
+            ..Default::default()
+        };
+        resolve_route_target_for(0, &route, target, &ctx)
+    }
+
+    use super::resolve_route_target as resolve_route_target_for;
 
     fn upstream_addr(resolution: &ProxyResolution) -> String {
         match &resolution.outcome {
@@ -798,6 +595,8 @@ mod tests {
                 ProxyTarget::Simple(RAMP_B.to_string()),
             ],
             strategy: Some(strategy),
+            // Hash the path: `path_hashing_to_b` picks a route path for the primary peer.
+            hash_key: Some("url".to_owned()),
             health_check: Some(UpstreamHealthCheck {
                 slow_start_secs: Some(3600),
                 ..Default::default()
@@ -895,5 +694,289 @@ mod tests {
             vec![RAMP_B.to_string()],
             "a ramp-filtered retry list must exclude the mid-ramp peer"
         );
+    }
+
+    // ── parity with the `proxy` map (issue #412) ──────────────────────────────
+
+    fn full(cfg: ProxyRouteConfig) -> ProxyRouteTarget {
+        ProxyRouteTarget::Full(Box::new(cfg))
+    }
+
+    fn simple(urls: &[&str]) -> Vec<ProxyTarget> {
+        urls.iter()
+            .map(|u| ProxyTarget::Simple((*u).to_owned()))
+            .collect()
+    }
+
+    fn resolve_with_headers(
+        target: &ProxyRouteTarget,
+        path: &str,
+        client_ip: &str,
+        headers: &http::HeaderMap,
+        registry: &UpstreamRegistry,
+    ) -> ProxyResolution {
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let ctx = ProxyCtx {
+            path,
+            client_ip,
+            req_headers: headers,
+            counters: &counters,
+            upstream_health: registry,
+            site_label: "test:80",
+        };
+        let route = RouteConfig {
+            r#match: crate::config::MatchConfig {
+                path: Some(path.to_owned()),
+                ..Default::default()
+            },
+            proxy: Some(target.clone()),
+            ..Default::default()
+        };
+        super::resolve_route_target(0, &route, target, &ctx)
+    }
+
+    #[test]
+    fn groups_only_route_resolves_to_a_group_member() {
+        // Before #412 a groups-only `routes[]` entry had an empty target list and resolved to
+        // nothing, so the route silently did not work at all.
+        let target = full(ProxyRouteConfig {
+            groups: Some(vec![conduit_upstream::UpstreamGroup {
+                name: "blue".to_owned(),
+                targets: simple(&["http://blue1:4000"]),
+                strategy: None,
+            }]),
+            ..Default::default()
+        });
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let resolution = resolve_route_target(&target, "/api", &counters, &UpstreamRegistry::new());
+        assert_eq!(upstream_addr(&resolution), "blue1:4000");
+    }
+
+    #[test]
+    fn hash_key_header_pins_the_client_regardless_of_ip() {
+        let target = full(ProxyRouteConfig {
+            targets: simple(&["http://a:4000", "http://b:4000", "http://c:4000"]),
+            strategy: Some(LoadBalanceStrategy::IpHash),
+            hash_key: Some("header:x-tenant".to_owned()),
+            ..Default::default()
+        });
+        let registry = UpstreamRegistry::new();
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-tenant", "acme".parse().unwrap());
+        let picks: std::collections::HashSet<String> = (1..=40)
+            .map(|i| {
+                let ip = format!("198.51.100.{i}");
+                upstream_addr(&resolve_with_headers(
+                    &target, "/api", &ip, &headers, &registry,
+                ))
+            })
+            .collect();
+        assert_eq!(
+            picks.len(),
+            1,
+            "the header, not the client IP, is the hash input: {picks:?}"
+        );
+    }
+
+    #[test]
+    fn default_hash_key_is_the_client_ip_not_the_path() {
+        // Control for the test above, and the old behaviour this replaces: `routes[]` used to hash
+        // the request path, so every client asking for one path landed on one peer.
+        let target = full(ProxyRouteConfig {
+            targets: simple(&["http://a:4000", "http://b:4000", "http://c:4000"]),
+            strategy: Some(LoadBalanceStrategy::IpHash),
+            ..Default::default()
+        });
+        let registry = UpstreamRegistry::new();
+        let headers = http::HeaderMap::new();
+        let picks: std::collections::HashSet<String> = (1..=40)
+            .map(|i| {
+                let ip = format!("198.51.100.{i}");
+                upstream_addr(&resolve_with_headers(
+                    &target, "/api", &ip, &headers, &registry,
+                ))
+            })
+            .collect();
+        assert!(
+            picks.len() > 1,
+            "different client IPs must spread over the peers: {picks:?}"
+        );
+    }
+
+    #[test]
+    fn backup_takes_over_when_every_primary_is_unhealthy() {
+        let target = full(ProxyRouteConfig {
+            targets: simple(&["http://primary:4000"]),
+            backup: Some("http://backup:4000".to_owned()),
+            ..Default::default()
+        });
+        let registry = UpstreamRegistry::new();
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        assert_eq!(
+            upstream_addr(&resolve_route_target(&target, "/api", &counters, &registry)),
+            "primary:4000"
+        );
+        registry
+            .statuses
+            .entry("http://primary:4000".to_owned())
+            .or_default()
+            .healthy = false;
+        assert_eq!(
+            upstream_addr(&resolve_route_target(&target, "/api", &counters, &registry)),
+            "backup:4000"
+        );
+    }
+
+    #[test]
+    fn rewrite_mirror_and_upstream_tls_reach_the_upstream() {
+        let target = full(ProxyRouteConfig {
+            targets: simple(&["https://secure:4443"]),
+            rewrite: Some(vec![crate::config::RewriteRule {
+                from: "^/v1/(.*)".to_owned(),
+                to: "/$1".to_owned(),
+            }]),
+            mirror: Some("http://shadow:4000".to_owned()),
+            upstream_tls: Some(conduit_upstream::UpstreamTlsConfig {
+                verify: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let resolution =
+            resolve_route_target(&target, "/v1/x", &counters, &UpstreamRegistry::new());
+        let ProxyOutcome::Upstream(pu) = resolution.outcome else {
+            panic!("expected an upstream");
+        };
+        assert_eq!(pu.rewrite.as_ref().map(Vec::len), Some(1));
+        assert_eq!(pu.mirror_url.as_deref(), Some("http://shadow:4000"));
+        assert_eq!(pu.upstream_tls.and_then(|t| t.verify), Some(false));
+    }
+
+    #[test]
+    fn sticky_route_sets_a_session_cookie() {
+        let target = full(ProxyRouteConfig {
+            targets: simple(&["http://a:4000", "http://b:4000"]),
+            sticky: Some(crate::config::StickyConfig {
+                cookie: "srv".to_owned(),
+                secret: Some("s3cret".to_owned()),
+                strict: None,
+            }),
+            ..Default::default()
+        });
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let resolution = resolve_route_target(&target, "/api", &counters, &UpstreamRegistry::new());
+        let (name, _value) = resolution
+            .state
+            .sticky_set_cookie
+            .expect("a sticky route must hand out its cookie");
+        assert_eq!(name, "srv");
+    }
+
+    #[test]
+    fn strip_prefix_without_match_path_strips_nothing() {
+        let target = full(ProxyRouteConfig {
+            targets: simple(&["http://a:4000"]),
+            strip_prefix: Some(true),
+            ..Default::default()
+        });
+        let headers = http::HeaderMap::new();
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let registry = UpstreamRegistry::new();
+        let ctx = ProxyCtx {
+            path: "/api/users",
+            client_ip: "203.0.113.1",
+            req_headers: &headers,
+            counters: &counters,
+            upstream_health: &registry,
+            site_label: "test:80",
+        };
+        let route = RouteConfig {
+            proxy: Some(target.clone()),
+            ..Default::default()
+        };
+        let ProxyOutcome::Upstream(pu) =
+            super::resolve_route_target(0, &route, &target, &ctx).outcome
+        else {
+            panic!("expected an upstream");
+        };
+        assert_eq!(pu.strip_prefix.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn strip_prefix_removes_the_literal_prefix_of_the_match_glob() {
+        // Before #412 the *whole request path* was stripped, so `/api/users` reached the upstream as `/`.
+        let target = full(ProxyRouteConfig {
+            targets: simple(&["http://a:4000"]),
+            strip_prefix: Some(true),
+            ..Default::default()
+        });
+        let headers = http::HeaderMap::new();
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let registry = UpstreamRegistry::new();
+        let ctx = ProxyCtx {
+            path: "/api/users",
+            client_ip: "203.0.113.1",
+            req_headers: &headers,
+            counters: &counters,
+            upstream_health: &registry,
+            site_label: "test:80",
+        };
+        let route = RouteConfig {
+            r#match: crate::config::MatchConfig {
+                path: Some("/api/**".to_owned()),
+                ..Default::default()
+            },
+            proxy: Some(target.clone()),
+            ..Default::default()
+        };
+        let ProxyOutcome::Upstream(pu) =
+            super::resolve_route_target(0, &route, &target, &ctx).outcome
+        else {
+            panic!("expected an upstream");
+        };
+        assert_eq!(pu.strip_prefix.as_deref(), Some("/api"));
+    }
+
+    #[test]
+    fn counters_are_scoped_to_the_site_and_the_entry() {
+        // Two sites (or two entries) must not share one round-robin position.
+        let target = full(ProxyRouteConfig {
+            targets: simple(&["http://a:4000", "http://b:4000"]),
+            ..Default::default()
+        });
+        let counters: DashMap<String, AtomicUsize> = DashMap::new();
+        let registry = UpstreamRegistry::new();
+        let headers = http::HeaderMap::new();
+        let route = RouteConfig::default();
+        for site in ["one:80", "two:80"] {
+            let ctx = ProxyCtx {
+                path: "/x",
+                client_ip: "203.0.113.1",
+                req_headers: &headers,
+                counters: &counters,
+                upstream_health: &registry,
+                site_label: site,
+            };
+            // First pick of each site starts at the first target, not wherever the other site left off.
+            assert_eq!(
+                upstream_addr(&super::resolve_route_target(0, &route, &target, &ctx)),
+                "a:4000",
+                "{site} must start its own rotation"
+            );
+        }
+        assert!(counters
+            .iter()
+            .any(|e| e.key().starts_with("one:80#routes[0]")));
+        let _ = Ordering::Relaxed;
+    }
+
+    #[test]
+    fn literal_prefix_cuts_the_glob_back_to_a_whole_segment() {
+        assert_eq!(literal_prefix("/api/**"), "/api/");
+        assert_eq!(literal_prefix("/api/us*"), "/api/");
+        assert_eq!(literal_prefix("/health"), "/health");
+        assert_eq!(literal_prefix("/**"), "/");
+        assert_eq!(literal_prefix("*"), "");
     }
 }
