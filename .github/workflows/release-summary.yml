@@ -40,5 +40,6 @@ jobs:
             echo "Release $TAG already has a summary; nothing to do."
             exit 0
           fi
-          printf '## Summary\n\n%b\n\n%s\n' "$SUMMARY" "$body" > notes.md
+          summary=${SUMMARY//\\n/$'\n'}
+          printf '## Summary\n\n%s\n\n%s\n' "$summary" "$body" > notes.md
           gh release edit "$TAG" --notes-file notes.md
