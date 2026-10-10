@@ -157,14 +157,16 @@ proxy:
   /api:
     targets: [https://api-1.internal:8443, https://api-2.internal:8443]
     backup: https://api-standby.internal:8443    # used while every target is unhealthy
-    upstreamTls: { verify: true, serverName: api.internal }   # verification is on by default; serverName adds an accepted name
+    upstreamTls: { verify: true }                # on by default; checks the certificate against the host in the target URL
     http2: true                                  # HTTP/2 to the upstream
     mirror: http://api-v2:4000                   # shadow copy of each request (headers only); the reply is dropped
     websocket: true                              # allow WebSocket upgrades on this route
 ```
 
 The mirror receives a copy of the request headers, `Authorization` and cookies included, so mirror
-only to a service you trust.
+only to a service you trust. Upstream certificates are always checked against the host in the target
+URL, so write the name the certificate carries; `upstreamTls.serverName` does not change that yet
+([#583](https://github.com/lopatnov/conduit/issues/583)).
 **→ Details:** [Backup targets](docs/configuration.md#proxy-route-field-reference) ·
 [Upstream TLS](docs/configuration.md#upstream-tls-verification) ·
 [Mirroring](docs/configuration.md#traffic-mirroring) ·

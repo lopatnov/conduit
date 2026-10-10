@@ -758,11 +758,10 @@ sites:
 
     proxy:
       /api:
-        targets: ["https://api-internal:8443"]
+        targets: ["https://api-internal.svc.cluster.local:8443"]
         stripPrefix: true
         upstreamTls:
-          verify: true
-          serverName: api-internal.svc.cluster.local
+          verify: true     # the default; checks the certificate against the host in the target URL
 
     healthCheck: true
     metrics:

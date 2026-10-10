@@ -3125,10 +3125,9 @@ Only enable this for upstreams that deliberately rely on duplicate chunked heade
 ```yaml
 proxy:
   /api:
-    targets: ["https://api-internal:8443"]
+    targets: ["https://api-internal.svc.cluster.local:8443"]
     upstreamTls:
       verify: true
-      serverName: api-internal.svc.cluster.local
 ```
 
 ```json
@@ -3136,10 +3135,9 @@ proxy:
 {
   "proxy": {
     "/api": {
-      "targets": ["https://api-internal:8443"],
+      "targets": ["https://api-internal.svc.cluster.local:8443"],
       "upstreamTls": {
-        "verify": true,
-        "serverName": "api-internal.svc.cluster.local"
+        "verify": true
       }
     }
   }
@@ -3148,8 +3146,12 @@ proxy:
 
 | Field        | Type   | Default  | Description                                  |
 | ------------ | ------ | -------- | -------------------------------------------- |
-| `verify`     | bool   | `true`   | Verify the upstream certificate against the system CA store; `false` turns the check off |
-| `serverName` | string | from URL | Extra name the upstream certificate is accepted for, besides the host in the URL |
+| `verify`     | bool   | `true`   | Verify the upstream certificate against the system CA store, using the host in the target URL; `false` turns the check off |
+| `serverName` | string | none     | Accepted by the parser but **has no effect** in current builds: the certificate is always checked against the host in the target URL, so write in the URL the name the certificate carries ([#583](https://github.com/lopatnov/conduit/issues/583)) |
+
+Do not set `verify: false` to work around a name mismatch: it also turns off the check that the
+certificate was issued by a trusted authority. Use the name from the certificate in the target URL
+instead.
 
 ---
 
