@@ -39,14 +39,12 @@ lopatnov-conduit-core = { workspace = true }
 # anymore; this is the only crate that calls into either.
 lopatnov-conduit-script-rhai = { workspace = true, optional = true }
 lopatnov-conduit-plugin-wasm = { workspace = true, optional = true }
-# WASM response-body-override header hack in response::apply_response_mutations
-# (issue #391, pre-existing, moved verbatim — not fixed as part of this
-# extraction). Only needed by the "wasm" feature.
-base64 = { workspace = true, optional = true }
 
 [dev-dependencies]
 http = { workspace = true }
+tempfile = { workspace = true }
+wat = { workspace = true }
 
 [features]
 rhai = ["dep:lopatnov-conduit-script-rhai"]
-wasm = ["dep:lopatnov-conduit-plugin-wasm", "dep:base64"]
+wasm = ["dep:lopatnov-conduit-plugin-wasm"]

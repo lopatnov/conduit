@@ -38,10 +38,7 @@
 //! - `rhai` → [`lopatnov-conduit-script-rhai`](../conduit_script_rhai/index.html)
 //!   (`run_script`/`run_script_response`)
 //! - `wasm` → [`lopatnov-conduit-plugin-wasm`](../conduit_plugin_wasm/index.html)
-//!   (`run_wasm`/`run_wasm_response`), plus `base64` for the WASM
-//!   response-body-override header hack in `response::apply_response_mutations`
-//!   (a real, separately-filed pre-existing bug — issue #391 — moved here
-//!   verbatim, not fixed as part of this extraction)
+//!   (`run_wasm`/`run_wasm_response`)
 //!
 //! The root crate's own `rhai`/`wasm` features simply forward into this
 //! crate's features (`lopatnov-conduit-middleware/rhai`,

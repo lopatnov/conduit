@@ -78,7 +78,7 @@ pub struct WasmRequest {
     pub client_ip: String,
     /// Lower-cased request headers.
     pub headers: HashMap<String, String>,
-    /// Header names in insertion order (for `conduit_get_header_names`).
+    /// Distinct lower-cased header names, in no guaranteed order (for `conduit_get_header_names`).
     pub header_names: Vec<String>,
     /// X-Request-ID value (may be empty when not set by XRequestIdGuard yet).
     pub request_id: String,
@@ -393,7 +393,8 @@ fn register_host_functions(linker: &mut Linker<WasmState>) -> anyhow::Result<()>
     )?;
 
     // conduit_get_header_names — all header names as newline-separated UTF-8.
-    // Order matches insertion order recorded in WasmRequest.header_names.
+    // The order is whatever WasmRequest.header_names holds: unspecified, one entry per distinct
+    // name (#380).
     // Returns total bytes written (may be truncated at buf_len).
     linker.func_wrap(
         "conduit",

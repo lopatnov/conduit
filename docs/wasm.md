@@ -115,9 +115,14 @@ truncated (no error). If the value does not exist (e.g. header not found),
 | `conduit_get_client_ip(buf: i32, buf_len: i32) -> i32`                            | Remote client IP address                                            |
 | `conduit_get_request_id(buf: i32, buf_len: i32) -> i32`                           | `X-Request-ID` header value                                         |
 | `conduit_get_header(name_ptr: i32, name_len: i32, buf: i32, buf_len: i32) -> i32` | Named header value; `-1` if absent. Look-up is **case-insensitive** |
-| `conduit_get_header_count() -> i32`                                               | Number of request headers                                           |
-| `conduit_get_header_names(buf: i32, buf_len: i32) -> i32`                         | All header names, newline-separated                                 |
+| `conduit_get_header_count() -> i32`                                               | Number of **distinct** request header names (see the note below)    |
+| `conduit_get_header_names(buf: i32, buf_len: i32) -> i32`                         | Distinct header names, newline-separated, in **no guaranteed order** |
 | `conduit_get_plugin_config(buf: i32, buf_len: i32) -> i32`                        | JSON bytes from `middleware[].config`; empty when not set           |
+
+> **Repeated headers (issue #380):** the plugin sees each request header name once. If a
+> client sends the same name twice (two `Cookie` lines, say), only one value reaches
+> `conduit_get_header`, and the name is counted and listed once. Header order is not
+> preserved.
 
 ### Host functions — mutate request
 
@@ -848,14 +853,20 @@ In `on_response`, seven host functions are available:
 | `conduit_get_response_header(name_ptr, name_len, buf, buf_len) -> i32` | Read upstream response header; `-1` if absent |
 | `conduit_set_response_header(name_ptr, name_len, val_ptr, val_len)`    | Add/overwrite header on client response       |
 | `conduit_remove_response_header(name_ptr, name_len)`                   | Remove header from client response            |
-| `conduit_set_response_body(body_ptr, body_len)`                        | Replace response body                         |
+| `conduit_set_response_body(body_ptr, body_len)`                        | **Not applied yet** (see the note below)      |
 | `conduit_get_plugin_config(buf, buf_len) -> i32`                       | Same as request phase                         |
 | `conduit_log(level, msg_ptr, msg_len)`                                 | Same as request phase                         |
 
 > Request-phase functions (`conduit_get_method`, `conduit_get_header`, etc.)
 > are **not** available in `on_response`.
 
-### Example in Rust — add header on error
+> **Known limitation (issue #379):** `conduit_set_response_body` is accepted in
+> `on_response` but the response body is **not** replaced yet — the upstream body
+> is sent unchanged, and Conduit logs one warning per process. Use `on_request`
+> with `conduit_set_response_status` + `conduit_set_response_body` to answer a
+> request yourself, or `maskErrors` to hide upstream 5xx bodies.
+
+### Example in Rust — add header on error (body replacement is not applied yet, see above)
 
 ```rust
 // src/lib.rs

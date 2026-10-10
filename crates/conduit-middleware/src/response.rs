@@ -87,19 +87,13 @@ impl ResponseFilter for MiddlewareResponseFilter {
                     };
                     let outcome = conduit_plugin_wasm::run_wasm_response(ctx, path);
                     apply_response_mutations(resp, outcome.added_headers, outcome.removed_headers);
-                    if let Some(body_bytes) = outcome.body {
-                        // Store the override body in the upstream_response_body
-                        // override slot — handled by upstream_response_body_filter.
-                        // We signal this via a custom header that the body filter reads.
-                        // (Using a header is simpler than extending RequestCtx here.)
-                        let _ = resp.insert_header(
-                            "x-conduit-wasm-body-override",
-                            format!("{}", body_bytes.len()),
-                        );
-                        // Store body bytes via header value (base64 for safety).
-                        use base64::Engine as _;
-                        let encoded = base64::engine::general_purpose::STANDARD.encode(&body_bytes);
-                        let _ = resp.insert_header("x-conduit-wasm-body-b64", encoded);
+                    if outcome.body.is_some() {
+                        // `conduit_set_response_body` in `on_response` is not wired to the
+                        // response body yet (#379): the upstream body still reaches the
+                        // client. Before this, the replacement leaked to the client as two
+                        // internal `x-conduit-wasm-body-*` headers (one carrying the whole
+                        // body, base64). Warn once per process instead.
+                        warn_response_body_unsupported(path);
                     }
                 }
 
@@ -108,6 +102,21 @@ impl ResponseFilter for MiddlewareResponseFilter {
         }
 
         Ok(ResponseFilterOutcome::Continue)
+    }
+}
+
+/// Warn, once per process, that a WASM plugin tried to replace the response body in
+/// `on_response` (not supported yet, #379).
+#[cfg(feature = "wasm")]
+fn warn_response_body_unsupported(path: &str) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            plugin = %path,
+            "WASM on_response called conduit_set_response_body, which is not supported yet: \
+             the upstream body is sent unchanged (issue #379)"
+        );
     }
 }
 
@@ -187,6 +196,50 @@ mod tests {
         // Must not panic even though the file doesn't exist (script skipped).
         let outcome = filter.apply(&mut resp, &ctx).unwrap();
         assert!(matches!(outcome, ResponseFilterOutcome::Continue));
+    }
+
+    /// #379: a plugin that calls `conduit_set_response_body` in `on_response` must not leak the
+    /// replacement to the client as internal `x-conduit-wasm-body-*` headers (the old behaviour,
+    /// one of them carrying the whole body in base64).
+    #[test]
+    #[cfg(feature = "wasm")]
+    fn wasm_response_body_override_does_not_leak_internal_headers() {
+        use std::io::Write as _;
+        let wasm = wat::parse_str(
+            r#"(module
+              (import "conduit" "conduit_set_response_body"
+                (func $set_body (param i32 i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "rewritten body")
+              (func (export "on_response") (param i32) (result i32)
+                (call $set_body (i32.const 0) (i32.const 14))
+                i32.const 0))"#,
+        )
+        .expect("WAT parse");
+        let mut file = tempfile::Builder::new()
+            .suffix(".wasm")
+            .tempfile()
+            .expect("tempfile");
+        file.write_all(&wasm).expect("write");
+        file.flush().expect("flush");
+
+        let filter = MiddlewareResponseFilter {
+            middleware: vec![MiddlewareEntry {
+                r#type: "wasm".to_owned(),
+                path: Some(file.path().to_string_lossy().into_owned()),
+                phase: None,
+                config: None,
+            }],
+        };
+        let mut resp = make_resp(500);
+        let outcome = filter.apply(&mut resp, &dummy_ctx()).unwrap();
+        assert!(matches!(outcome, ResponseFilterOutcome::Continue));
+        for (name, _) in resp.headers.iter() {
+            assert!(
+                !name.as_str().starts_with("x-conduit-"),
+                "internal header leaked to the client: {name}"
+            );
+        }
     }
 
     // ── may_block (issue #475) ────────────────────────────────────────────────
