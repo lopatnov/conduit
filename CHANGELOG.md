@@ -44,6 +44,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The Kubernetes provider rebuilds the config once per resync instead of on every `Init`/`InitApply`
   event (issue #408), which cut M+2 list-and-rebuild cycles to one at start-up and watch recovery.
 
+### Changed
+
+- **JWT verification now uses the `aws-lc-rs` crypto backend instead of the pure-Rust `rsa` stack.**
+  This removes the `rsa` crate (CVE-2023-49092, "Marvin", no upstream fix) from `Cargo.lock`; Conduit
+  only ever verified signatures with public keys, so it was not exploitable. HS256/384/512, RS/PS256/384/512,
+  ES256/384 and EdDSA keep working. **RSA keys must be 2048 to 8192 bits**: a JWKS or PEM that still
+  publishes a smaller RSA key is now rejected (fails closed) instead of verifying.
+
 ---
 
 ## [2.0.0] — 2026-10-03
