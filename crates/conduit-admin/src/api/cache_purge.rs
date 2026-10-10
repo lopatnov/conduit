@@ -42,6 +42,20 @@ pub(super) fn listener_ports(sites: &[SiteConfig]) -> Vec<u16> {
     ports
 }
 
+#[cfg(feature = "cache")]
+/// The port written in the authority of `raw`, if any (`http://h:80/x` -> `80`).
+fn written_port(raw: &str) -> Option<u16> {
+    let rest = raw.split_once("://")?.1;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let (host, port) = hostport.rsplit_once(':')?;
+    if host.ends_with(']') || !host.contains(']') {
+        port.parse().ok()
+    } else {
+        None
+    }
+}
+
 /// The cache keys that a purge of `raw` (a full `http://`/`https://` URL) has to target.
 ///
 /// The key's host is the URL's host **without its port** (`build_cache_key` drops it, exactly as it
@@ -71,8 +85,9 @@ pub(super) fn purge_cache_keys(
         .host_str()
         .ok_or_else(|| AdminError::BadRequest("url has no host".to_owned()))?;
 
-    // `Url::port()` is `None` for the scheme's default port, which is written or omitted alike.
-    let explicit = parsed.port();
+    // `Url::port()` drops a scheme-default port (`:80` on http, `:443` on https), so a port the
+    // operator wrote is read from the raw authority; one that is omitted fans out over all listeners.
+    let explicit = parsed.port().or_else(|| written_port(raw));
     let targets: Vec<u16> = match explicit {
         Some(p) => vec![p],
         None => ports.to_vec(),

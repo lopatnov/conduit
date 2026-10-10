@@ -68,6 +68,13 @@ static REDIS_STORES: OnceLock<DashMap<String, &RedisCacheStorage>> = OnceLock::n
 /// distinct URLs a process will ever connect bounds that growth; a reload past the cap needs a restart.
 const MAX_REDIS_STORES: usize = 16;
 
+static PENDING_STORES: OnceLock<dashmap::DashSet<String>> = OnceLock::new();
+
+/// URLs whose connection is in flight, so a concurrent caller neither duplicates nor overshoots it.
+fn pending_stores() -> &'static dashmap::DashSet<String> {
+    PENDING_STORES.get_or_init(dashmap::DashSet::new)
+}
+
 fn redis_stores() -> &'static DashMap<String, &'static RedisCacheStorage> {
     REDIS_STORES.get_or_init(DashMap::new)
 }
@@ -100,7 +107,19 @@ pub async fn connect_and_register(url: &str) -> bool {
     if redis_stores().contains_key(url) {
         return true;
     }
-    if redis_stores().len() >= MAX_REDIS_STORES {
+    // Reserve before connecting: `connect_all` runs these concurrently, so a bare "is there room?"
+    // check could pass for several new URLs at once and overshoot the cap, and two callers could open
+    // (and leak) two connections to one URL. A reservation is also counted against the cap.
+    if !pending_stores().insert(url.to_owned()) {
+        return false;
+    }
+    let result = register_reserved(url).await;
+    pending_stores().remove(url);
+    result
+}
+
+async fn register_reserved(url: &str) -> bool {
+    if redis_stores().len() + pending_stores().len() > MAX_REDIS_STORES {
         tracing::error!(
             url = %redact_url(url),
             limit = MAX_REDIS_STORES,
@@ -428,6 +447,18 @@ mod tests {
             !msg.contains("alice:s3cret@"),
             "connect() error must not leak raw userinfo: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn connect_and_register_skips_a_url_whose_connect_is_already_in_flight() {
+        let url = "redis://127.0.0.1:1/in-flight";
+        pending_stores().insert(url.to_owned());
+        assert!(!connect_and_register(url).await);
+        assert!(
+            pending_stores().contains(url),
+            "the other caller's reservation stays"
+        );
+        pending_stores().remove(url);
     }
 
     #[tokio::test]

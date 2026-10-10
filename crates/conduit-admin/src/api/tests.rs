@@ -98,6 +98,15 @@ fn purge_keys_of_a_url_are_the_keys_the_request_path_stores() {
         keys("http://EXAMPLE.com:8080/x", &[]),
         vec![stored("example.com", 8080, "/x", None)]
     );
+    // an explicit scheme-default port is still a choice of listener (`Url::port()` hides it)
+    assert_eq!(
+        keys("http://example.com:80/x", &[8080, 9090]),
+        vec![stored("example.com", 80, "/x", None)]
+    );
+    assert_eq!(
+        keys("http://user:pw@example.com:80/x?y=http://a:81", &[8080]),
+        vec![stored("example.com", 80, "/x", Some("y=http://a:81"))]
+    );
     // a bracketed IPv6 literal keeps its brackets and loses its port, like the request side
     assert_eq!(
         keys("http://[::1]:8080/x", &[]),

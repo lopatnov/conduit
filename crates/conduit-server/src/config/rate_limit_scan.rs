@@ -72,21 +72,35 @@ pub(crate) fn find_redis_rate_limit_store(config: &AppConfig) -> Option<String> 
         .map(str::to_owned)
 }
 
-/// A warning when `new` names a different Redis rate-limit store than `old`, or none where `old` had
-/// one. The connection is made once at startup (issue #358) and never re-scanned, so a hot reload
-/// that changes it leaves the old connection (or the in-memory fallback) in use; saying so beats
-/// silently ignoring the edit.
-pub(crate) fn redis_rate_limit_change_warning(old: &AppConfig, new: &AppConfig) -> Option<String> {
-    let (old_url, new_url) = (
-        find_redis_rate_limit_store(old),
-        find_redis_rate_limit_store(new),
-    );
-    if old_url == new_url {
+/// The Redis rate-limit store the connection was made for at startup (`None` = none configured).
+/// Set once by the bootstrap; later reloads are compared against it, not against the previous
+/// reload, so the warning repeats until the process restarts (issue #358).
+static STARTUP_REDIS_STORE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+#[cfg(feature = "redis")]
+pub(crate) fn record_startup_redis_store(config: &AppConfig) {
+    let _ = STARTUP_REDIS_STORE.set(find_redis_rate_limit_store(config));
+}
+
+/// A warning when `new` names a different Redis rate-limit store than the startup connection, or
+/// none where startup had one. The connection is made once at startup (issue #358) and never
+/// re-scanned, so a hot reload that changes it leaves the old connection (or the in-memory fallback)
+/// in use; saying so beats silently ignoring the edit.
+pub(crate) fn redis_rate_limit_change_warning(new: &AppConfig) -> Option<String> {
+    let startup = STARTUP_REDIS_STORE.get()?;
+    redis_store_change_warning(
+        startup.as_deref(),
+        find_redis_rate_limit_store(new).as_deref(),
+    )
+}
+
+fn redis_store_change_warning(startup: Option<&str>, new: Option<&str>) -> Option<String> {
+    if startup == new {
         return None;
     }
     Some(
         "rateLimit.store: the Redis rate-limit connection is made at startup only; this change \
-         takes effect after a restart (the previous connection, or the in-memory limiter, stays in use)"
+         takes effect after a restart (the startup connection, or the in-memory limiter, stays in use)"
             .to_owned(),
     )
 }
@@ -269,48 +283,28 @@ mod tests {
 mod redis_change_tests {
     use super::*;
 
-    fn cfg(store: Option<&str>) -> AppConfig {
-        AppConfig {
-            sites: vec![SiteConfig {
-                port: Some(8080),
-                rate_limit: store.map(|s| RateLimitConfig {
-                    window_secs: 60,
-                    limit: 10,
-                    burst: None,
-                    algorithm: None,
-                    key_by: None,
-                    skip_paths: None,
-                    store: Some(s.to_owned()),
-                    dry_run: None,
-                }),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }
-    }
-
     #[test]
     fn unchanged_store_is_silent() {
-        let c = cfg(Some("redis://a:6379"));
-        assert!(redis_rate_limit_change_warning(&c, &c).is_none());
-        assert!(redis_rate_limit_change_warning(&cfg(None), &cfg(None)).is_none());
+        assert!(
+            redis_store_change_warning(Some("redis://a:6379"), Some("redis://a:6379")).is_none()
+        );
+        assert!(redis_store_change_warning(None, None).is_none());
     }
 
     #[test]
     fn added_changed_or_removed_store_warns() {
-        let (none, a, b) = (
-            cfg(None),
-            cfg(Some("redis://a:6379")),
-            cfg(Some("redis://b:6379")),
-        );
-        assert!(
-            redis_rate_limit_change_warning(&none, &a).is_some(),
-            "added"
-        );
-        assert!(redis_rate_limit_change_warning(&a, &b).is_some(), "changed");
-        assert!(
-            redis_rate_limit_change_warning(&a, &none).is_some(),
-            "removed"
-        );
+        let (a, b) = (Some("redis://a:6379"), Some("redis://b:6379"));
+        assert!(redis_store_change_warning(None, a).is_some(), "added");
+        assert!(redis_store_change_warning(a, b).is_some(), "changed");
+        assert!(redis_store_change_warning(a, None).is_some(), "removed");
+    }
+
+    /// The warning compares with the startup store, so it keeps firing on the reload after a change.
+    #[test]
+    fn a_second_reload_with_the_same_changed_store_still_warns() {
+        let startup = Some("redis://a:6379");
+        let changed = Some("redis://b:6379");
+        assert!(redis_store_change_warning(startup, changed).is_some());
+        assert!(redis_store_change_warning(startup, changed).is_some());
     }
 }

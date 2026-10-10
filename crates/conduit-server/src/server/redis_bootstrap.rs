@@ -15,6 +15,7 @@ use crate::config::rate_limit_scan::find_redis_rate_limit_store;
 pub(super) fn connect_redis_rate_limiter_if_configured(
     config: &AppConfig,
 ) -> anyhow::Result<Option<Arc<RedisRateLimiter>>> {
+    crate::config::rate_limit_scan::record_startup_redis_store(config);
     let url_opt = find_redis_rate_limit_store(config);
     let Some(ref url) = url_opt else {
         return Ok(None);

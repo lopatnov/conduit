@@ -259,12 +259,7 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
     }
     // Collect config warnings once — used for both logging and the response body.
     let mut fw: Vec<String> = validate::feature_warnings(&new_config);
-    fw.extend(
-        crate::config::rate_limit_scan::redis_rate_limit_change_warning(
-            &state.config.load(),
-            &new_config,
-        ),
-    );
+    fw.extend(crate::config::rate_limit_scan::redis_rate_limit_change_warning(&new_config));
     for w in &fw {
         tracing::warn!("{w}");
     }

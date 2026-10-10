@@ -423,8 +423,34 @@ async fn find_index(dir: &Path, options: &StaticOptions) -> Option<PathBuf> {
 
 // ── Response helpers ───────────────────────────────────────────────────────
 
+/// Union of two `Vary` values, case-insensitive, keeping the first spelling of each token.
+fn merge_vary(existing: &str, extra: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for token in existing.split(',').chain(extra.split(',')) {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        if token == "*" {
+            return "*".to_owned();
+        }
+        if !out.iter().any(|t| t.eq_ignore_ascii_case(token)) {
+            out.push(token);
+        }
+    }
+    out.join(", ")
+}
+
 fn insert_extra(resp: &mut ResponseHeader, extra: &[(String, String)]) -> Result<()> {
     for (name, value) in extra {
+        // A configured `Vary` must not drop the `Vary: Accept-Encoding` the validators set: merge.
+        if name.eq_ignore_ascii_case("vary") {
+            if let Some(existing) = resp.headers.get("vary").and_then(|v| v.to_str().ok()) {
+                let merged = merge_vary(existing, value);
+                resp.insert_header("vary", merged)?;
+                continue;
+            }
+        }
         resp.insert_header(name.clone(), value.clone())?;
     }
     Ok(())
@@ -1398,6 +1424,23 @@ mod tests_extra {
     }
 
     #[test]
+    fn insert_extra_vary_merges_with_accept_encoding() {
+        let mut resp = ResponseHeader::build(200, None).unwrap();
+        resp.insert_header("vary", "accept-encoding").unwrap();
+        let extra = vec![("Vary".to_owned(), "Origin, Accept-Encoding".to_owned())];
+        insert_extra(&mut resp, &extra).unwrap();
+        assert_eq!(
+            resp.headers.get("vary").unwrap().to_str().unwrap(),
+            "accept-encoding, Origin"
+        );
+    }
+
+    #[test]
+    fn merge_vary_star_wins() {
+        assert_eq!(merge_vary("accept-encoding", "*"), "*");
+    }
+
+    #[test]
     fn insert_extra_empty_is_noop() {
         let mut resp = ResponseHeader::build(200, None).unwrap();
         insert_extra(&mut resp, &[]).unwrap();
@@ -1436,6 +1479,20 @@ mod tests_is_not_modified {
     fn if_none_match_exact_returns_true() {
         let hdrs = headers_with("if-none-match", ETAG);
         assert!(is_not_modified(&hdrs, Some(ETAG), true, MTIME));
+    }
+
+    #[test]
+    fn if_none_match_without_etag_ignores_if_modified_since() {
+        // RFC 9110 §13.1.3: with the ETag off, a present If-None-Match still suppresses the date check.
+        let mut hdrs = headers_with("if-none-match", "*");
+        let ims = httpdate::fmt_http_date(std::time::SystemTime::now() + Duration::from_secs(3600));
+        hdrs.insert("if-modified-since", ims.parse().unwrap());
+        assert!(!is_not_modified(
+            &hdrs,
+            None,
+            true,
+            std::time::SystemTime::now()
+        ));
     }
 
     #[test]
@@ -1490,10 +1547,13 @@ fn is_not_modified(
     use_last_modified: bool,
     mtime: std::time::SystemTime,
 ) -> bool {
-    if let (Some(etag), Some(inm)) = (
-        etag,
-        hdrs.get("if-none-match").and_then(|v| v.to_str().ok()),
-    ) {
+    if let Some(inm) = hdrs.get("if-none-match") {
+        // RFC 9110 §13.1.3: `If-Modified-Since` is ignored whenever `If-None-Match` is present, so
+        // with the ETag switched off the request is served in full instead of falling through to
+        // the date condition.
+        let (Some(etag), Ok(inm)) = (etag, inm.to_str()) else {
+            return false;
+        };
         // A wildcard matches any ETag; otherwise check each comma-separated value.
         // Per RFC 9110 the list may look like: `"abc123", "def456"`.
         return inm == "*" || inm.split(',').any(|token| token.trim() == etag);
