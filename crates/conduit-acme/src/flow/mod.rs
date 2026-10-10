@@ -27,7 +27,7 @@ pub use http01::ChallengeSource;
 pub use renewal::{renew_if_due, run_renewal_loop, RenewalJob};
 
 use http01::ChallengeServer;
-use storage::{cached_pair_matches, write_secret_atomic, PendingPair};
+use storage::{cached_pair_matches, pair_paths, write_secret_atomic, PendingPair};
 
 /// How many days before certificate expiry to trigger automatic renewal.
 const RENEWAL_THRESHOLD_DAYS: i64 = 30;
@@ -120,8 +120,10 @@ pub async fn load_or_obtain_certificate(
     // plain HTTP on its TLS port: keep serving the cached one.
     match result {
         Err(e) => {
-            let cert_path = storage_dir.join(format!("{domain}.crt.pem"));
-            let key_path = storage_dir.join(format!("{domain}.key.pem"));
+            // An unusable domain name failed above; there is no cached pair to fall back to.
+            let Ok((cert_path, key_path)) = pair_paths(storage_dir, domain) else {
+                return Err(e);
+            };
             let cert = tokio::fs::read_to_string(&cert_path).await.ok();
             let key = tokio::fs::read_to_string(&key_path).await.ok();
             if cached_pair_is_valid_now(cert.as_deref(), key.as_deref()) {
@@ -160,12 +162,13 @@ async fn load_or_obtain_with(
     storage_dir: &Path,
     challenge_source: ChallengeSource,
 ) -> anyhow::Result<AcmeCertPaths> {
+    // Check the name before touching the disk: an invalid host must not even create the directory.
+    let (cert_path, key_path) = pair_paths(storage_dir, domain)
+        .with_context(|| format!("invalid ACME domain for site host {domain:?}"))?;
+
     tokio::fs::create_dir_all(storage_dir)
         .await
         .with_context(|| format!("creating ACME storage directory {storage_dir:?}"))?;
-
-    let cert_path = storage_dir.join(format!("{domain}.crt.pem"));
-    let key_path = storage_dir.join(format!("{domain}.key.pem"));
 
     // Reuse the cached certificate when it is not about to expire *and* the
     // key on disk is the one it was issued for. A crash between the two
@@ -612,5 +615,52 @@ mod tests {
         .await
         .expect_err("storage dir is a file");
         assert!(err.to_string().contains("creating ACME storage directory"));
+    }
+
+    /// Issue #554: the site host names the files, so a host such as `../x` must not reach a
+    /// cached pair that sits outside the storage directory, nor create anything on disk.
+    #[tokio::test]
+    async fn a_host_that_is_not_a_plain_dns_name_is_refused_before_any_disk_or_ca_access() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let storage = dir.path().join("certs");
+        std::fs::create_dir(&storage).unwrap();
+        // A perfectly good pair that `certs/../x.*.pem` points at, one level above the storage dir.
+        let (cert, key) = self_signed_pair_with_not_after(
+            time::OffsetDateTime::now_utc() + time::Duration::days(365),
+        );
+        std::fs::write(dir.path().join("x.crt.pem"), cert).unwrap();
+        std::fs::write(dir.path().join("x.key.pem"), key).unwrap();
+
+        let err = load_or_obtain_certificate(
+            &unreachable_ca(),
+            "../x",
+            Arc::new(DashMap::new()),
+            &storage,
+            0,
+        )
+        .await
+        .expect_err("a path-like host must be refused, not served from the cache");
+        assert!(
+            format!("{err:#}").contains("invalid ACME domain"),
+            "got: {err:#}"
+        );
+        assert_eq!(std::fs::read_dir(&storage).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_host_does_not_even_create_the_storage_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let storage = dir.path().join("not-yet");
+        let err = load_or_obtain_certificate(
+            &unreachable_ca(),
+            "a/b",
+            Arc::new(DashMap::new()),
+            &storage,
+            0,
+        )
+        .await
+        .expect_err("invalid host");
+        assert!(format!("{err:#}").contains("invalid ACME domain"));
+        assert!(!storage.exists());
     }
 }

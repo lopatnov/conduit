@@ -159,6 +159,58 @@ fn tls_acme_only_valid() {
     assert!(errs(r#"{ "tls": { "acme": { "email": "a@b.com" } } }"#).is_empty());
 }
 
+// ── tls.acme: the site host names the certificate files (issue #554) ────────
+
+fn acme_site(host: &str) -> String {
+    let host = serde_json::to_string(host).unwrap();
+    format!(r#"{{ "host": {host}, "tls": {{ "acme": {{ "email": "a@b.com" }} }} }}"#)
+}
+
+#[test]
+fn tls_acme_host_that_could_leave_the_storage_dir_is_rejected() {
+    for host in [
+        "../x",
+        "../../etc/x",
+        "a/b",
+        "a\\b",
+        "..",
+        ".hidden.example.com",
+        "x\0y",
+        "/abs",
+        "*",
+    ] {
+        let e = errs(&acme_site(host));
+        assert_eq!(e.len(), 1, "{host:?}: {e:?}");
+        assert!(e[0].path.ends_with(".host"), "{host:?}: {:?}", e[0].path);
+        assert_eq!(e[0].severity, Severity::Error, "{host:?}");
+        assert!(
+            e[0].message
+                .contains("tls.acme needs a plain DNS host name"),
+            "{host:?}: {}",
+            e[0].message
+        );
+    }
+}
+
+#[test]
+fn tls_acme_plain_dns_hosts_are_accepted() {
+    for host in [
+        "example.com",
+        "a.example.com",
+        "xn--bcher-kva.example",
+        "*.example.com",
+    ] {
+        assert!(errs(&acme_site(host)).is_empty(), "{host:?}");
+    }
+}
+
+#[test]
+fn the_host_is_only_checked_for_sites_that_use_acme() {
+    // Without `tls.acme` the host names no file, so it keeps meaning whatever routing makes of it.
+    let e = errs(r#"{ "host": "../x", "tls": { "cert": "a.pem", "key": "a.key" } }"#);
+    assert!(e.iter().all(|x| !x.path.ends_with(".host")), "{e:?}");
+}
+
 #[test]
 fn tls_cert_and_key_valid() {
     assert!(errs(r#"{ "tls": { "cert": "a.pem", "key": "a.key" } }"#).is_empty());

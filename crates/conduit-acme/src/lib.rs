@@ -34,6 +34,7 @@
 #[cfg(feature = "acme")]
 pub mod challenge;
 pub mod config;
+pub mod domain;
 #[cfg(feature = "acme")]
 pub mod flow;
 pub mod warnings;
