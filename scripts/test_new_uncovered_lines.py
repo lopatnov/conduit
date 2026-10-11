@@ -82,12 +82,14 @@ def git(cwd, *args):
 
 
 def write(path, text):
+    """Write `text` to `path` with LF line endings, creating its directory."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
 
 
 def commit(root, files, message):
+    """Write the files (a `None` value deletes one) and commit them."""
     for name, text in files.items():
         if text is None:
             os.remove(os.path.join(root, name))
@@ -98,6 +100,7 @@ def commit(root, files, message):
 
 
 def write_lcov(root, records):
+    """Write `records` ({file: {line: count}}) as an lcov file in the repository root; returns its path."""
     lines = []
     for name, hits in records.items():
         lines += ["TN:", f"SF:{os.path.join(root, name)}", *(f"DA:{n},{c}" for n, c in hits.items()), "end_of_record"]
@@ -106,8 +109,16 @@ def write_lcov(root, records):
     return path
 
 
+def matches(patterns, path):
+    """True when one of the compiled exclusion patterns matches `path`."""
+    return any(rx.match(path) for rx in patterns)
+
+
 class Repository(unittest.TestCase):
+    """The script against a real repository: BASE, then CHANGE on top of it."""
+
     def setUp(self):
+        """Build the repository in a temporary directory and remember the base commit."""
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = os.path.realpath(tmp.name)
@@ -130,26 +141,30 @@ class Repository(unittest.TestCase):
 
     def test_added_lines_are_the_new_side_of_every_hunk(self):
         """A hunk without a count, a pure deletion (`+6,0`), a new file, a deleted file, a changed line that reads like
-        a `+++ b/...` header and a file without a final newline."""
+        a `+++ b/...` header, a file without a final newline and a non-ASCII name."""
         self.assertEqual(nul.added_lines(self.root, self.base), ADDED)
 
     def test_reports_the_uncovered_new_lines_and_the_percentage(self):
+        """Per file the uncovered lines, then the share of covered executable lines; no warning when all was measured."""
         out, err = self.report(write_lcov(self.root, LCOV), self.base)
         self.assertEqual(out, REPORT)
         self.assertEqual(err, "")
 
     def test_base_defaults_to_origin_main(self):
+        """Without a second argument the branch is compared with origin/main."""
         git(self.root, "update-ref", "refs/remotes/origin/main", self.base)
         out, _ = self.report(write_lcov(self.root, LCOV))
         self.assertEqual(out, REPORT)
 
     def test_the_users_diff_settings_do_not_change_what_is_parsed(self):
+        """Settings that change the diff's format (prefix, colour, external driver) must not change what is parsed."""
         for key, value in (("diff.noprefix", "true"), ("color.diff", "always"), ("color.ui", "always"),
                            ("diff.external", "false")):
             git(self.root, "config", key, value)
         self.assertEqual(nul.added_lines(self.root, self.base), ADDED)
 
     def test_an_inherited_git_environment_does_not_redirect_git(self):
+        """GIT_DIR and GIT_WORK_TREE from the caller (a hook, say) must not send git to another repository."""
         with tempfile.TemporaryDirectory() as decoy:
             git(decoy, "init", "-q")
             with mock.patch.dict(os.environ, {"GIT_DIR": os.path.join(decoy, ".git"), "GIT_WORK_TREE": decoy}):
@@ -166,11 +181,13 @@ class Repository(unittest.TestCase):
         self.assertEqual(nul.added_lines(self.root, self.base), expected)
 
     def test_nothing_added_warns_and_reports_no_executable_lines(self):
+        """An empty diff is reported as such, not as 100% coverage."""
         out, err = self.report(write_lcov(self.root, LCOV), "HEAD")
         self.assertEqual(out, "new code: no executable lines among the added lines\n")
         self.assertIn("no lines added between HEAD and the working tree", err)
 
     def test_added_rust_files_that_are_not_in_the_report_are_named(self):
+        """A new Rust file missing from the report (not compiled in that run) is named on stderr; other types are not."""
         commit(self.root, {"src/absent.rs": "z1\n", "src/absent.txt": "z\n"}, "more")
         out, err = self.report(write_lcov(self.root, LCOV), self.base)
         self.assertEqual(out, REPORT)
@@ -178,6 +195,7 @@ class Repository(unittest.TestCase):
         self.assertNotIn("absent.txt", err)  # only Rust files can be in the report
 
     def test_a_report_that_measures_none_of_the_added_lines_is_not_full_coverage(self):
+        """When no added file is in the report nothing was measured: say so instead of printing 100%."""
         out, err = self.report(write_lcov(self.root, {"src/untouched.rs": {1: 1}}), self.base)
         self.assertEqual(out, "new code: no executable lines among the added lines\n")
         for name in ("src/a.rs", "src/b.rs", "src/lookalike.rs", "src/nonl.rs"):
@@ -185,6 +203,7 @@ class Repository(unittest.TestCase):
         self.assertNotIn("excluded.rs", err)  # sonar.coverage.exclusions skips it anyway
 
     def test_an_unknown_base_stops_with_the_message_from_git(self):
+        """A mistyped base ref ends the run with git's own message."""
         with self.assertRaises(SystemExit) as caught:
             nul.added_lines(self.root, "no-such-ref")
         self.assertIn("no-such-ref", str(caught.exception))
@@ -194,16 +213,20 @@ class DiffText(unittest.TestCase):
     """Parser cases that real diffs cannot be made to produce on demand: a canned diff instead of git's."""
 
     def added(self, diff):
+        """The added lines of a canned diff."""
         return nul.parse_diff(diff)
 
     def test_a_name_with_a_space_ends_in_a_tab(self):
+        """git ends the name of a file that contains a space with a tab."""
         diff = "--- a/my file.rs\t\n+++ b/my file.rs\t\n@@ -1 +1,2 @@\n-a\n+b\n+c\n"
         self.assertEqual(self.added(diff), {"my file.rs": [1, 2]})
 
     def test_a_pure_deletion_adds_nothing(self):
+        """A hunk that only removes lines (`+2,0`) adds none."""
         self.assertEqual(self.added("--- a/x.rs\n+++ b/x.rs\n@@ -3 +2,0 @@\n-gone\n"), {})
 
     def test_a_no_newline_marker_is_not_a_hunk_line(self):
+        """`\\ No newline at end of file` sits inside a hunk but is not one of its lines; counting it ends the hunk early."""
         diff = ("--- a/x.rs\n+++ b/x.rs\n@@ -2 +2,2 @@\n-y\n\\ No newline at end of file\n+y\n+++ b/q.rs\n"
                 "@@ -9 +10 @@\n-i\n+j\n")
         self.assertEqual(self.added(diff), {"x.rs": [2, 3, 10]})
@@ -217,7 +240,10 @@ class DiffText(unittest.TestCase):
 
 
 class Files(unittest.TestCase):
+    """The readers of globs, sonar-project.properties and lcov files."""
+
     def test_globs_follow_sonars_ant_patterns(self):
+        """`**` crosses directories, `*` and `?` stay inside one path segment, the whole path has to match."""
         cases = [
             ("tests/**", "tests/a.rs", True),
             ("tests/**", "tests/x/y.rs", True),
@@ -239,23 +265,22 @@ class Files(unittest.TestCase):
                 self.assertEqual(bool(nul.glob_regex(glob).match(path)), expected)
 
     def test_exclusions_come_from_the_coverage_key_with_its_continuation_lines(self):
+        """Only `sonar.coverage.exclusions` counts, and its value continues over lines that end in a backslash."""
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "sonar-project.properties")
             write(path, PROPERTIES)
             patterns = nul.coverage_exclusions(path)
             missing = nul.coverage_exclusions(os.path.join(d, "absent.properties"))
-
-        def excluded(p):
-            return any(rx.match(p) for rx in patterns)
-
-        self.assertTrue(excluded("tests/x.rs"))
-        self.assertTrue(excluded("src/excluded.rs"))
-        self.assertTrue(excluded("crates/z/src/glue.rs"))
-        self.assertFalse(excluded("target/x.rs"))  # `sonar.exclusions` is another key
-        self.assertFalse(excluded("src/a.rs"))
+        self.assertTrue(matches(patterns, "tests/x.rs"))
+        self.assertTrue(matches(patterns, "src/excluded.rs"))
+        self.assertTrue(matches(patterns, "crates/z/src/glue.rs"))
+        self.assertFalse(matches(patterns, "target/x.rs"))  # `sonar.exclusions` is another key
+        self.assertFalse(matches(patterns, "src/a.rs"))
         self.assertEqual(missing, [])
 
     def test_lcov_records_resolve_against_the_repository_and_merge(self):
+        """`SF:` paths resolve against the repository root, a file repeated in the report merges, a third `DA:` field is
+        ignored."""
         with tempfile.TemporaryDirectory() as d:
             root = os.path.join(d, "repo")
             path = os.path.join(d, "x.lcov")

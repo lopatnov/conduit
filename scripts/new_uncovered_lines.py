@@ -114,6 +114,7 @@ def coverage_exclusions(properties):
 
 
 def main(argv=None):
+    """Print the uncovered new lines per file, then the share of covered executable lines."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("lcov", help="coverage report from cargo llvm-cov --lcov")
     ap.add_argument("base", nargs="?", default="origin/main", help="ref the branch is compared with")
