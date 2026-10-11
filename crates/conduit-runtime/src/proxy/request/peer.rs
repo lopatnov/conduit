@@ -622,7 +622,6 @@ mod upstream_tls_tests {
         conduit_upstream::config::UpstreamTlsConfig {
             verify,
             server_name: server_name.map(str::to_owned),
-            ..Default::default()
         }
     }
 
