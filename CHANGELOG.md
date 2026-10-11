@@ -7,16 +7,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Security
-
-- The HTTP-to-HTTPS redirect answers `421 Misdirected Request` for a `Host` that no site on that listener serves, instead of reflecting it into `Location` (#556, #588).
-- The static file handler opens files with `openat` + `O_NOFOLLOW` one component at a time, so a directory swapped for a symlink after the check can no longer be followed (Unix; #557).
-
-### Fixed
-
-- ACME certificate and key files are named from the lower-cased host, so `EXAMPLE.com` and `example.com` share one pair on every file system. On case-sensitive file systems a mixed-case host orders its certificate once more after the upgrade (#579).
-- A WASM `on_response` body replacement decides on the upstream `Content-Length` as received, so a `responseTransform` that removes the header no longer makes the guard miss an empty body (#561).
-
 ---
 
 ## [2.1.0] — 2026-10-11
@@ -62,7 +52,9 @@ maintainer release guide is `docs/releasing.md`.
   characters used to fail later with an error log and fall back to plain HTTP; with `tls.acme`
   set it is now a validation error. A private CA (`acme.directory`) with such internal names needs
   a plain DNS name for the site. The directory itself (`tls.acme.storage`) is not constrained yet
-  (issue #580), and Windows device names such as `con.example.com` are tracked in #579.
+  (issue #580); Windows device names such as `con.example.com` are refused too (issue #579).
+- The HTTP-to-HTTPS redirect answers `421 Misdirected Request` for a `Host` that no site on that listener serves, instead of reflecting it into `Location` (#556, #588).
+- The static file handler opens files with `openat` + `O_NOFOLLOW` one component at a time, so a directory swapped for a symlink after the check can no longer be followed (Unix; #557).
 
 ### Added
 
@@ -175,6 +167,8 @@ maintainer release guide is `docs/releasing.md`.
   TLS. A `websocket: true` route no longer answers 502 to upgrades after it fails over.
 - The Kubernetes provider rebuilds the config once per resync instead of on every `Init`/`InitApply`
   event (issue #408), which cut M+2 list-and-rebuild cycles to one at start-up and watch recovery.
+- ACME certificate and key files are named from the lower-cased host, so `EXAMPLE.com` and `example.com` share one pair on every file system. On case-sensitive file systems a mixed-case host orders its certificate once more after the upgrade (#579).
+- A WASM `on_response` body replacement decides on the upstream `Content-Length` as received, so a `responseTransform` that removes the header no longer makes the guard miss an empty body (#561).
 
 ### Documentation
 
