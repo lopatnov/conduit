@@ -351,7 +351,7 @@ within that window. Details: [`acme` in the CLI reference](cli.md#acme--auto-tls
 | `cert`             | path     | —       | PEM certificate file                                                                                                                          |
 | `key`              | path     | —       | PEM private key file                                                                                                                          |
 | `ca`               | path     | —       | CA bundle for upstream verification                                                                                                           |
-| `httpRedirectPort` | number   | —       | Port that redirects HTTP to HTTPS                                                                                                             |
+| `httpRedirectPort` | number   | —       | Port that redirects HTTP to HTTPS. Only `Host` values of sites using this port are redirected (a site without `host`, or with `"*"`, allows any valid host); other hosts get `421 Misdirected Request`, an invalid `Host` gets `400` |
 | `acme.email`       | string   | —       | Contact email for ACME account                                                                                                                |
 | `acme.storage`     | path     | —       | Directory for certificate persistence                                                                                                         |
 
