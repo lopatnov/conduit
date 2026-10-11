@@ -49,6 +49,24 @@ impl RedirectProxy {
         }
     }
 
+    /// Status and `Location` for a non-challenge request: 400 for a `Host` that is not a valid
+    /// name (it is reflected into `Location`, #556), 421 for a host no site serves (#588),
+    /// otherwise a 308 to the HTTPS port keeping path and query.
+    fn decide(&self, host_header: Option<&str>, path_and_query: &str) -> (u16, Option<String>) {
+        let Some(host) = host_header.and_then(redirect_host) else {
+            return (400, None);
+        };
+        if !self.host_allowed(&host) {
+            return (421, None);
+        }
+        let location = if self.https_port == 443 {
+            format!("https://{host}{path_and_query}")
+        } else {
+            format!("https://{host}:{}{path_and_query}", self.https_port)
+        };
+        (308, Some(location))
+    }
+
     fn host_allowed(&self, host: &str) -> bool {
         self.allowed_hosts
             .as_ref()
@@ -99,44 +117,22 @@ impl ProxyHttp for RedirectProxy {
             return Ok(true);
         }
 
-        // The redirect reflects the client's Host into `Location`, so accept only
-        // a syntactically valid host (#556); anything else is a 400.
-        let host = session
+        let host_header = session
             .req_header()
             .headers
             .get("host")
-            .and_then(|v| v.to_str().ok())
-            .and_then(redirect_host);
-        let Some(host) = host else {
-            let mut resp = ResponseHeader::build(400, Some(1))?;
-            resp.insert_header("Content-Length", "0")?;
-            session.write_response_header(Box::new(resp), true).await?;
-            return Ok(true);
-        };
-
-        if !self.host_allowed(&host) {
-            let mut resp = ResponseHeader::build(421, Some(1))?;
-            resp.insert_header("Content-Length", "0")?;
-            session.write_response_header(Box::new(resp), true).await?;
-            return Ok(true);
-        }
-
-        // Preserve path and query string.
+            .and_then(|v| v.to_str().ok());
         let path_and_query = session
             .req_header()
             .uri
             .path_and_query()
             .map(|pq| pq.as_str())
             .unwrap_or("/");
-
-        let location = if self.https_port == 443 {
-            format!("https://{host}{path_and_query}")
-        } else {
-            format!("https://{host}:{}{path_and_query}", self.https_port)
-        };
-
-        let mut resp = ResponseHeader::build(308, Some(2))?;
-        resp.insert_header("Location", location)?;
+        let (status, location) = self.decide(host_header, path_and_query);
+        let mut resp = ResponseHeader::build(status, Some(2))?;
+        if let Some(location) = location {
+            resp.insert_header("Location", location)?;
+        }
         resp.insert_header("Content-Length", "0")?;
         session.write_response_header(Box::new(resp), true).await?;
         Ok(true)
@@ -192,6 +188,23 @@ mod tests {
         assert!(p.host_allowed("EXAMPLE.com."));
         assert!(p.host_allowed("b.example.com"));
         assert!(!p.host_allowed("evil.example"));
+    }
+
+    #[test]
+    fn decide_answers_400_421_or_308() {
+        let p = proxy(&[Some("example.com")]);
+        assert_eq!(p.decide(None, "/"), (400, None));
+        assert_eq!(p.decide(Some("a b"), "/"), (400, None));
+        assert_eq!(p.decide(Some("evil.example"), "/x"), (421, None));
+        assert_eq!(
+            p.decide(Some("Example.com:8080"), "/x?y=1"),
+            (308, Some("https://Example.com/x?y=1".to_owned()))
+        );
+        let p8443 = RedirectProxy::new(8443, Arc::default(), [Some("example.com")]);
+        assert_eq!(
+            p8443.decide(Some("example.com"), "/"),
+            (308, Some("https://example.com:8443/".to_owned()))
+        );
     }
 
     #[test]
