@@ -274,7 +274,7 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
 /// [`crate::open_beneath`]), which closes the window between the `symlink_metadata` checks in
 /// `find_file` and the open (issue #557). On Windows it is a regular open, so a symlink or directory
 /// junction swapped in after the check could still be followed (see "Symlinks" in
-/// `docs/configuration.md`).
+/// `docs/configuration.md`; issue #600).
 async fn open_no_follow(root: &Path, path: &Path) -> std::io::Result<tokio::fs::File> {
     let rel = path
         .strip_prefix(root)

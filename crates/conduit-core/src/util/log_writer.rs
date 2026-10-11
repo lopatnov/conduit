@@ -7,9 +7,11 @@ use std::sync::Mutex;
 /// for the TOCTOU rationale (issue #280).
 ///
 /// On Unix, `O_NOFOLLOW` makes the open syscall fail atomically (`ELOOP`)
-/// when the final component is a symlink. On non-Unix platforms (no
-/// `O_NOFOLLOW` concept, and symlinks there require elevated privileges to
-/// create in the first place — lower risk), falls back to a plain open.
+/// when the final component is a symlink. Elsewhere there is no
+/// `O_NOFOLLOW`, so this is a plain open that follows a symlink planted at
+/// `path`. On Windows creating one takes the symlink privilege, or Developer
+/// Mode, which lifts that need: a lower risk, not none, so keep the log
+/// directory writable by trusted accounts only (issue #600).
 fn open_no_follow(path: &str) -> io::Result<File> {
     #[cfg(unix)]
     {
