@@ -93,9 +93,10 @@ query($cursor: String) {
 `gh api graphql` is refused in a cloud container even when `gh` is installed ("GitHub GraphQL
 is not available from Claude Code sessions", checked 2026-10-11), so the two GraphQL snippets
 above fail there. The REST reply above works unchanged. For threads the proxy offers CCR routes
-that take the numeric comment id, with no `PRRT_...` node id needed. They are also the way out
-when the MCP calls (`get_review_comments`, `resolve_review_thread`: GraphQL behind the scenes)
-are rate-limited (`rules/index.md`):
+that take the numeric comment id, with no `PRRT_...` node id needed. Both worked on PR #601
+(2026-10-11) in place of `get_review_comments` and `resolve_review_thread`. Whether they escape
+the rate limit those two calls have (`rules/index.md`: retry, then wait) is untested, so follow
+that rule first:
 
 ```bash
 # Threads of a PR: [{resolved, outdated, path, line, comment_ids}]
