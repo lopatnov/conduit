@@ -1051,7 +1051,7 @@ mod tests {
             .expect_err("a symlink must not be opened");
         assert_eq!(
             err.raw_os_error(),
-            Some(libc::ELOOP),
+            Some(rustix::io::Errno::LOOP.raw_os_error()),
             "expected ELOOP from O_NOFOLLOW, got: {err}"
         );
 

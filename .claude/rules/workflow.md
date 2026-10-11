@@ -70,6 +70,7 @@ the clippy matrix or CI do not.
   problems (next bullet).
 - **A performance problem becomes an issue at once** with the numbers and where they came from, what is unknown, suspects and a
   plan — even if the measurement must wait for a free machine. Never a chat remark.
+- **Findings get fixed, not explained away (owner, 2026-10-11).** A scanner, bot or review finding (Semgrep `unsafe`, Sonar gate, CodeRabbit, Gitar) is a defect in the PR until the code no longer triggers it: prefer the change that removes the cause (a safe wrapper instead of `unsafe`, tests instead of a waiver). A PR comment says what was changed and in which commit; it never argues that the finding is someone else's call. Only when a fix is truly impossible, one plain sentence says why and an issue is filed.
 - **Budget:** a second security-review round, or ~2 hours without a merge, means stop and ask the owner.
 - **Ask plainly:** short, self-contained, recommendation first, no internal labels (F1, S3 …).
 - **Build development tools freely** (scripts, checkers, generators; `scripts/verify-local.sh`, `pr-comments.sh`, `health.py`

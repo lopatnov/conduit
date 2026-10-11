@@ -3,7 +3,7 @@
 //! Checking a path with `symlink_metadata` and opening it afterwards leaves a window in which
 //! someone with write access inside the served directory can swap a directory for a symlink.
 //! Here the walk and the open are one step: the root is opened once, then every component is
-//! opened relative to the previous directory descriptor with `O_NOFOLLOW` (and `O_DIRECTORY` for
+//! opened relative to the previous directory descriptor (safe `rustix` wrappers, no `unsafe` here) with `O_NOFOLLOW` (and `O_DIRECTORY` for
 //! the intermediate ones), so the kernel refuses a symlink at any level, whatever happens to the
 //! path meanwhile. This is the same guarantee as Linux `openat2(RESOLVE_BENEATH |
 //! RESOLVE_NO_SYMLINKS)`, built from `openat` so it also holds on macOS and the BSDs.
@@ -18,21 +18,7 @@ use std::path::{Component, Path};
 /// The root itself may be a symlink (the operator chose it); nothing below it may be.
 #[cfg(unix)]
 pub fn open_beneath(root: &Path, rel: &Path) -> io::Result<std::fs::File> {
-    use std::ffi::CString;
-    use std::os::fd::{FromRawFd, OwnedFd};
-    use std::os::unix::ffi::OsStrExt;
-
-    fn cstr(p: &[u8]) -> io::Result<CString> {
-        CString::new(p).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
-    }
-    fn check(fd: libc::c_int) -> io::Result<OwnedFd> {
-        if fd < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            // SAFETY: `fd` is a freshly opened descriptor that nothing else owns.
-            Ok(unsafe { OwnedFd::from_raw_fd(fd) })
-        }
-    }
+    use rustix::fs::{openat, Mode, OFlags, CWD};
 
     let mut names = Vec::new();
     for c in rel.components() {
@@ -45,27 +31,17 @@ pub fn open_beneath(root: &Path, rel: &Path) -> io::Result<std::fs::File> {
         return Err(io::Error::from(io::ErrorKind::InvalidInput));
     };
 
-    let flags = libc::O_RDONLY | libc::O_CLOEXEC;
-    let root_c = cstr(root.as_os_str().as_bytes())?;
-    // SAFETY: `root_c` is a valid NUL-terminated string.
-    let mut cur = check(unsafe { libc::open(root_c.as_ptr(), flags | libc::O_DIRECTORY) })?;
+    let flags = OFlags::RDONLY | OFlags::CLOEXEC;
+    let mut cur = openat(CWD, root, flags | OFlags::DIRECTORY, Mode::empty())?;
     for name in dirs {
-        let c = cstr(name.as_bytes())?;
-        use std::os::fd::AsRawFd;
-        // SAFETY: `cur` is an open directory descriptor, `c` a valid C string.
-        let next = check(unsafe {
-            libc::openat(
-                cur.as_raw_fd(),
-                c.as_ptr(),
-                flags | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-            )
-        })?;
-        cur = next;
+        cur = openat(
+            &cur,
+            *name,
+            flags | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )?;
     }
-    let c = cstr(last.as_bytes())?;
-    use std::os::fd::AsRawFd;
-    // SAFETY: as above.
-    let fd = check(unsafe { libc::openat(cur.as_raw_fd(), c.as_ptr(), flags | libc::O_NOFOLLOW) })?;
+    let fd = openat(&cur, *last, flags | OFlags::NOFOLLOW, Mode::empty())?;
     Ok(std::fs::File::from(fd))
 }
 
@@ -110,7 +86,10 @@ mod tests {
         // directory symlink (ELOOP/ENOTDIR depending on the OS) and final-component symlink
         assert!(open_beneath(root.path(), Path::new("dir/secret")).is_err());
         let err = open_beneath(root.path(), Path::new("file")).unwrap_err();
-        assert_eq!(err.raw_os_error(), Some(libc::ELOOP));
+        assert_eq!(
+            err.raw_os_error(),
+            Some(rustix::io::Errno::LOOP.raw_os_error())
+        );
     }
 
     #[test]
