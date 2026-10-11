@@ -501,6 +501,19 @@ jobs:
       - name: Set executable bit on Unix binaries
         run: chmod +x npm/bin/native/conduit-*-linux-* npm/bin/native/conduit-*-darwin* 2>/dev/null || true
 
+      # download.js verifies its fallback download against these hashes (#571).
+      - name: Write npm/bin/checksums.json
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          d = pathlib.Path("npm/bin/native")
+          sums = {f.name: hashlib.sha256(f.read_bytes()).hexdigest()
+                  for f in sorted(d.iterdir()) if f.is_file()}
+          assert sums, "no binaries found to checksum"
+          pathlib.Path("npm/bin/checksums.json").write_text(json.dumps(sums, indent=2) + "\n")
+          print(json.dumps(sums, indent=2))
+          PY
+
       - name: Set package version
         working-directory: npm
         run: |
