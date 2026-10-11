@@ -61,6 +61,7 @@ See [docs/cli.md — Build features](cli.md#build-features) for binary sizes and
 - [HTTP/2](#http2)
 - [Compression](#compression)
 - [Response time header](#response-time-header)
+- [Server-Timing header](#server-timing-header)
 
 **Routing**
 
@@ -498,6 +499,34 @@ responseTime:
 // JSON
 { "responseTime": { "digits": 3 } }
 ```
+
+---
+
+## Server-Timing Header
+
+Add a [W3C `Server-Timing`](https://www.w3.org/TR/server-timing/) header to proxied responses so
+that browser DevTools (Network → Timing) can show where the time went.
+
+```yaml
+# YAML
+serverTiming: true
+```
+
+```json
+// JSON
+{ "serverTiming": true }
+```
+
+```text
+server-timing: total;dur=12.4, upstream;dur=11.8
+```
+
+- `total;dur=<ms>` is the time from receiving the request to getting the response headers back.
+- `upstream;dur=<ms>` is the time the upstream took to return its response headers.
+
+The header is added to responses that come back from an upstream. A response Conduit produces
+itself (a static file, a redirect, a rejection by a guard) does not carry it. The header is visible
+to every client, so leave it off if you do not want to expose timings.
 
 ---
 
@@ -2840,7 +2869,10 @@ See [`examples/observability.yaml`](../examples/observability.yaml)
 
 ## Hot Reload
 
-Watch the config file for changes and reload without restarting.
+Live reload for development: when a file in a served `static` directory changes, connected
+browsers are told to reload. `hotReload` watches the `static` directories (limited to
+`extensions` if you set them); it does **not** watch the config file. To apply a config change
+without a restart, run `conduit reload` (or `POST /reload`, see [admin.md](admin.md)).
 
 ```yaml
 # YAML
@@ -2860,7 +2892,7 @@ hotReload:
 { "hotReload": { "extensions": ["html", "css", "js"] } }
 ```
 
-**Hot-reloadable** (no restart): `proxy`, `static`, `routes`, `rateLimit`,
+**Config fields applied by `conduit reload`** (no restart): `proxy`, `static`, `routes`, `rateLimit`,
 `basicAuth`, `apiKey`, `jwtAuth`, `forwardAuth`, `consumers`, `middleware`,
 `logging`, `cors`, `securityHeaders`, `cache`, `outlierDetection`, `limits`,
 `requestTransform`, `responseTransform`, `maskErrors`.
@@ -3100,10 +3132,9 @@ Only enable this for upstreams that deliberately rely on duplicate chunked heade
 ```yaml
 proxy:
   /api:
-    targets: ["https://api-internal:8443"]
+    targets: ["https://api-internal.svc.cluster.local:8443"]
     upstreamTls:
       verify: true
-      serverName: api-internal.svc.cluster.local
 ```
 
 ```json
@@ -3111,10 +3142,9 @@ proxy:
 {
   "proxy": {
     "/api": {
-      "targets": ["https://api-internal:8443"],
+      "targets": ["https://api-internal.svc.cluster.local:8443"],
       "upstreamTls": {
-        "verify": true,
-        "serverName": "api-internal.svc.cluster.local"
+        "verify": true
       }
     }
   }
@@ -3123,8 +3153,12 @@ proxy:
 
 | Field        | Type   | Default  | Description                                  |
 | ------------ | ------ | -------- | -------------------------------------------- |
-| `verify`     | bool   | `false`  | Verify upstream cert against system CA store |
-| `serverName` | string | from URL | Override SNI hostname                        |
+| `verify`     | bool   | `true`   | Verify the upstream certificate against the system CA store, using the host in the target URL; `false` turns the check off |
+| `serverName` | string | none     | Accepted by the parser but **has no effect** in current builds: the certificate is always checked against the host in the target URL, so write in the URL the name the certificate carries ([#583](https://github.com/lopatnov/conduit/issues/583)) |
+
+Do not set `verify: false` to work around a name mismatch: it also turns off the check that the
+certificate was issued by a trusted authority. Use the name from the certificate in the target URL
+instead.
 
 ---
 
@@ -3353,7 +3387,7 @@ sites:
 
 | Field                 | Type   | Default         | Description                                                                          |
 | --------------------- | ------ | --------------- | ------------------------------------------------------------------------------------ |
-| `workers`             | number | CPU count       | Worker threads — cold restart to change                                              |
+| `workers`             | number | `1`             | Worker threads per service. Pingora's default is one thread, **not** one per CPU core; raise it to use more cores. Cold restart to change |
 | `backlog`             | number | —               | **Ignored.** Pingora fixes the listen backlog at 65535; validation warns              |
 | `shutdownTimeoutSecs` | number | `30`            | Shutdown grace period; SIGTERM waits all of it. Cold restart to change              |
 | `admin.bind`          | string | — (not started) | Admin API address. **Required to enable the Admin API.** Omit to disable it entirely |

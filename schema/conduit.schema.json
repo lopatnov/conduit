@@ -21,7 +21,7 @@
     "GlobalConfig": {
       "type": "object",
       "properties": {
-        "workers":             { "type": "integer", "minimum": 1 },
+        "workers":             { "type": "integer", "minimum": 1, "default": 1, "description": "Worker threads per service. Defaults to Pingora's single thread, not one per CPU core; raise it to use more cores. Needs a restart to change." },
         "backlog":             { "type": "integer", "minimum": 1, "deprecated": true, "description": "Ignored: Pingora fixes the listen backlog at 65535. Validation warns." },
         "shutdownTimeoutSecs": { "type": "integer", "minimum": 0, "default": 30, "description": "Grace period before shutdown completes. Pingora waits the whole period; it does not end early when connections drain." },
         "admin": {

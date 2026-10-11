@@ -36,7 +36,7 @@ function getPlatformBinary() {
     console.error(
       `[conduit] Unsupported platform: ${key}\n` +
       `Supported: ${Object.keys(map).join(", ")}\n` +
-      `Install from source: cargo install conduit-proxy`
+      `Install from source: cargo install lopatnov-conduit`
     );
     process.exit(1);
   }
@@ -55,7 +55,7 @@ if (!existsSync(binaryPath)) {
   console.error(
     `[conduit] Native binary not found: ${binaryPath}\n` +
     `Try reinstalling: npm install @lopatnov/conduit\n` +
-    `Or install from source: cargo install conduit-proxy`
+    `Or install from source: cargo install lopatnov-conduit`
   );
   process.exit(1);
 }

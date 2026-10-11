@@ -36,6 +36,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The npm package's "install from source" hint named the wrong crate.** Its error messages said
+  `cargo install conduit-proxy`; they now say `cargo install lopatnov-conduit`.
+- **Docs: wrong config snippets and defaults.** A top-level `http2: true` does not parse (the
+  setting is an object, `http2: {}` enables it) and appeared in the README, the npm README and
+  three recipes; two recipes set `tls.versions`, which `conduit validate` rejects; a missing
+  closing fence in `docs/cli.md` made every section after "fault-injection" render with code
+  and prose swapped; the config
+  reference said `global.workers` defaults to the CPU count when it defaults to one thread;
+  `hotReload` was documented as watching the config file when it only watches the served `static`
+  directories and reloads browsers (config changes need `conduit reload`); the
+  `conduit validate` example showed an error format the command does not print; the Linux release
+  archive was said to unpack to `./conduit` (it unpacks to a file named like the archive). The
+  README and the npm README were rewritten to match the code (the README has its table of contents
+  back, eleven SVG diagrams that work in light and dark themes, a configuration example for each
+  feature, Kubernetes `ConduitSite` mode included), the `serverTiming` option is now documented,
+  and the benchmark page now gives the exact setup the CI performance report uses; the
+  old per-feature throughput tables, the nginx/Traefik comparison and the build-size table were
+  removed: they were one-off measurements, some could not be reproduced (issues #475, #487).
 - **`global.shutdownTimeoutSecs` now takes effect** (issue #489). It is passed to Pingora's grace period (default 30 s;
   Pingora used to wait its own 300 s, so operators with long-lived streams (uploads, SSE, WebSocket) should raise it).
   On SIGTERM Pingora waits the whole period and does not end early when connections drain; `POST /shutdown` still exits at zero in-flight.

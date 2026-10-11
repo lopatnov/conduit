@@ -13,8 +13,8 @@ A bump touches, together: `[workspace.package].version` in the root `Cargo.toml`
 `lopatnov-conduit-*` `version = "…"` string in `[workspace.dependencies]`** (~32 literals; `cargo publish --workspace` resolves
 inter-crate deps through them and they do not follow the workspace version — `./scripts/check-workspace-versions.sh`, CI job
 `workspace-publish-dryrun`, fails on drift; run it before opening the PR), `Cargo.lock`
-(`cargo update -p lopatnov-conduit --offline`), `npm/package.json`, and the version strings in `docs/benchmarks.md`,
-`docs/cli.md`, `docs/deployment.md`. No per-crate versioning yet (#258). `release-engineer` drives it; confirm the target
+(`cargo update -p lopatnov-conduit --offline`), `npm/package.json`, and the version strings in `docs/cli.md` and
+`docs/deployment.md`. No per-crate versioning yet (#258). `release-engineer` drives it; confirm the target
 version with the owner, never guess patch/minor/major.
 
 ## Branches

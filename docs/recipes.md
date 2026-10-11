@@ -103,7 +103,7 @@ tls:
   key: /etc/tls/key.pem
   httpRedirectPort: 80     # redirect port 80 → 443 automatically
 
-http2: true
+http2: {}
 securityHeaders: true
 compression: true
 
@@ -172,8 +172,7 @@ tls:
   cert: /etc/tls/fullchain.pem
   key: /etc/tls/privkey.pem
   httpRedirectPort: 80      # redirect port 80 → 443 automatically
-  versions: ["TLSv1.2", "TLSv1.3"]
-http2: true
+http2: {}
 securityHeaders: true
 proxy:
   /: "http://localhost:4000"
@@ -204,7 +203,7 @@ tls:
     # Use staging for testing — no rate limits:
     # directory: "https://acme-staging-v02.api.letsencrypt.org/directory"
   httpRedirectPort: 80
-http2: true
+http2: {}
 securityHeaders: true
 proxy:
   /: "http://localhost:4000"
@@ -726,7 +725,8 @@ sites:
       cert: /etc/tls/server.crt
       key: /etc/tls/server.key
       httpRedirectPort: 80
-      versions: ["TLSv1.2", "TLSv1.3"]   # disable TLS 1.0/1.1
+      # TLS 1.2 and 1.3 are always enabled; tls.versions and tls.ciphers are
+      # rejected by validation (issue #189), so they are not set here.
 
     securityHeaders:
       hstsMaxAgeSecs: 63072000             # 2 years
@@ -758,11 +758,10 @@ sites:
 
     proxy:
       /api:
-        targets: ["https://api-internal:8443"]
+        targets: ["https://api-internal.svc.cluster.local:8443"]
         stripPrefix: true
         upstreamTls:
-          verify: true
-          serverName: api-internal.svc.cluster.local
+          verify: true     # the default; checks the certificate against the host in the target URL
 
     healthCheck: true
     metrics:

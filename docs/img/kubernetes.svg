@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 424" role="img" aria-labelledby="t d">
+  <title id="t">Conduit on Kubernetes</title>
+  <desc id="d">You apply a ConduitSite resource with kubectl. The Kubernetes API stores it next to the other ConduitSite resources. Conduit watches the namespace, builds one configuration from every resource, checks it and swaps it in without a restart; an invalid update is rejected and the running configuration stays. Requests are proxied to your Kubernetes services.</desc>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/></marker>
+    <marker id="ar-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--blue)"/></marker>
+    <marker id="ar-green" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--green)"/></marker>
+    <marker id="ar-orange" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--orange)"/></marker>
+    <marker id="ar-purple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--purple)"/></marker>
+    <marker id="ar-red" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--red)"/></marker>
+    <marker id="ar-gray" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--gray)"/></marker>
+    <style>
+svg { --bg:#f6f8fa; --card:#ffffff; --line:#d0d7de; --text:#1f2328; --muted:#59636e; --faint:#8c959f;
+  --blue:#0969da; --blue-s:#ddf4ff; --green:#1a7f37; --green-s:#dafbe1; --orange:#bc4c00; --orange-s:#fff1e5;
+  --purple:#8250df; --purple-s:#fbefff; --red:#cf222e; --red-s:#ffebe9; --gray:#59636e; --gray-s:#eaeef2; }
+@media (prefers-color-scheme: dark) {
+  svg { --bg:#0d1117; --card:#161b22; --line:#3d444d; --text:#f0f6fc; --muted:#9198a1; --faint:#6e7681;
+    --blue:#4493f8; --blue-s:#10233f; --green:#3fb950; --green-s:#102a1a; --orange:#e3893b; --orange-s:#33200d;
+    --purple:#ab7df8; --purple-s:#241b3d; --red:#f85149; --red-s:#3a1618; --gray:#9198a1; --gray-s:#21262d; }
+}
+text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--text); }
+.m { font-size: 12.5px; fill: var(--muted); }
+.s { font-size: 11.5px; fill: var(--muted); }
+.b { font-size: 14px; font-weight: 600; }
+.h { font-size: 15.5px; font-weight: 700; }
+.xl { font-size: 22px; font-weight: 700; }
+.k { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.ka { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; fill: var(--a); font-weight: 600; }
+.acc { fill: var(--a); }
+.cap { font-size: 11px; font-weight: 700; letter-spacing: .06em; fill: var(--a); }
+.panel { fill: var(--bg); stroke: var(--line); }
+.card { fill: var(--card); stroke: var(--line); }
+.cardA { fill: var(--card); stroke: var(--a); }
+.soft { fill: var(--s); stroke: var(--a); }
+.fillS { fill: var(--s); stroke: none; }
+.zone { fill: var(--s); stroke: var(--a); stroke-dasharray: none; opacity: 1; }
+.zoneD { fill: none; stroke: var(--faint); stroke-dasharray: 5 4; }
+.ln { fill: none; stroke: var(--muted); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.lnA { fill: none; stroke: var(--a); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.dash { stroke-dasharray: 5 4; }
+.ico { fill: none; stroke: var(--a); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.icoF { fill: var(--a); stroke: var(--a); stroke-width: 1.2; stroke-linejoin: round; }
+.num { fill: var(--a); }
+.numt { font-size: 12px; font-weight: 700; fill: #ffffff; text-anchor: middle; }
+.chip { fill: var(--s); stroke: var(--a); }
+.chipt { font-size: 11.5px; font-weight: 600; fill: var(--a); text-anchor: middle; }
+.blue { --a: var(--blue); --s: var(--blue-s); }
+.green { --a: var(--green); --s: var(--green-s); }
+.orange { --a: var(--orange); --s: var(--orange-s); }
+.purple { --a: var(--purple); --s: var(--purple-s); }
+.red { --a: var(--red); --s: var(--red-s); }
+.gray { --a: var(--gray); --s: var(--gray-s); }
+</style>
+  </defs>
+  <rect class="panel" x="0.5" y="0.5" width="959" height="423" rx="16"/>
+  <g class="blue"><rect class="cardA" x="20" y="24" width="272" height="206" rx="12"/></g>
+  <g class="blue" transform="translate(36 36) scale(0.917)"><g class="ico"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></g></g>
+  <text x="66" y="53" class="b">site.yaml</text>
+  <g class="blue"><text class="cap" x="276" y="53" text-anchor="end">ONE FILE PER SITE</text></g>
+  <text x="38" y="86" class="k" style="white-space:pre" xml:space="preserve">apiVersion: conduit.io/v1</text>
+  <text x="38" y="108" class="k" style="white-space:pre" xml:space="preserve">kind: ConduitSite</text>
+  <text x="38" y="130" class="k" style="white-space:pre" xml:space="preserve">metadata: { name: my-app }</text>
+  <text x="38" y="152" class="k" style="white-space:pre" xml:space="preserve">spec:</text>
+  <text x="38" y="174" class="k" style="white-space:pre" xml:space="preserve">  port: 8080</text>
+  <text x="38" y="196" class="k" style="white-space:pre" xml:space="preserve">  proxy: http://my-svc:4000</text>
+  <g class="gray"><rect class="soft" x="20" y="246" width="272" height="44" rx="10"/></g>
+  <g class="gray" transform="translate(34 257) scale(0.917)"><g class="ico"><rect x="3" y="4.500" width="18" height="15" rx="2.500"/><path d="M7.500 10l3 2.500-3 2.500M13 15h4"/></g></g>
+  <text x="66" y="273" class="k">kubectl apply -f site.yaml</text>
+  <g class="blue"><path class="lnA" d="M294 130 L334 130" marker-end="url(#ar-blue)"/></g>
+  <g class="gray"><rect class="zone" x="336" y="24" width="224" height="276" rx="14"/>
+  <text class="cap" x="352" y="46">KUBERNETES API</text>
+  </g>
+  <text x="352" y="70" class="s">ConduitSite resources</text>
+  <g class="blue">
+  <rect class="card" x="350" y="84" width="196" height="58" rx="9"/>
+  <rect class="acc" x="350" y="94" width="3.4" height="38" rx="1.7"/>
+  <g class="None" transform="translate(364 94) scale(0.833)"><g class="ico"><path d="M12 3L2.500 8 12 13 21.500 8z"/><path d="M2.500 12.500L12 17.500l9.500-5M2.500 16.500L12 21.500l9.500-5"/></g></g>
+  <text class="b" x="392" y="109">my-app</text>
+  <text class="m" x="364" y="129">app.example.com</text>
+  </g>
+  <g class="gray">
+  <rect class="card" x="350" y="154" width="196" height="58" rx="9"/>
+  <rect class="acc" x="350" y="164" width="3.4" height="38" rx="1.7"/>
+  <g class="None" transform="translate(364 164) scale(0.833)"><g class="ico"><path d="M12 3L2.500 8 12 13 21.500 8z"/><path d="M2.500 12.500L12 17.500l9.500-5M2.500 16.500L12 21.500l9.500-5"/></g></g>
+  <text class="b" x="392" y="179">my-api</text>
+  <text class="m" x="364" y="199">api.example.com</text>
+  </g>
+  <g class="gray">
+  <rect class="card" x="350" y="224" width="196" height="58" rx="9"/>
+  <rect class="acc" x="350" y="234" width="3.4" height="38" rx="1.7"/>
+  <g class="None" transform="translate(364 234) scale(0.833)"><g class="ico"><path d="M12 3L2.500 8 12 13 21.500 8z"/><path d="M2.500 12.500L12 17.500l9.500-5M2.500 16.500L12 21.500l9.500-5"/></g></g>
+  <text class="b" x="392" y="249">admin</text>
+  <text class="m" x="364" y="269">admin.example.com</text>
+  </g>
+  <g class="blue"><rect class="zone" x="604" y="24" width="336" height="276" rx="14"/>
+  <text class="cap" x="620" y="46">CONDUIT</text>
+  <text class="s" x="924" y="46" text-anchor="end">needs the kubernetes feature</text>
+  </g>
+  <g class="blue"><rect class="cardA" x="618" y="64" width="308" height="64" rx="10"/></g>
+  <g class="blue"><circle class="num" cx="640" cy="88" r="11"/><text class="numt" x="640" y="92.2">1</text></g>
+  <text x="662" y="93" class="b">Watches the namespace</text>
+  <text x="662" y="113" class="m">Added, Modified and Deleted events</text>
+  <g class="blue"><rect class="cardA" x="618" y="138" width="308" height="64" rx="10"/></g>
+  <g class="blue"><circle class="num" cx="640" cy="162" r="11"/><text class="numt" x="640" y="166.2">2</text></g>
+  <text x="662" y="167" class="b">Builds one configuration</text>
+  <text x="662" y="187" class="m">one virtual site per resource</text>
+  <g class="blue"><rect class="cardA" x="618" y="212" width="308" height="82" rx="10"/></g>
+  <g class="blue"><circle class="num" cx="640" cy="236" r="11"/><text class="numt" x="640" y="240.2">3</text></g>
+  <text x="662" y="241" class="b">Checks it, then swaps it in</text>
+  <text x="662" y="261" class="m">invalid updates are rejected;</text>
+  <text x="662" y="277" class="m">no restart, no dropped connections</text>
+  <g class="blue"><path class="lnA dash" d="M602 150 L562 150" marker-end="url(#ar-blue)"/></g>
+  <text x="582" y="142" class="s" text-anchor="middle">watch</text>
+  <g class="green"><path class="lnA" d="M772 302 L772 328" marker-end="url(#ar-green)"/></g>
+  <g class="green"><rect class="cardA" x="604" y="330" width="336" height="62" rx="10"/></g>
+  <g class="green" transform="translate(620 345) scale(1.083)"><g class="ico"><rect x="3" y="4" width="18" height="6.5" rx="1.8"/><rect x="3" y="13.5" width="18" height="6.5" rx="1.8"/><circle cx="7" cy="7.25" r=".9" class="icoF"/><circle cx="7" cy="16.75" r=".9" class="icoF"/></g></g>
+  <text x="658" y="353" class="b">Your services</text>
+  <text x="658" y="373" class="m">each site proxies to the Service it names</text>
+  <g class="purple"><rect class="soft" x="20" y="330" width="540" height="62" rx="10"/></g>
+  <g class="purple" transform="translate(36 347) scale(1.000)"><g class="ico"><path d="M20 11a8 8 0 0 0-14.500-4M4 13a8 8 0 0 0 14.500 4"/><path d="M5.500 3v4h4M18.500 21v-4h-4"/></g></g>
+  <text x="72" y="353" class="b">Change it the way you change anything else in the cluster</text>
+  <text x="72" y="373" class="m">kubectl patch or kubectl delete: Conduit follows within seconds.</text>
+</svg>

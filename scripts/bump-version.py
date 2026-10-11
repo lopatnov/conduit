@@ -9,7 +9,7 @@ Touches, together (see .claude/rules/conventions.md "Versioning"):
     in [workspace.dependencies] (cargo publish resolves inter-crate deps through those literals)
   * Cargo.lock (`cargo update --workspace --offline`, skipped with --no-lock)
   * npm/package.json
-  * docs/benchmarks.md, docs/cli.md, docs/deployment.md: the old full version, and the
+  * docs/cli.md, docs/deployment.md: the old full version, and the
     `:MAJOR.MINOR` Docker tag aliases in docs/deployment.md
 
 It does not touch CHANGELOG.md (move [Unreleased] by hand), commit, tag or push. It ends by running
@@ -26,7 +26,7 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 _NUM = r"(0|[1-9]\d*)"
 _PRE = r"(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"  # SemVer 2.0.0 item 9: no leading zeroes, no empty identifier
 SEMVER = re.compile(rf"^{_NUM}\.{_NUM}\.{_NUM}(-{_PRE}(?:\.{_PRE})*)?$")
-DOC_FILES = ["docs/benchmarks.md", "docs/cli.md", "docs/deployment.md"]
+DOC_FILES = ["docs/cli.md", "docs/deployment.md"]
 
 
 def parse(version):

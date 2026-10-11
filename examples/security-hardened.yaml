@@ -86,13 +86,13 @@ sites:
     proxy:
       /api:
         targets:
-          - "https://api-internal:8443"   # HTTPS upstream
+          - "https://api-internal.svc.cluster.local:8443"   # HTTPS upstream
         stripPrefix: true
-        # Verify the upstream TLS certificate against the system CA store.
+        # Verify the upstream TLS certificate against the system CA store. The
+        # certificate is checked against the host in the target URL above.
         # Set verify: false only for internal services with self-signed certs.
         upstreamTls:
           verify: true
-          serverName: api-internal.svc.cluster.local
 
       /admin:
         targets: ["http://admin-ui:3000"]

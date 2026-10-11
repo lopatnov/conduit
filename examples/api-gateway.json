@@ -90,12 +90,11 @@
           }
         },
         "/v1/payments": {
-          "targets": ["https://payment-svc:8443"],
+          "targets": ["https://payment-svc.internal:8443"],
           "strategy": "round-robin",
           "stripPrefix": true,
           "upstreamTls": {
-            "verify": true,
-            "serverName": "payment-svc.internal"
+            "verify": true
           },
           "rateLimit": {
             "windowSecs": 60,

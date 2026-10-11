@@ -1,0 +1,211 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" role="img" aria-labelledby="t d">
+  <title id="t">How a request flows through Conduit</title>
+  <desc id="d">A request passes through seven stages in a fixed order: accept, gate, protect, auth, shape, serve and respond. A guard that rejects the request answers it immediately with an error status (403, 400, 429, 503 or 401) and the stages after it do not run. After routing, the proxy checks the per-route rate limit and the circuit breaker, adds forwarded headers, applies header transforms and path rewrites, and forwards the request.</desc>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/></marker>
+    <marker id="ar-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--blue)"/></marker>
+    <marker id="ar-green" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--green)"/></marker>
+    <marker id="ar-orange" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--orange)"/></marker>
+    <marker id="ar-purple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--purple)"/></marker>
+    <marker id="ar-red" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--red)"/></marker>
+    <marker id="ar-gray" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--gray)"/></marker>
+    <style>
+svg { --bg:#f6f8fa; --card:#ffffff; --line:#d0d7de; --text:#1f2328; --muted:#59636e; --faint:#8c959f;
+  --blue:#0969da; --blue-s:#ddf4ff; --green:#1a7f37; --green-s:#dafbe1; --orange:#bc4c00; --orange-s:#fff1e5;
+  --purple:#8250df; --purple-s:#fbefff; --red:#cf222e; --red-s:#ffebe9; --gray:#59636e; --gray-s:#eaeef2; }
+@media (prefers-color-scheme: dark) {
+  svg { --bg:#0d1117; --card:#161b22; --line:#3d444d; --text:#f0f6fc; --muted:#9198a1; --faint:#6e7681;
+    --blue:#4493f8; --blue-s:#10233f; --green:#3fb950; --green-s:#102a1a; --orange:#e3893b; --orange-s:#33200d;
+    --purple:#ab7df8; --purple-s:#241b3d; --red:#f85149; --red-s:#3a1618; --gray:#9198a1; --gray-s:#21262d; }
+}
+text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--text); }
+.m { font-size: 12.5px; fill: var(--muted); }
+.s { font-size: 11.5px; fill: var(--muted); }
+.b { font-size: 14px; font-weight: 600; }
+.h { font-size: 15.5px; font-weight: 700; }
+.xl { font-size: 22px; font-weight: 700; }
+.k { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.ka { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; fill: var(--a); font-weight: 600; }
+.acc { fill: var(--a); }
+.cap { font-size: 11px; font-weight: 700; letter-spacing: .06em; fill: var(--a); }
+.panel { fill: var(--bg); stroke: var(--line); }
+.card { fill: var(--card); stroke: var(--line); }
+.cardA { fill: var(--card); stroke: var(--a); }
+.soft { fill: var(--s); stroke: var(--a); }
+.fillS { fill: var(--s); stroke: none; }
+.zone { fill: var(--s); stroke: var(--a); stroke-dasharray: none; opacity: 1; }
+.zoneD { fill: none; stroke: var(--faint); stroke-dasharray: 5 4; }
+.ln { fill: none; stroke: var(--muted); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.lnA { fill: none; stroke: var(--a); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.dash { stroke-dasharray: 5 4; }
+.ico { fill: none; stroke: var(--a); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.icoF { fill: var(--a); stroke: var(--a); stroke-width: 1.2; stroke-linejoin: round; }
+.num { fill: var(--a); }
+.numt { font-size: 12px; font-weight: 700; fill: #ffffff; text-anchor: middle; }
+.chip { fill: var(--s); stroke: var(--a); }
+.chipt { font-size: 11.5px; font-weight: 600; fill: var(--a); text-anchor: middle; }
+.blue { --a: var(--blue); --s: var(--blue-s); }
+.green { --a: var(--green); --s: var(--green-s); }
+.orange { --a: var(--orange); --s: var(--orange-s); }
+.purple { --a: var(--purple); --s: var(--purple-s); }
+.red { --a: var(--red); --s: var(--red-s); }
+.gray { --a: var(--gray); --s: var(--gray-s); }
+</style>
+  </defs>
+  <rect class="panel" x="0.5" y="0.5" width="959" height="559" rx="16"/>
+  <g class="gray"><path class="soft" d="M20.0 24 H142.0 L156.0 46.0 L142.0 68 H20.0 Z" stroke-linejoin="round"/></g>
+  <g class="gray"><circle class="num" cx="49.0" cy="46" r="11"/><text class="numt" x="49.0" y="50.2">1</text></g>
+  <text x="66.0" y="51" class="h">Accept</text>
+  <rect class="card" x="24.0" y="80" width="116" height="150" rx="9"/>
+  <g class="gray"><circle class="acc" cx="38.0" cy="103" r="2.7"/></g>
+  <text x="48.0" y="107" class="m">TLS handshake</text>
+  <g class="gray"><circle class="acc" cx="38.0" cy="127" r="2.7"/></g>
+  <text x="48.0" y="131" class="m">HTTP/1.1 and 2</text>
+  <g class="gray"><circle class="acc" cx="38.0" cy="151" r="2.7"/></g>
+  <text x="48.0" y="155" class="m">request ID</text>
+  <g class="blue"><path class="soft" d="M152.0 24 H274.0 L288.0 46.0 L274.0 68 H152.0 L166.0 46.0 Z" stroke-linejoin="round"/></g>
+  <g class="blue"><circle class="num" cx="177.0" cy="46" r="11"/><text class="numt" x="177.0" y="50.2">2</text></g>
+  <text x="194.0" y="51" class="h">Gate</text>
+  <rect class="card" x="156.0" y="80" width="116" height="150" rx="9"/>
+  <g class="blue"><circle class="acc" cx="170.0" cy="103" r="2.7"/></g>
+  <text x="180.0" y="107" class="m">IP allow / deny</text>
+  <g class="blue"><circle class="acc" cx="170.0" cy="127" r="2.7"/></g>
+  <text x="180.0" y="131" class="m">CORS preflight</text>
+  <g class="blue"><circle class="acc" cx="170.0" cy="151" r="2.7"/></g>
+  <text x="180.0" y="155" class="m">/__health__</text>
+  <g class="blue"><circle class="acc" cx="170.0" cy="175" r="2.7"/></g>
+  <text x="180.0" y="179" class="m">answered here</text>
+  <g class="blue"><path class="soft" d="M284.0 24 H406.0 L420.0 46.0 L406.0 68 H284.0 L298.0 46.0 Z" stroke-linejoin="round"/></g>
+  <g class="blue"><circle class="num" cx="309.0" cy="46" r="11"/><text class="numt" x="309.0" y="50.2">3</text></g>
+  <text x="326.0" y="51" class="h">Protect</text>
+  <rect class="card" x="288.0" y="80" width="116" height="150" rx="9"/>
+  <g class="blue"><circle class="acc" cx="302.0" cy="103" r="2.7"/></g>
+  <text x="312.0" y="107" class="m">allowed hosts</text>
+  <g class="blue"><circle class="acc" cx="302.0" cy="127" r="2.7"/></g>
+  <text x="312.0" y="131" class="m">request limits</text>
+  <g class="blue"><circle class="acc" cx="302.0" cy="151" r="2.7"/></g>
+  <text x="312.0" y="155" class="m">rate limit</text>
+  <g class="blue"><path class="soft" d="M416.0 24 H538.0 L552.0 46.0 L538.0 68 H416.0 L430.0 46.0 Z" stroke-linejoin="round"/></g>
+  <g class="blue"><circle class="num" cx="441.0" cy="46" r="11"/><text class="numt" x="441.0" y="50.2">4</text></g>
+  <text x="458.0" y="51" class="h">Auth</text>
+  <rect class="card" x="420.0" y="80" width="116" height="150" rx="9"/>
+  <g class="blue"><circle class="acc" cx="434.0" cy="103" r="2.7"/></g>
+  <text x="444.0" y="107" class="m">consumers</text>
+  <g class="blue"><circle class="acc" cx="434.0" cy="127" r="2.7"/></g>
+  <text x="444.0" y="131" class="m">Basic auth</text>
+  <g class="blue"><circle class="acc" cx="434.0" cy="151" r="2.7"/></g>
+  <text x="444.0" y="155" class="m">API key</text>
+  <g class="blue"><circle class="acc" cx="434.0" cy="175" r="2.7"/></g>
+  <text x="444.0" y="179" class="m">JWT</text>
+  <g class="blue"><circle class="acc" cx="434.0" cy="199" r="2.7"/></g>
+  <text x="444.0" y="203" class="m">forward auth</text>
+  <g class="purple"><path class="soft" d="M548.0 24 H670.0 L684.0 46.0 L670.0 68 H548.0 L562.0 46.0 Z" stroke-linejoin="round"/></g>
+  <g class="purple"><circle class="num" cx="573.0" cy="46" r="11"/><text class="numt" x="573.0" y="50.2">5</text></g>
+  <text x="590.0" y="51" class="h">Shape</text>
+  <rect class="card" x="552.0" y="80" width="116" height="150" rx="9"/>
+  <g class="purple"><circle class="acc" cx="566.0" cy="103" r="2.7"/></g>
+  <text x="576.0" y="107" class="m">redirects</text>
+  <g class="purple"><circle class="acc" cx="566.0" cy="127" r="2.7"/></g>
+  <text x="576.0" y="131" class="m">fault injection</text>
+  <g class="purple"><circle class="acc" cx="566.0" cy="151" r="2.7"/></g>
+  <text x="576.0" y="155" class="m">Rhai scripts</text>
+  <g class="purple"><circle class="acc" cx="566.0" cy="175" r="2.7"/></g>
+  <text x="576.0" y="179" class="m">WASM plugins</text>
+  <g class="green"><path class="soft" d="M680.0 24 H802.0 L816.0 46.0 L802.0 68 H680.0 L694.0 46.0 Z" stroke-linejoin="round"/></g>
+  <g class="green"><circle class="num" cx="705.0" cy="46" r="11"/><text class="numt" x="705.0" y="50.2">6</text></g>
+  <text x="722.0" y="51" class="h">Serve</text>
+  <rect class="card" x="684.0" y="80" width="116" height="150" rx="9"/>
+  <g class="green"><circle class="acc" cx="698.0" cy="103" r="2.7"/></g>
+  <text x="708.0" y="107" class="m">static files</text>
+  <g class="green"><circle class="acc" cx="698.0" cy="127" r="2.7"/></g>
+  <text x="708.0" y="131" class="m">reverse proxy</text>
+  <g class="green"><circle class="acc" cx="698.0" cy="151" r="2.7"/></g>
+  <text x="708.0" y="155" class="m">TCP / upload</text>
+  <g class="green"><circle class="acc" cx="698.0" cy="175" r="2.7"/></g>
+  <text x="708.0" y="179" class="m">fallback</text>
+  <g class="gray"><path class="soft" d="M812.0 24 H926.0 L940.0 46.0 L926.0 68 H812.0 L826.0 46.0 Z" stroke-linejoin="round"/></g>
+  <g class="gray"><circle class="num" cx="837.0" cy="46" r="11"/><text class="numt" x="837.0" y="50.2">7</text></g>
+  <text x="854.0" y="51" class="h">Respond</text>
+  <rect class="card" x="816.0" y="80" width="116" height="150" rx="9"/>
+  <g class="gray"><circle class="acc" cx="830.0" cy="103" r="2.7"/></g>
+  <text x="840.0" y="107" class="m">strip CR / LF</text>
+  <g class="gray"><circle class="acc" cx="830.0" cy="127" r="2.7"/></g>
+  <text x="840.0" y="131" class="m">header rules</text>
+  <g class="gray"><circle class="acc" cx="830.0" cy="151" r="2.7"/></g>
+  <text x="840.0" y="155" class="m">transforms</text>
+  <g class="gray"><circle class="acc" cx="830.0" cy="175" r="2.7"/></g>
+  <text x="840.0" y="179" class="m">compression</text>
+  <g class="gray"><circle class="acc" cx="830.0" cy="199" r="2.7"/></g>
+  <text x="840.0" y="203" class="m">log, metrics</text>
+  <g class="red"><path class="lnA dash" d="M214.0 232 L214.0 262" marker-end="url(#ar-red)"/></g>
+  <g class="red"><rect class="soft" x="156.0" y="264" width="116" height="59" rx="9"/>
+  <text class="b" x="214.0" y="287" text-anchor="middle" style="fill:var(--red)">403</text>
+  <text class="s" x="214.0" y="304" text-anchor="middle">IP not allowed</text>
+  </g>
+  <g class="red"><path class="lnA dash" d="M346.0 232 L346.0 262" marker-end="url(#ar-red)"/></g>
+  <g class="red"><rect class="soft" x="288.0" y="264" width="116" height="89" rx="9"/>
+  <text class="b" x="346.0" y="287" text-anchor="middle" style="fill:var(--red)">400 · 429 · 503</text>
+  <text class="s" x="346.0" y="304" text-anchor="middle">bad host,</text>
+  <text class="s" x="346.0" y="319" text-anchor="middle">over the limit,</text>
+  <text class="s" x="346.0" y="334" text-anchor="middle">server busy</text>
+  </g>
+  <g class="red"><path class="lnA dash" d="M478.0 232 L478.0 262" marker-end="url(#ar-red)"/></g>
+  <g class="red"><rect class="soft" x="420.0" y="264" width="116" height="74" rx="9"/>
+  <text class="b" x="478.0" y="287" text-anchor="middle" style="fill:var(--red)">401</text>
+  <text class="s" x="478.0" y="304" text-anchor="middle">credentials</text>
+  <text class="s" x="478.0" y="319" text-anchor="middle">missing or invalid</text>
+  </g>
+  <g class="red"><text class="cap" x="24" y="288">A GUARD THAT</text><text class="cap" x="24" y="303">SAYS NO ANSWERS</text><text class="cap" x="24" y="318">RIGHT THERE</text></g>
+  <g class="green"><rect class="zone" x="20" y="358" width="920" height="174" rx="14"/>
+  <text class="cap" x="36" y="380">AT THE PROXY, AFTER THE ROUTE IS PICKED</text>
+  </g>
+  <g class="green">
+  <rect class="card" x="36.0" y="398" width="168" height="118" rx="9"/>
+  <rect class="acc" x="36.0" y="408" width="3.4" height="98" rx="1.7"/>
+  <g class="None" transform="translate(50.0 408) scale(0.833)"><g class="ico"><circle cx="6" cy="6" r="2.500"/><circle cx="18" cy="18" r="2.500"/><path d="M8.500 6H15a3 3 0 0 1 0 6H9a3 3 0 0 0 0 6h6.500"/></g></g>
+  <text class="b" x="78.0" y="423">Route</text>
+  <text class="m" x="50.0" y="444">first matching route</text>
+  <text class="m" x="50.0" y="461">host · path · method</text>
+  <text class="m" x="50.0" y="478">header · cookie · query</text>
+  </g>
+  <g class="green"><path class="lnA" d="M206.0 457 L214.0 457" marker-end="url(#ar-green)"/></g>
+  <g class="green">
+  <rect class="card" x="216.0" y="398" width="168" height="118" rx="9"/>
+  <rect class="acc" x="216.0" y="408" width="3.4" height="98" rx="1.7"/>
+  <g class="None" transform="translate(230.0 408) scale(0.833)"><g class="ico"><path d="M4.500 17a8.500 8.500 0 1 1 15 0"/><path d="M12 13.500l4-4.500"/><circle cx="12" cy="14" r="1.2" class="icoF"/></g></g>
+  <text class="b" x="258.0" y="423">Checks</text>
+  <text class="m" x="230.0" y="444">per-route rate limit</text>
+  <text class="m" x="230.0" y="461">priority load shedding</text>
+  <text class="m" x="230.0" y="478">circuit breaker (503)</text>
+  </g>
+  <g class="green"><path class="lnA" d="M386.0 457 L394.0 457" marker-end="url(#ar-green)"/></g>
+  <g class="green">
+  <rect class="card" x="396.0" y="398" width="168" height="118" rx="9"/>
+  <rect class="acc" x="396.0" y="408" width="3.4" height="98" rx="1.7"/>
+  <g class="None" transform="translate(410.0 408) scale(0.833)"><g class="ico"><path d="M4 8h14l-3.500-3.500M20 16H6l3.500 3.500"/></g></g>
+  <text class="b" x="438.0" y="423">Upstream</text>
+  <text class="m" x="410.0" y="444">cache hit ends here</text>
+  <text class="m" x="410.0" y="461">balancer picks a target</text>
+  <text class="m" x="410.0" y="478">X-Forwarded-* added</text>
+  </g>
+  <g class="green"><path class="lnA" d="M566.0 457 L574.0 457" marker-end="url(#ar-green)"/></g>
+  <g class="green">
+  <rect class="card" x="576.0" y="398" width="168" height="118" rx="9"/>
+  <rect class="acc" x="576.0" y="408" width="3.4" height="98" rx="1.7"/>
+  <g class="None" transform="translate(590.0 408) scale(0.833)"><g class="ico"><path d="M8.500 7L3.500 12l5 5M15.500 7l5 5-5 5M13.500 5l-3 14"/></g></g>
+  <text class="b" x="618.0" y="423">Rewrite</text>
+  <text class="m" x="590.0" y="444">strip prefix / rewrite</text>
+  <text class="m" x="590.0" y="461">set / remove headers</text>
+  <text class="m" x="590.0" y="478">{{ jwt.sub }} templates</text>
+  </g>
+  <g class="green"><path class="lnA" d="M746.0 457 L754.0 457" marker-end="url(#ar-green)"/></g>
+  <g class="green">
+  <rect class="card" x="756.0" y="398" width="168" height="118" rx="9"/>
+  <rect class="acc" x="756.0" y="408" width="3.4" height="98" rx="1.7"/>
+  <g class="None" transform="translate(770.0 408) scale(0.833)"><g class="ico"><path d="M20 11a8 8 0 0 0-14.500-4M4 13a8 8 0 0 0 14.500 4"/><path d="M5.500 3v4h4M18.500 21v-4h-4"/></g></g>
+  <text class="b" x="798.0" y="423">Response</text>
+  <text class="m" x="770.0" y="444">retry on 5xx or error</text>
+  <text class="m" x="770.0" y="461">mask 5xx bodies</text>
+  <text class="m" x="770.0" y="478">store in the cache</text>
+  </g>
+</svg>

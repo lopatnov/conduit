@@ -56,11 +56,10 @@
 
       "proxy": {
         "/api": {
-          "targets": ["https://api-internal:8443"],
+          "targets": ["https://api-internal.svc.cluster.local:8443"],
           "stripPrefix": true,
           "upstreamTls": {
-            "verify": true,
-            "serverName": "api-internal.svc.cluster.local"
+            "verify": true
           }
         },
         "/admin": {
