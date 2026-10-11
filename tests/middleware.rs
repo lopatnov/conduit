@@ -672,7 +672,12 @@ fn wasm_on_response_replacement_drops_stale_headers_and_uses_the_upstream_length
 
     let resp = reqwest::blocking::get(srv.url("/validators")).unwrap();
     assert_eq!(resp.status(), 200);
-    for gone in ["etag", "content-md5", "content-encoding", "transfer-encoding"] {
+    for gone in [
+        "etag",
+        "content-md5",
+        "content-encoding",
+        "transfer-encoding",
+    ] {
         assert!(resp.headers().get(gone).is_none(), "{gone} must be dropped");
     }
     assert_eq!(
