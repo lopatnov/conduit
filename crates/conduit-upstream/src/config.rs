@@ -72,7 +72,7 @@ pub struct UpstreamTlsConfig {
     /// man-in-the-middle attacks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verify: Option<bool>,
-    /// Override the hostname used for certificate verification.
+    /// Override the TLS server name: sent as SNI and used to verify the upstream certificate (like nginx `proxy_ssl_name`).
     ///
     /// When absent, the SNI hostname (derived from the target URL) is used.
     /// Useful when the upstream presents a certificate for a different hostname

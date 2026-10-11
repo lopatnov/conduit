@@ -447,7 +447,7 @@
           "type": "object",
           "properties": {
             "verify":     { "type": "boolean", "description": "Verify upstream TLS certificate (default true)." },
-            "serverName": { "type": "string", "description": "Override SNI hostname for cert verification." }
+            "serverName": { "type": "string", "description": "TLS server name: sent as SNI and used to verify the upstream certificate." }
           }
         },
         "rateLimit": {

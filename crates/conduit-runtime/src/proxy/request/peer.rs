@@ -128,13 +128,7 @@ pub(crate) async fn upstream_peer(
     } = req_ctx.upstream
     {
         if let Some(tls_cfg) = upstream_tls {
-            if let Some(verify) = tls_cfg.verify {
-                peer.options.verify_cert = verify;
-                peer.options.verify_hostname = verify;
-            }
-            if let Some(ref server_name) = tls_cfg.server_name {
-                peer.options.alternative_cn = Some(server_name.clone());
-            }
+            apply_upstream_tls(&mut peer, tls_cfg);
         }
         // Always set the SNI for TLS connections (already done by HttpPeer::new
         // but explicit here for clarity).
@@ -599,5 +593,48 @@ mod tests {
         assert_eq!(addr, "a:4000");
         // Attempt should be incremented.
         assert_eq!(ctx.proxy.retry.unwrap().attempt, 1);
+    }
+}
+
+/// Apply `upstreamTls` to a peer. `serverName` becomes the peer's SNI, which the
+/// rustls connector sends *and* verifies the certificate against (nginx's
+/// `proxy_ssl_name`); `alternative_cn` is only read by the OpenSSL backends (#583).
+fn apply_upstream_tls(peer: &mut HttpPeer, tls_cfg: &conduit_upstream::config::UpstreamTlsConfig) {
+    if let Some(verify) = tls_cfg.verify {
+        peer.options.verify_cert = verify;
+        peer.options.verify_hostname = verify;
+    }
+    if let Some(ref server_name) = tls_cfg.server_name {
+        peer.sni.clone_from(server_name);
+        peer.options.alternative_cn = Some(server_name.clone());
+    }
+}
+
+#[cfg(test)]
+mod upstream_tls_tests {
+    use super::*;
+
+    fn cfg(server_name: Option<&str>, verify: Option<bool>) -> conduit_upstream::config::UpstreamTlsConfig {
+        conduit_upstream::config::UpstreamTlsConfig {
+            verify,
+            server_name: server_name.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn server_name_becomes_the_sni() {
+        let mut peer = HttpPeer::new("127.0.0.1:443", true, "10.0.0.5".to_owned());
+        apply_upstream_tls(&mut peer, &cfg(Some("api.internal"), None));
+        assert_eq!(peer.sni, "api.internal");
+        assert!(peer.options.verify_cert, "verification stays on");
+    }
+
+    #[test]
+    fn without_server_name_the_sni_is_unchanged() {
+        let mut peer = HttpPeer::new("127.0.0.1:443", true, "10.0.0.5".to_owned());
+        apply_upstream_tls(&mut peer, &cfg(None, Some(false)));
+        assert_eq!(peer.sni, "10.0.0.5");
+        assert!(!peer.options.verify_cert);
     }
 }
