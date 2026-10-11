@@ -13,7 +13,7 @@ use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
 /// The certificate and private-key file for `domain` inside `storage_dir`:
-/// `<domain>.crt.pem` and `<domain>.key.pem` (issue #554).
+/// `<domain>.crt.pem` and `<domain>.key.pem`, with the domain lower-cased (issues #554, #579).
 ///
 /// Every place that reads or writes these files gets the names from here. `domain` is the site's
 /// `host`, which a config author (a Kubernetes tenant, in CRD mode) controls, so it is checked
@@ -28,8 +28,11 @@ pub(super) fn pair_paths(storage_dir: &Path, domain: &str) -> io::Result<(PathBu
             format!("refusing to use the ACME domain as a file name: {why}"),
         )
     })?;
-    let cert = storage_dir.join(format!("{domain}.crt.pem"));
-    let key = storage_dir.join(format!("{domain}.key.pem"));
+    // DNS names are case-insensitive and macOS/Windows file systems are too, so `EXAMPLE.com`
+    // and `example.com` must be one file pair everywhere (#579).
+    let name = domain.to_ascii_lowercase();
+    let cert = storage_dir.join(format!("{name}.crt.pem"));
+    let key = storage_dir.join(format!("{name}.key.pem"));
     for path in [&cert, &key] {
         if !is_file_directly_in(storage_dir, path) {
             return Err(io::Error::new(
@@ -355,6 +358,18 @@ mod tests {
     }
 
     // ── file names from the site host (issue #554) ───────────────────────────
+
+    /// #579: mixed-case hosts share one lower-case file pair.
+    #[test]
+    fn pair_paths_lowercases_the_host() {
+        let dir = Path::new("storage/certs");
+        assert_eq!(
+            pair_paths(dir, "EXAMPLE.com").unwrap(),
+            pair_paths(dir, "example.com").unwrap()
+        );
+        let (cert, _) = pair_paths(dir, "A.Example.COM").unwrap();
+        assert_eq!(cert, dir.join("a.example.com.crt.pem"));
+    }
 
     #[test]
     fn pair_paths_puts_both_files_directly_inside_the_storage_dir() {
