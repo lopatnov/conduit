@@ -14,7 +14,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- ACME certificate and key files are named from the lower-cased host, so `EXAMPLE.com` and `example.com` share one pair on every file system. A mixed-case host orders its certificate once more after the upgrade (#579).
+- ACME certificate and key files are named from the lower-cased host, so `EXAMPLE.com` and `example.com` share one pair on every file system. On case-sensitive file systems a mixed-case host orders its certificate once more after the upgrade (#579).
 - A WASM `on_response` body replacement decides on the upstream `Content-Length` as received, so a `responseTransform` that removes the header no longer makes the guard miss an empty body (#561).
 
 ---

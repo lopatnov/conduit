@@ -41,7 +41,7 @@ are tracked but excluded from the published crate (`[package] exclude`).
 - Walls: `sonarcloud.io` and the GitHub Security tab / code-scanning API are unreachable via `WebFetch`; the
   `mcp__sonarqube__*` connector **does** work (check it first); no tool can dismiss a CodeQL alert (the owner does it in the UI);
   for the full code-scanning list ask the owner to paste it. `mcp__github__get_check_run` has no per-alert detail.
-- A failing SonarCloud gate: the project is public, so a local session can list the uncovered lines without the UI: `curl 'https://sonarcloud.io/api/measures/component_tree?component=lopatnov_conduit&pullRequest=<n>&metricKeys=new_uncovered_lines,new_coverage&strategy=leaves&ps=100'`, then `https://sonarcloud.io/api/sources/lines?key=<fileKey>&pullRequest=<n>` per file. A cloud container's proxy blocks the host (`CONNECT` 403, `ENOTFOUND`; checked 2026-10-11): use the `mcp__sonarqube__*` connector if present, else ask the owner for the list. Coverage that does not move after new tests means the uncovered lines are elsewhere.
+- A failing SonarCloud gate: `.claude/commands/sonar-gate.md` (how to list the uncovered lines; the cloud proxy blocks sonarcloud.io).
 - A local session never holds a `RemoteTrigger` (different id space) — not a bug. Session rotation is retired (automatic
   compaction bounds the context); don't recreate `session-rotate`. `/handoff` is for a manual restart.
 - GraphQL-backed GitHub calls (`get_review_comments`, `resolve_review_thread`) have their own rate limit: retry once or twice,
