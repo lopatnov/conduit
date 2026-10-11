@@ -599,6 +599,7 @@ mod tests {
 /// Apply `upstreamTls` to a peer. `serverName` becomes the peer's SNI, which the
 /// rustls connector sends *and* verifies the certificate against (nginx's
 /// `proxy_ssl_name`); `alternative_cn` is only read by the OpenSSL backends (#583).
+#[cfg(any(feature = "proxy", feature = "upload"))]
 fn apply_upstream_tls(peer: &mut HttpPeer, tls_cfg: &conduit_upstream::config::UpstreamTlsConfig) {
     if let Some(verify) = tls_cfg.verify {
         peer.options.verify_cert = verify;
@@ -610,7 +611,7 @@ fn apply_upstream_tls(peer: &mut HttpPeer, tls_cfg: &conduit_upstream::config::U
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "proxy", feature = "upload")))]
 mod upstream_tls_tests {
     use super::*;
 

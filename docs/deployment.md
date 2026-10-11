@@ -458,6 +458,14 @@ applied automatically — no `conduit reload` needed.
 3. Combines them into a running multi-site config
 4. Watches `Added` / `Modified` / `Deleted` events → hot-reloads automatically
 
+**Trust boundary.** Whoever can create a `ConduitSite` is trusted to route traffic
+for that site, but not to name files on the Conduit host. A `ConduitSite` that sets a
+host path (`static`, `upload`, `middleware`, `tls.cert`, `tls.key`, `tls.ca`,
+`tls.clientAuth`, `tls.acme.storage`, `logging.file`, `fallback.file`, including
+inside `routes`) is rejected, and the rest of the config stays as it was. Use a
+file config for those settings. Grant `create`/`update` on `conduitsites` only to
+people you would trust to configure that traffic.
+
 **Step 1 — Install the CRD definition (once per cluster):**
 
 ```bash

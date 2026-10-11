@@ -60,6 +60,7 @@ impl CrdConfigBuilder for ConduitSchema {
 
     fn site_from_spec(spec: &ConduitSiteSpec) -> Result<SiteConfig> {
         let json = serde_json::to_value(spec)?;
+        reject_host_paths(&json)?;
         let site: SiteConfig = serde_json::from_value(json)?;
         Ok(site)
     }
@@ -75,6 +76,62 @@ impl CrdConfigBuilder for ConduitSchema {
             }),
             sites,
         }
+    }
+}
+
+/// CRD-mode trust boundary (#580): whoever can write a `ConduitSite` must not be
+/// able to name files or directories on the Conduit host. A spec that sets any
+/// path-valued field is refused, so a tenant cannot read, write or serve
+/// arbitrary host paths. Certificates come from `tls.acme` (storage stays at the
+/// operator's default) and static content from upstreams, not host directories.
+fn reject_host_paths(spec: &serde_json::Value) -> Result<()> {
+    fn check(scope: &str, v: &serde_json::Value, out: &mut Vec<String>) {
+        let has = |p: &[&str]| {
+            let mut cur = v;
+            for k in p {
+                match cur.get(*k) {
+                    Some(n) if !n.is_null() => cur = n,
+                    _ => return false,
+                }
+            }
+            true
+        };
+        for p in [
+            &["static"][..],
+            &["upload"],
+            &["middleware"],
+            &["tls", "cert"],
+            &["tls", "key"],
+            &["tls", "ca"],
+            &["tls", "clientAuth"],
+            &["tls", "acme", "storage"],
+            &["logging", "file"],
+            &["fallback", "file"],
+        ] {
+            if has(p) {
+                out.push(format!("{scope}{}", p.join(".")));
+            }
+        }
+        if let Some(by) = v.pointer("/fallback/byAccept").and_then(|b| b.as_object()) {
+            if by.values().any(|e| e.get("file").is_some_and(|f| !f.is_null())) {
+                out.push(format!("{scope}fallback.byAccept.*.file"));
+            }
+        }
+    }
+    let mut bad = Vec::new();
+    check("", spec, &mut bad);
+    if let Some(routes) = spec.get("routes").and_then(|r| r.as_array()) {
+        for (i, r) in routes.iter().enumerate() {
+            check(&format!("routes[{i}]."), r, &mut bad);
+        }
+    }
+    if bad.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "host file paths cannot be set from a ConduitSite ({}); they are only allowed in a file config",
+            bad.join(", ")
+        )
     }
 }
 
@@ -147,6 +204,45 @@ mod tests {
     }
 
     // ── spec_to_site_config ───────────────────────────────────────────────────
+
+    #[test]
+    fn crd_specs_cannot_name_host_paths() {
+        for (field, value) in [
+            ("static", serde_json::json!({"root": "/etc"})),
+            ("upload", serde_json::json!({"path": "/u", "dir": "/etc"})),
+            ("tls", serde_json::json!({"cert": "/etc/ssl/c.pem", "key": "/k"})),
+            ("tls", serde_json::json!({"acme": {"email": "a@b.c", "storage": "../../x"}})),
+            ("logging", serde_json::json!({"file": "/etc/cron.d/x"})),
+            ("fallback", serde_json::json!({"file": "/etc/passwd"})),
+            ("middleware", serde_json::json!([{"type": "wasm", "path": "/x.wasm"}])),
+        ] {
+            let mut spec = make_spec(8080, Some("a.example.com"));
+            match field {
+                "static" => spec.static_files = Some(value),
+                "upload" => spec.upload = Some(value),
+                "tls" => spec.tls = Some(value),
+                "logging" => spec.logging = Some(value),
+                "fallback" => spec.fallback = Some(value),
+                _ => spec.middleware = Some(value),
+            }
+            let err = spec_to_site_config(&spec).expect_err(field).to_string();
+            assert!(err.contains("host file paths"), "{field}: {err}");
+        }
+    }
+
+    #[test]
+    fn crd_spec_in_a_route_cannot_name_host_paths() {
+        let mut spec = make_spec(8080, None);
+        spec.routes = Some(serde_json::json!([{"path": "/", "static": {"root": "/etc"}}]));
+        assert!(spec_to_site_config(&spec).is_err());
+    }
+
+    #[test]
+    fn crd_acme_without_storage_is_allowed() {
+        let mut spec = make_spec(8080, Some("a.example.com"));
+        spec.tls = Some(serde_json::json!({"acme": {"email": "a@b.c"}}));
+        assert!(spec_to_site_config(&spec).is_ok());
+    }
 
     #[test]
     fn spec_to_site_config_port_and_host() {
