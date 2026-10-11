@@ -121,13 +121,12 @@ sites:
       # ── Payment service (high-security) ─────────────────────────────────────
       /v1/payments:
         targets:
-          - "https://payment-svc:8443"
+          - "https://payment-svc.internal:8443"
         strategy: round-robin
         stripPrefix: true
-        # Verify the payment service TLS certificate.
+        # Verify the payment service TLS certificate (against the host above).
         upstreamTls:
           verify: true
-          serverName: payment-svc.internal
         # Strict per-route limit: only 10 payment attempts per minute per user.
         rateLimit:
           windowSecs: 60

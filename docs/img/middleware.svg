@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" role="img" aria-labelledby="t d">
+  <title id="t">Where your code runs</title>
+  <desc id="d">Rhai scripts and WebAssembly plugins hook into the request path after the built-in guards and again when the upstream response comes back. In the request phase a script can let the request continue or answer it itself; WebAssembly plugins can also read the client IP and change the headers sent to the upstream. In the response phase both can inspect the status. If a script or plugin fails to load or errors, the request continues.</desc>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/></marker>
+    <marker id="ar-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--blue)"/></marker>
+    <marker id="ar-green" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--green)"/></marker>
+    <marker id="ar-orange" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--orange)"/></marker>
+    <marker id="ar-purple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--purple)"/></marker>
+    <marker id="ar-red" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--red)"/></marker>
+    <marker id="ar-gray" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--gray)"/></marker>
+    <style>
+svg { --bg:#f6f8fa; --card:#ffffff; --line:#d0d7de; --text:#1f2328; --muted:#59636e; --faint:#8c959f;
+  --blue:#0969da; --blue-s:#ddf4ff; --green:#1a7f37; --green-s:#dafbe1; --orange:#bc4c00; --orange-s:#fff1e5;
+  --purple:#8250df; --purple-s:#fbefff; --red:#cf222e; --red-s:#ffebe9; --gray:#59636e; --gray-s:#eaeef2; }
+@media (prefers-color-scheme: dark) {
+  svg { --bg:#0d1117; --card:#161b22; --line:#3d444d; --text:#f0f6fc; --muted:#9198a1; --faint:#6e7681;
+    --blue:#4493f8; --blue-s:#10233f; --green:#3fb950; --green-s:#102a1a; --orange:#e3893b; --orange-s:#33200d;
+    --purple:#ab7df8; --purple-s:#241b3d; --red:#f85149; --red-s:#3a1618; --gray:#9198a1; --gray-s:#21262d; }
+}
+text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--text); }
+.m { font-size: 12.5px; fill: var(--muted); }
+.s { font-size: 11.5px; fill: var(--muted); }
+.b { font-size: 14px; font-weight: 600; }
+.h { font-size: 15.5px; font-weight: 700; }
+.xl { font-size: 22px; font-weight: 700; }
+.k { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.ka { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; fill: var(--a); font-weight: 600; }
+.acc { fill: var(--a); }
+.cap { font-size: 11px; font-weight: 700; letter-spacing: .06em; fill: var(--a); }
+.panel { fill: var(--bg); stroke: var(--line); }
+.card { fill: var(--card); stroke: var(--line); }
+.cardA { fill: var(--card); stroke: var(--a); }
+.soft { fill: var(--s); stroke: var(--a); }
+.fillS { fill: var(--s); stroke: none; }
+.zone { fill: var(--s); stroke: var(--a); stroke-dasharray: none; opacity: 1; }
+.zoneD { fill: none; stroke: var(--faint); stroke-dasharray: 5 4; }
+.ln { fill: none; stroke: var(--muted); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.lnA { fill: none; stroke: var(--a); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.dash { stroke-dasharray: 5 4; }
+.ico { fill: none; stroke: var(--a); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.icoF { fill: var(--a); stroke: var(--a); stroke-width: 1.2; stroke-linejoin: round; }
+.num { fill: var(--a); }
+.numt { font-size: 12px; font-weight: 700; fill: #ffffff; text-anchor: middle; }
+.chip { fill: var(--s); stroke: var(--a); }
+.chipt { font-size: 11.5px; font-weight: 600; fill: var(--a); text-anchor: middle; }
+.blue { --a: var(--blue); --s: var(--blue-s); }
+.green { --a: var(--green); --s: var(--green-s); }
+.orange { --a: var(--orange); --s: var(--orange-s); }
+.purple { --a: var(--purple); --s: var(--purple-s); }
+.red { --a: var(--red); --s: var(--red-s); }
+.gray { --a: var(--gray); --s: var(--gray-s); }
+</style>
+  </defs>
+  <rect class="panel" x="0.5" y="0.5" width="959" height="469" rx="16"/>
+  <g class="gray"><rect class="cardA" x="20" y="36" width="130" height="56" rx="10"/></g>
+  <g class="gray" transform="translate(32 52) scale(1.000)"><g class="ico"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c3 3 3 15 0 18c-3-3-3-15 0-18z"/></g></g>
+  <text x="64" y="69" class="b">Client</text>
+  <g class="blue"><rect class="cardA" x="186" y="36" width="160" height="56" rx="10"/></g>
+  <g class="blue" transform="translate(198 52) scale(1.000)"><g class="ico"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 7.7-7.5 9.5C7.700 19.200 4.500 16.100 4.500 11.500V6z"/><path d="M8.800 12l2.200 2.200 4.200-4.400"/></g></g>
+  <text x="230" y="69" class="b">Built-in guards</text>
+  <g class="purple"><rect class="soft" x="372" y="36" width="190" height="56" rx="10"/></g>
+  <g class="purple" transform="translate(384 52) scale(1.000)"><g class="ico"><path d="M8.500 7L3.500 12l5 5M15.500 7l5 5-5 5M13.500 5l-3 14"/></g></g>
+  <text x="416" y="69" class="b">Your code</text>
+  <g class="blue"><rect class="cardA" x="606" y="36" width="170" height="56" rx="10"/></g>
+  <g class="blue" transform="translate(618 52) scale(1.000)"><g class="ico"><path d="M12 21v-8M12 13L5 6M12 13l7-7"/><path d="M5 10V6h4M19 10V6h-4"/></g></g>
+  <text x="650" y="69" class="b">Router, proxy</text>
+  <g class="green"><rect class="cardA" x="806" y="36" width="134" height="56" rx="10"/></g>
+  <g class="green" transform="translate(818 52) scale(1.000)"><g class="ico"><rect x="3" y="4" width="18" height="6.5" rx="1.8"/><rect x="3" y="13.5" width="18" height="6.5" rx="1.8"/><circle cx="7" cy="7.25" r=".9" class="icoF"/><circle cx="7" cy="16.75" r=".9" class="icoF"/></g></g>
+  <text x="850" y="69" class="b">Upstream</text>
+  <g class="blue"><path class="lnA" d="M152 64 L184 64" marker-end="url(#ar-blue)"/></g>
+  <g class="purple"><path class="lnA" d="M348 64 L370 64" marker-end="url(#ar-purple)"/></g>
+  <g class="blue"><path class="lnA" d="M564 64 L604 64" marker-end="url(#ar-blue)"/></g>
+  <g class="blue"><path class="lnA" d="M778 64 L804 64" marker-end="url(#ar-blue)"/></g>
+  <g class="purple"><text class="cap" x="372" y="28">REQUEST PHASE</text></g>
+  <g class="gray"><path class="ln dash" d="M873 94 V122 H467 V98" marker-end="url(#ar-gray)"/></g>
+  <g class="gray"><text class="cap" x="484" y="116">RESPONSE PHASE: THE HOOK RUNS AGAIN WITH THE STATUS</text></g>
+  <g class="purple"><rect class="cardA" x="20" y="150" width="452" height="236" rx="12"/></g>
+  <g class="purple" transform="translate(36 164) scale(1.000)"><g class="ico"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></g></g>
+  <text x="70" y="182" class="h">Rhai scripts</text>
+  <g class="purple"><rect class="chip" x="380" y="164" width="80" height="20" rx="10"/><text class="chipt" x="420.0" y="178.0">no build step</text></g>
+  <g class="purple"><circle class="acc" cx="42" cy="212" r="2.7"/></g>
+  <text x="54" y="216" class="m">plain text files: edit and reload</text>
+  <g class="purple"><circle class="acc" cx="42" cy="238" r="2.7"/></g>
+  <text x="54" y="242" class="m">read request headers and the path</text>
+  <g class="purple"><circle class="acc" cx="42" cy="264" r="2.7"/></g>
+  <text x="54" y="268" class="m">let the request pass, or deny it</text>
+  <g class="purple"><circle class="acc" cx="42" cy="290" r="2.7"/></g>
+  <text x="54" y="294" class="m">answer with your own status, headers, body</text>
+  <g class="purple"><circle class="acc" cx="42" cy="316" r="2.7"/></g>
+  <text x="54" y="320" class="m">per-script config object</text>
+  <g class="purple"><circle class="acc" cx="42" cy="342" r="2.7"/></g>
+  <text x="54" y="346" class="m">response phase: set phase: response</text>
+  <g class="purple"><rect class="cardA" x="488" y="150" width="452" height="236" rx="12"/></g>
+  <g class="purple" transform="translate(504 164) scale(1.000)"><g class="ico"><path d="M9 3v5M15 3v5M6.500 8h11v3.500a5.500 5.500 0 0 1-11 0zM12 17v4"/></g></g>
+  <text x="538" y="182" class="h">WebAssembly plugins</text>
+  <g class="purple"><rect class="chip" x="770" y="164" width="90" height="20" rx="10"/><text class="chipt" x="815.0" y="178.0">any language</text></g>
+  <g class="purple"><circle class="acc" cx="510" cy="212" r="2.7"/></g>
+  <text x="522" y="216" class="m">compile Rust, C, Go or AssemblyScript to .wasm</text>
+  <g class="purple"><circle class="acc" cx="510" cy="238" r="2.7"/></g>
+  <text x="522" y="242" class="m">read headers, path and the client IP</text>
+  <g class="purple"><circle class="acc" cx="510" cy="264" r="2.7"/></g>
+  <text x="522" y="268" class="m">add or change headers sent upstream</text>
+  <g class="purple"><circle class="acc" cx="510" cy="290" r="2.7"/></g>
+  <text x="522" y="294" class="m">abort with a status, redirect or custom body</text>
+  <g class="purple"><circle class="acc" cx="510" cy="316" r="2.7"/></g>
+  <text x="522" y="320" class="m">plugin config and logging from the plugin</text>
+  <g class="purple"><circle class="acc" cx="510" cy="342" r="2.7"/></g>
+  <text x="522" y="346" class="m">on_response(status) hook for responses</text>
+  <g class="orange"><rect class="soft" x="20" y="402" width="920" height="50" rx="10"/></g>
+  <g class="orange" transform="translate(36 414) scale(1.000)"><g class="ico"><path d="M2.500 12S6 5.500 12 5.500 21.500 12 21.500 12 18 18.500 12 18.500 2.500 12 2.500 12z"/><circle cx="12" cy="12" r="3"/></g></g>
+  <text x="72" y="424" class="b">Scripts and plugins fail open: if one cannot be loaded or errors at run time, the problem is logged and the request goes on.</text>
+  <text x="72" y="441" class="s">Run them in order, and do not make a script your only access check; use the auth guards for that.</text>
+</svg>

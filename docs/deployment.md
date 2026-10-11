@@ -23,7 +23,7 @@ Not sure what config to write first? **[← Configuration Recipes](recipes.md)**
   - [As a sidecar proxy](#as-a-sidecar-proxy)
   - [As a DaemonSet (node-level proxy)](#as-a-daemonset-node-level-proxy)
   - [ConfigMap](#configmap)
-  - [ConduitSite CRD (`--features kubernetes`)](#conduitsite-crd----features-kubernetes)
+  - [ConduitSite CRD (`--features kubernetes`)](#conduitsite-crd---features-kubernetes)
   - [Compared to nginx-ingress](#compared-to-nginx-ingress)
 - [Updating the binary](#updating-the-binary)
 - [Production checklist](#production-checklist)
@@ -440,7 +440,7 @@ conduit reload --admin 127.0.0.1:2019
 ```
 
 > For automatic hot-reload on ConfigMap changes, use the
-> [ConduitSite CRD](#conduitsite-crd----features-kubernetes) instead —
+> [ConduitSite CRD](#conduitsite-crd---features-kubernetes) instead —
 > it watches Kubernetes events directly without polling.
 
 ### ConduitSite CRD (`--features kubernetes`)

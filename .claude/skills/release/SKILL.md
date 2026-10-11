@@ -29,8 +29,8 @@ python3 scripts/bump-version.py minor             # edits, refreshes Cargo.lock,
 ```
 
 It moves `[workspace.package].version`, all `lopatnov-conduit-*` dependency literals, `Cargo.lock`,
-`npm/package.json` and the version strings (and `:MAJOR.MINOR` image tags) in `docs/benchmarks.md`,
-`docs/cli.md`, `docs/deployment.md`, then runs `scripts/check-workspace-versions.sh`. It does not touch
+`npm/package.json` and the version strings (and `:MAJOR.MINOR` image tags) in `docs/cli.md` and
+`docs/deployment.md`, then runs `scripts/check-workspace-versions.sh`. It does not touch
 `CHANGELOG.md` (move `[Unreleased]` yourself), commit, tag or push. Confirm the target version with the
 user first. Tests: `python3 scripts/test_bump_version.py`. The list below is what it covers, for reference.
 
@@ -41,7 +41,7 @@ canonical example PR #71):
 - `Cargo.lock` → matching entry (regenerate with `cargo update -p lopatnov-conduit --offline`
   if it drifted)
 - `npm/package.json` → `"version": "x.y.z"`
-- `docs/benchmarks.md`, `docs/cli.md`, `docs/deployment.md` → version strings in prose/examples
+- `docs/cli.md`, `docs/deployment.md` → version strings in prose/examples
 - **Since the workspace migration (#114/#148): every `lopatnov-conduit-*` entry's own
   `version = "..."` string in `[workspace.dependencies]` (~32 lines) must match
   `[workspace.package].version` too — run `./scripts/check-workspace-versions.sh` (also

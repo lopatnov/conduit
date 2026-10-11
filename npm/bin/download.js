@@ -62,7 +62,7 @@ function getAssetName() {
   if (!name) {
     console.warn(
       `[conduit] Skipping binary download — unsupported platform: ${key}\n` +
-      `Install from source: cargo install conduit-proxy`
+      `Install from source: cargo install lopatnov-conduit`
     );
     process.exit(0);
   }
@@ -199,7 +199,7 @@ async function main() {
   } catch (err) {
     try { unlinkSync(tmp); } catch { /* ignore */ }
     console.error(`\n[conduit] Download failed: ${err.message}`);
-    console.error(`[conduit] You can install from source: cargo install conduit-proxy`);
+    console.error(`[conduit] You can install from source: cargo install lopatnov-conduit`);
     // A failed download is not a security event: leave the package without a
     // binary and let `conduit` report that, as before. Exit 0 so npm install
     // doesn't fail for the whole project. (A checksum mismatch does fail.)

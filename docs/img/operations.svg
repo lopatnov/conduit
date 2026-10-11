@@ -1,0 +1,163 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" role="img" aria-labelledby="t d">
+  <title id="t">Changing and running Conduit</title>
+  <desc id="d">You edit the config file, check it with conduit validate, and apply it with conduit reload or the Admin API without dropping connections. Most settings apply live; a few, such as the port, certificate files, the worker count and the Admin API address, need a restart and reload refuses them. While Conduit runs, the CLI and the Admin API show status and upstream health, change upstream targets in memory, and shut the server down gracefully.</desc>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/></marker>
+    <marker id="ar-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--blue)"/></marker>
+    <marker id="ar-green" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--green)"/></marker>
+    <marker id="ar-orange" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--orange)"/></marker>
+    <marker id="ar-purple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--purple)"/></marker>
+    <marker id="ar-red" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--red)"/></marker>
+    <marker id="ar-gray" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--gray)"/></marker>
+    <style>
+svg { --bg:#f6f8fa; --card:#ffffff; --line:#d0d7de; --text:#1f2328; --muted:#59636e; --faint:#8c959f;
+  --blue:#0969da; --blue-s:#ddf4ff; --green:#1a7f37; --green-s:#dafbe1; --orange:#bc4c00; --orange-s:#fff1e5;
+  --purple:#8250df; --purple-s:#fbefff; --red:#cf222e; --red-s:#ffebe9; --gray:#59636e; --gray-s:#eaeef2; }
+@media (prefers-color-scheme: dark) {
+  svg { --bg:#0d1117; --card:#161b22; --line:#3d444d; --text:#f0f6fc; --muted:#9198a1; --faint:#6e7681;
+    --blue:#4493f8; --blue-s:#10233f; --green:#3fb950; --green-s:#102a1a; --orange:#e3893b; --orange-s:#33200d;
+    --purple:#ab7df8; --purple-s:#241b3d; --red:#f85149; --red-s:#3a1618; --gray:#9198a1; --gray-s:#21262d; }
+}
+text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--text); }
+.m { font-size: 12.5px; fill: var(--muted); }
+.s { font-size: 11.5px; fill: var(--muted); }
+.b { font-size: 14px; font-weight: 600; }
+.h { font-size: 15.5px; font-weight: 700; }
+.xl { font-size: 22px; font-weight: 700; }
+.k { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.ka { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; fill: var(--a); font-weight: 600; }
+.acc { fill: var(--a); }
+.cap { font-size: 11px; font-weight: 700; letter-spacing: .06em; fill: var(--a); }
+.panel { fill: var(--bg); stroke: var(--line); }
+.card { fill: var(--card); stroke: var(--line); }
+.cardA { fill: var(--card); stroke: var(--a); }
+.soft { fill: var(--s); stroke: var(--a); }
+.fillS { fill: var(--s); stroke: none; }
+.zone { fill: var(--s); stroke: var(--a); stroke-dasharray: none; opacity: 1; }
+.zoneD { fill: none; stroke: var(--faint); stroke-dasharray: 5 4; }
+.ln { fill: none; stroke: var(--muted); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.lnA { fill: none; stroke: var(--a); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.dash { stroke-dasharray: 5 4; }
+.ico { fill: none; stroke: var(--a); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.icoF { fill: var(--a); stroke: var(--a); stroke-width: 1.2; stroke-linejoin: round; }
+.num { fill: var(--a); }
+.numt { font-size: 12px; font-weight: 700; fill: #ffffff; text-anchor: middle; }
+.chip { fill: var(--s); stroke: var(--a); }
+.chipt { font-size: 11.5px; font-weight: 600; fill: var(--a); text-anchor: middle; }
+.blue { --a: var(--blue); --s: var(--blue-s); }
+.green { --a: var(--green); --s: var(--green-s); }
+.orange { --a: var(--orange); --s: var(--orange-s); }
+.purple { --a: var(--purple); --s: var(--purple-s); }
+.red { --a: var(--red); --s: var(--red-s); }
+.gray { --a: var(--gray); --s: var(--gray-s); }
+</style>
+  </defs>
+  <rect class="panel" x="0.5" y="0.5" width="959" height="519" rx="16"/>
+  <g class="gray">
+  <rect class="card" x="20.0" y="24" width="208" height="108" rx="9"/>
+  <rect class="acc" x="20.0" y="34" width="3.4" height="88" rx="1.7"/>
+  <g class="None" transform="translate(34.0 34) scale(0.833)"><g class="ico"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></g></g>
+  <text class="b" x="62.0" y="49">Edit</text>
+  <text class="m" x="34.0" y="70">conduit.yaml or</text>
+  <text class="m" x="34.0" y="87">conduit.json</text>
+  </g>
+  <g class="gray"><circle class="num" cx="206.0" cy="44" r="11"/><text class="numt" x="206.0" y="48.2">1</text></g>
+  <g class="blue"><path class="lnA" d="M231.0 78 L254.3 78" marker-end="url(#ar-blue)"/></g>
+  <g class="blue">
+  <rect class="card" x="257.3" y="24" width="208" height="108" rx="9"/>
+  <rect class="acc" x="257.3" y="34" width="3.4" height="88" rx="1.7"/>
+  <g class="None" transform="translate(271.3 34) scale(0.833)"><g class="ico"><circle cx="12" cy="12" r="9"/><path d="M7.800 12.200l3 3 5.400-6"/></g></g>
+  <text class="b" x="299.3" y="49">Check</text>
+  <text class="m" x="271.3" y="70">conduit validate</text>
+  <text class="m" x="271.3" y="87">exit 1 on errors,</text>
+  <text class="m" x="271.3" y="104">conduit fmt tidies</text>
+  </g>
+  <g class="blue"><circle class="num" cx="443.3" cy="44" r="11"/><text class="numt" x="443.3" y="48.2">2</text></g>
+  <g class="blue"><path class="lnA" d="M468.3 78 L491.7 78" marker-end="url(#ar-blue)"/></g>
+  <g class="blue">
+  <rect class="card" x="494.7" y="24" width="208" height="108" rx="9"/>
+  <rect class="acc" x="494.7" y="34" width="3.4" height="88" rx="1.7"/>
+  <g class="None" transform="translate(508.7 34) scale(0.833)"><g class="ico"><path d="M20 11a8 8 0 0 0-14.500-4M4 13a8 8 0 0 0 14.500 4"/><path d="M5.500 3v4h4M18.500 21v-4h-4"/></g></g>
+  <text class="b" x="536.7" y="49">Reload</text>
+  <text class="m" x="508.7" y="70">conduit reload or</text>
+  <text class="m" x="508.7" y="87">POST /reload on the</text>
+  <text class="m" x="508.7" y="104">Admin API</text>
+  </g>
+  <g class="blue"><circle class="num" cx="680.7" cy="44" r="11"/><text class="numt" x="680.7" y="48.2">3</text></g>
+  <g class="blue"><path class="lnA" d="M705.7 78 L729.0 78" marker-end="url(#ar-blue)"/></g>
+  <g class="green">
+  <rect class="card" x="732.0" y="24" width="208" height="108" rx="9"/>
+  <rect class="acc" x="732.0" y="34" width="3.4" height="88" rx="1.7"/>
+  <g class="None" transform="translate(746.0 34) scale(0.833)"><g class="ico"><path d="M13 2.500L5 13.500h6l-1 8 8-11h-6z"/></g></g>
+  <text class="b" x="774.0" y="49">Live</text>
+  <text class="m" x="746.0" y="70">new config applies</text>
+  <text class="m" x="746.0" y="87">without dropping</text>
+  <text class="m" x="746.0" y="104">connections</text>
+  </g>
+  <g class="green"><circle class="num" cx="918.0" cy="44" r="11"/><text class="numt" x="918.0" y="48.2">4</text></g>
+  <g class="green"><rect class="zone" x="20" y="152" width="450" height="150" rx="14"/>
+  <text class="cap" x="36" y="174">APPLIES LIVE ON RELOAD</text>
+  </g>
+  <g class="green"><circle class="acc" cx="40" cy="192" r="2.7"/></g>
+  <text x="52" y="196" class="m">proxy targets, routes, static directories</text>
+  <g class="green"><circle class="acc" cx="40" cy="212" r="2.7"/></g>
+  <text x="52" y="216" class="m">rate limits, limits, outlier detection</text>
+  <g class="green"><circle class="acc" cx="40" cy="232" r="2.7"/></g>
+  <text x="52" y="236" class="m">basic auth, API keys, JWT, forward auth, consumers</text>
+  <g class="green"><circle class="acc" cx="40" cy="252" r="2.7"/></g>
+  <text x="52" y="256" class="m">cache, CORS, security headers, logging</text>
+  <g class="green"><circle class="acc" cx="40" cy="272" r="2.7"/></g>
+  <text x="52" y="276" class="m">Rhai and WASM middleware, transforms</text>
+  <g class="orange"><rect class="zone" x="490" y="152" width="450" height="150" rx="14"/>
+  <text class="cap" x="506" y="174">NEEDS A RESTART</text>
+  </g>
+  <g class="orange"><circle class="acc" cx="510" cy="192" r="2.7"/></g>
+  <text x="522" y="196" class="m">the port</text>
+  <g class="orange"><circle class="acc" cx="510" cy="212" r="2.7"/></g>
+  <text x="522" y="216" class="m">certificate and key files</text>
+  <g class="orange"><circle class="acc" cx="510" cy="232" r="2.7"/></g>
+  <text x="522" y="236" class="m">the worker count (global.workers)</text>
+  <g class="orange"><circle class="acc" cx="510" cy="252" r="2.7"/></g>
+  <text x="522" y="256" class="m">global.admin.bind, global.shutdownTimeoutSecs</text>
+  <g class="orange"><rect class="chip" x="510" y="274" width="410" height="20" rx="10"/><text class="chipt" x="715" y="288">reload answers 400 and names the field</text></g>
+  <g class="green"><path class="lnA" d="M816.0 134 L816.0 150" marker-end="url(#ar-green)"/></g>
+  <g class="purple"><rect class="zone" x="20" y="322" width="920" height="180" rx="14"/>
+  <text class="cap" x="36" y="344">WHILE IT RUNS</text>
+  </g>
+  <g class="purple">
+  <rect class="card" x="36.0" y="356" width="214" height="130" rx="9"/>
+  <rect class="acc" x="36.0" y="366" width="3.4" height="110" rx="1.7"/>
+  <g class="None" transform="translate(50.0 366) scale(0.833)"><g class="ico"><rect x="3" y="4.500" width="18" height="15" rx="2.500"/><path d="M7.500 10l3 2.500-3 2.500M13 15h4"/></g></g>
+  <text class="b" x="78.0" y="381">Look</text>
+  <text class="m" x="50.0" y="403">conduit status</text>
+  <text class="m" x="50.0" y="421">conduit upstreams</text>
+  <text class="m" x="50.0" y="439">conduit probe</text>
+  </g>
+  <g class="purple">
+  <rect class="card" x="260.7" y="356" width="214" height="130" rx="9"/>
+  <rect class="acc" x="260.7" y="366" width="3.4" height="110" rx="1.7"/>
+  <g class="None" transform="translate(274.7 366) scale(0.833)"><g class="ico"><path d="M12 21v-8M12 13L5 6M12 13l7-7"/><path d="M5 10V6h4M19 10V6h-4"/></g></g>
+  <text class="b" x="302.7" y="381">Steer</text>
+  <text class="m" x="274.7" y="403">upstreams add, remove,</text>
+  <text class="m" x="274.7" y="421">weight: in memory only,</text>
+  <text class="m" x="274.7" y="439">dropped by the next reload</text>
+  </g>
+  <g class="orange">
+  <rect class="card" x="485.3" y="356" width="214" height="130" rx="9"/>
+  <rect class="acc" x="485.3" y="366" width="3.4" height="110" rx="1.7"/>
+  <g class="None" transform="translate(499.3 366) scale(0.833)"><g class="ico"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></g></g>
+  <text class="b" x="527.3" y="381">Watch</text>
+  <text class="m" x="499.3" y="403">/__health__ for load</text>
+  <text class="m" x="499.3" y="421">balancers, /__metrics__</text>
+  <text class="m" x="499.3" y="439">for Prometheus</text>
+  </g>
+  <g class="gray">
+  <rect class="card" x="710.0" y="356" width="214" height="130" rx="9"/>
+  <rect class="acc" x="710.0" y="366" width="3.4" height="110" rx="1.7"/>
+  <g class="None" transform="translate(724.0 366) scale(0.833)"><g class="ico"><circle cx="12" cy="12" r="9"/><path d="M12 7v5.500l3.500 2"/></g></g>
+  <text class="b" x="752.0" y="381">Stop</text>
+  <text class="m" x="724.0" y="403">conduit shutdown waits</text>
+  <text class="m" x="724.0" y="421">for in-flight requests,</text>
+  <text class="m" x="724.0" y="439">up to the grace period</text>
+  </g>
+</svg>
