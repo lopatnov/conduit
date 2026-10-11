@@ -139,6 +139,7 @@ fn ask_tls_config(opts: &InitOptions<'_>) -> anyhow::Result<Option<Value>> {
 /// (issue #577): asked in the wizard, an error with `-y`.
 fn ask_host(opts: &InitOptions<'_>, needs_host: bool) -> anyhow::Result<Option<String>> {
     if let Some(host) = opts.host {
+        check_host(host, needs_host)?;
         return Ok(Some(host.to_owned()));
     }
     if !needs_host {
@@ -150,7 +151,17 @@ fn ask_host(opts: &InitOptions<'_>, needs_host: bool) -> anyhow::Result<Option<S
     let host: String = Input::new()
         .with_prompt("Host name the certificate is for (e.g. example.com)")
         .interact_text()?;
+    check_host(&host, true)?;
     Ok(Some(host))
+}
+
+/// With ACME the host names the certificate files, so reject what validation would reject later.
+fn check_host(host: &str, acme: bool) -> anyhow::Result<()> {
+    if acme {
+        conduit_acme::domain::validate_domain(host)
+            .map_err(|why| anyhow::anyhow!("invalid --host '{host}': {why}"))?;
+    }
+    Ok(())
 }
 
 // ── YAML serialization ────────────────────────────────────────────────────────
@@ -687,6 +698,33 @@ mod tests {
             content.contains("host: example.com"),
             "ACME needs a host (issue #577): {content}"
         );
+    }
+
+    #[test]
+    fn run_init_with_acme_and_an_invalid_host_is_an_error() {
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("conduit.yaml");
+        for bad in ["", "../x", "a/b"] {
+            let opts = InitOptions {
+                output: Some(output.to_str().unwrap()),
+                yes: true,
+                format: Some("yaml"),
+                port: Some(443),
+                static_dir: None,
+                no_static: true,
+                proxy: None,
+                no_proxy: true,
+                log: Some("dev"),
+                no_health: false,
+                tls_cert: None,
+                tls_key: None,
+                tls_acme: Some("admin@example.com"),
+                host: Some(bad),
+            };
+            let err = run_init(opts).expect_err(bad);
+            assert!(err.to_string().contains("invalid --host"), "{bad}: {err}");
+            assert!(!output.exists());
+        }
     }
 
     #[test]

@@ -2959,6 +2959,7 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "dialoguer",
+ "lopatnov-conduit-acme",
  "lopatnov-conduit-config",
  "lopatnov-conduit-config-core",
  "lopatnov-conduit-server",

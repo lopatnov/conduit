@@ -122,11 +122,19 @@ fn redirect_host(raw: &str) -> Option<String> {
     let valid = if let Some(inner) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
         !inner.is_empty() && inner.parse::<std::net::Ipv6Addr>().is_ok()
     } else {
-        !host.is_empty()
+        // One trailing dot (a fully qualified name) is fine; empty labels and labels that
+        // start or end with a hyphen are not.
+        let name = host.strip_suffix('.').unwrap_or(host);
+        !name.is_empty()
             && host.len() <= 253
-            && host
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+            && name.split('.').all(|label| {
+                !label.is_empty()
+                    && !label.starts_with('-')
+                    && !label.ends_with('-')
+                    && label
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            })
     };
     valid.then(|| host.to_owned())
 }
@@ -143,6 +151,10 @@ mod tests {
             Some("example.com")
         );
         assert_eq!(redirect_host("127.0.0.1:80").as_deref(), Some("127.0.0.1"));
+        assert_eq!(
+            redirect_host("example.com.").as_deref(),
+            Some("example.com.")
+        );
         assert_eq!(redirect_host("[::1]:8080").as_deref(), Some("[::1]"));
         assert_eq!(
             redirect_host("[2001:db8::1]").as_deref(),
@@ -165,6 +177,11 @@ mod tests {
             "[]",
             "[not-an-ip]",
             "a?b",
+            "a..b",
+            "-bad.example",
+            "bad-.example",
+            ".",
+            ".example.com",
             "a#b",
         ] {
             assert!(redirect_host(bad).is_none(), "{bad:?} must be refused");

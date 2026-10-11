@@ -461,8 +461,8 @@ applied automatically — no `conduit reload` needed.
 **Trust boundary.** Whoever can create a `ConduitSite` is trusted to route traffic
 for that site, but not to name files on the Conduit host. A `ConduitSite` that sets a
 host path (`static`, `upload`, `middleware`, `tls.cert`, `tls.key`, `tls.ca`,
-`tls.clientAuth`, `tls.acme.storage`, `logging.file`, `fallback.file`, including
-inside `routes`) is rejected, and the rest of the config stays as it was. Use a
+`tls.clientAuth`, `tls.acme.storage`, `logging.file`, `fallback.file`,
+`fallback.byAccept.*.file`, including inside `routes`) is rejected, and the rest of the config stays as it was. Use a
 file config for those settings. Grant `create`/`update` on `conduitsites` only to
 people you would trust to configure that traffic.
 

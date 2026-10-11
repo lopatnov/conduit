@@ -11,7 +11,7 @@
  *                                  where the binary is vendored or built locally)
  */
 
-import { createWriteStream, existsSync, mkdirSync, chmodSync, unlinkSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, chmodSync, unlinkSync, renameSync } from "node:fs";
 import { get as httpsGet } from "node:https";
 import { get as httpGet } from "node:http";
 import { fileURLToPath } from "node:url";
@@ -122,6 +122,7 @@ function download(url, dest) {
           }
         });
 
+        res.on("aborted", () => reject(new Error("connection closed before the download finished")));
         res.pipe(file);
         file.on("finish", () => {
           file.close(() => {
@@ -138,6 +139,10 @@ function download(url, dest) {
 
     request(url);
   });
+}
+
+function sha256(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
 function fail(msg) {
@@ -167,24 +172,32 @@ async function main() {
   const url = `${BASE_URL}/${assetName}`;
   const dest = join(NATIVE_DIR, assetName);
 
-  // Skip if already downloaded (idempotent)
-  if (existsSync(dest)) {
-    return;
-  }
-
   // The release workflow writes the expected SHA-256 of every asset into
   // checksums.json before `npm publish` (#571). Without an entry there is
   // nothing to verify against, so refuse to install an unchecked binary.
   const expected = loadExpectedChecksum(assetName);
+
+  // Idempotent: keep an existing binary only if it is the expected one.
+  if (existsSync(dest)) {
+    if (sha256(dest) === expected) {
+      return;
+    }
+    console.warn(`[conduit] Existing ${assetName} does not match its checksum; downloading it again.`);
+    try { unlinkSync(dest); } catch { /* ignore */ }
+  }
 
   mkdirSync(NATIVE_DIR, { recursive: true });
 
   console.log(`[conduit] Downloading v${VERSION} for ${process.platform}/${process.arch}`);
   console.log(`[conduit] Source: ${url}`);
 
+  // Download to a temporary name and rename only after verification, so a cut-off
+  // or tampered download is never left under the final name (#585).
+  const tmp = `${dest}.part`;
   try {
-    await download(url, dest);
+    await download(url, tmp);
   } catch (err) {
+    try { unlinkSync(tmp); } catch { /* ignore */ }
     console.error(`\n[conduit] Download failed: ${err.message}`);
     console.error(`[conduit] You can install from source: cargo install conduit-proxy`);
     // A failed download is not a security event: leave the package without a
@@ -193,11 +206,12 @@ async function main() {
     process.exit(0);
   }
 
-  const actual = createHash("sha256").update(readFileSync(dest)).digest("hex");
+  const actual = sha256(tmp);
   if (actual !== expected) {
-    try { unlinkSync(dest); } catch { /* ignore */ }
+    try { unlinkSync(tmp); } catch { /* ignore */ }
     fail(`checksum mismatch for ${assetName}: expected ${expected}, got ${actual}. The download was discarded.`);
   }
+  renameSync(tmp, dest);
 
   // Make executable on Unix
   if (process.platform !== "win32") {

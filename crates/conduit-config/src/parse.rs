@@ -58,7 +58,25 @@ fn diagnose(text: &str, yaml: bool, original: anyhow::Error) -> anyhow::Error {
     } else {
         from_json_str::<SiteConfig>(&json).err()
     };
-    refined.unwrap_or(original)
+    match refined {
+        Some(e) => anyhow::anyhow!(redact_value(&e.to_string())),
+        None => original,
+    }
+}
+
+/// Serde's type errors quote the rejected value (`invalid type: string "hunter2", expected u64`);
+/// after env interpolation that value may be a secret, so keep the field path and the expected
+/// type and drop the value from the diagnostic.
+fn redact_value(msg: &str) -> String {
+    for lead in ["invalid type: ", "invalid value: "] {
+        if let Some(i) = msg.find(lead) {
+            let (head, rest) = msg.split_at(i + lead.len());
+            let tail = rest.find(", expected ").map(|j| &rest[j..]).unwrap_or("");
+            let kind = rest.split([' ', ',']).next().unwrap_or("value");
+            return format!("{head}{kind}{tail}");
+        }
+    }
+    msg.to_owned()
 }
 
 /// `Single` accepts anything, so a full config (`sites: [...]`) whose sites fail to parse used to
@@ -66,13 +84,15 @@ fn diagnose(text: &str, yaml: bool, original: anyhow::Error) -> anyhow::Error {
 /// error instead (issue #570).
 fn reject_failed_full(file: &ConfigFile, text: &str, yaml: bool) -> Result<()> {
     if let ConfigFile::Single(site) = file {
-        if site.extra.contains_key("sites") {
+        if site.extra.contains_key("sites") || site.extra.contains_key("global") {
             let value: Result<serde_json::Value> = if yaml {
                 from_yaml_str(text)
             } else {
                 from_json_str(text)
             };
-            value.and_then(|v| from_json_str::<AppConfig>(&v.to_string()))?;
+            value
+                .and_then(|v| from_json_str::<AppConfig>(&v.to_string()))
+                .map_err(|e| anyhow::anyhow!(redact_value(&e.to_string())))?;
         }
     }
     Ok(())
@@ -96,6 +116,26 @@ pub fn normalize(file: ConfigFile) -> AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_do_not_echo_the_rejected_value() {
+        let e = from_str(r#"{ "port": "hunter2-secret" }"#)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("port") && !e.contains("hunter2"), "{e}");
+        let e = from_str(r#"{ "sites": [{ "port": "hunter2-secret" }] }"#)
+            .unwrap_err()
+            .to_string();
+        assert!(!e.contains("hunter2"), "{e}");
+    }
+
+    #[test]
+    fn global_without_sites_is_an_error_not_an_empty_site() {
+        let e = from_str(r#"{ "global": { "workers": 4 } }"#)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("sites"), "{e}");
+    }
 
     /// Issue #570: a wrong-typed value is reported with its field path, in every config shape.
     #[test]
