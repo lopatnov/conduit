@@ -240,7 +240,7 @@ pub(super) async fn upstream_response_filter(
 /// without a `Content-Length` cannot be told apart here and is a known limitation.)
 fn body_can_be_replaced(resp: &pingora_http::ResponseHeader) -> bool {
     let status = resp.status.as_u16();
-    if status < 200 || status == 204 || status == 304 {
+    if status < 200 || status == 204 || status == 205 || status == 304 {
         return false;
     }
     resp.headers
@@ -257,7 +257,7 @@ fn warn_body_not_replaceable(status: u16) {
     if !WARNED.swap(true, Ordering::Relaxed) {
         tracing::warn!(
             status,
-            "WASM on_response called conduit_set_response_body, but this response has no body              (1xx, 204, 304 or an empty upstream body): it is sent as the upstream sent it (issue #379)"
+            "WASM on_response called conduit_set_response_body, but this response has no body (1xx, 204, 205, 304 or an empty upstream body): it is sent as the upstream sent it (issue #379)"
         );
     }
 }
@@ -474,7 +474,7 @@ mod tests {
         assert!(body_can_be_replaced(&resp_with(200, Some("42"))));
         assert!(body_can_be_replaced(&resp_with(200, None)));
         assert!(body_can_be_replaced(&resp_with(404, Some("7"))));
-        for status in [100, 101, 103, 204, 304] {
+        for status in [100, 101, 103, 204, 205, 304] {
             assert!(!body_can_be_replaced(&resp_with(status, None)), "{status}");
         }
         assert!(!body_can_be_replaced(&resp_with(200, Some("0"))));
