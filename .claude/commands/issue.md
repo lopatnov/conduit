@@ -77,8 +77,10 @@ check (`.claude/rules/index.md`) before asking the user what to pick up.
 - Review your own diff as if it were someone else's: correctness, scope creep, missed edge
   cases, anything that contradicts a recorded architectural decision in `CLAUDE.md`.
 - Address any bot findings (CodeRabbit/Gitar/SonarCloud/Socket/Semgrep/CodeQL) that land
-  before you loop back — fix genuine issues, explain rather than silently ignore or
-  blindly comply with a false positive or stylistic opinion.
+  before you loop back. Check each claim against the code (`best-practices` §6): a real finding is
+  fixed until the code no longer triggers it (`workflow.md`, "Findings get fixed, not explained
+  away"); a wrong one gets one plain sentence with the evidence; one that cannot be fixed gets one
+  plain sentence and an issue.
 
 ## Step 4 — get it green
 
