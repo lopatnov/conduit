@@ -196,10 +196,13 @@ class Repository(unittest.TestCase):
         os.symlink(fifo, os.path.join(self.root, "src", "pipe.rs"))
 
         def writer():
-            """Open the pipe for writing, which lets a reader that waits for a writer finish."""
-            with open(fifo, "wb"):  # if the script did open the pipe, the test fails instead of hanging
+            """Open the pipe for writing without waiting, which lets a reader that is blocked on it finish."""
+            try:  # if the script did open the pipe, the test fails instead of hanging
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+            except OSError:  # nobody is reading (the script is right): fail at once, never wait for a reader
                 pass
         timer = threading.Timer(5, writer)
+        timer.daemon = True  # a timer that fires late must not keep the interpreter from exiting
         timer.start()
         self.addCleanup(timer.cancel)
         self.assertEqual(nul.added_lines(self.root, self.base), dict(ADDED, **{"src/linked.rs": [1, 2]}))
