@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- The HTTP-to-HTTPS redirect answers `421 Misdirected Request` for a `Host` that no site on that listener serves, instead of reflecting it into `Location` (#556, #588).
+- The static file handler opens files with `openat` + `O_NOFOLLOW` one component at a time, so a directory swapped for a symlink after the check can no longer be followed (Unix; #557).
+
+### Fixed
+
+- ACME certificate and key files are named from the lower-cased host, so `EXAMPLE.com` and `example.com` share one pair on every file system. A mixed-case host orders its certificate once more after the upgrade (#579).
+- A WASM `on_response` body replacement decides on the upstream `Content-Length` as received, so a `responseTransform` that removes the header no longer makes the guard miss an empty body (#561).
+
 ---
 
 ## [2.1.0] — 2026-10-11
