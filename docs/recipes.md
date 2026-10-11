@@ -195,6 +195,7 @@ The domain must point to this server and port 80 must be reachable for the HTTP-
 
 ```yaml
 # examples/tls-acme.yaml
+host: example.com   # required: the certificate is ordered for this name
 port: 443
 tls:
   acme:

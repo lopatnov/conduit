@@ -51,6 +51,7 @@ pub fn dispatch_command(cli: Cli) {
                 tls_cert: args.tls_cert,
                 tls_key: args.tls_key,
                 tls_acme: args.tls_acme,
+                host: args.host,
             }
             .execute();
         }
@@ -148,6 +149,7 @@ struct InitCmd {
     tls_cert: Option<String>,
     tls_key: Option<String>,
     tls_acme: Option<String>,
+    host: Option<String>,
 }
 impl CliCommand for InitCmd {
     fn execute(self) {
@@ -165,6 +167,7 @@ impl CliCommand for InitCmd {
             tls_cert: self.tls_cert.as_deref(),
             tls_key: self.tls_key.as_deref(),
             tls_acme: self.tls_acme.as_deref(),
+            host: self.host.as_deref(),
         };
         if let Err(e) = init::run_init(opts) {
             eprintln!("error: {e}");

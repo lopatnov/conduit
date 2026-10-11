@@ -113,7 +113,10 @@ fn reject_host_paths(spec: &serde_json::Value) -> Result<()> {
             }
         }
         if let Some(by) = v.pointer("/fallback/byAccept").and_then(|b| b.as_object()) {
-            if by.values().any(|e| e.get("file").is_some_and(|f| !f.is_null())) {
+            if by
+                .values()
+                .any(|e| e.get("file").is_some_and(|f| !f.is_null()))
+            {
                 out.push(format!("{scope}fallback.byAccept.*.file"));
             }
         }
@@ -210,11 +213,20 @@ mod tests {
         for (field, value) in [
             ("static", serde_json::json!({"root": "/etc"})),
             ("upload", serde_json::json!({"path": "/u", "dir": "/etc"})),
-            ("tls", serde_json::json!({"cert": "/etc/ssl/c.pem", "key": "/k"})),
-            ("tls", serde_json::json!({"acme": {"email": "a@b.c", "storage": "../../x"}})),
+            (
+                "tls",
+                serde_json::json!({"cert": "/etc/ssl/c.pem", "key": "/k"}),
+            ),
+            (
+                "tls",
+                serde_json::json!({"acme": {"email": "a@b.c", "storage": "../../x"}}),
+            ),
             ("logging", serde_json::json!({"file": "/etc/cron.d/x"})),
             ("fallback", serde_json::json!({"file": "/etc/passwd"})),
-            ("middleware", serde_json::json!([{"type": "wasm", "path": "/x.wasm"}])),
+            (
+                "middleware",
+                serde_json::json!([{"type": "wasm", "path": "/x.wasm"}]),
+            ),
         ] {
             let mut spec = make_spec(8080, Some("a.example.com"));
             match field {

@@ -308,6 +308,7 @@ tls:
 
 ```yaml
 # YAML
+host: example.com      # required: the certificate is ordered for this name
 port: 443
 tls:
   acme:
@@ -319,6 +320,7 @@ tls:
 ```json
 // JSON
 {
+  "host": "example.com",
   "port": 443,
   "tls": {
     "acme": {
@@ -361,7 +363,7 @@ within that window. Details: [`acme` in the CLI reference](cli.md#acme--auto-tls
 > TLS 1.2 and 1.3.) Setting either field is a hard validation
 > error (fails startup with an explanation) rather than a silent no-op, so a
 > misconfigured expectation of TLS restriction can't go unnoticed.
-| `acme.challenge`   | string   | —       | `"http-01"` or `"dns-01"`                                                                                                                     |
+| `acme.challenge`   | string   | —       | `"http-01"` (the only challenge implemented; other values are rejected)                                                                                                                     |
 | `acme.directory`   | string   | —       | Custom ACME directory URL. Use `"https://acme-staging-v02.api.letsencrypt.org/directory"` for Let's Encrypt staging (rate-limit-free testing) |
 | `clientAuth`       | object   | —       | [mTLS client cert verification](#mtls--client-certificate-authentication)                                                                     |
 

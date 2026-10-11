@@ -51,9 +51,6 @@ pub struct GlobalConfig {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub otlp: Option<OtlpConfig>,
-    // Reserved for future service-discovery providers (Consul, etcd, etc.)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub providers: Option<serde_json::Value>,
 }
 
 /// OpenTelemetry OTLP exporter configuration.

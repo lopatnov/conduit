@@ -32,7 +32,7 @@ pub(crate) fn load_config_or_exit(path: &Path) -> AppConfig {
     match conduit_config::parse::load_config(path) {
         Ok(cfg) => cfg,
         Err(e) => {
-            eprintln!("error loading config: {e}");
+            eprintln!("error loading config: {e:#}");
             print_missing_config_hint(path, &e);
             process::exit(1);
         }

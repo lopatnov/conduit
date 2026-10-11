@@ -13,6 +13,7 @@
       "type": "object",
       "required": ["sites"],
       "properties": {
+        "$schema": { "type": "string", "description": "Editor hint; ignored by Conduit." },
         "version": { "type": "integer", "minimum": 1, "description": "Config schema version." },
         "global": { "$ref": "#/$defs/GlobalConfig" },
         "sites": { "type": "array", "items": { "$ref": "#/$defs/SiteConfig" } }
@@ -41,13 +42,13 @@
             "sampleRate":  { "type": "number", "minimum": 0, "maximum": 1, "default": 1.0 },
             "timeoutMs":   { "type": "integer", "minimum": 1, "default": 5000 }
           }
-        },
-        "providers": { "description": "Reserved for future service-discovery providers (Consul, etcd, etc.) — not yet implemented." }
+        }
       }
     },
     "SiteConfig": {
       "type": "object",
       "properties": {
+        "$schema": { "type": "string", "description": "Editor hint; ignored by Conduit." },
         "host": { "type": "string", "description": "Virtual host name. '*' matches any host. With tls.acme it must be a plain DNS name, because the certificate and key files are named after it." },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "tls":  { "$ref": "#/$defs/TlsConfig" },
@@ -246,7 +247,7 @@
             "email":     { "type": "string", "format": "email" },
             "directory": { "type": "string" },
             "storage":   { "type": "string" },
-            "challenge": { "type": "string", "enum": ["http-01", "tls-alpn-01"] }
+            "challenge": { "type": "string", "enum": ["http-01"] }
           }
         }
       }

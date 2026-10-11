@@ -128,7 +128,8 @@ pub(super) fn plan_acme_renewals(
     let mut seen = HashSet::new();
     let mut jobs = Vec::new();
     for site in acme_sites(config) {
-        if !seen.insert((site.domain, site.storage_dir.clone())) {
+        // Case-insensitive: `EXAMPLE.com` and `example.com` share one file pair on macOS/Windows (#579).
+        if !seen.insert((site.domain.to_ascii_lowercase(), site.storage_dir.clone())) {
             continue;
         }
         let source = if token_ports.contains(&site.challenge_port) {

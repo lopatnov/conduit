@@ -615,7 +615,10 @@ fn apply_upstream_tls(peer: &mut HttpPeer, tls_cfg: &conduit_upstream::config::U
 mod upstream_tls_tests {
     use super::*;
 
-    fn cfg(server_name: Option<&str>, verify: Option<bool>) -> conduit_upstream::config::UpstreamTlsConfig {
+    fn cfg(
+        server_name: Option<&str>,
+        verify: Option<bool>,
+    ) -> conduit_upstream::config::UpstreamTlsConfig {
         conduit_upstream::config::UpstreamTlsConfig {
             verify,
             server_name: server_name.map(str::to_owned),

@@ -168,7 +168,7 @@ conduit init -y
 
 # Non-interactive with overrides
 conduit init -y --port 3000 --proxy http://localhost:4000
-conduit init -y --format yaml --port 443 --tls-acme admin@example.com -o prod.yaml
+conduit init -y --format yaml --port 443 --tls-acme admin@example.com --host example.com -o prod.yaml
 
 # Format inferred from -o extension
 conduit init -o conduit.yaml   # YAML
@@ -204,6 +204,7 @@ conduit init -o conduit.json   # JSON
 | `--tls-cert FILE`                   | —     | TLS certificate file (enables manual TLS)         |
 | `--tls-key FILE`                    | —     | TLS private key file (required with `--tls-cert`) |
 | `--tls-acme EMAIL`                  | —     | ACME email (enables Let's Encrypt auto-TLS)       |
+| `--host HOST`                       | —     | Site host name (required with `--tls-acme`)       |
 
 When both `--yes` and individual flags are given, the flags override the
 defaults. Any setting not covered by a flag is silently set to its default

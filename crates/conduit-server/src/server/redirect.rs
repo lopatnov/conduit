@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use dashmap::DashMap;
 use conduit_core::util::host::host_without_port;
+use dashmap::DashMap;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
 use pingora_http::ResponseHeader;
@@ -138,10 +138,16 @@ mod tests {
     #[test]
     fn accepts_plain_hosts_with_or_without_port() {
         assert_eq!(redirect_host("example.com").as_deref(), Some("example.com"));
-        assert_eq!(redirect_host("example.com:8080").as_deref(), Some("example.com"));
+        assert_eq!(
+            redirect_host("example.com:8080").as_deref(),
+            Some("example.com")
+        );
         assert_eq!(redirect_host("127.0.0.1:80").as_deref(), Some("127.0.0.1"));
         assert_eq!(redirect_host("[::1]:8080").as_deref(), Some("[::1]"));
-        assert_eq!(redirect_host("[2001:db8::1]").as_deref(), Some("[2001:db8::1]"));
+        assert_eq!(
+            redirect_host("[2001:db8::1]").as_deref(),
+            Some("[2001:db8::1]")
+        );
     }
 
     /// #556: nothing that could change the meaning of the `Location` URL is reflected.
