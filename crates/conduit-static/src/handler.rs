@@ -1065,16 +1065,34 @@ mod tests {
 
     #[tokio::test]
     async fn find_file_returns_the_root_that_holds_the_file_or_its_index() {
-        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (a, b, c) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        );
+        // `a` holds `first.txt`, `b` holds `f.txt` and `d/index.html`, `c` (the last root) is
+        // empty except for a root-level index.html: a lookup that always returned the first or
+        // the last root would get one of these wrong.
+        std::fs::write(a.path().join("first.txt"), "x").unwrap();
         std::fs::write(b.path().join("f.txt"), "x").unwrap();
         std::fs::create_dir(b.path().join("d")).unwrap();
         std::fs::write(b.path().join("d/index.html"), "x").unwrap();
-        let roots = [a.path().to_path_buf(), b.path().to_path_buf()];
+        std::fs::write(c.path().join("index.html"), "x").unwrap();
+        let roots = [
+            a.path().to_path_buf(),
+            b.path().to_path_buf(),
+            c.path().to_path_buf(),
+        ];
         let opts = StaticOptions::default();
+        let (root, path) = find_file(&roots, "first.txt", &opts).await.unwrap();
+        assert_eq!((root, path), (a.path(), a.path().join("first.txt")));
         let (root, path) = find_file(&roots, "f.txt", &opts).await.unwrap();
         assert_eq!((root, path), (b.path(), b.path().join("f.txt")));
         let (root, path) = find_file(&roots, "d", &opts).await.unwrap();
         assert_eq!((root, path), (b.path(), b.path().join("d/index.html")));
+        // The empty `rel` falls back to the first root that has an index file.
+        let (root, path) = find_file(&roots, "", &opts).await.unwrap();
+        assert_eq!((root, path), (c.path(), c.path().join("index.html")));
         assert!(find_file(&roots, "missing", &opts).await.is_none());
     }
 

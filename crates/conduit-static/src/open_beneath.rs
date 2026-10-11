@@ -3,13 +3,15 @@
 //! Checking a path with `symlink_metadata` and opening it afterwards leaves a window in which
 //! someone with write access inside the served directory can swap a directory for a symlink.
 //! Here the walk and the open are one step: the root is opened once, then every component is
-//! opened relative to the previous directory descriptor (safe `rustix` wrappers, no `unsafe` here) with `O_NOFOLLOW` (and `O_DIRECTORY` for
-//! the intermediate ones), so the kernel refuses a symlink at any level, whatever happens to the
-//! path meanwhile. This is the same guarantee as Linux `openat2(RESOLVE_BENEATH |
+//! opened relative to the previous directory descriptor (safe `rustix` wrappers, no `unsafe` here)
+//! with `O_NOFOLLOW` (and `O_DIRECTORY` for the intermediate ones), so the kernel refuses a symlink
+//! at any level below the root, whatever happens to the path meanwhile. The root path itself is
+//! resolved normally (a symlinked root is a supported deployment); see "Symlinks" in
+//! `docs/configuration.md`. This is the same guarantee as Linux `openat2(RESOLVE_BENEATH |
 //! RESOLVE_NO_SYMLINKS)`, built from `openat` so it also holds on macOS and the BSDs.
 //!
 //! Windows keeps the check-then-open in `handler.rs`; creating symlinks there needs elevated
-//! privileges and the remaining window is documented in `docs/`.
+//! privileges and the remaining window is documented in `docs/configuration.md`.
 
 use std::io;
 use std::path::{Component, Path};

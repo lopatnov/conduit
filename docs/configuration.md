@@ -1281,6 +1281,18 @@ staticOptions:
 | `lastModified`  | bool     | `true`           | `Last-Modified` header                               |
 | `maxAge`        | string   | —                | `Cache-Control: max-age` — humantime duration string |
 
+### Symlinks
+
+A symlink **below** a static root is never served, whether it points to a file or to a directory:
+the request is treated as if the file did not exist. On Unix every component under the root is
+opened with `O_NOFOLLOW`, so a directory swapped for a symlink between the check and the open is
+refused as well. On Windows the check runs before the open (creating symlinks there needs elevated
+rights), so a symlink swapped in between the two could still be followed.
+
+The root path itself is resolved normally: a symlinked root such as `current -> releases/42` works,
+and switching that link takes effect on the next request. Whoever can replace the root path, or one
+of its parent directories, decides what is served, so keep those writable by the operator only.
+
 ---
 
 ## Redirects

@@ -2,6 +2,8 @@
 description: Find the uncovered lines behind a failing SonarCloud quality gate on a PR
 ---
 
+# SonarCloud gate investigation
+
 The project is public, so a local session can list the uncovered new lines without the web UI (replace `<n>` with the PR number):
 
 ```
