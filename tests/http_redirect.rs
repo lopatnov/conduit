@@ -237,3 +237,51 @@ fn acme_challenge_path_returns_404_not_redirect() {
         "ACME challenge path must not be redirected, got status: {status}"
     );
 }
+
+/// #556/#588: only the host of a site on the redirect port is redirected; any other `Host` gets 421.
+#[test]
+#[serial]
+fn http_redirect_answers_421_for_hosts_no_site_serves() {
+    let (_cert_dir, cert_path, key_path) = make_self_signed_cert();
+    let tls_port = common::free_port();
+    let http_port = common::free_port();
+    let admin_port = common::free_port();
+
+    let _srv = common::TestServer::start_with_config(
+        tls_port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "host": "app.test",
+                "port": tls_port,
+                "tls": {
+                    "cert": cert_path,
+                    "key": key_path,
+                    "httpRedirectPort": http_port
+                },
+                "healthCheck": true
+            }]
+        }),
+    );
+
+    wait_for_redirect_port(http_port);
+    let client = no_redirect_client();
+    let get = |host: &str| {
+        client
+            .get(format!("http://127.0.0.1:{http_port}/x?y=1"))
+            .header("Host", host)
+            .send()
+            .expect("GET")
+    };
+
+    let resp = get("APP.test");
+    assert_eq!(resp.status().as_u16(), 308);
+    let location = resp.headers()["location"].to_str().unwrap().to_owned();
+    assert!(location.starts_with("https://APP.test"), "{location}");
+    assert!(location.ends_with("/x?y=1"), "{location}");
+
+    assert_eq!(get("evil.example").status().as_u16(), 421);
+    assert_eq!(get("127.0.0.1").status().as_u16(), 421);
+    assert_eq!(get("bad host").status().as_u16(), 400);
+}
