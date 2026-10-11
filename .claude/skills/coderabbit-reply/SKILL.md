@@ -51,7 +51,8 @@ mcp__github__resolve_review_thread(owner: "lopatnov", repo: "conduit", threadId:
 ## Local-session equivalent (`gh api`)
 
 A local session (see `.claude/rules/index.md` "GitHub access differs by execution
-context") can do the same two steps with `gh api` directly instead of the MCP tools:
+context") can do the same two steps with `gh api` directly instead of the MCP tools (a
+cloud container that ships `gh` cannot run the GraphQL parts, see the next section):
 
 ```bash
 # Reply (numeric comment id from #discussion_r..., same as above)
@@ -86,6 +87,25 @@ query($cursor: String) {
   }
 }'
 ```
+
+## Cloud container that has `gh` — GraphQL is blocked, use the CCR routes
+
+`gh api graphql` is refused in a cloud container even when `gh` is installed ("GitHub GraphQL
+is not available from Claude Code sessions", checked 2026-10-11), so the two GraphQL snippets
+above fail there. The REST reply above works unchanged. For threads the proxy offers CCR routes
+that take the numeric comment id, with no `PRRT_...` node id needed. They are also the way out
+when the MCP calls (`get_review_comments`, `resolve_review_thread`: GraphQL behind the scenes)
+are rate-limited (`rules/index.md`):
+
+```bash
+# Threads of a PR: [{resolved, outdated, path, line, comment_ids}]
+gh api repos/lopatnov/conduit/pulls/<PR>/ccr/review_threads
+# Resolve the thread that holds comment <id> (".../unresolve" reopens it)
+gh api -X POST repos/lopatnov/conduit/pulls/<PR>/ccr/comments/<comment id>/resolve
+```
+
+The same family: `PUT`/`DELETE .../ccr/auto_merge`, `POST .../ccr/ready_for_review` and
+`.../ccr/convert_to_draft`.
 
 ## Resolving isn't optional here — it can be a hard merge gate
 
