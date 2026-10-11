@@ -110,7 +110,8 @@ check (`.claude/rules/index.md`) before asking the user what to pick up.
   comments, and reviews, from every author (CodeRabbit, Gitar, Sonar, Semgrep, Socket, the
   user) — not that checks are green or the unresolved-thread count is 0. Give every finding
   a recorded disposition: fixed, deferred with an issue (`fast-follow` label), or rejected
-  with the reason.
+  with the reason. `scripts/pr-comments.sh <pr> --full` prints all three streams and the checks
+  that are not green (REST only, so it runs in a cloud container too).
 - Read each bot's **reply to your reply** before resolving a thread (CodeRabbit says whether it
   keeps the thread open as a tracked follow-up). Read what the bots posted on a tracking PR too, if
   the branch targets one. A review posted from the owner's own account may be tool-generated

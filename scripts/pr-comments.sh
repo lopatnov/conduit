@@ -14,7 +14,7 @@
 #   --full       print whole bodies (default: first 900 characters of each)
 #   --repo R     OWNER/REPO (default: the current directory's repository)
 #
-# Needs an authenticated `gh`. Read-only.
+# Needs an authenticated `gh` (REST only: works where GraphQL is refused, e.g. a cloud container). Read-only.
 set -uo pipefail
 
 usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
@@ -36,29 +36,48 @@ case "$PR" in *[!0-9]*) echo "PR must be a number, got: $PR" >&2; exit 2 ;; esac
 # SINCE is interpolated into a jq program below; accept only characters an ISO timestamp has.
 case "$SINCE" in *[!0-9TZ:.+-]*) echo "--since must look like 2026-09-26T19:00:00Z" >&2; exit 2 ;; esac
 
-[ -n "$REPO" ] || REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) || exit 1
+# `gh repo view`, `gh pr view` and `gh pr checks` use GraphQL, which a cloud container refuses ("GitHub GraphQL is not
+# available from Claude Code sessions"); the repository falls back to the origin URL and the rest is read over REST.
+if [ -z "$REPO" ]; then
+  REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) \
+    || REPO=$(git remote get-url origin 2>/dev/null | sed -E 's#/+$##; s#\.git$##; s#^.*[:/]([^/:]+/[^/]+)$#\1#')
+fi
+[[ $REPO =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || { echo "cannot tell the repository from gh or from the origin URL; pass --repo OWNER/REPO" >&2; exit 2; }
 
 # Trim, drop carriage returns, keep the body on its own indented lines.
 BODY='(.body // "") | gsub("\r"; "") | .[0:'"$LIMIT"'] | gsub("\n"; "\n    ")'
 
 echo "== PR #$PR in $REPO =="
-gh pr view "$PR" -R "$REPO" --json title,state,baseRefName,headRefOid,mergeStateStatus \
-  --jq '"title:  " + .title, "state:  " + .state + "  merge: " + .mergeStateStatus + "  base: " + .baseRefName, "head:   " + .headRefOid'
+# One read gives the header and the head commit the checks below are asked about, so the two cannot name different commits.
+# A failed read leaves no head commit, and so does an answer that is not a commit id: either way the run stops here.
+HEADER=$(gh api "repos/$REPO/pulls/$PR" \
+  --jq '"title:  " + .title, "state:  " + .state + (if .merged then " (merged)" else "" end) + "  merge: " + (.mergeable_state // "unknown") + "  base: " + .base.ref, "head:   " + .head.sha')
+HEAD=$(printf '%s\n' "$HEADER" | sed -n 's/^head:   //p')
+case "$HEAD" in ""|*[!0-9a-f]*) echo "could not read the head commit of PR #$PR" >&2; exit 1 ;; esac
+printf '%s\n' "$HEADER"
 
 echo
 echo "== checks that are not green =="
-# `gh pr checks` exits 8 while checks are pending and 1 when some failed, and prints its tab-separated table either
-# way; anything without a table (auth or network error, bad repo, "no checks reported") is a real failure and must
-# not be shown as a green list (a false "all passing" on a script meant to gate merges).
-RAW=$(gh pr checks "$PR" -R "$REPO" 2>&1); RC=$?
-if ! printf '%s\n' "$RAW" | grep -q "$(printf '\t')"; then
-  echo "  !! could not read the checks (gh exit $RC): ${RAW:-no output}"
+# The head commit's check runs (Actions jobs, apps) and its legacy commit statuses, as "state<TAB>name" rows. A read that
+# fails (auth or network error, bad repo) or finds no check at all is a real failure and must not be shown as a green
+# list (a false "all passing" on a script meant to gate merges).
+RUNS=$(gh api --paginate "repos/$REPO/commits/$HEAD/check-runs?per_page=100" \
+  --jq '.check_runs[] | [(if .status == "completed" then .conclusion else .status end), .name] | @tsv' 2>&1); RC1=$?
+STATUSES=$(gh api --paginate "repos/$REPO/commits/$HEAD/status?per_page=100" \
+  --jq '.statuses[] | [.state, .context] | @tsv' 2>&1); RC2=$?
+ROWS=$(printf '%s\n%s\n' "$RUNS" "$STATUSES" | awk -F'\t' 'NF > 1')  # drops anything gh printed that is not a row
+if [ "$RC1" -ne 0 ] || [ "$RC2" -ne 0 ]; then
+  echo "  !! could not read the checks (gh exit $RC1/$RC2): $RUNS $STATUSES"
+  CHECKS=""
+elif [ -z "$ROWS" ]; then
+  echo "  !! no check reported for ${HEAD:0:8} yet"
   CHECKS=""
 else
-  CHECKS=$(printf '%s\n' "$RAW" | awk -F'\t' 'NF > 1 && $2 != "pass" && $2 != "skipping" {print "  " $2 "\t" $1}')
+  CHECKS=$(printf '%s\n' "$ROWS" | awk -F'\t' '$1 != "success" && $1 != "skipped" && $1 != "neutral" {print "  " $1 "\t" $2}')
   if [ -z "$CHECKS" ]; then echo "  (all passing)"; else printf '%s\n' "$CHECKS"; fi
 fi
-if printf '%s\n' "$CHECKS" | grep -qiE 'pending|queued|in_progress'; then
+if printf '%s\n' "$CHECKS" | cut -f1 | grep -qE '^ +(pending|queued|in_progress|waiting|requested)$'; then
   echo "  !! something is still running — a bot that has not finished has not commented yet; run this again"
 fi
 
