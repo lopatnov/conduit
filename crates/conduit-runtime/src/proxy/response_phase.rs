@@ -160,6 +160,9 @@ pub(super) async fn upstream_response_filter(
     // The response chain may execute WASM plugins whose .wasm file is read from disk on first load, so a chain that
     // has one runs through `block_in_place`; a chain that only edits headers runs in place (issue #475: the
     // unconditional `block_in_place` cost ~30 us of CPU and a thread hand-off per response).
+    // Decide whether a body replacement could be delivered on the response as the upstream sent it: a
+    // `responseTransform` or plugin may drop `Content-Length` later and must not defeat the check (#561).
+    let upstream_has_body = body_can_be_replaced(upstream_response);
     let run_result = chain.run_offloading(upstream_response, req_ctx);
 
     match run_result? {
@@ -194,7 +197,7 @@ pub(super) async fn upstream_response_filter(
 
         ResponseFilterOutcome::ReplaceBody(bytes) => {
             if let Some(req_ctx_mut) = ctx.as_mut() {
-                if body_can_be_replaced(upstream_response) {
+                if upstream_has_body && status_allows_body(upstream_response) {
                     // The replacement is plain bytes of a known length: the upstream body's encoding,
                     // framing and validators no longer describe it.
                     upstream_response.remove_header("content-encoding");
@@ -238,6 +241,11 @@ pub(super) async fn upstream_response_filter(
 /// (`Content-Length: 0`). Advertising a `Content-Length` there would promise bytes that never come, so the
 /// response is left as the upstream sent it. (An HTTP/2 upstream that ends the stream on the HEADERS frame
 /// without a `Content-Length` cannot be told apart here and is a known limitation.)
+fn status_allows_body(resp: &pingora_http::ResponseHeader) -> bool {
+    let status = resp.status.as_u16();
+    !(status < 200 || status == 204 || status == 205 || status == 304)
+}
+
 fn body_can_be_replaced(resp: &pingora_http::ResponseHeader) -> bool {
     let status = resp.status.as_u16();
     if status < 200 || status == 204 || status == 205 || status == 304 {

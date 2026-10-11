@@ -865,9 +865,12 @@ In `on_response`, seven host functions are available:
 > headers and sets `Content-Length` to the new length. If several plugins set a body, the last one wins.
 > The upstream body is still read from the upstream; only what the client gets changes.
 >
-> Limits: a response that cannot carry a body (`1xx`, `204`, `304`, or an upstream `Content-Length: 0`) is sent
+> Limits: a response that cannot carry a body (`1xx`, `204`, `205`, `304`, or an upstream `Content-Length: 0`) is sent
 > as the upstream sent it, and Conduit logs one warning. `on_response` does not run for a `5xx` that
-> `maskErrors` masks or a retry replaces. Headers that describe the old body, such as `Content-Range`,
+> `maskErrors` masks or a retry replaces. Whether the upstream sent an empty body is decided from its own
+> `Content-Length` before any `responseTransform` runs. An HTTP/2 upstream that ends the stream on the HEADERS
+> frame without a `Content-Length` looks like a response with a body here, so the replacement is still applied
+> and the response is inconsistent; this is a known limitation. Headers that describe the old body, such as `Content-Range`,
 > `Accept-Ranges` and `Content-Digest`, are left alone: a plugin that replaces a `206` or a digested body should
 > remove them with `conduit_remove_response_header`. If the plugin traps or runs out of fuel, Conduit fails open and
 > the original body goes through, so `on_response` is not a redaction guarantee.
