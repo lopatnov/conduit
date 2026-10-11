@@ -5,7 +5,7 @@ members  = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version    = "2.0.0"
+version    = "2.1.0"
 edition    = "2021"
 # MSRV for default/standard/kubernetes builds — the lowest floor set by a
 # mandatory dependency (kube 4.2 needs 1.89). `--features wasm` (and so
@@ -31,38 +31,38 @@ pingora-cache = { version = "0.9", features = ["rustls"] }
 # --- Conduit workspace member crates ---
 # path + version so `cargo publish` can resolve this as a real dependency
 # once member crates start publishing (see #114's crates.io-publishing risk).
-lopatnov-conduit-core        = { path = "crates/conduit-core", version = "2.0.0" }
-lopatnov-conduit-config-core = { path = "crates/conduit-config-core", version = "2.0.0" }
-lopatnov-conduit-config      = { path = "crates/conduit-config", version = "2.0.0" }
-lopatnov-conduit-runtime     = { path = "crates/conduit-runtime", version = "2.0.0" }
-lopatnov-conduit-admin       = { path = "crates/conduit-admin", version = "2.0.0" }
-lopatnov-conduit-server      = { path = "crates/conduit-server", version = "2.0.0" }
-lopatnov-conduit-cli         = { path = "crates/conduit-cli", version = "2.0.0" }
-lopatnov-conduit-otlp        = { path = "crates/conduit-otlp", version = "2.0.0" }
-lopatnov-conduit-acme        = { path = "crates/conduit-acme", version = "2.0.0" }
-lopatnov-conduit-tcp         = { path = "crates/conduit-tcp", version = "2.0.0" }
-lopatnov-conduit-upload      = { path = "crates/conduit-upload", version = "2.0.0" }
-lopatnov-conduit-faults      = { path = "crates/conduit-faults", version = "2.0.0" }
-lopatnov-conduit-auth-jwt    = { path = "crates/conduit-auth-jwt", version = "2.0.0" }
-lopatnov-conduit-auth-forward   = { path = "crates/conduit-auth-forward", version = "2.0.0" }
-lopatnov-conduit-auth-consumers = { path = "crates/conduit-auth-consumers", version = "2.0.0" }
-lopatnov-conduit-cache          = { path = "crates/conduit-cache", version = "2.0.0" }
-lopatnov-conduit-ipfilter          = { path = "crates/conduit-ipfilter", version = "2.0.0" }
-lopatnov-conduit-cors              = { path = "crates/conduit-cors", version = "2.0.0" }
-lopatnov-conduit-security-headers  = { path = "crates/conduit-security-headers", version = "2.0.0" }
-lopatnov-conduit-ratelimit         = { path = "crates/conduit-ratelimit", version = "2.0.0" }
-lopatnov-conduit-limits             = { path = "crates/conduit-limits", version = "2.0.0" }
-lopatnov-conduit-compression        = { path = "crates/conduit-compression", version = "2.0.0" }
-lopatnov-conduit-static              = { path = "crates/conduit-static", version = "2.0.0" }
-lopatnov-conduit-hotreload           = { path = "crates/conduit-hotreload", version = "2.0.0" }
-lopatnov-conduit-metrics             = { path = "crates/conduit-metrics", version = "2.0.0" }
-lopatnov-conduit-redirects           = { path = "crates/conduit-redirects", version = "2.0.0" }
-lopatnov-conduit-script-rhai         = { path = "crates/conduit-script-rhai", version = "2.0.0" }
-lopatnov-conduit-plugin-wasm         = { path = "crates/conduit-plugin-wasm", version = "2.0.0" }
-lopatnov-conduit-middleware          = { path = "crates/conduit-middleware", version = "2.0.0" }
-lopatnov-conduit-k8s                 = { path = "crates/conduit-k8s", version = "2.0.0" }
-lopatnov-conduit-upstream            = { path = "crates/conduit-upstream", version = "2.0.0" }
-lopatnov-conduit-proxy-http          = { path = "crates/conduit-proxy-http", version = "2.0.0" }
+lopatnov-conduit-core        = { path = "crates/conduit-core", version = "2.1.0" }
+lopatnov-conduit-config-core = { path = "crates/conduit-config-core", version = "2.1.0" }
+lopatnov-conduit-config      = { path = "crates/conduit-config", version = "2.1.0" }
+lopatnov-conduit-runtime     = { path = "crates/conduit-runtime", version = "2.1.0" }
+lopatnov-conduit-admin       = { path = "crates/conduit-admin", version = "2.1.0" }
+lopatnov-conduit-server      = { path = "crates/conduit-server", version = "2.1.0" }
+lopatnov-conduit-cli         = { path = "crates/conduit-cli", version = "2.1.0" }
+lopatnov-conduit-otlp        = { path = "crates/conduit-otlp", version = "2.1.0" }
+lopatnov-conduit-acme        = { path = "crates/conduit-acme", version = "2.1.0" }
+lopatnov-conduit-tcp         = { path = "crates/conduit-tcp", version = "2.1.0" }
+lopatnov-conduit-upload      = { path = "crates/conduit-upload", version = "2.1.0" }
+lopatnov-conduit-faults      = { path = "crates/conduit-faults", version = "2.1.0" }
+lopatnov-conduit-auth-jwt    = { path = "crates/conduit-auth-jwt", version = "2.1.0" }
+lopatnov-conduit-auth-forward   = { path = "crates/conduit-auth-forward", version = "2.1.0" }
+lopatnov-conduit-auth-consumers = { path = "crates/conduit-auth-consumers", version = "2.1.0" }
+lopatnov-conduit-cache          = { path = "crates/conduit-cache", version = "2.1.0" }
+lopatnov-conduit-ipfilter          = { path = "crates/conduit-ipfilter", version = "2.1.0" }
+lopatnov-conduit-cors              = { path = "crates/conduit-cors", version = "2.1.0" }
+lopatnov-conduit-security-headers  = { path = "crates/conduit-security-headers", version = "2.1.0" }
+lopatnov-conduit-ratelimit         = { path = "crates/conduit-ratelimit", version = "2.1.0" }
+lopatnov-conduit-limits             = { path = "crates/conduit-limits", version = "2.1.0" }
+lopatnov-conduit-compression        = { path = "crates/conduit-compression", version = "2.1.0" }
+lopatnov-conduit-static              = { path = "crates/conduit-static", version = "2.1.0" }
+lopatnov-conduit-hotreload           = { path = "crates/conduit-hotreload", version = "2.1.0" }
+lopatnov-conduit-metrics             = { path = "crates/conduit-metrics", version = "2.1.0" }
+lopatnov-conduit-redirects           = { path = "crates/conduit-redirects", version = "2.1.0" }
+lopatnov-conduit-script-rhai         = { path = "crates/conduit-script-rhai", version = "2.1.0" }
+lopatnov-conduit-plugin-wasm         = { path = "crates/conduit-plugin-wasm", version = "2.1.0" }
+lopatnov-conduit-middleware          = { path = "crates/conduit-middleware", version = "2.1.0" }
+lopatnov-conduit-k8s                 = { path = "crates/conduit-k8s", version = "2.1.0" }
+lopatnov-conduit-upstream            = { path = "crates/conduit-upstream", version = "2.1.0" }
+lopatnov-conduit-proxy-http          = { path = "crates/conduit-proxy-http", version = "2.1.0" }
 
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }

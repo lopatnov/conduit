@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [2.1.0] — 2026-10-11
+
+2.1.0 is a fix release on top of 2.0.0: no config shape or CLI flag is removed
+except the unimplemented `global.providers` field. The main changes are
+security hardening (the npm postinstall now verifies the binary it downloads,
+the HTTP-to-HTTPS redirect refuses a malformed `Host`, a `ConduitSite` can no
+longer name host files, ACME certificate renewal is fixed) and config
+correctness (`tls.acme` needs a `host`, `upstreamTls.serverName` takes effect,
+config type errors name the field). The maintainer release guide is
+`docs/releasing.md`.
+
 ### Fixed
 
 - **`tls.acme` now needs a `host` and only accepts `challenge: http-01`** (issues #577, #578). A site with `tls.acme` and no host used to start and serve plain HTTP on its TLS port; `conduit init --tls-acme` now takes `--host`. DNS-01 was documented but never implemented. On Windows, hosts whose first label is a device name (`con`, `nul`, ...) are refused, and renewal de-duplication ignores case (issue #579).
