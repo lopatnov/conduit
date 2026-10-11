@@ -233,6 +233,12 @@ pub(super) async fn upstream_response_filter(
     Ok(())
 }
 
+/// `true` when the response status can carry content (not `1xx`, `204`, `205`, `304`).
+fn status_allows_body(resp: &pingora_http::ResponseHeader) -> bool {
+    let status = resp.status.as_u16();
+    !(status < 200 || status == 204 || status == 205 || status == 304)
+}
+
 /// `true` when a WASM `on_response` body replacement can be delivered for this response (issue #379).
 ///
 /// The replacement is swapped in by `upstream_response_body_filter`, which Pingora only calls when a body
@@ -241,11 +247,6 @@ pub(super) async fn upstream_response_filter(
 /// (`Content-Length: 0`). Advertising a `Content-Length` there would promise bytes that never come, so the
 /// response is left as the upstream sent it. (An HTTP/2 upstream that ends the stream on the HEADERS frame
 /// without a `Content-Length` cannot be told apart here and is a known limitation.)
-fn status_allows_body(resp: &pingora_http::ResponseHeader) -> bool {
-    let status = resp.status.as_u16();
-    !(status < 200 || status == 204 || status == 205 || status == 304)
-}
-
 fn body_can_be_replaced(resp: &pingora_http::ResponseHeader) -> bool {
     let status = resp.status.as_u16();
     if status < 200 || status == 204 || status == 205 || status == 304 {
