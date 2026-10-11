@@ -6,9 +6,12 @@ Run:  python3 scripts/test_new_uncovered_lines.py
 import contextlib
 import io
 import os
+import random
+import re
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -110,8 +113,8 @@ def write_lcov(root, records):
 
 
 def matches(patterns, path):
-    """True when one of the compiled exclusion patterns matches `path`."""
-    return any(rx.match(path) for rx in patterns)
+    """True when one of the exclusion token lists (from `coverage_exclusions`) matches `path`."""
+    return any(nul.glob_match(tokens, path) for tokens in patterns)
 
 
 class Repository(unittest.TestCase):
@@ -179,6 +182,38 @@ class Repository(unittest.TestCase):
         write(os.path.join(self.root, "notes.txt"), "not Rust\n")  # untracked, not compiled
         expected = dict(ADDED, **{"src/a.rs": [2, 3, 5, 8], "src/untouched.rs": [2], "src/fresh.rs": [1, 2, 3]})
         self.assertEqual(nul.added_lines(self.root, self.base), expected)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs named pipes and symlinks")
+    def test_an_untracked_link_is_followed_to_a_file_but_not_into_a_pipe(self):
+        """git lists an untracked symlink: one that points at a regular file is source (cargo follows it), but opening
+        one that points at a FIFO would wait for ever for a writer."""
+        elsewhere = tempfile.TemporaryDirectory()
+        self.addCleanup(elsewhere.cleanup)
+        real, fifo = os.path.join(elsewhere.name, "real.rs"), os.path.join(elsewhere.name, "pipe")
+        write(real, "r1\nr2\n")
+        os.mkfifo(fifo)
+        os.symlink(real, os.path.join(self.root, "src", "linked.rs"))
+        os.symlink(fifo, os.path.join(self.root, "src", "pipe.rs"))
+
+        def writer():
+            """Open the pipe for writing, which lets a reader that waits for a writer finish."""
+            with open(fifo, "wb"):  # if the script did open the pipe, the test fails instead of hanging
+                pass
+        timer = threading.Timer(5, writer)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        self.assertEqual(nul.added_lines(self.root, self.base), dict(ADDED, **{"src/linked.rs": [1, 2]}))
+
+    @unittest.skipIf(sys.platform == "win32", "such a file name cannot be created here")
+    def test_a_file_name_with_an_escape_character_is_printed_escaped(self):
+        """`ls-files -z` hands over names as they are: an escape sequence in one must not reach the terminal, in the
+        warning for a file missing from the report nor in the line for a file that is in it."""
+        write(os.path.join(self.root, "src", "x\x1b[31mred.rs"), "r\n")
+        write(os.path.join(self.root, "src", "y\x1b[32mgreen.rs"), "g\n")
+        out, err = self.report(write_lcov(self.root, dict(LCOV, **{"src/y\x1b[32mgreen.rs": {1: 0}})), self.base)
+        self.assertIn("'src/x\\x1b[31mred.rs'", err)
+        self.assertIn("'src/y\\x1b[32mgreen.rs': 1 of 1 new lines uncovered: [1]", out)
+        self.assertNotIn("\x1b", out + err)
 
     def test_nothing_added_warns_and_reports_no_executable_lines(self):
         """An empty diff is reported as such, not as 100% coverage."""
@@ -259,10 +294,33 @@ class Files(unittest.TestCase):
             ("src/?.rs", "src/ab.rs", False),
             ("a?b.rs", "a/b.rs", False),  # `?` does not match a separator
             ("src/main.rs", "src/main.rs.bak", False),  # the whole path has to match
+            ("src/**", "src/", True),  # `**` may match nothing
+            ("src/**", "src", False),
+            ("a**b", "ab", True),
+            ("src/**/gen.rs", "src/gen.rs", True),  # `**/` may match no directory
+            ("src/**/gen.rs", "src/a/b/gen.rs", True),
+            ("src/**/gen.rs", "src/gen.rsx", False),
+            # A backtracking regex takes hours on these (the pattern comes from a file in the repository).
+            ("*" * 30 + "x", "a" * 200, False),
+            ("*" * 30 + "x", "a" * 200 + "x", True),
+            ("*a" * 12 + "b", "a" * 200, False),
         ]
         for glob, path, expected in cases:
             with self.subTest(glob=glob, path=path):
-                self.assertEqual(bool(nul.glob_regex(glob).match(path)), expected)
+                self.assertEqual(nul.glob_match(nul.glob_tokens(glob), path), expected)
+
+    def test_globs_give_the_answer_of_the_regex_sonar_builds_from_them(self):
+        """Sonar turns an Ant pattern into a regex; on random patterns and paths the table-driven matcher agrees."""
+        table = {"**/": "(?:.*/)?", "**": ".*", "*": "[^/]*", "?": "[^/]"}
+        rng, seen = random.Random(2026), set()
+        for _ in range(4000):
+            glob = "".join(rng.choice(["a", "b", "/", "*", "**", "**/", "?", "ab"]) for _ in range(rng.randint(0, 6)))
+            path = "".join(rng.choice("ab/") for _ in range(rng.randint(0, 9)))
+            regex = "".join(table.get(part, re.escape(part)) for part in re.split(r"(\*\*/|\*\*|\*|\?)", glob))
+            expected = re.fullmatch(regex, path) is not None
+            seen.add(expected)
+            self.assertEqual(nul.glob_match(nul.glob_tokens(glob), path), expected, (glob, path))
+        self.assertEqual(seen, {True, False})  # both outcomes were compared
 
     def test_exclusions_come_from_the_coverage_key_with_its_continuation_lines(self):
         """Only `sonar.coverage.exclusions` counts, and its value continues over lines that end in a backslash."""

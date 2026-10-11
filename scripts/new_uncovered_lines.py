@@ -20,7 +20,8 @@ import subprocess
 import sys
 
 HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-GLOB_TOKENS = {"**/": "(?:.*/)?", "**": ".*", "*": "[^/]*", "?": "[^/]"}
+GLOB_TOKEN = re.compile(r"\*\*/|\*\*|\*|\?|.", re.S)
+GLOB_KINDS = {"**/": "dirs", "**": "any", "*": "star", "?": "one"}
 
 
 def git(root, *args):
@@ -79,38 +80,67 @@ def parse_diff(diff):
     return added
 
 
-def line_count(data):
-    """Lines in a file's bytes, counting a last line that has no newline."""
-    return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
-
-
 def added_lines(root, base):
     """{file: [added line numbers]} of the working tree against the merge base of `base` and HEAD."""
     fork = git(root, "merge-base", base, "HEAD").strip()
     added = parse_diff(git(root, "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff",
                            "--src-prefix=a/", "--dst-prefix=b/", "-U0", fork))
     for name in git(root, "ls-files", "--others", "--exclude-standard", "-z").split("\0"):
-        if name.endswith(".rs"):  # git diff leaves out an untracked file, but the build compiled it
-            with open(os.path.join(root, name), "rb") as f:
-                added[name] = list(range(1, line_count(f.read()) + 1))
+        full = os.path.join(root, name)
+        # git diff leaves out an untracked file, but the build compiled it. A FIFO or a device is not
+        # source, and opening a FIFO would block.
+        if name.endswith(".rs") and os.path.isfile(full):
+            with open(full, "rb") as f:
+                added[name] = list(range(1, sum(1 for _ in f) + 1))  # a last line without newline counts
     return added
 
 
-def glob_regex(glob):
-    """Ant-style pattern (`**` any depth, `*` and `?` within one path segment) as a regex."""
-    parts = re.split(r"(\*\*/|\*\*|\*|\?)", glob)
-    return re.compile("".join(GLOB_TOKENS.get(p, re.escape(p)) for p in parts) + r"\Z")
+def glob_tokens(glob):
+    """An Ant-style pattern as (kind, text) tokens: `**/` is "dirs" (zero or more directories), `**` "any"
+    (any characters), `*` "star" (any characters within one path segment), `?` "one" (one such character);
+    every other character is a "lit"."""
+    return [(GLOB_KINDS.get(token, "lit"), token) for token in GLOB_TOKEN.findall(glob)]
+
+
+def glob_match(tokens, path):
+    """True when the whole of `path` matches the tokens of `glob_tokens`. The table of (token, position)
+    costs len(tokens) * len(path); a backtracking regex takes exponential time on a pattern such as
+    `*a*a*a*a*b`, and the pattern comes from a file in the repository."""
+    n = len(path)
+    rest = [i == n for i in range(n + 1)]  # rest[i]: the tokens after this one match path[i:]
+    for kind, text in reversed(tokens):
+        here, slash = [False] * (n + 1), False
+        for i in range(n, -1, -1):
+            if kind == "lit":
+                here[i] = i < n and path[i] == text and rest[i + 1]
+            elif kind == "one":
+                here[i] = i < n and path[i] != "/" and rest[i + 1]
+            elif kind == "star":
+                here[i] = rest[i] or (i < n and path[i] != "/" and here[i + 1])
+            elif kind == "any":
+                here[i] = rest[i] or (i < n and here[i + 1])
+            else:  # dirs: nothing, or any text up to and including a "/"
+                slash = slash or (i < n and path[i] == "/" and rest[i + 1])
+                here[i] = rest[i] or slash
+        rest = here
+    return rest[0]
 
 
 def coverage_exclusions(properties):
-    """Regexes for the `sonar.coverage.exclusions` globs of a sonar-project.properties file."""
+    """Token lists (see `glob_tokens`) for the `sonar.coverage.exclusions` globs of a sonar-project.properties file."""
     try:
         text = pathlib.Path(properties).read_text(encoding="utf-8")
     except OSError:
         return []
     text = re.sub(r"\\\n[ \t]*", "", text)  # a trailing backslash continues the line
     m = re.search(r"^sonar\.coverage\.exclusions\s*=(.*)$", text, re.M)
-    return [glob_regex(g.strip()) for g in m.group(1).split(",") if g.strip()] if m else []
+    return [glob_tokens(g.strip()) for g in m.group(1).split(",") if g.strip()] if m else []
+
+
+def shown(path):
+    """A file name for the terminal. A name with a control or format character in it (an escape sequence, a
+    bidi override) is printed escaped, so a file name cannot drive the terminal."""
+    return path if path.isprintable() else ascii(path)
 
 
 def main(argv=None):
@@ -128,18 +158,18 @@ def main(argv=None):
     total = missed = 0
     unmeasured = []
     for path, lines in added.items():
-        if any(rx.match(path) for rx in excluded):
+        if any(glob_match(tokens, path) for tokens in excluded):
             continue
         if path not in hits:
             if path.endswith(".rs"):
-                unmeasured.append(path)
+                unmeasured.append(shown(path))
             continue
         executable = [n for n in lines if n in hits[path]]
         uncovered = [n for n in executable if hits[path][n] == 0]
         total += len(executable)
         missed += len(uncovered)
         if uncovered:
-            print(f"{path}: {len(uncovered)} of {len(executable)} new lines uncovered: {uncovered}")
+            print(f"{shown(path)}: {len(uncovered)} of {len(executable)} new lines uncovered: {uncovered}")
     if unmeasured:
         print("warning: not in the coverage report (not compiled in that run, or ignored by it): "
               + ", ".join(unmeasured), file=sys.stderr)
