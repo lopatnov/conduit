@@ -104,9 +104,6 @@ gh api repos/lopatnov/conduit/pulls/<PR>/ccr/review_threads
 gh api -X POST repos/lopatnov/conduit/pulls/<PR>/ccr/comments/<comment id>/resolve
 ```
 
-The same family: `PUT`/`DELETE .../ccr/auto_merge`, `POST .../ccr/ready_for_review` and
-`.../ccr/convert_to_draft`.
-
 ## Resolving isn't optional here — it can be a hard merge gate
 
 > Found the hard way on PR #361 (2026-09-05): `gh pr merge` failed with "the base branch
