@@ -1286,8 +1286,10 @@ staticOptions:
 A symlink **below** a static root is never served, whether it points to a file or to a directory:
 the request is treated as if the file did not exist. On Unix every component under the root is
 opened with `O_NOFOLLOW`, so a directory swapped for a symlink between the check and the open is
-refused as well. On Windows the check runs before the open (creating symlinks there needs elevated
-rights), so a symlink swapped in between the two could still be followed.
+refused as well. On Windows the check runs before the open, so a symlink or directory junction
+swapped in between the two could still be followed (creating symlinks there normally needs elevated
+rights, but junctions, and symlinks in Developer Mode, do not): keep the served tree writable by
+trusted accounts only.
 
 The root path itself is resolved normally: a symlinked root such as `current -> releases/42` works,
 and switching that link takes effect on the next request. Whoever can replace the root path, or one

@@ -10,8 +10,9 @@
 //! `docs/configuration.md`. This is the same guarantee as Linux `openat2(RESOLVE_BENEATH |
 //! RESOLVE_NO_SYMLINKS)`, built from `openat` so it also holds on macOS and the BSDs.
 //!
-//! Windows keeps the check-then-open in `handler.rs`; creating symlinks there needs elevated
-//! privileges and the remaining window is documented in `docs/configuration.md`.
+//! Windows keeps the check-then-open in `handler.rs`: a symlink or directory junction swapped in
+//! between the check and the open could still be followed. The window is documented in
+//! `docs/configuration.md`.
 
 use std::io;
 use std::path::{Component, Path};

@@ -272,8 +272,9 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
 ///
 /// On Unix the walk from `root` and the open are one step (`openat` + `O_NOFOLLOW`, see
 /// [`crate::open_beneath`]), which closes the window between the `symlink_metadata` checks in
-/// `find_file` and the open (issue #557). On Windows it is a regular open (creating symlinks there
-/// needs elevated privileges, so the remaining window is narrower).
+/// `find_file` and the open (issue #557). On Windows it is a regular open, so a symlink or directory
+/// junction swapped in after the check could still be followed (see "Symlinks" in
+/// `docs/configuration.md`).
 async fn open_no_follow(root: &Path, path: &Path) -> std::io::Result<tokio::fs::File> {
     let rel = path
         .strip_prefix(root)
@@ -1090,7 +1091,7 @@ mod tests {
         assert_eq!((root, path), (b.path(), b.path().join("f.txt")));
         let (root, path) = find_file(&roots, "d", &opts).await.unwrap();
         assert_eq!((root, path), (b.path(), b.path().join("d/index.html")));
-        // The empty `rel` falls back to the first root that has an index file.
+        // An empty `rel` is the root itself: the first root with an index file wins.
         let (root, path) = find_file(&roots, "", &opts).await.unwrap();
         assert_eq!((root, path), (c.path(), c.path().join("index.html")));
         assert!(find_file(&roots, "missing", &opts).await.is_none());
