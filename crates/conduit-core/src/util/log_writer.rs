@@ -60,9 +60,12 @@ impl LogWriter {
     ///
     /// # Security
     ///
-    /// Refuses to open symlinks, atomically. If an attacker can create a
-    /// symlink at the configured log path (e.g., pointing to `/etc/passwd`),
-    /// the proxy running as root would overwrite system files.
+    /// On Unix, refuses to open a symlink, atomically. If an attacker can
+    /// create a symlink at the configured log path (e.g., pointing to
+    /// `/etc/passwd`), the proxy running as root would overwrite system
+    /// files. Elsewhere the open is a plain one and follows such a symlink
+    /// (issue #600), so the log directory must be writable by trusted
+    /// accounts only.
     ///
     /// Issue #280: an earlier version of this check used
     /// `symlink_metadata()` followed by a *separate* `OpenOptions::open()`
@@ -73,8 +76,7 @@ impl LogWriter {
     /// the open itself: the kernel fails the syscall atomically with
     /// `ELOOP` if the final component is a symlink, with no window between
     /// checking and opening. Same pattern already used for static-file
-    /// serving, see `open_no_follow()` in the root crate's
-    /// `handler/static_files.rs`.
+    /// serving, see `open_beneath` in the `conduit-static` crate.
     pub fn switch_file(&self, path: &str) -> io::Result<()> {
         let file = open_no_follow(path)?;
         let mut inner = self
