@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
+use conduit_core::util::host::host_without_port;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
 use pingora_http::ResponseHeader;
@@ -69,24 +70,20 @@ impl ProxyHttp for RedirectProxy {
             return Ok(true);
         }
 
-        // Extract the host (without port), handling IPv6 bracketed addresses.
+        // The redirect reflects the client's Host into `Location`, so accept only
+        // a syntactically valid host (#556); anything else is a 400.
         let host = session
             .req_header()
             .headers
             .get("host")
             .and_then(|v| v.to_str().ok())
-            .map(|h| {
-                if h.starts_with('[') {
-                    // IPv6: "[::1]:8080" or "[::1]" → keep "[::1]"
-                    h.split(']')
-                        .next()
-                        .map(|s| format!("{s}]"))
-                        .unwrap_or_else(|| h.to_owned())
-                } else {
-                    h.split(':').next().unwrap_or(h).to_owned()
-                }
-            })
-            .unwrap_or_default();
+            .and_then(redirect_host);
+        let Some(host) = host else {
+            let mut resp = ResponseHeader::build(400, Some(1))?;
+            resp.insert_header("Content-Length", "0")?;
+            session.write_response_header(Box::new(resp), true).await?;
+            return Ok(true);
+        };
 
         // Preserve path and query string.
         let path_and_query = session
@@ -115,5 +112,56 @@ impl ProxyHttp for RedirectProxy {
         Self::CTX: Send + Sync,
     {
         unreachable!("RedirectProxy always handles requests in request_filter")
+    }
+}
+
+/// The host (without port) to put in a redirect `Location`, or `None` when the
+/// `Host` header is not a valid DNS name, IPv4 address or bracketed IPv6 literal.
+fn redirect_host(raw: &str) -> Option<String> {
+    let host = host_without_port(raw);
+    let valid = if let Some(inner) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        !inner.is_empty() && inner.parse::<std::net::Ipv6Addr>().is_ok()
+    } else {
+        !host.is_empty()
+            && host.len() <= 253
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+    };
+    valid.then(|| host.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redirect_host;
+
+    #[test]
+    fn accepts_plain_hosts_with_or_without_port() {
+        assert_eq!(redirect_host("example.com").as_deref(), Some("example.com"));
+        assert_eq!(redirect_host("example.com:8080").as_deref(), Some("example.com"));
+        assert_eq!(redirect_host("127.0.0.1:80").as_deref(), Some("127.0.0.1"));
+        assert_eq!(redirect_host("[::1]:8080").as_deref(), Some("[::1]"));
+        assert_eq!(redirect_host("[2001:db8::1]").as_deref(), Some("[2001:db8::1]"));
+    }
+
+    /// #556: nothing that could change the meaning of the `Location` URL is reflected.
+    #[test]
+    fn rejects_hosts_that_could_rewrite_the_location() {
+        for bad in [
+            "",
+            "evil.example\\@x",
+            "a/b",
+            "a b",
+            "user@evil.example",
+            "evil.example:80@good",
+            "evil.example\r\nX: y",
+            "[::1",
+            "[]",
+            "[not-an-ip]",
+            "a?b",
+            "a#b",
+        ] {
+            assert!(redirect_host(bad).is_none(), "{bad:?} must be refused");
+        }
     }
 }

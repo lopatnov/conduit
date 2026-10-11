@@ -3344,6 +3344,7 @@ dependencies = [
  "lopatnov-conduit-compression",
  "lopatnov-conduit-config",
  "lopatnov-conduit-config-core",
+ "lopatnov-conduit-core",
  "lopatnov-conduit-cors",
  "lopatnov-conduit-faults",
  "lopatnov-conduit-hotreload",
