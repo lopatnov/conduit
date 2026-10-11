@@ -20,15 +20,44 @@ pub struct RedirectProxy {
     https_port: u16,
     /// Shared ACME HTTP-01 challenge store.  Checked before redirecting.
     acme_challenges: Arc<DashMap<String, String>>,
+    /// Lower-cased hosts of the sites served by this redirect listener, or `None`
+    /// when a catch-all site is among them (any valid host is redirected).
+    allowed_hosts: Option<Vec<String>>,
 }
 
 impl RedirectProxy {
-    pub fn new(https_port: u16, acme_challenges: Arc<DashMap<String, String>>) -> Self {
+    /// `site_hosts` are the `host` values of the sites that use this listener
+    /// (`None`/`"*"` means a catch-all site).  A request for any other host gets
+    /// `421 Misdirected Request` instead of a redirect (#556, #588).
+    pub fn new<'a>(
+        https_port: u16,
+        acme_challenges: Arc<DashMap<String, String>>,
+        site_hosts: impl IntoIterator<Item = Option<&'a str>>,
+    ) -> Self {
+        let mut hosts = Vec::new();
+        let mut any = false;
+        for h in site_hosts {
+            match h {
+                None | Some("*") => any = true,
+                Some(h) => hosts.push(normalize_host(h)),
+            }
+        }
         Self {
             https_port,
             acme_challenges,
+            allowed_hosts: (!any).then_some(hosts),
         }
     }
+
+    fn host_allowed(&self, host: &str) -> bool {
+        self.allowed_hosts
+            .as_ref()
+            .is_none_or(|hosts| hosts.contains(&normalize_host(host)))
+    }
+}
+
+fn normalize_host(h: &str) -> String {
+    h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase()
 }
 
 #[async_trait]
@@ -84,6 +113,13 @@ impl ProxyHttp for RedirectProxy {
             session.write_response_header(Box::new(resp), true).await?;
             return Ok(true);
         };
+
+        if !self.host_allowed(&host) {
+            let mut resp = ResponseHeader::build(421, Some(1))?;
+            resp.insert_header("Content-Length", "0")?;
+            session.write_response_header(Box::new(resp), true).await?;
+            return Ok(true);
+        }
 
         // Preserve path and query string.
         let path_and_query = session
@@ -141,7 +177,28 @@ fn redirect_host(raw: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::redirect_host;
+    use super::{redirect_host, RedirectProxy};
+    use std::sync::Arc;
+
+    fn proxy(hosts: &[Option<&str>]) -> RedirectProxy {
+        RedirectProxy::new(443, Arc::default(), hosts.iter().copied())
+    }
+
+    /// #588: only hosts of configured sites are redirected.
+    #[test]
+    fn only_configured_hosts_are_redirected() {
+        let p = proxy(&[Some("Example.com"), Some("b.example.com")]);
+        assert!(p.host_allowed("example.com"));
+        assert!(p.host_allowed("EXAMPLE.com."));
+        assert!(p.host_allowed("b.example.com"));
+        assert!(!p.host_allowed("evil.example"));
+    }
+
+    #[test]
+    fn catch_all_site_allows_any_host() {
+        assert!(proxy(&[Some("a.example.com"), None]).host_allowed("anything.test"));
+        assert!(proxy(&[Some("*")]).host_allowed("anything.test"));
+    }
 
     #[test]
     fn accepts_plain_hosts_with_or_without_port() {

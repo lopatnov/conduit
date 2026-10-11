@@ -288,7 +288,15 @@ fn register_http_redirect_services(
             .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
         if let Some(http_port) = site.tls.as_ref().and_then(|t| t.http_redirect_port) {
             use crate::server::redirect::RedirectProxy;
-            let redirect = RedirectProxy::new(tls_port, state.acme_challenges.clone());
+            // Sites sharing this HTTP port decide which hosts may be redirected (#588).
+            let hosts = config.sites.iter().filter(|s| {
+                s.tls.as_ref().and_then(|t| t.http_redirect_port) == Some(http_port)
+            });
+            let redirect = RedirectProxy::new(
+                tls_port,
+                state.acme_challenges.clone(),
+                hosts.map(|s| s.host.as_deref()),
+            );
             let mut redirect_svc = http_proxy_service(&server.configuration, redirect);
             redirect_svc.add_tcp(&format!("0.0.0.0:{http_port}"));
             server.add_service(redirect_svc);
