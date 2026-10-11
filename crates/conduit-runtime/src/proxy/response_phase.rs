@@ -160,6 +160,9 @@ pub(super) async fn upstream_response_filter(
     // The response chain may execute WASM plugins whose .wasm file is read from disk on first load, so a chain that
     // has one runs through `block_in_place`; a chain that only edits headers runs in place (issue #475: the
     // unconditional `block_in_place` cost ~30 us of CPU and a thread hand-off per response).
+    // Decide whether a body replacement could be delivered on the response as the upstream sent it: a
+    // `responseTransform` or plugin may drop `Content-Length` later and must not defeat the check (#561).
+    let upstream_has_body = body_can_be_replaced(upstream_response);
     let run_result = chain.run_offloading(upstream_response, req_ctx);
 
     match run_result? {
@@ -194,7 +197,7 @@ pub(super) async fn upstream_response_filter(
 
         ResponseFilterOutcome::ReplaceBody(bytes) => {
             if let Some(req_ctx_mut) = ctx.as_mut() {
-                if body_can_be_replaced(upstream_response) {
+                if upstream_has_body && status_allows_body(upstream_response) {
                     // The replacement is plain bytes of a known length: the upstream body's encoding,
                     // framing and validators no longer describe it.
                     upstream_response.remove_header("content-encoding");
@@ -228,6 +231,12 @@ pub(super) async fn upstream_response_filter(
     }
 
     Ok(())
+}
+
+/// `true` when the response status can carry content (not `1xx`, `204`, `205`, `304`).
+fn status_allows_body(resp: &pingora_http::ResponseHeader) -> bool {
+    let status = resp.status.as_u16();
+    !(status < 200 || status == 204 || status == 205 || status == 304)
 }
 
 /// `true` when a WASM `on_response` body replacement can be delivered for this response (issue #379).
@@ -466,6 +475,16 @@ mod tests {
             resp.insert_header("content-length", cl).unwrap();
         }
         resp
+    }
+
+    #[test]
+    fn status_allows_body_excludes_1xx_204_205_304() {
+        for s in [101u16, 204, 205, 304] {
+            assert!(!super::status_allows_body(&resp_with(s, None)), "{s}");
+        }
+        for s in [200u16, 404, 500] {
+            assert!(super::status_allows_body(&resp_with(s, None)), "{s}");
+        }
     }
 
     #[test]

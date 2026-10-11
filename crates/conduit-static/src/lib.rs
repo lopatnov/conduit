@@ -82,6 +82,8 @@ pub mod handler;
 #[cfg(feature = "static")]
 pub mod mime;
 #[cfg(feature = "static")]
+mod open_beneath;
+#[cfg(feature = "static")]
 pub mod roots;
 pub mod validate;
 pub mod warnings;

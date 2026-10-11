@@ -287,8 +287,12 @@ fn register_http_redirect_services(
             .port
             .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
         if let Some(http_port) = site.tls.as_ref().and_then(|t| t.http_redirect_port) {
-            use crate::server::redirect::RedirectProxy;
-            let redirect = RedirectProxy::new(tls_port, state.acme_challenges.clone());
+            let redirect = crate::server::redirect::RedirectProxy::for_sites(
+                tls_port,
+                http_port,
+                &config.sites,
+                state.acme_challenges.clone(),
+            );
             let mut redirect_svc = http_proxy_service(&server.configuration, redirect);
             redirect_svc.add_tcp(&format!("0.0.0.0:{http_port}"));
             server.add_service(redirect_svc);

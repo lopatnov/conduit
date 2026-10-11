@@ -631,6 +631,70 @@ fn wasm_on_response_body_is_skipped_when_the_response_has_no_body() {
     assert_eq!(resp.text().unwrap(), "");
 }
 
+/// #561: a body replacement drops the headers that described the old body, and an upstream
+/// `Content-Length: 0` is honoured even when a `responseTransform` removes that header first.
+#[test]
+#[cfg(feature = "wasm")]
+fn wasm_on_response_replacement_drops_stale_headers_and_uses_the_upstream_length() {
+    const REPLACER: &str = r#"(module
+      (import "conduit" "conduit_set_response_body" (func $set_body (param i32 i32)))
+      (memory (export "memory") 1)
+      (data (i32.const 0) "rewritten body")
+      (func (export "on_request") (result i32) i32.const 0)
+      (func (export "on_response") (param i32) (result i32)
+        (call $set_body (i32.const 0) (i32.const 14))
+        i32.const 0))"#;
+    let dir = tempfile::tempdir().unwrap();
+    let wasm_path = compile_wat_to_file(&dir, "replacer.wasm", REPLACER);
+    let with_validators = start_fixed_upstream(
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nETag: \"abc\"\r\nContent-MD5: x\r\nContent-Encoding: identity\r\nConnection: close\r\n\r\nhello",
+    );
+    let empty_ok =
+        start_fixed_upstream("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+
+    let port = free_port();
+    let admin_port = free_port();
+    let cfg = serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "middleware": [{ "type": "wasm", "path": wasm_path }],
+            "proxy": {
+                "/validators": { "targets": [format!("http://127.0.0.1:{with_validators}")] },
+                "/empty": {
+                    "targets": [format!("http://127.0.0.1:{empty_ok}")],
+                    "responseTransform": { "removeHeaders": ["Content-Length"] }
+                }
+            }
+        }]
+    });
+    let srv = common::TestServer::start_with_config(port, admin_port, cfg);
+
+    let resp = reqwest::blocking::get(srv.url("/validators")).unwrap();
+    assert_eq!(resp.status(), 200);
+    for gone in [
+        "etag",
+        "content-md5",
+        "content-encoding",
+        "transfer-encoding",
+    ] {
+        assert!(resp.headers().get(gone).is_none(), "{gone} must be dropped");
+    }
+    assert_eq!(
+        resp.headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok()),
+        Some("14")
+    );
+    assert_eq!(resp.text().unwrap(), "rewritten body");
+
+    // The upstream said "no body"; removing its Content-Length later must not turn that into a
+    // replaceable response.
+    let resp = reqwest::blocking::get(srv.url("/empty")).unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().unwrap(), "");
+}
+
 // ── Rhai resource-limit tests ─────────────────────────────────────────────────
 
 /// A Rhai script with an infinite loop must NOT hang the server forever.

@@ -3,8 +3,6 @@
 //! Moved from `src/handler/static_files.rs` (issue #114/#139) — see this
 //! crate's `src/lib.rs` doc comment.
 
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
@@ -137,7 +135,7 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
         }
     }
 
-    let Some(file_path) = find_file(roots, &rel, options).await else {
+    let Some((root, file_path)) = find_file(roots, &rel, options).await else {
         return Ok(false);
     };
 
@@ -198,6 +196,7 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
     if let Some(range_hdr) = range_hdr {
         serve_range(
             session,
+            root,
             &file_path,
             file_size,
             range_hdr.to_owned(),
@@ -220,6 +219,7 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
         {
             serve_pre_compressed(
                 session,
+                root,
                 &pre_path,
                 pre_size,
                 &content_type,
@@ -252,6 +252,7 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
 
     serve_full(
         session,
+        root,
         &file_path,
         file_size,
         &content_type,
@@ -267,38 +268,25 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
 
 // ── File resolution ────────────────────────────────────────────────────────
 
-/// Open `path` for reading without following symlinks (nginx pattern).
+/// Open `path` (which lies below `root`) for reading without following a symlink at any level.
 ///
-/// On Linux/macOS: uses `O_NOFOLLOW` which makes the open syscall fail
-/// atomically when the final path component is a symbolic link.  This
-/// eliminates the TOCTOU window between stat_no_symlink() and open().
-///
-/// On Windows: falls back to a regular open (symlinks there require
-/// elevated privileges to create, so the risk is lower).
-async fn open_no_follow(path: &Path) -> std::io::Result<tokio::fs::File> {
-    #[cfg(unix)]
-    {
-        // O_NOFOLLOW is 0x20000 on Linux and 0x100 on macOS — use the
-        // platform constant via std's OpenOptionsExt trait.
-        //
-        // The `open(2)` itself is a blocking syscall, so it runs on the
-        // blocking pool; the exact same std `OpenOptions` (and therefore the
-        // exact same `O_NOFOLLOW` open) is used, only the thread differs.
-        let path = path.to_owned();
-        let std_file = tokio::task::spawn_blocking(move || {
-            std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(path)
-        })
-        .await
-        .map_err(std::io::Error::other)??;
-        Ok(tokio::fs::File::from_std(std_file))
-    }
-    #[cfg(not(unix))]
-    {
-        tokio::fs::File::open(path).await
-    }
+/// On Unix the walk from `root` and the open are one step (`openat` + `O_NOFOLLOW`, see
+/// [`crate::open_beneath`]), which closes the window between the `symlink_metadata` checks in
+/// `find_file` and the open (issue #557). On Windows it is a regular open, so a symlink or directory
+/// junction swapped in after the check could still be followed (see "Symlinks" in
+/// `docs/configuration.md`).
+async fn open_no_follow(root: &Path, path: &Path) -> std::io::Result<tokio::fs::File> {
+    let rel = path
+        .strip_prefix(root)
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?
+        .to_owned();
+    let root = root.to_owned();
+    // `openat(2)` blocks, so it runs on the blocking pool.
+    let std_file =
+        tokio::task::spawn_blocking(move || crate::open_beneath::open_beneath(&root, &rel))
+            .await
+            .map_err(std::io::Error::other)??;
+    Ok(tokio::fs::File::from_std(std_file))
 }
 
 /// Whether a `Range` request may be answered with `206` given its `If-Range` header (RFC 9110 §13.1.5).
@@ -379,17 +367,21 @@ async fn parent_dirs_are_not_symlinks(root: &Path, rel: &str) -> bool {
     .unwrap_or(false)
 }
 
-async fn find_file(roots: &[PathBuf], rel: &str, options: &StaticOptions) -> Option<PathBuf> {
+async fn find_file<'a>(
+    roots: &'a [PathBuf],
+    rel: &str,
+    options: &StaticOptions,
+) -> Option<(&'a Path, PathBuf)> {
     for root in roots {
         if !parent_dirs_are_not_symlinks(root, rel).await {
             continue;
         }
         let candidate = root.join(rel);
         match stat_no_symlink(&candidate).await {
-            Some(m) if m.is_file() => return Some(candidate),
+            Some(m) if m.is_file() => return Some((root, candidate)),
             Some(m) if m.is_dir() => {
                 if let Some(p) = find_index(&candidate, options).await {
-                    return Some(p);
+                    return Some((root, p));
                 }
             }
             _ => {}
@@ -398,7 +390,7 @@ async fn find_file(roots: &[PathBuf], rel: &str, options: &StaticOptions) -> Opt
     if rel.is_empty() {
         for root in roots {
             if let Some(p) = find_index(root, options).await {
-                return Some(p);
+                return Some((root, p));
             }
         }
     }
@@ -459,6 +451,7 @@ fn insert_extra(resp: &mut ResponseHeader, extra: &[(String, String)]) -> Result
 #[allow(clippy::too_many_arguments)]
 async fn serve_full(
     session: &mut Session,
+    root: &Path,
     path: &Path,
     size: u64,
     content_type: &str,
@@ -485,7 +478,7 @@ async fn serve_full(
         }
 
         session.write_response_header(Box::new(resp), false).await?;
-        stream_file_compressed(session, path, 0, size, encoding, level).await
+        stream_file_compressed(session, root, path, 0, size, encoding, level).await
     } else {
         let mut resp = ResponseHeader::build(200, Some(3 + Validators::SLOTS + extra.len()))?;
         resp.insert_header("content-type", content_type)?;
@@ -501,7 +494,7 @@ async fn serve_full(
         }
 
         session.write_response_header(Box::new(resp), false).await?;
-        stream_file(session, path, 0, size).await
+        stream_file(session, root, path, 0, size).await
     }
 }
 
@@ -585,6 +578,7 @@ async fn resolve_pre_compressed(
 #[allow(clippy::too_many_arguments)]
 async fn serve_pre_compressed(
     session: &mut Session,
+    root: &Path,
     pre_path: &Path,
     pre_size: u64,
     content_type: &str,
@@ -609,7 +603,7 @@ async fn serve_pre_compressed(
     }
 
     session.write_response_header(Box::new(resp), false).await?;
-    stream_file(session, pre_path, 0, pre_size).await
+    stream_file(session, root, pre_path, 0, pre_size).await
 }
 
 /// Stream a file compressed with the given encoding and quality level.
@@ -627,13 +621,14 @@ async fn serve_pre_compressed(
 #[cfg(feature = "compression")]
 async fn stream_file_compressed(
     session: &mut Session,
+    root: &Path,
     path: &Path,
     offset: u64,
     length: u64,
     encoding: &str,
     level: u8,
 ) -> Result<()> {
-    let mut file = open_no_follow(path).await.map_err(io_err)?;
+    let mut file = open_no_follow(root, path).await.map_err(io_err)?;
     if offset > 0 {
         file.seek(std::io::SeekFrom::Start(offset))
             .await
@@ -660,7 +655,7 @@ async fn stream_file_compressed(
         }
         _ => {
             // Unknown encoding — fall back to uncompressed streaming.
-            stream_file(session, path, offset, length).await
+            stream_file(session, root, path, offset, length).await
         }
     }
 }
@@ -671,13 +666,14 @@ async fn stream_file_compressed(
 #[cfg(not(feature = "compression"))]
 async fn stream_file_compressed(
     session: &mut Session,
+    root: &Path,
     path: &Path,
     offset: u64,
     length: u64,
     _encoding: &str,
     _level: u8,
 ) -> Result<()> {
-    stream_file(session, path, offset, length).await
+    stream_file(session, root, path, offset, length).await
 }
 
 /// Drain an `AsyncRead` encoder in 64 KiB chunks, signalling `done=true` on
@@ -713,9 +709,15 @@ async fn stream_encoded<R: AsyncRead + Unpin>(session: &mut Session, mut reader:
 }
 
 /// Stream `length` bytes from `file` starting at `offset` in 64 KiB chunks.
-async fn stream_file(session: &mut Session, path: &Path, offset: u64, length: u64) -> Result<()> {
+async fn stream_file(
+    session: &mut Session,
+    root: &Path,
+    path: &Path,
+    offset: u64,
+    length: u64,
+) -> Result<()> {
     const CHUNK: usize = 64 * 1024;
-    let mut file = open_no_follow(path).await.map_err(io_err)?;
+    let mut file = open_no_follow(root, path).await.map_err(io_err)?;
     if offset > 0 {
         file.seek(std::io::SeekFrom::Start(offset))
             .await
@@ -740,6 +742,7 @@ async fn stream_file(session: &mut Session, path: &Path, offset: u64, length: u6
 #[allow(clippy::too_many_arguments)]
 async fn serve_range(
     session: &mut Session,
+    root: &Path,
     path: &Path,
     total: u64,
     range_hdr: String,
@@ -774,7 +777,7 @@ async fn serve_range(
     }
 
     session.write_response_header(Box::new(resp), false).await?;
-    stream_file(session, path, start, length).await
+    stream_file(session, root, path, start, length).await
 }
 
 async fn write_not_modified(
@@ -1044,22 +1047,55 @@ mod tests {
         let link_path = dir.path().join("link.txt");
         std::os::unix::fs::symlink(&real_file, &link_path).unwrap();
 
-        let err = open_no_follow(&link_path)
+        let err = open_no_follow(dir.path(), &link_path)
             .await
             .expect_err("a symlink must not be opened");
         assert_eq!(
             err.raw_os_error(),
-            Some(libc::ELOOP),
+            Some(rustix::io::Errno::LOOP.raw_os_error()),
             "expected ELOOP from O_NOFOLLOW, got: {err}"
         );
 
         assert!(
-            open_no_follow(&real_file).await.is_ok(),
+            open_no_follow(dir.path(), &real_file).await.is_ok(),
             "a regular file must still open"
         );
     }
 
     // ── resolve_pre_compressed ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn find_file_returns_the_root_that_holds_the_file_or_its_index() {
+        let (a, b, c) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        );
+        // `a` holds `first.txt`, `b` holds `f.txt` and `d/index.html`, `c` (the last root) is
+        // empty except for a root-level index.html: a lookup that always returned the first or
+        // the last root would get one of these wrong.
+        std::fs::write(a.path().join("first.txt"), "x").unwrap();
+        std::fs::write(b.path().join("f.txt"), "x").unwrap();
+        std::fs::create_dir(b.path().join("d")).unwrap();
+        std::fs::write(b.path().join("d/index.html"), "x").unwrap();
+        std::fs::write(c.path().join("index.html"), "x").unwrap();
+        let roots = [
+            a.path().to_path_buf(),
+            b.path().to_path_buf(),
+            c.path().to_path_buf(),
+        ];
+        let opts = StaticOptions::default();
+        let (root, path) = find_file(&roots, "first.txt", &opts).await.unwrap();
+        assert_eq!((root, path), (a.path(), a.path().join("first.txt")));
+        let (root, path) = find_file(&roots, "f.txt", &opts).await.unwrap();
+        assert_eq!((root, path), (b.path(), b.path().join("f.txt")));
+        let (root, path) = find_file(&roots, "d", &opts).await.unwrap();
+        assert_eq!((root, path), (b.path(), b.path().join("d/index.html")));
+        // An empty `rel` is the root itself: the first root with an index file wins.
+        let (root, path) = find_file(&roots, "", &opts).await.unwrap();
+        assert_eq!((root, path), (c.path(), c.path().join("index.html")));
+        assert!(find_file(&roots, "missing", &opts).await.is_none());
+    }
 
     #[tokio::test]
     async fn resolve_pre_compressed_returns_size_when_sibling_exists() {

@@ -20,15 +20,77 @@ pub struct RedirectProxy {
     https_port: u16,
     /// Shared ACME HTTP-01 challenge store.  Checked before redirecting.
     acme_challenges: Arc<DashMap<String, String>>,
+    /// Lower-cased hosts of the sites served by this redirect listener, or `None`
+    /// when a catch-all site is among them (any valid host is redirected).
+    allowed_hosts: Option<Vec<String>>,
 }
 
 impl RedirectProxy {
-    pub fn new(https_port: u16, acme_challenges: Arc<DashMap<String, String>>) -> Self {
+    /// `site_hosts` are the `host` values of the sites that use this listener
+    /// (`None`/`"*"` means a catch-all site).  A request for any other host gets
+    /// `421 Misdirected Request` instead of a redirect (#556, #588).
+    pub fn new<'a>(
+        https_port: u16,
+        acme_challenges: Arc<DashMap<String, String>>,
+        site_hosts: impl IntoIterator<Item = Option<&'a str>>,
+    ) -> Self {
+        let mut hosts = Vec::new();
+        let mut any = false;
+        for h in site_hosts {
+            match h {
+                None | Some("*") => any = true,
+                Some(h) => hosts.push(normalize_host(h)),
+            }
+        }
         Self {
             https_port,
             acme_challenges,
+            allowed_hosts: (!any).then_some(hosts),
         }
     }
+
+    /// Redirect proxy for `http_port`: the hosts of every site whose `tls.httpRedirectPort`
+    /// is `http_port` decide which hosts may be redirected (#588).
+    pub fn for_sites(
+        https_port: u16,
+        http_port: u16,
+        sites: &[crate::config::schema::SiteConfig],
+        acme_challenges: Arc<DashMap<String, String>>,
+    ) -> Self {
+        let hosts = sites
+            .iter()
+            .filter(|s| s.tls.as_ref().and_then(|t| t.http_redirect_port) == Some(http_port))
+            .map(|s| s.host.as_deref());
+        Self::new(https_port, acme_challenges, hosts)
+    }
+
+    /// Status and `Location` for a non-challenge request: 400 for a `Host` that is not a valid
+    /// name (it is reflected into `Location`, #556), 421 for a host no site serves (#588),
+    /// otherwise a 308 to the HTTPS port keeping path and query.
+    fn decide(&self, host_header: Option<&str>, path_and_query: &str) -> (u16, Option<String>) {
+        let Some(host) = host_header.and_then(redirect_host) else {
+            return (400, None);
+        };
+        if !self.host_allowed(&host) {
+            return (421, None);
+        }
+        let location = if self.https_port == 443 {
+            format!("https://{host}{path_and_query}")
+        } else {
+            format!("https://{host}:{}{path_and_query}", self.https_port)
+        };
+        (308, Some(location))
+    }
+
+    fn host_allowed(&self, host: &str) -> bool {
+        self.allowed_hosts
+            .as_ref()
+            .is_none_or(|hosts| hosts.contains(&normalize_host(host)))
+    }
+}
+
+fn normalize_host(h: &str) -> String {
+    h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase()
 }
 
 #[async_trait]
@@ -70,37 +132,22 @@ impl ProxyHttp for RedirectProxy {
             return Ok(true);
         }
 
-        // The redirect reflects the client's Host into `Location`, so accept only
-        // a syntactically valid host (#556); anything else is a 400.
-        let host = session
+        let host_header = session
             .req_header()
             .headers
             .get("host")
-            .and_then(|v| v.to_str().ok())
-            .and_then(redirect_host);
-        let Some(host) = host else {
-            let mut resp = ResponseHeader::build(400, Some(1))?;
-            resp.insert_header("Content-Length", "0")?;
-            session.write_response_header(Box::new(resp), true).await?;
-            return Ok(true);
-        };
-
-        // Preserve path and query string.
+            .and_then(|v| v.to_str().ok());
         let path_and_query = session
             .req_header()
             .uri
             .path_and_query()
             .map(|pq| pq.as_str())
             .unwrap_or("/");
-
-        let location = if self.https_port == 443 {
-            format!("https://{host}{path_and_query}")
-        } else {
-            format!("https://{host}:{}{path_and_query}", self.https_port)
-        };
-
-        let mut resp = ResponseHeader::build(308, Some(2))?;
-        resp.insert_header("Location", location)?;
+        let (status, location) = self.decide(host_header, path_and_query);
+        let mut resp = ResponseHeader::build(status, Some(2))?;
+        if let Some(location) = location {
+            resp.insert_header("Location", location)?;
+        }
         resp.insert_header("Content-Length", "0")?;
         session.write_response_header(Box::new(resp), true).await?;
         Ok(true)
@@ -141,7 +188,63 @@ fn redirect_host(raw: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::redirect_host;
+    use super::{redirect_host, RedirectProxy};
+    use std::sync::Arc;
+
+    fn proxy(hosts: &[Option<&str>]) -> RedirectProxy {
+        RedirectProxy::new(443, Arc::default(), hosts.iter().copied())
+    }
+
+    /// `for_sites` takes hosts only from sites that share this HTTP port.
+    #[test]
+    fn for_sites_uses_the_hosts_of_sites_on_the_same_http_port() {
+        use crate::config::schema::{SiteConfig, TlsConfig};
+        let site = |host: &str, port: u16| SiteConfig {
+            host: Some(host.into()),
+            tls: Some(TlsConfig {
+                http_redirect_port: Some(port),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let sites = [site("a.test", 80), site("b.test", 8080)];
+        let p = RedirectProxy::for_sites(443, 80, &sites, Arc::default());
+        assert_eq!(p.decide(Some("a.test"), "/").0, 308);
+        assert_eq!(p.decide(Some("b.test"), "/").0, 421);
+    }
+
+    /// #588: only hosts of configured sites are redirected.
+    #[test]
+    fn only_configured_hosts_are_redirected() {
+        let p = proxy(&[Some("Example.com"), Some("b.example.com")]);
+        assert!(p.host_allowed("example.com"));
+        assert!(p.host_allowed("EXAMPLE.com."));
+        assert!(p.host_allowed("b.example.com"));
+        assert!(!p.host_allowed("evil.example"));
+    }
+
+    #[test]
+    fn decide_answers_400_421_or_308() {
+        let p = proxy(&[Some("example.com")]);
+        assert_eq!(p.decide(None, "/"), (400, None));
+        assert_eq!(p.decide(Some("a b"), "/"), (400, None));
+        assert_eq!(p.decide(Some("evil.example"), "/x"), (421, None));
+        assert_eq!(
+            p.decide(Some("Example.com:8080"), "/x?y=1"),
+            (308, Some("https://Example.com/x?y=1".to_owned()))
+        );
+        let p8443 = RedirectProxy::new(8443, Arc::default(), [Some("example.com")]);
+        assert_eq!(
+            p8443.decide(Some("example.com"), "/"),
+            (308, Some("https://example.com:8443/".to_owned()))
+        );
+    }
+
+    #[test]
+    fn catch_all_site_allows_any_host() {
+        assert!(proxy(&[Some("a.example.com"), None]).host_allowed("anything.test"));
+        assert!(proxy(&[Some("*")]).host_allowed("anything.test"));
+    }
 
     #[test]
     fn accepts_plain_hosts_with_or_without_port() {
