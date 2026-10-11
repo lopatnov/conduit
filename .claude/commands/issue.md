@@ -79,8 +79,9 @@ check (`.claude/rules/index.md`) before asking the user what to pick up.
 - Address any bot findings (CodeRabbit/Gitar/SonarCloud/Socket/Semgrep/CodeQL) that land
   before you loop back. Check each claim against the code (`best-practices` §6): a real finding is
   fixed until the code no longer triggers it (`workflow.md`, "Findings get fixed, not explained
-  away"); a wrong one gets one plain sentence with the evidence; one that cannot be fixed gets one
-  plain sentence and an issue.
+  away"), and a scanner alert that restructuring the code would silence is real, not "wrong"; a
+  claim the code disproves gets one plain sentence with the evidence; one that cannot be fixed gets
+  one plain sentence and an issue.
 
 ## Step 4 — get it green
 

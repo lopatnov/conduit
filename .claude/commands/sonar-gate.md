@@ -31,7 +31,7 @@ The script prints, per file, the added lines the report says never ran, then `ne
 
 - **Disk and time** (measured on #592, 4 vCPUs): `target/` ends at about 16 GB with `CARGO_INCREMENTAL=0`; with incremental compilation on it reached 26 GB and exceeded the container's writable-disk allowance. Plan for more than 15 minutes: run it in the background and poll.
 - **Keep the CI flags.** Dropping `--features full` silently changes which code is measured. The parent directory of `--output-path` must already exist, or `cargo llvm-cov` fails only after the whole run (checked 2026-10-11); `target/` does, and also keeps the file out of `git status` (a `coverage.lcov` in the repository root is not ignored).
-- **Tools:** `cargo llvm-cov --version` must work (`cargo install cargo-llvm-cov --locked` and `rustup component add llvm-tools-preview`; CI installs both).
+- **Tools:** `cargo llvm-cov --version` must work and the `llvm-tools-preview` component must be installed. A fresh container has neither (checked 2026-10-11): `rustup component add llvm-tools-preview`, then `cargo install cargo-llvm-cov --locked --version 0.9.1` (the version used that day), which builds from source in a few minutes. CI gets a prebuilt, checksum-verified binary from the SHA-pinned `taiki-e/install-action` in `sonar.yml`: the same tool, not the same install.
 - `-p <crate>` limits the run to one crate's unit tests, so a line only another crate's tests reach shows as uncovered; confirm with the full run before concluding.
 - The gate on the PR stays the arbiter; the script is a guide to which lines to cover.
 
