@@ -159,6 +159,14 @@ class Repository(unittest.TestCase):
         out, _ = self.report(write_lcov(self.root, LCOV))
         self.assertEqual(out, REPORT)
 
+    def test_what_the_base_changed_after_the_fork_is_not_the_branchs_work(self):
+        """The branch is compared with the merge base, not with the tip of main as it is now: lines main changed
+        since the fork must not be reported as added."""
+        git(self.root, "checkout", "-q", "-b", "main-moved", self.base)
+        commit(self.root, {"src/untouched.rs": "x1\nx2\n", "src/other.rs": "o\n"}, "main moved on")
+        git(self.root, "checkout", "-q", "-")
+        self.assertEqual(nul.added_lines(self.root, "main-moved"), ADDED)
+
     def test_the_users_diff_settings_do_not_change_what_is_parsed(self):
         """Settings that change the diff's format (prefix, colour, external driver) must not change what is parsed."""
         for key, value in (("diff.noprefix", "true"), ("color.diff", "always"), ("color.ui", "always"),
