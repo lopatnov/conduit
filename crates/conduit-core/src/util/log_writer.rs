@@ -62,10 +62,10 @@ impl LogWriter {
     ///
     /// On Unix, refuses to open a symlink, atomically. If an attacker can
     /// create a symlink at the configured log path (e.g., pointing to
-    /// `/etc/passwd`), the proxy running as root would overwrite system
-    /// files. Elsewhere the open is a plain one and follows such a symlink
-    /// (issue #600), so the log directory must be writable by trusted
-    /// accounts only.
+    /// `/etc/passwd`), the proxy running as root would append log lines to
+    /// system files. Elsewhere the open is a plain one and follows such a
+    /// symlink (issue #600), so the log directory must be writable by
+    /// trusted accounts only.
     ///
     /// Issue #280: an earlier version of this check used
     /// `symlink_metadata()` followed by a *separate* `OpenOptions::open()`
