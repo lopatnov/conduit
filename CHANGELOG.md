@@ -11,34 +11,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2.1.0] — 2026-10-11
 
-2.1.0 is a fix release on top of 2.0.0: no config shape or CLI flag is removed
-except the unimplemented `global.providers` field. The main changes are
-security hardening (the npm postinstall now verifies the binary it downloads,
-the HTTP-to-HTTPS redirect refuses a malformed `Host`, a `ConduitSite` can no
-longer name host files, ACME certificate renewal is fixed) and config
-correctness (`tls.acme` needs a `host`, `upstreamTls.serverName` takes effect,
-config type errors name the field). The maintainer release guide is
-`docs/releasing.md`.
-
-### Fixed
-
-- **`tls.acme` now needs a `host` and only accepts `challenge: http-01`** (issues #577, #578). A site with `tls.acme` and no host used to start and serve plain HTTP on its TLS port; `conduit init --tls-acme` now takes `--host`. DNS-01 was documented but never implemented. On Windows, hosts whose first label is a device name (`con`, `nul`, ...) are refused, and renewal de-duplication ignores case (issue #579).
-- **`upstreamTls.serverName` takes effect** (issue #583): it is sent as SNI and used to verify the upstream certificate.
-- **Config type errors name the field** (issue #570), and a full config (`sites: [...]`) with an invalid site no longer loads silently as one empty site. `$schema` is no longer reported as an unknown key (issue #569). The do-nothing `global.providers` field is removed (issue #582).
-- WASM `on_response` body replacement also skips `205` responses (issue #561).
+2.1.0 builds on 2.0.0 with security hardening, config-correctness fixes and one
+new command (`conduit features`). No config shape or CLI flag is removed except
+the unimplemented `global.providers` field. Two changes need attention when
+upgrading: `ip-hash`, `consistent-hash` and the no-secret sticky mode now use
+rendezvous hashing, so every client moves to a different upstream once; and JWT
+verification now rejects RSA keys outside 2048-8192 bits (it fails closed).
+The main changes are security hardening (the npm postinstall now verifies the
+binary it downloads, the HTTP-to-HTTPS redirect refuses a malformed `Host`, a
+`ConduitSite` can no longer name host files, ACME certificates are renewed
+while the process runs) and config correctness (`tls.acme` needs a `host`,
+`upstreamTls.serverName` takes effect, config type errors name the field). The
+maintainer release guide is `docs/releasing.md`.
 
 ### Security
 
 - **The HTTP-to-HTTPS redirect server refuses a `Host` that is not a valid host name or address** (issue #556) instead of reflecting it into `Location`.
 - **The npm postinstall verifies the downloaded binary against SHA-256 values baked into the package** (issue #571) and fails closed.
 - **A `ConduitSite` resource can no longer set host file paths** (`static`, `upload`, `middleware`, TLS files, `tls.acme.storage`, `logging.file`, `fallback.file`) (issue #580).
-
-### Documentation
-
-- New maintainer guide `docs/releasing.md`.
-
-### Security
-
 - **Two kid-less keys in a JWKS are no longer collapsed into one** (issue #351). The second used to
   replace the first under the same synthesized id, so a kid-less token was checked against whichever
   key survived instead of being rejected as ambiguous.
@@ -64,8 +54,34 @@ config type errors name the field). The maintainer release guide is
   a plain DNS name for the site. The directory itself (`tls.acme.storage`) is not constrained yet
   (issue #580), and Windows device names such as `con.example.com` are tracked in #579.
 
+### Added
+
+- **`conduit features`** (issue #473) prints the Cargo features a configuration needs, a ready-to-paste
+  `cargo install` line and the smallest bundle that covers it (`--json` for scripts). It exits with `1`
+  when the running binary lacks one of them, so it doubles as a deploy-time check.
+
+### Changed
+
+- **`ip-hash`, `consistent-hash` and the no-secret sticky mode are now actually consistent** (issue #377).
+  The upstream was picked with `hash % healthy-count`, so one upstream going unhealthy (or coming back)
+  moved almost every client. They now use rendezvous hashing: only the clients that were on the
+  affected upstream move. **On upgrade every client lands on a different upstream once**, then stays
+  stable; expect a one-time cold start of any per-upstream cache or session state. Capacity limits
+  (`maxConnectionsPerUpstream`) spill a key to its next-best upstream instead of the next list entry.
+
+- **JWT verification now uses the `aws-lc-rs` crypto backend instead of the pure-Rust `rsa` stack.**
+  This removes the `rsa` crate (CVE-2023-49092, "Marvin", no upstream fix) from `Cargo.lock`; Conduit
+  only ever verified signatures with public keys, so it was not exploitable. The supported algorithms are
+  unchanged (HS256 for `secret`; RS256/384/512 and ES256/384 for `jwksUrl`). **RSA keys must be 2048 to
+  8192 bits**: the `aws-lc-rs` verifier rejects a JWKS or PEM key outside that range (fails closed)
+  instead of verifying with it.
+
 ### Fixed
 
+- **`tls.acme` now needs a `host` and only accepts `challenge: http-01`** (issues #577, #578). A site with `tls.acme` and no host used to start and serve plain HTTP on its TLS port; `conduit init --tls-acme` now takes `--host`. DNS-01 was documented but never implemented. On Windows, hosts whose first label is a device name (`con`, `nul`, ...) are refused, and renewal de-duplication ignores case (issue #579).
+- **`upstreamTls.serverName` takes effect** (issue #583): it is sent as SNI and used to verify the upstream certificate.
+- **Config type errors name the field** (issue #570), and a full config (`sites: [...]`) with an invalid site no longer loads silently as one empty site. `$schema` is no longer reported as an unknown key (issue #569). The do-nothing `global.providers` field is removed (issue #582).
+- WASM `on_response` body replacement also skips `205` responses (issue #561).
 - **The npm package's "install from source" hint named the wrong crate.** Its error messages said
   `cargo install conduit-proxy`; they now say `cargo install lopatnov-conduit`.
 - **Docs: wrong config snippets and defaults.** A top-level `http2: true` does not parse (the
@@ -150,27 +166,9 @@ config type errors name the field). The maintainer release guide is
 - The Kubernetes provider rebuilds the config once per resync instead of on every `Init`/`InitApply`
   event (issue #408), which cut M+2 list-and-rebuild cycles to one at start-up and watch recovery.
 
-### Added
+### Documentation
 
-- **`conduit features`** (issue #473) prints the Cargo features a configuration needs, a ready-to-paste
-  `cargo install` line and the smallest bundle that covers it (`--json` for scripts). It exits with `1`
-  when the running binary lacks one of them, so it doubles as a deploy-time check.
-
-### Changed
-
-- **`ip-hash`, `consistent-hash` and the no-secret sticky mode are now actually consistent** (issue #377).
-  The upstream was picked with `hash % healthy-count`, so one upstream going unhealthy (or coming back)
-  moved almost every client. They now use rendezvous hashing: only the clients that were on the
-  affected upstream move. **On upgrade every client lands on a different upstream once**, then stays
-  stable; expect a one-time cold start of any per-upstream cache or session state. Capacity limits
-  (`maxConnectionsPerUpstream`) spill a key to its next-best upstream instead of the next list entry.
-
-- **JWT verification now uses the `aws-lc-rs` crypto backend instead of the pure-Rust `rsa` stack.**
-  This removes the `rsa` crate (CVE-2023-49092, "Marvin", no upstream fix) from `Cargo.lock`; Conduit
-  only ever verified signatures with public keys, so it was not exploitable. The supported algorithms are
-  unchanged (HS256 for `secret`; RS256/384/512 and ES256/384 for `jwksUrl`). **RSA keys must be 2048 to
-  8192 bits**: the `aws-lc-rs` verifier rejects a JWKS or PEM key outside that range (fails closed)
-  instead of verifying with it.
+- New maintainer guide `docs/releasing.md`.
 
 ---
 
