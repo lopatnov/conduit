@@ -42,9 +42,11 @@ CHANGE = {
     "src/lookalike.rs": "a\n++ b/fake.rs\nc\nd\nE\n",  # a changed line that reads like a diff header
     "src/nonl.rs": "x\ny\nz\n",
     "README.md": "docs\n",
+    "docs/ünï.md": "x\n",  # git C-quotes a name like this in a diff header unless told not to
 }
 ADDED = {
     "README.md": [1],
+    "docs/ünï.md": [1],
     "src/a.rs": [2, 3, 5],
     "src/b.rs": [1, 2, 3, 4, 5],
     "src/excluded.rs": [1, 2],
@@ -153,10 +155,34 @@ class Repository(unittest.TestCase):
             with mock.patch.dict(os.environ, {"GIT_DIR": os.path.join(decoy, ".git"), "GIT_WORK_TREE": decoy}):
                 self.assertEqual(nul.added_lines(self.root, self.base), ADDED)
 
-    def test_nothing_added_warns_and_counts_as_fully_covered(self):
+    def test_uncommitted_edits_and_untracked_rust_files_are_part_of_the_diff(self):
+        """cargo llvm-cov measures the working tree, so the diff has to be taken from the working tree too."""
+        write(os.path.join(self.root, "src", "a.rs"), CHANGE["src/a.rs"] + "l8\n")  # unstaged
+        write(os.path.join(self.root, "src", "untouched.rs"), "u1\nu2\n")  # staged
+        git(self.root, "add", "src/untouched.rs")
+        write(os.path.join(self.root, "src", "fresh.rs"), "f1\nf2\nf3")  # untracked, no final newline
+        write(os.path.join(self.root, "notes.txt"), "not Rust\n")  # untracked, not compiled
+        expected = dict(ADDED, **{"src/a.rs": [2, 3, 5, 8], "src/untouched.rs": [2], "src/fresh.rs": [1, 2, 3]})
+        self.assertEqual(nul.added_lines(self.root, self.base), expected)
+
+    def test_nothing_added_warns_and_reports_no_executable_lines(self):
         out, err = self.report(write_lcov(self.root, LCOV), "HEAD")
-        self.assertEqual(out, "new code: 0/0 lines covered = 100.0%\n")
-        self.assertIn("no lines added between HEAD and HEAD", err)
+        self.assertEqual(out, "new code: no executable lines among the added lines\n")
+        self.assertIn("no lines added between HEAD and the working tree", err)
+
+    def test_added_rust_files_that_are_not_in_the_report_are_named(self):
+        commit(self.root, {"src/absent.rs": "z1\n", "src/absent.txt": "z\n"}, "more")
+        out, err = self.report(write_lcov(self.root, LCOV), self.base)
+        self.assertEqual(out, REPORT)
+        self.assertIn("src/absent.rs", err)
+        self.assertNotIn("absent.txt", err)  # only Rust files can be in the report
+
+    def test_a_report_that_measures_none_of_the_added_lines_is_not_full_coverage(self):
+        out, err = self.report(write_lcov(self.root, {"src/untouched.rs": {1: 1}}), self.base)
+        self.assertEqual(out, "new code: no executable lines among the added lines\n")
+        for name in ("src/a.rs", "src/b.rs", "src/lookalike.rs", "src/nonl.rs"):
+            self.assertIn(name, err)
+        self.assertNotIn("excluded.rs", err)  # sonar.coverage.exclusions skips it anyway
 
     def test_an_unknown_base_stops_with_the_message_from_git(self):
         with self.assertRaises(SystemExit) as caught:
@@ -165,11 +191,10 @@ class Repository(unittest.TestCase):
 
 
 class DiffText(unittest.TestCase):
-    """Parser cases that real diffs cannot be made to produce on demand: git is replaced by a canned diff."""
+    """Parser cases that real diffs cannot be made to produce on demand: a canned diff instead of git's."""
 
     def added(self, diff):
-        with mock.patch.object(nul, "git", return_value=diff):
-            return nul.added_lines(".", "base")
+        return nul.parse_diff(diff)
 
     def test_a_name_with_a_space_ends_in_a_tab(self):
         diff = "--- a/my file.rs\t\n+++ b/my file.rs\t\n@@ -1 +1,2 @@\n-a\n+b\n+c\n"
