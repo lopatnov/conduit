@@ -155,7 +155,7 @@ function loadExpectedChecksum(assetName) {
   try {
     sums = JSON.parse(readFileSync(join(__dirname, "checksums.json"), "utf8"));
   } catch {
-    fail("checksums.json is missing from this package, so the downloaded binary cannot be verified. Install from source: cargo install conduit-proxy");
+    fail("checksums.json is missing from this package, so the downloaded binary cannot be verified. Install from source: cargo install lopatnov-conduit");
   }
   const hex = sums[assetName];
   if (typeof hex !== "string" || !/^[0-9a-f]{64}$/.test(hex)) {
