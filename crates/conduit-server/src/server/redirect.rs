@@ -49,6 +49,21 @@ impl RedirectProxy {
         }
     }
 
+    /// Redirect proxy for `http_port`: the hosts of every site whose `tls.httpRedirectPort`
+    /// is `http_port` decide which hosts may be redirected (#588).
+    pub fn for_sites(
+        https_port: u16,
+        http_port: u16,
+        sites: &[crate::config::schema::SiteConfig],
+        acme_challenges: Arc<DashMap<String, String>>,
+    ) -> Self {
+        let hosts = sites
+            .iter()
+            .filter(|s| s.tls.as_ref().and_then(|t| t.http_redirect_port) == Some(http_port))
+            .map(|s| s.host.as_deref());
+        Self::new(https_port, acme_challenges, hosts)
+    }
+
     /// Status and `Location` for a non-challenge request: 400 for a `Host` that is not a valid
     /// name (it is reflected into `Location`, #556), 421 for a host no site serves (#588),
     /// otherwise a 308 to the HTTPS port keeping path and query.
@@ -178,6 +193,24 @@ mod tests {
 
     fn proxy(hosts: &[Option<&str>]) -> RedirectProxy {
         RedirectProxy::new(443, Arc::default(), hosts.iter().copied())
+    }
+
+    /// `for_sites` takes hosts only from sites that share this HTTP port.
+    #[test]
+    fn for_sites_uses_the_hosts_of_sites_on_the_same_http_port() {
+        use crate::config::schema::{SiteConfig, TlsConfig};
+        let site = |host: &str, port: u16| SiteConfig {
+            host: Some(host.into()),
+            tls: Some(TlsConfig {
+                http_redirect_port: Some(port),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let sites = [site("a.test", 80), site("b.test", 8080)];
+        let p = RedirectProxy::for_sites(443, 80, &sites, Arc::default());
+        assert_eq!(p.decide(Some("a.test"), "/").0, 308);
+        assert_eq!(p.decide(Some("b.test"), "/").0, 421);
     }
 
     /// #588: only hosts of configured sites are redirected.

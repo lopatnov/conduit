@@ -478,6 +478,16 @@ mod tests {
     }
 
     #[test]
+    fn status_allows_body_excludes_1xx_204_205_304() {
+        for s in [101u16, 204, 205, 304] {
+            assert!(!super::status_allows_body(&resp_with(s, None)), "{s}");
+        }
+        for s in [200u16, 404, 500] {
+            assert!(super::status_allows_body(&resp_with(s, None)), "{s}");
+        }
+    }
+
+    #[test]
     fn body_can_be_replaced_only_when_a_body_can_follow() {
         use super::body_can_be_replaced;
         assert!(body_can_be_replaced(&resp_with(200, Some("42"))));

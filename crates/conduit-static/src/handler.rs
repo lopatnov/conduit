@@ -1064,6 +1064,21 @@ mod tests {
     // ── resolve_pre_compressed ────────────────────────────────────────────────
 
     #[tokio::test]
+    async fn find_file_returns_the_root_that_holds_the_file_or_its_index() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(b.path().join("f.txt"), "x").unwrap();
+        std::fs::create_dir(b.path().join("d")).unwrap();
+        std::fs::write(b.path().join("d/index.html"), "x").unwrap();
+        let roots = [a.path().to_path_buf(), b.path().to_path_buf()];
+        let opts = StaticOptions::default();
+        let (root, path) = find_file(&roots, "f.txt", &opts).await.unwrap();
+        assert_eq!((root, path), (b.path(), b.path().join("f.txt")));
+        let (root, path) = find_file(&roots, "d", &opts).await.unwrap();
+        assert_eq!((root, path), (b.path(), b.path().join("d/index.html")));
+        assert!(find_file(&roots, "missing", &opts).await.is_none());
+    }
+
+    #[tokio::test]
     async fn resolve_pre_compressed_returns_size_when_sibling_exists() {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().join("app.js");
