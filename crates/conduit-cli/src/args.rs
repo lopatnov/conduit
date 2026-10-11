@@ -131,6 +131,10 @@ pub struct InitArgs {
     /// ACME / Let's Encrypt email (enables auto-TLS)
     #[arg(long, value_name = "EMAIL")]
     pub tls_acme: Option<String>,
+
+    /// Host name the site answers to (required with --tls-acme: the certificate is ordered for it)
+    #[arg(long, value_name = "HOST")]
+    pub host: Option<String>,
 }
 
 #[derive(Args)]

@@ -92,7 +92,8 @@ pub(super) fn validate_tls(tls: &TlsConfig, prefix: &str, errors: &mut Vec<Valid
 
 /// `tls.acme` keeps its certificate and key in files named after the site `host` (issue #554), so
 /// that host must be a plain DNS name: no path separators, no `..`, no NUL. A site without a
-/// `host` is skipped here (the ACME flow skips it too).
+/// `host` is an error (issue #577): the certificate is ordered for the host, so without one the
+/// port would silently serve plain HTTP. Only the `http-01` challenge is implemented (issue #578).
 pub(super) fn validate_acme_host(
     host: Option<&str>,
     tls: &TlsConfig,
@@ -102,7 +103,23 @@ pub(super) fn validate_acme_host(
     if tls.acme.is_none() {
         return;
     }
+    if let Some(ch) = tls.acme.as_ref().and_then(|a| a.challenge.as_deref()) {
+        if ch != "http-01" {
+            errors.push(ValidationError::new(
+                format!("{prefix}.tls.acme.challenge"),
+                format!(
+                    "tls.acme.challenge '{ch}' is not supported: only 'http-01' is implemented \
+                     (DNS-01 and TLS-ALPN-01 are not)"
+                ),
+            ));
+        }
+    }
     let Some(host) = host else {
+        errors.push(ValidationError::new(
+            format!("{prefix}.host"),
+            "tls.acme needs a 'host': the certificate is ordered for it, and without one this \
+             site would serve plain HTTP on its TLS port",
+        ));
         return;
     };
     if let Err(why) = conduit_acme::domain::validate_domain(host) {

@@ -14,6 +14,7 @@ path = "src/lib.rs"
 [dependencies]
 # `AppState`/`ConduitProxy`/`ConduitMetrics`, the guard chain and `AppState.config` (Layer 3).
 lopatnov-conduit-runtime = { workspace = true }
+lopatnov-conduit-core    = { workspace = true }
 # The Admin API's axum server, bearer-token auth and eleven of its endpoints — this crate keeps `POST /reload` and the
 # background supervisor (`AdminApiService`), which needs `serve`/`AdminError`/`AdminResult`/`validate_cert_key_pem`.
 lopatnov-conduit-admin   = { workspace = true }

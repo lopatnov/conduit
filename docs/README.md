@@ -13,6 +13,7 @@
 | [deployment.md](deployment.md)       | Running in production — Docker, systemd, Kubernetes, production checklist  |
 | [benchmarks.md](benchmarks.md)       | How the CI measures performance and how to reproduce it on your machine    |
 | [live-demo.md](live-demo.md)         | Local demo — two virtual sites, load balancing, caching, auth              |
+| [releasing.md](releasing.md)       | Maintainers — bump the version and publish a release                       |
 
 ---
 

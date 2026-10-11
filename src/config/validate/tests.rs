@@ -112,6 +112,17 @@ fn global_backlog_is_a_warning_not_an_error() {
     assert_eq!(e[0].severity, Severity::Warning);
 }
 
+/// Issue #569: the `$schema` editor hint advertised in the README must not warn; a real typo still does.
+#[test]
+fn schema_key_is_ignored_without_a_warning_but_typos_still_warn() {
+    let w = feature_warnings(&parse(
+        r#"{ "$schema": "https://example.com/s.json", "port": 3000 }"#,
+    ));
+    assert!(w.iter().all(|m| !m.contains("$schema")), "got: {w:?}");
+    let w = feature_warnings(&parse(r#"{ "port": 3000, "prot": 1 }"#));
+    assert!(w.iter().any(|m| m.contains("prot")), "got: {w:?}");
+}
+
 #[test]
 fn global_workers_absent_is_accepted() {
     assert!(errs(r#"{ "sites": [{ "port": 8080 }] }"#).is_empty());
@@ -141,8 +152,9 @@ fn duplicate_http_redirect_port() {
 
 #[test]
 fn tls_acme_and_cert_conflict() {
-    let e =
-        errs(r#"{ "tls": { "cert": "a.pem", "key": "a.key", "acme": { "email": "a@b.com" } } }"#);
+    let e = errs(
+        r#"{ "host": "a.example.com", "tls": { "cert": "a.pem", "key": "a.key", "acme": { "email": "a@b.com" } } }"#,
+    );
     assert_eq!(e.len(), 1);
     assert!(e[0].message.contains("acme"), "got: {}", e[0].message);
 }
@@ -156,7 +168,34 @@ fn tls_missing_key() {
 
 #[test]
 fn tls_acme_only_valid() {
-    assert!(errs(r#"{ "tls": { "acme": { "email": "a@b.com" } } }"#).is_empty());
+    assert!(
+        errs(r#"{ "host": "a.example.com", "tls": { "acme": { "email": "a@b.com" } } }"#)
+            .is_empty()
+    );
+}
+
+/// Issue #577: `tls.acme` without a `host` used to validate and then serve plain HTTP.
+#[test]
+fn tls_acme_without_host_is_rejected() {
+    let e = errs(r#"{ "tls": { "acme": { "email": "a@b.com" } } }"#);
+    assert_eq!(e.len(), 1, "{e:?}");
+    assert!(e[0].path.ends_with(".host"), "{}", e[0].path);
+}
+
+/// Issue #578: only http-01 is implemented.
+#[test]
+fn tls_acme_challenge_other_than_http01_is_rejected() {
+    let site = |ch: &str| {
+        format!(
+            r#"{{ "host": "a.example.com", "tls": {{ "acme": {{ "email": "a@b.com", "challenge": "{ch}" }} }} }}"#
+        )
+    };
+    assert!(errs(&site("http-01")).is_empty());
+    for ch in ["dns-01", "tls-alpn-01"] {
+        let e = errs(&site(ch));
+        assert_eq!(e.len(), 1, "{ch}: {e:?}");
+        assert!(e[0].path.ends_with(".tls.acme.challenge"), "{}", e[0].path);
+    }
 }
 
 // ── tls.acme: the site host names the certificate files (issue #554) ────────

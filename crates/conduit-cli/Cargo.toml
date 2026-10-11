@@ -15,6 +15,7 @@ path = "src/lib.rs"
 # `run_server()`/config validation/the Kubernetes provider — `serve.rs`/`validate.rs` call straight into it (see
 # the alias modules in `src/lib.rs`), no facade needed since both crates sit at the same workspace layer.
 lopatnov-conduit-server = { workspace = true }
+lopatnov-conduit-acme   = { workspace = true }
 # `AppConfig`/`SiteConfig`/... and the parser (`load_config`) — every command that loads a config file needs
 # these directly; this crate does not depend on `conduit-server` just for config types.
 lopatnov-conduit-config = { workspace = true }

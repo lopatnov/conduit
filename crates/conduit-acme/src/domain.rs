@@ -13,6 +13,17 @@ const MAX_NAME_LEN: usize = 253;
 /// Longest single label (RFC 1035 section 2.3.4).
 const MAX_LABEL_LEN: usize = 63;
 
+/// Win32 treats the part of a file name before the first dot as a device when it is one of these
+/// (`con.example.com.crt.pem` is the console, not a file), so such a host cannot name a
+/// certificate file there (issue #579).
+fn is_windows_device_label(label: &str) -> bool {
+    let l = label.to_ascii_lowercase();
+    matches!(l.as_str(), "con" | "prn" | "aux" | "nul")
+        || ((l.starts_with("com") || l.starts_with("lpt"))
+            && l.len() == 4
+            && l.as_bytes()[3].is_ascii_digit())
+}
+
 /// `Ok` when `domain` can safely be both an ACME identifier and part of a file name; otherwise
 /// the reason, worded to follow "tls.acme needs a plain DNS host name:".
 ///
@@ -35,6 +46,14 @@ pub fn validate_domain(domain: &str) -> Result<(), &'static str> {
         return Err("the host is longer than 253 characters");
     }
     let name = domain.strip_prefix("*.").unwrap_or(domain);
+    if cfg!(windows)
+        && domain == name
+        && is_windows_device_label(name.split('.').next().unwrap_or(""))
+    {
+        return Err(
+            "the first label is a Windows device name (con, prn, aux, nul, com0-9, lpt0-9)",
+        );
+    }
     for label in name.split('.') {
         if label.is_empty() {
             return Err("the host has an empty label (a leading, trailing or doubled dot)");
@@ -61,6 +80,18 @@ pub fn validate_domain(domain: &str) -> Result<(), &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_device_labels_are_recognised_whatever_the_case() {
+        for l in [
+            "con", "CON", "Aux", "nul", "prn", "com1", "COM9", "lpt0", "LPT3",
+        ] {
+            assert!(is_windows_device_label(l), "{l}");
+        }
+        for l in ["console", "com", "com10", "lpt", "example", "comx", "a"] {
+            assert!(!is_windows_device_label(l), "{l}");
+        }
+    }
 
     #[test]
     fn accepts_ordinary_names() {

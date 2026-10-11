@@ -11,11 +11,13 @@
  *                                  where the binary is vendored or built locally)
  */
 
-import { createWriteStream, existsSync, mkdirSync, chmodSync, unlinkSync } from "node:fs";
-import { get } from "node:https";
+import { createWriteStream, existsSync, mkdirSync, chmodSync, unlinkSync, renameSync } from "node:fs";
+import { get as httpsGet } from "node:https";
+import { get as httpGet } from "node:http";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 // --------------------------------------------------------------------------
 // Skip conditions
@@ -33,6 +35,9 @@ const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
 const VERSION = pkg.version;
 const REPO = "lopatnov/conduit";
 const NATIVE_DIR = join(__dirname, "native");
+// Test hook: serve the asset from another base URL. The checksum is still enforced.
+const BASE_URL = process.env.CONDUIT_DOWNLOAD_BASE ||
+  `https://github.com/${REPO}/releases/download/v${VERSION}`;
 
 // --------------------------------------------------------------------------
 // Platform → asset name
@@ -76,7 +81,7 @@ function download(url, dest) {
     let redirectCount = 0;
 
     function request(url) {
-      get(url, { headers: { "User-Agent": `conduit-npm/${VERSION}` } }, (res) => {
+      (url.startsWith("http:") ? httpGet : httpsGet)(url, { headers: { "User-Agent": `conduit-npm/${VERSION}` } }, (res) => {
         if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
           if (++redirectCount > MAX_REDIRECTS) {
             file.close();
@@ -117,6 +122,7 @@ function download(url, dest) {
           }
         });
 
+        res.on("aborted", () => reject(new Error("connection closed before the download finished")));
         res.pipe(file);
         file.on("finish", () => {
           file.close(() => {
@@ -135,17 +141,49 @@ function download(url, dest) {
   });
 }
 
+function sha256(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function fail(msg) {
+  console.error(`\n[conduit] ${msg}`);
+  process.exit(1);
+}
+
+function loadExpectedChecksum(assetName) {
+  let sums;
+  try {
+    sums = JSON.parse(readFileSync(join(__dirname, "checksums.json"), "utf8"));
+  } catch {
+    fail("checksums.json is missing from this package, so the downloaded binary cannot be verified. Install from source: cargo install lopatnov-conduit");
+  }
+  const hex = sums[assetName];
+  if (typeof hex !== "string" || !/^[0-9a-f]{64}$/.test(hex)) {
+    fail(`no checksum for ${assetName} in checksums.json; refusing to install an unverified binary.`);
+  }
+  return hex;
+}
+
 // --------------------------------------------------------------------------
 // Main
 // --------------------------------------------------------------------------
 async function main() {
   const assetName = getAssetName();
-  const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${assetName}`;
+  const url = `${BASE_URL}/${assetName}`;
   const dest = join(NATIVE_DIR, assetName);
 
-  // Skip if already downloaded (idempotent)
+  // The release workflow writes the expected SHA-256 of every asset into
+  // checksums.json before `npm publish` (#571). Without an entry there is
+  // nothing to verify against, so refuse to install an unchecked binary.
+  const expected = loadExpectedChecksum(assetName);
+
+  // Idempotent: keep an existing binary only if it is the expected one.
   if (existsSync(dest)) {
-    return;
+    if (sha256(dest) === expected) {
+      return;
+    }
+    console.warn(`[conduit] Existing ${assetName} does not match its checksum; downloading it again.`);
+    try { unlinkSync(dest); } catch { /* ignore */ }
   }
 
   mkdirSync(NATIVE_DIR, { recursive: true });
@@ -153,14 +191,27 @@ async function main() {
   console.log(`[conduit] Downloading v${VERSION} for ${process.platform}/${process.arch}`);
   console.log(`[conduit] Source: ${url}`);
 
+  // Download to a temporary name and rename only after verification, so a cut-off
+  // or tampered download is never left under the final name (#585).
+  const tmp = `${dest}.part`;
   try {
-    await download(url, dest);
+    await download(url, tmp);
   } catch (err) {
+    try { unlinkSync(tmp); } catch { /* ignore */ }
     console.error(`\n[conduit] Download failed: ${err.message}`);
     console.error(`[conduit] You can install from source: cargo install lopatnov-conduit`);
-    // Exit 0 so npm install doesn't fail for the whole project
+    // A failed download is not a security event: leave the package without a
+    // binary and let `conduit` report that, as before. Exit 0 so npm install
+    // doesn't fail for the whole project. (A checksum mismatch does fail.)
     process.exit(0);
   }
+
+  const actual = sha256(tmp);
+  if (actual !== expected) {
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+    fail(`checksum mismatch for ${assetName}: expected ${expected}, got ${actual}. The download was discarded.`);
+  }
+  renameSync(tmp, dest);
 
   // Make executable on Unix
   if (process.platform !== "win32") {

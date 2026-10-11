@@ -36,6 +36,8 @@ pub struct InitOptions<'a> {
     pub tls_key: Option<&'a str>,
     /// `--tls-acme` — ACME email (auto-TLS mode)
     pub tls_acme: Option<&'a str>,
+    /// `--host` — site host name (required with `--tls-acme`)
+    pub host: Option<&'a str>,
 }
 
 // ── Format ────────────────────────────────────────────────────────────────────
@@ -131,6 +133,35 @@ fn ask_tls_config(opts: &InitOptions<'_>) -> anyhow::Result<Option<Value>> {
             .interact_text()?;
         Ok(Some(json!({ "acme": { "email": email } })))
     }
+}
+
+/// The site `host`. ACME orders the certificate for it, so it is required with `--tls-acme`
+/// (issue #577): asked in the wizard, an error with `-y`.
+fn ask_host(opts: &InitOptions<'_>, needs_host: bool) -> anyhow::Result<Option<String>> {
+    if let Some(host) = opts.host {
+        check_host(host, needs_host)?;
+        return Ok(Some(host.to_owned()));
+    }
+    if !needs_host {
+        return Ok(None);
+    }
+    if opts.yes {
+        anyhow::bail!("--tls-acme needs --host: the certificate is ordered for that host name");
+    }
+    let host: String = Input::new()
+        .with_prompt("Host name the certificate is for (e.g. example.com)")
+        .interact_text()?;
+    check_host(&host, true)?;
+    Ok(Some(host))
+}
+
+/// With ACME the host names the certificate files, so reject what validation would reject later.
+fn check_host(host: &str, acme: bool) -> anyhow::Result<()> {
+    if acme {
+        conduit_acme::domain::validate_domain(host)
+            .map_err(|why| anyhow::anyhow!("invalid --host '{host}': {why}"))?;
+    }
+    Ok(())
 }
 
 // ── YAML serialization ────────────────────────────────────────────────────────
@@ -317,16 +348,20 @@ struct Answers {
     static_dir: Option<String>,
     proxy_url: Option<String>,
     tls: Option<Value>,
+    host: Option<String>,
     health: bool,
     logging: Option<Value>,
 }
 
 fn collect_answers(opts: &InitOptions<'_>) -> anyhow::Result<Answers> {
+    let tls = ask_tls_config(opts)?;
+    let host = ask_host(opts, tls.as_ref().is_some_and(|t| t.get("acme").is_some()))?;
     Ok(Answers {
         port: ask_port(opts)?,
         static_dir: ask_static_dir(opts)?,
         proxy_url: ask_proxy_url(opts)?,
-        tls: ask_tls_config(opts)?,
+        tls,
+        host,
         health: ask_health(opts)?,
         logging: ask_logging(opts)?,
     })
@@ -335,6 +370,10 @@ fn collect_answers(opts: &InitOptions<'_>) -> anyhow::Result<Answers> {
 /// Assemble the site config object; keys are added only when configured.
 fn assemble_site(answers: Answers) -> Value {
     let mut site = json!({ "port": answers.port });
+
+    if let Some(host) = answers.host {
+        site["host"] = json!(host);
+    }
 
     if let Some(dir) = answers.static_dir {
         site["static"] = json!(dir);
@@ -503,6 +542,7 @@ mod tests {
             tls_cert: None,
             tls_key: None,
             tls_acme: None,
+            host: None,
         };
         run_init(opts).expect("run_init must succeed");
         let content = std::fs::read_to_string(&output).expect("output must exist");
@@ -531,6 +571,7 @@ mod tests {
             tls_cert: None,
             tls_key: None,
             tls_acme: None,
+            host: None,
         };
         run_init(opts).expect("run_init must succeed");
         let content = std::fs::read_to_string(&output).expect("output must exist");
@@ -558,6 +599,7 @@ mod tests {
             tls_cert: Some("./certs/server.pem"),
             tls_key: Some("./certs/server.key"),
             tls_acme: None,
+            host: None,
         };
         run_init(opts).expect("run_init with TLS must succeed");
         let content = std::fs::read_to_string(&output).expect("output must exist");
@@ -589,6 +631,7 @@ mod tests {
             tls_cert: None,
             tls_key: None,
             tls_acme: None,
+            host: None,
         };
         // Unknown log format should not panic; falls back to "dev".
         run_init(opts).expect("unknown log format must not error");
@@ -614,6 +657,7 @@ mod tests {
             tls_cert: None,
             tls_key: None,
             tls_acme: None,
+            host: None,
         };
         // Must not error — falls back gracefully to yaml.
         run_init(opts).expect("unknown format must not error");
@@ -642,6 +686,7 @@ mod tests {
             tls_cert: None,
             tls_key: None,
             tls_acme: Some("admin@example.com"),
+            host: Some("example.com"),
         };
         run_init(opts).expect("ACME TLS init must succeed");
         let content = std::fs::read_to_string(&output).unwrap();
@@ -649,6 +694,62 @@ mod tests {
             content.contains("admin@example.com"),
             "ACME email must appear in output: {content}"
         );
+        assert!(
+            content.contains("host: example.com"),
+            "ACME needs a host (issue #577): {content}"
+        );
+    }
+
+    #[test]
+    fn run_init_with_acme_and_an_invalid_host_is_an_error() {
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("conduit.yaml");
+        for bad in ["", "../x", "a/b"] {
+            let opts = InitOptions {
+                output: Some(output.to_str().unwrap()),
+                yes: true,
+                format: Some("yaml"),
+                port: Some(443),
+                static_dir: None,
+                no_static: true,
+                proxy: None,
+                no_proxy: true,
+                log: Some("dev"),
+                no_health: false,
+                tls_cert: None,
+                tls_key: None,
+                tls_acme: Some("admin@example.com"),
+                host: Some(bad),
+            };
+            let err = run_init(opts).expect_err(bad);
+            assert!(err.to_string().contains("invalid --host"), "{bad}: {err}");
+            assert!(!output.exists());
+        }
+    }
+
+    #[test]
+    fn run_init_with_acme_but_no_host_is_an_error() {
+        let dir = TempDir::new().unwrap();
+        let output = dir.path().join("conduit.yaml");
+        let opts = InitOptions {
+            output: Some(output.to_str().unwrap()),
+            yes: true,
+            format: Some("yaml"),
+            port: Some(443),
+            static_dir: None,
+            no_static: true,
+            proxy: None,
+            no_proxy: true,
+            log: Some("dev"),
+            no_health: false,
+            tls_cert: None,
+            tls_key: None,
+            tls_acme: Some("admin@example.com"),
+            host: None,
+        };
+        let err = run_init(opts).expect_err("ACME without a host must fail");
+        assert!(err.to_string().contains("--host"), "{err}");
+        assert!(!output.exists(), "nothing is written on error");
     }
 
     #[test]
@@ -669,6 +770,7 @@ mod tests {
             tls_cert: None,
             tls_key: None,
             tls_acme: None,
+            host: None,
         };
         run_init(opts).expect("init with static dir must succeed");
         let content = std::fs::read_to_string(&output).unwrap();
@@ -696,6 +798,7 @@ mod tests {
             tls_cert: None,
             tls_key: None,
             tls_acme: None,
+            host: None,
         };
         run_init(opts).expect("log: none must not error");
         let content = std::fs::read_to_string(&output).unwrap();
@@ -724,6 +827,7 @@ mod tests {
             tls_cert: None,
             tls_key: None,
             tls_acme: None,
+            host: None,
         };
         run_init(opts).expect("log: combined must not error");
         let content = std::fs::read_to_string(&output).unwrap();
@@ -753,6 +857,7 @@ mod tests {
             tls_cert: None,
             tls_key: None,
             tls_acme: None,
+            host: None,
         };
         run_init(opts).expect("default yes must succeed");
         let content = std::fs::read_to_string(&output).unwrap();
@@ -786,6 +891,7 @@ mod tests {
             tls_cert: None,
             tls_key: None,
             tls_acme: None,
+            host: None,
         };
         run_init(opts).expect("log: json must not error");
         let content = std::fs::read_to_string(&output).unwrap();
@@ -811,6 +917,7 @@ mod tests {
             tls_cert: None,
             tls_key: None,
             tls_acme: None,
+            host: None,
         };
         run_init(opts).expect("extension-inferred format must succeed");
         // Output must be valid JSON (config.json → JSON format).

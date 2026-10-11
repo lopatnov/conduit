@@ -7,6 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tls.acme` now needs a `host` and only accepts `challenge: http-01`** (issues #577, #578). A site with `tls.acme` and no host used to start and serve plain HTTP on its TLS port; `conduit init --tls-acme` now takes `--host`. DNS-01 was documented but never implemented. On Windows, hosts whose first label is a device name (`con`, `nul`, ...) are refused, and renewal de-duplication ignores case (issue #579).
+- **`upstreamTls.serverName` takes effect** (issue #583): it is sent as SNI and used to verify the upstream certificate.
+- **Config type errors name the field** (issue #570), and a full config (`sites: [...]`) with an invalid site no longer loads silently as one empty site. `$schema` is no longer reported as an unknown key (issue #569). The do-nothing `global.providers` field is removed (issue #582).
+- WASM `on_response` body replacement also skips `205` responses (issue #561).
+
+### Security
+
+- **The HTTP-to-HTTPS redirect server refuses a `Host` that is not a valid host name or address** (issue #556) instead of reflecting it into `Location`.
+- **The npm postinstall verifies the downloaded binary against SHA-256 values baked into the package** (issue #571) and fails closed.
+- **A `ConduitSite` resource can no longer set host file paths** (`static`, `upload`, `middleware`, TLS files, `tls.acme.storage`, `logging.file`, `fallback.file`) (issue #580).
+
+### Documentation
+
+- New maintainer guide `docs/releasing.md`.
+
 ### Security
 
 - **Two kid-less keys in a JWKS are no longer collapsed into one** (issue #351). The second used to

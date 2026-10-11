@@ -128,7 +128,9 @@ pub(super) fn plan_acme_renewals(
     let mut seen = HashSet::new();
     let mut jobs = Vec::new();
     for site in acme_sites(config) {
-        if !seen.insert((site.domain, site.storage_dir.clone())) {
+        // Case-insensitive: `EXAMPLE.com` and `example.com` share one file pair on macOS/Windows (#579).
+        let key = (site.domain.to_ascii_lowercase(), site.storage_dir.clone());
+        if seen.contains(&key) {
             continue;
         }
         let source = if token_ports.contains(&site.challenge_port) {
@@ -145,6 +147,9 @@ pub(super) fn plan_acme_renewals(
         } else {
             ChallengeSource::Bind(site.challenge_port)
         };
+        // Only a site that got a usable challenge port claims the certificate, so a later site
+        // with the same host and storage dir can still provide one.
+        seen.insert(key);
         jobs.push(RenewalJob {
             acme: site.acme.clone(),
             domain: site.domain.to_owned(),

@@ -52,6 +52,10 @@ const DISABLED_KEY_OWNING_FEATURE: &[(&str, &str)] = &[
 pub(super) fn check_extra_key_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
     for (i, site) in config.sites.iter().enumerate() {
         for key in site.extra.keys() {
+            // `$schema` is the editor-completion hint the docs tell users to add (#569).
+            if key == "$schema" {
+                continue;
+            }
             let key = sanitize_for_log(key);
             match DISABLED_KEY_OWNING_FEATURE.iter().find(|(k, _)| **k == key) {
                 Some((_, feature)) => warnings.push(format!(
