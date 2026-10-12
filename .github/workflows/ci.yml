@@ -588,6 +588,12 @@ jobs:
       - name: Unit-test the version bump script
         run: python3 scripts/test_bump_version.py
 
+      - name: Unit-test the uncovered-lines script
+        run: python3 scripts/test_new_uncovered_lines.py
+
+      - name: Unit-test the PR comments script
+        run: python3 scripts/test_pr_comments.py
+
       - name: Find associated PR and its base commit
         id: pr
         env:

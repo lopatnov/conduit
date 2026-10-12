@@ -7,9 +7,11 @@ use std::sync::Mutex;
 /// for the TOCTOU rationale (issue #280).
 ///
 /// On Unix, `O_NOFOLLOW` makes the open syscall fail atomically (`ELOOP`)
-/// when the final component is a symlink. On non-Unix platforms (no
-/// `O_NOFOLLOW` concept, and symlinks there require elevated privileges to
-/// create in the first place — lower risk), falls back to a plain open.
+/// when the final component is a symlink. Elsewhere there is no
+/// `O_NOFOLLOW`, so this is a plain open that follows a symlink planted at
+/// `path`. On Windows creating one takes the symlink privilege, or Developer
+/// Mode, which lifts that need: a lower risk, not none, so keep the log
+/// directory writable by trusted accounts only (issue #600).
 fn open_no_follow(path: &str) -> io::Result<File> {
     #[cfg(unix)]
     {
@@ -58,9 +60,12 @@ impl LogWriter {
     ///
     /// # Security
     ///
-    /// Refuses to open symlinks, atomically. If an attacker can create a
-    /// symlink at the configured log path (e.g., pointing to `/etc/passwd`),
-    /// the proxy running as root would overwrite system files.
+    /// On Unix, refuses to open a symlink, atomically. If an attacker can
+    /// create a symlink at the configured log path (e.g., pointing to
+    /// `/etc/passwd`), the proxy running as root would append log lines to
+    /// system files. Elsewhere the open is a plain one and follows such a
+    /// symlink (issue #600), so the log directory must be writable by
+    /// trusted accounts only.
     ///
     /// Issue #280: an earlier version of this check used
     /// `symlink_metadata()` followed by a *separate* `OpenOptions::open()`
@@ -71,8 +76,7 @@ impl LogWriter {
     /// the open itself: the kernel fails the syscall atomically with
     /// `ELOOP` if the final component is a symlink, with no window between
     /// checking and opening. Same pattern already used for static-file
-    /// serving, see `open_no_follow()` in the root crate's
-    /// `handler/static_files.rs`.
+    /// serving, see `open_beneath` in the `conduit-static` crate.
     pub fn switch_file(&self, path: &str) -> io::Result<()> {
         let file = open_no_follow(path)?;
         let mut inner = self

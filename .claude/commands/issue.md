@@ -77,8 +77,12 @@ check (`.claude/rules/index.md`) before asking the user what to pick up.
 - Review your own diff as if it were someone else's: correctness, scope creep, missed edge
   cases, anything that contradicts a recorded architectural decision in `CLAUDE.md`.
 - Address any bot findings (CodeRabbit/Gitar/SonarCloud/Socket/Semgrep/CodeQL) that land
-  before you loop back — fix genuine issues, explain rather than silently ignore or
-  blindly comply with a false positive or stylistic opinion.
+  before you loop back. Check each claim against the code (`best-practices` §6): a real finding is
+  fixed until the code no longer triggers it (`workflow.md`, "Findings get fixed, not explained
+  away"); a scanner alert that a restructure would silence gets that restructure, not an argument
+  that it is "wrong" (it may well be a false positive: the rule is to remove the cause, not to win
+  the point); a claim the code disproves gets one plain sentence with the evidence; one that cannot
+  be fixed gets one plain sentence and an issue.
 
 ## Step 4 — get it green
 
@@ -107,7 +111,8 @@ check (`.claude/rules/index.md`) before asking the user what to pick up.
   comments, and reviews, from every author (CodeRabbit, Gitar, Sonar, Semgrep, Socket, the
   user) — not that checks are green or the unresolved-thread count is 0. Give every finding
   a recorded disposition: fixed, deferred with an issue (`fast-follow` label), or rejected
-  with the reason.
+  with the reason. `scripts/pr-comments.sh <pr> --full` prints all three streams and the checks
+  that are not green (REST only, so it runs in a cloud container too).
 - Read each bot's **reply to your reply** before resolving a thread (CodeRabbit says whether it
   keeps the thread open as a tracked follow-up). Read what the bots posted on a tracking PR too, if
   the branch targets one. A review posted from the owner's own account may be tool-generated
