@@ -172,7 +172,7 @@ jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_r
 # depending on `rand_core` directly avoids the mismatch entirely rather than
 # pinning `rand` and waiting on p256 to catch up.
 aws-lc-rs = "1"
-p256      = "0.13"
+p256      = "0.14"
 rand_core = { version = "0.6", features = ["getrandom"] }
 
 # --- HTTP client (feature: jwt for JWKS via crates/conduit-auth-jwt,
