@@ -130,19 +130,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           key: ${{ matrix.target }}
 
       # Install cross for cross-compilation targets
       - name: Install cross
         if: matrix.use_cross
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29  # v2.87.21
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32  # v2.88.0
         with:
           tool: cross
 
@@ -190,7 +190,7 @@ jobs:
       # Name uses asset_name (not target) so standard and full builds for the
       # same target get distinct artifact names and don't overwrite each other.
       - name: Upload binary artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: binary-${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
@@ -198,7 +198,7 @@ jobs:
 
       # Upload archive (GitHub Release)
       - name: Upload archive artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: archive-${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}.${{ matrix.archive_ext }}
@@ -218,7 +218,7 @@ jobs:
       attestations: write   # required to create attestations
 
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: binary-*
           path: dist/
@@ -246,7 +246,7 @@ jobs:
           persist-credentials: false
 
       - name: Download all archive artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: archive-*
           path: dist/
@@ -255,7 +255,7 @@ jobs:
       # Also attach bare binaries so that npm's download.js fallback can
       # fetch the binary directly (without needing to unpack an archive).
       - name: Download all binary artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: binary-*
           path: dist/
@@ -312,11 +312,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
 
       - name: Publish workspace crates
         env:
@@ -351,7 +351,7 @@ jobs:
             type=raw,value=latest
 
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -397,7 +397,7 @@ jobs:
             type=raw,value=latest-full
 
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -425,7 +425,7 @@ jobs:
 
     steps:
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -452,7 +452,7 @@ jobs:
 
     steps:
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -492,7 +492,7 @@ jobs:
       # This way `npx conduit` works offline and without a postinstall network hit
       # if the user already has the matching platform binary cached by npm.
       - name: Download all binary artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: binary-*
           path: npm/bin/native/
@@ -526,7 +526,7 @@ jobs:
           "
 
       # ── 4a. Publish to npmjs.com ────────────────────────────────────────
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -538,7 +538,7 @@ jobs:
         run: npm publish --access public --provenance
 
       # ── 4b. Publish to GitHub Packages ─────────────────────────────────
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "24"
           registry-url: "https://npm.pkg.github.com"
