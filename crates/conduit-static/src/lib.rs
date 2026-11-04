@@ -74,6 +74,10 @@
 //! extraction recipe: these member crates are internal plumbing, not a
 //! semver-disciplined public API — `CLAUDE.md` decision #32).
 
+// The one place that needs `unsafe` is the Windows handle-relative open (`open_beneath/windows.rs`, issue #600); everything
+// else in the crate stays safe, and that module opts in explicitly.
+#![deny(unsafe_code)]
+
 pub mod config;
 #[cfg(feature = "static")]
 pub mod fallback;

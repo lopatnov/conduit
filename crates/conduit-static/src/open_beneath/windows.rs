@@ -22,9 +22,12 @@
 //! A reparse point that is *not* a link (a OneDrive placeholder, a deduplicated file) cannot be
 //! read through a `FILE_OPEN_REPARSE_POINT` handle, because the filter that serves it does not run.
 //! Such a component is reopened normally, relative to the same verified parent, and must be the
-//! same file (volume and file index) as the first open, so a link swapped in meanwhile is refused.
+//! same file (volume serial and 128-bit file id) as the first open, so a link swapped in meanwhile
+//! is refused. That branch has not been run against a real placeholder or deduplicated file (only
+//! reparse tags without a handler, which fail closed): it is written from the API contract.
 //!
-//! The only `unsafe` is the two FFI calls in [`open_relative`] and [`file_id`].
+//! The only `unsafe` is the FFI in [`open_relative`] and [`file_id`]; the crate denies it everywhere
+//! else (`#![deny(unsafe_code)]` in `lib.rs`).
 
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
@@ -45,14 +48,19 @@ use windows_sys::Win32::Foundation::{
     RtlNtStatusToDosError, HANDLE, OBJ_CASE_INSENSITIVE, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FileIdInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_REPARSE_POINT, FILE_GENERIC_READ,
+    FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    SYNCHRONIZE,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
 /// `ERROR_STOPPED_ON_SYMLINK`: what a refused link is reported as.
 const ERROR_STOPPED_ON_SYMLINK: i32 = 681;
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+const STATUS_SUCCESS: i32 = 0;
+/// What a directory handle needs: to be a root for relative opens and to report its type. No listing
+/// right, so a directory the account can only traverse still works.
+const DIRECTORY_ACCESS: u32 = FILE_READ_ATTRIBUTES | SYNCHRONIZE;
 
 fn link_error() -> io::Error {
     io::Error::from_raw_os_error(ERROR_STOPPED_ON_SYMLINK)
@@ -80,7 +88,7 @@ pub fn open_beneath(root: &Path, rel: &Path) -> io::Result<File> {
 
     // The root is resolved normally, which follows a symlinked or junctioned root.
     let mut cur = OpenOptions::new()
-        .read(true)
+        .access_mode(DIRECTORY_ACCESS)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(root)?;
     for name in dirs {
@@ -184,7 +192,11 @@ fn open_relative(
     let status = unsafe {
         NtCreateFile(
             &mut handle,
-            FILE_GENERIC_READ,
+            match kind {
+                // A directory is only a stepping stone for the next relative open.
+                Kind::Directory => DIRECTORY_ACCESS,
+                Kind::File => FILE_GENERIC_READ,
+            },
             &attributes,
             &mut status_block,
             ptr::null(),
@@ -201,25 +213,36 @@ fn open_relative(
         let code = unsafe { RtlNtStatusToDosError(status) };
         return Err(io::Error::from_raw_os_error(code as i32));
     }
+    // Only STATUS_SUCCESS with a handle is a success (a synchronous FILE_OPEN returns nothing else).
+    if status != STATUS_SUCCESS || handle.is_null() {
+        return Err(io::Error::other(format!(
+            "unexpected NtCreateFile status {status:#x}"
+        )));
+    }
     // SAFETY: the call succeeded, so `handle` is a valid handle that nothing else owns.
     Ok(File::from(unsafe {
         OwnedHandle::from_raw_handle(handle as RawHandle)
     }))
 }
 
-/// Volume serial number and file index: which file a handle refers to.
-fn file_id(file: &File) -> io::Result<(u32, u32, u32)> {
-    let mut info = BY_HANDLE_FILE_INFORMATION::default();
-    // SAFETY: `info` is valid for writes and the handle is open for the lifetime of `file`.
-    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut info) };
+/// Volume serial number and 128-bit file id: which file a handle refers to. The 128-bit form is the one
+/// that is unique on ReFS (and Dev Drive); NTFS fills its 64-bit index into the low bytes.
+fn file_id(file: &File) -> io::Result<(u64, [u8; 16])> {
+    let mut info = FILE_ID_INFO::default();
+    // SAFETY: `info` is a valid, writable `FILE_ID_INFO` and the size passed is its size; the handle is
+    // open for the lifetime of `file`.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as HANDLE,
+            FileIdInfo,
+            ptr::from_mut(&mut info).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
     if ok == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok((
-        info.dwVolumeSerialNumber,
-        info.nFileIndexHigh,
-        info.nFileIndexLow,
-    ))
+    Ok((info.VolumeSerialNumber, info.FileId.Identifier))
 }
 
 #[cfg(test)]
@@ -296,6 +319,12 @@ mod tests {
         if let Err(e) =
             std::os::windows::fs::symlink_file(outside.path().join("secret"), &file_link)
         {
+            // A developer machine without the symlink privilege cannot run this; CI (an elevated
+            // runner) must, so that the file-level refusal is never untested.
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "CI must be able to create symlinks, or this test silently stops covering the refusal ({e})"
+            );
             eprintln!("skipping the symlink test: cannot create a symlink here ({e})");
             return;
         }

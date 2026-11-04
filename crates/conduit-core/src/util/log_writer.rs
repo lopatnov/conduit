@@ -248,9 +248,13 @@ mod tests {
         match std::os::windows::fs::symlink_file(&target, &file_link) {
             Ok(()) => {
                 let w = LogWriter::new();
+                // The message, not just `is_err()`: only it proves the new check made the call.
+                let err = w
+                    .switch_file(file_link.to_str().unwrap())
+                    .expect_err("a file symlink must be rejected");
                 assert!(
-                    w.switch_file(file_link.to_str().unwrap()).is_err(),
-                    "a file symlink must be rejected"
+                    err.to_string().contains("refusing to open a symlink"),
+                    "unexpected error: {err}"
                 );
                 assert_eq!(
                     std::fs::read_to_string(&target).unwrap(),
@@ -258,7 +262,14 @@ mod tests {
                     "the symlink target must be untouched"
                 );
             }
-            Err(e) => eprintln!("skipping the file-symlink half: cannot create one here ({e})"),
+            Err(e) => {
+                // CI (an elevated runner) must be able to, or the refusal goes untested.
+                assert!(
+                    std::env::var_os("CI").is_none(),
+                    "CI must be able to create symlinks, or this test silently stops covering the refusal ({e})"
+                );
+                eprintln!("skipping the file-symlink half: cannot create one here ({e})");
+            }
         }
     }
 

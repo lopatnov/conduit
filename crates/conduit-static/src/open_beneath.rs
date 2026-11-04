@@ -21,6 +21,7 @@ use std::io;
 use std::path::{Component, Path};
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 mod windows;
 #[cfg(windows)]
 pub use windows::open_beneath;
