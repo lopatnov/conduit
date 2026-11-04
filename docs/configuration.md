@@ -1284,12 +1284,17 @@ staticOptions:
 ### Symlinks
 
 A symlink **below** a static root is never served, whether it points to a file or to a directory:
-the request is treated as if the file did not exist. On Unix every component under the root is
-opened with `O_NOFOLLOW`, so a directory swapped for a symlink between the check and the open is
-refused as well. On Windows the check runs before the open, so a symlink or directory junction
-swapped in between the two could still be followed (creating symlinks there normally needs elevated
-rights, but junctions, and symlinks in Developer Mode, do not): keep the served tree writable by
-trusted accounts only.
+the request is treated as if the file did not exist. Every component under the root is also opened
+relative to the directory above it without following links (`openat` with `O_NOFOLLOW` on Unix,
+`NtCreateFile` with `FILE_OPEN_REPARSE_POINT` on Windows, which covers directory junctions too), so
+a directory swapped for a symlink or junction between the check and the open is refused as well.
+On Windows, files that are reparse points but not links (OneDrive placeholders, deduplicated files)
+are still served. On any other platform the check runs before the open, so a symlink swapped in
+between the two could still be followed: keep the served tree writable by trusted accounts only.
+
+The access-log file (`logging.file`) gets the same protection for its last path component: a symlink
+(on Windows also a junction) planted at the log path is refused. The directories above it are not
+checked, so keep the log directory writable by trusted accounts only.
 
 The root path itself is resolved normally: a symlinked root such as `current -> releases/42` works,
 and switching that link takes effect on the next request. Whoever can replace the root path, or one

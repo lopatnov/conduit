@@ -10,12 +10,20 @@
 //! `docs/configuration.md`. This is the same guarantee as Linux `openat2(RESOLVE_BENEATH |
 //! RESOLVE_NO_SYMLINKS)`, built from `openat` so it also holds on macOS and the BSDs.
 //!
-//! Windows keeps the check-then-open in `handler.rs`: a symlink or directory junction swapped in
-//! between the check and the open could still be followed. The window is documented in
-//! `docs/configuration.md`.
+//! Windows has its own walk (`windows.rs`, issue #600): `NtCreateFile` per component, relative to
+//! the handle of the directory above it, with `FILE_OPEN_REPARSE_POINT`, so a symlink or directory
+//! junction is refused at any level for the same reason. Any other platform keeps a plain open and
+//! the check-then-open in `handler.rs`; see "Symlinks" in `docs/configuration.md`.
 
+#[cfg(unix)]
 use std::io;
+#[cfg(not(windows))]
 use std::path::{Component, Path};
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::open_beneath;
 
 /// Open `root`/`rel` read-only. `rel` must consist of normal components only (no `..`, no root).
 /// The root itself may be a symlink (the operator chose it); nothing below it may be.
@@ -48,11 +56,11 @@ pub fn open_beneath(root: &Path, rel: &Path) -> io::Result<std::fs::File> {
     Ok(std::fs::File::from(fd))
 }
 
-#[cfg(not(unix))]
-pub fn open_beneath(root: &Path, rel: &Path) -> io::Result<std::fs::File> {
+#[cfg(not(any(unix, windows)))]
+pub fn open_beneath(root: &Path, rel: &Path) -> std::io::Result<std::fs::File> {
     for c in rel.components() {
         if !matches!(c, Component::Normal(_)) {
-            return Err(io::Error::from(io::ErrorKind::InvalidInput));
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
         }
     }
     std::fs::File::open(root.join(rel))

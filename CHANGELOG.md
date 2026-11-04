@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **Windows: a symlink or junction swapped in after the check is no longer followed** (issue #600,
+  CWE-59/367). Static files are now opened component by component with `NtCreateFile` relative to the
+  directory above (`FILE_OPEN_REPARSE_POINT`), as `openat` + `O_NOFOLLOW` already did on Unix, so a
+  directory junction (which needs no privilege) or a symlink at any level below the root is refused.
+  The access-log file refuses a symlink or junction at its path the same way. Files that are
+  reparse points but not links (OneDrive placeholders, deduplicated files) are still served.
+
 ---
 
 ## [2.1.0] — 2026-10-11

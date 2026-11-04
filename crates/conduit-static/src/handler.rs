@@ -270,11 +270,10 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
 
 /// Open `path` (which lies below `root`) for reading without following a symlink at any level.
 ///
-/// On Unix the walk from `root` and the open are one step (`openat` + `O_NOFOLLOW`, see
-/// [`crate::open_beneath`]), which closes the window between the `symlink_metadata` checks in
-/// `find_file` and the open (issue #557). On Windows it is a regular open, so a symlink or directory
-/// junction swapped in after the check could still be followed (see "Symlinks" in
-/// `docs/configuration.md`; issue #600).
+/// The walk from `root` and the open are one step on Unix (`openat` + `O_NOFOLLOW`, issue #557) and on
+/// Windows (`NtCreateFile` relative to the parent handle, issue #600; see [`crate::open_beneath`]), which
+/// closes the window between the `symlink_metadata` checks in `find_file` and the open. Any other
+/// platform has a plain open (see "Symlinks" in `docs/configuration.md`).
 async fn open_no_follow(root: &Path, path: &Path) -> std::io::Result<tokio::fs::File> {
     let rel = path
         .strip_prefix(root)
@@ -372,6 +371,13 @@ async fn find_file<'a>(
     rel: &str,
     options: &StaticOptions,
 ) -> Option<(&'a Path, PathBuf)> {
+    // Win32 strips a trailing dot or space from a name (`index.html.` is `index.html`), but the
+    // handle-relative open on Windows (issue #600) takes the name literally and refuses it. Say "not
+    // found" here, before the headers are built, instead of failing the open later.
+    #[cfg(windows)]
+    if rel.split('/').any(|s| s.ends_with(['.', ' '])) {
+        return None;
+    }
     for root in roots {
         if !parent_dirs_are_not_symlinks(root, rel).await {
             continue;
@@ -1191,6 +1197,20 @@ mod tests {
     fn sanitize_path_removes_dotdot() {
         assert_eq!(sanitize_path("../etc/passwd"), "etc/passwd");
         assert_eq!(sanitize_path("a/../../b"), "b");
+    }
+
+    /// Win32 would have served `index.html.` as `index.html`; the Windows open takes names literally.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_trailing_dot_or_space_in_the_url_is_not_found_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "x").unwrap();
+        let roots = vec![dir.path().to_path_buf()];
+        let opts = StaticOptions::default();
+        assert!(find_file(&roots, "index.html", &opts).await.is_some());
+        for rel in ["index.html.", "index.html ", "sub./index.html"] {
+            assert!(find_file(&roots, rel, &opts).await.is_none(), "{rel:?}");
+        }
     }
 
     // ── sanitize_path extra cases ─────────────────────────────────────────────
