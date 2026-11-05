@@ -213,16 +213,21 @@ fn open_relative(
         let code = unsafe { RtlNtStatusToDosError(status) };
         return Err(io::Error::from_raw_os_error(code as i32));
     }
-    // Only STATUS_SUCCESS with a handle is a success (a synchronous FILE_OPEN returns nothing else).
-    if status != STATUS_SUCCESS || handle.is_null() {
+    if handle.is_null() {
+        return Err(io::Error::other(format!(
+            "NtCreateFile returned status {status:#x} and no handle"
+        )));
+    }
+    // SAFETY: the call did not fail and returned a handle, so `handle` is a valid handle that nothing else
+    // owns. Taking ownership first means every early return below closes it.
+    let owned = unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) };
+    // A synchronous FILE_OPEN returns STATUS_SUCCESS and nothing else; anything different is not trusted.
+    if status != STATUS_SUCCESS {
         return Err(io::Error::other(format!(
             "unexpected NtCreateFile status {status:#x}"
         )));
     }
-    // SAFETY: the call succeeded, so `handle` is a valid handle that nothing else owns.
-    Ok(File::from(unsafe {
-        OwnedHandle::from_raw_handle(handle as RawHandle)
-    }))
+    Ok(File::from(owned))
 }
 
 /// Volume serial number and 128-bit file id: which file a handle refers to. The 128-bit form is the one

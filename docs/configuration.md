@@ -1290,9 +1290,10 @@ relative to the directory above it without following links (`openat` with `O_NOF
 a directory swapped for a symlink or junction between the check and the open is refused as well.
 On Windows, a file or directory that is a reparse point but not a link (a OneDrive placeholder, a
 deduplicated file) is opened normally after an identity check; that path is written from the API
-contract and has not been run against a real placeholder, so such a file may be refused (a `500`)
-rather than served. On any other platform the check runs before the open, so a symlink swapped in
-between the two could still be followed: keep the served tree writable by trusted accounts only.
+contract and has not been run against a real placeholder, so such a file may be refused (the
+response is then cut off after its headers) rather than served. On any other platform the check runs
+before the open, so a symlink swapped in between the two could still be followed: keep the served
+tree writable by trusted accounts only.
 
 The access-log file (`logging.file`) gets the same protection for its last path component: a symlink
 (on Windows also a junction) planted at the log path is refused. The directories above it are not

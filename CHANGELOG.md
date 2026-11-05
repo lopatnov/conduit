@@ -15,7 +15,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   directory junction (which needs no privilege) or a symlink at any level below the root is refused.
   The access-log file refuses a symlink or junction at its path the same way. A reparse point that
   is not a link (OneDrive placeholder, deduplicated file) is reopened normally after an identity
-  check; that path has not been run against a real placeholder and fails closed if it misbehaves.
+  check; that path has not been run against a real placeholder, and the file is refused if the open fails or
+  the identity differs.
 
 ---
 
