@@ -207,11 +207,14 @@ futures     = { version = "0.3" }
 
 # --- WASM plugin middleware (optional feature) ---
 # Enable with: cargo build --features wasm
-# Cranelift JIT: fast compilation; no WASI by default (sandboxed). Default features are off: the crate uses
-# `Engine`, `Module`, `Store`, `Linker` and `Config` only, so the compile cache (and with it `zstd` 0.13, which
-# carries RUSTSEC-2026-0391 and twelve advisories on `zstd-safe` 7.3), the component model, async, GC, threads
-# and profiling are not compiled in.
-wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "anyhow"] }
+# Cranelift JIT: fast compilation; no WASI by default (sandboxed). Default features are off, except the ones that
+# decide WHICH GUEST MODULES LOAD: `gc` + `gc-drc` (WebAssembly GC and externref) and `threads` (shared memory).
+# A module that needs a proposal the host does not compile in fails to load, and a load failure is fail-open, so a
+# plugin that should abort a request would let it through (`a_plugin_that_uses_wasm_gc_types_still_loads_and_runs`).
+# What is off is host-side machinery the plugin crate does not use (it uses `Engine`, `Module`, `Store`, `Linker`
+# and `Config` only): the compile cache (which carried `zstd` 0.13 and `zstd-safe` 7.3 with 13 advisories no 0.13
+# release fixes), the component model, async, profiling and debugging, parallel compilation, `wat` text input.
+wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "anyhow", "gc", "gc-drc", "threads"] }
 
 # --- OpenTelemetry OTLP tracing (optional feature) ---
 # Enable with: cargo build --features otlp

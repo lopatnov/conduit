@@ -247,6 +247,13 @@ wat2wasm minimal.wat -o minimal.wasm
 wasm-tools parse minimal.wat -o minimal.wasm
 ```
 
+> **What the host runs.** A plugin file is a *core* WebAssembly module in **binary** form (`.wasm`). The `.wat`
+> text format is not accepted (compile it first, as above), and neither are component-model binaries or WASI
+> imports. The host is built with Wasmtime's Cranelift compiler, WebAssembly GC and shared memory, in addition
+> to what every core module can use (reference types, bulk memory, multi-value, SIMD). A module that does not
+> load, for any reason, is **fail-open**: the request continues and a warning is logged, so a plugin that is
+> supposed to reject requests must be tested by loading it, not assumed to run.
+
 **conduit.yaml:**
 
 ```yaml

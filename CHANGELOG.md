@@ -32,9 +32,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (RUSTSEC-2026-0386), `zstd` 0.14.3 with `zstd-safe` 8.2 and `zstd-sys` 2.1.2 (RUSTSEC-2026-0391, 0395-0406,
   0410), `aws-lc-rs` 1.18.2 (`aws-lc-sys` 0.46), `rustls-webpki` 0.103.16, `webpki-root-certs` 1.0.11,
   `ctutils` 0.4.8, and patch bumps of libc, sha2, serde_json, schemars and wat. wasmtime is now built
-  without its default features (the plugin crate uses `Engine`, `Module`, `Store`, `Linker` and `Config`
-  only): the compile cache, component model, async, GC, threads and profiling are not compiled in, and the
-  `wasm` build has 118 unique crates instead of 184, without `zstd` 0.13.
+  without its default features except `gc`, `gc-drc` and `threads`, which decide which plugin modules load
+  (the plugin crate uses `Engine`, `Module`, `Store`, `Linker` and `Config` only): the compile cache, component
+  model, async, profiling, debugging, parallel compilation and `.wat` text input are not compiled in, and the
+  `wasm` build has 118 unique crates instead of 184, without `zstd` 0.13. A plugin file must be a binary
+  module (documented in `docs/wasm.md`).
 
 ### Fixed
 
