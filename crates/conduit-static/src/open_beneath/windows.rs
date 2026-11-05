@@ -475,6 +475,22 @@ mod tests {
             fm.file_type().is_symlink()
         );
 
+        // Everything that can make a provider download the file comes last, and the walk goes before it: a
+        // provider may hydrate on the second (following) open, and the walk must meet the placeholder, not a
+        // file that a diagnostic has already downloaded.
+        let read_it = std::env::var_os("CONDUIT_REPARSE_READ").is_some_and(|v| v == "1");
+
+        // The whole walk, which is what the server calls.
+        let mut served = open_beneath(root, Path::new(name))
+            .expect("the walk must open a placeholder, not refuse it");
+        assert!(!served.metadata().unwrap().file_type().is_symlink());
+        eprintln!("open_beneath: opened the placeholder without reading it");
+        let via_walk = read_it.then(|| {
+            let mut bytes = Vec::new();
+            served.read_to_end(&mut bytes).unwrap();
+            bytes
+        });
+
         // Second open, following the reparse point through the provider's filter, then the identity check.
         let second = open_relative(&dir, name, Kind::File, true).expect("second open");
         eprintln!(
@@ -483,15 +499,9 @@ mod tests {
             same_file(&first, &second).unwrap()
         );
 
-        // The whole walk, which is what the server calls.
-        let served = open_beneath(root, Path::new(name))
-            .expect("the walk must open a placeholder, not refuse it");
-        assert!(!served.metadata().unwrap().file_type().is_symlink());
-        eprintln!("open_beneath: opened the placeholder without reading it");
-
-        if std::env::var_os("CONDUIT_REPARSE_READ").is_some_and(|v| v == "1") {
-            let via_walk = read(open_beneath(root, Path::new(name)).unwrap());
-            let via_plain = std::fs::read_to_string(path).unwrap();
+        if let Some(via_walk) = via_walk {
+            // Bytes, not text: a placeholder need not be UTF-8.
+            let via_plain = std::fs::read(path).unwrap();
             eprintln!(
                 "read: {} bytes through the walk, {} through a plain open, equal: {}",
                 via_walk.len(),
