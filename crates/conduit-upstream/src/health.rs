@@ -8,6 +8,7 @@
 //! Background health check tasks are spawned once at server start inside the
 //! root crate's `AdminApiService::start()` via [`spawn_health_checks`].
 
+use std::cmp::Ordering as CmpOrdering;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -444,7 +445,12 @@ impl UpstreamRegistry {
     /// A weight-3 peer is therefore chosen until it carries three times the
     /// connections of a weight-1 peer. `weighted` is the `(url, weight)` list of the
     /// route; a URL it does not name has weight 1, so with an empty list (or every
-    /// weight 1) this is plain least-connections and ties go to the earliest URL.
+    /// weight 1) this is plain least-connections.
+    ///
+    /// **Ties.** Peers with the same `inflight / weight` (every peer, when traffic is light
+    /// enough that nothing stays in flight) are chosen among at random, in proportion to their
+    /// weights. Taking the first of them, as this function used to, sent every request of a
+    /// quiet pool to its first target. nginx breaks the same ties with weighted round-robin.
     ///
     /// A peer with weight 0 receives nothing while any peer has a positive weight
     /// (the same rule as weighted round-robin); when every candidate has weight 0 the
@@ -452,28 +458,68 @@ impl UpstreamRegistry {
     ///
     /// Returns `None` when `urls` is empty.
     pub fn pick_least_conn(&self, urls: &[String], weighted: &[(String, u32)]) -> Option<String> {
+        // Pass 1: the lowest inflight/weight, the first peer at it, and how many peers share it.
         let mut best: Option<(usize, usize, u32)> = None; // (index, inflight, weight)
+        let mut tied = 0usize;
         for (i, url) in urls.iter().enumerate() {
             let weight = targets::weight_for(weighted, i, url);
             if weight == 0 {
                 continue;
             }
             let load = self.conn_load(url);
-            let better = best.is_none_or(|(_, best_load, best_weight)| {
-                (load as u128) * (best_weight as u128) < (best_load as u128) * (weight as u128)
-            });
-            if better {
-                best = Some((i, load, weight));
+            match best
+                .map(|(_, best_load, best_weight)| ratio_cmp(load, weight, best_load, best_weight))
+            {
+                None | Some(CmpOrdering::Less) => {
+                    best = Some((i, load, weight));
+                    tied = 1;
+                }
+                Some(CmpOrdering::Equal) => tied += 1,
+                Some(CmpOrdering::Greater) => {}
             }
         }
         let index = match best {
-            Some((i, _, _)) => i,
-            // Every candidate has weight 0: fall back to plain least-connections.
-            None => {
-                urls.iter()
+            // One peer at the best ratio: the common case under load, no second pass.
+            Some((first, _, _)) if tied == 1 => first,
+            // Several at the best ratio: one at random, in proportion to its weight. The counters
+            // can move between the passes, so fall back to the first peer found in pass 1.
+            Some((first, best_load, best_weight)) => {
+                let at_best = |i: usize, url: &String| {
+                    let weight = targets::weight_for(weighted, i, url);
+                    (weight != 0
+                        && ratio_cmp(self.conn_load(url), weight, best_load, best_weight)
+                            == CmpOrdering::Equal)
+                        .then_some(u64::from(weight))
+                };
+                let total: u64 = urls
+                    .iter()
                     .enumerate()
-                    .min_by_key(|(_, url)| self.conn_load(url))?
-                    .0
+                    .filter_map(|(i, url)| at_best(i, url))
+                    .sum();
+                let mut ticket = targets::fast_random() % total.max(1);
+                let mut chosen = first;
+                for (i, url) in urls.iter().enumerate() {
+                    if let Some(weight) = at_best(i, url) {
+                        chosen = i;
+                        if ticket < weight {
+                            break;
+                        }
+                        ticket -= weight;
+                    }
+                }
+                chosen
+            }
+            // Every candidate has weight 0: plain least-connections, ties at random.
+            None => {
+                let lowest = urls.iter().map(|url| self.conn_load(url)).min()?;
+                let tied: Vec<usize> = (0..urls.len())
+                    .filter(|&i| self.conn_load(&urls[i]) <= lowest)
+                    .collect();
+                // `tied` can only be empty if every counter rose since `lowest` was read.
+                match tied.len() {
+                    0 => 0,
+                    n => tied[(targets::fast_random() % n as u64) as usize],
+                }
             }
         };
         let chosen = urls[index].clone();
@@ -634,6 +680,12 @@ impl UpstreamRegistry {
     pub fn clear_overrides(&self) {
         self.overrides.clear();
     }
+}
+
+/// Compare `load_a / weight_a` with `load_b / weight_b` without dividing: cross-multiplied in `u128`,
+/// so there is no rounding and no overflow. Both weights must be non-zero.
+fn ratio_cmp(load_a: usize, weight_a: u32, load_b: usize, weight_b: u32) -> CmpOrdering {
+    ((load_a as u128) * (weight_b as u128)).cmp(&((load_b as u128) * (weight_a as u128)))
 }
 
 // ── Health state update ───────────────────────────────────────────────────────
@@ -1648,30 +1700,28 @@ mod tests {
 
     #[test]
     fn weighted_least_conn_with_equal_weights_matches_the_unweighted_pick() {
+        // Ties are broken at random, so compare what is guaranteed: 41 held-open requests over two
+        // peers split 21/20 either way round, whether the weights are absent, 1 or all the same.
         let (urls, ones) = pair(1, 1);
-        let (weighted_reg, plain_reg) = (UpstreamRegistry::new(), UpstreamRegistry::new());
-        assert_eq!(
-            spread(&weighted_reg, &urls, &ones, 41),
-            spread(&plain_reg, &urls, &[], 41),
-            "weights of 1 must not change the unweighted behaviour"
-        );
-        // Scaling every weight by the same factor changes nothing either.
         let (_, sevens) = pair(7, 7);
-        assert_eq!(
-            spread(&UpstreamRegistry::new(), &urls, &sevens, 41),
-            spread(&UpstreamRegistry::new(), &urls, &[], 41)
-        );
+        for weights in [&[][..], &ones[..], &sevens[..]] {
+            let counts = spread(&UpstreamRegistry::new(), &urls, weights, 41);
+            assert_eq!(counts.iter().sum::<usize>(), 41);
+            assert!(
+                counts[0].abs_diff(counts[1]) <= 1,
+                "weights {weights:?} split 41 requests as {counts:?}"
+            );
+        }
     }
 
     #[test]
     fn weighted_least_conn_prefers_the_heavy_peer_when_loads_are_equal() {
         let (urls, weighted) = pair(1, 3);
         let reg = UpstreamRegistry::new();
-        // Both idle: ratios are equal (0), the earlier URL wins. After that b (weight 3) is the
-        // one with room, so it takes the next three requests.
-        let first = reg.pick_least_conn(&urls, &weighted).unwrap();
-        assert_eq!(first, urls[0]);
-        for _ in 0..3 {
+        // a (weight 1) already carries one request: its ratio is 1, b's (weight 3) is 0, so b takes
+        // the next two requests (ratios 1/3 and 2/3 are both below 1).
+        reg.conn_inc(&urls[0]);
+        for _ in 0..2 {
             assert_eq!(reg.pick_least_conn(&urls, &weighted).unwrap(), urls[1]);
         }
     }
@@ -1701,6 +1751,43 @@ mod tests {
         reg.conn_inc(&urls[0]);
         // a: 1/(2^32-1), b: 0/(2^32-2) -> b has the lower ratio.
         assert_eq!(reg.pick_least_conn(&urls, &weighted).unwrap(), urls[1]);
+    }
+
+    /// Sequential traffic: every request is released before the next one arrives, so every pick sees
+    /// all peers at the same load and is a tie.
+    fn sequential_picks(urls: &[String], weighted: &[(String, u32)], n: usize) -> Vec<usize> {
+        let reg = UpstreamRegistry::new();
+        let mut counts = vec![0usize; urls.len()];
+        for _ in 0..n {
+            let url = reg.pick_least_conn(urls, weighted).expect("a candidate");
+            counts[urls.iter().position(|u| *u == url).unwrap()] += 1;
+            reg.conn_dec(&url);
+        }
+        counts
+    }
+
+    #[test]
+    fn least_conn_spreads_ties_when_nothing_stays_in_flight() {
+        let urls: Vec<String> = (0..3).map(|i| format!("http://b{i}:4000")).collect();
+        // 600 ties over 3 peers: 200 each, standard deviation about 11.5.
+        for (i, count) in sequential_picks(&urls, &[], 600).into_iter().enumerate() {
+            assert!(
+                (140..=260).contains(&count),
+                "peer {i} got {count} of 600 tied picks"
+            );
+        }
+    }
+
+    #[test]
+    fn weighted_least_conn_ties_follow_the_weights() {
+        let (urls, weighted) = pair(3, 1);
+        // 800 ties, weights 3:1: 600 and 200, standard deviation about 12.
+        let counts = sequential_picks(&urls, &weighted, 800);
+        assert!(
+            (540..=660).contains(&counts[0]),
+            "weight 3 got {} of 800 tied picks",
+            counts[0]
+        );
     }
 
     #[test]

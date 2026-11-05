@@ -871,6 +871,12 @@ retries and errors).
 reads and slow writes. Under uniform load it behaves like round-robin; its
 advantage emerges when some requests stall.
 
+**Ties.** When several upstreams have the same count (all of them, whenever the
+requests are short enough that none is still in flight when the next arrives),
+one of them is chosen at random, in proportion to its `weight`. Until 2.1 the
+first target in the list always won such a tie, so a lightly loaded pool sent
+every request to its first target.
+
 **Weights.** The comparison is *active connections divided by `weight`*, as in
 nginx `least_conn`: an upstream with weight 3 carries three times the in-flight
 requests of a weight-1 upstream before the next request goes elsewhere. Plain

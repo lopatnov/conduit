@@ -164,6 +164,35 @@ pub fn pick_weighted_round_robin(
     Some(targets.last().unwrap().0.clone())
 }
 
+/// A fast, non-cryptographic 64-bit random number for load-balancing choices (splitmix64).
+///
+/// The state is per thread and seeded once from the clock and the thread, so two calls in the same
+/// clock tick differ (a clock-seeded generator repeats itself within a tick: 100 ns on Windows,
+/// which is many requests). No allocation, no shared state.
+pub fn fast_random() -> u64 {
+    use std::cell::Cell;
+    use std::hash::{Hash, Hasher};
+
+    thread_local! {
+        static STATE: Cell<u64> = Cell::new({
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::thread::current().id().hash(&mut hasher);
+            nanos ^ hasher.finish()
+        });
+    }
+    STATE.with(|state| {
+        let mut x = state.get().wrapping_add(0x9e37_79b9_7f4a_7c15);
+        state.set(x);
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        x ^ (x >> 31)
+    })
+}
+
 /// Weight of `url` in a `(url, weight)` list; `1` when the list does not name it.
 ///
 /// `hint` is the index the caller expects `url` at. The candidate list and the weighted list are
@@ -428,6 +457,25 @@ mod tests {
         assert_eq!(
             pick_weighted_round_robin(&targets, "r", &counters),
             Some("http://a:4000".to_string())
+        );
+    }
+
+    #[test]
+    fn fast_random_never_repeats_back_to_back_and_differs_between_threads() {
+        // The old clock-seeded generator returned the same value for every call inside one clock
+        // tick; this one steps its state on every call.
+        let values: std::collections::HashSet<u64> = (0..10_000).map(|_| fast_random()).collect();
+        assert_eq!(values.len(), 10_000);
+        let (a, b) = (
+            std::thread::spawn(fast_random).join().unwrap(),
+            std::thread::spawn(fast_random).join().unwrap(),
+        );
+        assert_ne!(a, b, "two threads must not share a stream");
+        // Both halves of the range are used (a stuck high bit would show here).
+        let high = (0..1000).filter(|_| fast_random() >> 63 == 1).count();
+        assert!(
+            (400..=600).contains(&high),
+            "top bit set {high} times in 1000"
         );
     }
 

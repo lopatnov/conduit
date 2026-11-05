@@ -231,19 +231,7 @@ impl LoadBalancingStrategy for P2cChoice {
 
 /// Generate two distinct random indices in `[0, len)` using a fast XorShift.
 fn gen_pair(len: usize) -> (usize, usize) {
-    // Use thread-local fast RNG rather than an allocating SmallRng.
-    use std::time::{SystemTime, UNIX_EPOCH};
-    // Simple splitmix64 seeded from time — good enough for load balancing.
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos() as u64;
-    let mut x = seed
-        .wrapping_mul(0x9e3779b97f4a7c15)
-        .wrapping_add(0x6c62272e07bb0142);
-    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
-    x ^= x >> 31;
+    let x = targets::fast_random();
 
     let a = (x % len as u64) as usize;
     let b = ((x >> 32) % (len as u64 - 1)) as usize;
@@ -461,15 +449,20 @@ mod tests {
     }
 
     #[test]
-    fn least_conn_without_weights_is_unchanged() {
+    fn least_conn_without_weights_spreads_idle_peers_evenly() {
         let u = urls(3);
         let reg = registry();
         let c = counters();
         let picks: Vec<String> = (0..6)
             .map(|_| LEAST_CONN.pick(&u, &[], "r", 0, &c, &reg).unwrap().0)
             .collect();
-        // Held open: the first request goes to the earliest URL, then the idle ones in order.
-        assert_eq!(picks[..3], [u[0].clone(), u[1].clone(), u[2].clone()]);
+        // Held open, with ties broken at random: each round of three goes to three different peers.
+        for round in picks.chunks(3) {
+            let mut seen: Vec<&String> = round.iter().collect();
+            seen.sort();
+            seen.dedup();
+            assert_eq!(seen.len(), 3, "a round of three picks hit {round:?}");
+        }
     }
 
     #[test]

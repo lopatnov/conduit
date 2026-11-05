@@ -54,6 +54,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`least-conn` no longer sends every request of a lightly loaded pool to its first target** (issue #506).
+  When several upstreams had the same number of active connections, which is all of them whenever
+  requests are short enough that none is still in flight when the next arrives, the first one in the
+  list always won. The tie is now broken at random, in proportion to `weight`. `p2c` draws its two
+  samples from a per-thread generator instead of one seeded by the clock, which gave the same pair to
+  every request inside one clock tick (100 ns on Windows).
 - **Static files: a refused or failed open no longer cuts a `200` off after its headers** (issue
   #618). The file is opened once before any header is written, and its size, `ETag` and
   `Last-Modified` come from that handle, so a link swapped in after the lookup cannot leak the size
