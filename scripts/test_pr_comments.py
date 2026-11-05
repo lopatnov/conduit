@@ -459,8 +459,10 @@ class PrComments(unittest.TestCase):
         hidden = ["\U000e0041", "\U000e0000", "\U000e007f",           # Unicode tag block (start, `A`, end)
                   *map(chr, range(0x200B, 0x2010)),                    # zero-width space .. right-to-left mark
                   *map(chr, range(0x2028, 0x202F)),                    # line/paragraph separators, bidi embeddings and overrides
-                  *map(chr, range(0x2060, 0x206A)),                    # word joiner, invisible operators, bidi isolates
-                  "﻿"]
+                  *map(chr, range(0x2060, 0x2070)),                    # word joiner, invisible operators, bidi isolates, deprecated format characters
+                  *map(chr, range(0xFE00, 0xFE10)),                    # variation selectors
+                  "\U000e0100", "\U000e01ef",                          # variation selectors supplement (start, end)
+                  "\u00ad", "\u061c", "\ufeff"]                        # soft hyphen, Arabic letter mark, byte-order mark
         self.put(PULL, pull(title="t" + "".join(hidden) + "itle"))
         self.put(ISSUE_COMMENTS, [{"user": {"login": "a"}, "created_at": "2026-10-11T10:00:00Z", "id": 1,
                                    "body": "ok" + "".join(hidden) + "text"}])
@@ -470,7 +472,7 @@ class PrComments(unittest.TestCase):
         self.assertEqual([c for c in out if c in hidden], [])
         # What is visible and not a control stays, whatever the script: accents, emoji, CJK, and the characters just
         # outside each removed range.
-        keep = "café 😀 中文  ‐‧  ⁪"
+        keep = "caf\u00e9 \U0001f600 \u4e2d\u6587 \u200a\u2010\u2027\u202f\u205f\u2070 \u00ac\u00ae\u061b\u061d \ufe10 \U000e0080 \U000e01f0"
         self.put(ISSUE_COMMENTS, [{"user": {"login": "a"}, "created_at": "2026-10-11T10:00:00Z", "id": 1, "body": keep}])
         self.assertIn(f"\n    {keep}\n", self.run_script(str(PR)).stdout)
 

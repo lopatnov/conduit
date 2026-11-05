@@ -52,14 +52,15 @@ fi
 # `clean` drops what a terminal would act on: the C0 controls but tab and newline (ESC, BEL, CR ...), DEL and the C1
 # controls (U+0080-U+009F, some of them 8-bit forms of ESC sequences), and the characters that show nothing or reorder
 # what is shown: zero-width and direction marks (U+200B-U+200F), line/paragraph separators and the bidi embeddings and
-# overrides (U+2028-U+202E), word joiner, invisible operators and bidi isolates (U+2060-U+2069), the byte-order mark
-# (U+FEFF) and the Unicode tag block (U+E0000-U+E007F, which can carry text no one sees: a reader of this report that
-# is a language model would still read it). `oneline` also turns tab and newline into a space,
+# overrides (U+2028-U+202E), word joiner, invisible operators, bidi isolates and the deprecated format characters
+# (U+2060-U+206F), the soft hyphen (U+00AD), the Arabic letter mark (U+061C), the variation selectors (U+FE00-U+FE0F and
+# U+E0100-U+E01EF), the byte-order mark (U+FEFF) and the Unicode tag block (U+E0000-U+E007F, which can carry text no one
+# sees: a reader of this report that is a language model would still read it). `oneline` also turns tab and newline into a space,
 # for text that must stay on its line (a newline in a title could otherwise fake a heading of this report). Done in the
 # jq programs, one string at a time; wrapping the whole output in a process substitution would race with the exit.
-DEFS='def keep: . == 9 or . == 10 or (. >= 32 and . != 127 and (. < 128 or . > 159)
-  and (. < 8203 or . > 8207) and (. < 8232 or . > 8238) and (. < 8288 or . > 8297) and . != 65279
-  and (. < 917504 or . > 917631));
+DEFS='def keep: . == 9 or . == 10 or (. >= 32 and . != 127 and (. < 128 or . > 159) and . != 173 and . != 1564
+  and (. < 8203 or . > 8207) and (. < 8232 or . > 8238) and (. < 8288 or . > 8303) and . != 65279
+  and (. < 65024 or . > 65039) and (. < 917504 or . > 917631) and (. < 917760 or . > 917999));
 def clean: (. // "") | tostring | explode | map(select(keep)) | implode;
 def oneline: clean | gsub("[\t\n]"; " ");'
 # Trim (clean has already dropped the carriage returns), keep the body on its own indented lines.
