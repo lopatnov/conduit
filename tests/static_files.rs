@@ -549,7 +549,7 @@ fn symlink_file(target: &std::path::Path, link: &std::path::Path) -> bool {
 
 /// While a symlink to a longer file outside the root is swapped in and out at the served path, every
 /// answer is either the complete inside file (`Content-Length` and body agree, and it is not the
-/// outside file) or a plain `404`. This is an invariant check, not a proof of the open-before-headers
+/// outside file), a plain `404`, or (Windows only) a complete `500` for a file that was busy. This is an invariant check, not a proof of the open-before-headers
 /// order (the window is too narrow to hit reliably; the unreadable-file test below is the
 /// deterministic one for that).
 #[test]
@@ -588,7 +588,7 @@ fn static_a_file_swapped_for_a_symlink_is_never_served_or_cut_off() {
     };
 
     let client = reqwest::blocking::Client::new();
-    let (mut ok, mut missing) = (0u32, 0u32);
+    let (mut ok, mut missing, mut busy) = (0u32, 0u32, 0u32);
     for _ in 0..400 {
         let resp = match client.get(server.url("/f.txt")).send() {
             Ok(resp) => resp,
@@ -607,6 +607,13 @@ fn static_a_file_swapped_for_a_symlink_is_never_served_or_cut_off() {
                 ok += 1;
             }
             404 => missing += 1,
+            // On Windows a rename in flight holds the file exclusively for an instant, and the open then fails
+            // with a sharing violation: a clean 500 before any header (the body used to be cut off). It must be
+            // a complete response, and it can only happen there.
+            500 if cfg!(windows) => {
+                resp.text().expect("a 500 must carry its whole body");
+                busy += 1;
+            }
             other => panic!("unexpected status {other}"),
         }
     }
@@ -620,7 +627,7 @@ fn static_a_file_swapped_for_a_symlink_is_never_served_or_cut_off() {
         swaps > 0,
         "the file was never swapped; the test proves nothing"
     );
-    eprintln!("200: {ok}, 404: {missing}, swaps: {swaps}");
+    eprintln!("200: {ok}, 404: {missing}, busy: {busy}, swaps: {swaps}");
 }
 
 /// Issue #618, deterministic: a file the server cannot read used to get `200` plus `Content-Length`

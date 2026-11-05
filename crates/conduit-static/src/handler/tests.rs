@@ -394,6 +394,35 @@ async fn an_unreadable_file_is_a_complete_403_not_a_cut_off_200() {
     }
 }
 
+/// A file another process holds exclusively (a copy or a rename in flight) fails the open with a sharing
+/// violation. It is a complete `500` before any header, not a `200` whose body is cut off; it used to be
+/// the cut-off. Found by the swap test in `tests/static_files.rs` on `windows-latest`.
+#[cfg(windows)]
+#[tokio::test]
+async fn a_file_held_exclusively_is_a_complete_500_not_a_cut_off_200() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = dir_with(&[("busy.txt", b"contents")]);
+    let _writer = std::fs::OpenOptions::new()
+        .write(true)
+        .share_mode(0) // nobody else may open it while this handle lives
+        .open(dir.path().join("busy.txt"))
+        .unwrap();
+    let h = handler(dir.path(), StaticOptions::default());
+    for request in [
+        get("/busy.txt", ""),
+        "HEAD /busy.txt HTTP/1.1\r\nHost: t\r\n\r\n".to_owned(),
+    ] {
+        let (served, raw) = run(&h, &request).await;
+        assert!(served, "{request:?}");
+        let reply = parse(&raw);
+        assert_eq!(reply.status, 500, "{request:?}");
+        assert_eq!(reply.header("content-length"), Some("21"));
+        if request.starts_with("GET") {
+            assert_eq!(reply.body, b"Internal Server Error");
+        }
+    }
+}
+
 /// Issue #617: the NTFS 8.3 alias of a hidden file is a miss, with nothing written.
 #[cfg(windows)]
 #[tokio::test]
