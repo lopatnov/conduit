@@ -430,9 +430,8 @@ conduit upstreams remove --route /api --target http://api-3:4000 --site api.exam
 
 #### Change upstream weight
 
-Effective when the route uses `strategy: weighted-round-robin` or `least-conn`
-(shares in proportion to the weights), and, as a tilt only, `p2c`. The other
-strategies ignore weights.
+Effective when the route uses `strategy: weighted-round-robin`, `least-conn` or
+`p2c` (shares in proportion to the weights). The other strategies ignore weights.
 
 ```bash
 conduit upstreams weight --route /api --target http://api-1:4000 --weight 3

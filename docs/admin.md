@@ -416,9 +416,9 @@ curl -X POST http://localhost:2019/upstreams/remove \
 
 ### POST /upstreams/weight
 
-Change the weight of an upstream target. Effective for `weighted-round-robin`
-and `least-conn` (shares in proportion to the weights) and, as a tilt only,
-`p2c`; the other strategies ignore weights.
+Change the weight of an upstream target. Effective for `weighted-round-robin`,
+`least-conn` and `p2c` (shares in proportion to the weights); the other
+strategies ignore weights.
 
 ```bash
 # Give api-1 three times more traffic than api-2

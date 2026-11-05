@@ -769,7 +769,7 @@ traffic off a broken backend). Pick based on your actual traffic shape:
 | [`random`](#random) | Static | Uniform random pick | ✗ | none | Very large pools where a counter is unnecessary overhead | Worse uniformity than round-robin at small N |
 | [`least-conn`](#least-conn) | Load-aware | Fewest active connections per unit of `weight` | ✗ | none | Variable response times (mixed fast reads / slow writes), with or without unequal capacity | O(N) scan of the pool on every request |
 | [`least-response-time`](#least-response-time) | Load-aware | Lowest probed latency | ✗ | none | Upstreams with different hardware/geography | Needs `healthCheck` configured, or it's just round-robin |
-| [`p2c`](#p2c-power-of-two-choices) | Latency-aware | 2 random samples, lower EWMA latency (divided by `weight`) wins | ✗ | none | Large pools (10+) where `least-conn`'s full scan is too slow | Looks at latency, not at the number of requests in flight: it does not spread load in proportion to `weight` |
+| [`p2c`](#p2c-power-of-two-choices) | Load- and latency-aware | 2 random samples, lower EWMA latency × (in-flight + 1) ÷ `weight` wins | ✗ | none | Large pools (10+) where `least-conn`'s full scan is too slow | Marginally less precise than true least-conn |
 | [`ip-hash`](#ip-hash) | Affinity | rendezvous hash of the client IP | by IP | only the clients on a peer that leaves (or joins) move; the rest stay put | Soft per-IP affinity without a cookie | Clients on an ejected peer move to their next-best peer |
 | [`consistent-hash`](#consistent-hash) | Affinity | rendezvous hash of the configured key | by key | same as ip-hash — only the keys on a peer that leaves (or joins) move | Per-tenant/per-user routing, cache locality by URL | Keys on an ejected peer move to their next-best peer |
 
@@ -1055,22 +1055,29 @@ proxy:
 ### `p2c` (Power of Two Choices)
 
 On each request, samples **two upstreams at random** and forwards to the one
-with the lower **EWMA latency** (the passive, time-decayed measurement over all
-traffic that `GET /upstreams` reports as `ewma_latency_ms`; an upstream with no
-measurement yet counts as 30 ms). Ties are broken in favour of the first sample.
+with the lower **cost**:
 
-Selection costs O(1) — no scan of the full pool. Because the cost is latency
-alone, with no count of requests in flight, the O(log log N) load-balance
-guarantee that P2C has for queue lengths does not carry over; if you need even
-in-flight counts, use `least-conn`.
+```
+cost = EWMA latency × (requests in flight + 1) ÷ weight
+```
 
-**Weights.** The latency is divided by `weight` before the two are compared, so
-a weight-3 upstream is judged as if it were three times faster: it wins a
-comparison until its latency is more than three times the other's. This tilts
-the choice toward the heavier upstream; it does **not** give shares in
-proportion to the weights (use `least-conn` or `weighted-round-robin` for
-that). Plain string targets have weight 1, which leaves the comparison as it was.
-An upstream with weight 0 loses every comparison.
+The latency is the passive, time-decayed measurement over all traffic that
+`GET /upstreams` reports as `ewma_latency_ms` (an upstream with no measurement
+yet counts as 30 ms). The in-flight count is the one `least-conn` and
+`healthCheck.maxConnectionsPerUpstream` use, reported as `active_connections`.
+This is Tower's `PeakEwma` load, which linkerd's P2C balancer uses, divided by
+the weight. Ties are broken in favour of the first sample. Selection costs O(1) —
+no scan of the full pool.
+
+Both factors matter. Latency alone would send every request to the faster
+upstream however busy it was; with the in-flight factor an upstream twice as
+fast settles at about twice the in-flight requests of the slower one, and a busy
+upstream hands requests back to its sibling.
+
+**Weights.** The cost is divided by `weight`, so at equal latency a weight-3
+upstream carries about three times the in-flight requests of a weight-1 upstream.
+Plain string targets have weight 1. An upstream with weight 0 loses every
+comparison.
 
 With a single upstream in the pool, P2C falls back to round-robin.
 

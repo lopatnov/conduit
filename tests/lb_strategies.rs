@@ -2,7 +2,7 @@ mod common;
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use serial_test::serial;
@@ -12,6 +12,7 @@ use serial_test::serial;
 struct MockUpstream {
     port: u16,
     hits: Arc<AtomicUsize>,
+    hold_ms: Arc<AtomicU64>,
 }
 
 impl MockUpstream {
@@ -26,16 +27,21 @@ impl MockUpstream {
         let port = listener.local_addr().unwrap().port();
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_clone = hits.clone();
+        let hold_ms = Arc::new(AtomicU64::new(hold.as_millis() as u64));
+        let hold_clone = hold_ms.clone();
 
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
                 let hits_inner = hits_clone.clone();
+                let hold_inner = hold_clone.clone();
                 std::thread::spawn(move || {
                     let mut buf = [0u8; 4096];
                     let _ = stream.read(&mut buf);
                     hits_inner.fetch_add(1, Ordering::SeqCst);
-                    std::thread::sleep(hold);
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        hold_inner.load(Ordering::SeqCst),
+                    ));
                     let body = label;
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -47,7 +53,17 @@ impl MockUpstream {
             }
         });
 
-        MockUpstream { port, hits }
+        MockUpstream {
+            port,
+            hits,
+            hold_ms,
+        }
+    }
+
+    /// Change how long requests are held from now on.
+    fn set_hold(&self, hold: std::time::Duration) {
+        self.hold_ms
+            .store(hold.as_millis() as u64, Ordering::SeqCst);
     }
 
     fn url(&self) -> String {
@@ -139,6 +155,74 @@ fn least_conn_shares_concurrent_requests_by_weight() {
         (11..=13).contains(&hits_a),
         "least-conn with weights 3:1 must give the weight-3 upstream about three quarters of the in-flight requests (a={hits_a}, b={hits_b})"
     );
+}
+
+// ── P2C counts requests in flight (#628) ──────────────────────────────────────
+
+/// The sum of `active_connections` over every upstream `GET /upstreams` lists.
+fn active_connections(server: &common::TestServer, client: &reqwest::blocking::Client) -> u64 {
+    let body = client
+        .get(server.admin_url("/upstreams"))
+        .send()
+        .expect("GET /upstreams")
+        .text()
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_str(&body).expect("JSON");
+    json["upstreams"]
+        .as_array()
+        .expect("upstreams list")
+        .iter()
+        .map(|u| u["active_connections"].as_u64().unwrap_or(0))
+        .sum()
+}
+
+#[test]
+#[serial]
+fn p2c_holds_a_slot_while_a_request_is_in_flight_and_releases_it_after() {
+    let a = MockUpstream::start("a");
+    let b = MockUpstream::start("b");
+    let server = lb_server(serde_json::json!({
+        "/": { "targets": [a.url(), b.url()], "strategy": "p2c" }
+    }));
+    let client = reqwest::blocking::Client::new();
+
+    // Warm up, so that both upstreams are listed by the admin API (an upstream is listed once it has a
+    // recorded response). With two peers and equal start values the 20 picks all landing on one of them
+    // has probability 2^-19.
+    for _ in 0..20 {
+        client.get(server.url("/")).send().expect("GET");
+    }
+    assert_eq!(
+        active_connections(&server, &client),
+        0,
+        "nothing in flight yet"
+    );
+
+    // Eight requests, held for 2 s: while they run, the admin API must count eight in flight.
+    a.set_hold(std::time::Duration::from_secs(2));
+    b.set_hold(std::time::Duration::from_secs(2));
+    let mut seen_during = 0;
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                client.get(server.url("/")).send().expect("GET");
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        seen_during = active_connections(&server, &client);
+    });
+    assert_eq!(seen_during, 8, "p2c must count each request in flight");
+
+    // Every response is done; the slots are released when the request is logged, a moment later.
+    let mut left = u64::MAX;
+    for _ in 0..40 {
+        left = active_connections(&server, &client);
+        if left == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(left, 0, "p2c must release every slot it took");
 }
 
 // ── IP-hash ───────────────────────────────────────────────────────────────────

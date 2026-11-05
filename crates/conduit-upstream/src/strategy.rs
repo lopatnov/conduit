@@ -162,41 +162,41 @@ impl LoadBalancingStrategy for LeastResponseTime {
     }
 }
 
-/// Power of Two Choices (P2C): sample 2 random backends and forward to the
-/// one with lower **EWMA latency**.
+/// Power of Two Choices (P2C): sample 2 random backends and forward to the one with the lower
+/// **cost**, `ewma_latency * (in_flight + 1) / weight`.
 ///
-/// Achieves O(log log n) maximum load imbalance with O(1) selection.
-/// Uses the time-decayed Peak EWMA latency tracked in `UpstreamEntry.ewma_latency_us`
-/// rather than active connection counts — this matches how linkerd2-proxy implements
-/// P2C (via Tower's `PeakEwma`) and gives better tail-latency decisions.
+/// The cost is Tower's `PeakEwma` load (`rtt estimate * (pending + 1)`, which linkerd2-proxy's P2C
+/// balancer uses) divided by the target weight. Selection is O(1): two samples, two lookups.
 ///
-/// Latency measurements decay over a 10-second time constant so stale readings
-/// from past traffic bursts do not permanently bias routing.
+/// - `ewma_latency` is the passive, time-decayed latency in `UpstreamEntry.ewma_latency_us`
+///   (30 ms for a peer with no sample yet).
+/// - `in_flight` is the registry's per-upstream count, shared with `least-conn` and the circuit
+///   breaker. P2C increments it for the chosen peer and reports that it did (the `true` in the
+///   return value), so the caller releases it when the response completes. Without this term
+///   (before issue #628) P2C compared latency alone and kept sending to the faster peer however
+///   busy it was.
+/// - `weight` (issue #506) divides the cost, so at equal latency a weight-3 peer carries about
+///   three times the in-flight requests of a weight-1 peer. With every weight 1 and nothing in
+///   flight the cost is the latency, as before. A weight-0 peer loses every comparison.
 ///
-/// **Weights (issue #506).** The comparison is `latency / weight`: a peer with weight 3 is judged
-/// as if it were three times faster, so it wins a comparison against a weight-1 peer until its
-/// latency is more than three times the other's. This biases the choice towards the heavier peer;
-/// it does not make the shares proportional (there is no load term in the cost, see the docs) —
-/// use `least-conn` or `weighted-round-robin` for proportional sharing. With every weight 1 the
-/// cost is the latency itself, exactly as before. A weight-0 peer loses every comparison.
-///
-/// Reference: linkerd2-proxy `linkerd/pool/p2c/src/lib.rs`.
+/// Reference: linkerd2-proxy `linkerd/pool/p2c/src/lib.rs`; Tower `tower/src/load/peak_ewma.rs`.
 pub struct P2cChoice;
 
 /// Default EWMA value used when an upstream has no recorded latency yet.
 /// 30 ms — matches linkerd's `DEFAULT_RTT = 30 ms`.
 const P2C_DEFAULT_LATENCY_US: f64 = 30_000.0;
 
-/// The cost P2C compares: the EWMA latency of `url` divided by its weight; infinite for weight 0.
+/// The cost P2C compares: `ewma_latency * (in_flight + 1) / weight`; infinite for weight 0.
 fn p2c_cost(health: &UpstreamRegistry, weighted: &[(String, u32)], index: usize, url: &str) -> f64 {
     let latency = health
         .statuses
         .get(url)
         .map(|e| e.ewma_latency_us)
         .unwrap_or(P2C_DEFAULT_LATENCY_US);
+    let in_flight = health.conn_load(url) as f64 + 1.0;
     match targets::weight_for(weighted, index, url) {
         0 => f64::INFINITY,
-        w => latency / f64::from(w),
+        w => latency * in_flight / f64::from(w),
     }
 }
 
@@ -205,27 +205,31 @@ impl LoadBalancingStrategy for P2cChoice {
         &self,
         urls: &[String],
         weighted: &[(String, u32)],
-        route_key: &str,
+        _route_key: &str,
         _hash_val: u64,
-        counters: &DashMap<String, AtomicUsize>,
+        _counters: &DashMap<String, AtomicUsize>,
         health: &UpstreamRegistry,
     ) -> Option<(String, bool)> {
-        match urls.len() {
-            0 => None,
-            1 => {
-                // Trivial case: only one choice.
-                targets::pick_round_robin(urls, route_key, counters).map(|u| (u, false))
-            }
+        let chosen = match urls.len() {
+            0 => return None,
+            // Trivial case: only one choice.
+            1 => &urls[0],
             len => {
                 // Sample two distinct random indices and pick the lower-cost one.
                 let (a, b) = gen_pair(len);
                 let cost_a = p2c_cost(health, weighted, a, &urls[a]);
                 let cost_b = p2c_cost(health, weighted, b, &urls[b]);
                 // Pick the lower cost; break ties in favour of `a`.
-                let chosen = if cost_a <= cost_b { &urls[a] } else { &urls[b] };
-                Some((chosen.clone(), false))
+                if cost_a <= cost_b {
+                    &urls[a]
+                } else {
+                    &urls[b]
+                }
             }
-        }
+        };
+        // The request is now in flight on `chosen`; the caller releases the slot after the response.
+        health.conn_inc(chosen);
+        Some((chosen.clone(), true))
     }
 }
 
@@ -389,7 +393,18 @@ mod tests {
         let reg = registry();
         let (picked, lc) = P2C.pick(&u, &[], "r", 0, &counters(), &reg).unwrap();
         assert!(u.contains(&picked), "P2C must pick from the candidate list");
-        assert!(!lc, "P2C does not use the inflight counter");
+        // #628: P2C counts the request in flight, so the caller must release it afterwards.
+        assert!(lc, "P2C holds an in-flight slot and must say so");
+        assert_eq!(reg.conn_load(&picked), 1);
+    }
+
+    #[test]
+    fn p2c_counts_a_single_peer_in_flight_too() {
+        let u = vec!["http://only:4000".to_owned()];
+        let reg = registry();
+        let (picked, lc) = P2C.pick(&u, &[], "r", 0, &counters(), &reg).unwrap();
+        assert!(lc);
+        assert_eq!(reg.conn_load(&picked), 1);
     }
 
     #[test]
@@ -428,12 +443,86 @@ mod tests {
         (u, w)
     }
 
-    /// How many of 200 picks (a pair of two always compares both peers) land on `u[index]`.
+    /// How many of 200 picks (a pair of two always compares both peers) land on `u[index]`. Each
+    /// request finishes before the next one, so the in-flight counts stay as the caller set them.
     fn p2c_wins(u: &[String], w: &[(String, u32)], reg: &UpstreamRegistry, index: usize) -> usize {
         let c = counters();
         (0..200)
-            .filter(|_| P2C.pick(u, w, "r", 0, &c, reg).unwrap().0 == u[index])
+            .filter(|_| {
+                let (url, _) = P2C.pick(u, w, "r", 0, &c, reg).unwrap();
+                reg.conn_dec(&url);
+                url == u[index]
+            })
             .count()
+    }
+
+    /// Requests that never finish: how many of `n` land on each of `u`.
+    fn p2c_held_open(
+        u: &[String],
+        w: &[(String, u32)],
+        reg: &UpstreamRegistry,
+        n: usize,
+    ) -> Vec<usize> {
+        let c = counters();
+        for _ in 0..n {
+            P2C.pick(u, w, "r", 0, &c, reg).unwrap();
+        }
+        u.iter().map(|url| reg.conn_load(url)).collect()
+    }
+
+    // ── p2c counts requests in flight (#628) ──────────────────────────────────
+
+    #[test]
+    fn p2c_moves_to_the_slower_peer_when_the_faster_one_is_busy() {
+        let (u, w) = two(1, 1);
+        let reg = registry();
+        seed_latency(&reg, &u[0], 10_000.0);
+        seed_latency(&reg, &u[1], 20_000.0);
+        // Idle: the faster peer wins every comparison.
+        assert_eq!(p2c_wins(&u, &w, &reg, 0), 200);
+        // The faster peer carries three requests: 10 ms * (3 + 1) = 40 ms against 20 ms * 1.
+        for _ in 0..3 {
+            reg.conn_inc(&u[0]);
+        }
+        assert_eq!(p2c_wins(&u, &w, &reg, 1), 200);
+    }
+
+    #[test]
+    fn p2c_shares_load_between_peers_of_different_speed() {
+        // One peer twice as slow as the other. Latency alone sent everything to the fast one; with the
+        // in-flight factor the cost 10 * (a + 1) = 20 * (b + 1) settles at about two to one.
+        let (u, w) = two(1, 1);
+        let reg = registry();
+        seed_latency(&reg, &u[0], 10_000.0);
+        seed_latency(&reg, &u[1], 20_000.0);
+        let held = p2c_held_open(&u, &w, &reg, 100);
+        assert_eq!(held.iter().sum::<usize>(), 100);
+        assert!(
+            (32..=34).contains(&held[1]),
+            "the slow peer should carry about a third of 100 held-open requests, got {held:?}"
+        );
+    }
+
+    #[test]
+    fn p2c_shares_load_in_proportion_to_weight() {
+        // Same latency, weights 3:1: (a + 1) / 3 = (b + 1) / 1 settles at about three to one.
+        let (u, w) = two(3, 1);
+        let reg = registry();
+        let held = p2c_held_open(&u, &w, &reg, 40);
+        assert!(
+            (9..=10).contains(&held[1]),
+            "the weight-1 peer should carry about a quarter of 40 held-open requests, got {held:?}"
+        );
+    }
+
+    #[test]
+    fn p2c_with_every_weight_one_and_no_load_still_prefers_the_faster_peer() {
+        // The old behaviour, kept when nothing is in flight.
+        let (u, w) = two(1, 1);
+        let reg = registry();
+        seed_latency(&reg, &u[0], 80_000.0);
+        seed_latency(&reg, &u[1], 20_000.0);
+        assert_eq!(p2c_wins(&u, &w, &reg, 1), 200);
     }
 
     #[test]

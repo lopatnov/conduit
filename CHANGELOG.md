@@ -45,12 +45,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Load balancing: `least-conn` and `p2c` read `weight`** (issue #506). `least-conn` now picks the
   upstream with the fewest active connections *per unit of weight* (as nginx `least_conn` does), so a
-  weight-3 upstream carries three times the in-flight requests of a weight-1 one; `p2c` divides the
-  EWMA latency it compares by the weight, which tilts the choice toward the heavier upstream without
-  making the shares proportional. With every weight 1, which is every config without `weight`, nothing
+  weight-3 upstream carries three times the in-flight requests of a weight-1 one; `p2c` divides its
+  cost by the weight (see the next entry). With every weight 1, which is every config without `weight`, nothing
   changes. `conduit upstreams weight` and `POST /upstreams/weight` now apply to these two as well. The
   `docs/configuration.md` text for `p2c` said it compares connection counts; it compares latency, and
   now says so.
+
+- **`p2c` counts requests in flight** (issue #628). Its cost was the EWMA latency alone, so with two
+  upstreams of different speed the faster one got every request however busy it was (100 held-open
+  requests, one upstream twice as slow: 100 to 0). The cost is now `latency × (in-flight + 1) ÷ weight`,
+  Tower's `PeakEwma` load, as linkerd's P2C balancer uses; the same case ends at 67 to 33, and at
+  equal latency a weight-3 upstream carries about three times the in-flight requests of a weight-1 one.
+  A behaviour change for every `p2c` route. The request is now counted in flight (`active_connections`
+  in `GET /upstreams`) and released when it is logged, like `least-conn`.
 
 ### Fixed
 
