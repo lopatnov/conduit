@@ -233,6 +233,37 @@ impl LoadBalancingStrategy for P2cChoice {
     }
 }
 
+/// Send each request to the backend currently moving the least traffic, per unit of weight
+/// (issue #627).
+///
+/// The traffic of an upstream is the request-body plus response-body bytes the proxy moved for it,
+/// smoothed over about ten seconds ([`crate::traffic::TrafficMeter`]); the cost compared is
+/// `bytes_per_second / weight`. An idle pool ties at zero and is spread at random, in proportion to
+/// weight. The proxy meters an upstream only on routes that use this strategy, so the first requests
+/// of a route see every upstream at zero.
+///
+/// Prior art: Citrix ADC `leastbandwidth` (bytes sent plus received over the previous 14 seconds,
+/// weighted).
+pub struct LeastBandwidth;
+
+impl LoadBalancingStrategy for LeastBandwidth {
+    fn pick(
+        &self,
+        urls: &[String],
+        weighted: &[(String, u32)],
+        _route_key: &str,
+        _hash_val: u64,
+        _counters: &DashMap<String, AtomicUsize>,
+        health: &UpstreamRegistry,
+    ) -> Option<(String, bool)> {
+        // One clock reading for the whole pick.
+        let now = crate::traffic::monotonic_ms();
+        let index =
+            targets::pick_lowest_cost(urls, weighted, |url| health.traffic_rate_at(url, now))?;
+        Some((urls[index].clone(), false))
+    }
+}
+
 /// Generate two distinct random indices in `[0, len)` using a fast XorShift.
 fn gen_pair(len: usize) -> (usize, usize) {
     let x = targets::fast_random();
@@ -252,6 +283,7 @@ static WEIGHTED_RR: WeightedRoundRobin = WeightedRoundRobin;
 static HASH_BASED: HashBased = HashBased;
 static LEAST_RT: LeastResponseTime = LeastResponseTime;
 static P2C: P2cChoice = P2cChoice;
+static LEAST_BANDWIDTH: LeastBandwidth = LeastBandwidth;
 
 /// Return the `'static` strategy that corresponds to the config enum variant.
 pub fn from_config(s: &LoadBalanceStrategy) -> &'static dyn LoadBalancingStrategy {
@@ -263,6 +295,7 @@ pub fn from_config(s: &LoadBalanceStrategy) -> &'static dyn LoadBalancingStrateg
         LoadBalanceStrategy::IpHash | LoadBalanceStrategy::ConsistentHash => &HASH_BASED,
         LoadBalanceStrategy::LeastResponseTime => &LEAST_RT,
         LoadBalanceStrategy::P2c => &P2C,
+        LoadBalanceStrategy::LeastBandwidth => &LEAST_BANDWIDTH,
     }
 }
 
@@ -378,6 +411,7 @@ mod tests {
             ConsistentHash,
             LeastResponseTime,
             P2c,
+            LeastBandwidth,
         ] {
             let strategy = from_config(s);
             let u = urls(2);
@@ -606,6 +640,108 @@ mod tests {
         let reg = registry();
         let (picked, _) = P2C.pick(&u, &w, "r", 0, &counters(), &reg).unwrap();
         assert!(u.contains(&picked));
+    }
+
+    // ── least-bandwidth (#627) ────────────────────────────────────────────────
+
+    /// Give `url` a smoothed rate by feeding its meter `bytes` per 250 ms window for `windows`
+    /// windows. The clock is a made-up one that starts far ahead of the real one, so that the real
+    /// reads the strategy makes never open a window of their own.
+    fn seed_rate(reg: &UpstreamRegistry, url: &str, bytes: u64, windows: u64) {
+        let meter = reg.traffic.entry(url.to_owned()).or_default().clone();
+        let start = 10_000_000;
+        meter.rate(start);
+        for step in 1..=windows {
+            meter.add(bytes);
+            meter.rate(start + step * crate::traffic::WINDOW_MS);
+        }
+    }
+
+    fn bandwidth_picks(
+        u: &[String],
+        w: &[(String, u32)],
+        reg: &UpstreamRegistry,
+        n: usize,
+    ) -> Vec<usize> {
+        let c = counters();
+        let mut counts = vec![0; u.len()];
+        for _ in 0..n {
+            let (url, slot) = LEAST_BANDWIDTH.pick(u, w, "r", 0, &c, reg).unwrap();
+            assert!(!slot, "least-bandwidth takes no in-flight slot");
+            counts[u.iter().position(|x| *x == url).unwrap()] += 1;
+        }
+        counts
+    }
+
+    #[test]
+    fn least_bandwidth_picks_the_quieter_peer() {
+        let (u, w) = two(1, 1);
+        let reg = registry();
+        seed_rate(&reg, &u[0], 1_000_000, 8);
+        seed_rate(&reg, &u[1], 1_000, 8);
+        assert_eq!(bandwidth_picks(&u, &w, &reg, 50), vec![0, 50]);
+        // And the other way round.
+        let reg = registry();
+        seed_rate(&reg, &u[0], 1_000, 8);
+        seed_rate(&reg, &u[1], 1_000_000, 8);
+        assert_eq!(bandwidth_picks(&u, &w, &reg, 50), vec![50, 0]);
+    }
+
+    #[test]
+    fn least_bandwidth_divides_the_rate_by_the_weight() {
+        let (u, w) = two(3, 1);
+        // Twice the traffic on a weight-3 peer: 2 / 3 < 1, it is still the cheaper one.
+        let reg = registry();
+        seed_rate(&reg, &u[0], 2_000_000, 8);
+        seed_rate(&reg, &u[1], 1_000_000, 8);
+        assert_eq!(bandwidth_picks(&u, &w, &reg, 50), vec![50, 0]);
+        // Four times the traffic: 4 / 3 > 1, now the weight-1 peer is.
+        let reg = registry();
+        seed_rate(&reg, &u[0], 4_000_000, 8);
+        seed_rate(&reg, &u[1], 1_000_000, 8);
+        assert_eq!(bandwidth_picks(&u, &w, &reg, 50), vec![0, 50]);
+    }
+
+    #[test]
+    fn least_bandwidth_spreads_an_idle_pool_and_follows_the_weights() {
+        let u = urls(3);
+        // Nothing recorded anywhere: every cost is 0, a tie, chosen at random (600 picks: 200 each,
+        // standard deviation about 11.5).
+        for (i, count) in bandwidth_picks(&u, &[], &registry(), 600)
+            .into_iter()
+            .enumerate()
+        {
+            assert!((140..=260).contains(&count), "peer {i} got {count} of 600");
+        }
+        // Weights 3:1 on an idle pool: 600 and 200 of 800.
+        let (u, w) = two(3, 1);
+        let counts = bandwidth_picks(&u, &w, &registry(), 800);
+        assert!(
+            (540..=660).contains(&counts[0]),
+            "weight 3 got {} of 800",
+            counts[0]
+        );
+    }
+
+    #[test]
+    fn least_bandwidth_never_picks_a_weight_zero_peer_while_another_has_weight() {
+        let (u, w) = two(0, 1);
+        let reg = registry();
+        seed_rate(&reg, &u[1], 5_000_000, 8); // the weight-1 peer is the busy one, and still the only choice
+        assert_eq!(bandwidth_picks(&u, &w, &reg, 30), vec![0, 30]);
+        // Every weight 0: the weights are ignored and the quieter peer wins.
+        let (u, w) = two(0, 0);
+        let reg = registry();
+        seed_rate(&reg, &u[0], 5_000_000, 8);
+        assert_eq!(bandwidth_picks(&u, &w, &reg, 30), vec![0, 30]);
+    }
+
+    #[test]
+    fn least_bandwidth_with_an_empty_list_picks_nothing() {
+        let c = counters();
+        assert!(LEAST_BANDWIDTH
+            .pick(&[], &[], "r", 0, &c, &registry())
+            .is_none());
     }
 
     #[test]

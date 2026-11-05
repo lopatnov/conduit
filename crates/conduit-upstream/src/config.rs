@@ -30,6 +30,9 @@ pub enum LoadBalanceStrategy {
     /// O(1) selection; better latency distribution than LeastConn under high load.
     #[serde(rename = "p2c")]
     P2c,
+    /// Send each request to the backend currently moving the least traffic (request plus response
+    /// bytes per second, divided by `weight`). Issue #627.
+    LeastBandwidth,
 }
 
 /// `"http://b1:4000"` | `{ "url": "http://b1:4000", "weight": 3 }`

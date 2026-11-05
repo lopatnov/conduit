@@ -378,7 +378,8 @@
           "type": "string",
           "enum": [
             "round-robin", "weighted-round-robin", "random",
-            "least-conn", "least-response-time", "ip-hash", "consistent-hash"
+            "least-conn", "least-response-time", "ip-hash", "consistent-hash",
+            "p2c", "least-bandwidth"
           ],
           "description": "Load-balancing strategy for flat targets."
         },
@@ -391,7 +392,8 @@
           "type": "string",
           "enum": [
             "round-robin", "weighted-round-robin", "random",
-            "least-conn", "least-response-time", "ip-hash", "consistent-hash"
+            "least-conn", "least-response-time", "ip-hash", "consistent-hash",
+            "p2c", "least-bandwidth"
           ],
           "description": "Strategy used to select among groups when 'groups' is configured."
         },
@@ -518,7 +520,8 @@
           "type": "string",
           "enum": [
             "round-robin", "weighted-round-robin", "random",
-            "least-conn", "least-response-time", "ip-hash", "consistent-hash"
+            "least-conn", "least-response-time", "ip-hash", "consistent-hash",
+            "p2c", "least-bandwidth"
           ],
           "description": "Intra-group load-balancing strategy."
         }

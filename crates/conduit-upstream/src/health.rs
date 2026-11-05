@@ -352,6 +352,9 @@ pub struct UpstreamRegistry {
     /// Incremented in the router when a URL is selected; decremented in the
     /// `logging()` hook after the response is sent.
     pub conn_count: DashMap<String, AtomicUsize>,
+    /// Per-upstream traffic meters, used by the `least-bandwidth` strategy (issue #627). An entry is
+    /// created by the first byte recorded for a URL; only routes that use that strategy record any.
+    pub traffic: DashMap<String, std::sync::Arc<crate::traffic::TrafficMeter>>,
     /// Runtime upstream overrides: `route_path → [(url, weight)]`.
     ///
     /// When present for a route, these targets are used **instead of** the
@@ -399,8 +402,33 @@ impl UpstreamRegistry {
         Self {
             statuses: DashMap::new(),
             conn_count: DashMap::new(),
+            traffic: DashMap::new(),
             overrides: DashMap::new(),
         }
+    }
+
+    // ── Traffic (least-bandwidth) helpers ─────────────────────────────────────
+
+    /// Record `bytes` moved (request or response body) for `url`.
+    pub fn record_traffic(&self, url: &str, bytes: u64) {
+        if let Some(meter) = self.traffic.get(url) {
+            meter.add(bytes);
+            return;
+        }
+        self.traffic.entry(url.to_owned()).or_default().add(bytes);
+    }
+
+    /// The smoothed traffic rate of `url` in bytes per second (0 when nothing was recorded).
+    pub fn traffic_rate(&self, url: &str) -> f64 {
+        self.traffic_rate_at(url, crate::traffic::monotonic_ms())
+    }
+
+    /// [`traffic_rate`](Self::traffic_rate) at a clock reading the caller took once for a whole pick
+    /// (`crate::traffic::monotonic_ms()`), so that comparing N candidates reads the clock once, not N times.
+    pub fn traffic_rate_at(&self, url: &str, now_ms: u64) -> f64 {
+        self.traffic
+            .get(url)
+            .map_or(0.0, |meter| meter.rate(now_ms))
     }
 
     // ── Least-conn helpers ────────────────────────────────────────────────────
@@ -1647,6 +1675,67 @@ mod tests {
         let reg = UpstreamRegistry::new();
         // Decrementing an unknown URL must not panic.
         reg.conn_dec("http://never-seen:4000");
+    }
+
+    // ── traffic (least-bandwidth, #627) ───────────────────────────────────────
+
+    #[test]
+    fn traffic_is_recorded_per_url_and_unknown_urls_have_rate_zero() {
+        let reg = UpstreamRegistry::new();
+        assert_eq!(reg.traffic_rate("http://a:4000"), 0.0);
+        reg.record_traffic("http://a:4000", 1_000);
+        reg.record_traffic("http://a:4000", 2_000);
+        reg.record_traffic("http://b:4000", 7);
+        assert_eq!(reg.traffic.get("http://a:4000").unwrap().total(), 3_000);
+        assert_eq!(reg.traffic.get("http://b:4000").unwrap().total(), 7);
+        assert!(reg.traffic.get("http://c:4000").is_none());
+    }
+
+    /// Cost of the one thing `least-bandwidth` adds to the request path, `record_traffic` once per body
+    /// chunk. Run: `cargo test -p lopatnov-conduit-upstream --release -- --ignored record_traffic_cost --nocapture`.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn record_traffic_cost() {
+        use std::sync::Arc;
+        use std::time::Instant;
+        const CALLS: u64 = 5_000_000;
+        let reg = Arc::new(UpstreamRegistry::new());
+        let url = "http://upstream-1.internal:4000";
+        reg.record_traffic(url, 1);
+        for threads in [1u64, 4, 8] {
+            let start = Instant::now();
+            let handles: Vec<_> = (0..threads)
+                .map(|_| {
+                    let reg = reg.clone();
+                    std::thread::spawn(move || {
+                        for _ in 0..CALLS {
+                            reg.record_traffic(url, 16 * 1024);
+                        }
+                    })
+                })
+                .collect();
+            handles.into_iter().for_each(|h| h.join().unwrap());
+            let ns = start.elapsed().as_nanos() as f64 / (CALLS * threads) as f64;
+            eprintln!("record_traffic: {threads} thread(s) on one URL: {ns:.1} ns per call");
+        }
+        let now = crate::traffic::monotonic_ms();
+        let start = Instant::now();
+        let mut rate = 0.0;
+        for _ in 0..CALLS {
+            rate += reg.traffic_rate_at(url, now);
+        }
+        eprintln!(
+            "traffic_rate_at (one candidate, inside the window): {:.1} ns per call ({rate:e})",
+            start.elapsed().as_nanos() as f64 / CALLS as f64
+        );
+        let start = Instant::now();
+        for _ in 0..CALLS {
+            rate += reg.traffic_rate(url);
+        }
+        eprintln!(
+            "traffic_rate (reads the clock too): {:.1} ns per call ({rate:e})",
+            start.elapsed().as_nanos() as f64 / CALLS as f64
+        );
     }
 
     // ── pick_least_conn ───────────────────────────────────────────────────────

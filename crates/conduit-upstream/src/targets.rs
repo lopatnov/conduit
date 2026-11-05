@@ -209,6 +209,83 @@ pub fn weight_for(weighted: &[(String, u32)], hint: usize, url: &str) -> u32 {
     }
 }
 
+/// Index of the candidate with the lowest `cost(url) / weight`.
+///
+/// Candidates whose scaled cost is exactly equal (every idle upstream, for a cost that is 0 when idle)
+/// are chosen among at random, in proportion to their weight. A weight-0 candidate is skipped; when
+/// every candidate has weight 0 the weights are ignored rather than refusing to route. `None` only for
+/// an empty list. Used by `least-bandwidth`.
+pub fn pick_lowest_cost(
+    urls: &[String],
+    weighted: &[(String, u32)],
+    cost: impl Fn(&str) -> f64,
+) -> Option<usize> {
+    // `None` for a weight-0 candidate; a NaN cost counts as the worst possible.
+    let scaled = |i: usize, url: &String| -> Option<(f64, u32)> {
+        let weight = weight_for(weighted, i, url);
+        (weight != 0).then(|| {
+            let scaled = cost(url) / f64::from(weight);
+            (
+                if scaled.is_nan() {
+                    f64::INFINITY
+                } else {
+                    scaled
+                },
+                weight,
+            )
+        })
+    };
+    let mut best: Option<(usize, f64)> = None;
+    let mut tied = 0usize;
+    for (i, url) in urls.iter().enumerate() {
+        let Some((c, _)) = scaled(i, url) else {
+            continue;
+        };
+        match best {
+            Some((_, lowest)) if c > lowest => {}
+            Some((_, lowest)) if c == lowest => tied += 1,
+            _ => {
+                best = Some((i, c));
+                tied = 1;
+            }
+        }
+    }
+    let Some((first, lowest)) = best else {
+        // Every candidate has weight 0 (or the list is empty): ignore the weights.
+        return if urls.is_empty() {
+            None
+        } else {
+            pick_lowest_cost(urls, &[], cost)
+        };
+    };
+    if tied == 1 {
+        return Some(first);
+    }
+    // Several at the lowest cost: one at random, in proportion to its weight. The costs can move
+    // between the passes, so fall back to the first one found.
+    let at_lowest = |i: usize, url: &String| match scaled(i, url) {
+        Some((c, weight)) if c == lowest => Some(u64::from(weight)),
+        _ => None,
+    };
+    let total: u64 = urls
+        .iter()
+        .enumerate()
+        .filter_map(|(i, url)| at_lowest(i, url))
+        .sum();
+    let mut ticket = fast_random() % total.max(1);
+    let mut chosen = first;
+    for (i, url) in urls.iter().enumerate() {
+        if let Some(weight) = at_lowest(i, url) {
+            chosen = i;
+            if ticket < weight {
+                break;
+            }
+            ticket -= weight;
+        }
+    }
+    Some(chosen)
+}
+
 /// Pick a URL for a precomputed key hash by rendezvous (highest-random-weight) hashing.
 ///
 /// Used for `ip-hash`, `consistent-hash` and the no-secret sticky mode.  Those hash a key (client IP,
@@ -458,6 +535,30 @@ mod tests {
             pick_weighted_round_robin(&targets, "r", &counters),
             Some("http://a:4000".to_string())
         );
+    }
+
+    #[test]
+    fn pick_lowest_cost_takes_the_cheapest_and_survives_a_nan_cost() {
+        let urls: Vec<String> = ["http://a:1", "http://b:1", "http://c:1"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let cost = |url: &str| match url {
+            "http://a:1" => 5.0,
+            "http://b:1" => 2.0,
+            _ => 9.0,
+        };
+        assert_eq!(pick_lowest_cost(&urls, &[], cost), Some(1));
+        // A NaN cost is the worst, never the best, wherever it sits.
+        let with_nan = |url: &str| {
+            if url == "http://a:1" {
+                f64::NAN
+            } else {
+                cost(url)
+            }
+        };
+        assert_eq!(pick_lowest_cost(&urls, &[], with_nan), Some(1));
+        assert_eq!(pick_lowest_cost(&[], &[], cost), None);
     }
 
     #[test]

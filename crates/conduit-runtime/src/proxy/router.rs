@@ -42,6 +42,9 @@ pub struct RouteResolution {
     /// of load-balancing strategy. See `upstream_conn_slot` for whether a
     /// `conn_count` slot also needs releasing.
     pub proxy_upstream_url: Option<String>,
+    /// `true` when the route's strategy is `least-bandwidth`: the body filters meter the traffic of
+    /// `proxy_upstream_url` (issue #627).
+    pub meters_traffic: bool,
     /// `true` when a `conn_count` slot was acquired for `proxy_upstream_url`
     /// and must be released by `logging()` via `conn_dec`. `false` means the
     /// URL above is for attribution only — no slot to release.
@@ -83,6 +86,7 @@ impl RouteResolution {
             proxy_pool: None,
             proxy_http2: false,
             proxy_upstream_url: None,
+            meters_traffic: false,
             upstream_conn_slot: false,
             proxy_cache_cfg: None,
             passive_unhealthy_status: Vec::new(),
@@ -152,6 +156,7 @@ pub fn route_request(
         proxy_pool: res.proxy_pool,
         proxy_http2: res.proxy_http2,
         proxy_upstream_url: res.proxy_upstream_url,
+        meters_traffic: res.meters_traffic,
         upstream_conn_slot: res.upstream_conn_slot,
         proxy_cache_cfg: res.proxy_cache_cfg,
         // Populate passive health thresholds so logging() can apply them.
@@ -443,6 +448,7 @@ fn proxy_route_result(upstream: ProxyUpstream, state: ProxyReqState) -> RouteRes
         proxy_pool: state.proxy_pool,
         proxy_http2: state.proxy_http2,
         proxy_upstream_url: state.proxy_upstream_url,
+        meters_traffic: state.meters_traffic,
         upstream_conn_slot: state.upstream_conn_slot,
         proxy_cache_cfg: state.proxy_cache_cfg,
         passive_unhealthy_status: state.passive_unhealthy_status,

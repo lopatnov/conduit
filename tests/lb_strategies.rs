@@ -23,6 +23,15 @@ impl MockUpstream {
     /// Like `start`, but holds every request for `hold` before answering, so that a burst of
     /// concurrent requests is all in flight at once.
     fn start_holding(label: &'static str, hold: std::time::Duration) -> Self {
+        Self::start_with(label, hold, 0)
+    }
+
+    /// Like `start`, but answers with a body of `body_len` bytes instead of the label.
+    fn start_sized(label: &'static str, body_len: usize) -> Self {
+        Self::start_with(label, std::time::Duration::ZERO, body_len)
+    }
+
+    fn start_with(label: &'static str, hold: std::time::Duration, body_len: usize) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock upstream");
         let port = listener.local_addr().unwrap().port();
         let hits = Arc::new(AtomicUsize::new(0));
@@ -42,7 +51,11 @@ impl MockUpstream {
                     std::thread::sleep(std::time::Duration::from_millis(
                         hold_inner.load(Ordering::SeqCst),
                     ));
-                    let body = label;
+                    let body = if body_len == 0 {
+                        label.to_owned()
+                    } else {
+                        "x".repeat(body_len)
+                    };
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         body.len(),
@@ -154,6 +167,39 @@ fn least_conn_shares_concurrent_requests_by_weight() {
     assert!(
         (11..=13).contains(&hits_a),
         "least-conn with weights 3:1 must give the weight-3 upstream about three quarters of the in-flight requests (a={hits_a}, b={hits_b})"
+    );
+}
+
+// ── Least-bandwidth (#627) ────────────────────────────────────────────────────
+
+#[test]
+#[serial]
+fn least_bandwidth_steers_requests_away_from_the_upstream_moving_more_bytes() {
+    // One upstream answers with 256 KiB, the other with a few bytes. Requests are paced over about
+    // 3 seconds so that the traffic meters (refreshed at most every 250 ms) see the difference.
+    // round-robin would split 50/50; here the big one keeps only the requests that arrived before
+    // its first refresh showed its rate.
+    let big = MockUpstream::start_sized("big", 256 * 1024);
+    let small = MockUpstream::start("small");
+    let server = lb_server(serde_json::json!({
+        "/": { "targets": [big.url(), small.url()], "strategy": "least-bandwidth" }
+    }));
+    let client = reqwest::blocking::Client::new();
+    for _ in 0..120 {
+        client
+            .get(server.url("/"))
+            .send()
+            .expect("GET")
+            .bytes()
+            .expect("body");
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let (hits_big, hits_small) = (big.hit_count(), small.hit_count());
+    eprintln!("least-bandwidth split: big={hits_big}, small={hits_small}");
+    assert_eq!(hits_big + hits_small, 120);
+    assert!(
+        hits_big <= 40 && hits_small >= 80,
+        "the upstream moving 256 KiB per request should get far fewer requests (big={hits_big}, small={hits_small})"
     );
 }
 

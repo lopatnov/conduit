@@ -237,6 +237,7 @@ pub(crate) fn resolve_grouped(
             proxy_pool: opts.pool.cloned(),
             proxy_http2: opts.http2,
             proxy_upstream_url,
+            meters_traffic: matches!(group.strategy, Some(LoadBalanceStrategy::LeastBandwidth)),
             upstream_conn_slot: is_least_conn || circuit_tracking,
             proxy_cache_cfg: opts.cache.cloned(),
             passive_unhealthy_status: Vec::new(), // groups don't have per-route healthCheck

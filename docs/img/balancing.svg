@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 566" role="img" aria-labelledby="t d">
   <title id="t">Balancing and resilience</title>
-  <desc id="d">Requests reach a balancer that picks an upstream with one of eight strategies. Upstreams that fail active health checks or are ejected by outlier detection are skipped, upstreams at their connection cap are skipped by the circuit breaker, and a failed attempt is retried on another target within a retry budget.</desc>
+  <desc id="d">Requests reach a balancer that picks an upstream with one of nine strategies. Upstreams that fail active health checks or are ejected by outlier detection are skipped, upstreams at their connection cap are skipped by the circuit breaker, and a failed attempt is retried on another target within a retry budget.</desc>
   <defs>
     <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/></marker>
     <marker id="ar-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--blue)"/></marker>

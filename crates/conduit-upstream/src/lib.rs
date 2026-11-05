@@ -15,10 +15,12 @@
 //!   inflight connection counts, runtime upstream overrides), Peak EWMA
 //!   latency tracking, Outlier Detection, active health-check/connection-
 //!   warmup background tasks, and the half-open circuit breaker.
-//! - [`strategy`] — [`strategy::LoadBalancingStrategy`] trait + all 8
+//! - [`strategy`] — [`strategy::LoadBalancingStrategy`] trait + all 9
 //!   concrete strategy structs (`RoundRobin`, `Random`, `LeastConn`,
-//!   `WeightedRoundRobin`, `HashBased`, `LeastResponseTime`, `P2cChoice`),
-//!   dispatched via [`strategy::from_config`].
+//!   `WeightedRoundRobin`, `HashBased`, `LeastResponseTime`, `P2cChoice`,
+//!   `LeastBandwidth`), dispatched via [`strategy::from_config`].
+//! - [`traffic`] — [`traffic::TrafficMeter`], the per-upstream byte counter and
+//!   smoothed rate behind `least-bandwidth` (issue #627).
 //! - [`targets`] — URL parsing helpers (`url_to_host_port`, `url_is_tls`,
 //!   `url_host`, `fnv1a_hash`) and the plain-slice "pick" algorithms
 //!   (`pick_round_robin`, `pick_random`, `pick_weighted_round_robin`,
@@ -101,6 +103,7 @@ pub mod config;
 pub mod health;
 pub mod strategy;
 pub mod targets;
+pub mod traffic;
 
 pub use config::{
     LoadBalanceStrategy, OutlierDetectionConfig, ProxyTarget, UpstreamGroup, UpstreamHealthCheck,

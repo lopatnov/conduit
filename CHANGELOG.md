@@ -41,6 +41,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   intermediates (the emSign CAs; RUSTSEC-2026-0382, `webpki-root-certs` 1.0.11 is RUSTSEC-2026-0383), so an
   HTTPS upstream behind one of them now fails the handshake.
 
+### Added
+
+- **`least-bandwidth` load-balancing strategy** (issue #627). Sends each request to the upstream moving
+  the least traffic: request plus response body bytes per second, smoothed over about ten seconds, divided by
+  `weight`; idle upstreams tie and are spread at random. Only routes that use it are metered (one atomic add
+  per body chunk). Measured on an end-to-end run with one upstream answering 256 KiB and one a few bytes:
+  3–6 of 120 requests went to the big one (`round-robin` gives 60). The JSON schema's strategy lists also
+  gain `p2c`, which a valid config could use but the schema rejected.
+
 ### Changed
 
 - **Load balancing: `least-conn` and `p2c` read `weight`** (issue #506). `least-conn` now picks the

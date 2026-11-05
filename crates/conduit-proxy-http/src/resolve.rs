@@ -8,6 +8,7 @@
 //! `crate::outcome`'s module doc for why.
 
 use conduit_upstream::health::UpstreamRegistry;
+use conduit_upstream::LoadBalanceStrategy;
 
 use crate::config::{ProxyRouteTarget, StickyConfig};
 use crate::groups::resolve_grouped;
@@ -143,6 +144,7 @@ pub(crate) fn resolve_target(
             proxy_pool: opts.pool.cloned(),
             proxy_http2: opts.http2,
             proxy_upstream_url,
+            meters_traffic: matches!(opts.strategy, Some(LoadBalanceStrategy::LeastBandwidth)),
             upstream_conn_slot,
             proxy_cache_cfg: opts.cache.cloned(),
             passive_unhealthy_status: opts.unhealthy_status.to_vec(),

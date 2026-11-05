@@ -770,6 +770,7 @@ traffic off a broken backend). Pick based on your actual traffic shape:
 | [`least-conn`](#least-conn) | Load-aware | Fewest active connections per unit of `weight` | ✗ | none | Variable response times (mixed fast reads / slow writes), with or without unequal capacity | O(N) scan of the pool on every request |
 | [`least-response-time`](#least-response-time) | Load-aware | Lowest probed latency | ✗ | none | Upstreams with different hardware/geography | Needs `healthCheck` configured, or it's just round-robin |
 | [`p2c`](#p2c-power-of-two-choices) | Load- and latency-aware | 2 random samples, lower EWMA latency × (in-flight + 1) ÷ `weight` wins | ✗ | none | Large pools (10+) where `least-conn`'s full scan is too slow | Marginally less precise than true least-conn |
+| [`least-bandwidth`](#least-bandwidth) | Load-aware | Fewest bytes per second (request + response bodies) ÷ `weight` | ✗ | none | Mixed large and small responses, where equal connection counts hide very unequal network load | Counts bytes only, not CPU or memory; a route's first requests see every upstream at zero |
 | [`ip-hash`](#ip-hash) | Affinity | rendezvous hash of the client IP | by IP | only the clients on a peer that leaves (or joins) move; the rest stay put | Soft per-IP affinity without a cookie | Clients on an ejected peer move to their next-best peer |
 | [`consistent-hash`](#consistent-hash) | Affinity | rendezvous hash of the configured key | by key | same as ip-hash — only the keys on a peer that leaves (or joins) move | Per-tenant/per-user routing, cache locality by URL | Keys on an ejected peer move to their next-best peer |
 
@@ -1113,6 +1114,45 @@ proxy:
 }
 ```
 
+
+---
+
+### `least-bandwidth`
+
+Routes each request to the upstream that is currently moving the **least
+traffic**, in bytes per second. What counts is the request-body and
+response-body bytes Conduit moves for the upstream, both directions added
+together, as each chunk passes. The rate is an exponentially decayed average
+with a time constant of 10 seconds, refreshed at most every 250 ms, so a burst
+is remembered for a few seconds and an idle upstream's rate falls towards zero.
+
+The comparison is `bytes per second ÷ weight`: an upstream with weight 3 may
+move three times the traffic of a weight-1 upstream before the next request
+goes elsewhere. Upstreams that are all idle tie at zero and are chosen at
+random, in proportion to their weight.
+
+**Use when:** responses differ a lot in size, for example large downloads next
+to small API calls, so equal connection counts hide very unequal network load
+and the upstream's network is the bottleneck. When the limit is CPU or memory,
+`least-conn` or `p2c` is the better signal.
+
+```yaml
+proxy:
+  /files:
+    targets:
+      - { url: "http://store-1:4000", weight: 1 }
+      - { url: "http://store-2:4000", weight: 2 }
+    strategy: least-bandwidth
+```
+
+- Only routes that use this strategy are metered, so no other route pays for it.
+  The first requests after start (and after an idle spell) see every upstream at
+  zero and are spread at random until a 250 ms window has passed.
+- A body is counted as its chunks arrive, so a long download or stream counts
+  continuously, not only when it ends. The bytes are those the client sent and
+  the upstream sent, before Conduit's own compression or body replacement.
+- Prior art: Citrix ADC `leastbandwidth` (bytes sent plus received over the
+  previous 14 seconds, weighted).
 ---
 
 ### Sticky sessions

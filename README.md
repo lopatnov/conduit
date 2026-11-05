@@ -126,7 +126,7 @@ Features marked *(needs `x`)* are optional at build time; see [Choose your build
 ### Reverse proxy and load balancing
 
 <p align="center">
-  <img src="docs/img/balancing.svg" alt="A balancer picks an upstream with one of eight strategies. Unhealthy and ejected upstreams are skipped, upstreams at their connection cap are skipped, and a failed attempt is retried on another target within a retry budget." width="900">
+  <img src="docs/img/balancing.svg" alt="A balancer picks an upstream with one of nine strategies. Unhealthy and ejected upstreams are skipped, upstreams at their connection cap are skipped, and a failed attempt is retried on another target within a retry budget." width="900">
 </p>
 
 ```yaml
@@ -137,7 +137,7 @@ proxy:
       - http://api-1:4000
       - http://api-2:4000
       - http://api-3:4000
-    strategy: least-conn               # also round-robin, p2c, ip-hash, consistent-hash …
+    strategy: least-conn               # also round-robin, p2c, least-bandwidth, ip-hash, consistent-hash …
     healthCheck: { path: /health, intervalSecs: 10 }
     maxConnectionsPerUpstream: 200     # 503 instead of queueing when every target is full
     retry: { attempts: 2, conditions: [connection_error, 5xx] }

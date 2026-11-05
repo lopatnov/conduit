@@ -9,6 +9,16 @@
 use crate::proxy::ctx::RequestCtx;
 use crate::proxy::service::ConduitProxy;
 
+/// Count `len` request-body bytes against the upstream this request goes to, when the route's strategy
+/// is `least-bandwidth` (issue #627). A no-op, one boolean test, for every other route.
+fn meter_traffic(proxy: &ConduitProxy, req_ctx: &RequestCtx, len: usize) {
+    if len > 0 && req_ctx.proxy.meters_traffic {
+        if let Some(url) = req_ctx.proxy.proxy_upstream_url.as_deref() {
+            proxy.state.upstream_health.record_traffic(url, len as u64);
+        }
+    }
+}
+
 /// Body of [`pingora_proxy::ProxyHttp::request_body_filter`].
 ///
 /// Buffer request body chunks for retry replay (stale-if-error pattern).
@@ -33,6 +43,7 @@ pub(crate) async fn request_body_filter(
 
     let chunk_len = body.as_ref().map(|c| c.len()).unwrap_or(0);
     req_ctx.limits.actual_body_bytes += chunk_len as u64;
+    meter_traffic(proxy, req_ctx, chunk_len);
 
     // Enforce maxBodyBytes on the ACTUAL received bytes.
     // The LimitsGuard only checks the Content-Length header; chunked clients bypass it.

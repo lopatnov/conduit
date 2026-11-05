@@ -280,7 +280,16 @@ pub(super) fn upstream_response_body_filter(
     body: &mut Option<Bytes>,
     end_of_stream: bool,
     ctx: &mut Option<RequestCtx>,
+    health: &conduit_upstream::health::UpstreamRegistry,
 ) -> Result<Option<std::time::Duration>> {
+    // `least-bandwidth` (issue #627): count what the upstream sent, before any replacement below.
+    if let (Some(req_ctx), Some(chunk)) = (ctx.as_ref(), body.as_ref()) {
+        if req_ctx.proxy.meters_traffic && !chunk.is_empty() {
+            if let Some(url) = req_ctx.proxy.proxy_upstream_url.as_deref() {
+                health.record_traffic(url, chunk.len() as u64);
+            }
+        }
+    }
     if let Some(req_ctx) = ctx.as_ref() {
         if req_ctx.mask_upstream_body {
             if end_of_stream {
