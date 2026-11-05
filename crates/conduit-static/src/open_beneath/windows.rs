@@ -124,15 +124,18 @@ fn open_component(parent: &File, name: &OsStr, kind: Kind) -> io::Result<File> {
     match verdict(meta.file_attributes(), meta.file_type().is_symlink()) {
         Verdict::Use => Ok(first),
         Verdict::Refuse => Err(link_error()),
-        Verdict::Reopen => {
-            let second = open_relative(parent, name, kind, true)?;
-            if file_id(&first)? == file_id(&second)? {
-                Ok(second)
-            } else {
-                // The name now resolves to something else: swapped in between the two opens.
-                Err(link_error())
-            }
-        }
+        Verdict::Reopen => reopen_if_same(first, || open_relative(parent, name, kind, true)),
+    }
+}
+
+/// The second open of a non-link reparse point must be the same file as the first.
+fn reopen_if_same(first: File, open_second: impl FnOnce() -> io::Result<File>) -> io::Result<File> {
+    let second = open_second()?;
+    if file_id(&first)? == file_id(&second)? {
+        Ok(second)
+    } else {
+        // The name now resolves to something else: swapped in between the two opens.
+        Err(link_error())
     }
 }
 
@@ -390,6 +393,29 @@ mod tests {
         assert_eq!(verdict(FILE_ATTRIBUTE_REPARSE_POINT, true), Verdict::Refuse);
     }
 
+    /// The identity check of the reopen branch: another file on the second open is refused. Removing
+    /// the comparison makes this fail.
+    #[test]
+    fn a_reopen_that_lands_on_another_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a"), "1").unwrap();
+        std::fs::write(dir.path().join("b"), "1").unwrap();
+        let open = |n: &str| open_beneath(dir.path(), Path::new(n)).unwrap();
+
+        // the same file twice: accepted, and the second handle is the one returned
+        let same = reopen_if_same(open("a"), || Ok(open("a"))).unwrap();
+        assert_eq!(file_id(&same).unwrap(), file_id(&open("a")).unwrap());
+
+        // a different file the second time: refused as a swapped-in link is
+        let err = reopen_if_same(open("a"), || Ok(open("b"))).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(ERROR_STOPPED_ON_SYMLINK));
+
+        // a failing second open is passed on
+        let err = reopen_if_same(open("a"), || Err(io::Error::from(io::ErrorKind::NotFound)))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
     #[test]
     fn file_id_tells_files_apart() {
         let dir = tempfile::tempdir().unwrap();
@@ -421,16 +447,19 @@ mod tests {
         let swapper = {
             let (stop, dir, link, parked) = (stop.clone(), dir.clone(), link.clone(), parked);
             std::thread::spawn(move || {
+                let mut swaps = 0u32;
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                     // d -> parked, junction -> d (readers may now hit it), then everything back.
                     if std::fs::rename(&dir, &parked).is_ok() {
                         if std::fs::rename(&link, &dir).is_ok() {
+                            swaps += 1;
                             std::thread::yield_now();
                             let _ = std::fs::rename(&dir, &link);
                         }
                         let _ = std::fs::rename(&parked, &dir);
                     }
                 }
+                swaps
             })
         };
         let mut opened = 0u32;
@@ -441,10 +470,14 @@ mod tests {
             }
         }
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        swapper.join().unwrap();
+        let swaps = swapper.join().unwrap();
         assert!(
             opened > 0,
             "the test never opened anything, so it proves nothing"
+        );
+        assert!(
+            swaps > 0,
+            "no directory was ever swapped for the junction, so the test proves nothing"
         );
     }
 }

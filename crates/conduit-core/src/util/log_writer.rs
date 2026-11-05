@@ -38,6 +38,8 @@ fn open_no_follow(path: &str) -> io::Result<File> {
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)?;
         refuse_reparse_point(&file)?;
+        // Return the handle that was just checked. Closing it and reopening `path` would put the
+        // check-to-open window back: the path can be redirected in between.
         Ok(file)
     }
     #[cfg(not(any(unix, windows)))]

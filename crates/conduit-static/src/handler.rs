@@ -366,6 +366,13 @@ async fn parent_dirs_are_not_symlinks(root: &Path, rel: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// `true` when a path segment ends in a dot or a space: Win32 strips those (`index.html.` is
+/// `index.html`), the handle-relative open on Windows (issue #600) takes the name literally.
+#[cfg(windows)]
+fn has_win32_stripped_segment(path: &str) -> bool {
+    path.split(['/', '\\']).any(|s| s.ends_with(['.', ' ']))
+}
+
 async fn find_file<'a>(
     roots: &'a [PathBuf],
     rel: &str,
@@ -375,7 +382,7 @@ async fn find_file<'a>(
     // handle-relative open on Windows (issue #600) takes the name literally and refuses it. Say "not
     // found" here, before the headers are built, instead of failing the open later.
     #[cfg(windows)]
-    if rel.split('/').any(|s| s.ends_with(['.', ' '])) {
+    if has_win32_stripped_segment(rel) {
         return None;
     }
     for root in roots {
@@ -407,6 +414,12 @@ async fn find_index(dir: &Path, options: &StaticOptions) -> Option<PathBuf> {
     let defaults = vec!["index.html".to_string()];
     let indices = options.index.as_deref().unwrap_or(&defaults);
     for name in indices {
+        // Same Windows rule as `find_file`: such a name would pass the Win32 stat below and then be
+        // refused by the handle-relative open after the headers are sent, so try the next entry.
+        #[cfg(windows)]
+        if has_win32_stripped_segment(name) {
+            continue;
+        }
         let p = dir.join(name);
         if stat_no_symlink(&p)
             .await
@@ -1205,12 +1218,37 @@ mod tests {
     async fn a_trailing_dot_or_space_in_the_url_is_not_found_on_windows() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "x").unwrap();
+        // A real `sub/index.html`, so `sub./index.html` could only be refused by looking at the
+        // *intermediate* segment (Win32 would resolve `sub.` to `sub`).
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub").join("index.html"), "x").unwrap();
         let roots = vec![dir.path().to_path_buf()];
         let opts = StaticOptions::default();
         assert!(find_file(&roots, "index.html", &opts).await.is_some());
+        assert!(find_file(&roots, "sub/index.html", &opts).await.is_some());
         for rel in ["index.html.", "index.html ", "sub./index.html"] {
             assert!(find_file(&roots, rel, &opts).await.is_none(), "{rel:?}");
         }
+    }
+
+    /// A configured index name Win32 would resolve (`index.html.`) is skipped, so the next entry wins.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn find_index_skips_names_the_windows_open_would_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "x").unwrap();
+        let opts = StaticOptions {
+            index: Some(vec![
+                "index.html.".to_string(),
+                "index.html ".to_string(),
+                "index.html".to_string(),
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(
+            find_index(dir.path(), &opts).await,
+            Some(dir.path().join("index.html"))
+        );
     }
 
     // ── sanitize_path extra cases ─────────────────────────────────────────────
