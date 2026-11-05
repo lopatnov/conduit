@@ -1,4 +1,4 @@
-"""Query OSV for every registry package in a Cargo.lock and list the ones with advisories.
+"""Query OSV for every crates.io package in a Cargo.lock and list the ones with advisories.
 
 A quick local answer to "what would osv-scanner say about this lock, and what did a dependency change
 fix?" without the scanner or a CI run. Compare two locks by giving both (for example the lock on `main` from
@@ -7,29 +7,56 @@ fix?" without the scanner or a CI run. Compare two locks by giving both (for exa
     python scripts/osv_lock_check.py Cargo.lock [more.lock ...]
 
 It sends package names and versions to https://api.osv.dev (nothing else) and prints, per lock, the number
-of registry packages scanned, the packages with advisories and their RUSTSEC ids. "Unmaintained" notices
-are advisories too; read the ids. Needs Python 3.11+ (tomllib). Read-only.
+of crates.io packages scanned, the packages with advisories and their RUSTSEC ids. "Unmaintained" notices
+are advisories too; read the ids. Packages from another registry are not looked up (OSV would answer for the
+crates.io package of the same name): they are counted and listed as unscanned. Needs Python 3.11+ (tomllib).
+Read-only.
 """
 import json
 import sys
 import tomllib
 import urllib.request
 
+CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index"
+BATCH = 500
+
+
+def query_batch(queries):
+    body = json.dumps({"queries": queries}).encode()
+    req = urllib.request.Request("https://api.osv.dev/v1/querybatch", data=body, headers={"Content-Type": "application/json"})
+    return json.load(urllib.request.urlopen(req, timeout=120))["results"]
+
+
+def advisories(pkgs):
+    """Map (name, version) -> sorted advisory ids, following OSV's page tokens until none is left."""
+    found = {}
+    pending = [({"package": {"name": n, "ecosystem": "crates.io"}, "version": v}, (n, v)) for n, v in pkgs]
+    while pending:
+        retry = []
+        for i in range(0, len(pending), BATCH):
+            chunk = pending[i:i + BATCH]
+            results = query_batch([q for q, _ in chunk])
+            for (query, key), result in zip(chunk, results, strict=True):
+                ids = found.setdefault(key, set())
+                ids.update(x["id"] for x in result.get("vulns", []))
+                token = result.get("next_page_token")
+                if token:
+                    retry.append(({**query, "page_token": token}, key))
+        pending = retry
+    return {k: sorted(v) for k, v in found.items() if v}
+
+
 for path in sys.argv[1:]:
     with open(path, "rb") as f:
         lock = tomllib.load(f)
-    pkgs = [(p["name"], p["version"]) for p in lock["package"] if str(p.get("source", "")).startswith("registry+")]
-    found = {}
-    for i in range(0, len(pkgs), 500):
-        chunk = pkgs[i:i + 500]
-        body = json.dumps({"queries": [{"package": {"name": n, "ecosystem": "crates.io"}, "version": v} for n, v in chunk]}).encode()
-        req = urllib.request.Request("https://api.osv.dev/v1/querybatch", data=body, headers={"Content-Type": "application/json"})
-        res = json.load(urllib.request.urlopen(req, timeout=120))
-        for (n, v), r in zip(chunk, res["results"]):
-            ids = sorted({x["id"] for x in r.get("vulns", [])})
-            if ids:
-                found[(n, v)] = ids
+    scanned = [(p["name"], p["version"]) for p in lock["package"] if p.get("source") == CRATES_IO]
+    other = [(p["name"], p["version"], p["source"]) for p in lock["package"] if str(p.get("source", "")).startswith("registry") and p.get("source") != CRATES_IO]
+    found = advisories(scanned)
     total = sum(len(v) for v in found.values())
-    print(f"{path}: {len(pkgs)} registry packages, {len(found)} with advisories, {total} advisory hits")
+    print(f"{path}: {len(scanned)} crates.io packages, {len(found)} with advisories, {total} advisory hits")
     for (n, v), ids in sorted(found.items()):
-        print(f"  {n} {v}: {len(ids)}  {', '.join(i for i in ids if i.startswith('RUSTSEC'))[:120]}")
+        print(f"  {n} {v}: {len(ids)}  {', '.join(i for i in ids if i.startswith('RUSTSEC'))}")
+    if other:
+        print(f"  NOT SCANNED ({len(other)} from another registry):")
+        for n, v, src in sorted(other):
+            print(f"    {n} {v} ({src})")
