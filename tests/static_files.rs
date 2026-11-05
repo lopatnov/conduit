@@ -549,7 +549,7 @@ fn symlink_file(target: &std::path::Path, link: &std::path::Path) -> bool {
 
 /// While a symlink to a longer file outside the root is swapped in and out at the served path, every
 /// answer is either the complete inside file (`Content-Length` and body agree, and it is not the
-/// outside file), a plain `404`, or (Windows only) a complete `500` for a file that was busy. This is an invariant check, not a proof of the open-before-headers
+/// outside file), a plain `404`, or (Windows only) a complete `403` or `500` for a file that was busy or being replaced. This is an invariant check, not a proof of the open-before-headers
 /// order (the window is too narrow to hit reliably; the unreadable-file test below is the
 /// deterministic one for that).
 #[test]
