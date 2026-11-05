@@ -74,8 +74,8 @@
 //! extraction recipe: these member crates are internal plumbing, not a
 //! semver-disciplined public API — `CLAUDE.md` decision #32).
 
-// The one place that needs `unsafe` is the Windows handle-relative open (`open_beneath/windows.rs`, issue #600); everything
-// else in the crate stays safe, and that module opts in explicitly.
+// No `unsafe` in this crate (issues #600, #621): the Windows handle-relative open is built from `fs_at` and
+// `same-file`, and the Unix one from `rustix`. `deny` (not `forbid`) so a future, reviewed exception can opt in.
 #![deny(unsafe_code)]
 
 pub mod config;

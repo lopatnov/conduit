@@ -366,11 +366,14 @@ async fn parent_dirs_are_not_symlinks(root: &Path, rel: &str) -> bool {
     .unwrap_or(false)
 }
 
-/// `true` when a path segment ends in a dot or a space: Win32 strips those (`index.html.` is
-/// `index.html`), the handle-relative open on Windows (issue #600) takes the name literally.
+/// `true` when a path segment is a name the Windows open refuses (see `open_beneath::name_is_refused`):
+/// one that ends in a dot or a space (Win32 strips those, `index.html.` is `index.html`, while the
+/// handle-relative open of issue #600 takes the name literally), or that has the shape of a generated
+/// 8.3 short name (`HTPASS~1` reaches `.htpasswd`, issue #617). Empty segments are not names.
 #[cfg(windows)]
-fn has_win32_stripped_segment(path: &str) -> bool {
-    path.split(['/', '\\']).any(|s| s.ends_with(['.', ' ']))
+fn has_refused_segment(path: &str) -> bool {
+    path.split(['/', '\\'])
+        .any(|s| !s.is_empty() && crate::open_beneath::name_is_refused(s))
 }
 
 async fn find_file<'a>(
@@ -378,11 +381,11 @@ async fn find_file<'a>(
     rel: &str,
     options: &StaticOptions,
 ) -> Option<(&'a Path, PathBuf)> {
-    // Win32 strips a trailing dot or space from a name (`index.html.` is `index.html`), but the
-    // handle-relative open on Windows (issue #600) takes the name literally and refuses it. Say "not
-    // found" here, before the headers are built, instead of failing the open later.
+    // Names the handle-relative open on Windows refuses (a trailing dot or space that Win32 would
+    // strip, issue #600; the shape of an 8.3 short name, issue #617): say "not found" here, before
+    // anything is built, instead of failing the open later.
     #[cfg(windows)]
-    if has_win32_stripped_segment(rel) {
+    if has_refused_segment(rel) {
         return None;
     }
     for root in roots {
@@ -417,7 +420,7 @@ async fn find_index(dir: &Path, options: &StaticOptions) -> Option<PathBuf> {
         // Same Windows rule as `find_file`: such a name would pass the Win32 stat below and then be
         // refused by the handle-relative open after the headers are sent, so try the next entry.
         #[cfg(windows)]
-        if has_win32_stripped_segment(name) {
+        if has_refused_segment(name) {
             continue;
         }
         let p = dir.join(name);
@@ -1229,6 +1232,35 @@ mod tests {
         for rel in ["index.html.", "index.html ", "sub./index.html"] {
             assert!(find_file(&roots, rel, &opts).await.is_none(), "{rel:?}");
         }
+    }
+
+    /// Issue #617: `/HTPASS~1` would reach `.htpasswd` through its NTFS 8.3 alias, past the `dotFiles`
+    /// policy that only looked at the request path. The shape of a generated alias is not found, in the
+    /// file, in a directory segment, and as a configured index name; longer or ordinary names are.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_short_alias_shaped_name_is_not_found_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("HTPASS~1"), "x").unwrap();
+        std::fs::create_dir(dir.path().join("GIT~1")).unwrap();
+        std::fs::write(dir.path().join("GIT~1").join("config"), "x").unwrap();
+        std::fs::write(dir.path().join("report~1.html"), "x").unwrap();
+        let roots = vec![dir.path().to_path_buf()];
+        let opts = StaticOptions::default();
+        for rel in ["HTPASS~1", "htpass~1", "GIT~1/config"] {
+            assert!(find_file(&roots, rel, &opts).await.is_none(), "{rel:?}");
+        }
+        // Longer than an alias can be (extension of four characters): an ordinary file.
+        assert!(find_file(&roots, "report~1.html", &opts).await.is_some());
+        let opts = StaticOptions {
+            index: Some(vec!["INDEX~1".to_string(), "report~1.html".to_string()]),
+            ..Default::default()
+        };
+        std::fs::write(dir.path().join("INDEX~1"), "x").unwrap();
+        assert_eq!(
+            find_index(dir.path(), &opts).await,
+            Some(dir.path().join("report~1.html"))
+        );
     }
 
     /// A configured index name Win32 would resolve (`index.html.`) is skipped, so the next entry wins.

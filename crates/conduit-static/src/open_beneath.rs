@@ -21,10 +21,9 @@ use std::io;
 use std::path::{Component, Path};
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
 mod windows;
 #[cfg(windows)]
-pub use windows::open_beneath;
+pub use windows::{name_is_refused, open_beneath};
 
 /// Open `root`/`rel` read-only. `rel` must consist of normal components only (no `..`, no root).
 /// The root itself may be a symlink (the operator chose it); nothing below it may be.

@@ -16,54 +16,53 @@
 //! Choices that follow from the NT API (the name is *not* normalised by Win32):
 //! - the name must be one plain component: no `\`, `/`, `:` (drive, alternate data stream), and no
 //!   trailing dot or space (which Win32 would strip, so the earlier path checks saw another name);
+//! - a name that looks like a generated 8.3 short name (`HTPASS~1`, `PROGRA~1.TXT`) is refused, because
+//!   NTFS resolves such an alias to the real entry (`.htpasswd`) and the `dotFiles` policy never saw
+//!   that name (issue #617);
 //! - lookups are case-insensitive, like `File::open` on a default NTFS volume;
 //! - the handle is opened for synchronous I/O, so it works with `std::fs::File` unchanged.
+//!
+//! A parent that turns into a link while a child is being opened is refused too: after each child
+//! open the parent handle is asked again whether it is a link. The measured behaviour on Windows 11
+//! (the child lookup through a converted directory fails with error 1921) already fails closed; this
+//! check makes it independent of that behaviour on other builds and file systems.
 //!
 //! A reparse point that is *not* a link (a OneDrive placeholder, a deduplicated file) cannot be
 //! read through a `FILE_OPEN_REPARSE_POINT` handle, because the filter that serves it does not run.
 //! Such a component is reopened normally, relative to the same verified parent, and must be the
-//! same file (volume serial and 128-bit file id) as the first open, so a link swapped in meanwhile
+//! same file (volume serial number and file index) as the first open, so a link swapped in meanwhile
 //! is refused. That branch has not been run against a real placeholder or deduplicated file (only
 //! reparse tags without a handler, which fail closed): it is written from the API contract.
 //!
-//! The only `unsafe` is the FFI in [`open_relative`] and [`file_id`]; the crate denies it everywhere
-//! else (`#![deny(unsafe_code)]` in `lib.rs`).
+//! There is no `unsafe` here (issue #621): the handle-relative open is `fs_at`, the identity check is
+//! `same-file`, and `windows-sys` supplies constants only. The crate denies `unsafe` everywhere
+//! (`#![deny(unsafe_code)]` in `lib.rs`).
 
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::{Component, Path};
-use std::ptr;
 
-use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use fs_at::os::windows::OpenOptionsExt as _;
 use windows_sys::Wdk::Storage::FileSystem::{
-    NtCreateFile, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-    FILE_SYNCHRONOUS_IO_NONALERT,
+    FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT,
 };
-use windows_sys::Win32::Foundation::{
-    RtlNtStatusToDosError, HANDLE, OBJ_CASE_INSENSITIVE, UNICODE_STRING,
-};
+use windows_sys::Win32::Foundation::{ERROR_STOPPED_ON_SYMLINK, OBJ_CASE_INSENSITIVE};
 use windows_sys::Win32::Storage::FileSystem::{
-    FileIdInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_REPARSE_POINT, FILE_GENERIC_READ,
-    FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    SYNCHRONIZE,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ,
+    FILE_READ_ATTRIBUTES, SYNCHRONIZE,
 };
-use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
-/// `ERROR_STOPPED_ON_SYMLINK`: what a refused link is reported as.
-const ERROR_STOPPED_ON_SYMLINK: i32 = 681;
-const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-const STATUS_SUCCESS: i32 = 0;
+/// What a refused link is reported as (`ERROR_STOPPED_ON_SYMLINK`, 681).
+const LINK_REFUSED: i32 = ERROR_STOPPED_ON_SYMLINK as i32;
 /// What a directory handle needs: to be a root for relative opens and to report its type. No listing
 /// right, so a directory the account can only traverse still works.
 const DIRECTORY_ACCESS: u32 = FILE_READ_ATTRIBUTES | SYNCHRONIZE;
 
 fn link_error() -> io::Error {
-    io::Error::from_raw_os_error(ERROR_STOPPED_ON_SYMLINK)
+    io::Error::from_raw_os_error(LINK_REFUSED)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -121,22 +120,46 @@ fn verdict(attributes: u32, is_link: bool) -> Verdict {
 fn open_component(parent: &File, name: &OsStr, kind: Kind) -> io::Result<File> {
     let first = open_relative(parent, name, kind, false)?;
     let meta = first.metadata()?;
-    match verdict(meta.file_attributes(), meta.file_type().is_symlink()) {
-        Verdict::Use => Ok(first),
-        Verdict::Refuse => Err(link_error()),
-        Verdict::Reopen => reopen_if_same(first, || open_relative(parent, name, kind, true)),
+    let child = match verdict(meta.file_attributes(), meta.file_type().is_symlink()) {
+        Verdict::Use => first,
+        Verdict::Refuse => return Err(link_error()),
+        Verdict::Reopen => reopen_if_same(first, || open_relative(parent, name, kind, true))?,
+    };
+    // The lookup above went through `parent`. If `parent` has become a link meanwhile (a directory
+    // converted in place), do not trust what the lookup returned.
+    ensure_parent_plain(parent)?;
+    Ok(child)
+}
+
+/// Refuse when the directory handle `parent` now is a symlink or junction.
+fn ensure_parent_plain(parent: &File) -> io::Result<()> {
+    if parent.metadata()?.file_type().is_symlink() {
+        Err(link_error())
+    } else {
+        Ok(())
     }
 }
 
 /// The second open of a non-link reparse point must be the same file as the first.
 fn reopen_if_same(first: File, open_second: impl FnOnce() -> io::Result<File>) -> io::Result<File> {
     let second = open_second()?;
-    if file_id(&first)? == file_id(&second)? {
+    if same_file(&first, &second)? {
         Ok(second)
     } else {
         // The name now resolves to something else: swapped in between the two opens.
         Err(link_error())
     }
+}
+
+/// Whether two open handles refer to the same file: same volume, same file index.
+///
+/// The index is the 64-bit one that `GetFileInformationByHandle` reports. On ReFS the file id is 128
+/// bits wide and this keeps only the low part (the exact id needs `FileIdInfo`, which `std` does not
+/// expose in stable); two different files that agree in volume and low index are not something a name
+/// swap can produce.
+fn same_file(a: &File, b: &File) -> io::Result<bool> {
+    Ok(same_file::Handle::from_file(a.try_clone()?)?
+        == same_file::Handle::from_file(b.try_clone()?)?)
 }
 
 /// One plain path component: what `NtCreateFile` may be handed as a relative name.
@@ -146,12 +169,51 @@ fn valid_name(wide: &[u16]) -> bool {
     !wide.is_empty()
         && !wide.iter().any(|c| BAD.contains(c))
         && !matches!(wide.last(), Some(&c) if c == dot || c == space)
+        && !looks_like_short_alias(wide)
 }
 
-/// `NtCreateFile(FILE_OPEN)` of `name` relative to the open directory `parent`.
+/// Whether `wide` has the shape of a *generated* 8.3 short name, `BASE~N` or `BASE~N.EXT`.
+///
+/// NTFS keeps a second, short name for every long one on a volume with 8.3 creation on (the system
+/// volume by default), and resolves it to the same entry: `HTPASS~1` opens `.htpasswd`. The request path
+/// the `dotFiles` policy looked at said `HTPASS~1`, so the policy never applied (issue #617). A name
+/// that is *served* under its alias is refused instead: a generated alias is at most 8 characters before
+/// the last dot (the base ends in `~` and one or more digits, with at least one character before the
+/// `~`) and at most 3 after it, which is what this tests.
+///
+/// This catches what Windows generates. It does not catch an alias an administrator chose by hand
+/// (`fsutil file setshortname`), which needs the same rights as planting a link. A real file named like
+/// an alias (`report~1.pdf`) is refused too, on Windows only; a longer base or extension is not.
+fn looks_like_short_alias(wide: &[u16]) -> bool {
+    let dot = u16::from(b'.');
+    let (base, ext) = match wide.iter().rposition(|&c| c == dot) {
+        Some(i) => (&wide[..i], &wide[i + 1..]),
+        None => (wide, &[][..]),
+    };
+    // A generated alias has one dot at most, so a dot inside the base is a different kind of name.
+    if base.len() > 8 || ext.len() > 3 || base.contains(&dot) {
+        return false;
+    }
+    let digits = base
+        .iter()
+        .rev()
+        .take_while(|&&c| (u16::from(b'0')..=u16::from(b'9')).contains(&c))
+        .count();
+    // `X~1`: at least one character, the tilde, then one or more digits up to the end of the base.
+    digits >= 1 && base.len() > digits + 1 && base[base.len() - digits - 1] == u16::from(b'~')
+}
+
+/// Whether a request path segment is a name the Windows open refuses (see [`valid_name`]). Used by the
+/// handler to answer "not found" before it builds a response.
+pub fn name_is_refused(segment: &str) -> bool {
+    let wide: Vec<u16> = segment.encode_utf16().collect();
+    !valid_name(&wide)
+}
+
+/// `NtCreateFile(FILE_OPEN)` of `name` relative to the open directory `parent`, through `fs_at`.
 ///
 /// With `follow_reparse == false` the name is opened with `FILE_OPEN_REPARSE_POINT`: a link is opened
-/// as the link itself rather than followed.
+/// as the link itself rather than followed, and the caller reads its type from the handle.
 fn open_relative(
     parent: &File,
     name: &OsStr,
@@ -162,101 +224,34 @@ fn open_relative(
     if !valid_name(&wide) {
         return Err(io::Error::from(io::ErrorKind::InvalidInput));
     }
-    let bytes =
-        u16::try_from(wide.len() * 2).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    let object_name = UNICODE_STRING {
-        Length: bytes,
-        MaximumLength: bytes,
-        Buffer: wide.as_ptr().cast_mut(),
+    let mut create_options = match kind {
+        Kind::Directory => FILE_DIRECTORY_FILE,
+        Kind::File => FILE_NON_DIRECTORY_FILE,
     };
-    let attributes = OBJECT_ATTRIBUTES {
-        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-        RootDirectory: parent.as_raw_handle() as HANDLE,
-        ObjectName: &object_name,
-        Attributes: OBJ_CASE_INSENSITIVE,
-        SecurityDescriptor: ptr::null(),
-        SecurityQualityOfService: ptr::null(),
-    };
-    let mut options = FILE_SYNCHRONOUS_IO_NONALERT
-        | match kind {
-            Kind::Directory => FILE_DIRECTORY_FILE,
-            Kind::File => FILE_NON_DIRECTORY_FILE,
-        };
     if !follow_reparse {
-        options |= FILE_OPEN_REPARSE_POINT;
+        create_options |= FILE_OPEN_REPARSE_POINT;
     }
-
-    let mut handle: HANDLE = ptr::null_mut();
-    let mut status_block = IO_STATUS_BLOCK::default();
-    // SAFETY: `handle` and `status_block` are valid for writes; `attributes` and everything it points
-    // to (`object_name`, the UTF-16 buffer `wide`) outlive the call; `RootDirectory` is a handle owned by
-    // `parent`, which the caller keeps alive; the null pointers are the documented "none" values for
-    // the allocation size, the security fields and the extended-attribute buffer.
-    let status = unsafe {
-        NtCreateFile(
-            &mut handle,
-            match kind {
-                // A directory is only a stepping stone for the next relative open.
-                Kind::Directory => DIRECTORY_ACCESS,
-                Kind::File => FILE_GENERIC_READ,
-            },
-            &attributes,
-            &mut status_block,
-            ptr::null(),
-            0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            FILE_OPEN,
-            options,
-            ptr::null(),
-            0,
-        )
-    };
-    if status < 0 {
-        // SAFETY: a plain status-to-error conversion, no pointers involved.
-        let code = unsafe { RtlNtStatusToDosError(status) };
-        return Err(io::Error::from_raw_os_error(code as i32));
-    }
-    if handle.is_null() {
-        return Err(io::Error::other(format!(
-            "NtCreateFile returned status {status:#x} and no handle"
-        )));
-    }
-    // SAFETY: the call did not fail and returned a handle, so `handle` is a valid handle that nothing else
-    // owns. Taking ownership first means every early return below closes it.
-    let owned = unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) };
-    // A synchronous FILE_OPEN returns STATUS_SUCCESS and nothing else; anything different is not trusted.
-    if status != STATUS_SUCCESS {
-        return Err(io::Error::other(format!(
-            "unexpected NtCreateFile status {status:#x}"
-        )));
-    }
-    Ok(File::from(owned))
-}
-
-/// Volume serial number and 128-bit file id: which file a handle refers to. The 128-bit form is the one
-/// that is unique on ReFS (and Dev Drive); NTFS fills its 64-bit index into the low bytes.
-fn file_id(file: &File) -> io::Result<(u64, [u8; 16])> {
-    let mut info = FILE_ID_INFO::default();
-    // SAFETY: `info` is a valid, writable `FILE_ID_INFO` and the size passed is its size; the handle is
-    // open for the lifetime of `file`.
-    let ok = unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle() as HANDLE,
-            FileIdInfo,
-            ptr::from_mut(&mut info).cast(),
-            size_of::<FILE_ID_INFO>() as u32,
-        )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok((info.VolumeSerialNumber, info.FileId.Identifier))
+    let mut options = fs_at::OpenOptions::default();
+    options
+        .object_attributes(OBJ_CASE_INSENSITIVE)
+        .desired_access(match kind {
+            // A directory is only a stepping stone for the next relative open.
+            Kind::Directory => DIRECTORY_ACCESS,
+            Kind::File => FILE_GENERIC_READ,
+        })
+        // `fs_at` adds FILE_SYNCHRONOUS_IO_NONALERT; these replace its defaults, so the type flag and
+        // the reparse flag are set here, not left to it.
+        .create_options(create_options);
+    // `open_path_at` opens whatever the name is (a link is opened as itself, never followed) and
+    // reports no error for a link; `open_component` reads the type from the handle.
+    options.open_path_at(parent, name)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Read;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
 
     fn read(mut f: File) -> String {
         let mut s = String::new();
@@ -309,7 +304,7 @@ mod tests {
         junction(&root.path().join("dir"), outside.path());
         // a directory junction in the middle of the path...
         let err = open_beneath(root.path(), Path::new("dir/secret")).unwrap_err();
-        assert_eq!(err.raw_os_error(), Some(ERROR_STOPPED_ON_SYMLINK));
+        assert_eq!(err.raw_os_error(), Some(LINK_REFUSED));
         // ...and as the last component
         assert!(open_beneath(root.path(), Path::new("dir")).is_err());
         // a junction below a real subdirectory
@@ -338,7 +333,7 @@ mod tests {
         }
         std::os::windows::fs::symlink_dir(outside.path(), root.path().join("dir")).unwrap();
         let err = open_beneath(root.path(), Path::new("file")).unwrap_err();
-        assert_eq!(err.raw_os_error(), Some(ERROR_STOPPED_ON_SYMLINK));
+        assert_eq!(err.raw_os_error(), Some(LINK_REFUSED));
         assert!(open_beneath(root.path(), Path::new("dir/secret")).is_err());
     }
 
@@ -404,11 +399,11 @@ mod tests {
 
         // the same file twice: accepted, and the second handle is the one returned
         let same = reopen_if_same(open("a"), || Ok(open("a"))).unwrap();
-        assert_eq!(file_id(&same).unwrap(), file_id(&open("a")).unwrap());
+        assert!(same_file(&same, &open("a")).unwrap());
 
         // a different file the second time: refused as a swapped-in link is
         let err = reopen_if_same(open("a"), || Ok(open("b"))).unwrap_err();
-        assert_eq!(err.raw_os_error(), Some(ERROR_STOPPED_ON_SYMLINK));
+        assert_eq!(err.raw_os_error(), Some(LINK_REFUSED));
 
         // a failing second open is passed on
         let err = reopen_if_same(open("a"), || Err(io::Error::from(io::ErrorKind::NotFound)))
@@ -417,15 +412,125 @@ mod tests {
     }
 
     #[test]
-    fn file_id_tells_files_apart() {
+    fn same_file_tells_files_apart() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a"), "1").unwrap();
         std::fs::write(dir.path().join("b"), "1").unwrap();
         let a1 = open_beneath(dir.path(), Path::new("a")).unwrap();
         let a2 = open_beneath(dir.path(), Path::new("a")).unwrap();
         let b = open_beneath(dir.path(), Path::new("b")).unwrap();
-        assert_eq!(file_id(&a1).unwrap(), file_id(&a2).unwrap());
-        assert_ne!(file_id(&a1).unwrap(), file_id(&b).unwrap());
+        assert!(same_file(&a1, &a2).unwrap());
+        assert!(!same_file(&a1, &b).unwrap());
+    }
+
+    /// Issue #617: the shape of a generated 8.3 short name is refused, ordinary names are not.
+    #[test]
+    fn a_name_shaped_like_a_generated_short_alias_is_refused() {
+        for alias in [
+            "HTPASS~1",
+            "htpass~1",
+            "HTPASS~1.TXT",
+            "GIT~1",
+            "A~1",
+            "ABCDE~12.JS",
+            "PROGRA~1",
+            "ABC~1234",
+        ] {
+            assert!(!valid_name(&wide(alias)), "{alias} must be refused");
+            assert!(name_is_refused(alias), "{alias} must be refused");
+        }
+        for ordinary in [
+            "index.html",
+            "style.css",
+            "a~b",
+            "~1",
+            "~",
+            "tilde~",
+            "report~1.html",
+            "a-very-long-name~1",
+            "file~1.tar.gz",
+            "a.b~1.txt",
+            "ABCDEFGH~1",
+            "x~y1",
+            "~$doc.docx",
+        ] {
+            assert!(valid_name(&wide(ordinary)), "{ordinary} must be allowed");
+            assert!(!name_is_refused(ordinary), "{ordinary} must be allowed");
+        }
+    }
+
+    /// `dir /x` style helper: the short path of an existing file, or `None` if the volume keeps no
+    /// 8.3 names (then the short path is the long one).
+    fn short_path(path: &Path) -> Option<std::path::PathBuf> {
+        use std::os::windows::process::CommandExt;
+        let out = std::process::Command::new("cmd")
+            .arg("/C")
+            .raw_arg(format!("for %I in (\"{}\") do @echo %~sI", path.display()))
+            .output()
+            .ok()?;
+        let short = std::path::PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+        (short != path && short.exists()).then_some(short)
+    }
+
+    /// Issue #617 end to end: `.htpasswd` opened through its real generated alias is refused, the real
+    /// name still opens. Needs a volume with 8.3 names (the system volume by default).
+    #[test]
+    fn a_real_short_alias_does_not_reach_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(".htpasswd"), "secret").unwrap();
+        std::fs::create_dir(root.path().join("somelongdirname")).unwrap();
+        std::fs::write(root.path().join("somelongdirname").join("inner.txt"), "x").unwrap();
+
+        let Some(short) = short_path(&root.path().join(".htpasswd")) else {
+            eprintln!("skipping: this volume keeps no 8.3 names for the temp directory");
+            return;
+        };
+        let alias = short.file_name().unwrap().to_owned();
+        // The alias reaches the real file for a plain open: this is what the walk must not allow.
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(&alias)).unwrap(),
+            "secret"
+        );
+        assert!(open_beneath(root.path(), Path::new(&alias)).is_err());
+        assert_eq!(
+            read(open_beneath(root.path(), Path::new(".htpasswd")).unwrap()),
+            "secret"
+        );
+
+        // A directory alias in the middle of the path is refused the same way.
+        if let Some(dir_alias) = short_path(&root.path().join("somelongdirname")) {
+            let dir_alias = dir_alias.file_name().unwrap().to_owned();
+            let rel = Path::new(&dir_alias).join("inner.txt");
+            assert!(open_beneath(root.path(), &rel).is_err());
+        }
+        assert_eq!(
+            read(open_beneath(root.path(), Path::new("somelongdirname/inner.txt")).unwrap()),
+            "x"
+        );
+    }
+
+    /// A handle on a junction (what a directory converted in place would be) is refused as a parent, a
+    /// plain directory handle is not; and a lookup through the junction handle returns an error whether
+    /// the OS refuses it (error 1921 on Windows 11) or `open_component`'s own check does.
+    #[test]
+    fn a_parent_that_is_a_link_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), "s").unwrap();
+        junction(&root.path().join("j"), outside.path());
+        let open_dir = |path: &Path, extra: u32| {
+            OpenOptions::new()
+                .access_mode(DIRECTORY_ACCESS)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | extra)
+                .open(path)
+                .unwrap()
+        };
+        let link = open_dir(&root.path().join("j"), FILE_FLAG_OPEN_REPARSE_POINT);
+        assert!(link.metadata().unwrap().file_type().is_symlink());
+        let err = ensure_parent_plain(&link).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(LINK_REFUSED));
+        assert!(ensure_parent_plain(&open_dir(root.path(), 0)).is_ok());
+        assert!(open_component(&link, OsStr::new("secret"), Kind::File).is_err());
     }
 
     /// A directory swapped for a junction while opens are running must never leak outside bytes.

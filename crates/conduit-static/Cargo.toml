@@ -72,6 +72,8 @@ static = [
     "dep:httpdate",
     "dep:humantime",
     "dep:rustix",
+    "dep:fs_at",
+    "dep:same-file",
     "dep:windows-sys",
     "dep:lopatnov-conduit-core",
     "dep:tracing",
@@ -87,15 +89,17 @@ compression = [
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", optional = true, default-features = false, features = ["fs", "std"] }
 
-# `NtCreateFile` relative to a directory handle for the symlink- and junction-safe static-file open on
-# Windows (issue #600). Already in the tree several times over (tokio, mio, socket2, ...); this only adds
-# feature flags, no new crate.
+# The symlink- and junction-safe static-file open on Windows (issue #600) is built from safe wrappers, so
+# this crate has no `unsafe` of its own (issue #621):
+# - `fs_at`: `NtCreateFile` relative to a directory handle (the `openat` of Windows);
+# - `same-file`: whether two handles are the same file (volume serial number and file index), already in
+#   the tree through `notify`;
+# - `windows-sys`: constants only (access masks, `NtCreateFile` options), already in the tree several times.
 [target.'cfg(windows)'.dependencies]
+fs_at = { version = "0.2", optional = true }
+same-file = { version = "1", optional = true }
 windows-sys = { version = "0.61", optional = true, features = [
-    "Wdk_Foundation",
     "Wdk_Storage_FileSystem",
     "Win32_Foundation",
-    "Win32_Security",
     "Win32_Storage_FileSystem",
-    "Win32_System_IO",
 ] }
