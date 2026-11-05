@@ -22,8 +22,10 @@ use std::path::{Component, Path};
 
 #[cfg(windows)]
 mod windows;
+#[cfg(all(windows, test))]
+pub use windows::LINK_REFUSED;
 #[cfg(windows)]
-pub use windows::{is_link_refused, name_is_refused, open_beneath, LINK_REFUSED};
+pub use windows::{is_link_refused, name_is_refused, open_beneath};
 
 /// Open `root`/`rel` read-only. `rel` must consist of normal components only (no `..`, no root).
 /// The root itself may be a symlink (the operator chose it); nothing below it may be.
