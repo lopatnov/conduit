@@ -207,8 +207,11 @@ futures     = { version = "0.3" }
 
 # --- WASM plugin middleware (optional feature) ---
 # Enable with: cargo build --features wasm
-# Cranelift JIT: fast compilation; no WASI by default (sandboxed).
-wasmtime = { version = "49", features = ["cranelift"] }
+# Cranelift JIT: fast compilation; no WASI by default (sandboxed). Default features are off: the crate uses
+# `Engine`, `Module`, `Store`, `Linker` and `Config` only, so the compile cache (and with it `zstd` 0.13, which
+# carries RUSTSEC-2026-0391 and twelve advisories on `zstd-safe` 7.3), the component model, async, GC, threads
+# and profiling are not compiled in.
+wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "anyhow"] }
 
 # --- OpenTelemetry OTLP tracing (optional feature) ---
 # Enable with: cargo build --features otlp
