@@ -435,6 +435,76 @@ mod tests {
         assert!(!same_file(&a1, &b).unwrap());
     }
 
+    /// Manual check for issue #619: the walk against a *real* cloud placeholder (OneDrive Files On-Demand, Dropbox
+    /// Smart Sync, any Cloud Files API provider). Run it with the full path of an online-only file:
+    ///
+    /// `CONDUIT_REPARSE_FILE=<path> cargo test -p lopatnov-conduit-static --features static -- --ignored a_real_cloud_placeholder --nocapture`
+    ///
+    /// By default it only opens the file (no read, so nothing is downloaded) and prints what it saw: the
+    /// attributes of the file as itself, what the first open reports, the verdict, and whether the second open is
+    /// the same file. With `CONDUIT_REPARSE_READ=1` it also reads the file through the walk and through a plain
+    /// `File::open` and compares the bytes; that DOWNLOADS the placeholder, so use a small one.
+    #[test]
+    #[ignore = "needs a real cloud placeholder: set CONDUIT_REPARSE_FILE to the path of an online-only file"]
+    fn a_real_cloud_placeholder_is_served_like_a_plain_open() {
+        let path = std::env::var_os("CONDUIT_REPARSE_FILE").expect("set CONDUIT_REPARSE_FILE");
+        let path = Path::new(&path);
+        let (root, name) = (path.parent().unwrap(), path.file_name().unwrap());
+
+        // `symlink_metadata` opens the file as itself; a plain `metadata` follows the reparse point through the
+        // provider's filter, which can already download a small placeholder.
+        let before = std::fs::symlink_metadata(path).expect("the placeholder exists");
+        eprintln!(
+            "as itself:   attributes {:#010x}, reported size {} bytes",
+            before.file_attributes(),
+            before.len()
+        );
+        let dir = OpenOptions::new()
+            .access_mode(DIRECTORY_ACCESS)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(root)
+            .unwrap();
+
+        // First open, as the walk does it: the file as itself, not followed.
+        let first = open_relative(&dir, name, Kind::File, false).expect("first open");
+        let fm = first.metadata().unwrap();
+        let v = verdict(fm.file_attributes(), fm.file_type().is_symlink());
+        eprintln!(
+            "first open:  attributes {:#010x}, is_symlink {}, verdict {v:?}",
+            fm.file_attributes(),
+            fm.file_type().is_symlink()
+        );
+
+        // Second open, following the reparse point through the provider's filter, then the identity check.
+        let second = open_relative(&dir, name, Kind::File, true).expect("second open");
+        eprintln!(
+            "second open: attributes {:#010x}, same file as the first: {}",
+            second.metadata().unwrap().file_attributes(),
+            same_file(&first, &second).unwrap()
+        );
+
+        // The whole walk, which is what the server calls.
+        let served = open_beneath(root, Path::new(name))
+            .expect("the walk must open a placeholder, not refuse it");
+        assert!(!served.metadata().unwrap().file_type().is_symlink());
+        eprintln!("open_beneath: opened the placeholder without reading it");
+
+        if std::env::var_os("CONDUIT_REPARSE_READ").is_some_and(|v| v == "1") {
+            let via_walk = read(open_beneath(root, Path::new(name)).unwrap());
+            let via_plain = std::fs::read_to_string(path).unwrap();
+            eprintln!(
+                "read: {} bytes through the walk, {} through a plain open, equal: {}",
+                via_walk.len(),
+                via_plain.len(),
+                via_walk == via_plain
+            );
+            assert_eq!(
+                via_walk, via_plain,
+                "the walk must serve what a plain open serves"
+            );
+        }
+    }
+
     /// Issue #617: the shape of a generated 8.3 short name is refused, ordinary names are not.
     #[test]
     fn a_name_shaped_like_a_generated_short_alias_is_refused() {
