@@ -232,11 +232,22 @@ def collect(text, prefix="", outer_cfg=""):
     return items
 
 
+def _drop_leading_banners(lines):
+    """Remove `// ── name ──` section banners from the comment block above an item.
+
+    Only the lines before the item itself (blank lines, comments, attributes) are looked at: a banner-shaped
+    line inside a string literal or a block comment is part of the code and must still be compared."""
+    end = 0
+    while end < len(lines) and (not lines[end].strip() or lines[end].lstrip().startswith(("//", "#["))):
+        end += 1
+    return [line for line in lines[:end] if not BANNER_RE.match(line)] + lines[end:]
+
+
 def normalise(chunk, renames=()):
     for a, b in renames:
         chunk = chunk.replace(a, b)
     chunk = VIS_RE.sub("", chunk)
-    lines = [line for line in chunk.split("\n") if not BANNER_RE.match(line)]
+    lines = _drop_leading_banners(chunk.split("\n"))
     while lines and not lines[0].strip():
         lines.pop(0)
     if not lines:
