@@ -513,13 +513,14 @@ fn symlink_file(target: &std::path::Path, link: &std::path::Path) -> bool {
     }
 }
 
-/// Issue #618: the file is opened once, before the first header. While a symlink to a longer file
-/// outside the root is swapped in and out at the served path, every answer is either the complete
-/// inside file (`Content-Length` and body agree, and it is not the outside file) or a plain
-/// `404`: never a `200` whose body is cut off because the open after the headers was refused.
+/// While a symlink to a longer file outside the root is swapped in and out at the served path, every
+/// answer is either the complete inside file (`Content-Length` and body agree, and it is not the
+/// outside file) or a plain `404`. This is an invariant check, not a proof of the open-before-headers
+/// order (the window is too narrow to hit reliably; the unreadable-file test below is the
+/// deterministic one for that).
 #[test]
 #[serial]
-fn static_a_file_swapped_for_a_symlink_never_cuts_a_200_off() {
+fn static_a_file_swapped_for_a_symlink_is_never_served_or_cut_off() {
     let inside = "inside-inside-inside";
     let outside_dir = tempfile::tempdir().expect("tempdir");
     let outside = outside_dir.path().join("secret.txt");
@@ -586,4 +587,34 @@ fn static_a_file_swapped_for_a_symlink_never_cuts_a_200_off() {
         "the file was never swapped; the test proves nothing"
     );
     eprintln!("200: {ok}, 404: {missing}, swaps: {swaps}");
+}
+
+/// Issue #618, deterministic: a file the server cannot read used to get `200` plus `Content-Length`
+/// and then a body that was cut off when the open failed after the headers. The open now comes
+/// first, so the answer is a `403` with its own small body. A mode-000 file is readable by root, so
+/// the test skips where the account can still open it.
+#[cfg(unix)]
+#[test]
+#[serial]
+fn static_an_unreadable_file_is_403_before_any_header() {
+    use std::os::unix::fs::PermissionsExt;
+    let (server, dir) = make_static_server(&[("secret.txt", "classified bytes")]);
+    let path = dir.path().join("secret.txt");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::File::open(&path).is_ok() {
+        eprintln!("skipping: this account can read a mode-000 file (root)");
+        return;
+    }
+    let resp = reqwest::blocking::get(server.url("/secret.txt")).expect("GET");
+    assert_eq!(resp.status(), 403);
+    assert_eq!(
+        resp.text().expect("a 403 carries its whole body"),
+        "Forbidden"
+    );
+    // HEAD opens the file too: the same answer, no body.
+    let head = reqwest::blocking::Client::new()
+        .head(server.url("/secret.txt"))
+        .send()
+        .expect("HEAD");
+    assert_eq!(head.status(), 403);
 }
