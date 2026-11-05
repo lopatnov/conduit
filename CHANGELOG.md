@@ -16,7 +16,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The access-log file refuses a symlink, junction or other reparse point at its path the same way.
   For static files, a reparse point that is not a link (OneDrive placeholder, deduplicated file) is
   reopened normally after an identity check; that path has not been run against a real placeholder,
-  and the file is refused if the open fails or the identity differs. The Windows open uses the safe
+  and the file is refused if the open fails (a `500`) or the identity differs (not found). The Windows open uses the safe
   wrappers `fs_at` and `same-file`, so the workspace has no first-party `unsafe` (issue #621); a
   parent directory that turns into a link while a child is opened is refused too.
 - **Windows: an NTFS 8.3 short name no longer reaches a file the `dotFiles` policy hides** (issue

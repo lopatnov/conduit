@@ -24,6 +24,7 @@ pub(super) struct Validators<'a> {
 }
 
 impl Validators<'_> {
+    /// Add the validator headers this response carries: `ETag`, `Last-Modified` and `Vary: Accept-Encoding`.
     pub(super) fn apply(&self, resp: &mut ResponseHeader) -> Result<()> {
         if let Some(etag) = self.etag {
             resp.insert_header("etag", etag)?;
@@ -66,6 +67,7 @@ pub(super) fn if_range_allows_range(
     }
 }
 
+/// `Cache-Control` for the site's `maxAge`: `public, max-age=N`; `no-cache` when it is not set or not a duration.
 pub(super) fn make_cache_control(options: &StaticOptions) -> String {
     if let Some(age) = options.max_age.as_deref() {
         if let Ok(d) = humantime::parse_duration(age) {
@@ -75,6 +77,9 @@ pub(super) fn make_cache_control(options: &StaticOptions) -> String {
     "no-cache".to_string()
 }
 
+/// Parse one `bytes=` range against the file's `total` size into inclusive `(start, end)` offsets (the
+/// open-ended and suffix forms included). `None` for a malformed range or one that starts past the end:
+/// the caller answers `416`.
 pub(super) fn parse_range(header: &str, total: u64) -> Option<(u64, u64)> {
     if total == 0 {
         // No satisfiable range exists for an empty file — bail out before

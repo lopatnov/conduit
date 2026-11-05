@@ -56,6 +56,8 @@ pub fn open_beneath(root: &Path, rel: &Path) -> io::Result<std::fs::File> {
     Ok(std::fs::File::from(fd))
 }
 
+/// Fallback for a platform with neither `openat` nor `NtCreateFile`: reject components that are not plain names,
+/// then a plain open (the window between check and open remains; see "Symlinks" in `docs/configuration.md`).
 #[cfg(not(any(unix, windows)))]
 pub fn open_beneath(root: &Path, rel: &Path) -> std::io::Result<std::fs::File> {
     for c in rel.components() {

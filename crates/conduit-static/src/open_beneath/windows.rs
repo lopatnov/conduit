@@ -61,6 +61,7 @@ const LINK_REFUSED: i32 = ERROR_STOPPED_ON_SYMLINK as i32;
 /// right, so a directory the account can only traverse still works.
 const DIRECTORY_ACCESS: u32 = FILE_READ_ATTRIBUTES | SYNCHRONIZE;
 
+/// What a refused link is reported as: `ERROR_STOPPED_ON_SYMLINK`.
 fn link_error() -> io::Error {
     io::Error::from_raw_os_error(LINK_REFUSED)
 }
@@ -107,6 +108,8 @@ enum Verdict {
     Reopen,
 }
 
+/// Decide what to do with an opened component from its attributes and from whether it is a link (a symlink,
+/// a junction or another name-surrogate reparse point).
 fn verdict(attributes: u32, is_link: bool) -> Verdict {
     if is_link {
         Verdict::Refuse
@@ -117,6 +120,9 @@ fn verdict(attributes: u32, is_link: bool) -> Verdict {
     }
 }
 
+/// Open one path component below `parent` and judge it: a plain file or directory is returned, a link is
+/// refused, a reparse point that is not a link is reopened and checked against the first open. The parent
+/// must still be a plain directory afterwards.
 fn open_component(parent: &File, name: &OsStr, kind: Kind) -> io::Result<File> {
     let first = open_relative(parent, name, kind, false)?;
     let meta = first.metadata()?;

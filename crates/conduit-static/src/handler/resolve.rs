@@ -139,6 +139,8 @@ fn has_refused_segment(path: &str) -> bool {
         .any(|s| !s.is_empty() && crate::open_beneath::name_is_refused(s))
 }
 
+/// Find the file `rel` names below the first of `roots` that holds it; a directory resolves to its index file.
+/// A symlink at any level below the root, or (on Windows) a name the open refuses, finds nothing.
 pub(super) async fn find_file<'a>(
     roots: &'a [PathBuf],
     rel: &str,
@@ -176,6 +178,8 @@ pub(super) async fn find_file<'a>(
     None
 }
 
+/// The first configured index name (default `index.html`) that exists in `dir` as a plain file; on Windows
+/// the names the open refuses are skipped.
 async fn find_index(dir: &Path, options: &StaticOptions) -> Option<PathBuf> {
     let defaults = vec!["index.html".to_string()];
     let indices = options.index.as_deref().unwrap_or(&defaults);
@@ -250,6 +254,8 @@ fn try_decode_percent_seq(hex: &[u8]) -> Option<u8> {
     }
 }
 
+/// Percent-decode a request path. `%2F`, `%5C` and `%00` stay undecoded: a separator or a NUL decoded here
+/// would reach the file system.
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -268,6 +274,9 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Turn a decoded request path into a relative one: backslashes become slashes, empty and `.` segments
+/// vanish, `..` removes the segment before it (it never climbs above the root), and on Windows a segment with
+/// a colon (a drive prefix, an alternate data stream) is dropped.
 fn sanitize_path(path: &str) -> String {
     // Normalize backslashes to forward slashes before splitting so that
     // Windows path separators cannot be used to bypass traversal checks.
@@ -302,6 +311,8 @@ fn sanitize_path(path: &str) -> String {
     parts.join("/")
 }
 
+/// Whether a segment of `rel_path` starts with a dot (`..` included): a hidden file or directory, which the
+/// `dotFiles` policy governs.
 pub(super) fn has_dotfile(rel_path: &str) -> bool {
     rel_path
         .split('/')

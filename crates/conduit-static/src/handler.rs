@@ -55,6 +55,7 @@ pub struct StaticFileHandler {
 
 #[async_trait]
 impl LocalHandlerImpl for StaticFileHandler {
+    /// Serve the requested file, or hand a miss to the site's fallback (SPA index, 404 page).
     async fn handle(&mut self, session: &mut Session) -> Result<()> {
         let found = handle_static(session, self).await?;
 

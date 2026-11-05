@@ -3,6 +3,7 @@ mod common;
 use serial_test::serial;
 use std::fs;
 
+/// A server with one static site over a temp dir holding `files`; the dir is returned so it outlives the test.
 fn make_static_server(files: &[(&str, &str)]) -> (common::TestServer, tempfile::TempDir) {
     let static_dir = tempfile::tempdir().expect("tempdir");
     for (name, content) in files {

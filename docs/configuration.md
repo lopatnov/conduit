@@ -1290,16 +1290,18 @@ relative to the directory above it without following links (`openat` with `O_NOF
 a directory swapped for a symlink or junction between the check and the open is refused as well.
 On Windows, a file or directory that is a reparse point but not a link (a OneDrive placeholder, a
 deduplicated file) is opened normally after an identity check; that path is written from the API
-contract and has not been run against a real placeholder, so such a file may be refused (answered as
-not found) rather than served. On any other platform the check runs before the open, so a symlink
-swapped in between the two could still be followed: keep the served tree writable by trusted
-accounts only.
+contract and has not been run against a real placeholder, so such a file may be refused rather than
+served: answered as not found when the second open lands on another file, and as a `500` when the
+second open itself fails (for example a reparse tag nothing handles). On any other platform the check
+runs before the open, so a symlink swapped in between the two could still be followed: keep the
+served tree writable by trusted accounts only.
 
 The file is opened once, before the first response header is written, and its size, modification
 time, `ETag` and `Last-Modified` are read from that open handle, which the body is then streamed
-from. A file that disappears, turns into a link or stops being a plain file between the lookup and
-the open is answered as not found (the fallback runs) before anything is sent, never as a `200`
-cut off after its headers. A file the server cannot read is a `403`, any other open failure a `500`,
+from. A file that disappears or turns into a link between the lookup and the open is answered as not
+found (the fallback runs) before anything is sent, never as a `200` cut off after its headers; so is
+a directory that took the file's place on Unix (on Windows that case is reported by the system as
+access denied, a `403`). A file the server cannot read is a `403`, any other open failure a `500`,
 both before the headers. A `304` or a `HEAD` request therefore also opens the file.
 
 On Windows, NTFS keeps a second, 8.3 short name for each long name on a volume that creates them (the

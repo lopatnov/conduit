@@ -27,6 +27,7 @@ fn merge_vary(existing: &str, extra: &str) -> String {
     out.join(", ")
 }
 
+/// Add the site's extra response headers; a configured `Vary` is merged with the one already set, not replaced.
 fn insert_extra(resp: &mut ResponseHeader, extra: &[(String, String)]) -> Result<()> {
     for (name, value) in extra {
         // A configured `Vary` must not drop the `Vary: Accept-Encoding` the validators set: merge.
@@ -130,6 +131,8 @@ pub(super) async fn serve_pre_compressed(
     stream_file(session, opened.file, 0, opened.size).await
 }
 
+/// `206` with the requested byte range of an opened file, or `416` when the range cannot be satisfied;
+/// `total` is the file's size.
 pub(super) async fn serve_range(
     session: &mut Session,
     ctx: &RespCtx<'_>,
@@ -166,6 +169,7 @@ pub(super) async fn serve_range(
     stream_file(session, file, start, length).await
 }
 
+/// `304` carrying the validators, `Cache-Control` and the extra headers.
 pub(super) async fn write_not_modified(
     session: &mut Session,
     validators: &Validators<'_>,
@@ -179,6 +183,7 @@ pub(super) async fn write_not_modified(
     session.write_response_header(Box::new(resp), true).await
 }
 
+/// A small plain-text error response (`403`, `500`) with the extra headers.
 pub(super) async fn write_error(
     session: &mut Session,
     status: u16,

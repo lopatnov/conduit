@@ -72,6 +72,7 @@ fn refuse_reparse_point(file: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether file attributes mark a reparse point: a symlink, a junction, a OneDrive placeholder, a deduplicated file.
 #[cfg(windows)]
 fn is_reparse_point(attributes: u32) -> bool {
     attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
@@ -94,6 +95,7 @@ struct Inner {
 }
 
 impl LogWriter {
+    /// A writer that logs to stdout until a file is switched in.
     pub fn new() -> Self {
         LogWriter {
             inner: Mutex::new(Inner {
@@ -175,6 +177,7 @@ impl LogWriter {
 }
 
 impl Default for LogWriter {
+    /// Same as [`LogWriter::new`].
     fn default() -> Self {
         Self::new()
     }
