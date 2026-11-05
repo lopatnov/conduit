@@ -3,12 +3,14 @@
 
 The fake `gh` answers `gh api` from canned JSON files, applies `--jq` with the real `jq` (so the script's own filters
 run), and refuses what a cloud container refuses: every GraphQL-backed command. The script must work without them.
+Like the API, it answers one page of 100 items unless it is called with `--paginate`.
 
 Run:  python3 scripts/test_pr_comments.py        (needs bash, git and jq)
 """
 import json
 import os
 import shutil
+import string
 import subprocess
 import sys
 import tempfile
@@ -26,8 +28,9 @@ INLINE_COMMENTS = f"repos/o/r/pulls/{PR}/comments"
 
 # The fake `gh`: refuses GraphQL, serves `<fixtures>/<endpoint with / as __, no query>.json` through `jq -r <--jq filter>`
 # (every call of the script has a filter), can be told to fail (`.fail`) or to print a warning and still succeed
-# (`.warn`), and logs every call.
+# (`.warn`), and logs every call. Without `--paginate` it keeps only the first 100 items of every list in the answer.
 FAKE_GH = """#!{python}
+import json
 import os
 import subprocess
 import sys
@@ -61,7 +64,13 @@ if not os.path.exists(base + ".json"):
     sys.exit("gh: Not Found (HTTP 404)")
 if os.path.exists(base + ".warn"):
     print(read(base + ".warn"), file=sys.stderr)
-sys.exit(subprocess.run(["jq", "-r", jq, base + ".json"]).returncode)
+data = json.loads(read(base + ".json"))
+if "--paginate" not in args:
+    if isinstance(data, list):
+        data = data[:100]
+    else:
+        data = {{key: value[:100] if isinstance(value, list) else value for key, value in data.items()}}
+sys.exit(subprocess.run(["jq", "-r", jq], input=json.dumps(data).encode()).returncode)
 """
 
 
@@ -92,6 +101,11 @@ def git(cwd, *args):
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     return subprocess.run(["git", "-C", cwd, *args], check=True, capture_output=True, text=True, env=env).stdout
+
+
+def rejected(allowed):
+    """Every printable ASCII character and the tab that `allowed` does not list: what a widened input guard would let in."""
+    return [c for c in map(chr, [9, *range(32, 127)]) if c not in allowed]
 
 
 class PrComments(unittest.TestCase):
@@ -177,12 +191,17 @@ class PrComments(unittest.TestCase):
         """Every other conclusion, a run that has not finished and a failed or pending status are listed by state."""
         self.put(CHECK_RUNS, runs(
             check("fmt"), check("unit", conclusion="failure"), check("lint", conclusion="cancelled"),
-            check("slow", conclusion="timed_out"), check("windows", status="in_progress"), check("e2e", status="queued")))
-        self.put(STATUS, statuses(("error", "ci/legacy"), ("pending", "ci/other"), ("success", "ci/fine")))
+            check("slow", conclusion="timed_out"), check("deploy", conclusion="action_required"),
+            check("cache", conclusion="stale"), check("boot", conclusion="startup_failure"),
+            check("windows", status="in_progress"), check("e2e", status="queued")))
+        self.put(STATUS, statuses(("error", "ci/legacy"), ("pending", "ci/other"), ("failure", "ci/old"),
+                                  ("success", "ci/fine")))
         section = self.checks_section()
-        for row in ("failure\tunit", "cancelled\tlint", "timed_out\tslow", "in_progress\twindows", "queued\te2e",
-                    "error\tci/legacy", "pending\tci/other"):
-            self.assertIn("  " + row, section)
+        for row in ("failure\tunit", "cancelled\tlint", "timed_out\tslow", "action_required\tdeploy", "stale\tcache",
+                    "startup_failure\tboot", "in_progress\twindows", "queued\te2e", "error\tci/legacy",
+                    "pending\tci/other", "failure\tci/old"):
+            with self.subTest(row=row):
+                self.assertIn("  " + row, section)
         self.assertNotIn("fmt", section)
         self.assertNotIn("ci/fine", section)
         self.assertNotIn("all passing", section)
@@ -259,6 +278,19 @@ class PrComments(unittest.TestCase):
         self.assertIn("could not read the checks", section)
         self.assertNotIn("all passing", section)
 
+    def test_the_failure_line_carries_the_words_of_every_read_that_failed(self):
+        """Each failed read puts its own exit status and gh's own message on the line, so none is lost behind the other."""
+        for failing, codes in (((CHECK_RUNS,), "1/0"), ((STATUS,), "0/1"), ((CHECK_RUNS, STATUS), "1/1")):
+            with self.subTest(failing=failing):
+                messages = {endpoint: f"gh: {endpoint.rsplit('/', 1)[1]} endpoint is down" for endpoint in failing}
+                for endpoint, message in messages.items():
+                    self.put_text(endpoint, ".fail", message)
+                section = self.checks_section()
+                self.assertIn(f"(gh exit {codes})", section)
+                for endpoint, message in messages.items():
+                    self.assertIn(message, section)
+                    os.remove(self.path(endpoint, ".fail"))
+
     def test_no_check_at_all_is_never_all_passing(self):
         """A head commit nothing has reported on yet is not a green one."""
         self.put(CHECK_RUNS, runs())
@@ -333,6 +365,46 @@ class PrComments(unittest.TestCase):
         self.assertIn("looks fine", later)
         self.assertIn("issue comments: 1   reviews: 1   inline comments: 2", later)
 
+    def test_since_cuts_every_stream_and_keeps_what_was_written_at_the_cut_off(self):
+        """All three streams drop what came before the cut-off and keep an item stamped with exactly the cut-off."""
+        cut = "2026-10-11T10:00:00Z"
+        stamps = {"before": "2026-10-11T09:59:59Z", "at": cut, "after": "2026-10-11T10:00:01Z"}
+        self.put(ISSUE_COMMENTS, [{"user": {"login": "a"}, "created_at": ts, "id": i, "body": f"issue-{name}"}
+                                  for i, (name, ts) in enumerate(stamps.items())])
+        self.put(REVIEWS, [{"user": {"login": "a"}, "state": "COMMENTED", "submitted_at": ts, "commit_id": SHA,
+                            "body": f"review-{name}"} for name, ts in stamps.items()])
+        self.put(INLINE_COMMENTS, [{"user": {"login": "a"}, "path": "src/x.rs", "line": 1, "created_at": ts,
+                                    "commit_id": SHA, "body": f"inline-{name}"} for name, ts in stamps.items()])
+        out = self.run_script(str(PR), "--since", cut).stdout
+        for stream in ("issue", "review", "inline"):
+            with self.subTest(stream=stream):
+                self.assertNotIn(f"{stream}-before", out)
+                self.assertIn(f"{stream}-at", out)
+                self.assertIn(f"{stream}-after", out)
+        self.assertIn("issue comments: 3   reviews: 3   inline comments: 3", out)
+
+    def test_a_long_pull_request_is_read_to_its_last_page(self):
+        """An unpaginated read stops at 100 items (#152 has 214 inline comments): nothing may be read one page short."""
+        self.put(CHECK_RUNS, runs(*[check(f"job-{i}") for i in range(100)], check("late-run", conclusion="failure")))
+        self.put(STATUS, statuses(*[("success", f"ci/{i}") for i in range(100)], ("error", "late-status")))
+        self.put(ISSUE_COMMENTS, [{"user": {"login": "a"}, "created_at": "2026-10-11T10:00:00Z", "id": i,
+                                   "body": f"issue-{i}"} for i in range(101)])
+        self.put(REVIEWS, [{"user": {"login": "a"}, "state": "COMMENTED", "submitted_at": "2026-10-11T10:00:00Z",
+                            "commit_id": SHA, "body": f"review-{i}"} for i in range(102)])
+        self.put(INLINE_COMMENTS, [{"user": {"login": "a"}, "path": "src/x.rs", "line": 1,
+                                    "created_at": "2026-10-11T10:00:00Z", "commit_id": SHA, "body": f"inline-{i}"}
+                                   for i in range(214)])
+        out = self.run_script(str(PR)).stdout
+        for last in ("failure\tlate-run", "error\tlate-status", "issue-100", "review-101", "inline-213",
+                     "issue comments: 101   reviews: 102   inline comments: 214"):
+            with self.subTest(last=last):
+                self.assertIn(last, out)
+        api_calls = [call.split() for call in self.calls() if call.startswith("api ")]
+        later_reads = [call for call in api_calls if call[1] != PULL]
+        self.assertEqual(len(later_reads), 8)  # check runs, statuses, three streams, three counts
+        for call in later_reads:
+            self.assertIn("--paginate", call)
+
     def test_bodies_are_cut_unless_the_whole_text_is_asked_for(self):
         """The default shows the first 900 characters of a body, `--full` all of it."""
         self.put(ISSUE_COMMENTS, [{"user": {"login": "a"}, "created_at": "2026-10-11T10:00:00Z", "id": 1,
@@ -349,6 +421,49 @@ class PrComments(unittest.TestCase):
                 r = self.run_script(*args)
                 self.assertEqual(r.returncode, 2)
         self.assertEqual(self.calls(), [])
+
+    def test_since_takes_only_the_characters_of_a_timestamp(self):
+        """The cut-off sits inside a jq string: each other character is refused on its own, quote and backslash too."""
+        stamp = "2026-09-26T19:00:00Z"
+        for c in [*rejected(string.digits + "TZ:.+-"), "\n"]:
+            with self.subTest(char=c):
+                r = self.run_script(str(PR), "--since", stamp[:10] + c + stamp[10:])
+                self.assertEqual(r.returncode, 2)
+                self.assertIn("--since must look like", r.stderr)
+        self.assertEqual(self.calls(), [])
+        r = self.run_script(str(PR), "--since", "2026-09-26T19:00:00.5+02:00")  # a fraction and an offset still pass
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_the_pull_request_number_is_digits_only(self):
+        """The number ends up in API paths, so a slash, a dot or any other character is refused on its own."""
+        for c in [*rejected(string.digits), "\n"]:
+            with self.subTest(char=c):
+                r = self.run_script("5" + c + "6")
+                self.assertEqual(r.returncode, 2)
+                self.assertIn("PR must be a number", r.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_the_repository_takes_only_the_characters_of_owner_and_name(self):
+        """The repository ends up in API paths: each other character, in owner or name, is refused on its own."""
+        for c in [*rejected(string.ascii_letters + string.digits + "_.-"), "\n"]:
+            for repo in (f"o{c}x/r", f"o/r{c}x"):
+                with self.subTest(repo=repo):
+                    r = self.run_script(str(PR), "--repo", repo)
+                    self.assertEqual(r.returncode, 2)
+                    self.assertIn("pass --repo OWNER/REPO", r.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_the_head_commit_is_lowercase_hex_and_nothing_else(self):
+        """The head is put into an API path: each other character, or a second `head:` line, ends the run."""
+        heads = [SHA[:20] + c + SHA[20:] for c in rejected(string.digits + "abcdef")]
+        heads.append(f"{SHA}\nhead:   {SHA}")  # the second `head:` line makes the value two lines long
+        for head in heads:
+            with self.subTest(head=head):
+                self.put(PULL, pull(head={"sha": head}))
+                r = self.run_script(str(PR))
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("could not read the head commit", r.stderr)
+        self.assertNotIn("check-runs", " ".join(self.calls()))
 
     def test_help_prints_the_whole_header_comment(self):
         """`--help` prints the comment block at the top of the script, from its first line to its last."""
