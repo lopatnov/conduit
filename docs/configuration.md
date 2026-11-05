@@ -873,8 +873,8 @@ advantage emerges when some requests stall.
 
 **Ties.** When several upstreams have the same count (all of them, whenever the
 requests are short enough that none is still in flight when the next arrives),
-one of them is chosen at random, in proportion to its `weight`. Until 2.1 the
-first target in the list always won such a tie, so a lightly loaded pool sent
+one of them is chosen at random, in proportion to its `weight`. Earlier releases
+always picked the first target in the list for such a tie, so a lightly loaded pool sent
 every request to its first target.
 
 **Weights.** The comparison is *active connections divided by `weight`*, as in
