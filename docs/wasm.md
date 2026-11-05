@@ -1049,7 +1049,9 @@ wasm-opt -Os -o plugin-opt.wasm plugin.wasm
 
 Conduit uses **fail-open** for WASM: if a plugin fails to load, link, or
 execute (trap), the error is logged and the request passes through as if the
-plugin returned `0` (continue).
+plugin returned `0` (continue). The one exception is the engine itself: if the WebAssembly engine
+cannot be built on this machine, no plugin could run, so configuration validation refuses the config (at start-up
+and on a hot reload) with `middleware type "wasm" cannot run: ...` instead of letting every plugin fail open.
 
 ```
 WARN conduit_plugin_wasm::wasm: WASM plugin error — request passes through (fail-open)

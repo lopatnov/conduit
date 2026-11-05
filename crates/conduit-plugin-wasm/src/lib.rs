@@ -76,5 +76,6 @@
 pub mod wasm;
 
 pub use wasm::{
-    run_wasm, run_wasm_response, WasmOutcome, WasmRequest, WasmResponseContext, WasmResponseOutcome,
+    check_engine, run_wasm, run_wasm_response, WasmOutcome, WasmRequest, WasmResponseContext,
+    WasmResponseOutcome,
 };

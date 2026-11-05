@@ -61,6 +61,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **WASM: an engine that cannot be built no longer makes every plugin fail open** (issue #626). A failed
+  `Engine::new` used to fall back to a default engine without fuel, on which every call failed and every
+  request passed through, so a plugin that was supposed to reject requests (authentication, say) rejected
+  none. The engine is now built once when a `wasm` middleware is validated, and a config (or hot reload)
+  that cannot get one is refused. A module that fails to load is still fail-open, as documented.
 - **`least-conn` no longer sends every request of a lightly loaded pool to its first target** (issue #506).
   When several upstreams had the same number of active connections, which is all of them whenever
   requests are short enough that none is still in flight when the next arrives, the first one in the
