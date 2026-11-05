@@ -1,10 +1,65 @@
 //! Finding the file a request names, and opening it below its root without following a link.
 
+use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use conduit_core::util::encoding::AcceptEncoding;
 
 use crate::config::StaticOptions;
+
+/// A file opened below its root, with the facts a response needs about it, all read from the handle.
+pub(super) struct Opened {
+    pub(super) file: tokio::fs::File,
+    pub(super) size: u64,
+    pub(super) mtime: SystemTime,
+}
+
+/// Open the file at `path` (below `root`) once, before any response header is written, and read its
+/// size and modification time from the handle (issue #618).
+///
+/// The size, the `ETag`, `Last-Modified` and the body then describe the same object, and a link swapped
+/// in after [`find_file`] can neither leak the metadata of a file outside the root nor cut a `200` off
+/// after its headers: a refused open is a miss (`Ok(None)`: gone, not a plain file, a link, a name the
+/// Windows open refuses) and the caller answers before it has written anything. Any other failure
+/// (descriptors exhausted, I/O error, permission denied) is an `Err` for the caller to turn into a
+/// clean error response.
+pub(super) async fn open_served(root: &Path, path: &Path) -> io::Result<Option<Opened>> {
+    let file = match open_no_follow(root, path).await {
+        Ok(file) => file,
+        Err(e) if is_miss(&e) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let meta = file.metadata().await?;
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    Ok(Some(Opened {
+        file,
+        size: meta.len(),
+        mtime: meta.modified().unwrap_or(UNIX_EPOCH),
+    }))
+}
+
+/// Whether a failed open means "there is no such servable file" rather than a server problem.
+fn is_miss(e: &io::Error) -> bool {
+    use io::ErrorKind::{InvalidInput, IsADirectory, NotADirectory, NotFound};
+    // `ELOOP` is what `O_NOFOLLOW` reports for a symlink on Unix (`ErrorKind::FilesystemLoop` is not
+    // stable yet).
+    #[cfg(unix)]
+    if e.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) {
+        return true;
+    }
+    // 681 is `ERROR_STOPPED_ON_SYMLINK`, what the Windows walk reports for a symlink or junction.
+    #[cfg(windows)]
+    if e.raw_os_error() == Some(681) {
+        return true;
+    }
+    matches!(
+        e.kind(),
+        NotFound | NotADirectory | IsADirectory | InvalidInput
+    )
+}
 
 /// Open `path` (which lies below `root`) for reading without following a symlink at any level.
 ///
@@ -12,7 +67,7 @@ use crate::config::StaticOptions;
 /// Windows (`NtCreateFile` relative to the parent handle, issue #600; see [`crate::open_beneath`]), which
 /// closes the window between the `symlink_metadata` checks in `find_file` and the open. Any other
 /// platform has a plain open (see "Symlinks" in `docs/configuration.md`).
-pub(super) async fn open_no_follow(root: &Path, path: &Path) -> std::io::Result<tokio::fs::File> {
+async fn open_no_follow(root: &Path, path: &Path) -> io::Result<tokio::fs::File> {
     let rel = path
         .strip_prefix(root)
         .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?
@@ -143,76 +198,40 @@ async fn find_index(dir: &Path, options: &StaticOptions) -> Option<PathBuf> {
     None
 }
 
-/// Look for a pre-compressed sibling file next to `path`.
+/// A pre-compressed sibling (`.br` / `.gz`) of the requested file, opened, with its encoding token.
+pub(super) struct PreCompressed {
+    pub(super) opened: Opened,
+    pub(super) encoding: &'static str,
+}
+
+/// Open the pre-compressed sibling of `path` that the client accepts, if there is one.
 ///
-/// Preference order: brotli (`.br`) → gzip (`.gz`), filtered by what the
-/// client declares in `Accept-Encoding`.  Returns the path to the
-/// pre-compressed file and its encoding token (`"br"` or `"gzip"`), or `None`
-/// when no suitable sibling exists.
-async fn find_pre_compressed(
+/// Preference order: brotli (`.br`) → gzip (`.gz`), filtered by what the client declares in
+/// `Accept-Encoding`. Each candidate is opened (and sized) in one step by [`open_served`], so a sibling
+/// that is missing, is a link, or was removed or replaced since the lookup is skipped and the next
+/// candidate, finally the uncompressed original, is served instead of a `200` with a stale size
+/// (`content-length: 0` for an asset that exists uncompressed).
+pub(super) async fn resolve_pre_compressed(
+    root: &Path,
     path: &Path,
     accept_enc: &AcceptEncoding,
-) -> Option<(PathBuf, &'static str)> {
+) -> Option<PreCompressed> {
     // Candidates in preference order.
-    let candidates: &[(&'static str, &'static str)] = &[("br", ".br"), ("gzip", ".gz")];
-
-    for (enc, suffix) in candidates {
-        let accept = match *enc {
-            "br" => accept_enc.brotli,
-            "gzip" => accept_enc.gzip,
-            _ => false,
-        };
-        if !accept {
+    let candidates = [
+        ("br", ".br", accept_enc.brotli),
+        ("gzip", ".gz", accept_enc.gzip),
+    ];
+    for (encoding, suffix, accepted) in candidates {
+        if !accepted {
             continue;
         }
         let mut pre = path.as_os_str().to_owned();
         pre.push(suffix);
-        let pre_path = PathBuf::from(pre);
-        if stat_no_symlink(&pre_path)
-            .await
-            .map(|m| m.is_file())
-            .unwrap_or(false)
-        {
-            return Some((pre_path, enc));
+        if let Ok(Some(opened)) = open_served(root, &PathBuf::from(pre)).await {
+            return Some(PreCompressed { opened, encoding });
         }
     }
     None
-}
-
-/// Re-stat an already-`find_pre_compressed`-confirmed candidate, returning
-/// its current size.
-///
-/// Split out from [`resolve_pre_compressed`] specifically so this half —
-/// the actual TOCTOU guard — is independently testable: calling
-/// `resolve_pre_compressed` again after removing the file would re-run
-/// `find_pre_compressed` too and short-circuit before ever reaching this
-/// re-stat, so a test built that way would prove nothing about this
-/// function's own failure handling.
-///
-/// On a failed re-stat (the sibling was removed or replaced since
-/// `find_pre_compressed` confirmed it), returns `None` so the caller falls
-/// through to serving the uncompressed original instead of defaulting to a
-/// `pre_size` of `0`, which would send a 200 with `content-length: 0` for
-/// an asset that actually exists uncompressed.
-async fn confirm_pre_compressed(
-    pre_path: PathBuf,
-    encoding: &'static str,
-) -> Option<(PathBuf, &'static str, u64)> {
-    let pre_size = stat_no_symlink(&pre_path).await?.len();
-    Some((pre_path, encoding, pre_size))
-}
-
-/// Resolve a pre-compressed sibling to serve, including its current size.
-///
-/// Guards the same TOCTOU window as the main file check — see
-/// [`confirm_pre_compressed`]'s doc comment for why the re-stat is a
-/// separate function rather than inlined here.
-pub(super) async fn resolve_pre_compressed(
-    path: &Path,
-    accept_enc: &AcceptEncoding,
-) -> Option<(PathBuf, &'static str, u64)> {
-    let (pre_path, encoding) = find_pre_compressed(path, accept_enc).await?;
-    confirm_pre_compressed(pre_path, encoding).await
 }
 
 /// Attempt to decode a two-byte hex sequence (the digits after `%`) into a
@@ -430,56 +449,184 @@ mod tests {
             gzip: true,
             ..Default::default()
         };
-        let (pre_path, encoding, pre_size) = resolve_pre_compressed(&base, &accept_enc)
+        let pre = resolve_pre_compressed(dir.path(), &base, &accept_enc)
             .await
-            .expect("gz sibling exists and is confirmed by both stats");
-        assert_eq!(pre_path, dir.path().join("app.js.gz"));
-        assert_eq!(encoding, "gzip");
-        assert_eq!(pre_size, "compressed-bytes".len() as u64);
+            .expect("the gz sibling exists and opens");
+        assert_eq!(pre.encoding, "gzip");
+        // The size is the size of the handle the body is read from.
+        assert_eq!(pre.opened.size, "compressed-bytes".len() as u64);
+        assert_eq!(read_all(pre.opened.file).await, b"compressed-bytes");
     }
 
-    #[tokio::test]
-    async fn confirm_pre_compressed_returns_size_when_file_present() {
-        let dir = tempfile::tempdir().unwrap();
-        let gz_path = dir.path().join("app.js.gz");
-        std::fs::write(&gz_path, b"compressed-bytes").unwrap();
-
-        let (returned_path, encoding, pre_size) = confirm_pre_compressed(gz_path.clone(), "gzip")
-            .await
-            .expect("file exists, re-stat must succeed");
-        assert_eq!(returned_path, gz_path);
-        assert_eq!(encoding, "gzip");
-        assert_eq!(pre_size, "compressed-bytes".len() as u64);
+    async fn read_all(mut file: tokio::fs::File) -> Vec<u8> {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).await.unwrap();
+        buf
     }
 
+    /// The TOCTOU the old `confirm_pre_compressed` guarded, now closed by opening: a sibling that is
+    /// gone, or is not a plain file, is skipped and the next candidate is tried; none left, `None`, so
+    /// the caller serves the uncompressed original instead of a `200` with `content-length: 0`.
     #[tokio::test]
-    async fn confirm_pre_compressed_falls_through_when_file_removed() {
-        // Directly exercises the TOCTOU guard itself (not resolve_pre_compressed,
-        // which would re-run find_pre_compressed internally and short-circuit
-        // before ever reaching this re-stat if the file were already gone —
-        // confirm_pre_compressed exists precisely so this failure path is
-        // reachable in a deterministic test). Before the fix, the caller
-        // defaulted `pre_size` to 0 and still served a 200 with an empty body
-        // for a file confirmed present moments earlier; the fix must return
-        // `None` here so the caller falls through to the uncompressed original.
+    async fn a_pre_compressed_sibling_that_cannot_be_opened_is_skipped() {
         let dir = tempfile::tempdir().unwrap();
-        let gz_path = dir.path().join("app.js.gz");
-        std::fs::write(&gz_path, b"compressed-bytes").unwrap();
+        let base = dir.path().join("app.js");
+        std::fs::write(&base, "irrelevant").unwrap();
+        let both = AcceptEncoding {
+            brotli: true,
+            gzip: true,
+            ..Default::default()
+        };
 
-        // Confirm the happy path works before removing the file.
+        // a directory where the `.br` should be: skipped, the `.gz` wins
+        std::fs::create_dir(dir.path().join("app.js.br")).unwrap();
+        std::fs::write(dir.path().join("app.js.gz"), b"gz").unwrap();
+        let pre = resolve_pre_compressed(dir.path(), &base, &both)
+            .await
+            .expect("falls back to the gz sibling");
+        assert_eq!((pre.encoding, pre.opened.size), ("gzip", 2));
+
+        // the `.gz` removed as well: nothing left to serve
+        std::fs::remove_file(dir.path().join("app.js.gz")).unwrap();
+        assert!(resolve_pre_compressed(dir.path(), &base, &both)
+            .await
+            .is_none());
+
+        // an encoding the client does not accept is never looked at
+        std::fs::write(dir.path().join("app.js.gz"), b"gz").unwrap();
+        let only_br = AcceptEncoding {
+            brotli: true,
+            ..Default::default()
+        };
+        assert!(resolve_pre_compressed(dir.path(), &base, &only_br)
+            .await
+            .is_none());
+    }
+
+    /// Issue #618: `open_served` opens once, takes the size and mtime from the handle, and turns every
+    /// "there is no such servable file" case into `Ok(None)` (a miss before any header).
+    #[tokio::test]
+    async fn open_served_gives_the_handle_and_its_metadata_or_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, b"12345").unwrap();
+        let opened = open_served(dir.path(), &file).await.unwrap().unwrap();
+        assert_eq!(opened.size, 5);
+        assert_eq!(
+            opened.mtime,
+            std::fs::metadata(&file).unwrap().modified().unwrap()
+        );
+        assert_eq!(read_all(opened.file).await, b"12345");
+
+        // gone
+        assert!(open_served(dir.path(), &dir.path().join("none.txt"))
+            .await
+            .unwrap()
+            .is_none());
+        // a directory is not a servable file (Windows reports a directory opened as a file as access
+        // denied, which the handler answers with a 403; `find_file` never hands it a directory, so this is
+        // only reachable by a swap)
+        std::fs::create_dir(dir.path().join("d")).unwrap();
+        match open_served(dir.path(), &dir.path().join("d")).await {
+            Ok(None) => {}
+            Err(e) if cfg!(windows) => assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied),
+            other => panic!(
+                "a directory was opened for serving: {:?}",
+                other.map(|o| o.is_some())
+            ),
+        }
+        // a path that is not below the root is never served
+        let other = tempfile::tempdir().unwrap();
+        assert!(open_served(other.path(), &file).await.unwrap().is_none());
+    }
+
+    /// A link is a miss, whether it is the file or a directory above it (Unix: `ELOOP`; the Windows
+    /// walk refuses a symlink or junction the same way, see `open_beneath`).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_served_treats_a_link_as_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), b"s").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), dir.path().join("l.txt"))
+            .unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("dir")).unwrap();
+        assert!(open_served(dir.path(), &dir.path().join("l.txt"))
+            .await
+            .unwrap()
+            .is_none());
         assert!(
-            confirm_pre_compressed(gz_path.clone(), "gzip")
+            open_served(dir.path(), &dir.path().join("dir").join("secret.txt"))
                 .await
-                .is_some(),
-            "sanity: re-stat must succeed while the file still exists"
+                .unwrap()
+                .is_none()
         );
+    }
 
-        std::fs::remove_file(&gz_path).unwrap();
-
+    /// The same for a junction, which needs no privilege on Windows.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn open_served_treats_a_junction_as_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), b"s").unwrap();
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(dir.path().join("dir"))
+            .arg(outside.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "mklink /J failed: {out:?}");
         assert!(
-            confirm_pre_compressed(gz_path, "gzip").await.is_none(),
-            "must fall through, not default pre_size to 0, when the re-stat fails"
+            open_served(dir.path(), &dir.path().join("dir").join("secret.txt"))
+                .await
+                .unwrap()
+                .is_none()
         );
+    }
+
+    /// The size comes from the handle, not from the path: a file renamed over the path after the open
+    /// does not change what `Opened` says, and the handle still reads the file that was opened.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_served_reads_size_and_body_from_the_same_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, b"12345").unwrap();
+        let opened = open_served(dir.path(), &path).await.unwrap().unwrap();
+        std::fs::write(dir.path().join("b.txt"), b"123456789").unwrap();
+        std::fs::rename(dir.path().join("b.txt"), &path).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 9);
+        assert_eq!(opened.size, 5);
+        assert_eq!(read_all(opened.file).await, b"12345");
+    }
+
+    #[test]
+    fn only_a_missing_or_refused_file_is_a_miss() {
+        use std::io::{Error, ErrorKind};
+        for kind in [
+            ErrorKind::NotFound,
+            ErrorKind::NotADirectory,
+            ErrorKind::IsADirectory,
+            ErrorKind::InvalidInput,
+        ] {
+            assert!(is_miss(&Error::from(kind)), "{kind:?}");
+        }
+        #[cfg(unix)]
+        assert!(is_miss(&Error::from_raw_os_error(
+            rustix::io::Errno::LOOP.raw_os_error()
+        )));
+        for kind in [
+            ErrorKind::PermissionDenied,
+            ErrorKind::OutOfMemory,
+            ErrorKind::Other,
+            ErrorKind::TimedOut,
+        ] {
+            assert!(!is_miss(&Error::from(kind)), "{kind:?}");
+        }
+        #[cfg(windows)]
+        assert!(is_miss(&Error::from_raw_os_error(681)));
     }
 
     #[test]

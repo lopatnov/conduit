@@ -1,7 +1,5 @@
 //! Copying the body of an opened file to the client, plain or compressed on the fly.
 
-use std::path::Path;
-
 #[cfg(feature = "compression")]
 use async_compression::tokio::bufread::{BrotliEncoder, DeflateEncoder, GzipEncoder};
 #[cfg(feature = "compression")]
@@ -12,8 +10,6 @@ use pingora_proxy::Session;
 #[cfg(feature = "compression")]
 use tokio::io::AsyncRead;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
-
-use super::resolve::open_no_follow;
 
 /// Map a file I/O error to a Pingora-level internal error.
 fn io_err(e: std::io::Error) -> Box<pingora_core::Error> {
@@ -35,14 +31,12 @@ fn io_err(e: std::io::Error) -> Box<pingora_core::Error> {
 #[cfg(feature = "compression")]
 pub(super) async fn stream_file_compressed(
     session: &mut Session,
-    root: &Path,
-    path: &Path,
+    mut file: tokio::fs::File,
     offset: u64,
     length: u64,
     encoding: &str,
     level: u8,
 ) -> Result<()> {
-    let mut file = open_no_follow(root, path).await.map_err(io_err)?;
     if offset > 0 {
         file.seek(std::io::SeekFrom::Start(offset))
             .await
@@ -68,8 +62,15 @@ pub(super) async fn stream_file_compressed(
             stream_encoded(session, encoder).await
         }
         _ => {
-            // Unknown encoding — fall back to uncompressed streaming.
-            stream_file(session, root, path, offset, length).await
+            // Unknown encoding — fall back to uncompressed streaming. Nothing has been read yet, so the
+            // file is taken back out of the reader and `stream_file` seeks to `offset` again.
+            stream_file(
+                session,
+                buf_reader.into_inner().into_inner(),
+                offset,
+                length,
+            )
+            .await
         }
     }
 }
@@ -80,14 +81,13 @@ pub(super) async fn stream_file_compressed(
 #[cfg(not(feature = "compression"))]
 pub(super) async fn stream_file_compressed(
     session: &mut Session,
-    root: &Path,
-    path: &Path,
+    file: tokio::fs::File,
     offset: u64,
     length: u64,
     _encoding: &str,
     _level: u8,
 ) -> Result<()> {
-    stream_file(session, root, path, offset, length).await
+    stream_file(session, file, offset, length).await
 }
 
 /// Drain an `AsyncRead` encoder in 64 KiB chunks, signalling `done=true` on
@@ -122,16 +122,15 @@ async fn stream_encoded<R: AsyncRead + Unpin>(session: &mut Session, mut reader:
     }
 }
 
-/// Stream `length` bytes from `file` starting at `offset` in 64 KiB chunks.
+/// Stream `length` bytes from `file` starting at `offset` in 64 KiB chunks. `file` is already open
+/// (issue #618), so no open can fail once the response headers are out.
 pub(super) async fn stream_file(
     session: &mut Session,
-    root: &Path,
-    path: &Path,
+    mut file: tokio::fs::File,
     offset: u64,
     length: u64,
 ) -> Result<()> {
     const CHUNK: usize = 64 * 1024;
-    let mut file = open_no_follow(root, path).await.map_err(io_err)?;
     if offset > 0 {
         file.seek(std::io::SeekFrom::Start(offset))
             .await

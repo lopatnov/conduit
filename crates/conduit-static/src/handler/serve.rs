@@ -1,13 +1,12 @@
 //! Writing the responses: full, range, pre-compressed, `304` and the small error bodies.
 
-use std::path::Path;
-
 use bytes::Bytes;
 use pingora_core::Result;
 use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
 
 use super::conditional::{parse_range, Validators};
+use super::resolve::PreCompressed;
 use super::stream::{stream_file, stream_file_compressed};
 
 /// Union of two `Vary` values, case-insensitive, keeping the first spelling of each token.
@@ -43,53 +42,60 @@ fn insert_extra(resp: &mut ResponseHeader, extra: &[(String, String)]) -> Result
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What the file responses share, apart from the file itself: the parts of the request and of the
+/// configuration (the content type, the validators, `Cache-Control`, `HEAD`, the extra headers).
+pub(super) struct RespCtx<'a> {
+    pub(super) content_type: &'a str,
+    pub(super) validators: &'a Validators<'a>,
+    pub(super) cache_control: &'a str,
+    pub(super) is_head: bool,
+    pub(super) extra: &'a [(String, String)],
+}
+
+/// `200` with the whole file. `file` is already open (issue #618): nothing here can fail to open it
+/// after the headers are out.
 pub(super) async fn serve_full(
     session: &mut Session,
-    root: &Path,
-    path: &Path,
+    ctx: &RespCtx<'_>,
+    file: tokio::fs::File,
     size: u64,
-    content_type: &str,
-    validators: &Validators<'_>,
-    cache_control: &str,
-    is_head: bool,
-    extra: &[(String, String)],
     compress: Option<(&'static str, u8)>,
 ) -> Result<()> {
+    let extra = ctx.extra;
     if let Some((encoding, level)) = compress {
         // Compressed response — no Content-Length (chunked transfer encoding).
         let header_count = 4 + Validators::SLOTS + extra.len(); // no content-length
         let mut resp = ResponseHeader::build(200, Some(header_count))?;
-        resp.insert_header("content-type", content_type)?;
-        validators.apply(&mut resp)?;
-        resp.insert_header("cache-control", cache_control)?;
+        resp.insert_header("content-type", ctx.content_type)?;
+        ctx.validators.apply(&mut resp)?;
+        resp.insert_header("cache-control", ctx.cache_control)?;
         resp.insert_header("accept-ranges", "bytes")?;
         resp.insert_header("content-encoding", encoding)?;
         insert_extra(&mut resp, extra)?;
 
-        if is_head {
+        if ctx.is_head {
             session.write_response_header(Box::new(resp), true).await?;
             return Ok(());
         }
 
         session.write_response_header(Box::new(resp), false).await?;
-        stream_file_compressed(session, root, path, 0, size, encoding, level).await
+        stream_file_compressed(session, file, 0, size, encoding, level).await
     } else {
         let mut resp = ResponseHeader::build(200, Some(3 + Validators::SLOTS + extra.len()))?;
-        resp.insert_header("content-type", content_type)?;
+        resp.insert_header("content-type", ctx.content_type)?;
         resp.insert_header("content-length", size.to_string())?;
-        validators.apply(&mut resp)?;
-        resp.insert_header("cache-control", cache_control)?;
+        ctx.validators.apply(&mut resp)?;
+        resp.insert_header("cache-control", ctx.cache_control)?;
         resp.insert_header("accept-ranges", "bytes")?;
         insert_extra(&mut resp, extra)?;
 
-        if is_head {
+        if ctx.is_head {
             session.write_response_header(Box::new(resp), true).await?;
             return Ok(());
         }
 
         session.write_response_header(Box::new(resp), false).await?;
-        stream_file(session, root, path, 0, size).await
+        stream_file(session, file, 0, size).await
     }
 }
 
@@ -97,52 +103,42 @@ pub(super) async fn serve_full(
 ///
 /// Sends the original resource's `Content-Type`, `ETag`, `Last-Modified`, and
 /// `Cache-Control`, while adding `Content-Encoding` and `Vary: accept-encoding`
-/// to inform caches that this representation is encoding-specific.
-#[allow(clippy::too_many_arguments)]
+/// to inform caches that this representation is encoding-specific. The sibling was opened (and sized)
+/// before the call, so its `Content-Length` is the length of the file this handle reads.
 pub(super) async fn serve_pre_compressed(
     session: &mut Session,
-    root: &Path,
-    pre_path: &Path,
-    pre_size: u64,
-    content_type: &str,
-    encoding: &'static str,
-    validators: &Validators<'_>,
-    cache_control: &str,
-    is_head: bool,
-    extra: &[(String, String)],
+    ctx: &RespCtx<'_>,
+    pre: PreCompressed,
 ) -> Result<()> {
+    let extra = ctx.extra;
+    let PreCompressed { opened, encoding } = pre;
     let mut resp = ResponseHeader::build(200, Some(5 + Validators::SLOTS + extra.len()))?;
-    resp.insert_header("content-type", content_type)?;
-    resp.insert_header("content-length", pre_size.to_string())?;
+    resp.insert_header("content-type", ctx.content_type)?;
+    resp.insert_header("content-length", opened.size.to_string())?;
     resp.insert_header("content-encoding", encoding)?;
-    validators.apply(&mut resp)?;
-    resp.insert_header("cache-control", cache_control)?;
+    ctx.validators.apply(&mut resp)?;
+    resp.insert_header("cache-control", ctx.cache_control)?;
     resp.insert_header("accept-ranges", "none")?; // ranges unsupported on pre-compressed
     insert_extra(&mut resp, extra)?;
 
-    if is_head {
+    if ctx.is_head {
         session.write_response_header(Box::new(resp), true).await?;
         return Ok(());
     }
 
     session.write_response_header(Box::new(resp), false).await?;
-    stream_file(session, root, pre_path, 0, pre_size).await
+    stream_file(session, opened.file, 0, opened.size).await
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn serve_range(
     session: &mut Session,
-    root: &Path,
-    path: &Path,
+    ctx: &RespCtx<'_>,
+    file: tokio::fs::File,
     total: u64,
-    range_hdr: String,
-    content_type: &str,
-    validators: &Validators<'_>,
-    cache_control: &str,
-    is_head: bool,
-    extra: &[(String, String)],
+    range_hdr: &str,
 ) -> Result<()> {
-    let Some((start, end)) = parse_range(&range_hdr, total) else {
+    let extra = ctx.extra;
+    let Some((start, end)) = parse_range(range_hdr, total) else {
         let mut resp = ResponseHeader::build(416, Some(2 + extra.len()))?;
         resp.insert_header("content-range", format!("bytes */{total}"))?;
         resp.insert_header("content-length", "0")?;
@@ -153,21 +149,21 @@ pub(super) async fn serve_range(
 
     let length = end - start + 1;
     let mut resp = ResponseHeader::build(206, Some(5 + Validators::SLOTS + extra.len()))?;
-    resp.insert_header("content-type", content_type)?;
+    resp.insert_header("content-type", ctx.content_type)?;
     resp.insert_header("content-length", length.to_string())?;
     resp.insert_header("content-range", format!("bytes {start}-{end}/{total}"))?;
-    validators.apply(&mut resp)?;
-    resp.insert_header("cache-control", cache_control)?;
+    ctx.validators.apply(&mut resp)?;
+    resp.insert_header("cache-control", ctx.cache_control)?;
     resp.insert_header("accept-ranges", "bytes")?;
     insert_extra(&mut resp, extra)?;
 
-    if is_head {
+    if ctx.is_head {
         session.write_response_header(Box::new(resp), true).await?;
         return Ok(());
     }
 
     session.write_response_header(Box::new(resp), false).await?;
-    stream_file(session, root, path, start, length).await
+    stream_file(session, file, start, length).await
 }
 
 pub(super) async fn write_not_modified(

@@ -26,8 +26,12 @@ mod serve;
 mod stream;
 
 use conditional::{if_range_allows_range, is_not_modified, make_cache_control, Validators};
-use resolve::{decode_rel_path, find_file, has_dotfile, resolve_pre_compressed};
-use serve::{serve_full, serve_pre_compressed, serve_range, write_error, write_not_modified};
+use resolve::{
+    decode_rel_path, find_file, has_dotfile, open_served, resolve_pre_compressed, Opened,
+};
+use serve::{
+    serve_full, serve_pre_compressed, serve_range, write_error, write_not_modified, RespCtx,
+};
 
 /// Handler struct for static file responses.
 ///
@@ -108,17 +112,33 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
         return Ok(false);
     };
 
-    // Re-check with symlink_metadata to guard against a TOCTOU race:
-    // between find_file() rejecting symlinks and this point, another process
-    // could have replaced the file with a symlink.  Reject if it's now
-    // a symlink or has disappeared.
-    let meta = match tokio::fs::symlink_metadata(&file_path).await {
-        Ok(m) if !m.file_type().is_symlink() => m,
-        _ => return Ok(false),
+    // Open the file once, here, before anything is written (issue #618). `find_file` only looked at
+    // the path; between that and now another process may have swapped the file for a link, replaced
+    // it or removed it. The open below does not follow a link at any level, and the size and
+    // modification time that go into `Content-Length` and the validators are read from this same
+    // handle, which the body is streamed from later, so none of them can describe another file and a
+    // refused open is answered before the first header instead of cutting a `200` off.
+    let Opened {
+        file,
+        size: file_size,
+        mtime,
+    } = match open_served(root, &file_path).await {
+        Ok(Some(opened)) => opened,
+        Ok(None) => return Ok(false),
+        Err(e) => {
+            // Not a miss (permission denied, descriptors exhausted, I/O error), and still nothing
+            // written: a clean error response.
+            let (status, msg) = if e.kind() == std::io::ErrorKind::PermissionDenied {
+                (403, "Forbidden")
+            } else {
+                (500, "Internal Server Error")
+            };
+            tracing::warn!(path = ?file_path, error = %e, status, "static file could not be opened");
+            write_error(session, status, msg, extra).await?;
+            return Ok(true);
+        }
     };
 
-    let file_size = meta.len();
-    let mtime = meta.modified().unwrap_or(UNIX_EPOCH);
     let mtime_secs = mtime
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -162,20 +182,15 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
         .get("range")
         .and_then(|v| v.to_str().ok())
         .filter(|_| if_range_allows_range(&hdrs, validators.etag, validators.last_modified));
+    let ctx = RespCtx {
+        content_type: &content_type,
+        validators: &validators,
+        cache_control: &cache_control,
+        is_head,
+        extra,
+    };
     if let Some(range_hdr) = range_hdr {
-        serve_range(
-            session,
-            root,
-            &file_path,
-            file_size,
-            range_hdr.to_owned(),
-            &content_type,
-            &validators,
-            &cache_control,
-            is_head,
-            extra,
-        )
-        .await?;
+        serve_range(session, &ctx, file, file_size, range_hdr).await?;
         return Ok(true);
     }
 
@@ -183,22 +198,8 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
     // and the client accepts the encoding.  This avoids CPU-intensive on-the-fly
     // compression for assets that were pre-compressed at build time.
     if options.pre_compressed.unwrap_or(false) {
-        if let Some((pre_path, encoding, pre_size)) =
-            resolve_pre_compressed(&file_path, accept_enc).await
-        {
-            serve_pre_compressed(
-                session,
-                root,
-                &pre_path,
-                pre_size,
-                &content_type,
-                encoding,
-                &validators,
-                &cache_control,
-                is_head,
-                extra,
-            )
-            .await?;
+        if let Some(pre) = resolve_pre_compressed(root, &file_path, accept_enc).await {
+            serve_pre_compressed(session, &ctx, pre).await?;
             return Ok(true);
         }
     }
@@ -219,18 +220,6 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
     #[cfg(not(feature = "compression"))]
     let compress: Option<(&'static str, u8)> = None;
 
-    serve_full(
-        session,
-        root,
-        &file_path,
-        file_size,
-        &content_type,
-        &validators,
-        &cache_control,
-        is_head,
-        extra,
-        compress,
-    )
-    .await?;
+    serve_full(session, &ctx, file, file_size, compress).await?;
     Ok(true)
 }

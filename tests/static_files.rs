@@ -492,3 +492,98 @@ fn static_cache_control_max_age() {
         "expected max-age=3600, got: {cc}"
     );
 }
+
+/// A symlink to `target` at `link`; `None` when this machine cannot create one (a Windows account
+/// without the privilege). CI can, so a missing privilege there is a failure, not a skip.
+fn symlink_file(target: &std::path::Path, link: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(target, link);
+    match made {
+        Ok(()) => true,
+        Err(e) => {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "CI must be able to create symlinks ({e})"
+            );
+            eprintln!("skipping: cannot create a symlink here ({e})");
+            false
+        }
+    }
+}
+
+/// Issue #618: the file is opened once, before the first header. While a symlink to a longer file
+/// outside the root is swapped in and out at the served path, every answer is either the complete
+/// inside file (`Content-Length` and body agree, and it is not the outside file) or a plain
+/// `404`: never a `200` whose body is cut off because the open after the headers was refused.
+#[test]
+#[serial]
+fn static_a_file_swapped_for_a_symlink_never_cuts_a_200_off() {
+    let inside = "inside-inside-inside";
+    let outside_dir = tempfile::tempdir().expect("tempdir");
+    let outside = outside_dir.path().join("secret.txt");
+    fs::write(&outside, "OUTSIDE-OUTSIDE-OUTSIDE-OUTSIDE-OUTSIDE").unwrap();
+
+    let (server, dir) = make_static_server(&[("f.txt", inside)]);
+    let served = dir.path().join("f.txt");
+    let parked = dir.path().join("parked.txt");
+    if !symlink_file(&outside, &dir.path().join("probe.txt")) {
+        return;
+    }
+    fs::remove_file(dir.path().join("probe.txt")).unwrap();
+
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let swapper = {
+        let (stop, served, parked, outside) = (stop.clone(), served, parked, outside);
+        std::thread::spawn(move || {
+            let mut swaps = 0u32;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                if fs::rename(&served, &parked).is_ok() {
+                    if symlink_file(&outside, &served) {
+                        swaps += 1;
+                        std::thread::yield_now();
+                        let _ = fs::remove_file(&served);
+                    }
+                    let _ = fs::rename(&parked, &served);
+                }
+            }
+            swaps
+        })
+    };
+
+    let client = reqwest::blocking::Client::new();
+    let (mut ok, mut missing) = (0u32, 0u32);
+    for _ in 0..400 {
+        let resp = match client.get(server.url("/f.txt")).send() {
+            Ok(resp) => resp,
+            Err(e) => panic!("the request itself failed: {e}"),
+        };
+        match resp.status().as_u16() {
+            200 => {
+                let declared = resp
+                    .headers()
+                    .get("content-length")
+                    .map(|v| v.to_str().unwrap().parse::<usize>().unwrap());
+                // A body cut off after its headers is an error here, not a short string.
+                let body = resp.text().expect("a 200 must carry its whole body");
+                assert_eq!(body, inside, "wrong bytes served");
+                assert_eq!(declared, Some(body.len()), "Content-Length disagrees");
+                ok += 1;
+            }
+            404 => missing += 1,
+            other => panic!("unexpected status {other}"),
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let swaps = swapper.join().unwrap();
+    assert!(
+        ok > 0,
+        "no request ever got the file; the test proves nothing"
+    );
+    assert!(
+        swaps > 0,
+        "the file was never swapped; the test proves nothing"
+    );
+    eprintln!("200: {ok}, 404: {missing}, swaps: {swaps}");
+}
