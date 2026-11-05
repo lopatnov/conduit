@@ -1284,12 +1284,39 @@ staticOptions:
 ### Symlinks
 
 A symlink **below** a static root is never served, whether it points to a file or to a directory:
-the request is treated as if the file did not exist. On Unix every component under the root is
-opened with `O_NOFOLLOW`, so a directory swapped for a symlink between the check and the open is
-refused as well. On Windows the check runs before the open, so a symlink or directory junction
-swapped in between the two could still be followed (creating symlinks there normally needs elevated
-rights, but junctions, and symlinks in Developer Mode, do not): keep the served tree writable by
-trusted accounts only.
+the request is treated as if the file did not exist. Every component under the root is also opened
+relative to the directory above it without following links (`openat` with `O_NOFOLLOW` on Unix,
+`NtCreateFile` with `FILE_OPEN_REPARSE_POINT` on Windows, which covers directory junctions too), so
+a directory swapped for a symlink or junction between the check and the open is refused as well.
+On Windows, a file or directory that is a reparse point but not a link (a OneDrive placeholder, a
+deduplicated file) is opened normally after an identity check; that path is written from the API
+contract and has not been run against a real placeholder, so such a file may be refused rather than
+served: answered as not found when the second open lands on another file, and as a `500` when the
+second open itself fails (for example a reparse tag nothing handles). On any other platform the check
+runs before the open, so a symlink swapped in between the two could still be followed: keep the
+served tree writable by trusted accounts only.
+
+The file is opened once, before the first response header is written, and its size, modification
+time, `ETag` and `Last-Modified` are read from that open handle, which the body is then streamed
+from. A file that disappears or turns into a link between the lookup and the open is answered as not
+found (the fallback runs) before anything is sent, never as a `200` cut off after its headers; so is
+a directory that took the file's place on Unix (on Windows that case is reported by the system as
+access denied, a `403`). A file the server cannot read is a `403`, any other open failure a `500`,
+both before the headers. A `304` or a `HEAD` request therefore also opens the file.
+
+On Windows, NTFS keeps a second, 8.3 short name for each long name on a volume that creates them (the
+system volume by default), and resolves it to the same file: `/HTPASS~1` would open `.htpasswd`
+without `dotFiles` ever seeing a dot. A name shaped like a generated short name (`BASE~N` or
+`BASE~N.EXT`, at most 8 characters before the last dot and 3 after, with a `~` and digits at the end of
+the base) is therefore answered as not found, in any path segment and as an index name. A real file
+named like that (`report~1.pdf`) is not served on Windows; a longer base or extension (`report~1.html`)
+is. A short name an administrator chose by hand (`fsutil file setshortname`) is not recognised: that
+needs the same rights as planting a link.
+
+The access-log file (`logging.file`) gets the same protection for its last path component: a symlink
+planted at the log path is refused, and on Windows so is a junction or any other reparse point (a
+OneDrive placeholder, a deduplicated file), so keep the log on a plain folder there. The directories
+above it are not checked, so keep the log directory writable by trusted accounts only.
 
 The root path itself is resolved normally: a symlinked root such as `current -> releases/42` works,
 and switching that link takes effect on the next request. Whoever can replace the root path, or one

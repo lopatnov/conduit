@@ -74,6 +74,10 @@
 //! extraction recipe: these member crates are internal plumbing, not a
 //! semver-disciplined public API — `CLAUDE.md` decision #32).
 
+// No `unsafe` in this crate (issues #600, #621): the Windows handle-relative open is built from `fs_at` and
+// `same-file`, and the Unix one from `rustix`. `deny` (not `forbid`) so a future, reviewed exception can opt in.
+#![deny(unsafe_code)]
+
 pub mod config;
 #[cfg(feature = "static")]
 pub mod fallback;

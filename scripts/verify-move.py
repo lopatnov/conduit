@@ -42,6 +42,8 @@ KINDS = ("fn", "struct", "enum", "trait", "type", "const", "static", "mod", "uni
 # Items that end only at a top-level `;` (a `}` inside them does not end the item).
 SEMI_ITEMS = ("use", "const", "static", "type", "extern crate")
 VIS_RE = re.compile(r"\bpub(?:\s*\([^)]*\))?\s+")
+# A section banner such as `// ── Utilities ───`: a divider between groups of items, not part of one.
+BANNER_RE = re.compile(r"^\s*//\s*──.*$")
 HEAD_RE = re.compile(
     r"^(?:pub(?:\s*\([^)]*\))?\s+)?(?:default\s+)?(?:unsafe\s+|async\s+|const\s+|extern\s+(?:\"[^\"]*\"\s+)?)*"
     r"(fn|struct|enum|trait|type|const|static|mod|union|use|impl|macro_rules!|extern crate)(?![A-Za-z0-9_])\s*"
@@ -197,7 +199,7 @@ def item_key(chunk):
         return ("other", " ".join(body.split())[:80]), None
     kind, rest = m.group(1), body[m.end():]
     if kind == "impl":
-        header = re.split(r"\{", rest, 1)[0]
+        header = re.split(r"\{", rest, maxsplit=1)[0]
         name = " ".join(header.split())
     elif kind in ("use", "extern crate"):
         name = " ".join(rest.split()).rstrip(";")
@@ -230,11 +232,22 @@ def collect(text, prefix="", outer_cfg=""):
     return items
 
 
+def _drop_leading_banners(lines):
+    """Remove `// ── name ──` section banners from the comment block above an item.
+
+    Only the lines before the item itself (blank lines, comments, attributes) are looked at: a banner-shaped
+    line inside a string literal or a block comment is part of the code and must still be compared."""
+    end = 0
+    while end < len(lines) and (not lines[end].strip() or lines[end].lstrip().startswith(("//", "#["))):
+        end += 1
+    return [line for line in lines[:end] if not BANNER_RE.match(line)] + lines[end:]
+
+
 def normalise(chunk, renames=()):
     for a, b in renames:
         chunk = chunk.replace(a, b)
     chunk = VIS_RE.sub("", chunk)
-    lines = chunk.split("\n")
+    lines = _drop_leading_banners(chunk.split("\n"))
     while lines and not lines[0].strip():
         lines.pop(0)
     if not lines:
@@ -287,10 +300,13 @@ def compare(old_text, new_text, renames=(), allow=()):
 
 
 def git_show(rev, path):
-    return subprocess.run(["git", "show", f"{rev}:{path}"], check=True, capture_output=True, text=True).stdout
+    return subprocess.run(["git", "show", f"{rev}:{path}"], check=True, capture_output=True, text=True, encoding="utf-8").stdout
 
 
 def main(argv=None):
+    # The report quotes source text (arrows, dashes): do not die on a Windows console code page.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("old_rev")
     ap.add_argument("--from", dest="src", nargs="+", required=True, metavar="OLD_FILE")
@@ -313,6 +329,7 @@ def main(argv=None):
     lost, added, changed, uses = compare(old_text, new_text, renames, args.allow)
 
     print("normalisations: visibility prefixes removed; common indentation and trailing whitespace ignored; "
+          "section banner comments (`// ── name ──`) ignored; "
           f"`use` items not compared ({uses} in the old files)")
     if renames:
         print("renames applied to the old text: " + ", ".join(f"{a} -> {b}" for a, b in renames))

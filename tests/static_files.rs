@@ -3,6 +3,7 @@ mod common;
 use serial_test::serial;
 use std::fs;
 
+/// A server with one static site over a temp dir holding `files`; the dir is returned so it outlives the test.
 fn make_static_server(files: &[(&str, &str)]) -> (common::TestServer, tempfile::TempDir) {
     let static_dir = tempfile::tempdir().expect("tempdir");
     for (name, content) in files {
@@ -140,6 +141,39 @@ fn static_206_range_suffix() {
         .expect("GET suffix range");
     assert_eq!(resp.status(), 206);
     assert_eq!(resp.text().unwrap(), "789");
+}
+
+/// RFC 9110 §14.1.2: a last byte past the end of the file means "to the end", and a suffix longer than
+/// the file selects all of it; both are a `206`, not a `416`. A first byte past the end is still a `416`.
+#[test]
+#[serial]
+fn static_range_past_the_end_is_clamped_not_rejected() {
+    let (server, _dir) = make_static_server(&[("range.txt", "0123456789")]);
+    let client = reqwest::blocking::Client::new();
+    for (range, content_range, body) in [
+        ("bytes=4-999", "bytes 4-9/10", "456789"),
+        ("bytes=0-999", "bytes 0-9/10", "0123456789"),
+        ("bytes=-999", "bytes 0-9/10", "0123456789"),
+    ] {
+        let resp = client
+            .get(server.url("/range.txt"))
+            .header("range", range)
+            .send()
+            .expect("GET range");
+        assert_eq!(resp.status(), 206, "{range}");
+        assert_eq!(
+            resp.headers().get("content-range").unwrap(),
+            content_range,
+            "{range}"
+        );
+        assert_eq!(resp.text().unwrap(), body, "{range}");
+    }
+    let resp = client
+        .get(server.url("/range.txt"))
+        .header("range", "bytes=10-20")
+        .send()
+        .expect("GET unsatisfiable range");
+    assert_eq!(resp.status(), 416);
 }
 
 /// Issue #402 (RFC 9110 §13.1.5): a current `If-Range` validator keeps the `206`, a stale one
@@ -491,4 +525,144 @@ fn static_cache_control_max_age() {
         cc.contains("max-age=3600"),
         "expected max-age=3600, got: {cc}"
     );
+}
+
+/// A symlink to `target` at `link`; `false` when this machine cannot create one (a Windows account
+/// without the privilege). CI can, so a missing privilege there is a failure, not a skip.
+fn symlink_file(target: &std::path::Path, link: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(target, link);
+    match made {
+        Ok(()) => true,
+        Err(e) => {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "CI must be able to create symlinks ({e})"
+            );
+            eprintln!("skipping: cannot create a symlink here ({e})");
+            false
+        }
+    }
+}
+
+/// While a symlink to a longer file outside the root is swapped in and out at the served path, every
+/// answer is either the complete inside file (`Content-Length` and body agree, and it is not the
+/// outside file), a plain `404`, or (Windows only) a complete `500` for a file that was busy. This is an invariant check, not a proof of the open-before-headers
+/// order (the window is too narrow to hit reliably; the unreadable-file test below is the
+/// deterministic one for that).
+#[test]
+#[serial]
+fn static_a_file_swapped_for_a_symlink_is_never_served_or_cut_off() {
+    let inside = "inside-inside-inside";
+    let outside_dir = tempfile::tempdir().expect("tempdir");
+    let outside = outside_dir.path().join("secret.txt");
+    fs::write(&outside, "OUTSIDE-OUTSIDE-OUTSIDE-OUTSIDE-OUTSIDE").unwrap();
+
+    let (server, dir) = make_static_server(&[("f.txt", inside)]);
+    let served = dir.path().join("f.txt");
+    let parked = dir.path().join("parked.txt");
+    if !symlink_file(&outside, &dir.path().join("probe.txt")) {
+        return;
+    }
+    fs::remove_file(dir.path().join("probe.txt")).unwrap();
+
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let swapper = {
+        let (stop, served, parked, outside) = (stop.clone(), served, parked, outside);
+        std::thread::spawn(move || {
+            let mut swaps = 0u32;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                if fs::rename(&served, &parked).is_ok() {
+                    if symlink_file(&outside, &served) {
+                        swaps += 1;
+                        std::thread::yield_now();
+                        let _ = fs::remove_file(&served);
+                    }
+                    let _ = fs::rename(&parked, &served);
+                }
+                // Leave the file in place for a moment: a swapper that never rests can keep every request
+                // on a swapped or missing path (it did on a CI runner), and then nothing is proved.
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            swaps
+        })
+    };
+
+    let client = reqwest::blocking::Client::new();
+    let (mut ok, mut missing, mut busy) = (0u32, 0u32, 0u32);
+    // At least 400 requests, and on until 25 of them got the file (at most 4000).
+    for n in 0..4000u32 {
+        if n >= 400 && ok >= 25 {
+            break;
+        }
+        let resp = match client.get(server.url("/f.txt")).send() {
+            Ok(resp) => resp,
+            Err(e) => panic!("the request itself failed: {e}"),
+        };
+        match resp.status().as_u16() {
+            200 => {
+                let declared = resp
+                    .headers()
+                    .get("content-length")
+                    .map(|v| v.to_str().unwrap().parse::<usize>().unwrap());
+                // A body cut off after its headers is an error here, not a short string.
+                let body = resp.text().expect("a 200 must carry its whole body");
+                assert_eq!(body, inside, "wrong bytes served");
+                assert_eq!(declared, Some(body.len()), "Content-Length disagrees");
+                ok += 1;
+            }
+            404 => missing += 1,
+            // On Windows a rename in flight holds the file exclusively for an instant, and the open then fails
+            // with a sharing violation: a clean 500 before any header (the body used to be cut off). It must be
+            // a complete response, and it can only happen there.
+            500 if cfg!(windows) => {
+                resp.text().expect("a 500 must carry its whole body");
+                busy += 1;
+            }
+            other => panic!("unexpected status {other}"),
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let swaps = swapper.join().unwrap();
+    assert!(
+        ok > 0,
+        "no request ever got the file; the test proves nothing"
+    );
+    assert!(
+        swaps > 0,
+        "the file was never swapped; the test proves nothing"
+    );
+    eprintln!("200: {ok}, 404: {missing}, busy: {busy}, swaps: {swaps}");
+}
+
+/// Issue #618, deterministic: a file the server cannot read used to get `200` plus `Content-Length`
+/// and then a body that was cut off when the open failed after the headers. The open now comes
+/// first, so the answer is a `403` with its own small body. A mode-000 file is readable by root, so
+/// the test skips where the account can still open it.
+#[cfg(unix)]
+#[test]
+#[serial]
+fn static_an_unreadable_file_is_403_before_any_header() {
+    use std::os::unix::fs::PermissionsExt;
+    let (server, dir) = make_static_server(&[("secret.txt", "classified bytes")]);
+    let path = dir.path().join("secret.txt");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::File::open(&path).is_ok() {
+        eprintln!("skipping: this account can read a mode-000 file (root)");
+        return;
+    }
+    let resp = reqwest::blocking::get(server.url("/secret.txt")).expect("GET");
+    assert_eq!(resp.status(), 403);
+    assert_eq!(
+        resp.text().expect("a 403 carries its whole body"),
+        "Forbidden"
+    );
+    // HEAD opens the file too: the same answer, no body.
+    let head = reqwest::blocking::Client::new()
+        .head(server.url("/secret.txt"))
+        .send()
+        .expect("HEAD");
+    assert_eq!(head.status(), 403);
 }

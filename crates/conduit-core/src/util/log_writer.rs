@@ -7,11 +7,17 @@ use std::sync::Mutex;
 /// for the TOCTOU rationale (issue #280).
 ///
 /// On Unix, `O_NOFOLLOW` makes the open syscall fail atomically (`ELOOP`)
-/// when the final component is a symlink. Elsewhere there is no
-/// `O_NOFOLLOW`, so this is a plain open that follows a symlink planted at
-/// `path`. On Windows creating one takes the symlink privilege, or Developer
-/// Mode, which lifts that need: a lower risk, not none, so keep the log
-/// directory writable by trusted accounts only (issue #600).
+/// when the final component is a symlink.
+///
+/// On Windows the same guarantee comes from `FILE_FLAG_OPEN_REPARSE_POINT`:
+/// a symlink or directory junction at `path` is opened *itself* instead of
+/// being followed, and its attributes are then read from the opened handle
+/// (`GetFileInformationByHandle`), not from the path, so nothing can be swapped
+/// in between the check and the open (issue #600). Any reparse point is
+/// refused; a regular file is opened as usual. As on Unix, only the final component is
+/// covered — the log directory stays operator-controlled.
+///
+/// Any other platform has no equivalent: a plain open that follows a symlink.
 fn open_no_follow(path: &str) -> io::Result<File> {
     #[cfg(unix)]
     {
@@ -22,10 +28,54 @@ fn open_no_follow(path: &str) -> io::Result<File> {
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        refuse_reparse_point(&file)?;
+        // Return the handle that was just checked. Closing it and reopening `path` would put the
+        // check-to-open window back: the path can be redirected in between.
+        Ok(file)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         OpenOptions::new().create(true).append(true).open(path)
     }
+}
+
+/// `FILE_ATTRIBUTE_REPARSE_POINT`: set on symlinks, junctions and every other reparse point.
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+/// Windows: error out when `file` is any reparse point. The attributes come from the open handle, so
+/// they cannot be raced.
+///
+/// Not only links: a reparse point that is not a link (a OneDrive placeholder, a deduplicated file) is
+/// served by a filter that does not run for a `FILE_FLAG_OPEN_REPARSE_POINT` handle, so appending to it
+/// could lose or corrupt log lines. Unlike static files there is no reopen: the log must live on a
+/// plain folder, and the error says so.
+#[cfg(windows)]
+fn refuse_reparse_point(file: &File) -> io::Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    if is_reparse_point(file.metadata()?.file_attributes()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "refusing to open a symlink, junction or other reparse point as the access-log file; \
+             put the log on a plain (not synced or deduplicated) folder",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether file attributes mark a reparse point: a symlink, a junction, a OneDrive placeholder, a deduplicated file.
+#[cfg(windows)]
+fn is_reparse_point(attributes: u32) -> bool {
+    attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 /// Writes access-log lines to either stdout or a file.
@@ -45,6 +95,7 @@ struct Inner {
 }
 
 impl LogWriter {
+    /// A writer that logs to stdout until a file is switched in.
     pub fn new() -> Self {
         LogWriter {
             inner: Mutex::new(Inner {
@@ -60,12 +111,12 @@ impl LogWriter {
     ///
     /// # Security
     ///
-    /// On Unix, refuses to open a symlink, atomically. If an attacker can
-    /// create a symlink at the configured log path (e.g., pointing to
-    /// `/etc/passwd`), the proxy running as root would append log lines to
-    /// system files. Elsewhere the open is a plain one and follows such a
-    /// symlink (issue #600), so the log directory must be writable by
-    /// trusted accounts only.
+    /// On Unix and Windows, refuses to open a symlink (on Windows also a
+    /// junction), atomically. If an attacker can create a symlink at the
+    /// configured log path (e.g., pointing to `/etc/passwd`), the proxy
+    /// running as root would append log lines to system files. On any other
+    /// platform the open is a plain one and follows such a symlink, so the log
+    /// directory must be writable by trusted accounts only.
     ///
     /// Issue #280: an earlier version of this check used
     /// `symlink_metadata()` followed by a *separate* `OpenOptions::open()`
@@ -126,6 +177,7 @@ impl LogWriter {
 }
 
 impl Default for LogWriter {
+    /// Same as [`LogWriter::new`].
     fn default() -> Self {
         Self::new()
     }
@@ -200,6 +252,105 @@ mod tests {
         let w = LogWriter::new();
         let result = w.switch_file(link.to_str().unwrap());
         assert!(result.is_err(), "symlink should be rejected");
+    }
+
+    /// Windows: a file symlink planted at the log path is opened as the link itself and refused,
+    /// and its target is left untouched. Creating one needs the symlink privilege (or Developer
+    /// Mode), so this skips, with a message, on a machine that does not grant it; the check is
+    /// also covered without a privilege by `refuse_reparse_point_flags_a_junction_but_not_a_plain_directory`.
+    #[test]
+    #[cfg(windows)]
+    fn switch_to_a_file_symlink_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.log");
+        std::fs::write(&target, "original\n").unwrap();
+
+        let file_link = dir.path().join("link.log");
+        match std::os::windows::fs::symlink_file(&target, &file_link) {
+            Ok(()) => {
+                let w = LogWriter::new();
+                // The message, not just `is_err()`: only it proves the new check made the call.
+                let err = w
+                    .switch_file(file_link.to_str().unwrap())
+                    .expect_err("a file symlink must be rejected");
+                assert!(
+                    err.to_string().contains("refusing to open a symlink"),
+                    "unexpected error: {err}"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(&target).unwrap(),
+                    "original\n",
+                    "the symlink target must be untouched"
+                );
+            }
+            Err(e) => {
+                // CI (an elevated runner) must be able to, or the refusal goes untested.
+                assert!(
+                    std::env::var_os("CI").is_none(),
+                    "CI must be able to create symlinks, or this test silently stops covering the refusal ({e})"
+                );
+                eprintln!("skipping the file-symlink half: cannot create one here ({e})");
+            }
+        }
+    }
+
+    /// The check itself, run against a junction without needing the symlink privilege: a handle
+    /// opened on the junction (reparse point flag, so it is the link itself) is refused, a handle
+    /// on the directory it points at is not.
+    #[test]
+    #[cfg(windows)]
+    fn refuse_reparse_point_flags_a_junction_but_not_a_plain_directory() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        let open_dir = |p: &std::path::Path| {
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(p)
+                .unwrap()
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let real_dir = dir.path().join("real_dir");
+        std::fs::create_dir(&real_dir).unwrap();
+        let junction = dir.path().join("junction");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&real_dir)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "mklink /J failed: {made:?}");
+
+        assert!(refuse_reparse_point(&open_dir(&junction)).is_err());
+        assert!(refuse_reparse_point(&open_dir(&real_dir)).is_ok());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_open_keeps_appending_to_a_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("access.log");
+        std::fs::write(&path, "first\n").unwrap();
+        let w = LogWriter::new();
+        w.switch_file(path.to_str().unwrap()).unwrap();
+        w.write_line("second");
+        w.use_stdout();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\nsecond\n");
+    }
+
+    /// A reparse point that is not a link (placeholder, dedup) has the attribute too and is refused;
+    /// ordinary attributes are not.
+    #[test]
+    #[cfg(windows)]
+    fn any_reparse_point_attribute_is_refused() {
+        const ARCHIVE: u32 = 0x20;
+        const READONLY: u32 = 0x1;
+        assert!(is_reparse_point(FILE_ATTRIBUTE_REPARSE_POINT));
+        assert!(is_reparse_point(FILE_ATTRIBUTE_REPARSE_POINT | ARCHIVE));
+        assert!(!is_reparse_point(ARCHIVE | READONLY));
+        assert!(!is_reparse_point(0));
     }
 
     #[test]

@@ -7,6 +7,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **Windows: a symlink or junction swapped in after the check is no longer followed** (issue #600,
+  CWE-59/367). Static files are now opened component by component with `NtCreateFile` relative to the
+  directory above (`FILE_OPEN_REPARSE_POINT`), as `openat` + `O_NOFOLLOW` already did on Unix, so a
+  directory junction (which needs no privilege) or a symlink at any level below the root is refused.
+  The access-log file refuses a symlink, junction or other reparse point at its path the same way.
+  For static files, a reparse point that is not a link (OneDrive placeholder, deduplicated file) is
+  reopened normally after an identity check; that path has not been run against a real placeholder,
+  and the file is refused if the open fails (a `500`) or the identity differs (not found). The Windows open uses the safe
+  wrappers `fs_at` and `same-file`, so the workspace has no first-party `unsafe` (issue #621); a
+  parent directory that turns into a link while a child is opened is refused too.
+- **Windows: an NTFS 8.3 short name no longer reaches a file the `dotFiles` policy hides** (issue
+  #617). `/HTPASS~1` opened `.htpasswd`; a name shaped like a generated short name (`BASE~N[.EXT]`)
+  is now answered as not found on Windows, in any path segment and as an index name. A real file
+  named like that is not served there either.
+
+### Fixed
+
+- **Static files: a refused or failed open no longer cuts a `200` off after its headers** (issue
+  #618). The file is opened once before any header is written, and its size, `ETag` and
+  `Last-Modified` come from that handle, so a link swapped in after the lookup cannot leak the size
+  or modification time of a file outside the root. A miss is answered as not found, an unreadable
+  file as `403`, another failure as `500`, all before the headers. A `304` and a `HEAD` request now
+  open the file too.
+- **Static files: a `Range` that runs past the end of the file is answered, not rejected.** A last byte
+  at or past the end now means "to the end", and a suffix longer than the file selects all of it
+  (`206`, RFC 9110 §14.1.2); both were a `416`. A first byte at or past the end is still a `416`.
+  Found while documenting `parse_range` for this PR.
+
 ---
 
 ## [2.1.0] — 2026-10-11

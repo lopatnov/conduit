@@ -344,9 +344,25 @@ jobs:
       - name: Install oha (load generator)
         run: |
           set -euo pipefail
-          curl -sSL -o /tmp/oha \
-            https://github.com/hatoo/oha/releases/download/v1.16.0/oha-linux-amd64
-          echo "620bb9e16fb53eabc9a3fc45f88bdb41fefa3fee5c05e75892011ce320391716  /tmp/oha" | sha256sum -c -
+          # `--fail` keeps an HTTP error page from being saved as the binary, and the whole
+          # download-and-verify pair is retried: a truncated or bad download once failed the
+          # pinned checksum on a commit that passed on another run. The checksum stays the
+          # only thing that decides whether the file is trusted.
+          for attempt in 1 2 3; do
+            if curl --fail --silent --show-error --location \
+                 --connect-timeout 20 --max-time 120 \
+                 -o /tmp/oha \
+                 https://github.com/hatoo/oha/releases/download/v1.16.0/oha-linux-amd64 \
+               && echo "620bb9e16fb53eabc9a3fc45f88bdb41fefa3fee5c05e75892011ce320391716  /tmp/oha" | sha256sum -c -; then
+              break
+            fi
+            rm -f /tmp/oha
+            if [ "$attempt" -eq 3 ]; then
+              echo "oha could not be downloaded and verified in three attempts" >&2
+              exit 1
+            fi
+            sleep 5
+          done
           sudo install -m 0755 /tmp/oha /usr/local/bin/oha
           oha --version
 
