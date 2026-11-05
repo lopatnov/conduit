@@ -50,9 +50,9 @@ fn is_miss(e: &io::Error) -> bool {
     if e.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) {
         return true;
     }
-    // 681 is `ERROR_STOPPED_ON_SYMLINK`, what the Windows walk reports for a symlink or junction.
+    // What the Windows walk reports for a symlink or junction (`ERROR_STOPPED_ON_SYMLINK`).
     #[cfg(windows)]
-    if e.raw_os_error() == Some(681) {
+    if crate::open_beneath::is_link_refused(e) {
         return true;
     }
     matches!(
@@ -637,7 +637,9 @@ mod tests {
             assert!(!is_miss(&Error::from(kind)), "{kind:?}");
         }
         #[cfg(windows)]
-        assert!(is_miss(&Error::from_raw_os_error(681)));
+        assert!(is_miss(&Error::from_raw_os_error(
+            crate::open_beneath::LINK_REFUSED
+        )));
     }
 
     #[test]

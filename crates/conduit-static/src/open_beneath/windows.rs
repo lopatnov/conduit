@@ -56,7 +56,13 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 /// What a refused link is reported as (`ERROR_STOPPED_ON_SYMLINK`, 681).
-const LINK_REFUSED: i32 = ERROR_STOPPED_ON_SYMLINK as i32;
+pub const LINK_REFUSED: i32 = ERROR_STOPPED_ON_SYMLINK as i32;
+
+/// Whether `e` is the error this walk reports for a symlink, a junction or a swapped-in link, so a caller
+/// can answer "not found" without repeating the raw Windows error value.
+pub fn is_link_refused(e: &io::Error) -> bool {
+    e.raw_os_error() == Some(LINK_REFUSED)
+}
 /// What a directory handle needs: to be a root for relative opens and to report its type. No listing
 /// right, so a directory the account can only traverse still works.
 const DIRECTORY_ACCESS: u32 = FILE_READ_ATTRIBUTES | SYNCHRONIZE;
