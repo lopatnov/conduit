@@ -527,7 +527,7 @@ fn static_cache_control_max_age() {
     );
 }
 
-/// A symlink to `target` at `link`; `None` when this machine cannot create one (a Windows account
+/// A symlink to `target` at `link`; `false` when this machine cannot create one (a Windows account
 /// without the privilege). CI can, so a missing privilege there is a failure, not a skip.
 fn symlink_file(target: &std::path::Path, link: &std::path::Path) -> bool {
     #[cfg(unix)]
