@@ -582,6 +582,9 @@ fn static_a_file_swapped_for_a_symlink_is_never_served_or_cut_off() {
                     }
                     let _ = fs::rename(&parked, &served);
                 }
+                // Leave the file in place for a moment: a swapper that never rests can keep every request
+                // on a swapped or missing path (it did on a CI runner), and then nothing is proved.
+                std::thread::sleep(std::time::Duration::from_millis(2));
             }
             swaps
         })
@@ -589,7 +592,11 @@ fn static_a_file_swapped_for_a_symlink_is_never_served_or_cut_off() {
 
     let client = reqwest::blocking::Client::new();
     let (mut ok, mut missing, mut busy) = (0u32, 0u32, 0u32);
-    for _ in 0..400 {
+    // At least 400 requests, and on until 25 of them got the file (at most 4000).
+    for n in 0..4000u32 {
+        if n >= 400 && ok >= 25 {
+            break;
+        }
         let resp = match client.get(server.url("/f.txt")).send() {
             Ok(resp) => resp,
             Err(e) => panic!("the request itself failed: {e}"),
