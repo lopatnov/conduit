@@ -42,7 +42,9 @@ if [ -z "$REPO" ]; then
   REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) \
     || REPO=$(git remote get-url origin 2>/dev/null | sed -E 's#/+$##; s#\.git$##; s#^.*[:/]([^/:]+/[^/]+)$#\1#')
 fi
-[[ $REPO =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+# `.` and `..` fit the character set but are path steps, not names: `../..` would turn repos/$REPO/pulls/N into
+# repos/../../pulls/N. A name that merely starts with a dot (`.github`) is a real repository and stays valid.
+[[ $REPO =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "/$REPO/" != */./* && "/$REPO/" != */../* ]] \
   || { echo "cannot tell the repository from gh or from the origin URL; pass --repo OWNER/REPO" >&2; exit 2; }
 
 # Trim, drop carriage returns, keep the body on its own indented lines.

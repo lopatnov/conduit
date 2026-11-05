@@ -334,6 +334,27 @@ class PrComments(unittest.TestCase):
                 self.assertIn("pass --repo OWNER/REPO", r.stderr)
         self.assertFalse(any(f"pulls/{PR}" in call for call in self.calls()), self.calls())
 
+    def test_a_dot_or_dot_dot_owner_or_name_is_refused_but_a_dotted_name_is_not(self):
+        """`.` and `..` fit the OWNER/REPO characters but would walk out of repos/OWNER/REPO in the API path."""
+        for repo in ("../..", "o/..", "../r", "./r", "o/.", "./."):
+            with self.subTest(repo=repo):
+                r = self.run_script(str(PR), "--repo", repo)
+                self.assertEqual(r.returncode, 2)
+                self.assertIn("pass --repo OWNER/REPO", r.stderr)
+        for url in ("https://github.com/../..", "https://github.com/o/..", "https://github.com/o/../",
+                    "git@github.com:../..", "git@github.com:./r.git"):
+            with self.subTest(origin=url):
+                git(self.work, "remote", "set-url", "origin", url)
+                r = self.run_script(str(PR))
+                self.assertEqual(r.returncode, 2)
+                self.assertIn("pass --repo OWNER/REPO", r.stderr)
+        self.assertFalse(any(f"pulls/{PR}" in call for call in self.calls()), self.calls())
+        # Real names: the pull request is asked for (the fake answers 404 and the run ends there).
+        for repo in (".github/r", "o/.github", "o/...", "o/..x", "o/r."):
+            with self.subTest(dotted=repo):
+                self.run_script(str(PR), "--repo", repo)
+                self.assertTrue(any(call.startswith(f"api repos/{repo}/pulls/{PR} ") for call in self.calls()))
+
     def test_an_unknown_repository_asks_for_the_repo_option(self):
         """Without an origin and with `gh repo view` refused there is nothing to go on, and the script says what to do."""
         git(self.work, "remote", "remove", "origin")
