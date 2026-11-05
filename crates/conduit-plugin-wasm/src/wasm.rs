@@ -767,6 +767,44 @@ mod tests {
         );
     }
 
+    /// Wasmtime's default features include WebAssembly GC, and the manifest keeps `gc` / `gc-drc` when it turns the
+    /// other defaults off: a plugin written against GC types must keep loading, and a load failure is fail-open,
+    /// so a plugin that should abort a request would let it through. This plugin allocates a GC struct and returns
+    /// its field (1 = abort, default status 500); if it did not load, the outcome would be `Continue`.
+    #[test]
+    fn a_plugin_that_uses_wasm_gc_types_still_loads_and_runs() {
+        let (_f, p) = compile_wat(
+            r#"(module
+              (type $point (struct (field i32)))
+              (func (export "on_request") (result i32)
+                i32.const 1
+                struct.new $point
+                struct.get $point 0))"#,
+        );
+        match run_wasm(req(), &p) {
+            WasmOutcome::Abort { status, .. } => assert_eq!(status, 500),
+            other => panic!("the GC plugin did not run (a load failure is fail-open): {other:?}"),
+        }
+    }
+
+    /// The docs say a plugin file is a binary module: the host is built without Wasmtime's `wat` feature, so a text
+    /// file is not loaded and, being fail-open, the request continues even though this plugin would abort it.
+    #[test]
+    fn a_plugin_file_in_wat_text_form_is_not_loaded() {
+        let mut f = tempfile::Builder::new()
+            .suffix(".wasm")
+            .tempfile()
+            .expect("tempfile");
+        f.write_all(b"(module (func (export \"on_request\") (result i32) i32.const 1))")
+            .expect("write");
+        f.flush().expect("flush");
+        let outcome = run_wasm(req(), &f.path().to_string_lossy());
+        assert!(
+            matches!(outcome, WasmOutcome::Continue { .. }),
+            "a text module must not run: {outcome:?}"
+        );
+    }
+
     #[test]
     fn passthrough_returns_continue() {
         let (_f, p) =

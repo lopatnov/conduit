@@ -23,6 +23,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   #617). `/HTPASS~1` opened `.htpasswd`; a name shaped like a generated short name (`BASE~N[.EXT]`)
   is now answered as not found on Windows, in any path segment and as an index name. A real file
   named like that is not served there either.
+- **Dependencies: the advisories in the shipped lock are fixed** (OSV on `Cargo.lock`: 16 packages with 63
+  advisories before, 5 packages with 5 after; the five left are four "unmaintained" notices and
+  `crypto-bigint` 0.5.5, which only the `p256` 0.13 **dev**-dependency of the tests pulls). Pingora
+  0.9.0 -> 0.9.1 (also fixes a panic on every accepted connection with tokio 1.54 and later, and requires
+  the fixed `zstd`), wasmtime 49.0.2 -> 49.0.5 (19 advisories, among them RUSTSEC-2026-0379/0378, fixed in
+  49.0.4, and 0422-0424, which 49.0.4 and 50.0.0 still have), rustls 0.23.45 -> 0.23.46 (8), tokio 1.53.2 -> 1.54.1
+  (RUSTSEC-2026-0386), `zstd` 0.14.3 with `zstd-safe` 8.2 and `zstd-sys` 2.1.2 (RUSTSEC-2026-0391, 0395-0406,
+  0410), `aws-lc-rs` 1.18.2 (`aws-lc-sys` 0.46), `rustls-webpki` 0.103.16, `webpki-root-certs` 1.0.11,
+  `ctutils` 0.4.8, and patch bumps of libc, sha2, serde_json, schemars and wat. wasmtime is now built
+  without its default features except `gc`, `gc-drc` and `threads`, which decide which plugin modules load
+  (the plugin crate uses `Engine`, `Module`, `Store`, `Linker` and `Config` only): the compile cache, component
+  model, async, profiling, debugging, parallel compilation and `.wat` text input are not compiled in, and the
+  `wasm` build has 118 unique crates instead of 184 (`cargo tree -p lopatnov-conduit-plugin-wasm -e normal`),
+  without `zstd` 0.13. A plugin file must be a binary module (documented in `docs/wasm.md`). Worth knowing
+  when upgrading: `rustls-webpki` 0.103.16 refuses certificate chains that go through eight distrusted
+  intermediates (the emSign CAs; RUSTSEC-2026-0382, `webpki-root-certs` 1.0.11 is RUSTSEC-2026-0383), so an
+  HTTPS upstream behind one of them now fails the handshake.
 
 ### Fixed
 

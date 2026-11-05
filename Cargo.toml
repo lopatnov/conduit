@@ -24,9 +24,9 @@ repository = "https://github.com/lopatnov/conduit"
 # pingora and pingora-load-balancing dropped (#117, integrity audit): declared
 # but zero references anywhere in src/ — pingora-core/-proxy/-cache cover
 # everything actually used.
-pingora-core  = { version = "0.9", features = ["rustls"] }
-pingora-proxy = { version = "0.9", features = ["rustls"] }
-pingora-cache = { version = "0.9", features = ["rustls"] }
+pingora-core  = { version = "0.9.1", features = ["rustls"] }
+pingora-proxy = { version = "0.9.1", features = ["rustls"] }
+pingora-cache = { version = "0.9.1", features = ["rustls"] }
 
 # --- Conduit workspace member crates ---
 # path + version so `cargo publish` can resolve this as a real dependency
@@ -86,7 +86,7 @@ dialoguer     = "0.12"
 async-trait   = "0.1"
 
 # --- Pingora HTTP types ---
-pingora-http = "0.9"
+pingora-http = "0.9.1"
 
 # --- Async runtime & HTTP ---
 tokio = { version = "1", features = ["full"] }
@@ -207,8 +207,16 @@ futures     = { version = "0.3" }
 
 # --- WASM plugin middleware (optional feature) ---
 # Enable with: cargo build --features wasm
-# Cranelift JIT: fast compilation; no WASI by default (sandboxed).
-wasmtime = { version = "49", features = ["cranelift"] }
+# Cranelift JIT: fast compilation; no WASI by default (sandboxed). Default features are off, except the ones that
+# decide WHICH GUEST MODULES LOAD: `gc` + `gc-drc` (WebAssembly GC and externref) and `threads` (the atomics
+# instructions; a module that declares a shared memory still fails to instantiate, the engine never enables it).
+# A module that needs a proposal the host does not compile in fails to load, and a load failure is fail-open, so a
+# plugin that should abort a request would let it through (`a_plugin_that_uses_wasm_gc_types_still_loads_and_runs`).
+# What is off is host-side machinery the plugin crate does not use (it uses `Engine`, `Module`, `Store`, `Linker`
+# and `Config` only): the compile cache (which carried `zstd` 0.13 and `zstd-safe` 7.3, 13 advisories that a 0.13
+# release fixed only on 2026-11-01), the component model, async, profiling and debugging, parallel compilation,
+# `wat` text input.
+wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "anyhow", "gc", "gc-drc", "threads"] }
 
 # --- OpenTelemetry OTLP tracing (optional feature) ---
 # Enable with: cargo build --features otlp

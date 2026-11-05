@@ -614,11 +614,14 @@ fn static_a_file_swapped_for_a_symlink_is_never_served_or_cut_off() {
                 ok += 1;
             }
             404 => missing += 1,
-            // On Windows a rename in flight holds the file exclusively for an instant, and the open then fails
-            // with a sharing violation: a clean 500 before any header (the body used to be cut off). It must be
-            // a complete response, and it can only happen there.
-            500 if cfg!(windows) => {
-                resp.text().expect("a 500 must carry its whole body");
+            // On Windows a rename or a delete in flight holds the file for an instant, and the open then fails
+            // with a sharing violation ("being used by another process", os error 32: a 500) or with "Access is
+            // denied" (os error 5: a 403); both showed up side by side in the server log of the two CI runners
+            // that failed on 2026-11-05. Either is a clean error before any header (the body used to be cut
+            // off). It must be a complete response, and it can only happen there. Neither status is a leak: the
+            // test fails on a 200 with the wrong bytes, a short body or a wrong Content-Length.
+            403 | 500 if cfg!(windows) => {
+                resp.text().expect("an error must carry its whole body");
                 busy += 1;
             }
             other => panic!("unexpected status {other}"),
