@@ -24,6 +24,8 @@ mod conditional;
 mod resolve;
 mod serve;
 mod stream;
+#[cfg(test)]
+mod tests;
 
 use conditional::{if_range_allows_range, is_not_modified, make_cache_control, Validators};
 use resolve::{
