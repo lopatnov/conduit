@@ -2287,6 +2287,27 @@ fn weighted_round_robin_with_weighted_target_passes() {
     );
 }
 
+#[test]
+fn least_conn_and_p2c_accept_weighted_and_plain_targets() {
+    // Issue #506: both strategies read the weights, and unlike weighted-round-robin they do not
+    // require them (a plain string target has weight 1).
+    for strategy in ["least-conn", "p2c"] {
+        for targets in [
+            r#"[{ "url": "http://a:4000", "weight": 3 }, { "url": "http://b:4000", "weight": 1 }]"#,
+            r#"["http://a:4000", "http://b:4000"]"#,
+            r#"[{ "url": "http://a:4000", "weight": 3 }, "http://b:4000"]"#,
+        ] {
+            let e = errs(&format!(
+                r#"{{ "port": 8080, "proxy": {{ "/": {{ "targets": {targets}, "strategy": "{strategy}" }} }} }}"#
+            ));
+            assert!(
+                e.is_empty(),
+                "{strategy} with targets {targets} must validate: {e:?}"
+            );
+        }
+    }
+}
+
 // ── validate_groups_config ────────────────────────────────────────────────
 
 #[test]

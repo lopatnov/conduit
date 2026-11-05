@@ -16,6 +16,12 @@ struct MockUpstream {
 
 impl MockUpstream {
     fn start(label: &'static str) -> Self {
+        Self::start_holding(label, std::time::Duration::ZERO)
+    }
+
+    /// Like `start`, but holds every request for `hold` before answering, so that a burst of
+    /// concurrent requests is all in flight at once.
+    fn start_holding(label: &'static str, hold: std::time::Duration) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock upstream");
         let port = listener.local_addr().unwrap().port();
         let hits = Arc::new(AtomicUsize::new(0));
@@ -29,6 +35,7 @@ impl MockUpstream {
                     let mut buf = [0u8; 4096];
                     let _ = stream.read(&mut buf);
                     hits_inner.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(hold);
                     let body = label;
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -91,6 +98,47 @@ fn wrr_distributes_by_weight() {
 
     assert_eq!(a.hit_count(), 6, "a should receive 3/4 of requests");
     assert_eq!(b.hit_count(), 2, "b should receive 1/4 of requests");
+}
+
+// ── Weighted least-conn (#506) ────────────────────────────────────────────────
+
+#[test]
+#[serial]
+fn least_conn_shares_concurrent_requests_by_weight() {
+    // Both upstreams hold every request for 2 s, so the 16 requests below are all in flight at the
+    // moment each one is routed and none has finished: the in-flight counts only grow. With weights
+    // 3:1 the split is then decided by the strategy alone: 12 and 4. Two requests routed in the same
+    // instant can read the same counts (the pick and the increment are two steps), so allow one or
+    // two to land on the other side; without weights the split would be 8 and 8.
+    let hold = std::time::Duration::from_secs(2);
+    let a = MockUpstream::start_holding("a", hold);
+    let b = MockUpstream::start_holding("b", hold);
+
+    let server = lb_server(serde_json::json!({
+        "/": {
+            "targets": [
+                { "url": a.url(), "weight": 3 },
+                { "url": b.url(), "weight": 1 }
+            ],
+            "strategy": "least-conn"
+        }
+    }));
+
+    let client = reqwest::blocking::Client::new();
+    std::thread::scope(|scope| {
+        for _ in 0..16 {
+            scope.spawn(|| {
+                client.get(server.url("/")).send().expect("GET");
+            });
+        }
+    });
+
+    let (hits_a, hits_b) = (a.hit_count(), b.hit_count());
+    assert_eq!(hits_a + hits_b, 16, "every request must be forwarded");
+    assert!(
+        (11..=13).contains(&hits_a),
+        "least-conn with weights 3:1 must give the weight-3 upstream about three quarters of the in-flight requests (a={hits_a}, b={hits_b})"
+    );
 }
 
 // ── IP-hash ───────────────────────────────────────────────────────────────────

@@ -29,7 +29,8 @@ pub trait LoadBalancingStrategy: Send + Sync {
     ///
     /// # Parameters
     /// - `urls`      — healthy candidate URLs (already filtered by the caller)
-    /// - `weighted`  — `(url, weight)` pairs; used by [`WeightedRoundRobin`] only
+    /// - `weighted`  — `(url, weight)` pairs; read by [`WeightedRoundRobin`], [`LeastConn`] and
+    ///   [`P2cChoice`] (issue #506), ignored by the rest. A URL it does not name has weight 1.
     /// - `route_key` — stable key for per-route counters (round-robin cursor, etc.)
     /// - `hash_val`  — FNV-1a hash of the relevant input; used by hash strategies
     /// - `counters`  — shared per-route atomic counters for rotation
@@ -86,21 +87,24 @@ impl LoadBalancingStrategy for Random {
     }
 }
 
-/// Send each request to the backend with the fewest active connections.
+/// Send each request to the backend with the fewest active connections **per unit of
+/// weight** (issue #506): a weight-3 backend carries three times the in-flight requests of a
+/// weight-1 one before the next request goes elsewhere. With every weight 1 (plain string
+/// targets) this is plain least-connections.
 pub struct LeastConn;
 
 impl LoadBalancingStrategy for LeastConn {
     fn pick(
         &self,
         urls: &[String],
-        _weighted: &[(String, u32)],
+        weighted: &[(String, u32)],
         _route_key: &str,
         _hash_val: u64,
         _counters: &DashMap<String, AtomicUsize>,
         health: &UpstreamRegistry,
     ) -> Option<(String, bool)> {
         // pick_least_conn increments the inflight counter on the chosen URL.
-        health.pick_least_conn(urls).map(|u| (u, true))
+        health.pick_least_conn(urls, weighted).map(|u| (u, true))
     }
 }
 
@@ -169,6 +173,13 @@ impl LoadBalancingStrategy for LeastResponseTime {
 /// Latency measurements decay over a 10-second time constant so stale readings
 /// from past traffic bursts do not permanently bias routing.
 ///
+/// **Weights (issue #506).** The comparison is `latency / weight`: a peer with weight 3 is judged
+/// as if it were three times faster, so it wins a comparison against a weight-1 peer until its
+/// latency is more than three times the other's. This biases the choice towards the heavier peer;
+/// it does not make the shares proportional (there is no load term in the cost, see the docs) —
+/// use `least-conn` or `weighted-round-robin` for proportional sharing. With every weight 1 the
+/// cost is the latency itself, exactly as before. A weight-0 peer loses every comparison.
+///
 /// Reference: linkerd2-proxy `linkerd/pool/p2c/src/lib.rs`.
 pub struct P2cChoice;
 
@@ -176,11 +187,24 @@ pub struct P2cChoice;
 /// 30 ms — matches linkerd's `DEFAULT_RTT = 30 ms`.
 const P2C_DEFAULT_LATENCY_US: f64 = 30_000.0;
 
+/// The cost P2C compares: the EWMA latency of `url` divided by its weight; infinite for weight 0.
+fn p2c_cost(health: &UpstreamRegistry, weighted: &[(String, u32)], index: usize, url: &str) -> f64 {
+    let latency = health
+        .statuses
+        .get(url)
+        .map(|e| e.ewma_latency_us)
+        .unwrap_or(P2C_DEFAULT_LATENCY_US);
+    match targets::weight_for(weighted, index, url) {
+        0 => f64::INFINITY,
+        w => latency / f64::from(w),
+    }
+}
+
 impl LoadBalancingStrategy for P2cChoice {
     fn pick(
         &self,
         urls: &[String],
-        _weighted: &[(String, u32)],
+        weighted: &[(String, u32)],
         route_key: &str,
         _hash_val: u64,
         counters: &DashMap<String, AtomicUsize>,
@@ -193,24 +217,12 @@ impl LoadBalancingStrategy for P2cChoice {
                 targets::pick_round_robin(urls, route_key, counters).map(|u| (u, false))
             }
             len => {
-                // Sample two distinct random indices and pick the lower-latency one.
+                // Sample two distinct random indices and pick the lower-cost one.
                 let (a, b) = gen_pair(len);
-                let latency_a = health
-                    .statuses
-                    .get(&urls[a])
-                    .map(|e| e.ewma_latency_us)
-                    .unwrap_or(P2C_DEFAULT_LATENCY_US);
-                let latency_b = health
-                    .statuses
-                    .get(&urls[b])
-                    .map(|e| e.ewma_latency_us)
-                    .unwrap_or(P2C_DEFAULT_LATENCY_US);
-                // Pick the lower latency; break ties in favour of `a`.
-                let chosen = if latency_a <= latency_b {
-                    &urls[a]
-                } else {
-                    &urls[b]
-                };
+                let cost_a = p2c_cost(health, weighted, a, &urls[a]);
+                let cost_b = p2c_cost(health, weighted, b, &urls[b]);
+                // Pick the lower cost; break ties in favour of `a`.
+                let chosen = if cost_a <= cost_b { &urls[a] } else { &urls[b] };
                 Some((chosen.clone(), false))
             }
         }
@@ -411,6 +423,107 @@ mod tests {
             picks.len() > 1,
             "P2C should hit more than one backend over 40 picks"
         );
+    }
+
+    // ── weights for least-conn and p2c (#506) ─────────────────────────────────
+
+    fn seed_latency(reg: &UpstreamRegistry, url: &str, us: f64) {
+        reg.statuses
+            .entry(url.to_owned())
+            .or_default()
+            .ewma_latency_us = us;
+    }
+
+    fn two(weight_a: u32, weight_b: u32) -> (Vec<String>, Vec<(String, u32)>) {
+        let u = urls(2);
+        let w = vec![(u[0].clone(), weight_a), (u[1].clone(), weight_b)];
+        (u, w)
+    }
+
+    /// How many of 200 picks (a pair of two always compares both peers) land on `u[index]`.
+    fn p2c_wins(u: &[String], w: &[(String, u32)], reg: &UpstreamRegistry, index: usize) -> usize {
+        let c = counters();
+        (0..200)
+            .filter(|_| P2C.pick(u, w, "r", 0, &c, reg).unwrap().0 == u[index])
+            .count()
+    }
+
+    #[test]
+    fn least_conn_splits_held_open_requests_by_weight() {
+        let (u, w) = two(3, 1);
+        let reg = registry();
+        let c = counters();
+        let picks: Vec<String> = (0..40)
+            .map(|_| LEAST_CONN.pick(&u, &w, "r", 0, &c, &reg).unwrap().0)
+            .collect();
+        let first = picks.iter().filter(|p| **p == u[0]).count();
+        assert_eq!((first, picks.len() - first), (30, 10));
+    }
+
+    #[test]
+    fn least_conn_without_weights_is_unchanged() {
+        let u = urls(3);
+        let reg = registry();
+        let c = counters();
+        let picks: Vec<String> = (0..6)
+            .map(|_| LEAST_CONN.pick(&u, &[], "r", 0, &c, &reg).unwrap().0)
+            .collect();
+        // Held open: the first request goes to the earliest URL, then the idle ones in order.
+        assert_eq!(picks[..3], [u[0].clone(), u[1].clone(), u[2].clone()]);
+    }
+
+    #[test]
+    fn p2c_with_weight_one_picks_the_faster_peer() {
+        let (u, w) = two(1, 1);
+        let reg = registry();
+        seed_latency(&reg, &u[0], 80_000.0);
+        seed_latency(&reg, &u[1], 20_000.0);
+        assert_eq!(
+            p2c_wins(&u, &w, &reg, 1),
+            200,
+            "the faster peer must win every comparison"
+        );
+        // The same with no weighted list at all.
+        assert_eq!(p2c_wins(&u, &[], &reg, 1), 200);
+    }
+
+    #[test]
+    fn p2c_prefers_the_heavier_peer_when_latencies_are_equal() {
+        let (u, w) = two(3, 1);
+        let reg = registry();
+        seed_latency(&reg, &u[0], 30_000.0);
+        seed_latency(&reg, &u[1], 30_000.0);
+        assert_eq!(p2c_wins(&u, &w, &reg, 0), 200);
+    }
+
+    #[test]
+    fn p2c_weight_divides_the_latency_it_is_judged_by() {
+        let (u, w) = two(3, 1);
+        let reg = registry();
+        // Weight 3 and twice the latency: 60/3 = 20 < 30 -> the heavy peer still wins.
+        seed_latency(&reg, &u[0], 60_000.0);
+        seed_latency(&reg, &u[1], 30_000.0);
+        assert_eq!(p2c_wins(&u, &w, &reg, 0), 200);
+        // Four times the latency: 120/3 = 40 > 30 -> the light peer wins.
+        seed_latency(&reg, &u[0], 120_000.0);
+        assert_eq!(p2c_wins(&u, &w, &reg, 1), 200);
+    }
+
+    #[test]
+    fn p2c_never_prefers_a_zero_weight_peer() {
+        let (u, w) = two(0, 1);
+        let reg = registry();
+        seed_latency(&reg, &u[0], 1.0); // the fastest peer in the pool, but weight 0
+        seed_latency(&reg, &u[1], 500_000.0);
+        assert_eq!(p2c_wins(&u, &w, &reg, 1), 200);
+    }
+
+    #[test]
+    fn p2c_with_every_weight_zero_still_picks_a_peer() {
+        let (u, w) = two(0, 0);
+        let reg = registry();
+        let (picked, _) = P2C.pick(&u, &w, "r", 0, &counters(), &reg).unwrap();
+        assert!(u.contains(&picked));
     }
 
     #[test]

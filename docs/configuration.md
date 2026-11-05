@@ -767,9 +767,9 @@ traffic off a broken backend). Pick based on your actual traffic shape:
 | [`round-robin`](#round-robin-default) (default) | Static | Rotation order | ✗ | none | Homogeneous upstreams, simplest default | Ignores load — a slow request still gets the next slot |
 | [`weighted-round-robin`](#weighted-round-robin) | Static | Rotation + fixed weight | ✗ | none | Heterogeneous capacity (big primary + small standby, canary %) | Weights are static — doesn't adapt to real-time load |
 | [`random`](#random) | Static | Uniform random pick | ✗ | none | Very large pools where a counter is unnecessary overhead | Worse uniformity than round-robin at small N |
-| [`least-conn`](#least-conn) | Load-aware | Fewest active connections | ✗ | none | Variable response times (mixed fast reads / slow writes) | O(N) scan of the pool on every request |
+| [`least-conn`](#least-conn) | Load-aware | Fewest active connections per unit of `weight` | ✗ | none | Variable response times (mixed fast reads / slow writes), with or without unequal capacity | O(N) scan of the pool on every request |
 | [`least-response-time`](#least-response-time) | Load-aware | Lowest probed latency | ✗ | none | Upstreams with different hardware/geography | Needs `healthCheck` configured, or it's just round-robin |
-| [`p2c`](#p2c-power-of-two-choices) | Load-aware | 2 random samples, fewer conns wins | ✗ | none | Large pools (10+) where `least-conn`'s full scan is too slow | Marginally less precise than true least-conn |
+| [`p2c`](#p2c-power-of-two-choices) | Latency-aware | 2 random samples, lower EWMA latency (divided by `weight`) wins | ✗ | none | Large pools (10+) where `least-conn`'s full scan is too slow | Looks at latency, not at the number of requests in flight: it does not spread load in proportion to `weight` |
 | [`ip-hash`](#ip-hash) | Affinity | rendezvous hash of the client IP | by IP | only the clients on a peer that leaves (or joins) move; the rest stay put | Soft per-IP affinity without a cookie | Clients on an ejected peer move to their next-best peer |
 | [`consistent-hash`](#consistent-hash) | Affinity | rendezvous hash of the configured key | by key | same as ip-hash — only the keys on a peer that leaves (or joins) move | Per-tenant/per-user routing, cache locality by URL | Keys on an ejected peer move to their next-best peer |
 
@@ -871,10 +871,27 @@ retries and errors).
 reads and slow writes. Under uniform load it behaves like round-robin; its
 advantage emerges when some requests stall.
 
+**Weights.** The comparison is *active connections divided by `weight`*, as in
+nginx `least_conn`: an upstream with weight 3 carries three times the in-flight
+requests of a weight-1 upstream before the next request goes elsewhere. Plain
+string targets have weight 1, so a pool without weights behaves exactly as
+plain least-connections. An upstream with weight 0 receives nothing while any
+other upstream has a weight above 0. `conduit upstreams weight` changes the
+weight at runtime.
+
 ```yaml
 proxy:
   /api:
     targets: ["http://a:4000", "http://b:4000", "http://c:4000"]
+    strategy: least-conn
+```
+
+```yaml
+proxy:
+  /api:
+    targets:
+      - { url: "http://big:4000", weight: 3 } # up to 3x the in-flight requests of "small"
+      - { url: "http://small:4000", weight: 1 }
     strategy: least-conn
 ```
 
@@ -1032,11 +1049,22 @@ proxy:
 ### `p2c` (Power of Two Choices)
 
 On each request, samples **two upstreams at random** and forwards to the one
-with fewer active connections. Ties are broken in favour of the first sample.
+with the lower **EWMA latency** (the passive, time-decayed measurement over all
+traffic that `GET /upstreams` reports as `ewma_latency_ms`; an upstream with no
+measurement yet counts as 30 ms). Ties are broken in favour of the first sample.
 
-Achieves O(log log N) maximum load imbalance — dramatically better tail latency
-than pure random, and competitive with `least-conn` at scale, with O(1)
-selection cost (no scan of the full pool).
+Selection costs O(1) — no scan of the full pool. Because the cost is latency
+alone, with no count of requests in flight, the O(log log N) load-balance
+guarantee that P2C has for queue lengths does not carry over; if you need even
+in-flight counts, use `least-conn`.
+
+**Weights.** The latency is divided by `weight` before the two are compared, so
+a weight-3 upstream is judged as if it were three times faster: it wins a
+comparison until its latency is more than three times the other's. This tilts
+the choice toward the heavier upstream; it does **not** give shares in
+proportion to the weights (use `least-conn` or `weighted-round-robin` for
+that). Plain string targets have weight 1, which leaves the comparison as it was.
+An upstream with weight 0 loses every comparison.
 
 With a single upstream in the pool, P2C falls back to round-robin.
 

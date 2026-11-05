@@ -41,6 +41,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   intermediates (the emSign CAs; RUSTSEC-2026-0382, `webpki-root-certs` 1.0.11 is RUSTSEC-2026-0383), so an
   HTTPS upstream behind one of them now fails the handshake.
 
+### Changed
+
+- **Load balancing: `least-conn` and `p2c` read `weight`** (issue #506). `least-conn` now picks the
+  upstream with the fewest active connections *per unit of weight* (as nginx `least_conn` does), so a
+  weight-3 upstream carries three times the in-flight requests of a weight-1 one; `p2c` divides the
+  EWMA latency it compares by the weight, which tilts the choice toward the heavier upstream without
+  making the shares proportional. With every weight 1, which is every config without `weight`, nothing
+  changes. `conduit upstreams weight` and `POST /upstreams/weight` now apply to these two as well. The
+  `docs/configuration.md` text for `p2c` said it compares connection counts; it compares latency, and
+  now says so.
+
 ### Fixed
 
 - **Static files: a refused or failed open no longer cuts a `200` off after its headers** (issue

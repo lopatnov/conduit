@@ -164,6 +164,22 @@ pub fn pick_weighted_round_robin(
     Some(targets.last().unwrap().0.clone())
 }
 
+/// Weight of `url` in a `(url, weight)` list; `1` when the list does not name it.
+///
+/// `hint` is the index the caller expects `url` at. The candidate list and the weighted list are
+/// built from the same targets in the same order, so the first probe almost always hits and a
+/// pick that looks at two candidates (P2C) stays O(1); the scan only runs when the two lists have
+/// diverged (a filtered-out peer shifts the indices).
+pub fn weight_for(weighted: &[(String, u32)], hint: usize, url: &str) -> u32 {
+    match weighted.get(hint) {
+        Some((u, w)) if u == url => *w,
+        _ => weighted
+            .iter()
+            .find(|(u, _)| u == url)
+            .map_or(1, |(_, w)| *w),
+    }
+}
+
 /// Pick a URL for a precomputed key hash by rendezvous (highest-random-weight) hashing.
 ///
 /// Used for `ip-hash`, `consistent-hash` and the no-secret sticky mode.  Those hash a key (client IP,
@@ -412,6 +428,27 @@ mod tests {
         assert_eq!(
             pick_weighted_round_robin(&targets, "r", &counters),
             Some("http://a:4000".to_string())
+        );
+    }
+
+    #[test]
+    fn weight_for_finds_by_hint_then_by_url_then_defaults_to_one() {
+        let list = vec![
+            ("http://a:1".to_owned(), 5u32),
+            ("http://b:1".to_owned(), 2u32),
+        ];
+        // The hint is right.
+        assert_eq!(weight_for(&list, 1, "http://b:1"), 2);
+        // The hint is wrong or out of range: found by URL.
+        assert_eq!(weight_for(&list, 0, "http://b:1"), 2);
+        assert_eq!(weight_for(&list, 9, "http://a:1"), 5);
+        // Not named, or no list: weight 1.
+        assert_eq!(weight_for(&list, 0, "http://c:1"), 1);
+        assert_eq!(weight_for(&[], 0, "http://a:1"), 1);
+        // A stored 0 is a 0, not the default.
+        assert_eq!(
+            weight_for(&[("http://z:1".to_owned(), 0)], 0, "http://z:1"),
+            0
         );
     }
 

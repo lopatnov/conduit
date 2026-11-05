@@ -435,12 +435,48 @@ impl UpstreamRegistry {
         }
     }
 
-    /// Pick the URL from `urls` with the lowest current inflight count and
-    /// increment its count.
+    /// Pick the URL from `urls` with the lowest inflight count **per unit of weight**
+    /// and increment its count (issue #506).
+    ///
+    /// The comparison is `inflight / weight`, done by cross-multiplication (nginx
+    /// `least_conn` does the same) so there is no division and no rounding: peer `a`
+    /// beats the best so far when `a.inflight * best.weight < best.inflight * a.weight`.
+    /// A weight-3 peer is therefore chosen until it carries three times the
+    /// connections of a weight-1 peer. `weighted` is the `(url, weight)` list of the
+    /// route; a URL it does not name has weight 1, so with an empty list (or every
+    /// weight 1) this is plain least-connections and ties go to the earliest URL.
+    ///
+    /// A peer with weight 0 receives nothing while any peer has a positive weight
+    /// (the same rule as weighted round-robin); when every candidate has weight 0 the
+    /// weights are ignored rather than refusing to route.
     ///
     /// Returns `None` when `urls` is empty.
-    pub fn pick_least_conn(&self, urls: &[String]) -> Option<String> {
-        let chosen = urls.iter().min_by_key(|url| self.conn_load(url))?.clone();
+    pub fn pick_least_conn(&self, urls: &[String], weighted: &[(String, u32)]) -> Option<String> {
+        let mut best: Option<(usize, usize, u32)> = None; // (index, inflight, weight)
+        for (i, url) in urls.iter().enumerate() {
+            let weight = targets::weight_for(weighted, i, url);
+            if weight == 0 {
+                continue;
+            }
+            let load = self.conn_load(url);
+            let better = best.is_none_or(|(_, best_load, best_weight)| {
+                (load as u128) * (best_weight as u128) < (best_load as u128) * (weight as u128)
+            });
+            if better {
+                best = Some((i, load, weight));
+            }
+        }
+        let index = match best {
+            Some((i, _, _)) => i,
+            // Every candidate has weight 0: fall back to plain least-connections.
+            None => {
+                urls.iter()
+                    .enumerate()
+                    .min_by_key(|(_, url)| self.conn_load(url))?
+                    .0
+            }
+        };
+        let chosen = urls[index].clone();
         self.conn_inc(&chosen);
         Some(chosen)
     }
@@ -1184,7 +1220,7 @@ mod tests {
         reg.conn_inc("http://b:4000");
 
         // c has 0 — should be chosen and its count incremented.
-        let chosen = reg.pick_least_conn(&urls).unwrap();
+        let chosen = reg.pick_least_conn(&urls, &[]).unwrap();
         assert_eq!(chosen, "http://c:4000");
         assert_eq!(reg.conn_load("http://c:4000"), 1);
     }
@@ -1566,7 +1602,7 @@ mod tests {
     #[test]
     fn pick_least_conn_returns_none_for_empty_list() {
         let reg = UpstreamRegistry::new();
-        assert!(reg.pick_least_conn(&[]).is_none());
+        assert!(reg.pick_least_conn(&[], &[]).is_none());
     }
 
     #[test]
@@ -1576,8 +1612,109 @@ mod tests {
         let b = "http://b:4000".to_owned();
         reg.conn_inc(&a);
         reg.conn_inc(&a); // a = 2, b = 0
-        let chosen = reg.pick_least_conn(&[a.clone(), b.clone()]);
+        let chosen = reg.pick_least_conn(&[a.clone(), b.clone()], &[]);
         assert_eq!(chosen.as_deref(), Some(b.as_str()), "b has lower load");
+    }
+
+    // ── pick_least_conn, weighted (#506) ──────────────────────────────────────
+
+    /// Run `n` requests that never finish (every pick stays inflight) against `urls` and count how
+    /// many each peer received.
+    fn spread(
+        reg: &UpstreamRegistry,
+        urls: &[String],
+        weighted: &[(String, u32)],
+        n: usize,
+    ) -> Vec<usize> {
+        for _ in 0..n {
+            reg.pick_least_conn(urls, weighted).expect("a candidate");
+        }
+        urls.iter().map(|u| reg.conn_load(u)).collect()
+    }
+
+    fn pair(a: u32, b: u32) -> (Vec<String>, Vec<(String, u32)>) {
+        let urls = vec!["http://a:4000".to_owned(), "http://b:4000".to_owned()];
+        let weighted = vec![(urls[0].clone(), a), (urls[1].clone(), b)];
+        (urls, weighted)
+    }
+
+    #[test]
+    fn weighted_least_conn_shares_inflight_in_proportion_to_weight() {
+        let (urls, weighted) = pair(3, 1);
+        let reg = UpstreamRegistry::new();
+        // 40 requests held open: a (weight 3) must carry three times what b carries.
+        assert_eq!(spread(&reg, &urls, &weighted, 40), vec![30, 10]);
+    }
+
+    #[test]
+    fn weighted_least_conn_with_equal_weights_matches_the_unweighted_pick() {
+        let (urls, ones) = pair(1, 1);
+        let (weighted_reg, plain_reg) = (UpstreamRegistry::new(), UpstreamRegistry::new());
+        assert_eq!(
+            spread(&weighted_reg, &urls, &ones, 41),
+            spread(&plain_reg, &urls, &[], 41),
+            "weights of 1 must not change the unweighted behaviour"
+        );
+        // Scaling every weight by the same factor changes nothing either.
+        let (_, sevens) = pair(7, 7);
+        assert_eq!(
+            spread(&UpstreamRegistry::new(), &urls, &sevens, 41),
+            spread(&UpstreamRegistry::new(), &urls, &[], 41)
+        );
+    }
+
+    #[test]
+    fn weighted_least_conn_prefers_the_heavy_peer_when_loads_are_equal() {
+        let (urls, weighted) = pair(1, 3);
+        let reg = UpstreamRegistry::new();
+        // Both idle: ratios are equal (0), the earlier URL wins. After that b (weight 3) is the
+        // one with room, so it takes the next three requests.
+        let first = reg.pick_least_conn(&urls, &weighted).unwrap();
+        assert_eq!(first, urls[0]);
+        for _ in 0..3 {
+            assert_eq!(reg.pick_least_conn(&urls, &weighted).unwrap(), urls[1]);
+        }
+    }
+
+    #[test]
+    fn weighted_least_conn_never_picks_a_zero_weight_peer_while_another_has_weight() {
+        let (urls, weighted) = pair(0, 1);
+        let reg = UpstreamRegistry::new();
+        // Even though a is idle and b is busy, a has no weight.
+        reg.conn_inc(&urls[1]);
+        reg.conn_inc(&urls[1]);
+        assert_eq!(reg.pick_least_conn(&urls, &weighted).unwrap(), urls[1]);
+    }
+
+    #[test]
+    fn weighted_least_conn_with_every_weight_zero_still_routes_by_load() {
+        let (urls, weighted) = pair(0, 0);
+        let reg = UpstreamRegistry::new();
+        reg.conn_inc(&urls[0]);
+        assert_eq!(reg.pick_least_conn(&urls, &weighted).unwrap(), urls[1]);
+    }
+
+    #[test]
+    fn weighted_least_conn_handles_the_largest_weights() {
+        let (urls, weighted) = pair(u32::MAX, u32::MAX - 1);
+        let reg = UpstreamRegistry::new();
+        reg.conn_inc(&urls[0]);
+        // a: 1/(2^32-1), b: 0/(2^32-2) -> b has the lower ratio.
+        assert_eq!(reg.pick_least_conn(&urls, &weighted).unwrap(), urls[1]);
+    }
+
+    #[test]
+    fn weighted_least_conn_finds_weights_when_the_lists_are_not_aligned() {
+        // The weighted list has a peer the candidate list lacks (filtered by capacity or ramp):
+        // indices differ, the weight lookup must go by URL.
+        let urls = vec!["http://b:4000".to_owned(), "http://c:4000".to_owned()];
+        let weighted = vec![
+            ("http://a:4000".to_owned(), 1),
+            ("http://b:4000".to_owned(), 1),
+            ("http://c:4000".to_owned(), 4),
+        ];
+        let reg = UpstreamRegistry::new();
+        assert_eq!(spread(&reg, &urls, &weighted, 10), vec![2, 8]);
     }
 
     // ── filter_healthy ────────────────────────────────────────────────────────
