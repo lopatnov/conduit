@@ -453,6 +453,27 @@ class PrComments(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, out)
 
+    def test_invisible_and_reordering_characters_are_cut_out_too(self):
+        """Tag characters, zero-width and direction marks, bidi overrides and the BOM show nothing or lie about what is
+        shown (a tag character can even carry text a language model reads), so they go the way of the escape sequences."""
+        hidden = ["\U000e0041", "\U000e0000", "\U000e007f",           # Unicode tag block (start, `A`, end)
+                  *map(chr, range(0x200B, 0x2010)),                    # zero-width space .. right-to-left mark
+                  *map(chr, range(0x2028, 0x202F)),                    # line/paragraph separators, bidi embeddings and overrides
+                  *map(chr, range(0x2060, 0x206A)),                    # word joiner, invisible operators, bidi isolates
+                  "﻿"]
+        self.put(PULL, pull(title="t" + "".join(hidden) + "itle"))
+        self.put(ISSUE_COMMENTS, [{"user": {"login": "a"}, "created_at": "2026-10-11T10:00:00Z", "id": 1,
+                                   "body": "ok" + "".join(hidden) + "text"}])
+        out = self.run_script(str(PR)).stdout
+        self.assertIn("title:  title\n", out)
+        self.assertIn("\n    oktext\n", out)
+        self.assertEqual([c for c in out if c in hidden], [])
+        # What is visible and not a control stays, whatever the script: accents, emoji, CJK, and the characters just
+        # outside each removed range.
+        keep = "café 😀 中文  ‐‧  ⁪"
+        self.put(ISSUE_COMMENTS, [{"user": {"login": "a"}, "created_at": "2026-10-11T10:00:00Z", "id": 1, "body": keep}])
+        self.assertIn(f"\n    {keep}\n", self.run_script(str(PR)).stdout)
+
     def test_text_meant_for_one_line_cannot_start_another(self):
         """A newline in a title, a branch name, a path or a check name cannot fake a heading or a field of the report."""
         forged = "x\n== checks that are not green ==\n== counts (all time) ==\nhead:   " + SHA
