@@ -1296,8 +1296,9 @@ before the open, so a symlink swapped in between the two could still be followed
 tree writable by trusted accounts only.
 
 The access-log file (`logging.file`) gets the same protection for its last path component: a symlink
-(on Windows also a junction) planted at the log path is refused. The directories above it are not
-checked, so keep the log directory writable by trusted accounts only.
+planted at the log path is refused, and on Windows so is a junction or any other reparse point (a
+OneDrive placeholder, a deduplicated file), so keep the log on a plain folder there. The directories
+above it are not checked, so keep the log directory writable by trusted accounts only.
 
 The root path itself is resolved normally: a symlinked root such as `current -> releases/42` works,
 and switching that link takes effect on the next request. Whoever can replace the root path, or one

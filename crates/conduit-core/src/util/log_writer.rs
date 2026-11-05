@@ -11,10 +11,10 @@ use std::sync::Mutex;
 ///
 /// On Windows the same guarantee comes from `FILE_FLAG_OPEN_REPARSE_POINT`:
 /// a symlink or directory junction at `path` is opened *itself* instead of
-/// being followed, and the file type is then read from the opened handle
+/// being followed, and its attributes are then read from the opened handle
 /// (`GetFileInformationByHandle`), not from the path, so nothing can be swapped
-/// in between the check and the open (issue #600). A planted link is refused;
-/// a regular file is opened as usual. As on Unix, only the final component is
+/// in between the check and the open (issue #600). Any reparse point is
+/// refused; a regular file is opened as usual. As on Unix, only the final component is
 /// covered — the log directory stays operator-controlled.
 ///
 /// Any other platform has no equivalent: a plain open that follows a symlink.
@@ -37,7 +37,7 @@ fn open_no_follow(path: &str) -> io::Result<File> {
             .append(true)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)?;
-        refuse_link(&file)?;
+        refuse_reparse_point(&file)?;
         Ok(file)
     }
     #[cfg(not(any(unix, windows)))]
@@ -46,17 +46,33 @@ fn open_no_follow(path: &str) -> io::Result<File> {
     }
 }
 
-/// Windows: error out when `file` is a symlink or directory junction (a name-surrogate reparse
-/// point). The type comes from the open handle, so it cannot be raced.
+/// `FILE_ATTRIBUTE_REPARSE_POINT`: set on symlinks, junctions and every other reparse point.
 #[cfg(windows)]
-fn refuse_link(file: &File) -> io::Result<()> {
-    if file.metadata()?.file_type().is_symlink() {
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+/// Windows: error out when `file` is any reparse point. The attributes come from the open handle, so
+/// they cannot be raced.
+///
+/// Not only links: a reparse point that is not a link (a OneDrive placeholder, a deduplicated file) is
+/// served by a filter that does not run for a `FILE_FLAG_OPEN_REPARSE_POINT` handle, so appending to it
+/// could lose or corrupt log lines. Unlike static files there is no reopen: the log must live on a
+/// plain folder, and the error says so.
+#[cfg(windows)]
+fn refuse_reparse_point(file: &File) -> io::Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    if is_reparse_point(file.metadata()?.file_attributes()) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "refusing to open a symlink or junction as the access-log file",
+            "refusing to open a symlink, junction or other reparse point as the access-log file; \
+             put the log on a plain (not synced or deduplicated) folder",
         ));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn is_reparse_point(attributes: u32) -> bool {
+    attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 /// Writes access-log lines to either stdout or a file.
@@ -236,7 +252,7 @@ mod tests {
     /// Windows: a file symlink planted at the log path is opened as the link itself and refused,
     /// and its target is left untouched. Creating one needs the symlink privilege (or Developer
     /// Mode), so this skips, with a message, on a machine that does not grant it; the check is
-    /// also covered without a privilege by `refuse_link_flags_a_junction_but_not_a_plain_directory`.
+    /// also covered without a privilege by `refuse_reparse_point_flags_a_junction_but_not_a_plain_directory`.
     #[test]
     #[cfg(windows)]
     fn switch_to_a_file_symlink_returns_error() {
@@ -278,7 +294,7 @@ mod tests {
     /// on the directory it points at is not.
     #[test]
     #[cfg(windows)]
-    fn refuse_link_flags_a_junction_but_not_a_plain_directory() {
+    fn refuse_reparse_point_flags_a_junction_but_not_a_plain_directory() {
         use std::os::windows::fs::OpenOptionsExt;
         const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
         const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
@@ -302,8 +318,8 @@ mod tests {
             .unwrap();
         assert!(made.status.success(), "mklink /J failed: {made:?}");
 
-        assert!(refuse_link(&open_dir(&junction)).is_err());
-        assert!(refuse_link(&open_dir(&real_dir)).is_ok());
+        assert!(refuse_reparse_point(&open_dir(&junction)).is_err());
+        assert!(refuse_reparse_point(&open_dir(&real_dir)).is_ok());
     }
 
     #[test]
@@ -317,6 +333,19 @@ mod tests {
         w.write_line("second");
         w.use_stdout();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\nsecond\n");
+    }
+
+    /// A reparse point that is not a link (placeholder, dedup) has the attribute too and is refused;
+    /// ordinary attributes are not.
+    #[test]
+    #[cfg(windows)]
+    fn any_reparse_point_attribute_is_refused() {
+        const ARCHIVE: u32 = 0x20;
+        const READONLY: u32 = 0x1;
+        assert!(is_reparse_point(FILE_ATTRIBUTE_REPARSE_POINT));
+        assert!(is_reparse_point(FILE_ATTRIBUTE_REPARSE_POINT | ARCHIVE));
+        assert!(!is_reparse_point(ARCHIVE | READONLY));
+        assert!(!is_reparse_point(0));
     }
 
     #[test]
