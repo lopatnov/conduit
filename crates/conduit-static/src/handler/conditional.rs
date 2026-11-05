@@ -78,8 +78,9 @@ pub(super) fn make_cache_control(options: &StaticOptions) -> String {
 }
 
 /// Parse one `bytes=` range against the file's `total` size into inclusive `(start, end)` offsets (the
-/// open-ended and suffix forms included). `None` for a malformed range or one that starts past the end:
-/// the caller answers `416`.
+/// open-ended and suffix forms included). A last byte at or past the end is clamped to the last byte and a
+/// suffix longer than the file selects all of it (RFC 9110 §14.1.2). `None` for a malformed range, one whose
+/// last byte is before its first, or one that starts at or past the end: the caller answers `416`.
 pub(super) fn parse_range(header: &str, total: u64) -> Option<(u64, u64)> {
     if total == 0 {
         // No satisfiable range exists for an empty file — bail out before
@@ -90,9 +91,11 @@ pub(super) fn parse_range(header: &str, total: u64) -> Option<(u64, u64)> {
     let s = header.strip_prefix("bytes=")?;
     if let Some(suffix) = s.strip_prefix('-') {
         let n: u64 = suffix.trim().parse().ok()?;
-        if n == 0 || n > total {
+        if n == 0 {
             return None;
         }
+        // A suffix longer than the file selects the whole file (RFC 9110 §14.1.2).
+        let n = n.min(total);
         return Some((total - n, total - 1));
     }
     let (start_s, end_s) = s.split_once('-')?;
@@ -102,7 +105,10 @@ pub(super) fn parse_range(header: &str, total: u64) -> Option<(u64, u64)> {
     } else {
         end_s.trim().parse().ok()?
     };
-    if start > end || end >= total {
+    // A last byte at or past the end of the file means "to the end" (RFC 9110 §14.1.2); a first byte at or
+    // past the end, or a last byte before the first, is not satisfiable.
+    let end = end.min(total - 1);
+    if start > end {
         return None;
     }
     Some((start, end))
@@ -221,9 +227,28 @@ mod tests {
     }
 
     #[test]
-    fn parse_range_end_beyond_total() {
-        // bytes=0-9999 with total=1000 → invalid (end >= total)
-        assert!(parse_range("bytes=0-9999", 1000).is_none());
+    fn parse_range_end_beyond_total_is_clamped() {
+        // bytes=0-9999 with total=1000 → the whole file (RFC 9110 §14.1.2: a last-pos at or past the end
+        // means "to the end"), not a 416 (a media player asking for more than there is must get the rest)
+        assert_eq!(parse_range("bytes=0-9999", 1000), Some((0, 999)));
+        assert_eq!(parse_range("bytes=500-1000", 1000), Some((500, 999)));
+        assert_eq!(parse_range("bytes=999-5000", 1000), Some((999, 999)));
+    }
+
+    #[test]
+    fn parse_range_start_at_or_past_the_end_is_unsatisfiable() {
+        assert!(parse_range("bytes=1000-", 1000).is_none());
+        assert!(parse_range("bytes=1000-2000", 1000).is_none());
+        assert!(parse_range("bytes=5000-9999", 1000).is_none());
+    }
+
+    #[test]
+    fn parse_range_suffix_longer_than_the_file_selects_all_of_it() {
+        // RFC 9110 §14.1.2: "If the selected representation is shorter than the specified suffix-length,
+        // the entire representation is used."
+        assert_eq!(parse_range("bytes=-5000", 1000), Some((0, 999)));
+        assert_eq!(parse_range("bytes=-1000", 1000), Some((0, 999)));
+        assert_eq!(parse_range("bytes=-1", 1), Some((0, 0)));
     }
 
     #[test]

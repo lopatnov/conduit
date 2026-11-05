@@ -143,6 +143,39 @@ fn static_206_range_suffix() {
     assert_eq!(resp.text().unwrap(), "789");
 }
 
+/// RFC 9110 §14.1.2: a last byte past the end of the file means "to the end", and a suffix longer than
+/// the file selects all of it; both are a `206`, not a `416`. A first byte past the end is still a `416`.
+#[test]
+#[serial]
+fn static_range_past_the_end_is_clamped_not_rejected() {
+    let (server, _dir) = make_static_server(&[("range.txt", "0123456789")]);
+    let client = reqwest::blocking::Client::new();
+    for (range, content_range, body) in [
+        ("bytes=4-999", "bytes 4-9/10", "456789"),
+        ("bytes=0-999", "bytes 0-9/10", "0123456789"),
+        ("bytes=-999", "bytes 0-9/10", "0123456789"),
+    ] {
+        let resp = client
+            .get(server.url("/range.txt"))
+            .header("range", range)
+            .send()
+            .expect("GET range");
+        assert_eq!(resp.status(), 206, "{range}");
+        assert_eq!(
+            resp.headers().get("content-range").unwrap(),
+            content_range,
+            "{range}"
+        );
+        assert_eq!(resp.text().unwrap(), body, "{range}");
+    }
+    let resp = client
+        .get(server.url("/range.txt"))
+        .header("range", "bytes=10-20")
+        .send()
+        .expect("GET unsatisfiable range");
+    assert_eq!(resp.status(), 416);
+}
+
 /// Issue #402 (RFC 9110 §13.1.5): a current `If-Range` validator keeps the `206`, a stale one
 /// turns the request into a plain `200` with the whole file.
 #[test]

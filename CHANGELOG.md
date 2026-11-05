@@ -32,6 +32,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or modification time of a file outside the root. A miss is answered as not found, an unreadable
   file as `403`, another failure as `500`, all before the headers. A `304` and a `HEAD` request now
   open the file too.
+- **Static files: a `Range` that runs past the end of the file is answered, not rejected.** A last byte
+  at or past the end now means "to the end", and a suffix longer than the file selects all of it
+  (`206`, RFC 9110 §14.1.2); both were a `416`. A first byte at or past the end is still a `416`.
+  Found while documenting `parse_range` for this PR.
 
 ---
 
