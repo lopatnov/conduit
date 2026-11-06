@@ -7,6 +7,9 @@ For every strategy and scenario it starts mock upstreams (in this process), star
 generated config, drives it with a closed-loop load (a fixed number of client threads, each sending the next
 request when the last one is answered) and prints Markdown tables. Standard library only, Python 3.11+.
 
+By default routes have no active health check, so `least-response-time` is round-robin and a dead upstream is
+found by passive ejection only; `--health-checks` adds one HEAD probe a second per upstream.
+
 Scenarios (all with 4 upstreams unless said otherwise):
 
   mixed     90% light requests (5 ms, 1 KiB) and 10% heavy ones (100 ms, 256 KiB). What matters: the latency of
@@ -107,6 +110,17 @@ class Upstream:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def do_HEAD(self):
+                # The health-check probe (--health-checks): the same service time as a light request, no body.
+                if upstream.down:
+                    self.close_connection = True
+                    return
+                time.sleep(LIGHT_MS * upstream.speed / 1000.0)
+                self.send_response(200)
+                self.send_header("X-Upstream", str(upstream.index))
+                self.send_header("Content-Length", str(LIGHT_BYTES))
+                self.end_headers()
+
         class QuietServer(ThreadingHTTPServer):
             daemon_threads = True
 
@@ -137,19 +151,23 @@ class Upstream:
 
 
 class Conduit:
-    def __init__(self, binary: str, upstream_urls: list[str], weights: list[int], strategy: str):
+    def __init__(
+        self, binary: str, upstream_urls: list[str], weights: list[int], strategy: str, health_checks: bool = False
+    ):
         self.port, self.admin = free_port(), free_port()
+        route = {
+            "targets": [{"url": u, "weight": w} for u, w in zip(upstream_urls, weights, strict=True)],
+            "strategy": strategy,
+        }
+        if health_checks:
+            # Active probes once a second: what `least-response-time` reads (without them it is round-robin).
+            route["healthCheck"] = {"path": "/", "intervalSecs": 1}
         config = {
             "global": {"admin": {"bind": f"127.0.0.1:{self.admin}"}},
             "sites": [
                 {
                     "port": self.port,
-                    "proxy": {
-                        "/": {
-                            "targets": [{"url": u, "weight": w} for u, w in zip(upstream_urls, weights)],
-                            "strategy": strategy,
-                        }
-                    },
+                    "proxy": {"/": route},
                 }
             ],
         }
@@ -235,7 +253,9 @@ def percentile(values: list[float], p: float) -> float:
     return values[min(len(values) - 1, int(len(values) * p))]
 
 
-def run_cell(binary: str, strategy: str, scenario: str, duration: float, seed: int) -> dict:
+def run_cell(
+    binary: str, strategy: str, scenario: str, duration: float, seed: int, health_checks: bool = False
+) -> dict:
     count = 3 if scenario == "weights" else 4
     weights = [3, 1, 1] if scenario == "weights" else [1] * count
     upstreams = [Upstream(i) for i in range(count)]
@@ -243,20 +263,23 @@ def run_cell(binary: str, strategy: str, scenario: str, duration: float, seed: i
         upstreams[0].speed = 8.0
     conduit = None
     try:
-        conduit = Conduit(binary, [u.url() for u in upstreams], weights, strategy)
+        conduit = Conduit(binary, [u.url() for u in upstreams], weights, strategy, health_checks)
         # warm-up (not recorded), so that connections exist and the first latency samples are in
         drive(conduit.port, WARMUP_SECONDS, seed + 1)
         for u in upstreams:
             u.hits = 0
 
         killer = None
+        marks: dict[str, float] = {}
         if scenario == "outage":
 
             def outage() -> None:
                 time.sleep(duration / 3)
+                marks["kill"] = time.time()
                 upstreams[0].kill()
                 time.sleep(duration / 3)
                 upstreams[0].revive()
+                marks["revive"] = time.time()
 
             killer = threading.Thread(target=outage, daemon=True)
             killer.start()
@@ -295,14 +318,14 @@ def run_cell(binary: str, strategy: str, scenario: str, duration: float, seed: i
         window = [s for s in ok if sec <= s.t - t0 < sec + 1]
         per_second.append(sum(1 for s in window if s.upstream == 0) / max(1, len(window)) * 100)
     cell["share0_stdev"] = statistics.pstdev(per_second) if per_second else float("nan")
-    if scenario == "outage":
-        third = max(1, seconds // 3)
-        phases = (per_second[:third], per_second[third : 2 * third], per_second[2 * third :])
-        cell["share0_phases"] = [statistics.fmean(p) if p else float("nan") for p in phases]
-        cell["errors_phases"] = [
-            sum(1 for s in samples if not s.ok and lo <= s.t - t0 < hi)
-            for lo, hi in ((0, third), (third, 2 * third), (2 * third, seconds + 1))
+    if scenario == "outage" and "kill" in marks and "revive" in marks:
+        # Phases by the moments upstream 0 actually went down and came back, not by thirds of the run.
+        bounds = ((float("-inf"), marks["kill"]), (marks["kill"], marks["revive"]), (marks["revive"], float("inf")))
+        in_phase = [[s for s in ok if lo <= s.t < hi] for lo, hi in bounds]
+        cell["share0_phases"] = [
+            sum(1 for s in group if s.upstream == 0) / max(1, len(group)) * 100 for group in in_phase
         ]
+        cell["errors_phases"] = [sum(1 for s in samples if not s.ok and lo <= s.t < hi) for lo, hi in bounds]
     return cell
 
 
@@ -351,6 +374,12 @@ def main() -> None:
     ap.add_argument("--strategies", default=",".join(STRATEGIES))
     ap.add_argument("--scenarios", default=",".join(SCENARIOS))
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument(
+        "--health-checks",
+        action="store_true",
+        help="give every route an active health check (one HEAD probe a second) so that least-response-time has latencies; "
+        "without it that strategy is round-robin, and the outage scenario is left to passive ejection",
+    )
     ap.add_argument("--json", help="also write the raw results here")
     args = ap.parse_args()
 
@@ -363,7 +392,9 @@ def main() -> None:
         results: dict[str, dict] = {}
         for strategy in strategies:
             print(f"  running {scenario} / {strategy} ...", file=sys.stderr, flush=True)
-            results[strategy] = run_cell(binary, strategy, scenario, args.duration, args.seed)
+            results[strategy] = run_cell(
+                binary, strategy, scenario, args.duration, args.seed, args.health_checks
+            )
         everything[scenario] = results
         print(table(scenario, results))
     if args.json:

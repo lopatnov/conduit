@@ -482,7 +482,9 @@ mod tests {
         );
 
         // A junction below the root, to a folder outside it on the same disk.
-        let outside = tempfile::tempdir().unwrap();
+        // Under the folder behind the share, not the temp directory: `mklink /J` cannot make a junction to
+        // a target on another volume or a UNC path, and the temp directory may be either.
+        let outside = tempfile::tempdir_in(&local).unwrap();
         std::fs::write(outside.path().join("secret"), "s").unwrap();
         junction(&local_root.join("j"), outside.path());
         let walk = open_beneath(&unc_root, Path::new("j/secret"));

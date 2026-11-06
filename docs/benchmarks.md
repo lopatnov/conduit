@@ -204,7 +204,12 @@ second. It starts its own mock upstreams and the Conduit binary, and needs only 
 ```bash
 python scripts/lb_compare.py --duration 10                   # all of it, about 8 minutes
 python scripts/lb_compare.py --strategies least-conn,p2c --scenarios slow-one
+python scripts/lb_compare.py --health-checks --strategies round-robin,least-response-time
 ```
+
+`--health-checks` gives every route an active health check (one `HEAD` probe a second). Without it
+`least-response-time` has no latencies to go on and behaves like round-robin, and a dead upstream is found
+only by passive ejection; with it the harness measures what a deployment with health checks sees.
 
 It uses a debug build when there is no release one, and each cell is a single run: throughput varies by
 10–20% from run to run on a desktop (round-robin on the mixed scenario gave 1504 to 1867 requests per second over five runs), so only compare differences well beyond that, and repeat a

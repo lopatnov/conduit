@@ -29,8 +29,8 @@ pub trait LoadBalancingStrategy: Send + Sync {
     ///
     /// # Parameters
     /// - `urls`      — healthy candidate URLs (already filtered by the caller)
-    /// - `weighted`  — `(url, weight)` pairs; read by [`WeightedRoundRobin`], [`LeastConn`] and
-    ///   [`P2cChoice`] (issue #506), ignored by the rest. A URL it does not name has weight 1.
+    /// - `weighted`  — `(url, weight)` pairs; read by [`WeightedRoundRobin`], [`LeastConn`],
+    ///   [`P2cChoice`] (issue #506) and [`LeastBandwidth`] (issue #627), ignored by the rest. A URL it does not name has weight 1.
     /// - `route_key` — stable key for per-route counters (round-robin cursor, etc.)
     /// - `hash_val`  — FNV-1a hash of the relevant input; used by hash strategies
     /// - `counters`  — shared per-route atomic counters for rotation

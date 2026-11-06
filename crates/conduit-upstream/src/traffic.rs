@@ -12,6 +12,7 @@
 //! of the last 14 seconds; this is the same idea with a smooth edge.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
 
 /// A rate is recomputed at most this often (milliseconds).
@@ -24,12 +25,15 @@ pub const DECAY_SECS: f64 = 10.0;
 pub struct TrafficMeter {
     /// Bytes ever recorded.
     total: AtomicU64,
-    /// `total` at the last refresh.
-    last_total: AtomicU64,
-    /// Monotonic milliseconds of the last refresh; 0 until the first reader arrives.
+    /// Monotonic milliseconds of the last refresh; 0 until the first reader arrives. Read without the
+    /// lock as the cheap "is a refresh due?" test; only written under it.
     last_ms: AtomicU64,
     /// The smoothed rate, `f64::to_bits`, in bytes per second.
     rate_bits: AtomicU64,
+    /// `total` at the last refresh, behind the lock that serialises refreshes: a refresh that was
+    /// descheduled between reading the total and storing it can no longer overwrite a newer one with an
+    /// older snapshot, which would make the next refresh count the same bytes twice (review of PR #631).
+    window: Mutex<u64>,
 }
 
 impl TrafficMeter {
@@ -50,31 +54,31 @@ impl TrafficMeter {
     }
 
     fn refresh(&self, now_ms: u64) {
+        // Nothing due: no lock, one atomic load. This is the path nearly every pick takes.
+        let last = self.last_ms.load(Ordering::Relaxed);
+        if last != 0 && now_ms.saturating_sub(last) < WINDOW_MS {
+            return;
+        }
+        // One refresh at a time. A reader that does not get the lock never waits: somebody else is
+        // refreshing, and it keeps the rate that is there.
+        let Ok(mut last_total) = self.window.try_lock() else {
+            return;
+        };
         let last = self.last_ms.load(Ordering::Relaxed);
         if last == 0 {
             // First reader: open the first window now. `last_total` stays 0, so the bytes recorded
             // before this first read (the meter is created by the first byte, the first read comes
             // with a later pick) are part of the first window instead of being thrown away: an upstream
             // that has just served a large response must not look idle.
-            self.last_ms
-                .compare_exchange(0, now_ms.max(1), Ordering::Relaxed, Ordering::Relaxed)
-                .ok();
+            self.last_ms.store(now_ms.max(1), Ordering::Relaxed);
             return;
         }
         let elapsed_ms = now_ms.saturating_sub(last);
         if elapsed_ms < WINDOW_MS {
-            return;
-        }
-        // One reader refreshes; the others keep the rate they have.
-        if self
-            .last_ms
-            .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
-            .is_err()
-        {
-            return;
+            return; // another reader refreshed between the check above and the lock
         }
         let total = self.total.load(Ordering::Relaxed);
-        let before = self.last_total.swap(total, Ordering::Relaxed);
+        let before = std::mem::replace(&mut *last_total, total);
         let secs = elapsed_ms as f64 / 1000.0;
         let instant = total.saturating_sub(before) as f64 / secs;
         let keep = (-secs / DECAY_SECS).exp();
@@ -83,6 +87,13 @@ impl TrafficMeter {
             (old * keep + instant * (1.0 - keep)).to_bits(),
             Ordering::Relaxed,
         );
+        self.last_ms.store(now_ms, Ordering::Relaxed);
+    }
+
+    /// `total` at the last refresh (tests only).
+    #[cfg(test)]
+    fn window_total(&self) -> u64 {
+        *self.window.lock().unwrap()
     }
 }
 
@@ -162,6 +173,49 @@ mod tests {
         m.rate(1_100); // 100 ms: window not over
         assert_eq!(m.rate(1_100), 0.0);
         assert!(m.rate(1_000 + WINDOW_MS) > 0.0);
+    }
+
+    /// Review finding on PR #631: refreshes are serialised, so the byte snapshot of the window only ever
+    /// moves forward and no byte is counted twice. Four writers and refreshers race on one meter while the
+    /// test watches the snapshot; with the lock-free version of this code a refresh that stalled between
+    /// reading the total and storing it could set the snapshot back (rare, hence a stress test).
+    #[test]
+    fn concurrent_refreshes_never_move_the_window_back() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let meter = Arc::new(TrafficMeter::default());
+        let clock = Arc::new(AtomicU64::new(1_000));
+        meter.rate(1_000);
+        let done = Arc::new(AtomicBool::new(false));
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let (meter, clock) = (meter.clone(), clock.clone());
+                std::thread::spawn(move || {
+                    for _ in 0..20_000 {
+                        meter.add(10);
+                        meter.rate(clock.fetch_add(WINDOW_MS, Ordering::Relaxed));
+                    }
+                })
+            })
+            .collect();
+        let watcher = {
+            let (meter, done) = (meter.clone(), done.clone());
+            std::thread::spawn(move || {
+                let mut seen = 0;
+                while !done.load(Ordering::Relaxed) {
+                    let now = meter.window_total();
+                    assert!(
+                        now >= seen,
+                        "the window snapshot went back from {seen} to {now}"
+                    );
+                    seen = now;
+                }
+            })
+        };
+        workers.into_iter().for_each(|w| w.join().unwrap());
+        done.store(true, Ordering::Relaxed);
+        watcher.join().unwrap();
+        assert_eq!(meter.total(), 4 * 20_000 * 10);
     }
 
     #[test]
