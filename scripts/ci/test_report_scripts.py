@@ -125,6 +125,21 @@ class WorkerSettings(unittest.TestCase):
         self.assertNotIn("⚠️", out)
         self.assertIn("⚠️", perf.render(dict(env, HEAD_RPS="700")))  # -12.5%
 
+    def test_a_scatter_above_the_mean_itself_is_not_believed(self):
+        for big in ("150", "1e308", "100.5"):
+            out = perf.render(dict(self.ENV, HEAD_RPS_SEM=big, HEAD_RPS="700"))
+            row = next(line for line in out.splitlines() if line.startswith("Requests/sec"))
+            self.assertIn("▼ -12.5% ⚠️", row)
+            self.assertNotIn("noise", row, f"scatter {big!r} must not be used")
+        out = perf.render(dict(self.ENV, HEAD_RPS_SEM="100", BASE_RPS_SEM="0", HEAD_RPS="700"))
+        self.assertIn("within noise", next(line for line in out.splitlines() if line.startswith("Requests/sec")))
+
+    def test_an_exact_tie_with_no_measured_scatter_is_within_noise(self):
+        env = dict(self.ENV, HEAD_RPS="800", HEAD_RPS_SEM="0.0", BASE_RPS_SEM="0.0")
+        row = next(line for line in perf.render(env).splitlines() if line.startswith("Requests/sec"))
+        self.assertIn("(within noise, ±0.0%)", row)
+        self.assertNotIn("⚠️", row)
+
     def test_hostile_scatter_numbers_fall_back_to_the_size_alone(self):
         for bad in ("nan", "inf", "-1", "<b>x</b>", ""):
             out = perf.render(dict(self.ENV, HEAD_RPS_SEM=bad, HEAD_RPS="700"))

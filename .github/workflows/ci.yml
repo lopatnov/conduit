@@ -571,7 +571,10 @@ jobs:
                       values = [get(m) for m in runs]
                       mu = sum(values) / len(values)
                       print(f"{p}_{name}={round(mu) if digits == 0 else round(mu, digits)}")
-                      if len(values) > 1 and mu > 0:
+                      # Four runs are what the report's noise factor (2.5) is calibrated for; with fewer parsed
+                      # runs the scatter would be understated, so none is reported and the report judges the
+                      # difference by its size alone.
+                      if len(values) >= 4 and mu > 0:
                           sd = (sum((v - mu) ** 2 for v in values) / (len(values) - 1)) ** 0.5
                           print(f"{p}_{name}_sem={round(sd / len(values) ** 0.5 / mu * 100, 1)}")
                   print(f"{p}_ok={round(min(m['success_rate'] for m in runs) * 100, 1)}")

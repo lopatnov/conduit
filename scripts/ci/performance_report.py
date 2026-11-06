@@ -64,6 +64,8 @@ FLAG_UNKNOWN_NOISE_AT = 10.0
 # A difference counts as noise below this many standard errors of the difference. With four runs per build
 # (about six degrees of freedom) the 95% critical value of Student's t is 2.45, so 2.5 keeps it honest.
 NOISE_FACTOR = 2.5
+# The largest standard error of a mean, in percent of the mean, that is believed (see `metrics`).
+MAX_SEM = 100.0
 
 
 def number(raw):
@@ -78,13 +80,19 @@ def metrics(env, prefix):
     """The measured numbers of one build and worker setting. `<k>_sem` is the standard error of the mean of the
     runs, as a percentage of that mean: the scatter the Δ column is judged against."""
     keys = ("rps", "p50", "p99", "ok", "rps_sem", "p50_sem", "p99_sem")
-    return {k: number(env.get(f"{prefix}_{k.upper()}", "")) for k in keys}
+    out = {k: number(env.get(f"{prefix}_{k.upper()}", "")) for k in keys}
+    for k in ("rps_sem", "p50_sem", "p99_sem"):
+        # A standard error above the mean itself says nothing, and an absurd one (1e308) would turn every row
+        # into "within noise": treat it as absent, so the difference is judged by its size.
+        if out[k] is not None and not 0 <= out[k] <= MAX_SEM:
+            out[k] = None
+    return out
 
 
 def noise(head, base, key):
     """One standard error of (head - base), in percent, or None when either side has no scatter estimate."""
     h, b = head.get(f"{key}_sem"), base.get(f"{key}_sem")
-    if h is None or b is None or h < 0 or b < 0:
+    if h is None or b is None:  # `metrics` has already dropped negative and absurd values
         return None
     return math.hypot(h, b)
 
@@ -173,7 +181,7 @@ def delta(head, base, key, higher_is_better, flag_at=FLAG_UNKNOWN_NOISE_AT):
     if n is None:
         flag = " ⚠️" if abs(pct) >= flag_at and not good else ""
         return f"{arrow} {sign}{pct:.1f}%{flag}"
-    if abs(pct) < NOISE_FACTOR * n:
+    if abs(pct) <= NOISE_FACTOR * n:  # `<=`: with no measured scatter at all, an exact tie is still noise
         return f"{arrow} {sign}{pct:.1f}% (within noise, ±{n:.1f}%)"
     flag = " ⚠️" if abs(pct) >= FLAG_BEYOND_NOISE_AT and not good else ""
     return f"{arrow} {sign}{pct:.1f}%{flag} (beyond noise, ±{n:.1f}%)"

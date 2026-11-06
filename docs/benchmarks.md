@@ -40,7 +40,9 @@ second (from 13.7k to 17.5k), and the two copies differed by 0.0% on average. So
 of each mean from the scatter of its runs, and the report calls a difference *within noise* when
 it is smaller than 2.5 times the standard error of the difference. Only an adverse difference beyond
 the noise (and at least 3%) is flagged ⚠️. A drop of 6% that is within noise is not a finding;
-re-run the job or measure with `scripts/bench/ab.sh` before acting on it. The load-balancing
+re-run the job or measure with `scripts/bench/ab.sh` before acting on it. A report holds eight
+comparisons (four metrics at two worker settings), so one lone ⚠️ among them can still be chance:
+look for the same direction in the other rows and in a second run. The load-balancing
 tables below hold single 5-second runs, so they are flagged only for drops above 25%.
 
 | | |
