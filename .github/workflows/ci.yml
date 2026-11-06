@@ -715,6 +715,38 @@ jobs:
       - name: Check Layer-1 crates don't reference SiteConfig/AppConfig
         run: ./scripts/check-layer-boundaries.sh
 
+  # ── Documentation config examples (issue #567) ───────────────────────────────
+  # Every unmarked yaml/json block of README.md, npm/Readme.md and docs/*.md, and every file of examples/, must pass
+  # `conduit validate` (a typo'd key or a rejected setting in an example is a bug). A block that is deliberately not a
+  # whole config carries `<!-- docs-check: skip (why) -->` before its fence. The binary has every feature, so that
+  # feature-gated examples validate. Read-only: it runs the repository's own scripts and binary, no token.
+  docs-configs:
+    name: Docs config examples
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          key: docs-configs
+        continue-on-error: true
+
+      - name: Tests of the checker
+        run: python3 scripts/test_check_doc_configs.py
+
+      - name: Build conduit (all features)
+        run: cargo build --features full
+
+      - name: Validate the documented configs
+        run: python3 scripts/check_doc_configs.py --conduit target/debug/conduit
+
   # ── Code length report: Rust files over the soft (400) / hard (1000) limits ─
   # Counts *code* lines (comments, blank lines and tests excluded) with
   # scripts/check_file_length.py and posts the result as a PR comment, so a PR

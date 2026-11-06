@@ -1,4 +1,5 @@
 {
+  "host": "example.com",
   "port": 443,
   "tls": {
     "acme": {
