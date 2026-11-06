@@ -240,12 +240,16 @@ def render(env):
         else:
             note = "Hardware varies between runs: absolute numbers are not comparable across PRs."
         lines += ["", f"**Runner:** {hw}. " + note]
-    sections = []
+    sections, shown = [], []
     for variable, heading_suffix, workers_text in LB_SETTINGS:
-        sections += render_lb(parse_lb(env.get(variable, "")), heading_suffix, workers_text)
+        part = render_lb(parse_lb(env.get(variable, "")), heading_suffix, workers_text)
+        if part:
+            sections += part
+            shown.append(heading_suffix)
     if sections:
-        # Collapsed: the tables are long and answer a different question than the passthrough numbers above.
-        lines += ["", "<details><summary>Load balancing across four upstreams (one and four worker threads)</summary>",
+        # Collapsed: the tables are long and answer a different question than the passthrough numbers above. The
+        # summary names only the worker settings that produced a table (the four-worker run can be missing).
+        lines += ["", f"<details><summary>Load balancing across four upstreams ({', '.join(shown)})</summary>",
                   "", LB_INTRO] + sections + ["", "</details>"]
     return "\n".join(lines) + "\n"
 

@@ -204,6 +204,16 @@ class WorkerSettings(unittest.TestCase):
     def test_no_load_balancing_data_means_no_collapsed_block(self):
         self.assertNotIn("<details>", perf.render(self.ENV))
 
+    def test_the_block_summary_names_only_the_worker_settings_that_produced_a_table(self):
+        lb = LoadBalancingSection()
+        both = perf.render(dict(self.ENV, **lb.lb(), **lb.lb_w4()))
+        self.assertIn("<summary>Load balancing across four upstreams (one worker thread, four worker threads)</summary>", both)
+        one = perf.render(dict(self.ENV, **lb.lb()))  # the four-worker run is missing
+        self.assertIn("<summary>Load balancing across four upstreams (one worker thread)</summary>", one)
+        self.assertNotIn("four worker threads", one)
+        four = perf.render(dict(self.ENV, **lb.lb_w4()))  # only the four-worker run produced a table
+        self.assertIn("<summary>Load balancing across four upstreams (four worker threads)</summary>", four)
+
 
 class LoadBalancingSection(unittest.TestCase):
     """The load-balancing tables of issue #629: parsed defensively, because they come from a job output."""
