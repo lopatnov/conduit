@@ -163,9 +163,10 @@ proxy:
 ```
 
 The mirror receives a copy of the request headers, `Authorization` and cookies included, so mirror
-only to a service you trust. Upstream certificates are always checked against the host in the target
-URL, so write the name the certificate carries; `upstreamTls.serverName` does not change that yet
-([#583](https://github.com/lopatnov/conduit/issues/583)).
+only to a service you trust. While verification is on (the default; `upstreamTls.verify: false` turns it
+off, and then nothing is checked), upstream certificates are checked against the host in the target
+URL, or set `upstreamTls.serverName`, which is then sent as SNI and used for the check instead
+(like nginx `proxy_ssl_name`).
 **→ Details:** [Backup targets](docs/configuration.md#proxy-route-field-reference) ·
 [Upstream TLS](docs/configuration.md#upstream-tls-verification) ·
 [Mirroring](docs/configuration.md#traffic-mirroring) ·
@@ -363,6 +364,7 @@ sites:
 Instead of a config file, Conduit can read its sites from Kubernetes custom resources. Each
 `ConduitSite` is one virtual site, and its `spec` takes the same fields as a site in `conduit.yaml`.
 
+<!-- docs-check: skip (a Kubernetes ConduitSite resource, not a Conduit config file) -->
 ```yaml
 # site.yaml
 apiVersion: conduit.io/v1
@@ -418,7 +420,7 @@ Uploads are open to anyone who can reach the port unless the site also has an au
 
 **→ More scenarios:** [docs/recipes.md](docs/recipes.md) covers HTTPS, load balancing, failover,
 circuit breaker, caching, security hardening, observability and Kubernetes, and
-[`examples/`](examples/) has a validated config for each.
+[`examples/`](examples/) has a validated config for each. Every other topic is in [`docs/`](docs/).
 
 ## Installation
 
@@ -459,17 +461,20 @@ Download from [GitHub Releases](https://github.com/lopatnov/conduit/releases):
 | macOS Apple Silicon  | `conduit-aarch64-apple-darwin.tar.gz`       | `conduit-aarch64-apple-darwin-full.tar.gz`       |
 | Windows x86-64       | `conduit-x86_64-pc-windows-msvc.exe.zip`    | `conduit-x86_64-pc-windows-msvc-full.exe.zip`    |
 
-```bash
-# Linux x86-64, standard
-curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu.tar.gz \
-  | tar xz && ./conduit-x86_64-unknown-linux-gnu --version
-```
-
 Every release also carries `SHA256SUMS.txt` (it lists every file attached to the release,
 archives included) and GitHub build-provenance attestations for the bare binaries, which are
 attached next to the archives (`gh attestation verify <binary> --repo lopatnov/conduit`; the
 archives themselves are covered by the checksums only). The musl builds are statically linked;
-the glibc builds link the system C library dynamically.
+the glibc builds link the system C library dynamically. Verify the download before you run it:
+
+```bash
+# Linux x86-64, standard: download, verify, then run
+BASE=https://github.com/lopatnov/conduit/releases/latest/download
+curl -LO $BASE/conduit-x86_64-unknown-linux-gnu.tar.gz -O $BASE/SHA256SUMS.txt \
+  && sha256sum --ignore-missing -c SHA256SUMS.txt \
+  && tar xzf conduit-x86_64-unknown-linux-gnu.tar.gz \
+  && ./conduit-x86_64-unknown-linux-gnu --version
+```
 
 ### cargo install
 
@@ -742,6 +747,7 @@ validation in JSON and YAML configs.
 
 **VS Code — JSON: workspace-wide (all `conduit*.json` files):**
 
+<!-- docs-check: skip (an editor settings file) -->
 ```json
 // .vscode/settings.json
 {
@@ -755,6 +761,7 @@ validation in JSON and YAML configs.
 **VS Code — YAML: add to `.vscode/settings.json`** (requires the
 [YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)):
 
+<!-- docs-check: skip (an editor settings file) -->
 ```json
 // .vscode/settings.json
 {

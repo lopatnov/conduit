@@ -138,10 +138,15 @@ For a longer, local comparison with failures and weights see
 
 ## Reproduce it on your machine
 
-Linux or macOS; needs Go, a Rust toolchain and `oha`:
+Linux or macOS; needs Go, a Rust toolchain, Python 3 and `oha`. Save the block as `bench.sh` and run `bash bench.sh`: it stops
+at the first failure, and on the way out it stops the two background processes it started and removes its scratch
+directory.
 
 ```bash
+set -eu
 WORK=$(mktemp -d)   # a private scratch directory, not a predictable name in /tmp
+# `jobs -p` lists only children that are still running, so no stale process number is ever signalled
+trap 'kill $(jobs -p) 2>/dev/null; rm -r -- "${WORK:?}"' EXIT
 
 # 1. the upstream: the same program as above, written to the scratch directory
 cat > "$WORK/main.go" <<'GOEOF'
@@ -177,17 +182,21 @@ func main() {
         w.Header().Set("Content-Type", "application/json")
         w.Write(body)
     })
-    srv := &http.Server{Addr: ":" + port, ReadTimeout: 5 * time.Second}
+    // CI listens on all interfaces (":" + port); a run on a laptop binds to loopback only
+    srv := &http.Server{Addr: "127.0.0.1:" + port, ReadTimeout: 5 * time.Second}
     srv.ListenAndServe()
 }
 GOEOF
 (cd "$WORK" && go mod init bench-upstream && go build -o bench-upstream .)
 "$WORK"/bench-upstream &
+UP=$!
+sleep 1; kill -0 "$UP"   # stops the script here if the upstream did not start (is port 4000 in use?)
 
 # 2. Conduit, built and configured exactly as in CI
 cd /path/to/conduit && cargo build --release
 printf '{ "port": 8080, "proxy": "http://127.0.0.1:4000" }' > "$WORK/conduit.json"
 ./target/release/conduit -c "$WORK/conduit.json" &
+CP=$!
 curl -sf http://127.0.0.1:8080/__health__   # wait until this answers
 
 # 3. the load
@@ -196,8 +205,7 @@ oha -z 10s -c 50 --no-tui --output-format json http://127.0.0.1:8080/ \
 ```
 
 Record `nproc`, the CPU model (`grep -m1 'model name' /proc/cpuinfo`), the RAM, the Conduit
-commit and `global.workers` next to any number you publish. Stop the background processes and
-remove the scratch directory afterwards: `kill %1 %2; rm -r "$WORK"`.
+commit and `global.workers` next to any number you publish.
 
 ## Why the CI report measures one worker thread and four
 
@@ -258,8 +266,9 @@ A comparison is only fair when everything but the proxy is the same:
 
 ## Binary size and dependencies
 
-Every pull request gets a **Footprint report** comment (`.github/workflows/ci.yml`): the stripped
-release binary size and the number of normal dependencies for `--no-default-features`,
+Pull requests get a **Footprint report** comment (`.github/workflows/ci.yml`; on a pull request from a fork the
+comment cannot be posted and the report stays in the job log): the stripped
+release binary size and the number of normal dependencies (`cargo tree -e normal | wc -l`, a rough measure) for `--no-default-features`,
 `--no-default-features --features static`, `default`, `standard` and `full`. Sizes depend on the
 target (musl, glibc, Windows), so compare like with like. To measure one locally:
 

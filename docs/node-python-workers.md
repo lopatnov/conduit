@@ -31,8 +31,8 @@ for the distinction.
 - `proxy:`/`routes:` path/host/header/query matching — route specific paths to
   your worker pool while other paths go elsewhere (static files, a different
   upstream, etc.).
-- 9 load-balancing strategies (round-robin, least-connections, IP hash, P2C,
-  weighted round-robin, ...) across however many worker instances you run.
+- Load balancing (round-robin, least-conn, IP hash, P2C, weighted round-robin, least-bandwidth and more)
+  across however many worker instances you run.
 - TLS termination, rate limiting, circuit breaking, passive health tracking
   (EWMA latency, outlier detection), retries with jitter — all in front of
   your worker pool, none of it your application code's problem.

@@ -450,7 +450,7 @@
           "type": "object",
           "properties": {
             "verify":     { "type": "boolean", "description": "Verify upstream TLS certificate (default true)." },
-            "serverName": { "type": "string", "description": "TLS server name: sent as SNI and used to verify the upstream certificate." }
+            "serverName": { "type": "string", "description": "TLS server name: sent as SNI and used to verify the upstream certificate, instead of the host in the target URL (like nginx proxy_ssl_name)." }
           }
         },
         "rateLimit": {

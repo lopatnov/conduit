@@ -173,7 +173,7 @@ pub enum UpstreamsCommand {
     Add(UpstreamAddArgs),
     /// Remove a target from a route (in-memory only)
     Remove(UpstreamRemoveArgs),
-    /// Change a target's weight (WeightedRoundRobin only)
+    /// Change a target's weight (weighted-round-robin, least-conn, p2c and least-bandwidth read it)
     Weight(UpstreamWeightArgs),
 }
 
@@ -201,7 +201,7 @@ pub struct UpstreamAddArgs {
     /// Upstream URL (e.g. http://backend:4000)
     #[arg(long)]
     pub target: String,
-    /// Weight (for weighted-round-robin)
+    /// Weight (read by weighted-round-robin, least-conn, p2c and least-bandwidth; default 1)
     #[arg(long)]
     pub weight: Option<u32>,
     /// Limit the override to a specific site label (e.g. app.example.com:443).

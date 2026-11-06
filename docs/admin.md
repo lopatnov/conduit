@@ -42,11 +42,17 @@ global:
   admin:
     bind: "127.0.0.1:2019" # required — loopback only
     token: "$ADMIN_TOKEN" # strongly recommended in production
+sites:
+  - port: 8080
+    proxy: http://127.0.0.1:4000
 ```
 
 ```json
 // conduit.json
-{ "global": { "admin": { "bind": "127.0.0.1:2019", "token": "$ADMIN_TOKEN" } } }
+{
+  "global": { "admin": { "bind": "127.0.0.1:2019", "token": "$ADMIN_TOKEN" } },
+  "sites": [ { "port": 8080, "proxy": "http://127.0.0.1:4000" } ]
+}
 ```
 
 > **Security:** Keep `bind` on loopback (`127.0.0.1`). Never bind to `0.0.0.0`
@@ -99,6 +105,9 @@ global:
   admin:
     bind: "127.0.0.1:2019"
     token: "$ADMIN_TOKEN"
+sites:
+  - port: 8080
+    proxy: http://127.0.0.1:4000
 ```
 
 ### Using the token
@@ -141,6 +150,7 @@ curl http://localhost:2019/status
 
 **Response:**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 {
   "status": "running",
@@ -178,12 +188,14 @@ curl -X POST http://localhost:2019/reload
 
 **On success:**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 { "status": "ok", "message": "config reloaded" }
 ```
 
 **On success with feature warnings** (feature configured but not compiled in):
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 {
   "status": "ok",
@@ -194,6 +206,7 @@ curl -X POST http://localhost:2019/reload
 
 **On validation error (400):**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 {
   "status": "error",
@@ -203,6 +216,7 @@ curl -X POST http://localhost:2019/reload
 
 **On cold field change (400):**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 {
   "status": "error",
@@ -245,6 +259,7 @@ curl -X POST http://localhost:2019/shutdown
 
 **Response:**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 { "status": "shutting_down" }
 ```
@@ -263,6 +278,7 @@ curl http://localhost:2019/upstreams
 
 **Response:**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 {
   "upstreams": [
@@ -374,6 +390,7 @@ curl -X POST http://localhost:2019/upstreams/add \
 
 **Response:**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 {
   "status": "ok",
@@ -400,6 +417,7 @@ curl -X POST http://localhost:2019/upstreams/remove \
 
 **Response:**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 {
   "status": "ok",
@@ -431,6 +449,7 @@ curl -X POST http://localhost:2019/upstreams/weight \
 
 **Response:**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 {
   "status": "ok",
@@ -461,6 +480,7 @@ entry on every listener port the server serves, which is what you want behind a 
 
 **Response:**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 { "status": "ok", "purged": true, "url": "https://api.example.com/v1/products" }
 ```
@@ -487,6 +507,7 @@ curl http://localhost:2019/rate-limits
 
 **Response:**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 {
   "app.example.com:8080": {
@@ -540,12 +561,14 @@ curl -X POST http://localhost:2019/ip-deny \
 
 **Response:**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 { "status": "ok", "action": "added", "cidr": "203.0.113.0/24" }
 ```
 
 An invalid CIDR/IP returns `400 Bad Request`:
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 { "status": "error", "message": "invalid CIDR or IP address: \"not-an-ip\"" }
 ```
@@ -571,6 +594,7 @@ curl -X DELETE http://localhost:2019/ip-deny \
 
 **Response:**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 { "status": "ok", "action": "removed", "cidr": "203.0.113.0/24" }
 ```
@@ -599,6 +623,7 @@ and reports success without the new certificate ever being loaded.
 
 **Request body:**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 {
   "cert": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
@@ -635,6 +660,7 @@ jq -n --rawfile cert /tmp/new-server.crt \
 
 **Success response (200):**
 
+<!-- docs-check: skip (an Admin API reply, not a config) -->
 ```json
 {
   "status": "ok",
@@ -736,6 +762,9 @@ global:
   admin:
     bind: "127.0.0.1:2019"
     token: "$ADMIN_TOKEN" # read from environment variable
+sites:
+  - port: 8080
+    proxy: http://127.0.0.1:4000
 ```
 
 **Zero-downtime config update workflow:**
