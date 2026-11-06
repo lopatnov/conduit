@@ -19,12 +19,14 @@ pub fn upstream_json(route: &str, target: &str, weight: Option<u32>, site: Optio
 
 // ── Admin API helpers ──────────────────────────────────────────────────────
 
+/// The Admin API address: the flag, else `CONDUIT_ADMIN`, else `127.0.0.1:2019`.
 pub fn resolve_admin(flag: Option<&str>) -> String {
     flag.map(ToOwned::to_owned)
         .or_else(|| std::env::var("CONDUIT_ADMIN").ok())
         .unwrap_or_else(|| "127.0.0.1:2019".to_owned())
 }
 
+/// GET `path` from the Admin API and print the body; on failure print the error and exit 1.
 pub fn admin_get(path: &str, addr: &str) {
     match http_get(path, addr) {
         Ok(body) => println!("{body}"),
@@ -35,6 +37,7 @@ pub fn admin_get(path: &str, addr: &str) {
     }
 }
 
+/// POST `path` (no body) to the Admin API and print the reply; on failure print the error and exit 1.
 pub fn admin_post(path: &str, addr: &str) {
     match http_post(path, addr) {
         Ok(body) => println!("{body}"),
@@ -56,14 +59,17 @@ pub fn admin_post_json(path: &str, addr: &str, json_body: &str) {
     }
 }
 
+/// GET `path` from the Admin API at `addr` and return the body of a 2xx reply.
 pub(crate) fn http_get(path: &str, addr: &str) -> anyhow::Result<String> {
     http_request("GET", path, addr, None)
 }
 
+/// POST `path` with no body to the Admin API at `addr` and return the body of a 2xx reply.
 fn http_post(path: &str, addr: &str) -> anyhow::Result<String> {
     http_request("POST", path, addr, None)
 }
 
+/// POST `json_body` to `path` on the Admin API at `addr` and return the body of a 2xx reply.
 fn http_post_json(path: &str, addr: &str, json_body: &str) -> anyhow::Result<String> {
     http_request("POST", path, addr, Some(json_body))
 }
@@ -188,6 +194,7 @@ fn http_request_with(
     }
 }
 
+/// Everything after the blank line that ends the headers, or the whole text when there is none.
 fn extract_body(response: &str) -> String {
     response
         .find("\r\n\r\n")
@@ -218,6 +225,7 @@ mod tests {
     const REJECTED: &str = "HTTP/1.1 400 Bad Request\r\n\r\n{\"status\":\"error\",\"message\":\"cold fields changed\"}";
     const UNAUTHORIZED: &str = "HTTP/1.1 401 Unauthorized\r\n\r\n{\"error\":\"unauthorized\"}";
 
+    /// A 2xx reply returns its body.
     #[test]
     fn a_2xx_reply_returns_its_body() {
         let (addr, server) = serve_once(OK);
@@ -228,6 +236,7 @@ mod tests {
         server.join().unwrap();
     }
 
+    /// A rejected reload is an error that carries the message.
     #[test]
     fn a_rejected_reload_is_an_error_that_carries_the_message() {
         let (addr, server) = serve_once(REJECTED);
@@ -241,6 +250,7 @@ mod tests {
         );
     }
 
+    /// A 401 is an error.
     #[test]
     fn a_401_is_an_error() {
         let (addr, server) = serve_once(UNAUTHORIZED);
@@ -251,6 +261,7 @@ mod tests {
         assert!(err.contains("HTTP 401"), "{err}");
     }
 
+    /// The token is sent as a bearer header and only when given.
     #[test]
     fn the_token_is_sent_as_a_bearer_header_and_only_when_given() {
         let (addr, server) = serve_once(OK);
@@ -267,6 +278,7 @@ mod tests {
         );
     }
 
+    /// A token with a line break is refused before anything is sent.
     #[test]
     fn a_token_with_a_line_break_is_refused_before_anything_is_sent() {
         for bad in ["a\r\nX-Evil: 1", "a\nb", "a\rb"] {
@@ -278,6 +290,7 @@ mod tests {
         }
     }
 
+    /// A redirect is an error not a success.
     #[test]
     fn a_redirect_is_an_error_not_a_success() {
         let (addr, server) = serve_once(
@@ -293,6 +306,7 @@ Location: /elsewhere
         assert!(err.contains("HTTP 302"), "{err}");
     }
 
+    /// A reply that is not http is an error.
     #[test]
     fn a_reply_that_is_not_http_is_an_error() {
         let (addr, server) = serve_once("garbage without a status line");
@@ -303,6 +317,7 @@ Location: /elsewhere
         assert!(err.contains("not HTTP"), "{err}");
     }
 
+    /// The token warning appears only for an address that is not loopback.
     #[test]
     fn the_token_warning_appears_only_for_an_address_that_is_not_loopback() {
         use std::net::IpAddr;
@@ -316,6 +331,7 @@ Location: /elsewhere
         assert!(!w.contains("s3cret"));
     }
 
+    /// The error text of a server carries no control characters.
     #[test]
     fn the_error_text_of_a_server_carries_no_control_characters() {
         assert_eq!(printable("ok\tline\nnext"), "ok\tline\nnext");
@@ -331,6 +347,7 @@ Location: /elsewhere
         );
     }
 
+    /// The request is http 1 0 so the reply cannot be chunked.
     #[test]
     fn the_request_is_http_1_0_so_the_reply_cannot_be_chunked() {
         let (addr, server) = serve_once(OK);
@@ -340,6 +357,7 @@ Location: /elsewhere
         assert!(sent.contains("Connection: close\r\n"), "{sent}");
     }
 
+    /// The token from the environment is none when unset or empty and an error when not unicode.
     #[test]
     fn the_token_from_the_environment_is_none_when_unset_or_empty_and_an_error_when_not_unicode() {
         use std::env::VarError;
@@ -354,6 +372,7 @@ Location: /elsewhere
         assert!(err.to_string().contains("not valid Unicode"), "{err}");
     }
 
+    /// Status code reads the first line only.
     #[test]
     fn status_code_reads_the_first_line_only() {
         assert_eq!(status_code("HTTP/1.1 204 No Content\r\n\r\n"), Some(204));

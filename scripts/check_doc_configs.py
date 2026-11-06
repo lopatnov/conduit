@@ -43,13 +43,16 @@ class Block:
     """One fenced block: where it is, what language, its text, and whether it is marked as a fragment."""
 
     def __init__(self, path, line, lang, text, skip_reason):
+        """Remember where the block is, its language, its text and, if it is marked, why it is skipped."""
         self.path, self.line, self.lang, self.text, self.skip_reason = path, line, lang, text, skip_reason
 
     @property
     def skipped(self):
+        """True when the block carries a skip marker."""
         return self.skip_reason is not None
 
     def where(self):
+        """`file:line` of the block's opening fence, relative to the repository."""
         return f"{os.path.relpath(self.path, REPO)}:{self.line}"
 
 
@@ -138,6 +141,7 @@ def validate_file(conduit, path):
 
 
 def check_block(conduit, block, tmp):
+    """Write one block to a temporary file and validate it; return (ok, output excerpt)."""
     suffix = LANGS[block.lang]
     text = strip_json_comments(block.text) if suffix == ".json" else block.text
     path = os.path.join(tmp, f"block-{id(block)}{suffix}")
@@ -147,12 +151,14 @@ def check_block(conduit, block, tmp):
 
 
 def default_files():
+    """README.md, npm/Readme.md and docs/*.md, those that exist."""
     files = [os.path.join(REPO, "README.md"), os.path.join(REPO, "npm", "Readme.md")]
     files += sorted(glob.glob(os.path.join(REPO, "docs", "*.md")))
     return [f for f in files if os.path.exists(f)]
 
 
 def example_files():
+    """Every yaml, yml and json file of examples/."""
     out = []
     for pattern in ("*.yaml", "*.yml", "*.json"):
         out += glob.glob(os.path.join(REPO, "examples", pattern))
@@ -160,6 +166,7 @@ def example_files():
 
 
 def run(conduit, files, jobs, with_examples):
+    """Extract and validate everything; return (checked, skipped, failures, problems)."""
     problems, blocks = [], []
     for path in files:
         with open(path, encoding="utf-8") as f:
@@ -187,6 +194,7 @@ def run(conduit, files, jobs, with_examples):
 
 
 def main(argv=None):
+    """Command-line entry point: 0 all good, 1 something failed, 2 usage or setup error."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("files", nargs="*", help="markdown files to check (default: README.md, npm/Readme.md, docs/*.md, and examples/)")
     parser.add_argument("--conduit", default=os.environ.get("CONDUIT_BIN", "conduit"), help="the conduit binary (default: $CONDUIT_BIN or `conduit` on PATH)")

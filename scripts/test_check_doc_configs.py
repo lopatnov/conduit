@@ -37,90 +37,109 @@ else:
 
 
 def md(*parts):
+    """Join lines into markdown text that ends with a newline."""
     return "\n".join(parts) + "\n"
 
 
 class Extract(unittest.TestCase):
     def blocks(self, text):
+        """Extract the blocks and problems of a markdown text as if it were docs/x.md."""
         return cdc.extract(os.path.join(cdc.REPO, "docs", "x.md"), text)
 
     def test_only_yaml_yml_json_fences_are_blocks(self):
+        """Only yaml yml json fences are blocks."""
         blocks, problems = self.blocks(md("```yaml", "port: 1", "```", "```bash", "ls", "```", "```json", "{}", "```", "```yml", "a: 1", "```"))
         self.assertEqual([b.lang for b in blocks], ["yaml", "json", "yml"])
         self.assertEqual(problems, [])
 
     def test_a_block_knows_its_line_and_text(self):
+        """A block knows its line and text."""
         blocks, _ = self.blocks(md("text", "", "```yaml", "port: 1", "host: a", "```"))
         self.assertEqual(blocks[0].line, 3)
         self.assertEqual(blocks[0].text, "port: 1\nhost: a\n")
 
     def test_the_marker_marks_the_next_fence_only(self):
+        """The marker marks the next fence only."""
         blocks, problems = self.blocks(md("<!-- docs-check: skip (excerpt) -->", "```yaml", "a: 1", "```", "```yaml", "b: 2", "```"))
         self.assertEqual([b.skipped for b in blocks], [True, False])
         self.assertEqual(blocks[0].skip_reason, "excerpt")
         self.assertEqual(problems, [])
 
     def test_the_reason_may_contain_parentheses(self):
+        """The reason may contain parentheses."""
         blocks, problems = self.blocks(md("<!-- docs-check: skip (command output (JSON), not a config) -->", "```json", "{}", "```"))
         self.assertEqual(blocks[0].skip_reason, "command output (JSON), not a config")
         self.assertEqual(problems, [])
 
     def test_a_marker_may_be_separated_from_its_fence_by_one_blank_line(self):
+        """A marker may be separated from its fence by one blank line."""
         blocks, problems = self.blocks(md("<!-- docs-check: skip -->", "", "```yaml", "a: 1", "```"))
         self.assertTrue(blocks[0].skipped)
         self.assertEqual(problems, [])
 
     def test_a_marker_with_nothing_after_it_is_a_problem(self):
+        """A marker with nothing after it is a problem."""
         _, problems = self.blocks(md("<!-- docs-check: skip -->", "", "", "some prose", "```yaml", "a: 1", "```"))
         self.assertEqual(len(problems), 1)
         self.assertIn("not followed by a fence", problems[0])
 
     def test_a_marker_at_the_end_of_the_file_is_a_problem(self):
+        """A marker at the end of the file is a problem."""
         _, problems = self.blocks(md("text", "<!-- docs-check: skip -->"))
         self.assertEqual(len(problems), 1)
 
     def test_two_markers_in_a_row_are_a_problem(self):
+        """Two markers in a row are a problem."""
         _, problems = self.blocks(md("<!-- docs-check: skip -->", "<!-- docs-check: skip -->", "```yaml", "a: 1", "```"))
         self.assertEqual(len(problems), 1)
 
     def test_an_unclosed_fence_is_a_problem(self):
+        """An unclosed fence is a problem."""
         blocks, problems = self.blocks(md("```yaml", "a: 1", "", "text goes on"))
         self.assertEqual(blocks, [])
         self.assertIn("never closed", problems[0])
 
     def test_a_longer_fence_is_closed_only_by_an_equal_or_longer_one(self):
+        """A longer fence is closed only by an equal or longer one."""
         blocks, problems = self.blocks(md("````yaml", "a: 1", "```", "b: 2", "````"))
         self.assertEqual(blocks[0].text, "a: 1\n```\nb: 2\n")
         self.assertEqual(problems, [])
 
     def test_tilde_fences_work_and_are_not_closed_by_backticks(self):
+        """Tilde fences work and are not closed by backticks."""
         blocks, _ = self.blocks(md("~~~yaml", "a: 1", "```", "~~~"))
         self.assertEqual(blocks[0].text, "a: 1\n```\n")
 
     def test_a_fence_inside_another_language_block_is_not_a_block(self):
+        """A fence inside another language block is not a block."""
         blocks, _ = self.blocks(md("```markdown", "```yaml", "a: 1", "```", "```"))
         self.assertEqual(blocks, [])
 
     def test_a_config_fence_opening_inside_an_open_fence_is_a_problem(self):
+        """A config fence opening inside an open fence is a problem."""
         _, problems = self.blocks(md("```bash", "echo hi", "```yaml", "a: 1", "```", "", "```yaml", "b: 2", "```"))
         self.assertTrue(any("opens inside the fence opened at line 1" in p for p in problems), problems)
 
     def test_an_inner_fence_of_a_markdown_example_is_not_a_problem(self):
+        """An inner fence of a markdown example is not a problem."""
         _, problems = self.blocks(md("````markdown", "```yaml", "a: 1", "```", "````"))
         self.assertEqual(problems, [])
         _, problems = self.blocks(md("~~~markdown", "```yaml", "a: 1", "```", "~~~"))
         self.assertEqual(problems, [])
 
     def test_a_marker_inside_a_fence_is_just_text(self):
+        """A marker inside a fence is just text."""
         blocks, problems = self.blocks(md("```yaml", "<!-- docs-check: skip -->", "a: 1", "```"))
         self.assertFalse(blocks[0].skipped)
         self.assertEqual(problems, [])
 
     def test_the_info_string_may_have_more_words(self):
+        """The info string may have more words."""
         blocks, _ = self.blocks(md("```yaml title=conduit.yaml", "a: 1", "```"))
         self.assertEqual(blocks[0].lang, "yaml")
 
     def test_json_comment_lines_are_removed_but_a_slash_slash_in_a_value_stays(self):
+        """Json comment lines are removed but a slash slash in a value stays."""
         text = '{\n  // a comment\n  "url": "http://a//b"\n}\n'
         self.assertEqual(cdc.strip_json_comments(text), '{\n  "url": "http://a//b"\n}\n')
 
@@ -128,6 +147,7 @@ class Extract(unittest.TestCase):
 class Run(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        """Write the stub `conduit` to a temporary directory once for the class."""
         cls.tmp = tempfile.TemporaryDirectory()
         cls.stub = os.path.join(cls.tmp.name, "stub.py")
         with open(cls.stub, "w", encoding="utf-8") as f:
@@ -136,47 +156,57 @@ class Run(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        """Remove the temporary directory of the stub."""
         cls.tmp.cleanup()
 
     def check(self, markdown):
+        """Validate a markdown text with the stub `conduit`; return what `run` returns."""
         path = os.path.join(self.tmp.name, "doc.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write(markdown)
         return cdc.run(self.conduit, [path], jobs=2, with_examples=False)
 
     def test_good_blocks_pass(self):
+        """Good blocks pass."""
         checked, skipped, failures, problems = self.check(md("```yaml", "port: 1", "```", "```json", '{ "port": 1 }', "```"))
         self.assertEqual((checked, skipped, failures, problems), (2, 0, [], []))
 
     def test_an_unknown_key_warning_fails_the_block(self):
+        """An unknown key warning fails the block."""
         _, _, failures, _ = self.check(md("```yaml", "BADKEY: 1", "```"))
         self.assertEqual(len(failures), 1)
         self.assertIn("not a recognized configuration key", failures[0][1])
 
     def test_another_warning_does_not_fail_the_block(self):
+        """Another warning does not fail the block."""
         _, _, failures, _ = self.check(md("```yaml", "OTHERWARN: 1", "```"))
         self.assertEqual(failures, [])
 
     def test_a_validation_error_fails_the_block(self):
+        """A validation error fails the block."""
         _, _, failures, _ = self.check(md("```yaml", "BADVALUE: 1", "```"))
         self.assertEqual(len(failures), 1)
         self.assertIn("broken", failures[0][1])
 
     def test_a_marked_fragment_is_not_run(self):
+        """A marked fragment is not run."""
         checked, skipped, failures, _ = self.check(md("<!-- docs-check: skip (excerpt) -->", "```yaml", "BADVALUE: 1", "```"))
         self.assertEqual((checked, skipped, failures), (0, 1, []))
 
     def test_json_comments_are_stripped_before_the_check(self):
+        """Json comments are stripped before the check."""
         _, _, failures, _ = self.check(md("```json", "{", "  // BADVALUE would fail if it were not removed", '  "a": 1', "}", "```"))
         self.assertEqual(failures, [])
 
     def test_a_failure_names_the_file_and_line(self):
+        """A failure names the file and line."""
         _, _, failures, _ = self.check(md("text", "```yaml", "BADVALUE: 1", "```"))
         self.assertTrue(failures[0][0].endswith(":2"), failures[0][0])
 
 
 class Main(unittest.TestCase):
     def test_exit_codes(self):
+        """Exit codes."""
         with tempfile.TemporaryDirectory() as tmp:
             stub = os.path.join(tmp, "stub.py")
             with open(stub, "w", encoding="utf-8") as f:
