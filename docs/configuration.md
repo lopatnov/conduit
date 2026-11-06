@@ -33,8 +33,10 @@ The published downloads and images are `standard` (or `full`, files and tags end
 
 **If your config uses something your binary lacks**, Conduit does not fail: the section is
 parsed, **ignored**, and a warning is printed at start-up and by `conduit validate`. That
-matters most for the security features, where "ignored" means the check is not applied
-(`jwtAuth` without `jwt` lets every request through unchecked). To see what a config needs, and whether the
+matters most for the security features and for middleware that can reject a request,
+where "ignored" means the check is not applied (`jwtAuth` without `jwt`, `consumers`
+without `consumers`, `forwardAuth` without `forward-auth`, a `rhai` or `wasm` entry that
+was a gate: every request goes through unchecked). To see what a config needs, and whether the
 binary you run has it:
 
 ```bash
@@ -60,10 +62,10 @@ Admin API.
 | Feature | What it gives you | Config | If it is compiled out |
 | --- | --- | --- | --- |
 | `jwt` | Validates JWT bearer tokens: HS256 with a shared secret, RS256/ES256 through a JWKS URL (fetched and refreshed in the background). Claims are available as `{{ jwt.<claim> }}` in header templates. | [`jwtAuth`](#jwt-auth), [claim templates](#jwt-claim-templates) | `jwtAuth` is ignored: **requests are not authenticated by JWT**. JWT credentials of `consumers` are not recognised either. |
-| `consumers` | Named API clients: each with its own API keys, Basic or JWT credentials, its own rate limit and headers added to the proxied request. | [`consumers`](#consumers) | `consumers` is ignored. |
+| `consumers` | Named API clients: each with its own API keys, Basic or JWT credentials, its own rate limit and headers added to the proxied request. | [`consumers`](#consumers) | `consumers` is ignored: **API-key, Basic and JWT consumer authentication is not applied**, every request bypasses it. |
 | `forward-auth` | Asks an external HTTP service whether each request may pass (like nginx `auth_request` or Traefik ForwardAuth) and copies chosen headers from its answer. | [`forwardAuth`](#forward-auth) | `forwardAuth` is ignored: **the external check does not run**. |
-| `rhai` | Small scripts as middleware: read or change headers, reject a request, answer it directly. | [`middleware[].type: "script"`](#rhai-script-middleware) | The entry is ignored. |
-| `wasm` | WebAssembly plugins (any language that compiles to WASM) run in a Wasmtime sandbox as middleware; a plugin that fails lets the request through (fail-open). Adds the Wasmtime runtime to the binary. | [`middleware[].type: "wasm"`](#wasm-middleware) | The entry is ignored. |
+| `rhai` | Small scripts as middleware: read or change headers, reject a request, answer it directly. | [`middleware[].type: "script"`](#rhai-script-middleware) | The entry is ignored: a script that was a gate **no longer runs**. |
+| `wasm` | WebAssembly plugins (any language that compiles to WASM) run in a Wasmtime sandbox as middleware; a plugin that fails lets the request through (fail-open). Adds the Wasmtime runtime to the binary. | [`middleware[].type: "wasm"`](#wasm-middleware) | The entry is ignored: a plugin that was a gate **no longer runs**. |
 | `tcp` | A raw TCP proxy site, for protocols that are not HTTP (databases, message brokers, anything else on a TCP port). | [`type: "tcp"` site](#tcp-proxy) | The site is ignored. |
 | `upload` | An endpoint that accepts multipart file uploads and writes them to a directory. | [`upload`](#upload) | `upload` is ignored. |
 | `redis` | Keeps rate-limit counters and cached responses in Redis, so several Conduit instances share them. | `rateLimit.store: "redis://..."`, `cache.store: "redis://..."` | Falls back to the in-memory store, **per instance**: with three instances each limit effectively triples. |
