@@ -163,17 +163,13 @@ jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_r
 # source text. aws-lc-rs is already in the graph (rustls); p256 is test-only.
 # Referenced from crates/conduit-auth-jwt's [dev-dependencies] and the root
 # crate's own [dev-dependencies] below (tests/auth.rs).
-# Uses `rand_core::OsRng` (0.6), not the `rand` crate: `p256` (via
-# `elliptic-curve`) require the `rand_core` 0.6 `CryptoRngCore` trait, which
-# `rand` 0.9's `ThreadRng` (built on `rand_core` 0.9) no longer implements —
-# confirmed a real, non-transient E0277 trait-mismatch build break when
-# Dependabot proposed the 0.8→0.9 bump (PR #272, root-caused on `main` via
-# PR #294). `rand` itself is not used anywhere in this workspace, so
-# depending on `rand_core` directly avoids the mismatch entirely rather than
-# pinning `rand` and waiting on p256 to catch up.
+# p256 0.14 generates keys with its own `Generate` trait from the system's randomness
+# (`SecretKey::generate()`, feature `getrandom`), so no `rand` or `rand_core` crate is
+# needed: the old `rand_core` 0.6 dev-dependency existed only to feed
+# `SecretKey::random`, whose RNG trait changed in 0.14 (and `rand` 0.9 never matched the
+# 0.13 one: PR #272, #294).
 aws-lc-rs = "1"
-p256      = "0.14"
-rand_core = { version = "0.6", features = ["getrandom"] }
+p256      = { version = "0.14", features = ["getrandom"] }
 
 # --- HTTP client (feature: jwt for JWKS via crates/conduit-auth-jwt,
 # forward-auth, mirroring) ---
@@ -982,14 +978,13 @@ time.workspace          = true
 wat.workspace           = true
 # rcgen is used in tests for cert generation even without the acme feature.
 rcgen.workspace         = true
-# aws-lc-rs/p256/rand_core: generate throwaway RSA-2048 and P-256 keypairs at
+# aws-lc-rs/p256: generate throwaway RSA-2048 and P-256 keypairs at
 # test-run time for JWKS/RS256/ES256 coverage (issue #164) — see the
 # workspace.dependencies comment above. Used here for tests/auth.rs;
 # crates/conduit-auth-jwt has its own identical dev-dependency edge for its
 # own JWKS unit tests (#133).
 aws-lc-rs.workspace    = true
 p256.workspace          = true
-rand_core.workspace     = true
 # jsonwebtoken is used in auth integration tests (tests/auth.rs) to generate
 # test tokens. Listed as dev-dep (not [dependencies], which no longer has a
 # jsonwebtoken entry at all — the real JWT validation code moved to

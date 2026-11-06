@@ -932,14 +932,15 @@ mod jwt {
     }
 
     fn gen_jwks_test_ec_key() -> JwksTestEcKey {
-        use p256::elliptic_curve::sec1::ToEncodedPoint;
+        use p256::elliptic_curve::sec1::ToSec1Point;
+        use p256::elliptic_curve::Generate;
         use p256::pkcs8::EncodePrivateKey;
-        let secret_key = p256::SecretKey::random(&mut rand_core::OsRng);
+        let secret_key = p256::SecretKey::generate();
         let pem = secret_key
             .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
             .expect("EC PKCS#8 PEM encode")
             .to_string();
-        let point = secret_key.public_key().to_encoded_point(false);
+        let point = secret_key.public_key().to_sec1_point(false);
         JwksTestEcKey {
             pem,
             x: base64::engine::general_purpose::URL_SAFE_NO_PAD

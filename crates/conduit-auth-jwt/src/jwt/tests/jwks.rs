@@ -16,7 +16,8 @@ use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der};
 use aws_lc_rs::rsa::{KeyPair as RsaKeyPair, KeySize, PublicKeyComponents};
 use aws_lc_rs::signature::KeyPair as _;
 use base64::Engine as _;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
+use p256::elliptic_curve::Generate;
 use p256::pkcs8::EncodePrivateKey;
 
 fn b64url(bytes: &[u8]) -> String {
@@ -77,12 +78,12 @@ struct EcTestKey {
 }
 
 fn gen_ec_test_key() -> EcTestKey {
-    let secret_key = p256::SecretKey::random(&mut rand_core::OsRng);
+    let secret_key = p256::SecretKey::generate();
     let pem = secret_key
         .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
         .expect("EC PKCS#8 PEM encode")
         .to_string();
-    let point = secret_key.public_key().to_encoded_point(false);
+    let point = secret_key.public_key().to_sec1_point(false);
     EcTestKey {
         pem,
         x: b64url(point.x().expect("uncompressed point has x")),
