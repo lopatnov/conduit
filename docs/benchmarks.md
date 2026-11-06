@@ -138,7 +138,7 @@ For a longer, local comparison with failures and weights see
 
 ## Reproduce it on your machine
 
-Linux or macOS; needs Go, a Rust toolchain and `oha`. Save the block as `bench.sh` and run `bash bench.sh`: it stops
+Linux or macOS; needs Go, a Rust toolchain, Python 3 and `oha`. Save the block as `bench.sh` and run `bash bench.sh`: it stops
 at the first failure, and on the way out it stops the two background processes it started and removes its scratch
 directory.
 
