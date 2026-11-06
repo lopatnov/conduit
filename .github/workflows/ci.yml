@@ -3,8 +3,9 @@ name: CI
 # A branch with a pull request runs CI once, through `pull_request` (the merge result with main). `push` is for
 # `main` itself (after a merge). It used to be `["**"]`, which ran every PR commit twice (the two runs sit in
 # different `concurrency` groups and do not cancel each other); that was only needed for the #114 migration, whose
-# PRs targeted a branch other than main. A branch without a PR gets no CI until its pull request (a draft is
-# enough) is opened.
+# PRs targeted a branch other than main. So: a branch without a PR gets no CI until its pull request (a draft is
+# enough) is opened; a PR into a branch other than main gets none (add that base to `pull_request.branches`
+# first); and a PR with merge conflicts gets no `pull_request` run until the conflict is resolved.
 on:
   push:
     branches: [main]
