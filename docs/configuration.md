@@ -770,7 +770,7 @@ traffic off a broken backend). Pick based on your actual traffic shape:
 | [`least-conn`](#least-conn) | Load-aware | Fewest active connections per unit of `weight` | ✗ | none | Variable response times (mixed fast reads / slow writes), with or without unequal capacity | O(N) scan of the pool on every request |
 | [`least-response-time`](#least-response-time) | Load-aware | Lowest probed latency | ✗ | none | Upstreams with different hardware/geography | Needs `healthCheck` configured, or it's just round-robin |
 | [`p2c`](#p2c-power-of-two-choices) | Load- and latency-aware | 2 random samples, lower EWMA latency × (in-flight + 1) ÷ `weight` wins | ✗ | none | Large pools (10+) where `least-conn`'s full scan is too slow | Marginally less precise than true least-conn |
-| [`least-bandwidth`](#least-bandwidth) | Load-aware | Fewest bytes per second (request + response bodies) ÷ `weight` | ✗ | none | Mixed large and small responses, where equal connection counts hide very unequal network load | Counts bytes only, not CPU or memory; a route's first requests see every upstream at zero |
+| [`least-bandwidth`](#least-bandwidth) | Load-aware | √((bytes per second + 1) × (in-flight + 1)) ÷ `weight`, two random samples | ✗ | none | Mixed large and small responses, where equal connection counts hide very unequal network load | Counts bytes, not CPU or memory; a route's first requests see every upstream at zero |
 | [`ip-hash`](#ip-hash) | Affinity | rendezvous hash of the client IP | by IP | only the clients on a peer that leaves (or joins) move; the rest stay put | Soft per-IP affinity without a cookie | Clients on an ejected peer move to their next-best peer |
 | [`consistent-hash`](#consistent-hash) | Affinity | rendezvous hash of the configured key | by key | same as ip-hash — only the keys on a peer that leaves (or joins) move | Per-tenant/per-user routing, cache locality by URL | Keys on an ejected peer move to their next-best peer |
 
@@ -1078,7 +1078,9 @@ upstream hands requests back to its sibling.
 **Weights.** The cost is divided by `weight`, so at equal latency a weight-3
 upstream carries about three times the in-flight requests of a weight-1 upstream.
 Plain string targets have weight 1. An upstream with weight 0 loses every
-comparison.
+comparison. With nothing in flight the weight-3 upstream is simply the cheaper
+one every time, so serial requests all go to it; the in-flight shares become
+proportional once requests overlap.
 
 With a single upstream in the pool, P2C falls back to round-robin.
 
@@ -1120,16 +1122,29 @@ proxy:
 ### `least-bandwidth`
 
 Routes each request to the upstream that is currently moving the **least
-traffic**, in bytes per second. What counts is the request-body and
-response-body bytes Conduit moves for the upstream, both directions added
-together, as each chunk passes. The rate is an exponentially decayed average
-with a time constant of 10 seconds, refreshed at most every 250 ms, so a burst
-is remembered for a few seconds and an idle upstream's rate falls towards zero.
+traffic**. Of two upstreams sampled at random (all of them, when the pool has
+two), it picks the one with the lower cost:
 
-The comparison is `bytes per second ÷ weight`: an upstream with weight 3 may
-move three times the traffic of a weight-1 upstream before the next request
-goes elsewhere. Upstreams that are all idle tie at zero and are chosen at
-random, in proportion to their weight.
+```
+cost = √((bytes per second + 1) × (requests in flight + 1)) ÷ weight
+```
+
+- **Bytes per second** is the request-body and response-body bytes Conduit moves
+  for the upstream, both directions added together, as each chunk passes. The
+  rate is an exponentially decayed average with a time constant of 10 seconds,
+  refreshed at most every 250 ms, so a burst is remembered for a few seconds and
+  an idle upstream's rate falls towards zero.
+- **Requests in flight** is the same count `least-conn` and
+  `healthCheck.maxConnectionsPerUpstream` use (`active_connections` in
+  `GET /upstreams`). The rate alone is stale for a quarter of a second at a time,
+  so every request in a window would go to the one upstream that was quietest
+  when the window opened; and an upstream that is slow moves few bytes and looks
+  idle. Requests piling up on it give it away at once.
+- **The square root** keeps `weight` proportional: both factors grow with an
+  upstream's share of the traffic, so their product grows with its square. With
+  weights 3:1:1 and traffic flowing, the shares come out near 60/20/20. With no
+  traffic and nothing in flight the weight-3 upstream is simply the cheaper one
+  every time, so serial requests all go to it until they overlap.
 
 **Use when:** responses differ a lot in size, for example large downloads next
 to small API calls, so equal connection counts hide very unequal network load
@@ -1145,14 +1160,17 @@ proxy:
     strategy: least-bandwidth
 ```
 
-- Only routes that use this strategy are metered, so no other route pays for it.
-  The first requests after start (and after an idle spell) see every upstream at
-  zero and are spread at random until a 250 ms window has passed.
+- Only routes that use this strategy are metered, so no other route pays for it
+  (one atomic add per body chunk, 29 ns single-threaded in a release build,
+  110–130 ns when 4–8 threads hit one upstream). The first requests after start
+  (and after an idle spell) see every upstream at zero and are spread at random
+  until a 250 ms window has passed.
 - A body is counted as its chunks arrive, so a long download or stream counts
   continuously, not only when it ends. The bytes are those the client sent and
   the upstream sent, before Conduit's own compression or body replacement.
 - Prior art: Citrix ADC `leastbandwidth` (bytes sent plus received over the
-  previous 14 seconds, weighted).
+  previous 14 seconds, weighted), which has neither the in-flight factor nor the
+  sampling.
 ---
 
 ### Sticky sessions

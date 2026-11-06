@@ -225,10 +225,21 @@ fn active_connections(server: &common::TestServer, client: &reqwest::blocking::C
 #[test]
 #[serial]
 fn p2c_holds_a_slot_while_a_request_is_in_flight_and_releases_it_after() {
+    slot_is_held_while_in_flight_and_released_after("p2c");
+}
+
+/// Issue #627: `least-bandwidth` counts requests in flight like `p2c`, so it must release them too.
+#[test]
+#[serial]
+fn least_bandwidth_holds_a_slot_while_a_request_is_in_flight_and_releases_it_after() {
+    slot_is_held_while_in_flight_and_released_after("least-bandwidth");
+}
+
+fn slot_is_held_while_in_flight_and_released_after(strategy: &str) {
     let a = MockUpstream::start("a");
     let b = MockUpstream::start("b");
     let server = lb_server(serde_json::json!({
-        "/": { "targets": [a.url(), b.url()], "strategy": "p2c" }
+        "/": { "targets": [a.url(), b.url()], "strategy": strategy }
     }));
     let client = reqwest::blocking::Client::new();
 
@@ -257,7 +268,10 @@ fn p2c_holds_a_slot_while_a_request_is_in_flight_and_releases_it_after() {
         std::thread::sleep(std::time::Duration::from_millis(700));
         seen_during = active_connections(&server, &client);
     });
-    assert_eq!(seen_during, 8, "p2c must count each request in flight");
+    assert_eq!(
+        seen_during, 8,
+        "{strategy} must count each request in flight"
+    );
 
     // Every response is done; the slots are released when the request is logged, a moment later.
     let mut left = u64::MAX;
@@ -268,7 +282,7 @@ fn p2c_holds_a_slot_while_a_request_is_in_flight_and_releases_it_after() {
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    assert_eq!(left, 0, "p2c must release every slot it took");
+    assert_eq!(left, 0, "{strategy} must release every slot it took");
 }
 
 // ── IP-hash ───────────────────────────────────────────────────────────────────

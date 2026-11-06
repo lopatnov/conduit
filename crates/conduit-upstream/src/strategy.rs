@@ -236,14 +236,29 @@ impl LoadBalancingStrategy for P2cChoice {
 /// Send each request to the backend currently moving the least traffic, per unit of weight
 /// (issue #627).
 ///
-/// The traffic of an upstream is the request-body plus response-body bytes the proxy moved for it,
-/// smoothed over about ten seconds ([`crate::traffic::TrafficMeter`]); the cost compared is
-/// `bytes_per_second / weight`. An idle pool ties at zero and is spread at random, in proportion to
-/// weight. The proxy meters an upstream only on routes that use this strategy, so the first requests
-/// of a route see every upstream at zero.
+/// ```text
+/// cost = sqrt((bytes per second + 1) * (requests in flight + 1)) / weight
+/// ```
+///
+/// - *Bytes per second*: the request-body plus response-body bytes the proxy moved for the upstream,
+///   smoothed over about ten seconds ([`crate::traffic::TrafficMeter`]). The proxy meters an upstream
+///   only on routes that use this strategy, so the first requests of a route see every upstream at 0.
+/// - *In flight*: the registry's per-upstream count, which this strategy increments for the chosen
+///   peer and reports (the `true` in the return value) so that the caller releases it, as for `p2c`.
+///   The rate is refreshed once per 250 ms window, so on its own it is stale for every request inside
+///   a window (the harness of issue #629 measured the share of one upstream swinging by 26 points a
+///   second), and a slow upstream moves fewer bytes and looks idle; the in-flight factor reacts at
+///   once and grows on a slow upstream.
+/// - The square root keeps `weight` proportional: both factors grow with an upstream's share of the
+///   traffic, so their product grows with its square, and the root brings that back to the share
+///   itself (measured: weights 3:1:1 gave a 58/21/21 split).
+/// - With more than two upstreams only two, sampled at random, are compared, as in `p2c`: a scan of
+///   all of them sends every request of a window to the one that was quietest when it opened.
+///
+/// An idle pool ties at 1 and is spread at random, in proportion to weight.
 ///
 /// Prior art: Citrix ADC `leastbandwidth` (bytes sent plus received over the previous 14 seconds,
-/// weighted).
+/// weighted), which has neither the in-flight factor nor the sampling.
 pub struct LeastBandwidth;
 
 impl LoadBalancingStrategy for LeastBandwidth {
@@ -258,9 +273,21 @@ impl LoadBalancingStrategy for LeastBandwidth {
     ) -> Option<(String, bool)> {
         // One clock reading for the whole pick.
         let now = crate::traffic::monotonic_ms();
-        let index =
-            targets::pick_lowest_cost(urls, weighted, |url| health.traffic_rate_at(url, now))?;
-        Some((urls[index].clone(), false))
+        let cost = |url: &str| {
+            ((health.traffic_rate_at(url, now) + 1.0) * (health.conn_load(url) as f64 + 1.0)).sqrt()
+        };
+        let index = match urls.len() {
+            0 => return None,
+            // With two peers a pair is both of them.
+            1 | 2 => targets::pick_lowest_cost(urls, weighted, 0..urls.len(), cost)?,
+            len => {
+                let (a, b) = gen_pair(len);
+                targets::pick_lowest_cost(urls, weighted, [a, b].into_iter(), cost)?
+            }
+        };
+        // The request is now in flight on the chosen peer; the caller releases the slot.
+        health.conn_inc(&urls[index]);
+        Some((urls[index].clone(), true))
     }
 }
 
@@ -657,6 +684,7 @@ mod tests {
         }
     }
 
+    /// `n` picks, each finishing before the next, so the in-flight counts stay as the caller set them.
     fn bandwidth_picks(
         u: &[String],
         w: &[(String, u32)],
@@ -667,7 +695,11 @@ mod tests {
         let mut counts = vec![0; u.len()];
         for _ in 0..n {
             let (url, slot) = LEAST_BANDWIDTH.pick(u, w, "r", 0, &c, reg).unwrap();
-            assert!(!slot, "least-bandwidth takes no in-flight slot");
+            assert!(
+                slot,
+                "least-bandwidth holds an in-flight slot and must say so"
+            );
+            reg.conn_dec(&url);
             counts[u.iter().position(|x| *x == url).unwrap()] += 1;
         }
         counts
@@ -688,39 +720,89 @@ mod tests {
     }
 
     #[test]
-    fn least_bandwidth_divides_the_rate_by_the_weight() {
+    fn least_bandwidth_divides_the_cost_by_the_weight() {
+        // The cost is the square root of the rate (see the strategy's doc), so a weight-3 peer stays
+        // the cheaper one until its rate is nine times the weight-1 peer's.
         let (u, w) = two(3, 1);
-        // Twice the traffic on a weight-3 peer: 2 / 3 < 1, it is still the cheaper one.
         let reg = registry();
-        seed_rate(&reg, &u[0], 2_000_000, 8);
+        seed_rate(&reg, &u[0], 4_000_000, 8); // 4x: sqrt(4) / 3 = 0.67 < 1
         seed_rate(&reg, &u[1], 1_000_000, 8);
         assert_eq!(bandwidth_picks(&u, &w, &reg, 50), vec![50, 0]);
-        // Four times the traffic: 4 / 3 > 1, now the weight-1 peer is.
         let reg = registry();
-        seed_rate(&reg, &u[0], 4_000_000, 8);
+        seed_rate(&reg, &u[0], 16_000_000, 8); // 16x: sqrt(16) / 3 = 1.33 > 1
         seed_rate(&reg, &u[1], 1_000_000, 8);
         assert_eq!(bandwidth_picks(&u, &w, &reg, 50), vec![0, 50]);
     }
 
     #[test]
-    fn least_bandwidth_spreads_an_idle_pool_and_follows_the_weights() {
+    fn least_bandwidth_counts_requests_in_flight() {
+        let (u, w) = two(1, 1);
+        // Equal rates: the peer with requests in flight is the dearer one.
+        let reg = registry();
+        seed_rate(&reg, &u[0], 1_000_000, 8);
+        seed_rate(&reg, &u[1], 1_000_000, 8);
+        for _ in 0..3 {
+            reg.conn_inc(&u[0]);
+        }
+        assert_eq!(bandwidth_picks(&u, &w, &reg, 50), vec![0, 50]);
+        // A peer with a quarter of the traffic (cost factor 0.5) but eight requests in flight
+        // (factor 3) is the dearer one too: a slow peer moves few bytes and looks idle, its
+        // piled-up requests give it away.
+        let reg = registry();
+        seed_rate(&reg, &u[0], 250_000, 8);
+        seed_rate(&reg, &u[1], 1_000_000, 8);
+        for _ in 0..8 {
+            reg.conn_inc(&u[0]);
+        }
+        assert_eq!(bandwidth_picks(&u, &w, &reg, 50), vec![0, 50]);
+    }
+
+    #[test]
+    fn least_bandwidth_takes_and_reports_an_in_flight_slot() {
+        let (u, w) = two(1, 1);
+        let reg = registry();
+        let (url, slot) = LEAST_BANDWIDTH
+            .pick(&u, &w, "r", 0, &counters(), &reg)
+            .unwrap();
+        assert!(slot);
+        assert_eq!(reg.conn_load(&url), 1);
+    }
+
+    #[test]
+    fn least_bandwidth_spreads_an_idle_pool_of_equal_weights_at_random() {
         let u = urls(3);
-        // Nothing recorded anywhere: every cost is 0, a tie, chosen at random (600 picks: 200 each,
-        // standard deviation about 11.5).
+        // Nothing recorded and nothing in flight anywhere: every cost is 1, a tie, chosen at random
+        // (600 picks: 200 each, standard deviation about 11.5).
         for (i, count) in bandwidth_picks(&u, &[], &registry(), 600)
             .into_iter()
             .enumerate()
         {
             assert!((140..=260).contains(&count), "peer {i} got {count} of 600");
         }
-        // Weights 3:1 on an idle pool: 600 and 200 of 800.
+    }
+
+    #[test]
+    fn least_bandwidth_prefers_the_heavier_peer_while_nothing_is_in_flight() {
+        // The cost is divided by the weight, so with no traffic and no request in flight the weight-3
+        // peer is the cheaper one every time (like `p2c`); the split becomes proportional once traffic
+        // flows (the harness of issue #629 measured 58/21/21 for weights 3:1:1).
         let (u, w) = two(3, 1);
-        let counts = bandwidth_picks(&u, &w, &registry(), 800);
-        assert!(
-            (540..=660).contains(&counts[0]),
-            "weight 3 got {} of 800",
-            counts[0]
-        );
+        assert_eq!(bandwidth_picks(&u, &w, &registry(), 100), vec![100, 0]);
+    }
+
+    #[test]
+    fn least_bandwidth_gives_the_heavier_peer_more_in_flight_requests() {
+        // Requests that never finish: the weight-3 peer takes more of them, up to the point where
+        // sqrt(in flight + 1) / 3 catches up with the weight-1 peer's sqrt(in flight + 1).
+        let (u, w) = two(3, 1);
+        let reg = registry();
+        let c = counters();
+        for _ in 0..100 {
+            LEAST_BANDWIDTH.pick(&u, &w, "r", 0, &c, &reg).unwrap();
+        }
+        let (heavy, light) = (reg.conn_load(&u[0]), reg.conn_load(&u[1]));
+        assert_eq!(heavy + light, 100);
+        assert!(heavy > light * 3, "heavy {heavy}, light {light}");
     }
 
     #[test]

@@ -209,7 +209,8 @@ pub fn weight_for(weighted: &[(String, u32)], hint: usize, url: &str) -> u32 {
     }
 }
 
-/// Index of the candidate with the lowest `cost(url) / weight`.
+/// Index (into `urls`) of the candidate with the lowest `cost(url) / weight`, looking only at the indices
+/// `candidates` yields (all of `0..urls.len()` for a full scan, or two sampled indices).
 ///
 /// Candidates whose scaled cost is exactly equal (every idle upstream, for a cost that is 0 when idle)
 /// are chosen among at random, in proportion to their weight. A weight-0 candidate is skipped; when
@@ -218,6 +219,7 @@ pub fn weight_for(weighted: &[(String, u32)], hint: usize, url: &str) -> u32 {
 pub fn pick_lowest_cost(
     urls: &[String],
     weighted: &[(String, u32)],
+    candidates: impl Iterator<Item = usize> + Clone,
     cost: impl Fn(&str) -> f64,
 ) -> Option<usize> {
     // `None` for a weight-0 candidate; a NaN cost counts as the worst possible.
@@ -237,8 +239,8 @@ pub fn pick_lowest_cost(
     };
     let mut best: Option<(usize, f64)> = None;
     let mut tied = 0usize;
-    for (i, url) in urls.iter().enumerate() {
-        let Some((c, _)) = scaled(i, url) else {
+    for i in candidates.clone() {
+        let Some((c, _)) = scaled(i, &urls[i]) else {
             continue;
         };
         match best {
@@ -255,7 +257,7 @@ pub fn pick_lowest_cost(
         return if urls.is_empty() {
             None
         } else {
-            pick_lowest_cost(urls, &[], cost)
+            pick_lowest_cost(urls, &[], candidates, cost)
         };
     };
     if tied == 1 {
@@ -267,15 +269,14 @@ pub fn pick_lowest_cost(
         Some((c, weight)) if c == lowest => Some(u64::from(weight)),
         _ => None,
     };
-    let total: u64 = urls
-        .iter()
-        .enumerate()
-        .filter_map(|(i, url)| at_lowest(i, url))
+    let total: u64 = candidates
+        .clone()
+        .filter_map(|i| at_lowest(i, &urls[i]))
         .sum();
     let mut ticket = fast_random() % total.max(1);
     let mut chosen = first;
-    for (i, url) in urls.iter().enumerate() {
-        if let Some(weight) = at_lowest(i, url) {
+    for i in candidates {
+        if let Some(weight) = at_lowest(i, &urls[i]) {
             chosen = i;
             if ticket < weight {
                 break;
@@ -548,7 +549,7 @@ mod tests {
             "http://b:1" => 2.0,
             _ => 9.0,
         };
-        assert_eq!(pick_lowest_cost(&urls, &[], cost), Some(1));
+        assert_eq!(pick_lowest_cost(&urls, &[], 0..urls.len(), cost), Some(1));
         // A NaN cost is the worst, never the best, wherever it sits.
         let with_nan = |url: &str| {
             if url == "http://a:1" {
@@ -557,8 +558,16 @@ mod tests {
                 cost(url)
             }
         };
-        assert_eq!(pick_lowest_cost(&urls, &[], with_nan), Some(1));
-        assert_eq!(pick_lowest_cost(&[], &[], cost), None);
+        assert_eq!(
+            pick_lowest_cost(&urls, &[], 0..urls.len(), with_nan),
+            Some(1)
+        );
+        // Only the indices given are looked at: of 0 and 2 the cheaper one is 0, though 1 is cheapest overall.
+        assert_eq!(
+            pick_lowest_cost(&urls, &[], [0usize, 2].into_iter(), cost),
+            Some(0)
+        );
+        assert_eq!(pick_lowest_cost(&[], &[], 0..0, cost), None);
     }
 
     #[test]

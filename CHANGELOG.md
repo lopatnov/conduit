@@ -44,11 +44,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **`least-bandwidth` load-balancing strategy** (issue #627). Sends each request to the upstream moving
-  the least traffic: request plus response body bytes per second, smoothed over about ten seconds, divided by
-  `weight`; idle upstreams tie and are spread at random. Only routes that use it are metered (one atomic add
-  per body chunk). Measured on an end-to-end run with one upstream answering 256 KiB and one a few bytes:
-  3–6 of 120 requests went to the big one (`round-robin` gives 60). The JSON schema's strategy lists also
-  gain `p2c`, which a valid config could use but the schema rejected.
+  the least traffic. Of two upstreams sampled at random it picks the lower of
+  `sqrt((bytes per second + 1) * (requests in flight + 1)) / weight`: request plus response body bytes,
+  smoothed over about ten seconds, times the in-flight count that `p2c` and `least-conn` also use. The
+  first version, bytes per second alone over a full scan, was measured with the new harness
+  (`scripts/lb_compare.py`, issue #629) and swung one upstream's share by 26 points a second and could not
+  see a slow upstream; with the in-flight factor and the sampling the swing is 1.4 and the slow upstream
+  gets 12% instead of 25%, and weights 3:1:1 give 58/21/21. Only routes that use it are metered (one
+  atomic add per body chunk). The JSON schema's strategy lists also gain `p2c`, which a valid config could
+  use but the schema rejected.
 
 ### Changed
 
