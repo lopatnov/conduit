@@ -198,6 +198,22 @@ class Conduit:
                 time.sleep(0.2)
         raise RuntimeError("conduit did not become ready in 30 s")
 
+    def wait_for_probes(self, urls: list[str], timeout: float = 20.0) -> None:
+        """Block until the active health check has measured every upstream (`latency_ms` is set), or fail."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                c = http.client.HTTPConnection("127.0.0.1", self.admin, timeout=2)
+                c.request("GET", "/upstreams")
+                listed = json.loads(c.getresponse().read()).get("upstreams", [])
+                measured = {u.get("url"): u.get("latency_ms") for u in listed}
+                if all(measured.get(url) is not None for url in urls):
+                    return
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.3)
+        raise RuntimeError(f"the health-check probes did not report every upstream within {timeout:.0f} s")
+
     def stop(self) -> None:
         self.proc.kill()
         self.proc.wait()
@@ -264,6 +280,9 @@ def run_cell(
     conduit = None
     try:
         conduit = Conduit(binary, [u.url() for u in upstreams], weights, strategy, health_checks)
+        if health_checks:
+            # Record only once every upstream has a probe result, or `least-response-time` starts blind.
+            conduit.wait_for_probes([u.url() for u in upstreams])
         # warm-up (not recorded), so that connections exist and the first latency samples are in
         drive(conduit.port, WARMUP_SECONDS, seed + 1)
         for u in upstreams:
