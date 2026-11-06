@@ -25,8 +25,10 @@ pub const DECAY_SECS: f64 = 10.0;
 pub struct TrafficMeter {
     /// Bytes ever recorded.
     total: AtomicU64,
-    /// Monotonic milliseconds of the last refresh; 0 until the first reader arrives. Read without the
-    /// lock as the cheap "is a refresh due?" test; only written under it.
+    /// Monotonic milliseconds of the last refresh; 0 until the first byte or the first reader arrives.
+    /// Read without the lock as the cheap "is a refresh due?" test. Opened once, 0 to a value, by a
+    /// compare-and-swap (`add` at the first byte, or the first reader); after that only written under
+    /// the lock.
     last_ms: AtomicU64,
     /// The smoothed rate, `f64::to_bits`, in bytes per second.
     rate_bits: AtomicU64,

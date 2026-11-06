@@ -43,7 +43,9 @@ CPID=""     # the Conduit that is running now; emptied when it is reaped
 cleanup() {
   [ -n "$CPID" ] && kill -KILL "$CPID" 2>/dev/null
   for p in "${UP_PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
-  wait 2>/dev/null || true
+  # Only our own children: a bare `wait` would also block on anything else the shell started.
+  [ -n "$CPID" ] && wait "$CPID" 2>/dev/null
+  [ "${#UP_PIDS[@]}" -gt 0 ] && wait "${UP_PIDS[@]}" 2>/dev/null
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -141,7 +143,9 @@ PY
 for scenario in even slow; do
   delay=0
   [ "$scenario" = slow ] && delay="$SLOW_MS"
-  start_upstreams "$delay" || { echo "skipping scenario $scenario" >&2; continue; }
+  # A start failure can leave some upstreams running: stop them, or the next scenario would find them on
+  # the ports and measure the wrong delay.
+  start_upstreams "$delay" || { echo "skipping scenario $scenario" >&2; stop_upstreams; continue; }
   for strategy in "${STRATEGIES[@]}"; do
     run_one "$scenario" "$strategy"
   done
