@@ -767,9 +767,10 @@ traffic off a broken backend). Pick based on your actual traffic shape:
 | [`round-robin`](#round-robin-default) (default) | Static | Rotation order | ✗ | none | Homogeneous upstreams, simplest default | Ignores load — a slow request still gets the next slot |
 | [`weighted-round-robin`](#weighted-round-robin) | Static | Rotation + fixed weight | ✗ | none | Heterogeneous capacity (big primary + small standby, canary %) | Weights are static — doesn't adapt to real-time load |
 | [`random`](#random) | Static | Uniform random pick | ✗ | none | Very large pools where a counter is unnecessary overhead | Worse uniformity than round-robin at small N |
-| [`least-conn`](#least-conn) | Load-aware | Fewest active connections | ✗ | none | Variable response times (mixed fast reads / slow writes) | O(N) scan of the pool on every request |
+| [`least-conn`](#least-conn) | Load-aware | Fewest active connections per unit of `weight` | ✗ | none | Variable response times (mixed fast reads / slow writes), with or without unequal capacity | O(N) scan of the pool on every request |
 | [`least-response-time`](#least-response-time) | Load-aware | Lowest probed latency | ✗ | none | Upstreams with different hardware/geography | Needs `healthCheck` configured, or it's just round-robin |
-| [`p2c`](#p2c-power-of-two-choices) | Load-aware | 2 random samples, fewer conns wins | ✗ | none | Large pools (10+) where `least-conn`'s full scan is too slow | Marginally less precise than true least-conn |
+| [`p2c`](#p2c-power-of-two-choices) | Load- and latency-aware | 2 random samples, lower EWMA latency × (in-flight + 1) ÷ `weight` wins | ✗ | none | Large pools (10+) where `least-conn`'s full scan is too slow | Marginally less precise than true least-conn |
+| [`least-bandwidth`](#least-bandwidth) | Load-aware | √((bytes per second + 1) × (in-flight + 1)) ÷ `weight`, two random samples | ✗ | none | Mixed large and small responses, where equal connection counts hide very unequal network load | Counts bytes, not CPU or memory; a route's meters start at zero and update every 250 ms |
 | [`ip-hash`](#ip-hash) | Affinity | rendezvous hash of the client IP | by IP | only the clients on a peer that leaves (or joins) move; the rest stay put | Soft per-IP affinity without a cookie | Clients on an ejected peer move to their next-best peer |
 | [`consistent-hash`](#consistent-hash) | Affinity | rendezvous hash of the configured key | by key | same as ip-hash — only the keys on a peer that leaves (or joins) move | Per-tenant/per-user routing, cache locality by URL | Keys on an ejected peer move to their next-best peer |
 
@@ -871,10 +872,33 @@ retries and errors).
 reads and slow writes. Under uniform load it behaves like round-robin; its
 advantage emerges when some requests stall.
 
+**Ties.** When several upstreams have the same count (all of them, whenever the
+requests are short enough that none is still in flight when the next arrives),
+one of them is chosen at random, in proportion to its `weight`. Earlier releases
+always picked the first target in the list for such a tie, so a lightly loaded pool sent
+every request to its first target.
+
+**Weights.** The comparison is *active connections divided by `weight`*, as in
+nginx `least_conn`: an upstream with weight 3 carries three times the in-flight
+requests of a weight-1 upstream before the next request goes elsewhere. Plain
+string targets have weight 1, so a pool without weights behaves exactly as
+plain least-connections. An upstream with weight 0 receives nothing while any
+other upstream has a weight above 0. `conduit upstreams weight` changes the
+weight at runtime.
+
 ```yaml
 proxy:
   /api:
     targets: ["http://a:4000", "http://b:4000", "http://c:4000"]
+    strategy: least-conn
+```
+
+```yaml
+proxy:
+  /api:
+    targets:
+      - { url: "http://big:4000", weight: 3 } # up to 3x the in-flight requests of "small"
+      - { url: "http://small:4000", weight: 1 }
     strategy: least-conn
 ```
 
@@ -1032,11 +1056,36 @@ proxy:
 ### `p2c` (Power of Two Choices)
 
 On each request, samples **two upstreams at random** and forwards to the one
-with fewer active connections. Ties are broken in favour of the first sample.
+with the lower **cost**:
 
-Achieves O(log log N) maximum load imbalance — dramatically better tail latency
-than pure random, and competitive with `least-conn` at scale, with O(1)
-selection cost (no scan of the full pool).
+```
+cost = EWMA latency × (requests in flight + 1) ÷ weight
+```
+
+The latency is the passive, time-decayed measurement over all traffic that
+`GET /upstreams` reports as `ewma_latency_ms` (an upstream with no measurement
+yet counts as 30 ms). The in-flight count is the one `least-conn` and
+`healthCheck.maxConnectionsPerUpstream` use, reported as `active_connections`.
+This is Tower's `PeakEwma` load, which linkerd's P2C balancer uses, divided by
+the weight. Ties are broken in favour of the first sample. Selection costs O(1) —
+no scan of the full pool.
+
+Both factors matter. Latency alone would send every request to the faster
+upstream however busy it was; with the in-flight factor an upstream twice as
+fast settles at about twice the in-flight requests of the slower one, and a busy
+upstream hands requests back to its sibling.
+
+**Weights.** The cost is divided by `weight`, so at equal latency a weight-3
+upstream carries about three times the in-flight requests of a weight-1 upstream
+when the pool has two upstreams. With more, only two random samples are compared
+and the in-flight counts are small whole numbers, so the split is coarser: weights
+3:1:1 with 32 concurrent clients measured 47/26/27 of the requests (60/20/20 would
+be proportional). Use `least-conn`, `least-bandwidth` or `weighted-round-robin`
+when proportional shares matter.
+Plain string targets have weight 1. An upstream with weight 0 loses every
+comparison. With nothing in flight the weight-3 upstream is simply the cheaper
+one every time, so serial requests all go to it; the in-flight shares become
+proportional once requests overlap.
 
 With a single upstream in the pool, P2C falls back to round-robin.
 
@@ -1072,6 +1121,62 @@ proxy:
 }
 ```
 
+
+---
+
+### `least-bandwidth`
+
+Routes each request to the upstream that is currently moving the **least
+traffic**. Of two upstreams sampled at random (all of them, when the pool has
+two), it picks the one with the lower cost:
+
+```
+cost = √((bytes per second + 1) × (requests in flight + 1)) ÷ weight
+```
+
+- **Bytes per second** is the request-body and response-body bytes Conduit moves
+  for the upstream, both directions added together, as each chunk passes. The
+  rate is an exponentially decayed average with a time constant of 10 seconds,
+  refreshed at most every 250 ms, so a burst is remembered for a few seconds and
+  an idle upstream's rate falls towards zero.
+- **Requests in flight** is the same count `least-conn` and
+  `healthCheck.maxConnectionsPerUpstream` use (`active_connections` in
+  `GET /upstreams`). The rate alone is stale for a quarter of a second at a time,
+  so every request in a window would go to the one upstream that was quietest
+  when the window opened; and an upstream that is slow moves few bytes and looks
+  idle. Requests piling up on it give it away at once.
+- **The square root** keeps `weight` proportional: both factors grow with an
+  upstream's share of the traffic, so their product grows with its square. With
+  weights 3:1:1 and traffic flowing, the shares come out near 60/20/20. With no
+  traffic and nothing in flight the weight-3 upstream is simply the cheaper one
+  every time, so serial requests all go to it until they overlap.
+
+**Use when:** responses differ a lot in size, for example large downloads next
+to small API calls, so equal connection counts hide very unequal network load
+and the upstream's network is the bottleneck. When the limit is CPU or memory,
+`least-conn` or `p2c` is the better signal.
+
+```yaml
+proxy:
+  /files:
+    targets:
+      - { url: "http://store-1:4000", weight: 1 }
+      - { url: "http://store-2:4000", weight: 2 }
+    strategy: least-bandwidth
+```
+
+- Only routes that use this strategy are metered, so no other route pays for it
+  (one atomic add per body chunk, 29 ns single-threaded in a release build,
+  110–130 ns when 4–8 threads hit one upstream). A route's meters start at zero
+  and update at most every 250 ms, so the first requests are chosen on weight and
+  in-flight requests alone. After an idle spell the rate keeps the earlier traffic
+  and fades with the 10-second time constant.
+- A body is counted as its chunks arrive, so a long download or stream counts
+  continuously, not only when it ends. The bytes are those the client sent and
+  the upstream sent, before Conduit's own compression or body replacement.
+- Prior art: Citrix ADC `leastbandwidth` (bytes sent plus received over the
+  previous 14 seconds, weighted), which has neither the in-flight factor nor the
+  sampling.
 ---
 
 ### Sticky sessions
@@ -1160,6 +1265,14 @@ a hash key, and routing goes through `consistent-hash` as usual.
 
 An outer strategy picks the group; an inner strategy balances within it.
 `groups` is an array — each entry has `name`, `targets`, and optional `strategy`.
+
+The outer strategy chooses among the group *names*, and a name has no load of
+its own: nothing is in flight on it, no latency is measured for it and no bytes
+move through it. So `round-robin`, `random`, `ip-hash` and `consistent-hash`
+work as described, while `least-conn`, `p2c`, `least-bandwidth` and
+`least-response-time` cannot tell the groups apart by load (the first three
+choose at random, the last one in turn) and Conduit logs a warning for them.
+Put the load-aware strategy on each group's own `strategy` instead, as below.
 
 ```yaml
 proxy:

@@ -41,8 +41,67 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   intermediates (the emSign CAs; RUSTSEC-2026-0382, `webpki-root-certs` 1.0.11 is RUSTSEC-2026-0383), so an
   HTTPS upstream behind one of them now fails the handshake.
 
+### Added
+
+- **`least-bandwidth` load-balancing strategy** (issue #627). Sends each request to the upstream moving
+  the least traffic. Of two upstreams sampled at random it picks the lower of
+  `sqrt((bytes per second + 1) * (requests in flight + 1)) / weight`: request plus response body bytes,
+  smoothed over about ten seconds, times the in-flight count that `p2c` and `least-conn` also use. The
+  first version, bytes per second alone over a full scan, was measured with the new harness
+  (`scripts/lb_compare.py`, issue #629) and swung one upstream's share by 26 points a second and could not
+  see a slow upstream; with the in-flight factor and the sampling the swing is 1.4 and the slow upstream
+  gets 12% instead of 25%, and weights 3:1:1 give 58/21/21. Only routes that use it are metered (one
+  atomic add per body chunk). The JSON schema's strategy lists also gain `p2c`, which a valid config could
+  use but the schema rejected.
+
+### Changed
+
+- **Load balancing: `least-conn` and `p2c` read `weight`** (issue #506). `least-conn` now picks the
+  upstream with the fewest active connections *per unit of weight* (as nginx `least_conn` does), so a
+  weight-3 upstream carries three times the in-flight requests of a weight-1 one; `p2c` divides its
+  cost by the weight (see the next entry). With every weight 1, which is every config without `weight`, nothing
+  changes, with one exception: a target with `weight: 0` (the schema asks for 1 or more, but nothing rejected 0) was
+  treated like any other by these two strategies and now receives nothing while another target has weight, as
+  with `weighted-round-robin`. `conduit upstreams weight` and `POST /upstreams/weight` now apply to these two as well. The
+  `docs/configuration.md` text for `p2c` said it compares connection counts; it compares latency, and
+  now says so.
+
+- **`p2c` counts requests in flight** (issue #628). Its cost was the EWMA latency alone, so with two
+  upstreams of different speed the faster one got every request however busy it was (100 held-open
+  requests, one upstream twice as slow: 100 to 0). The cost is now `latency × (in-flight + 1) ÷ weight`,
+  Tower's `PeakEwma` load, as linkerd's P2C balancer uses; the same case ends at 67 to 33, and at
+  equal latency, with two upstreams, a weight-3 upstream carries about three times the in-flight requests of
+  a weight-1 one (with three upstreams and weights 3:1:1 the harness measured 47/26/27 of the requests).
+  A behaviour change for every `p2c` route. The request is now counted in flight (`active_connections`
+  in `GET /upstreams`) and released when it is logged, like `least-conn`.
+
+- **The CI performance report tells noise from a change** (issues #475, #629). One 10-second run on a
+  shared runner scatters by 6–9% (24 runs of one binary, measured), so the old single-run "−6%" was not a
+  finding. Each build is now run four times, alternating head and base, at one worker thread (the
+  default) and at four; the Δ column says *within noise* or *beyond noise* (2.5 times the standard error
+  of the difference) and only an adverse difference beyond the noise is flagged. The report also
+  measures four-upstream load balancing for `round-robin`, `least-conn`, `p2c` and `least-bandwidth`, once with
+  one worker thread and, in addition, once with four (single runs, flagged only above 25%). See `docs/benchmarks.md`.
+
 ### Fixed
 
+- **A route with `groups` and a load-aware `groupStrategy` no longer leaves a counter on every group name** (found by
+  the review of PR #631). The outer pick runs the strategy over the group names and threw away the in-flight slot
+  that `least-conn` takes (and, since this release, `p2c` and `least-bandwidth`), so the counter of each group name
+  grew by one per request and nothing released it. The slot is handed back at once; the real one is taken by the
+  inner pick. The load-aware strategies still compare the *names'* own counters (all 0), that is, they choose
+  among groups at random: #632 is about choosing by the group's real load.
+- **WASM: an engine that cannot be built no longer makes every plugin fail open** (issue #626). A failed
+  `Engine::new` used to fall back to a default engine without fuel, on which every call failed and every
+  request passed through, so a plugin that was supposed to reject requests (authentication, say) rejected
+  none. The engine is now built once when a `wasm` middleware is validated, and a config (or hot reload)
+  that cannot get one is refused. A module that fails to load is still fail-open, as documented.
+- **`least-conn` no longer sends every request of a lightly loaded pool to its first target** (issue #506).
+  When several upstreams had the same number of active connections, which is all of them whenever
+  requests are short enough that none is still in flight when the next arrives, the first one in the
+  list always won. The tie is now broken at random, in proportion to `weight`. `p2c` draws its two
+  samples from a per-thread generator instead of one seeded by the clock, which gave the same pair to
+  every request inside one clock tick (100 ns on Windows).
 - **Static files: a refused or failed open no longer cuts a `200` off after its headers** (issue
   #618). The file is opened once before any header is written, and its size, `ETag` and
   `Last-Modified` come from that handle, so a link swapped in after the lookup cannot leak the size

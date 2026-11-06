@@ -22,6 +22,18 @@ pub fn validate_middleware(
                         ),
                     ));
                 }
+                // A `wasm` entry needs an engine that can run plugins. If it cannot be built, every plugin
+                // would pass requests through (fail-open), so refuse the config or the hot reload instead
+                // (issue #626).
+                #[cfg(feature = "wasm")]
+                if entry.r#type == "wasm" {
+                    if let Err(e) = conduit_plugin_wasm::check_engine() {
+                        errors.push(ValidationError::new(
+                            format!("{entry_prefix}.type"),
+                            format!("middleware type \"wasm\" cannot run: {e}"),
+                        ));
+                    }
+                }
             }
             "ipFilter" | "rateLimit" | "auth" | "headers" => {
                 // Built-in types — currently executed via top-level config fields;
@@ -47,5 +59,25 @@ pub fn validate_middleware(
                 ));
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "wasm"))]
+mod tests {
+    use super::*;
+
+    fn entry(kind: &str) -> MiddlewareEntry {
+        serde_json::from_value(serde_json::json!({ "type": kind, "path": "plugin.wasm" })).unwrap()
+    }
+
+    /// Issue #626: validation builds the plugin engine for a `wasm` entry. With a healthy engine it adds
+    /// nothing; the refusal path is covered where the engine is built
+    /// (`conduit-plugin-wasm`, `an_engine_that_cannot_be_built_is_reported_not_swallowed`).
+    #[test]
+    fn a_wasm_entry_with_a_buildable_engine_validates() {
+        let mut errors = Vec::new();
+        validate_middleware(&[entry("wasm")], "sites[0]", &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(conduit_plugin_wasm::check_engine(), Ok(()));
     }
 }

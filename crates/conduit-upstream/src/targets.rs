@@ -164,6 +164,131 @@ pub fn pick_weighted_round_robin(
     Some(targets.last().unwrap().0.clone())
 }
 
+/// A fast, non-cryptographic 64-bit random number for load-balancing choices (splitmix64).
+///
+/// The state is per thread and seeded once from the clock and the thread, so two calls in the same
+/// clock tick differ (a clock-seeded generator repeats itself within a tick: 100 ns on Windows,
+/// which is many requests). No allocation, no shared state.
+pub fn fast_random() -> u64 {
+    use std::cell::Cell;
+    use std::hash::{Hash, Hasher};
+
+    thread_local! {
+        static STATE: Cell<u64> = Cell::new({
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::thread::current().id().hash(&mut hasher);
+            nanos ^ hasher.finish()
+        });
+    }
+    STATE.with(|state| {
+        let mut x = state.get().wrapping_add(0x9e37_79b9_7f4a_7c15);
+        state.set(x);
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        x ^ (x >> 31)
+    })
+}
+
+/// Weight of `url` in a `(url, weight)` list; `1` when the list does not name it.
+///
+/// `hint` is the index the caller expects `url` at. The candidate list and the weighted list are
+/// built from the same targets in the same order, so the first probe almost always hits and a
+/// pick that looks at two candidates (P2C) stays O(1); the scan only runs when the two lists have
+/// diverged (a filtered-out peer shifts the indices).
+pub fn weight_for(weighted: &[(String, u32)], hint: usize, url: &str) -> u32 {
+    match weighted.get(hint) {
+        Some((u, w)) if u == url => *w,
+        _ => weighted
+            .iter()
+            .find(|(u, _)| u == url)
+            .map_or(1, |(_, w)| *w),
+    }
+}
+
+/// Index (into `urls`) of the candidate with the lowest `cost(url) / weight`, looking only at the indices
+/// `candidates` yields (all of `0..urls.len()` for a full scan, or two sampled indices).
+///
+/// Candidates whose scaled cost is exactly equal (every idle upstream, for a cost that is 0 when idle)
+/// are chosen among at random, in proportion to their weight. A weight-0 candidate is skipped; when
+/// every candidate has weight 0 the weights are ignored rather than refusing to route. `None` only for
+/// an empty list. Used by `least-bandwidth`.
+pub fn pick_lowest_cost(
+    urls: &[String],
+    weighted: &[(String, u32)],
+    candidates: impl Iterator<Item = usize> + Clone,
+    cost: impl Fn(&str) -> f64,
+) -> Option<usize> {
+    // `None` for a weight-0 candidate; a NaN cost counts as the worst possible.
+    let scaled = |i: usize, url: &String| -> Option<(f64, u32)> {
+        let weight = weight_for(weighted, i, url);
+        (weight != 0).then(|| {
+            let scaled = cost(url) / f64::from(weight);
+            (
+                if scaled.is_nan() {
+                    f64::INFINITY
+                } else {
+                    scaled
+                },
+                weight,
+            )
+        })
+    };
+    let mut best: Option<(usize, f64)> = None;
+    let mut tied = 0usize;
+    for i in candidates.clone() {
+        let Some((c, _)) = scaled(i, &urls[i]) else {
+            continue;
+        };
+        match best {
+            Some((_, lowest)) if c > lowest => {}
+            Some((_, lowest)) if c == lowest => tied += 1,
+            _ => {
+                best = Some((i, c));
+                tied = 1;
+            }
+        }
+    }
+    let Some((first, lowest)) = best else {
+        // Every candidate has weight 0, or there is nothing to look at: ignore the weights. Once the
+        // weights are already ignored (`weighted` empty) and still nothing was found, `candidates` is
+        // empty: stop instead of asking again.
+        return if urls.is_empty() || weighted.is_empty() {
+            None
+        } else {
+            pick_lowest_cost(urls, &[], candidates, cost)
+        };
+    };
+    if tied == 1 {
+        return Some(first);
+    }
+    // Several at the lowest cost: one at random, in proportion to its weight. The costs can move
+    // between the passes, so fall back to the first one found.
+    let at_lowest = |i: usize, url: &String| match scaled(i, url) {
+        Some((c, weight)) if c == lowest => Some(u64::from(weight)),
+        _ => None,
+    };
+    let total: u64 = candidates
+        .clone()
+        .filter_map(|i| at_lowest(i, &urls[i]))
+        .sum();
+    let mut ticket = fast_random() % total.max(1);
+    let mut chosen = first;
+    for i in candidates {
+        if let Some(weight) = at_lowest(i, &urls[i]) {
+            chosen = i;
+            if ticket < weight {
+                break;
+            }
+            ticket -= weight;
+        }
+    }
+    Some(chosen)
+}
+
 /// Pick a URL for a precomputed key hash by rendezvous (highest-random-weight) hashing.
 ///
 /// Used for `ip-hash`, `consistent-hash` and the no-secret sticky mode.  Those hash a key (client IP,
@@ -412,6 +537,93 @@ mod tests {
         assert_eq!(
             pick_weighted_round_robin(&targets, "r", &counters),
             Some("http://a:4000".to_string())
+        );
+    }
+
+    /// The cheapest wins, a NaN cost is the worst wherever it sits, only the given indices are looked at,
+    /// and nothing is picked from nothing.
+    #[test]
+    fn pick_lowest_cost_takes_the_cheapest_and_survives_a_nan_cost() {
+        let urls: Vec<String> = ["http://a:1", "http://b:1", "http://c:1"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let cost = |url: &str| match url {
+            "http://a:1" => 5.0,
+            "http://b:1" => 2.0,
+            _ => 9.0,
+        };
+        assert_eq!(pick_lowest_cost(&urls, &[], 0..urls.len(), cost), Some(1));
+        // A NaN cost is the worst, never the best, wherever it sits.
+        let with_nan = |url: &str| {
+            if url == "http://a:1" {
+                f64::NAN
+            } else {
+                cost(url)
+            }
+        };
+        assert_eq!(
+            pick_lowest_cost(&urls, &[], 0..urls.len(), with_nan),
+            Some(1)
+        );
+        // Only the indices given are looked at: of 0 and 2 the cheaper one is 0, though 1 is cheapest overall.
+        assert_eq!(
+            pick_lowest_cost(&urls, &[], [0usize, 2].into_iter(), cost),
+            Some(0)
+        );
+        assert_eq!(pick_lowest_cost(&[], &[], 0..0, cost), None);
+        // No candidate to look at, with and without weights: nothing, and no endless retry.
+        assert_eq!(pick_lowest_cost(&urls, &[], std::iter::empty(), cost), None);
+        let weights: Vec<(String, u32)> = urls.iter().map(|u| (u.clone(), 0)).collect();
+        assert_eq!(
+            pick_lowest_cost(&urls, &weights, std::iter::empty(), cost),
+            None
+        );
+        // Every weight 0 over real candidates: the weights are ignored and the cheapest wins.
+        assert_eq!(
+            pick_lowest_cost(&urls, &weights, 0..urls.len(), cost),
+            Some(1)
+        );
+    }
+
+    /// Successive values differ, threads have their own streams, and the top bit is used.
+    #[test]
+    fn fast_random_never_repeats_back_to_back_and_differs_between_threads() {
+        // The old clock-seeded generator returned the same value for every call inside one clock
+        // tick; this one steps its state on every call.
+        let values: std::collections::HashSet<u64> = (0..10_000).map(|_| fast_random()).collect();
+        assert_eq!(values.len(), 10_000);
+        let (a, b) = (
+            std::thread::spawn(fast_random).join().unwrap(),
+            std::thread::spawn(fast_random).join().unwrap(),
+        );
+        assert_ne!(a, b, "two threads must not share a stream");
+        // Both halves of the range are used (a stuck high bit would show here).
+        let high = (0..1000).filter(|_| fast_random() >> 63 == 1).count();
+        assert!(
+            (400..=600).contains(&high),
+            "top bit set {high} times in 1000"
+        );
+    }
+
+    #[test]
+    fn weight_for_finds_by_hint_then_by_url_then_defaults_to_one() {
+        let list = vec![
+            ("http://a:1".to_owned(), 5u32),
+            ("http://b:1".to_owned(), 2u32),
+        ];
+        // The hint is right.
+        assert_eq!(weight_for(&list, 1, "http://b:1"), 2);
+        // The hint is wrong or out of range: found by URL.
+        assert_eq!(weight_for(&list, 0, "http://b:1"), 2);
+        assert_eq!(weight_for(&list, 9, "http://a:1"), 5);
+        // Not named, or no list: weight 1.
+        assert_eq!(weight_for(&list, 0, "http://c:1"), 1);
+        assert_eq!(weight_for(&[], 0, "http://a:1"), 1);
+        // A stored 0 is a 0, not the default.
+        assert_eq!(
+            weight_for(&[("http://z:1".to_owned(), 0)], 0, "http://z:1"),
+            0
         );
     }
 

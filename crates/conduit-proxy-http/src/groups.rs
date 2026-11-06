@@ -122,7 +122,17 @@ pub(crate) fn resolve_grouped(
             ctx.upstream_health,
             &hash_ctx,
         )
-        .map(|(name, _, _)| name)
+        .map(|(name, _, holds_slot)| {
+            // The strategy ran over group *names*, and a group name is never an upstream with a request
+            // in flight: hand back the slot a load-aware strategy (`least-conn`, `p2c`,
+            // `least-bandwidth`) took on it, or the counter of the name grows by one per request and
+            // nothing ever releases it (found by the review of PR #631; `least-conn` did this before).
+            // The real slot is taken by the inner pick below.
+            if holds_slot {
+                ctx.upstream_health.conn_dec(&name);
+            }
+            name
+        })
     };
     let Some(picked_name) = picked_name else {
         return ProxyResolution::unresolved(ProxyReqState::default());
@@ -237,6 +247,7 @@ pub(crate) fn resolve_grouped(
             proxy_pool: opts.pool.cloned(),
             proxy_http2: opts.http2,
             proxy_upstream_url,
+            meters_traffic: matches!(group.strategy, Some(LoadBalanceStrategy::LeastBandwidth)),
             upstream_conn_slot: is_least_conn || circuit_tracking,
             proxy_cache_cfg: opts.cache.cloned(),
             passive_unhealthy_status: Vec::new(), // groups don't have per-route healthCheck

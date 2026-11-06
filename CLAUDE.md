@@ -48,7 +48,7 @@
 14. **Rate limiter** — `DashMap` v6 (`AppState.rate_limiter`, общий для site/route/consumer). Ключи строятся **только** через `rate_limit::{site_key,route_key,consumer_key}` (`\0`-разделители): `site\0{site_label}\0{client}`, `route\0{site_label}\0{route_key}\0{client}`, `consumer\0{username}` (квота consumer'а **намеренно** глобальна по сайтам). `GET /rate-limits` разбирает все три формы. Redis-бэкенд — `crates/conduit-ratelimit/src/redis.rs` (за фичей `redis`; ключи тоже `\0`-разделены, не `:` — #350); на процесс одно Redis-соединение (первый найденный URL, #357). Admission — через `conduit_ratelimit::check_key_for` (#305). История находок и форматов — `.claude/archive/decisions-history.md`.
 15. **Graceful shutdown** — `Arc<AtomicUsize>` inflight. SIGTERM → перестать принимать → ждать нуля → exit. Факт (исправлено #489, 2026-10-10): `global.shutdownTimeoutSecs` (по умолчанию 30) идёт в `ServerConf.grace_period_seconds`; При SIGTERM Pingora спит весь период безусловно, не завершается раньше при нулевом inflight и не смотрит на `AppState.inflight`; `POST /shutdown` (и `conduit shutdown`) сам опрашивает inflight и выходит при нуле или по дедлайну. `global.backlog` — no-op (Pingora фиксирует 65535), validate предупреждает (#490).
 16. **`FallbackConfig`:** нет поля `redirect`.
-17. **LoadBalanceStrategy** — 8 вариантов (включая P2c). Веса статические. Для IpHash/CH — `hash_key: "ip" | "header:X-Key" | "url"`. P2C: splitmix64 RNG, O(1).
+17. **LoadBalanceStrategy** — 9 вариантов (включая P2c и LeastBandwidth). Веса статические (admin меняет в памяти) и читают WeightedRoundRobin, LeastConn, P2c, LeastBandwidth. `least-conn`: минимум in-flight/вес, ничьи случайно по весу. `p2c`: EWMA×(in-flight+1)/вес из двух случайных, берёт слот. `least-bandwidth` (`traffic.rs`): √((байт/с+1)(in-flight+1))/вес из двух случайных, берёт слот. Флаг `is_least_conn` у `pick` = «держит слот» (переименование — #630). Для IpHash/CH — `hash_key: "ip" | "header:X-Key" | "url"`. P2C: splitmix64 RNG, O(1).
 18. **Динамические upstream'ы** — только в памяти. `UpstreamRegistry` отдельно от конфига. `conduit reload` сбрасывает overrides.
 19. **Upstream groups** — `groups` + `groupStrategy`. Phase 3.7b.
 20. **Filter Chain (CoR)** — `crates/conduit-runtime/src/filter/chain.rs` (с #145; `src/filter/chain.rs` в корне — фасад). Новый guard = `impl RequestFilter` + push в chain. `service.rs` не трогать. `phase: "response"` scripts пропускаются в request-фазе (`MiddlewareGuard::apply`, теперь в `crates/conduit-middleware/src/guard.rs` — issue #114/#141; сборка chain'а — там же, в `filter/chain.rs` крейта `conduit-runtime`).
@@ -220,17 +220,6 @@ Integrity-аудит (Step 1c цикла) и Dependabot/branch hygiene веду�
 > `python scripts/health.py --line`, размер `--no-default-features` из Footprint-отчёта PR и одно честное предложение
 > на вопрос «выбрал бы я этот проект для другого начала?» (подробности — Step 8 цикла).
 
-### Реализовано в сессии 2026-10-03 (часть 7 — /retro: диета инструкций, RAG, пять приоритетов, #516 admin-фича; PR не открыты)
-
-- **Измерено:** production Rust +22% (16,4 → 20,0 тыс. строк), ×2 выросли файлы, документы и `.claude/` (298 → 820 КБ); в сессию грузилось 207 КБ инструкций. 12,84 MiB `--no-default-features`: пол — минимальный Pingora 7,64 MiB; наши крейты 1,1 MiB `.text`, конфиг всех фич ~0,7, CLI ~0,5, Admin API ~0,3; сжатие Pingora 0.9 (~0,7) безусловно (#516).
-- **Диета (#512):** авто-загружаемое 207 → **49 КБ**; `CLAUDE.md` 125,7 → 28,6 КБ; история — в `.claude/archive/` (не `docs/`: она английская), ничего не удалено (проверено построчно). Находка: `AGENTS.md`/`.agents/`/`.codex/` — устаревшие копии старых инструкций (v1.1.0), решение за владельцем.
-- **Правила:** 5 приоритетов (+ код-практики, RFC); «Found while here» в PR; «Research before building»; строка «Здоровье» в журнале (`scripts/health.py`); `crate-extractor` → `crate-steward` + skill `new-feature-crate` (#259).
-- **RAG (#513):** qdrant + LM Studio запущены владельцем; `scripts/rag/rag.py` (docs 1 414 точек за 333 с, issues, code, `.reference`).
-- **#516, срез 1:** Admin API — Cargo-фича `admin` (default-on); из `--no-default-features` уходят 15 крейтов (axum, hyper, tower…); `default`/`full` без изменений; warning + golden `[!admin]` + 11-й parity-assert.
-- **Ждёт владельца:** push/PR (две ветки), пилот для #258 (рекомендую `conduit-ratelimit`), остальные срезы #516, `AGENTS.md`.
-- **Здоровье:** 20 042 строки, 32 крейта, инструкции 49 КБ (ok), `--no-default-features` 12,84 MiB. Выбрал бы Conduit для другого проекта? **Нет, пока** (ACME не продлевается #491, no-op поля #489/#490, 84k не воспроизводится, RFC не измерено #514; зато ниша «платишь за скомпилированное» настоящая) — что сделать: #514, #516, #487.
-- Полный текст — `.claude/logs/session-log.md`.
-
 ### Реализовано в сессии 2026-11-05 (#600 + #617 #618 #621 #622 #602, часть #619 — PR #620: Windows symlink/junction TOCTOU и всё, что нашлось рядом)
 
 - **PR #620** (одна ветка `fix/windows-nofollow-600`). **Владелец (трижды): issues, заведённые «чтобы не забыть» в контексте #600, чинятся в этом же PR** (память `feedback_fix_followups_in_same_pr`) — поэтому #617, #618, #621, #622 и #602 вошли сюда. Остаётся открытым только то, что требует среды, которой нет: #619 (OneDrive/Dedup, ReFS, SMB, Server 2016/2019, `OBJ_DONT_REPARSE`).
@@ -239,4 +228,17 @@ Integrity-аудит (Step 1c цикла) и Dependabot/branch hygiene веду�
 - **Уроки.** (1) Тест подмены файла проходил 3 из 3 на **старом** коде — нужен детерминированный (нечитаемый файл → 403 до заголовков, под non-root). (2) В Docker при смене ревизий cargo по mtime считает сборку свежей: после распаковки tar — `touch`. (3) Heredoc снова съел `\\` (escape превратились в сырые невидимые символы) — только файл-скрипт, в исходниках нет невидимых символов. (4) Агент в worktree стартует от `main`: коммиты переносить cherry-pick. (5) `curl -sSL` без `--fail` сохранял страницу ошибки как бинарь `oha`.
 - **Ревью безопасности:** проход одним агентом по каждой голове ветки (первый на `4adae40`, затем дельты) — PASS; 2 LOW исправлены, 1 LOW (`same-file` на ReFS) и INFO приняты как информационные.
 - **Здоровье:** production code 21 731 строка в 315 файлах, 32 крейта; инструкции 52 КБ (ok); `--no-default-features` 13,3 MiB (Footprint-отчёт PR на `26e8c92`). Выбрал бы Conduit для другого проекта? **Пока с оговорками**: граница безопасности статики покрыта тестами на обеих ОС; не проверено: OneDrive/Dedup, ReFS, SMB (#619); прежние вопросы (RFC не измерено #514) я не перепроверял.
+- Полный текст — `.claude/logs/session-log.md`.
+
+### Реализовано в сессии 2026-11-06 (PR #625 влит; PR #631: балансировщик #506 + #575 #626–#629 #632 #633 #615, часть #619)
+
+- **PR #625** влит (`d1eee2f`): Pingora 0.9.1, пакеты по OSV 16/63 → 5/5, wasmtime без default-фич.
+- **PR #631** (`fix/506-619-615`). Владелец: p2c с in-flight — да; всё заведённое по ходу — в этот PR; Performance report расширить.
+- **В нём:** веса у `least-conn`/`p2c`; ничьи `least-conn` случайно по весу; `p2c` = задержка×(in-flight+1)/вес; `least-bandwidth`; `run_server` отказывает на hard-ошибках (#626); warning `groupStrategy` (#632); `health.rs` в 4 файла (#633); Actions по SHA (#615); ReFS/SMB (#619). Стенд `scripts/lb_compare.py`, цифры — комментарий на #629.
+- **«−6 %» в Performance report — шум.** Один 10-секундный прогон на общем раннере: σ = 6–9 % (A/A, 24 прогона: 15 008 против 15 007); A/B `main` против ветки, 36 прогонов: −4,2 % ± 2,4 %; профиль `perf` по функциям тот же. Отчёт (#575): 1 и 4 воркера, 4 чередующихся прогона на сборку, вердикт «within/beyond noise» (2,5 σ), ⚠️ только за шумом и ≥ 3 %; LB-ячейки (один прогон) — от 25 %.
+- **Архитектор:** PR ничего не добавляет на путь запроса; потери уже в `main` (`getrandom` на каждый запрос, клоны конфига и пересборка цепочки guard'ов, аллокации в маршрутизации) — план на #486; как доказать 1–3 % — #636. Идеи владельца: #634 (маршрутизация по IP-диапазону, GeoIP, языку, устройству, пользователю), #635 (нагрузка CPU/GPU/…, LLM по токенам).
+- **Безопасность:** PASS на восьми головах, последняя `2f01487`; находки исправлены, вердикт — в PR.
+- **Уроки.** Heredoc съедает `\` — только `Edit`/`Write`; «Fixes #1, #2» связывает один issue, «closed: #N» в тексте закрывает; SIGTERM = 30 с grace, в бенчмарках SIGKILL.
+- **Открыто:** #619, #630, #633 (`wasm.rs`, `filter.rs`), #486, #634–#636; CodeRabbit Docstring Coverage 63 % при пороге 80 % (совещательная). После слияния (просьба владельца): проверить обновление пакетов, взять issues с тегом `documentation`.
+- **Здоровье:** production code 22 136 строк в 319 файлах, 32 крейта; инструкции 57 КБ (ok); `--no-default-features` 13,3 MiB (Footprint PR). Выбрал бы Conduit для другого проекта? **Пока с оговорками**: отчёт честнее про шум, но 3 % мы видеть не умеем (#636), а потери на пути запроса известны (#486).
 - Полный текст — `.claude/logs/session-log.md`.

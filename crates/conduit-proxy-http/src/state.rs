@@ -155,6 +155,11 @@ pub struct ProxyReqState {
     /// a phantom decrement from an attribution-only request would corrupt the
     /// slot count for a *different* route sharing the same upstream.
     pub proxy_upstream_url: Option<String>,
+    /// `true` when the route's strategy is `least-bandwidth` (issue #627): the body filters then add
+    /// the size of every request and response chunk to the meter of `proxy_upstream_url`. `false` for
+    /// every other strategy, so their request path gains no work. It follows `proxy_upstream_url`
+    /// through retries because the meter is looked up by that URL on every chunk.
+    pub meters_traffic: bool,
     /// `true` when routing acquired a `conn_count` slot for
     /// `proxy_upstream_url` (via `conn_inc` / least-conn selection) that this
     /// request is responsible for releasing via `conn_dec`.

@@ -55,6 +55,7 @@ pub(super) fn strategy_label(s: &conduit_config::schema::LoadBalanceStrategy) ->
         S::IpHash => "ip-hash",
         S::ConsistentHash => "consistent-hash",
         S::P2c => "p2c",
+        S::LeastBandwidth => "least-bandwidth",
     }
 }
 

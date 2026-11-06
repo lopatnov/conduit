@@ -369,7 +369,7 @@ curl -X POST http://localhost:2019/upstreams/add \
 | -------- | -------- | -------------------------------------------------------------------------------------------------------- |
 | `route`  | ✅       | Route path prefix, e.g. `"/api"`                                                                         |
 | `target` | ✅       | Full upstream URL, e.g. `"http://api-3:4000"`                                                            |
-| `weight` | —        | Weight for weighted-round-robin (default: `1`)                                                           |
+| `weight` | —        | Weight for weighted-round-robin, least-conn, p2c and least-bandwidth (default: `1`)                      |
 | `site`   | —        | Scope to a specific site label, e.g. `"api.example.com:443"`. Omit to apply to all sites with this route |
 
 **Response:**
@@ -416,8 +416,9 @@ curl -X POST http://localhost:2019/upstreams/remove \
 
 ### POST /upstreams/weight
 
-Change the weight of an upstream target (effective for `weighted-round-robin`
-strategy only).
+Change the weight of an upstream target. Effective for `weighted-round-robin`,
+`least-conn`, `p2c` and `least-bandwidth` (shares in proportion to the weights);
+the other strategies ignore weights.
 
 ```bash
 # Give api-1 three times more traffic than api-2

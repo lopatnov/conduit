@@ -12,7 +12,8 @@ use wasmtime::{Caller, Engine, Linker, Module, Store};
 
 // ── Singletons ────────────────────────────────────────────────────────────────
 
-static WASM_ENGINE: OnceLock<Engine> = OnceLock::new();
+/// The engine every plugin runs on, or why it could not be built (issue #626).
+static WASM_ENGINE: OnceLock<Result<Engine, String>> = OnceLock::new();
 
 /// Maximum WASM fuel (instruction budget) per plugin call.
 ///
@@ -24,29 +25,57 @@ static WASM_ENGINE: OnceLock<Engine> = OnceLock::new();
 /// (Pattern from wasmtime docs: `Config::consume_fuel` + `Store::set_fuel`.)
 const WASM_MAX_FUEL: u64 = 10_000_000;
 
-fn engine() -> &'static Engine {
-    WASM_ENGINE.get_or_init(|| {
-        // Harden the WASM engine against malicious or buggy plugins:
-        //
-        // • consume_fuel: each WASM instruction consumes one unit.  When the
-        //   budget runs out the execution traps immediately.  Unlike
-        //   epoch_interruption this works WITHOUT a background thread — the
-        //   budget is set per-Store in run_inner() / run_response_inner().
-        //
-        //   Note: we previously enabled epoch_interruption but never started
-        //   the epoch-counter background thread, so that setting was inert.
-        //   Fuel is the correct per-request CPU limit mechanism.
-        //
-        // • wasm_memory64: disabled — plugins don't need >4 GiB address space
-        //   and 64-bit memory makes bound-checking more complex.
-        let mut config = wasmtime::Config::new();
-        config.consume_fuel(true);
-        config.wasm_memory64(false);
-        // Raise the memory guard region so out-of-bounds WASM accesses reliably
-        // trap rather than silently reading/writing host memory.
-        config.memory_guard_size(64 * 1024 * 1024); // 64 MiB guard
-        Engine::new(&config).unwrap_or_default()
-    })
+/// The `Config` plugins run under.
+fn engine_config() -> wasmtime::Config {
+    // Harden the WASM engine against malicious or buggy plugins:
+    //
+    // • consume_fuel: each WASM instruction consumes one unit.  When the
+    //   budget runs out the execution traps immediately.  Unlike
+    //   epoch_interruption this works WITHOUT a background thread — the
+    //   budget is set per-Store in run_inner() / run_response_inner().
+    //
+    //   Note: we previously enabled epoch_interruption but never started
+    //   the epoch-counter background thread, so that setting was inert.
+    //   Fuel is the correct per-request CPU limit mechanism.
+    //
+    // • wasm_memory64: disabled — plugins don't need >4 GiB address space
+    //   and 64-bit memory makes bound-checking more complex.
+    let mut config = wasmtime::Config::new();
+    config.consume_fuel(true);
+    config.wasm_memory64(false);
+    // Raise the memory guard region so out-of-bounds WASM accesses reliably
+    // trap rather than silently reading/writing host memory.
+    config.memory_guard_size(64 * 1024 * 1024); // 64 MiB guard
+    config
+}
+
+/// Turn the outcome of `Engine::new` into the engine or the reason there is none. Never a default
+/// engine in place of an error (issue #626).
+fn engine_from<E: std::fmt::Display>(created: Result<Engine, E>) -> Result<Engine, String> {
+    created.map_err(|e| format!("the WebAssembly engine could not be created: {e}"))
+}
+
+/// Build an engine from `config`, or say why that is impossible.
+fn build_engine(config: &wasmtime::Config) -> Result<Engine, String> {
+    engine_from(Engine::new(config))
+}
+
+/// The process-wide engine, or the reason there is none, built on first use.
+fn shared_engine() -> &'static Result<Engine, String> {
+    WASM_ENGINE.get_or_init(|| build_engine(&engine_config()))
+}
+
+/// The shared engine. An error here is never papered over with a default engine: a default engine has
+/// no fuel, so `set_fuel` would fail on every call and every plugin would silently fail open (issue #626).
+fn engine() -> anyhow::Result<&'static Engine> {
+    shared_engine().as_ref().map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Build the shared engine now and report why it cannot be built. Configuration validation calls this when
+/// a `wasm` middleware is configured, so that a start-up or a hot reload that could never run a plugin is
+/// refused instead of letting every plugin fail open (issue #626). The result is cached.
+pub fn check_engine() -> Result<(), String> {
+    shared_engine().as_ref().map(|_| ()).map_err(Clone::clone)
 }
 
 static WASM_MODULES: OnceLock<DashMap<String, Arc<Module>>> = OnceLock::new();
@@ -61,7 +90,7 @@ fn get_or_compile(path: &str) -> anyhow::Result<Arc<Module>> {
         return Ok(m.clone());
     }
     let bytes = std::fs::read(path)?;
-    let module = Module::new(engine(), &bytes)?;
+    let module = Module::new(engine()?, &bytes)?;
     let arc = Arc::new(module);
     cache.insert(path.to_owned(), arc.clone());
     Ok(arc)
@@ -447,13 +476,13 @@ pub fn run_wasm(request: WasmRequest, path: &str) -> WasmOutcome {
 
 fn run_inner(request: WasmRequest, path: &str) -> anyhow::Result<WasmOutcome> {
     let module = get_or_compile(path)?;
-    let mut store = Store::new(engine(), WasmState::new(request));
+    let mut store = Store::new(engine()?, WasmState::new(request));
     // Enforce per-call memory limit — prevents a plugin from OOM-killing the proxy.
     store.limiter(|s| &mut s.resource_limits as &mut dyn wasmtime::ResourceLimiter);
     // Enforce per-call CPU budget — terminates infinite loops and runaway plugins.
     // Each WASM instruction consumes 1 unit of fuel; a trap is raised when exhausted.
     store.set_fuel(WASM_MAX_FUEL)?;
-    let mut linker = Linker::new(engine());
+    let mut linker = Linker::new(engine()?);
     register_host_functions(&mut linker)?;
 
     let instance = linker.instantiate(&mut store, &module)?;
@@ -677,10 +706,10 @@ pub fn run_wasm_response(ctx: WasmResponseContext, path: &str) -> WasmResponseOu
 
 fn run_response_inner(ctx: WasmResponseContext, path: &str) -> anyhow::Result<WasmResponseOutcome> {
     let module = get_or_compile(path)?;
-    let mut store = Store::new(engine(), WasmResponseState::new(ctx));
+    let mut store = Store::new(engine()?, WasmResponseState::new(ctx));
     store.limiter(|s| &mut s.resource_limits as &mut dyn wasmtime::ResourceLimiter);
     store.set_fuel(WASM_MAX_FUEL)?;
-    let mut linker = Linker::new(engine());
+    let mut linker = Linker::new(engine()?);
     register_response_host_functions(&mut linker)?;
 
     let instance = linker.instantiate(&mut store, &module)?;
@@ -712,6 +741,28 @@ fn run_response_inner(ctx: WasmResponseContext, path: &str) -> anyhow::Result<Wa
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_shared_engine_builds_with_the_plugin_config() {
+        assert_eq!(check_engine(), Ok(()));
+        assert!(engine().is_ok());
+    }
+
+    /// Issue #626: `Engine::new(..).unwrap_or_default()` used to turn a failure into an engine without
+    /// fuel, on which every `set_fuel` fails and every plugin passes the request through. A failure must
+    /// come back as an error instead. The seam is `engine_from`, which both `build_engine` and the shared
+    /// engine go through; a failing `Engine::new` itself cannot be provoked in a way that does not depend
+    /// on which Wasmtime back ends are compiled in (a foreign target, say, works until `all-arch` is on).
+    #[test]
+    fn an_engine_that_cannot_be_built_is_reported_not_swallowed() {
+        let err = engine_from(Err("no code generator for this host")).unwrap_err();
+        assert_eq!(
+            err,
+            "the WebAssembly engine could not be created: no code generator for this host"
+        );
+        // And a good one comes through as an engine.
+        assert!(engine_from(Engine::new(&engine_config())).is_ok());
+    }
+
     use super::*;
     use std::io::Write as _;
 

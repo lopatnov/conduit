@@ -614,7 +614,7 @@ kubectl delete conduitsite my-app
 | TLS termination    | ✅               | ✅                         |
 | Auto-TLS (ACME)    | via cert-manager | ✅ built-in                |
 | Path-based routing | ✅               | ✅                         |
-| Load balancing     | ✅               | ✅ 8 strategies            |
+| Load balancing     | ✅               | ✅ 9 strategies            |
 | Rate limiting      | via annotations  | ✅ native                  |
 | JWT / API key auth | via plugin       | ✅ native                  |
 | Prometheus metrics | via exporter     | ✅ native                  |

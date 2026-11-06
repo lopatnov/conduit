@@ -396,7 +396,12 @@ impl ProxyHttp for ConduitProxy {
         end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> Result<Option<std::time::Duration>> {
-        response_phase::upstream_response_body_filter(body, end_of_stream, ctx)
+        response_phase::upstream_response_body_filter(
+            body,
+            end_of_stream,
+            ctx,
+            &self.state.upstream_health,
+        )
     }
 
     async fn response_filter(

@@ -412,7 +412,7 @@ conduit upstreams add --route /api --target http://api-3:4000 --site api.example
 | -------------- | -------- | ------------------------------------------------------------------------------------------------- |
 | `--route PATH` | ✅       | Route path (e.g. `/api`)                                                                          |
 | `--target URL` | ✅       | Upstream URL to add                                                                               |
-| `--weight N`   | —        | Weight for weighted-round-robin (default: 1)                                                      |
+| `--weight N`   | —        | Weight for weighted-round-robin, least-conn, p2c and least-bandwidth (default: 1)                 |
 | `--site LABEL` | —        | Limit to a specific site (e.g. `api.example.com:443`). Omit to apply to all sites with this route |
 
 #### Remove an upstream
@@ -430,7 +430,8 @@ conduit upstreams remove --route /api --target http://api-3:4000 --site api.exam
 
 #### Change upstream weight
 
-Only effective when the route uses `strategy: weighted-round-robin`.
+Effective when the route uses `strategy: weighted-round-robin`, `least-conn`, `p2c` or
+`least-bandwidth` (shares in proportion to the weights). The other strategies ignore weights.
 
 ```bash
 conduit upstreams weight --route /api --target http://api-1:4000 --weight 3

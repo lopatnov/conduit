@@ -8,15 +8,15 @@
 //! Background health check tasks are spawned once at server start inside the
 //! root crate's `AdminApiService::start()` via [`spawn_health_checks`].
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::AtomicUsize;
 
 use dashmap::DashMap;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::config::{OutlierDetectionConfig, UpstreamHealthCheck};
-use crate::targets;
+use crate::config::OutlierDetectionConfig;
+
+#[cfg(feature = "proxy")]
+pub use crate::probes::spawn_connection_warmup;
+pub use crate::probes::spawn_health_checks;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ use crate::targets;
 /// Used throughout the health module for ejection/recovery time comparisons.
 /// Centralised here to avoid repeating the same `SystemTime::now()…` chain.
 #[inline]
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -351,6 +351,9 @@ pub struct UpstreamRegistry {
     /// Incremented in the router when a URL is selected; decremented in the
     /// `logging()` hook after the response is sent.
     pub conn_count: DashMap<String, AtomicUsize>,
+    /// Per-upstream traffic meters, used by the `least-bandwidth` strategy (issue #627). An entry is
+    /// created by the first byte recorded for a URL; only routes that use that strategy record any.
+    pub traffic: DashMap<String, std::sync::Arc<crate::traffic::TrafficMeter>>,
     /// Runtime upstream overrides: `route_path → [(url, weight)]`.
     ///
     /// When present for a route, these targets are used **instead of** the
@@ -367,17 +370,6 @@ impl Default for UpstreamRegistry {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// ── Override key helpers ──────────────────────────────────────────────────────
-
-/// Build the DashMap key for a runtime override entry.
-///
-/// Format: `"{site}\0{route}"`.  The null byte is a safe separator because
-/// neither host labels nor URL paths can contain `\0`.
-/// Site `"*"` is the wildcard — applies to every site that serves the route.
-fn override_key(site: &str, route: &str) -> String {
-    format!("{site}\0{route}")
 }
 
 /// Format a site's host+port as the canonical site label used in override keys.
@@ -398,51 +390,9 @@ impl UpstreamRegistry {
         Self {
             statuses: DashMap::new(),
             conn_count: DashMap::new(),
+            traffic: DashMap::new(),
             overrides: DashMap::new(),
         }
-    }
-
-    // ── Least-conn helpers ────────────────────────────────────────────────────
-
-    /// Return the current inflight count for `url` (0 when unknown).
-    pub fn conn_load(&self, url: &str) -> usize {
-        self.conn_count
-            .get(url)
-            .map(|c| c.load(Ordering::Relaxed))
-            .unwrap_or(0)
-    }
-
-    /// Increment the inflight count for `url` and return the new value.
-    pub fn conn_inc(&self, url: &str) {
-        self.conn_count
-            .entry(url.to_owned())
-            .or_insert_with(|| AtomicUsize::new(0))
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Decrement the inflight count for `url`, saturating at 0.
-    pub fn conn_dec(&self, url: &str) {
-        if let Some(c) = self.conn_count.get(url) {
-            // fetch_update lets us implement saturating decrement atomically.
-            // It's deprecated in favor of try_update on current stable rustc, but
-            // try_update was only stabilized well after this project's declared
-            // rust-version (1.89) -- keep the MSRV-compatible API and silence the
-            // deprecation warning explicitly rather than breaking older toolchains.
-            #[allow(deprecated)]
-            let _ = c.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                Some(n.saturating_sub(1))
-            });
-        }
-    }
-
-    /// Pick the URL from `urls` with the lowest current inflight count and
-    /// increment its count.
-    ///
-    /// Returns `None` when `urls` is empty.
-    pub fn pick_least_conn(&self, urls: &[String]) -> Option<String> {
-        let chosen = urls.iter().min_by_key(|url| self.conn_load(url))?.clone();
-        self.conn_inc(&chosen);
-        Some(chosen)
     }
 
     // ── Health helpers ────────────────────────────────────────────────────────
@@ -525,329 +475,14 @@ impl UpstreamRegistry {
             (healthy, false)
         }
     }
-
-    // ── Runtime upstream overrides (Phase 2.5c) ───────────────────────────────
-
-    /// Return the runtime override target list for `(site_label, route)`.
-    ///
-    /// Lookup order:
-    /// 1. Site-specific key — `"{site_label}\0{route}"` (set via `--site` flag).
-    /// 2. Wildcard key — `"*\0{route}"` (set when no `--site` is specified).
-    /// 3. `None` — fall back to the config-file targets.
-    pub fn get_override_targets(
-        &self,
-        site_label: &str,
-        route: &str,
-    ) -> Option<Vec<(String, u32)>> {
-        // Site-specific takes precedence.
-        let specific = override_key(site_label, route);
-        if let Some(v) = self.overrides.get(&specific) {
-            return Some(v.value().clone());
-        }
-        // Wildcard — applies to all sites.
-        self.overrides
-            .get(&override_key("*", route))
-            .map(|e| e.value().clone())
-    }
-
-    /// Add `url` with `weight` to the runtime override list for `(site, route)`.
-    ///
-    /// `site` is either a site label (e.g. `"app.example.com:443"`) for a
-    /// site-specific override, or `"*"` to apply the override to every site
-    /// that serves this route (wildcard, backward-compatible default).
-    ///
-    /// If `url` is already present its weight is updated.
-    pub fn add_upstream(&self, site: &str, route: &str, url: &str, weight: u32) {
-        let key = override_key(site, route);
-        let mut entry = self.overrides.entry(key).or_default();
-        if let Some(existing) = entry.iter_mut().find(|(u, _)| u == url) {
-            existing.1 = weight;
-        } else {
-            entry.push((url.to_owned(), weight));
-        }
-    }
-
-    /// Remove `url` from the runtime override list for `(site, route)`.
-    ///
-    /// Returns `true` if the URL was found and removed.
-    pub fn remove_upstream(&self, site: &str, route: &str, url: &str) -> bool {
-        let key = override_key(site, route);
-        if let Some(mut entry) = self.overrides.get_mut(&key) {
-            let before = entry.len();
-            entry.retain(|(u, _)| u != url);
-            return entry.len() < before;
-        }
-        false
-    }
-
-    /// Update the weight of `url` within the runtime override list for `(site, route)`.
-    ///
-    /// Returns `true` when the URL was found and its weight updated.
-    pub fn set_weight(&self, site: &str, route: &str, url: &str, weight: u32) -> bool {
-        let key = override_key(site, route);
-        if let Some(mut entry) = self.overrides.get_mut(&key) {
-            if let Some(existing) = entry.iter_mut().find(|(u, _)| u == url) {
-                existing.1 = weight;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Drop all runtime overrides (called on `POST /reload`).
-    pub fn clear_overrides(&self) {
-        self.overrides.clear();
-    }
-}
-
-// ── Health state update ───────────────────────────────────────────────────────
-
-/// Apply a single probe result to an upstream's health entry.
-///
-/// Called from the background health-check task after each TCP probe.  Extracted
-/// into a pure function so the threshold logic can be unit-tested without a live
-/// network connection or a running Tokio runtime.
-pub(crate) fn apply_probe_result(
-    entry: &mut UpstreamEntry,
-    ok: bool,
-    latency_ms: u64,
-    healthy_threshold: u32,
-    unhealthy_threshold: u32,
-) {
-    if ok {
-        entry.consecutive_failures = 0;
-        entry.consecutive_successes = entry.consecutive_successes.saturating_add(1);
-        entry.latency_ms = Some(latency_ms);
-        if entry.consecutive_successes >= healthy_threshold {
-            entry.healthy = true;
-        }
-    } else {
-        entry.consecutive_successes = 0;
-        entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
-        if entry.consecutive_failures >= unhealthy_threshold {
-            entry.healthy = false;
-        }
-    }
-}
-
-// ── Background health check tasks ─────────────────────────────────────────────
-
-/// Spawn a Tokio background task for every `(healthCheck config, target URLs)`
-/// pair supplied.
-///
-/// Call once after the Tokio runtime is available (e.g. from the root
-/// crate's `AdminApiService::start()`).  Tasks are fire-and-forget; they run
-/// until the process exits.
-///
-/// Takes an iterator of already-resolved `(&UpstreamHealthCheck, &[String])`
-/// pairs rather than the root crate's `AppConfig` directly: `conduit-upstream`
-/// doesn't (and, per the crate-extraction layering rule, must not) depend on
-/// `AppConfig`/`ProxyConfig`/`ProxyRouteTarget` — those are still root-crate-
-/// only types (a later migration phase, #143/#144, extracts proxy routing
-/// itself). The root crate's own call site (`admin/api.rs`'s
-/// `spawn_upstream_probes()`, which builds the slice with
-/// `health_check_routes()`) resolves `AppConfig` down to this shape before
-/// calling in — the same pattern `conduit-hotreload`'s `build_watch_config`
-/// uses for its own analogous `AppConfig`-dependency problem (issue
-/// #114/#140).
-pub fn spawn_health_checks<'a, I>(registry: Arc<UpstreamRegistry>, routes: I)
-where
-    I: IntoIterator<Item = (&'a UpstreamHealthCheck, &'a [String])>,
-{
-    for (hc, urls) in routes {
-        if urls.is_empty() {
-            continue;
-        }
-        let raw_path = hc.path.clone().unwrap_or_else(|| "/".to_string());
-        let path = if raw_path.starts_with('/') {
-            raw_path
-        } else {
-            format!("/{raw_path}")
-        };
-        spawn_health_task(
-            registry.clone(),
-            urls.to_vec(),
-            path,
-            hc.interval_secs.unwrap_or(10).max(1),
-            hc.healthy_threshold.unwrap_or(1),
-            hc.unhealthy_threshold.unwrap_or(3),
-        );
-    }
-}
-
-/// Spawn background connection warmup tasks for routes that have
-/// `healthCheck.prewarmConnections` configured.
-///
-/// For each such route, sends `n` sequential HEAD requests to the configured
-/// health-check path immediately after startup.
-///
-/// **`[🚫 BLOCKED]`** (2026-08-03 integrity audit; confirmed genuinely
-/// blocked, not just unimplemented, 2026-09-06 — issue #158): each request
-/// currently goes through its own freshly-built, short-lived `reqwest::Client`
-/// (see `warmup_url`), which is dropped at the end of the loop body — it does
-/// not populate Pingora's own upstream connector pool used by
-/// `upstream_peer()` for real proxied traffic, so real user requests still
-/// pay the full TCP-handshake cost.
-///
-/// Confirmed via `pingora-proxy` 0.8.1's vendored source
-/// (`pingora-proxy-0.8.1/src/lib.rs`): `HttpProxy<SV, C>::client_upstream`
-/// (the actual `Connector` whose keepalive pool `upstream_peer()`'s request
-/// path reads from) is a **private field with no public accessor** anywhere
-/// in the struct's `impl` blocks, and the `ProxyHttp` trait Conduit
-/// implements never receives a reference to it in any hook. There is no
-/// public API in Pingora 0.8 to reach, share, or pre-populate that specific
-/// pool from outside the crate (re-checked against 0.9.0 when Conduit moved
-/// to it: the field is still private, still no accessor) — the same class of
-/// gap as this repo's other `[🚫 BLOCKED]` items (OCSP stapling, request
-/// queue + backpressure), waiting on a future Pingora release. Left in place
-/// because it's otherwise harmless (a handful
-/// of HEAD requests at startup); does not deliver the latency benefit its
-/// name implies, and cannot until Pingora exposes the real pool.
-///
-/// Takes the same `(&UpstreamHealthCheck, &[String])` iterator shape as
-/// [`spawn_health_checks`], for the same reason — see that function's doc
-/// comment.
-#[cfg(feature = "proxy")]
-pub fn spawn_connection_warmup<'a, I>(routes: I)
-where
-    I: IntoIterator<Item = (&'a UpstreamHealthCheck, &'a [String])>,
-{
-    for (hc, urls) in routes {
-        let n = match hc.prewarm_connections {
-            Some(0) | None => continue,
-            Some(n) => n.min(8) as usize,
-        };
-        let path = hc.path.clone().unwrap_or_else(|| "/".to_string());
-        for url in urls {
-            let path = path.clone();
-            tokio::spawn(warmup_url(url.clone(), path, n));
-        }
-    }
-}
-
-/// Perform `n` sequential HEAD requests to warm up the connection pool for `url`.
-#[cfg(feature = "proxy")]
-async fn warmup_url(url: String, path: String, n: usize) {
-    for i in 0..n {
-        let target = format!("{url}{path}");
-        match reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-        {
-            Ok(client) => match client.head(&target).send().await {
-                Ok(_) => tracing::debug!(
-                    url,
-                    attempt = i + 1,
-                    total = n,
-                    "connection warmup request succeeded"
-                ),
-                Err(e) => tracing::debug!(
-                    url,
-                    attempt = i + 1,
-                    total = n,
-                    "connection warmup request failed: {e}"
-                ),
-            },
-            Err(e) => tracing::warn!("connection warmup client build error: {e}"),
-        }
-    }
-    tracing::info!(url, n, "connection warmup complete");
-}
-
-/// Spawn a single background health-check task for a set of upstream URLs.
-fn spawn_health_task(
-    registry: Arc<UpstreamRegistry>,
-    urls: Vec<String>,
-    path: String,
-    interval_secs: u64,
-    healthy_threshold: u32,
-    unhealthy_threshold: u32,
-) {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            ticker.tick().await;
-            for url in &urls {
-                let Some(host_port) = targets::url_to_host_port(url) else {
-                    continue;
-                };
-                let (ok, latency_ms) = probe_http(&host_port, &path).await;
-                let mut entry = registry.statuses.entry(url.clone()).or_default();
-                let was_healthy = entry.healthy;
-                apply_probe_result(
-                    &mut entry,
-                    ok,
-                    latency_ms,
-                    healthy_threshold,
-                    unhealthy_threshold,
-                );
-                if ok && !was_healthy && entry.healthy {
-                    // Record recovery time for slow-start weight ramping.
-                    let now = now_secs();
-                    entry.recovery_time_secs = Some(now);
-                    tracing::info!(url, "upstream recovered");
-                } else if !ok && was_healthy && !entry.healthy {
-                    tracing::warn!(
-                        url,
-                        failures = entry.consecutive_failures,
-                        "upstream marked unhealthy"
-                    );
-                }
-            }
-        }
-    });
-}
-
-// ── HTTP health probe ─────────────────────────────────────────────────────────
-
-/// Send an HTTP/1.1 HEAD request to `host_port` at `path`.
-///
-/// Returns `(success, latency_ms)`.  `success` is `true` when the server
-/// responds with any HTTP status below 500.  Connection or I/O errors return
-/// `(false, 0)`.
-///
-/// A 5-second timeout is applied to both the TCP connect and the read.
-async fn probe_http(host_port: &str, path: &str) -> (bool, u64) {
-    let start = tokio::time::Instant::now();
-    let timeout = Duration::from_secs(5);
-
-    let stream =
-        match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(host_port)).await {
-            Ok(Ok(s)) => s,
-            _ => return (false, 0),
-        };
-
-    let req = format!("HEAD {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n\r\n");
-
-    let mut reader = BufReader::new(stream);
-
-    let write_result =
-        tokio::time::timeout(timeout, reader.get_mut().write_all(req.as_bytes())).await;
-    if write_result.is_err() || write_result.unwrap().is_err() {
-        return (false, 0);
-    }
-
-    let mut line = String::new();
-    let read_result = tokio::time::timeout(timeout, reader.read_line(&mut line)).await;
-    if read_result.is_err() || line.is_empty() {
-        return (false, 0);
-    }
-
-    // Status line: "HTTP/1.1 200 OK" — parse the code.
-    let status: u16 = line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-
-    let latency_ms = start.elapsed().as_millis() as u64;
-    (status > 0 && status < 500, latency_ms)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::UpstreamHealthCheck;
+    use crate::overrides::override_key;
+    use crate::probes::{apply_probe_result, probe_http};
 
     // ── site_label ───────────────────────────────────────────────────────────
 
@@ -1184,7 +819,7 @@ mod tests {
         reg.conn_inc("http://b:4000");
 
         // c has 0 — should be chosen and its count incremented.
-        let chosen = reg.pick_least_conn(&urls).unwrap();
+        let chosen = reg.pick_least_conn(&urls, &[]).unwrap();
         assert_eq!(chosen, "http://c:4000");
         assert_eq!(reg.conn_load("http://c:4000"), 1);
     }
@@ -1561,12 +1196,83 @@ mod tests {
         reg.conn_dec("http://never-seen:4000");
     }
 
+    // ── traffic (least-bandwidth, #627) ───────────────────────────────────────
+
+    #[test]
+    fn traffic_is_recorded_per_url_and_unknown_urls_have_rate_zero() {
+        let reg = UpstreamRegistry::new();
+        assert_eq!(reg.traffic_rate("http://a:4000"), 0.0);
+        reg.record_traffic("http://a:4000", 1_000);
+        reg.record_traffic("http://a:4000", 2_000);
+        reg.record_traffic("http://b:4000", 7);
+        assert_eq!(reg.traffic.get("http://a:4000").unwrap().total(), 3_000);
+        assert_eq!(reg.traffic.get("http://b:4000").unwrap().total(), 7);
+        assert!(reg.traffic.get("http://c:4000").is_none());
+    }
+
+    /// Cost of the one thing `least-bandwidth` adds to the request path, `record_traffic` once per body
+    /// chunk. Run: `cargo test -p lopatnov-conduit-upstream --release -- --ignored record_traffic_cost --nocapture`.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn record_traffic_cost() {
+        use std::sync::Arc;
+        use std::time::Instant;
+        const CALLS: u64 = 5_000_000;
+        let reg = Arc::new(UpstreamRegistry::new());
+        let url = "http://upstream-1.internal:4000";
+        reg.record_traffic(url, 1);
+        for threads in [1u64, 4, 8] {
+            let start = Instant::now();
+            let handles: Vec<_> = (0..threads)
+                .map(|_| {
+                    let reg = reg.clone();
+                    std::thread::spawn(move || {
+                        for _ in 0..CALLS {
+                            reg.record_traffic(url, 16 * 1024);
+                        }
+                    })
+                })
+                .collect();
+            handles.into_iter().for_each(|h| h.join().unwrap());
+            let ns = start.elapsed().as_nanos() as f64 / (CALLS * threads) as f64;
+            eprintln!("record_traffic: {threads} thread(s) on one URL: {ns:.1} ns per call");
+        }
+        // The in-flight pair every request of `least-conn`, `p2c` and `least-bandwidth` makes.
+        let start = Instant::now();
+        for _ in 0..CALLS {
+            reg.conn_inc(url);
+            reg.conn_dec(url);
+        }
+        eprintln!(
+            "conn_inc + conn_dec (key exists): {:.1} ns per pair",
+            start.elapsed().as_nanos() as f64 / CALLS as f64
+        );
+        let now = crate::traffic::monotonic_ms();
+        let start = Instant::now();
+        let mut rate = 0.0;
+        for _ in 0..CALLS {
+            rate += reg.traffic_rate_at(url, now);
+        }
+        eprintln!(
+            "traffic_rate_at (one candidate, inside the window): {:.1} ns per call ({rate:e})",
+            start.elapsed().as_nanos() as f64 / CALLS as f64
+        );
+        let start = Instant::now();
+        for _ in 0..CALLS {
+            rate += reg.traffic_rate(url);
+        }
+        eprintln!(
+            "traffic_rate (reads the clock too): {:.1} ns per call ({rate:e})",
+            start.elapsed().as_nanos() as f64 / CALLS as f64
+        );
+    }
+
     // ── pick_least_conn ───────────────────────────────────────────────────────
 
     #[test]
     fn pick_least_conn_returns_none_for_empty_list() {
         let reg = UpstreamRegistry::new();
-        assert!(reg.pick_least_conn(&[]).is_none());
+        assert!(reg.pick_least_conn(&[], &[]).is_none());
     }
 
     #[test]
@@ -1576,8 +1282,147 @@ mod tests {
         let b = "http://b:4000".to_owned();
         reg.conn_inc(&a);
         reg.conn_inc(&a); // a = 2, b = 0
-        let chosen = reg.pick_least_conn(&[a.clone(), b.clone()]);
+        let chosen = reg.pick_least_conn(&[a.clone(), b.clone()], &[]);
         assert_eq!(chosen.as_deref(), Some(b.as_str()), "b has lower load");
+    }
+
+    // ── pick_least_conn, weighted (#506) ──────────────────────────────────────
+
+    /// Run `n` requests that never finish (every pick stays inflight) against `urls` and count how
+    /// many each peer received.
+    fn spread(
+        reg: &UpstreamRegistry,
+        urls: &[String],
+        weighted: &[(String, u32)],
+        n: usize,
+    ) -> Vec<usize> {
+        for _ in 0..n {
+            reg.pick_least_conn(urls, weighted).expect("a candidate");
+        }
+        urls.iter().map(|u| reg.conn_load(u)).collect()
+    }
+
+    fn pair(a: u32, b: u32) -> (Vec<String>, Vec<(String, u32)>) {
+        let urls = vec!["http://a:4000".to_owned(), "http://b:4000".to_owned()];
+        let weighted = vec![(urls[0].clone(), a), (urls[1].clone(), b)];
+        (urls, weighted)
+    }
+
+    #[test]
+    fn weighted_least_conn_shares_inflight_in_proportion_to_weight() {
+        let (urls, weighted) = pair(3, 1);
+        let reg = UpstreamRegistry::new();
+        // 40 requests held open: a (weight 3) must carry three times what b carries.
+        assert_eq!(spread(&reg, &urls, &weighted, 40), vec![30, 10]);
+    }
+
+    /// Ties are random, so compare what is guaranteed: weights absent, 1 or all 7 split 41 held-open requests 21/20.
+    #[test]
+    fn weighted_least_conn_with_equal_weights_matches_the_unweighted_pick() {
+        // Ties are broken at random, so compare what is guaranteed: 41 held-open requests over two
+        // peers split 21/20 either way round, whether the weights are absent, 1 or all the same.
+        let (urls, ones) = pair(1, 1);
+        let (_, sevens) = pair(7, 7);
+        for weights in [&[][..], &ones[..], &sevens[..]] {
+            let counts = spread(&UpstreamRegistry::new(), &urls, weights, 41);
+            assert_eq!(counts.iter().sum::<usize>(), 41);
+            assert!(
+                counts[0].abs_diff(counts[1]) <= 1,
+                "weights {weights:?} split 41 requests as {counts:?}"
+            );
+        }
+    }
+
+    /// With the weight-1 peer already carrying one request, the weight-3 peer takes the next two.
+    #[test]
+    fn weighted_least_conn_prefers_the_heavy_peer_when_loads_are_equal() {
+        let (urls, weighted) = pair(1, 3);
+        let reg = UpstreamRegistry::new();
+        // a (weight 1) already carries one request: its ratio is 1, b's (weight 3) is 0, so b takes
+        // the next two requests (ratios 1/3 and 2/3 are both below 1).
+        reg.conn_inc(&urls[0]);
+        for _ in 0..2 {
+            assert_eq!(reg.pick_least_conn(&urls, &weighted).unwrap(), urls[1]);
+        }
+    }
+
+    #[test]
+    fn weighted_least_conn_never_picks_a_zero_weight_peer_while_another_has_weight() {
+        let (urls, weighted) = pair(0, 1);
+        let reg = UpstreamRegistry::new();
+        // Even though a is idle and b is busy, a has no weight.
+        reg.conn_inc(&urls[1]);
+        reg.conn_inc(&urls[1]);
+        assert_eq!(reg.pick_least_conn(&urls, &weighted).unwrap(), urls[1]);
+    }
+
+    #[test]
+    fn weighted_least_conn_with_every_weight_zero_still_routes_by_load() {
+        let (urls, weighted) = pair(0, 0);
+        let reg = UpstreamRegistry::new();
+        reg.conn_inc(&urls[0]);
+        assert_eq!(reg.pick_least_conn(&urls, &weighted).unwrap(), urls[1]);
+    }
+
+    #[test]
+    fn weighted_least_conn_handles_the_largest_weights() {
+        let (urls, weighted) = pair(u32::MAX, u32::MAX - 1);
+        let reg = UpstreamRegistry::new();
+        reg.conn_inc(&urls[0]);
+        // a: 1/(2^32-1), b: 0/(2^32-2) -> b has the lower ratio.
+        assert_eq!(reg.pick_least_conn(&urls, &weighted).unwrap(), urls[1]);
+    }
+
+    /// Sequential traffic: every request is released before the next one arrives, so every pick sees
+    /// all peers at the same load and is a tie.
+    fn sequential_picks(urls: &[String], weighted: &[(String, u32)], n: usize) -> Vec<usize> {
+        let reg = UpstreamRegistry::new();
+        let mut counts = vec![0usize; urls.len()];
+        for _ in 0..n {
+            let url = reg.pick_least_conn(urls, weighted).expect("a candidate");
+            counts[urls.iter().position(|u| *u == url).unwrap()] += 1;
+            reg.conn_dec(&url);
+        }
+        counts
+    }
+
+    /// Sequential requests tie every time: 600 picks over three peers land about 200 each (standard deviation 11.5).
+    #[test]
+    fn least_conn_spreads_ties_when_nothing_stays_in_flight() {
+        let urls: Vec<String> = (0..3).map(|i| format!("http://b{i}:4000")).collect();
+        // 600 ties over 3 peers: 200 each, standard deviation about 11.5.
+        for (i, count) in sequential_picks(&urls, &[], 600).into_iter().enumerate() {
+            assert!(
+                (140..=260).contains(&count),
+                "peer {i} got {count} of 600 tied picks"
+            );
+        }
+    }
+
+    #[test]
+    fn weighted_least_conn_ties_follow_the_weights() {
+        let (urls, weighted) = pair(3, 1);
+        // 800 ties, weights 3:1: 600 and 200, standard deviation about 12.
+        let counts = sequential_picks(&urls, &weighted, 800);
+        assert!(
+            (540..=660).contains(&counts[0]),
+            "weight 3 got {} of 800 tied picks",
+            counts[0]
+        );
+    }
+
+    #[test]
+    fn weighted_least_conn_finds_weights_when_the_lists_are_not_aligned() {
+        // The weighted list has a peer the candidate list lacks (filtered by capacity or ramp):
+        // indices differ, the weight lookup must go by URL.
+        let urls = vec!["http://b:4000".to_owned(), "http://c:4000".to_owned()];
+        let weighted = vec![
+            ("http://a:4000".to_owned(), 1),
+            ("http://b:4000".to_owned(), 1),
+            ("http://c:4000".to_owned(), 4),
+        ];
+        let reg = UpstreamRegistry::new();
+        assert_eq!(spread(&reg, &urls, &weighted, 10), vec![2, 8]);
     }
 
     // ── filter_healthy ────────────────────────────────────────────────────────

@@ -1,0 +1,305 @@
+//! Per-upstream traffic meter for the `least-bandwidth` strategy (issue #627).
+//!
+//! The proxy adds the size of every request-body and response-body chunk it moves for an upstream
+//! ([`TrafficMeter::add`], one relaxed atomic add); the strategy reads a smoothed rate in bytes per
+//! second ([`TrafficMeter::rate`]). There is no timer thread: the rate is refreshed lazily by whichever
+//! reader notices that the last refresh is older than [`WINDOW_MS`], and only one reader wins that
+//! refresh (a compare-and-swap on the timestamp), so a pick never waits on a lock.
+//!
+//! The smoothing is an exponentially decayed average with a time constant of [`DECAY_SECS`]
+//! (`rate = rate * e^(-dt/tau) + instant * (1 - e^(-dt/tau))`), so a burst is remembered for some
+//! seconds and an idle upstream's rate falls towards zero. Citrix ADC's `leastbandwidth` sums the bytes
+//! of the last 14 seconds; this is the same idea with a smooth edge.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::Instant;
+
+/// A rate is recomputed at most this often (milliseconds).
+pub const WINDOW_MS: u64 = 250;
+/// Time constant of the decayed average (seconds).
+pub const DECAY_SECS: f64 = 10.0;
+
+/// Bytes moved for one upstream and their smoothed rate.
+#[derive(Debug, Default)]
+pub struct TrafficMeter {
+    /// Bytes ever recorded.
+    total: AtomicU64,
+    /// Monotonic milliseconds of the last refresh; 0 until the first byte or the first reader arrives.
+    /// Read without the lock as the cheap "is a refresh due?" test. Opened once, 0 to a value, by a
+    /// compare-and-swap (`add` at the first byte, or the first reader); after that only written under
+    /// the lock.
+    last_ms: AtomicU64,
+    /// The smoothed rate, `f64::to_bits`, in bytes per second.
+    rate_bits: AtomicU64,
+    /// `total` at the last refresh, behind the lock that serialises refreshes: a refresh that was
+    /// descheduled between reading the total and storing it can no longer overwrite a newer one with an
+    /// older snapshot, which would make the next refresh count the same bytes twice (review of PR #631).
+    window: Mutex<u64>,
+}
+
+impl TrafficMeter {
+    /// Record `bytes` moved for this upstream (either direction).
+    ///
+    /// The first byte also opens the measurement window (one extra atomic load per call afterwards), so
+    /// that the first selection after a window has elapsed already sees what an upstream served, instead
+    /// of that window only starting at the first read (review of PR #631).
+    pub fn add(&self, bytes: u64) {
+        self.total.fetch_add(bytes, Ordering::Relaxed);
+        if self.last_ms.load(Ordering::Relaxed) == 0 {
+            self.open_window(monotonic_ms());
+        }
+    }
+
+    /// Start the first window at `now_ms`, unless some reader or writer already did.
+    fn open_window(&self, now_ms: u64) {
+        let _ =
+            self.last_ms
+                .compare_exchange(0, now_ms.max(1), Ordering::Relaxed, Ordering::Relaxed);
+    }
+
+    /// [`add`](Self::add) with the clock reading given (tests only).
+    #[cfg(test)]
+    fn add_at(&self, bytes: u64, now_ms: u64) {
+        self.total.fetch_add(bytes, Ordering::Relaxed);
+        self.open_window(now_ms);
+    }
+
+    /// Bytes ever recorded.
+    pub fn total(&self) -> u64 {
+        self.total.load(Ordering::Relaxed)
+    }
+
+    /// The smoothed rate in bytes per second as of `now_ms` (monotonic milliseconds, never 0).
+    pub fn rate(&self, now_ms: u64) -> f64 {
+        self.refresh(now_ms);
+        f64::from_bits(self.rate_bits.load(Ordering::Relaxed))
+    }
+
+    /// Recompute the smoothed rate if a window has elapsed. Nothing due costs one atomic load; otherwise one refresh
+    /// runs at a time under a try-lock, and a reader that does not get it keeps the rate that is there.
+    fn refresh(&self, now_ms: u64) {
+        // Nothing due: no lock, one atomic load. This is the path nearly every pick takes.
+        let last = self.last_ms.load(Ordering::Relaxed);
+        if last != 0 && now_ms.saturating_sub(last) < WINDOW_MS {
+            return;
+        }
+        // One refresh at a time. A reader that does not get the lock never waits: somebody else is
+        // refreshing, and it keeps the rate that is there.
+        let Ok(mut last_total) = self.window.try_lock() else {
+            return;
+        };
+        let last = self.last_ms.load(Ordering::Relaxed);
+        if last == 0 {
+            // Nothing was recorded before this first read: open the first window now. (When bytes came
+            // first, `add` opened the window at the first byte and `last_total` is still 0, so those bytes
+            // are part of the first window instead of being thrown away: an upstream that has just served
+            // a large response must not look idle.)
+            self.open_window(now_ms);
+            return;
+        }
+        let elapsed_ms = now_ms.saturating_sub(last);
+        if elapsed_ms < WINDOW_MS {
+            return; // another reader refreshed between the check above and the lock
+        }
+        let total = self.total.load(Ordering::Relaxed);
+        let before = std::mem::replace(&mut *last_total, total);
+        let secs = elapsed_ms as f64 / 1000.0;
+        let instant = total.saturating_sub(before) as f64 / secs;
+        let keep = (-secs / DECAY_SECS).exp();
+        let old = f64::from_bits(self.rate_bits.load(Ordering::Relaxed));
+        self.rate_bits.store(
+            (old * keep + instant * (1.0 - keep)).to_bits(),
+            Ordering::Relaxed,
+        );
+        self.last_ms.store(now_ms, Ordering::Relaxed);
+    }
+
+    /// `total` at the last refresh (tests only).
+    #[cfg(test)]
+    fn window_total(&self) -> u64 {
+        *self.window.lock().unwrap()
+    }
+}
+
+/// Monotonic milliseconds since the first call in this process, plus one (so it is never 0).
+pub fn monotonic_ms() -> u64 {
+    use std::sync::OnceLock;
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_meter_nobody_wrote_to_has_rate_zero() {
+        let m = TrafficMeter::default();
+        assert_eq!(m.rate(1_000), 0.0);
+        assert_eq!(m.rate(5_000), 0.0);
+    }
+
+    /// Review findings on PR #631: the first read used to open its window at the bytes recorded so far
+    /// (they were forgotten), and then the window opened only at the first read (the first selection
+    /// after a large response still saw nothing). The window opens at the first byte now.
+    #[test]
+    fn the_first_selection_after_one_window_sees_the_first_response() {
+        let m = TrafficMeter::default();
+        m.add_at(5_000_000, 1_000); // a large response served at t = 1000 ms, nobody has read the rate yet
+        assert_eq!(
+            m.rate(1_100),
+            0.0,
+            "inside the first window nothing is due yet"
+        );
+        assert!(
+            m.rate(1_000 + WINDOW_MS) > 0.0,
+            "one window after the first byte the rate must show it"
+        );
+    }
+
+    #[test]
+    fn a_meter_read_before_any_byte_opens_its_window_at_the_read() {
+        let m = TrafficMeter::default();
+        assert_eq!(m.rate(1_000), 0.0);
+        m.add_at(5_000_000, 1_100); // does not move the window: it is open since t = 1000
+        assert!(m.rate(1_000 + WINDOW_MS) > 0.0);
+    }
+
+    /// The production `add` (the other tests give the clock by hand) opens the window at the first byte.
+    #[test]
+    fn the_first_byte_opens_the_window_and_later_bytes_do_not_move_it() {
+        let m = TrafficMeter::default();
+        assert_eq!(m.last_ms.load(Ordering::Relaxed), 0);
+        m.add(1);
+        let opened = m.last_ms.load(Ordering::Relaxed);
+        assert_ne!(opened, 0);
+        m.add(1);
+        assert_eq!(m.last_ms.load(Ordering::Relaxed), opened);
+    }
+
+    #[test]
+    fn bytes_recorded_before_the_first_read_count() {
+        let m = TrafficMeter::default();
+        m.add_at(5_000_000, 1_000);
+        let first = m.rate(2_000);
+        assert!(
+            first > 0.0,
+            "the early bytes must show up at the first read after a window: {first}"
+        );
+    }
+
+    /// 1000 times the bytes give 1000 times the rate, and the average climbs towards the real rate with the 10 s constant.
+    #[test]
+    fn the_rate_follows_the_bytes_and_is_the_same_for_the_same_traffic() {
+        let (a, b) = (TrafficMeter::default(), TrafficMeter::default());
+        a.rate(1_000);
+        b.rate(1_000); // open the windows
+        for step in 1..=20u64 {
+            a.add(1_000_000); // 1 MB per window
+            b.add(1_000); //     1 KB per window
+            a.rate(1_000 + step * WINDOW_MS);
+            b.rate(1_000 + step * WINDOW_MS);
+        }
+        let now = 1_000 + 20 * WINDOW_MS;
+        let (ra, rb) = (a.rate(now), b.rate(now));
+        assert!(ra > 0.0 && rb > 0.0);
+        assert!(
+            (ra / rb - 1000.0).abs() < 1.0,
+            "1000x the bytes must be 1000x the rate: {ra} vs {rb}"
+        );
+        // After 5 s of 4 MB/s the decayed average has climbed to about 1 - e^(-5/10) = 39% of it.
+        assert!((1_400_000.0..1_700_000.0).contains(&ra), "rate {ra}");
+    }
+
+    /// A minute of silence is folded into one window of zero traffic: the rate falls below 1% of the busy value.
+    #[test]
+    fn an_idle_meter_forgets() {
+        let m = TrafficMeter::default();
+        m.rate(1_000);
+        for step in 1..=40u64 {
+            m.add(1_000_000);
+            m.rate(1_000 + step * WINDOW_MS);
+        }
+        let busy = m.rate(1_000 + 40 * WINDOW_MS);
+        // A minute of silence: the next reader folds it into one window of zero traffic.
+        let later = m.rate(1_000 + 40 * WINDOW_MS + 60_000);
+        assert!(busy > 1_000_000.0, "{busy}");
+        assert!(later < busy * 0.01, "idle for a minute: {later} vs {busy}");
+    }
+
+    #[test]
+    fn a_reader_inside_the_window_changes_nothing() {
+        let m = TrafficMeter::default();
+        m.rate(1_000);
+        m.add(500_000);
+        m.rate(1_100); // 100 ms: window not over
+        assert_eq!(m.rate(1_100), 0.0);
+        assert!(m.rate(1_000 + WINDOW_MS) > 0.0);
+    }
+
+    /// Review finding on PR #631: refreshes are serialised, so the byte snapshot of the window only ever
+    /// moves forward and no byte is counted twice. Four writers and refreshers race on one meter while the
+    /// test watches the snapshot; with the lock-free version of this code a refresh that stalled between
+    /// reading the total and storing it could set the snapshot back (rare, hence a stress test).
+    #[test]
+    fn concurrent_refreshes_never_move_the_window_back() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let meter = Arc::new(TrafficMeter::default());
+        let clock = Arc::new(AtomicU64::new(1_000));
+        meter.rate(1_000);
+        let done = Arc::new(AtomicBool::new(false));
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let (meter, clock) = (meter.clone(), clock.clone());
+                std::thread::spawn(move || {
+                    for _ in 0..20_000 {
+                        meter.add(10);
+                        meter.rate(clock.fetch_add(WINDOW_MS, Ordering::Relaxed));
+                    }
+                })
+            })
+            .collect();
+        let watcher = {
+            let (meter, done) = (meter.clone(), done.clone());
+            std::thread::spawn(move || {
+                let mut seen = 0;
+                while !done.load(Ordering::Relaxed) {
+                    let now = meter.window_total();
+                    assert!(
+                        now >= seen,
+                        "the window snapshot went back from {seen} to {now}"
+                    );
+                    seen = now;
+                }
+            })
+        };
+        workers.into_iter().for_each(|w| w.join().unwrap());
+        done.store(true, Ordering::Relaxed);
+        watcher.join().unwrap();
+        assert_eq!(meter.total(), 4 * 20_000 * 10);
+    }
+
+    /// Four threads adding at once lose no byte.
+    #[test]
+    fn totals_add_up_from_many_threads() {
+        let m = std::sync::Arc::new(TrafficMeter::default());
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let m = m.clone();
+                std::thread::spawn(move || (0..10_000).for_each(|_| m.add(3)))
+            })
+            .collect();
+        threads.into_iter().for_each(|t| t.join().unwrap());
+        assert_eq!(m.total(), 4 * 10_000 * 3);
+    }
+
+    /// The clock never returns 0 and does not go back.
+    #[test]
+    fn monotonic_ms_never_returns_zero_and_does_not_go_back() {
+        let a = monotonic_ms();
+        let b = monotonic_ms();
+        assert!(a >= 1 && b >= a);
+    }
+}

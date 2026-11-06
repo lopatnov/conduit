@@ -31,12 +31,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
         with:
           toolchain: stable
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         continue-on-error: true  # transient cache failures must not abort the build
 
       - name: fmt
@@ -69,11 +69,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
         with:
           toolchain: "1.89"
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         continue-on-error: true  # transient cache failures must not abort the build
 
       - name: check (default features)
@@ -96,12 +96,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
         with:
           toolchain: stable
           components: clippy
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           key: features-all
         continue-on-error: true
@@ -128,12 +128,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
         with:
           toolchain: stable
           components: clippy
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           key: features-standard
         continue-on-error: true  # transient cache failures must not abort the build
@@ -184,11 +184,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           key: footprint
         continue-on-error: true  # transient cache failures must not abort the build
@@ -316,11 +316,33 @@ jobs:
       head_p50: ${{ steps.bench.outputs.head_p50 }}
       head_p99: ${{ steps.bench.outputs.head_p99 }}
       head_ok: ${{ steps.bench.outputs.head_ok }}
+      head_rps_sem: ${{ steps.bench.outputs.head_rps_sem }}
+      head_p50_sem: ${{ steps.bench.outputs.head_p50_sem }}
+      head_p99_sem: ${{ steps.bench.outputs.head_p99_sem }}
       base_rps: ${{ steps.bench.outputs.base_rps }}
       base_p50: ${{ steps.bench.outputs.base_p50 }}
       base_p99: ${{ steps.bench.outputs.base_p99 }}
       base_ok: ${{ steps.bench.outputs.base_ok }}
+      base_rps_sem: ${{ steps.bench.outputs.base_rps_sem }}
+      base_p50_sem: ${{ steps.bench.outputs.base_p50_sem }}
+      base_p99_sem: ${{ steps.bench.outputs.base_p99_sem }}
+      head_w4_rps: ${{ steps.bench.outputs.head_w4_rps }}
+      head_w4_p50: ${{ steps.bench.outputs.head_w4_p50 }}
+      head_w4_p99: ${{ steps.bench.outputs.head_w4_p99 }}
+      head_w4_ok: ${{ steps.bench.outputs.head_w4_ok }}
+      head_w4_rps_sem: ${{ steps.bench.outputs.head_w4_rps_sem }}
+      head_w4_p50_sem: ${{ steps.bench.outputs.head_w4_p50_sem }}
+      head_w4_p99_sem: ${{ steps.bench.outputs.head_w4_p99_sem }}
+      base_w4_rps: ${{ steps.bench.outputs.base_w4_rps }}
+      base_w4_p50: ${{ steps.bench.outputs.base_w4_p50 }}
+      base_w4_p99: ${{ steps.bench.outputs.base_w4_p99 }}
+      base_w4_ok: ${{ steps.bench.outputs.base_w4_ok }}
+      base_w4_rps_sem: ${{ steps.bench.outputs.base_w4_rps_sem }}
+      base_w4_p50_sem: ${{ steps.bench.outputs.base_w4_p50_sem }}
+      base_w4_p99_sem: ${{ steps.bench.outputs.base_w4_p99_sem }}
       hw: ${{ steps.hw.outputs.summary }}
+      lb: ${{ steps.bench.outputs.lb }}
+      lb_w4: ${{ steps.bench.outputs.lb_w4 }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -328,15 +350,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
         with:
           toolchain: stable
 
-      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00  # v6.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version: "1.24"
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           key: performance
         continue-on-error: true  # transient cache failures must not abort the build
@@ -393,17 +415,36 @@ jobs:
           package main
 
           import (
+              "fmt"
               "net/http"
+              "os"
+              "strconv"
+              "sync/atomic"
               "time"
           )
 
+          // PORT (default 4000) and DELAY_MS (default 0) are read from the environment; the load-balancing
+          // scenarios start four of these and read each one's request count from /__count.
           func main() {
+              port := os.Getenv("PORT")
+              if port == "" {
+                  port = "4000"
+              }
+              delay, _ := strconv.Atoi(os.Getenv("DELAY_MS"))
+              var count atomic.Int64
               body := []byte(`{"status":"ok","ts":0}`)
+              http.HandleFunc("/__count", func(w http.ResponseWriter, r *http.Request) {
+                  fmt.Fprint(w, count.Load())
+              })
               http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+                  if delay > 0 {
+                      time.Sleep(time.Duration(delay) * time.Millisecond)
+                  }
+                  count.Add(1)
                   w.Header().Set("Content-Type", "application/json")
                   w.Write(body)
               })
-              srv := &http.Server{Addr: ":4000", ReadTimeout: 5 * time.Second}
+              srv := &http.Server{Addr: ":" + port, ReadTimeout: 5 * time.Second}
               srv.ListenAndServe()
           }
           GOEOF
@@ -428,6 +469,7 @@ jobs:
         id: bench
         env:
           BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          HW: ${{ steps.hw.outputs.summary }}
         run: |
           set -euo pipefail
 
@@ -441,9 +483,15 @@ jobs:
             echo "upstream never became ready" >&2; exit 1
           }
 
+          # BINARY WORKERS. One worker thread is Conduit's default (`global.workers` unset); more are set
+          # explicitly.
           start_conduit() {
-            printf '{ "port": 8080, "proxy": "http://127.0.0.1:4000" }' > /tmp/bench-conduit.json
-            ./target/release/conduit -c /tmp/bench-conduit.json &
+            if [ "$2" = 1 ]; then
+              printf '{ "port": 8080, "proxy": "http://127.0.0.1:4000" }' > /tmp/bench-conduit.json
+            else
+              printf '{ "global": { "workers": %s }, "sites": [ { "port": 8080, "proxy": "http://127.0.0.1:4000" } ] }' "$2" > /tmp/bench-conduit.json
+            fi
+            "$1" -c /tmp/bench-conduit.json &
             CONDUIT_PID=$!
             for _ in $(seq 1 30); do
               curl -sf http://127.0.0.1:8080/__health__ > /dev/null 2>&1 && return 0
@@ -452,40 +500,124 @@ jobs:
             echo "conduit never became ready" >&2; exit 1
           }
 
+          # One 10 s passthrough run: LABEL WORKERS RUN -> /tmp/oha-LABEL-wWORKERS-RUN.json. Conduit is stopped
+          # with SIGKILL: on SIGTERM Pingora sleeps its whole 30 s shutdown grace period, which over eight runs
+          # would add four minutes to the job and change nothing that is measured.
+          passthrough_run() {
+            start_upstream
+            start_conduit "/tmp/conduit-$1" "$2"
+            oha -z 10s -c 50 --no-tui --output-format json http://127.0.0.1:8080/ > "/tmp/oha-$1-w$2-$3.json"
+            kill -KILL "$CONDUIT_PID" 2>/dev/null || true
+            kill "$UPSTREAM_PID" 2>/dev/null || true
+            wait "$CONDUIT_PID" "$UPSTREAM_PID" 2>/dev/null || true
+          }
+
           # The numbers are collected into /tmp/bench-outputs and written to
           # $GITHUB_OUTPUT once, at the very end, after the last binary built
           # from repository code has stopped.
           : > /tmp/bench-outputs
-          measure() {
-            local label="$1"
-            cargo build --release -q
-            start_upstream
-            start_conduit
-            oha -z 10s -c 50 --no-tui --output-format json http://127.0.0.1:8080/ > "/tmp/oha-${label}.json"
-            kill "$CONDUIT_PID" "$UPSTREAM_PID" 2>/dev/null || true
-            wait "$CONDUIT_PID" "$UPSTREAM_PID" 2>/dev/null || true
 
-            python3 -c "
-          import json
-          m = json.load(open('/tmp/oha-${label}.json'))['metrics']
-          print(f'${label}_rps={round(m[\"requests_per_sec\"])}')
-          print(f'${label}_p50={round(m[\"latency_ms\"][\"p50\"], 2)}')
-          print(f'${label}_p99={round(m[\"latency_ms\"][\"p99\"], 2)}')
-          print(f'${label}_ok={round(m[\"success_rate\"] * 100, 1)}')
-          " >> /tmp/bench-outputs
-          }
+          # Copied out of the checkout: the base commit is checked out below and has no such script.
+          cp scripts/ci/bench_lb.sh /tmp/bench_lb.sh
 
-          measure head
-
+          # Both builds first, so that the runs below can alternate between them.
+          cargo build --release -q
+          cp target/release/conduit /tmp/conduit-head
+          labels="head head head head"
           if [ -n "$BASE_SHA" ]; then
             head_sha=$(git rev-parse HEAD)
             git fetch --depth 1 origin "$BASE_SHA" 2>/dev/null || true
             git checkout --quiet "$BASE_SHA"
-            measure base
+            cargo build --release -q
+            cp target/release/conduit /tmp/conduit-base
             git checkout --quiet "$head_sha"
+            # Four runs of each build, alternating: a slow start or a drifting runner hits both builds alike.
+            labels="head base base head head base base head"
           fi
 
+          # One worker thread (the default), then four (the runner has four vCPUs, shared with the load generator
+          # and the upstream): the runs of each build in the order above.
+          for workers in 1 4; do
+            run=0
+            for label in $labels; do
+              run=$((run + 1))
+              passthrough_run "$label" "$workers" "$run"
+            done
+          done
+
+          python3 - >> /tmp/bench-outputs <<'PY'
+          import glob
+          import json
+
+          for label in ("head", "base"):
+              for workers, tag in ((1, ""), (4, "_w4")):
+                  runs = []
+                  for path in sorted(glob.glob(f"/tmp/oha-{label}-w{workers}-*.json")):
+                      try:
+                          with open(path, encoding="utf-8") as f:
+                              runs.append(json.load(f)["metrics"])
+                      except (OSError, ValueError, KeyError):
+                          pass
+                  if not runs:
+                      continue
+                  p = f"{label}{tag}"
+                  # The mean of the runs, and how far that mean can be trusted: the standard error of the mean
+                  # (sample standard deviation over the square root of the number of runs), in percent of the
+                  # mean. The report judges a base-to-head difference against it.
+                  for name, digits, get in (
+                      ("rps", 0, lambda m: m["requests_per_sec"]),
+                      ("p50", 2, lambda m: m["latency_ms"]["p50"]),
+                      ("p99", 2, lambda m: m["latency_ms"]["p99"]),
+                  ):
+                      values = [get(m) for m in runs]
+                      mu = sum(values) / len(values)
+                      print(f"{p}_{name}={round(mu) if digits == 0 else round(mu, digits)}")
+                      # Four runs are what the report's noise factor (2.5) is calibrated for; with fewer parsed
+                      # runs the scatter would be understated, so none is reported and the report judges the
+                      # difference by its size alone.
+                      if len(values) >= 4 and mu > 0:
+                          sd = (sum((v - mu) ** 2 for v in values) / (len(values) - 1)) ** 0.5
+                          print(f"{p}_{name}_sem={round(sd / len(values) ** 0.5 / mu * 100, 1)}")
+                  print(f"{p}_ok={round(min(m['success_rate'] for m in runs) * 100, 1)}")
+          PY
+
+          # The same builds through four upstreams with each load-balancing strategy (issue #629), at one worker
+          # thread and at four (all the vCPUs of the runner, shared with the upstreams and the load generator).
+          # Informational: a failure here leaves the section out and must not fail the job.
+          for workers in 1 4; do
+            for label in $(echo "$labels" | tr ' ' '\n' | awk '!seen[$0]++'); do
+              BENCH_LB_WORKERS="$workers" CONDUIT_BIN="/tmp/conduit-$label" \
+                bash /tmp/bench_lb.sh "$label" "/tmp/lb-${label}-w${workers}.json" \
+                || echo '{}' > "/tmp/lb-${label}-w${workers}.json"
+            done
+          done
+
+          # Both builds' load-balancing numbers, per worker setting, as single-line JSON outputs (parsed
+          # defensively by the comment job): `lb` for one worker thread, `lb_w4` for four.
+          python3 - >> /tmp/bench-outputs <<'PY'
+          import json
+
+          def load(label, workers):
+              try:
+                  with open(f"/tmp/lb-{label}-w{workers}.json", encoding="utf-8") as f:
+                      return json.load(f)
+              except (OSError, ValueError):
+                  return {}
+
+          for name, workers in (("lb", 1), ("lb_w4", 4)):
+              both = {"head": load("head", workers), "base": load("base", workers)}
+              print(name + "=" + json.dumps(both, separators=(",", ":")))
+          PY
+
           cat /tmp/bench-outputs >> "$GITHUB_OUTPUT"
+
+          # The report as the comment will show it, on this run's summary page: the comment is formatted by
+          # the default branch's script (the write token never runs pull-request code), so a change to the
+          # report is visible here first.
+          while IFS='=' read -r key value; do
+            [ -n "$key" ] && export "$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')=$value"
+          done < /tmp/bench-outputs
+          python3 scripts/ci/performance_report.py /tmp/summary.md && cat /tmp/summary.md >> "$GITHUB_STEP_SUMMARY" || true
 
   performance-comment:
     name: Performance report comment
@@ -526,11 +658,33 @@ jobs:
           HEAD_P50: ${{ needs.performance.outputs.head_p50 }}
           HEAD_P99: ${{ needs.performance.outputs.head_p99 }}
           HEAD_OK: ${{ needs.performance.outputs.head_ok }}
+          HEAD_RPS_SEM: ${{ needs.performance.outputs.head_rps_sem }}
+          HEAD_P50_SEM: ${{ needs.performance.outputs.head_p50_sem }}
+          HEAD_P99_SEM: ${{ needs.performance.outputs.head_p99_sem }}
           BASE_RPS: ${{ needs.performance.outputs.base_rps }}
           BASE_P50: ${{ needs.performance.outputs.base_p50 }}
           BASE_P99: ${{ needs.performance.outputs.base_p99 }}
           BASE_OK: ${{ needs.performance.outputs.base_ok }}
+          BASE_RPS_SEM: ${{ needs.performance.outputs.base_rps_sem }}
+          BASE_P50_SEM: ${{ needs.performance.outputs.base_p50_sem }}
+          BASE_P99_SEM: ${{ needs.performance.outputs.base_p99_sem }}
+          HEAD_W4_RPS: ${{ needs.performance.outputs.head_w4_rps }}
+          HEAD_W4_P50: ${{ needs.performance.outputs.head_w4_p50 }}
+          HEAD_W4_P99: ${{ needs.performance.outputs.head_w4_p99 }}
+          HEAD_W4_OK: ${{ needs.performance.outputs.head_w4_ok }}
+          HEAD_W4_RPS_SEM: ${{ needs.performance.outputs.head_w4_rps_sem }}
+          HEAD_W4_P50_SEM: ${{ needs.performance.outputs.head_w4_p50_sem }}
+          HEAD_W4_P99_SEM: ${{ needs.performance.outputs.head_w4_p99_sem }}
+          BASE_W4_RPS: ${{ needs.performance.outputs.base_w4_rps }}
+          BASE_W4_P50: ${{ needs.performance.outputs.base_w4_p50 }}
+          BASE_W4_P99: ${{ needs.performance.outputs.base_w4_p99 }}
+          BASE_W4_OK: ${{ needs.performance.outputs.base_w4_ok }}
+          BASE_W4_RPS_SEM: ${{ needs.performance.outputs.base_w4_rps_sem }}
+          BASE_W4_P50_SEM: ${{ needs.performance.outputs.base_w4_p50_sem }}
+          BASE_W4_P99_SEM: ${{ needs.performance.outputs.base_w4_p99_sem }}
           HW: ${{ needs.performance.outputs.hw }}
+          LB: ${{ needs.performance.outputs.lb }}
+          LB_W4: ${{ needs.performance.outputs.lb_w4 }}
         run: |
           set -euo pipefail
           python3 scripts/ci/performance_report.py /tmp/comment-body.md
@@ -690,17 +844,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           key: hack-each-feature
         continue-on-error: true  # transient cache failures must not abort the build
 
       - name: Install cargo-hack
-        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e  # v2.85.4
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32  # v2.88.0
         with:
           tool: cargo-hack
 
@@ -735,11 +889,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           key: no-proxy
         continue-on-error: true  # transient cache failures must not abort the build
@@ -875,18 +1029,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           key: cross-${{ matrix.target }}
         continue-on-error: true  # transient cache failures must not abort the build
 
       - name: Install cross
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29  # v2.87.21
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32  # v2.88.0
         with:
           tool: cross
 
@@ -915,11 +1069,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         continue-on-error: true  # transient cache failures must not abort the build
 
       - name: Wait for Pebble to be ready
@@ -972,11 +1126,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         continue-on-error: true  # transient cache failures must not abort the build
 
       - name: Check every workspace-dependency version is in lockstep

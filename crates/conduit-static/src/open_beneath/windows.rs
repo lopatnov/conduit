@@ -435,6 +435,80 @@ mod tests {
         assert!(!same_file(&a1, &b).unwrap());
     }
 
+    /// Manual check for issue #619: the walk over an SMB share, with the share and the folder behind it on the same
+    /// machine (that is enough to exercise the client side):
+    ///
+    /// `$env:CONDUIT_SMB_ROOT='\\localhost\share'; $env:CONDUIT_SMB_LOCAL='C:\folder-behind-it'; cargo test -p lopatnov-conduit-static --features static -- --ignored served_over_an_smb_share --nocapture`
+    ///
+    /// It makes a scratch folder in the share, serves a nested file through `\\...` with the walk, and prints what
+    /// happens to a junction below the root. The junction case is printed, not asserted: how a link below a share is
+    /// reported is up to the server and its symlink policy. Run on 2026-11-06 (Windows 11 build 26300, the client
+    /// against its own share): the walk refuses it (os error 681, stopped on a symbolic link) where a plain open
+    /// through the share serves it. From PowerShell, because Git Bash rewrites a leading `\\`.
+    #[test]
+    #[ignore = "needs an SMB share: set CONDUIT_SMB_ROOT (UNC path) and CONDUIT_SMB_LOCAL (the folder behind it)"]
+    fn served_over_an_smb_share() {
+        let share = std::path::PathBuf::from(
+            std::env::var_os("CONDUIT_SMB_ROOT").expect("set CONDUIT_SMB_ROOT"),
+        );
+        let local = std::path::PathBuf::from(
+            std::env::var_os("CONDUIT_SMB_LOCAL").expect("set CONDUIT_SMB_LOCAL"),
+        );
+        let scratch = format!("conduit-619-{}", std::process::id());
+        let (unc_root, local_root) = (share.join(&scratch), local.join(&scratch));
+        // Exclusive: never write into, or later delete, a folder that was already there.
+        std::fs::create_dir(&local_root).unwrap();
+        let _cleanup = Scratch(local_root.clone());
+        std::fs::create_dir_all(local_root.join("a/b")).unwrap();
+        std::fs::write(local_root.join("a/b/f.txt"), "hi").unwrap();
+
+        // A plain file, a differently cased name, a missing file: the walk behaves as on a local disk.
+        assert_eq!(
+            read(open_beneath(&unc_root, Path::new("a/b/f.txt")).unwrap()),
+            "hi"
+        );
+        assert_eq!(
+            read(open_beneath(&unc_root, Path::new("A/B/F.TXT")).unwrap()),
+            "hi"
+        );
+        assert_eq!(
+            open_beneath(&unc_root, Path::new("a/missing.txt"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        eprintln!(
+            "smb: nested file, case-insensitive name and missing file behave as on a local disk"
+        );
+
+        // A junction below the root, to a folder outside it on the same disk.
+        // Under the folder behind the share, not the temp directory: `mklink /J` cannot make a junction to
+        // a target on another volume or a UNC path, and the temp directory may be either.
+        let outside = tempfile::tempdir_in(&local).unwrap();
+        std::fs::write(outside.path().join("secret"), "s").unwrap();
+        junction(&local_root.join("j"), outside.path());
+        let walk = open_beneath(&unc_root, Path::new("j/secret"));
+        let plain = std::fs::File::open(unc_root.join("j").join("secret"));
+        eprintln!(
+            "smb: junction below the root -> walk: {}, plain open: {}",
+            walk.as_ref()
+                .map_or_else(|e| format!("refused ({e})"), |_| "served".to_owned()),
+            plain
+                .as_ref()
+                .map_or_else(|e| format!("refused ({e})"), |_| "served".to_owned())
+        );
+    }
+
+    /// Removes the scratch folder of the SMB test when the test ends, also when an assertion in it panics.
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir(self.0.join("j")); // the junction only, not its target
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// Manual check for issue #619: the walk against a *real* cloud placeholder (OneDrive Files On-Demand, Dropbox
     /// Smart Sync, any Cloud Files API provider). Run it with the full path of an online-only file:
     ///
