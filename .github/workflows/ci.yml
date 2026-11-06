@@ -342,6 +342,7 @@ jobs:
       base_w4_p99_sem: ${{ steps.bench.outputs.base_w4_p99_sem }}
       hw: ${{ steps.hw.outputs.summary }}
       lb: ${{ steps.bench.outputs.lb }}
+      lb_w4: ${{ steps.bench.outputs.lb_w4 }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -580,25 +581,32 @@ jobs:
                   print(f"{p}_ok={round(min(m['success_rate'] for m in runs) * 100, 1)}")
           PY
 
-          # The same builds through four upstreams with each load-balancing strategy (issue #629).
+          # The same builds through four upstreams with each load-balancing strategy (issue #629), at one worker
+          # thread and at four (all the vCPUs of the runner, shared with the upstreams and the load generator).
           # Informational: a failure here leaves the section out and must not fail the job.
-          for label in $(echo "$labels" | tr ' ' '\n' | awk '!seen[$0]++'); do
-            CONDUIT_BIN="/tmp/conduit-$label" bash /tmp/bench_lb.sh "$label" "/tmp/lb-${label}.json" || echo '{}' > "/tmp/lb-${label}.json"
+          for workers in 1 4; do
+            for label in $(echo "$labels" | tr ' ' '\n' | awk '!seen[$0]++'); do
+              BENCH_LB_WORKERS="$workers" CONDUIT_BIN="/tmp/conduit-$label" \
+                bash /tmp/bench_lb.sh "$label" "/tmp/lb-${label}-w${workers}.json" \
+                || echo '{}' > "/tmp/lb-${label}-w${workers}.json"
+            done
           done
 
-          # Both builds' load-balancing numbers as one single-line JSON output (parsed defensively by the
-          # comment job).
+          # Both builds' load-balancing numbers, per worker setting, as single-line JSON outputs (parsed
+          # defensively by the comment job): `lb` for one worker thread, `lb_w4` for four.
           python3 - >> /tmp/bench-outputs <<'PY'
           import json
 
-          def load(label):
+          def load(label, workers):
               try:
-                  with open(f"/tmp/lb-{label}.json", encoding="utf-8") as f:
+                  with open(f"/tmp/lb-{label}-w{workers}.json", encoding="utf-8") as f:
                       return json.load(f)
               except (OSError, ValueError):
                   return {}
 
-          print("lb=" + json.dumps({"head": load("head"), "base": load("base")}, separators=(",", ":")))
+          for name, workers in (("lb", 1), ("lb_w4", 4)):
+              both = {"head": load("head", workers), "base": load("base", workers)}
+              print(name + "=" + json.dumps(both, separators=(",", ":")))
           PY
 
           cat /tmp/bench-outputs >> "$GITHUB_OUTPUT"
@@ -676,6 +684,7 @@ jobs:
           BASE_W4_P99_SEM: ${{ needs.performance.outputs.base_w4_p99_sem }}
           HW: ${{ needs.performance.outputs.hw }}
           LB: ${{ needs.performance.outputs.lb }}
+          LB_W4: ${{ needs.performance.outputs.lb_w4 }}
         run: |
           set -euo pipefail
           python3 scripts/ci/performance_report.py /tmp/comment-body.md

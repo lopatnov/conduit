@@ -9,9 +9,9 @@ Env:   HEAD_RPS HEAD_P50 HEAD_P99 HEAD_OK  BASE_RPS BASE_P50 BASE_P99 BASE_OK  (
        HEAD_RPS_SEM HEAD_P50_SEM HEAD_P99_SEM  BASE_RPS_SEM BASE_P50_SEM BASE_P99_SEM  (standard error of those
        means, in percent of the mean; without them a difference is judged by its size alone)
        HEAD_W4_* and BASE_W4_* with the same suffixes  (four worker threads; the section is left out without them)
-       HW  LB
+       HW  LB  LB_W4
 
-`LB` is the JSON of scripts/ci/bench_lb.sh for both builds, {"head": {...}, "base": {...}}, each with the
+`LB` (one worker thread) and `LB_W4` (four, in addition to it) are the JSON of scripts/ci/bench_lb.sh for both builds, {"head": {...}, "base": {...}}, each with the
 scenarios `even` and `slow` and per strategy {"rps", "p50", "p99", "ok", "share": [..]} or null (issue #629).
 It is parsed defensively: only known scenario and strategy names are read, every number goes through
 float() and is dropped if it is not finite, and anything malformed leaves the section out.
@@ -49,10 +49,21 @@ LB_SCENARIOS = (
 )
 LB_INTRO = (
     "_The same load through **four local upstreams** with each load-balancing strategy, `oha -z 5s -c 50`, "
-    "one worker thread, base and head measured back to back. Each cell is a single run that is not repeated, so "
+    "{workers}, base and head measured back to back. Each cell is a single run that is not repeated, so "
     "a base-to-head difference is flagged only above 25%; the strategies compared with each other are the point "
     "of these tables. A strategy the base commit does not have shows `n/a` on the base side. The last column is "
     "each upstream's share of the requests on the head build._"
+)
+# The load-balancing report is produced for each worker setting, one after the other: (env variable, heading
+# suffix, how the intro describes the setting). The four-worker one is in addition to the one-worker one.
+LB_SETTINGS = (
+    ("LB", "one worker thread", "one worker thread (the default)"),
+    (
+        "LB_W4",
+        "four worker threads",
+        "four worker threads (`global.workers: 4`; the balancer's workers, the four upstreams and the load "
+        "generator share the runner's four vCPUs)",
+    ),
 )
 
 # A single 5-second run scatters by ten percent or more between base and head: flag only a large drop.
@@ -138,13 +149,18 @@ def parse_lb(raw):
     return out
 
 
-def render_lb(lb):
-    """The load-balancing tables, or [] when the head build has no usable cell."""
+def render_lb(lb, heading_suffix="one worker thread", workers_text="one worker thread (the default)"):
+    """The load-balancing tables of one worker setting, or [] when the head build has no usable cell."""
     head = lb.get("head", {})
     if not any(c for cells in head.values() for c in cells.values()):
         return []
     base = lb.get("base", {})
-    lines = ["", "### Load balancing across four upstreams", "", LB_INTRO]
+    lines = [
+        "",
+        f"### Load balancing across four upstreams, {heading_suffix}",
+        "",
+        LB_INTRO.replace("{workers}", workers_text),
+    ]
     for name, what in LB_SCENARIOS:
         if name not in head:
             continue
@@ -238,7 +254,8 @@ def render(env):
         else:
             note = "GitHub-hosted runner hardware varies between runs, so absolute numbers are not comparable across PRs."
         lines += ["", f"**Runner:** {hw}. " + note]
-    lines += render_lb(parse_lb(env.get("LB", "")))
+    for variable, heading_suffix, workers_text in LB_SETTINGS:
+        lines += render_lb(parse_lb(env.get(variable, "")), heading_suffix, workers_text)
     return "\n".join(lines) + "\n"
 
 

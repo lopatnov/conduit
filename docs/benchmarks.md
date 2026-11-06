@@ -113,8 +113,11 @@ func main() {
 
 ### Load-balancing scenarios
 
-Below the passthrough table the report has a section **Load balancing across four upstreams**, for the
-same pair of builds. `scripts/ci/bench_lb.sh` starts four copies of the upstream above (ports 4001-4004),
+Below the passthrough tables the report has two sections **Load balancing across four upstreams**, for the
+same pair of builds: one with **one worker thread** (the default) and, in addition to it, one with
+**four** (`global.workers: 4`, the balancer using all the vCPUs of the runner; the four upstreams and the
+load generator run on the same vCPUs). `scripts/ci/bench_lb.sh` (`BENCH_LB_WORKERS` is the worker count)
+starts four copies of the upstream above (ports 4001-4004),
 puts Conduit in front of them with one strategy at a time (`round-robin`, `least-conn`, `p2c`,
 `least-bandwidth`), and drives it with `oha -z 5s -c 50`. Two scenarios:
 

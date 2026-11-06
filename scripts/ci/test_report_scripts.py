@@ -265,6 +265,53 @@ class LoadBalancingSection(unittest.TestCase):
         data = {"head": {"even": {s: None for s in perf.LB_STRATEGIES}}, "base": {}}
         self.assertNotIn("Load balancing", self.render({"LB": json.dumps(data)}))
 
+    def lb_w4(self, factor=2.0):
+        """The four-worker input: the same shape as `lb()` with every requests-per-second figure times `factor`."""
+        data = json.loads(self.lb()["LB"])
+        for side in data.values():
+            for cells in side.values():
+                for cell in cells.values():
+                    if cell:
+                        cell["rps"] = cell["rps"] * factor
+        return {"LB_W4": json.dumps(data)}
+
+    def test_the_four_worker_tables_come_in_addition_to_the_one_worker_ones(self):
+        out = self.render(dict(self.lb(), **self.lb_w4()))
+        one = "### Load balancing across four upstreams, one worker thread"
+        four = "### Load balancing across four upstreams, four worker threads"
+        self.assertEqual(out.count(one), 1)
+        self.assertEqual(out.count(four), 1)
+        self.assertLess(out.index(one), out.index(four))
+        self.assertEqual(out.count("**even** —"), 2)
+        self.assertEqual(out.count("**slow** —"), 2)
+        self.assertIn("`global.workers: 4`", out.split(four)[1])
+        self.assertNotIn("`global.workers: 4`", out.split(four)[0].split(one)[1])
+
+    def test_each_worker_setting_shows_its_own_numbers(self):
+        out = self.render(dict(self.lb(), **self.lb_w4(factor=2.0)))
+        one, four = out.split("### Load balancing across four upstreams, four worker threads")
+        self.assertIn("round-robin | 2000 → 2000", one)  # even/round-robin, one worker
+        self.assertIn("round-robin | 4000 → 4000", four)  # doubled for four workers
+        self.assertNotIn("4000 → 4000", one)
+        self.assertNotIn("2000 → 2000", four.split("**slow** —")[0])
+
+    def test_without_four_worker_input_only_the_one_worker_tables_remain(self):
+        out = self.render(self.lb())
+        self.assertIn("### Load balancing across four upstreams, one worker thread", out)
+        self.assertNotIn("four worker threads", out.split("### Load balancing")[1])
+
+    def test_a_four_worker_input_without_a_one_worker_one_still_renders_its_own_tables(self):
+        out = self.render(self.lb_w4())
+        self.assertNotIn("one worker thread", out.split("### Load balancing")[1])
+        self.assertIn("### Load balancing across four upstreams, four worker threads", out)
+
+    def test_hostile_four_worker_input_is_dropped_and_leaves_the_one_worker_tables_alone(self):
+        for bad in ("not json", "[" * 100000, '{"head": 5}', '{"head": {"even": {"p2c": {"rps": "<b>x</b>"}}}}', ""):
+            out = self.render(dict(self.lb(), LB_W4=bad))
+            self.assertIn("### Load balancing across four upstreams, one worker thread", out)
+            self.assertNotIn("four worker threads", out.split("### Load balancing")[1])
+            self.assertNotIn("<b>", out)
+
     def test_a_single_run_difference_under_the_load_balancing_line_is_not_flagged(self):
         data = json.loads(self.lb()["LB"])
         data["head"]["even"]["p2c"] = self.cell(1900 * 0.85, 11.0 * 1.15)  # -15% and +15%: noise for one 5 s run

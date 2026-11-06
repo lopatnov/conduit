@@ -17,7 +17,11 @@
 #
 # Writes {"even": {"<strategy>": {"rps", "p50", "p99", "ok", "share": [..]} | null, ..}, "slow": {..}} to
 # OUT_JSON. Binaries can be overridden for testing: CONDUIT_BIN, UPSTREAM_BIN, OHA; also BENCH_LB_STRATEGIES,
-# BENCH_LB_SECS, BENCH_LB_CONNS, BENCH_LB_SLOW_MS.
+# BENCH_LB_SECS, BENCH_LB_CONNS, BENCH_LB_SLOW_MS, BENCH_LB_WORKERS.
+#
+# BENCH_LB_WORKERS is Conduit's `global.workers` (default 1: the setting left unset, one worker thread). The CI
+# job runs the script once with 1 and once with 4, the vCPUs of its runner (shared with the four upstreams and the
+# load generator, so it shows how a strategy behaves when the balancer's workers compete for the machine).
 #
 # The numbers come from a shared CI runner: read them as a trend (base against head, back to back on the
 # same machine), not as a lab measurement.
@@ -28,6 +32,8 @@ OUT="${2:?usage: bench_lb.sh LABEL OUT_JSON}"
 SECS="${BENCH_LB_SECS:-5}"
 SLOW_MS="${BENCH_LB_SLOW_MS:-8}"
 CONNS="${BENCH_LB_CONNS:-50}"
+WORKERS="${BENCH_LB_WORKERS:-1}"
+case "$WORKERS" in ''|*[!0-9]*|0*) echo "BENCH_LB_WORKERS must be a positive integer, got '$WORKERS'" >&2; exit 2 ;; esac
 CONDUIT_BIN="${CONDUIT_BIN:-./target/release/conduit}"
 UPSTREAM_BIN="${UPSTREAM_BIN:-/tmp/bench-upstream-bin}"
 OHA="${OHA:-oha}"
@@ -87,8 +93,12 @@ counts() { # one request count per line, in port order
 run_one() { # SCENARIO STRATEGY
   local scenario="$1" strategy="$2" targets="" port
   for port in "${UP_PORTS[@]}"; do targets="$targets\"http://127.0.0.1:$port\","; done
-  printf '{"sites":[{"port":%s,"proxy":{"/":{"targets":[%s],"strategy":"%s"}}}]}' \
-    "$PROXY_PORT" "${targets%,}" "$strategy" > "$WORK/conduit.json"
+  # One worker thread is the default, so `global` is written only for more: the one-worker run is byte for byte
+  # the configuration it always was.
+  local global=""
+  [ "$WORKERS" -ne 1 ] && global="\"global\":{\"workers\":$WORKERS},"
+  printf '{%s"sites":[{"port":%s,"proxy":{"/":{"targets":[%s],"strategy":"%s"}}}]}' \
+    "$global" "$PROXY_PORT" "${targets%,}" "$strategy" > "$WORK/conduit.json"
 
   "$CONDUIT_BIN" -c "$WORK/conduit.json" > "$WORK/conduit.log" 2>&1 &
   local cpid=$! ready=0

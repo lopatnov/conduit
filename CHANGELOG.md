@@ -80,8 +80,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   finding. Each build is now run four times, alternating head and base, at one worker thread (the
   default) and at four; the Δ column says *within noise* or *beyond noise* (2.5 times the standard error
   of the difference) and only an adverse difference beyond the noise is flagged. The report also
-  measures four-upstream load balancing for `round-robin`, `least-conn`, `p2c` and `least-bandwidth`
-  (single runs, flagged only above 25%). See `docs/benchmarks.md`.
+  measures four-upstream load balancing for `round-robin`, `least-conn`, `p2c` and `least-bandwidth`, once with
+  one worker thread and, in addition, once with four (single runs, flagged only above 25%). See `docs/benchmarks.md`.
 
 ### Fixed
 
