@@ -1837,8 +1837,9 @@ request goes:
 An upstream that is unhealthy (a failed probe series or an ejection) is **left out of the
 candidates of every pick**: round-robin, least-conn, the hash strategies, sticky pins, the
 inside of an upstream group and the retry list all choose among the healthy ones only. When
-it recovers it is a candidate again; `slowStartSecs` brings it back gradually, except with the
-hash strategies and sticky pins, which send it its clients at once. If *every* upstream of a
+it recovers it is a candidate again; `slowStartSecs` can bring it back gradually (see
+[Slow start](#slow-start) for when it does not: the hash strategies and sticky pins send it its
+clients at once, and a route that fails open has no ramp). If *every* upstream of a
 route (or of a group) is unhealthy, all of them stay candidates and the strategy picks one as
 usual: it does not try them in turn, and a route with `groups` has no `retry`. So a wrongly
 failing probe cannot take a route down by itself, but nothing protects the requests then.
@@ -1862,9 +1863,11 @@ right after and 20 six seconds later):
 | `outlierDetection`, `consecutive5xx: 2`, `maxEjectionPercent: 50` | 18 ok, 2 `502` | 20 ok |
 
 So there is always a window in which some requests still go to the dead upstream. For probes
-it is at least `intervalSecs` × `unhealthyThreshold`, plus the time the probes take (the
-measurement above used an upstream that refuses connections, which fails at once; one that
-hangs takes up to `timeoutMs`, 2000 ms by default, per probe). Passive ejection closes it after
+it is about (`unhealthyThreshold` − 1) to `unhealthyThreshold` times `intervalSecs` (it depends on
+where the failure falls between two probe ticks), plus the time the probes take. The measurement
+above used an upstream that refuses connections, which fails at once; one that hangs takes up to
+5 seconds per phase (connect, write, read): the probe timeout is fixed, `healthCheck` has no
+`timeoutMs` (#652). Passive ejection closes it after
 `consecutive5xx` failed requests, as long as the ejection cap below allows another ejection,
 and it reacts only to real requests (an upstream that gets none is never examined). To lose
 fewer requests during that window add [`retry`](#retry), which repeats a failed request on
@@ -1944,7 +1947,6 @@ healthCheck:
 | --------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `path`                      | string   | `/__health__` | Probe URL path                                                                                                                                       |
 | `intervalSecs`              | number   | `10`          | Probe interval                                                                                                                                       |
-| `timeoutMs`                 | number   | `2000`        | Probe timeout                                                                                                                                        |
 | `unhealthyThreshold`        | number   | `3`           | Consecutive failures before removal                                                                                                                  |
 | `healthyThreshold`          | number   | `1`           | Consecutive passes before re-adding                                                                                                                  |
 | `unhealthyStatus`           | number[] | any non-2xx   | HTTP status codes from the health-check probe that count as failures. Default: any non-2xx response. Example: `[429, 500, 502, 503, 504]` |
