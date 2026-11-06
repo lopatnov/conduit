@@ -138,10 +138,15 @@ For a longer, local comparison with failures and weights see
 
 ## Reproduce it on your machine
 
-Linux or macOS; needs Go, a Rust toolchain and `oha`:
+Linux or macOS; needs Go, a Rust toolchain and `oha`. Save the block as `bench.sh` and run `bash bench.sh`: it stops
+at the first failure, and on the way out it stops the two background processes it started and removes its scratch
+directory.
 
 ```bash
+set -eu
 WORK=$(mktemp -d)   # a private scratch directory, not a predictable name in /tmp
+# `jobs -p` lists only children that are still running, so no stale process number is ever signalled
+trap 'kill $(jobs -p) 2>/dev/null; rm -r -- "${WORK:?}"' EXIT
 
 # 1. the upstream: the same program as above, written to the scratch directory
 cat > "$WORK/main.go" <<'GOEOF'
@@ -185,8 +190,7 @@ GOEOF
 (cd "$WORK" && go mod init bench-upstream && go build -o bench-upstream .)
 "$WORK"/bench-upstream &
 UP=$!
-sleep 1; kill -0 "$UP" || echo "the upstream did not start (is port 4000 in use?)"
-trap 'kill $UP $CP 2>/dev/null; rm -r "$WORK"' EXIT   # stops both and removes the scratch directory when this shell exits
+sleep 1; kill -0 "$UP"   # stops the script here if the upstream did not start (is port 4000 in use?)
 
 # 2. Conduit, built and configured exactly as in CI
 cd /path/to/conduit && cargo build --release
@@ -201,9 +205,7 @@ oha -z 10s -c 50 --no-tui --output-format json http://127.0.0.1:8080/ \
 ```
 
 Record `nproc`, the CPU model (`grep -m1 'model name' /proc/cpuinfo`), the RAM, the Conduit
-commit and `global.workers` next to any number you publish. The `trap` stops the two background processes and
-removes the scratch directory when the shell exits; to do it sooner run `kill $UP $CP; rm -r "$WORK"`, and only while both
-are still running (the number of a process that has exited can be given to an unrelated one).
+commit and `global.workers` next to any number you publish.
 
 ## Why the CI report measures one worker thread and four
 

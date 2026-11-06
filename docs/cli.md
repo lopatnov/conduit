@@ -292,7 +292,7 @@ conduit reload     # token sent automatically
 ```
 
 The CLI talks to the Admin API over plain HTTP, so keep the address on loopback or behind a tunnel. A reply that is
-not `2xx` (a wrong token gives `401`, a rejected reload gives `400`) makes the command print the server's message
+not `2xx` (a wrong token gives `401`, a cold-field rejection of a reload gives `400`) makes the command print the server's message
 and exit 1.
 
 For direct `curl` calls, pass the token as a Bearer header:
