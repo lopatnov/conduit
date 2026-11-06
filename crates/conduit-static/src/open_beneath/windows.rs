@@ -438,7 +438,7 @@ mod tests {
     /// Manual check for issue #619: the walk over an SMB share, with the share and the folder behind it on the same
     /// machine (that is enough to exercise the client side):
     ///
-    /// `CONDUIT_SMB_ROOT=\\localhost\share CONDUIT_SMB_LOCAL=C:\folder-behind-it cargo test -p lopatnov-conduit-static --features static -- --ignored served_over_an_smb_share --nocapture`
+    /// `$env:CONDUIT_SMB_ROOT='\\localhost\share'; $env:CONDUIT_SMB_LOCAL='C:\folder-behind-it'; cargo test -p lopatnov-conduit-static --features static -- --ignored served_over_an_smb_share --nocapture`
     ///
     /// It makes a scratch folder in the share, serves a nested file through `\\...` with the walk, and prints what
     /// happens to a junction below the root. The junction case is printed, not asserted: how a link below a share is
@@ -456,6 +456,9 @@ mod tests {
         );
         let scratch = format!("conduit-619-{}", std::process::id());
         let (unc_root, local_root) = (share.join(&scratch), local.join(&scratch));
+        // Exclusive: never write into, or later delete, a folder that was already there.
+        std::fs::create_dir(&local_root).unwrap();
+        let _cleanup = Scratch(local_root.clone());
         std::fs::create_dir_all(local_root.join("a/b")).unwrap();
         std::fs::write(local_root.join("a/b/f.txt"), "hi").unwrap();
 
@@ -492,9 +495,16 @@ mod tests {
                 .as_ref()
                 .map_or_else(|e| format!("refused ({e})"), |_| "served".to_owned())
         );
+    }
 
-        std::fs::remove_dir(local_root.join("j")).unwrap(); // the link only, not its target
-        std::fs::remove_dir_all(&local_root).unwrap();
+    /// Removes the scratch folder of the SMB test when the test ends, also when an assertion in it panics.
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir(self.0.join("j")); // the junction only, not its target
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     /// Manual check for issue #619: the walk against a *real* cloud placeholder (OneDrive Files On-Demand, Dropbox

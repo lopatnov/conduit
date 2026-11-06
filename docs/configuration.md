@@ -770,7 +770,7 @@ traffic off a broken backend). Pick based on your actual traffic shape:
 | [`least-conn`](#least-conn) | Load-aware | Fewest active connections per unit of `weight` | ✗ | none | Variable response times (mixed fast reads / slow writes), with or without unequal capacity | O(N) scan of the pool on every request |
 | [`least-response-time`](#least-response-time) | Load-aware | Lowest probed latency | ✗ | none | Upstreams with different hardware/geography | Needs `healthCheck` configured, or it's just round-robin |
 | [`p2c`](#p2c-power-of-two-choices) | Load- and latency-aware | 2 random samples, lower EWMA latency × (in-flight + 1) ÷ `weight` wins | ✗ | none | Large pools (10+) where `least-conn`'s full scan is too slow | Marginally less precise than true least-conn |
-| [`least-bandwidth`](#least-bandwidth) | Load-aware | √((bytes per second + 1) × (in-flight + 1)) ÷ `weight`, two random samples | ✗ | none | Mixed large and small responses, where equal connection counts hide very unequal network load | Counts bytes, not CPU or memory; a route's first requests see every upstream at zero |
+| [`least-bandwidth`](#least-bandwidth) | Load-aware | √((bytes per second + 1) × (in-flight + 1)) ÷ `weight`, two random samples | ✗ | none | Mixed large and small responses, where equal connection counts hide very unequal network load | Counts bytes, not CPU or memory; a route's meters start at zero and update every 250 ms |
 | [`ip-hash`](#ip-hash) | Affinity | rendezvous hash of the client IP | by IP | only the clients on a peer that leaves (or joins) move; the rest stay put | Soft per-IP affinity without a cookie | Clients on an ejected peer move to their next-best peer |
 | [`consistent-hash`](#consistent-hash) | Affinity | rendezvous hash of the configured key | by key | same as ip-hash — only the keys on a peer that leaves (or joins) move | Per-tenant/per-user routing, cache locality by URL | Keys on an ejected peer move to their next-best peer |
 
@@ -1167,9 +1167,10 @@ proxy:
 
 - Only routes that use this strategy are metered, so no other route pays for it
   (one atomic add per body chunk, 29 ns single-threaded in a release build,
-  110–130 ns when 4–8 threads hit one upstream). The first requests after start
-  (and after an idle spell) see every upstream at zero and are spread at random
-  until a 250 ms window has passed.
+  110–130 ns when 4–8 threads hit one upstream). A route's meters start at zero
+  and update at most every 250 ms, so the first requests are chosen on weight and
+  in-flight requests alone. After an idle spell the rate keeps the earlier traffic
+  and fades with the 10-second time constant.
 - A body is counted as its chunks arrive, so a long download or stream counts
   continuously, not only when it ends. The bytes are those the client sent and
   the upstream sent, before Conduit's own compression or body replacement.

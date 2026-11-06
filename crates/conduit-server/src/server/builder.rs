@@ -90,6 +90,23 @@ fn build_server_conf(config: &AppConfig) -> ServerConf {
     }
 }
 
+/// Refuse a configuration that has hard validation errors. [`run_server`] calls this first, so that a
+/// caller other than the CLI (which validates and logs the warnings itself) cannot start the server on a
+/// config `validate` rejects: for a `wasm` middleware whose engine cannot be built, that would be a
+/// server on which every plugin lets the request through (issue #626, PR #631 review).
+fn refuse_invalid_config(config: &AppConfig) -> anyhow::Result<()> {
+    let (_warnings, hard_errors) =
+        crate::config::validate::partition_by_severity(crate::config::validate::validate(config));
+    if hard_errors.is_empty() {
+        return Ok(());
+    }
+    let messages: Vec<String> = hard_errors
+        .iter()
+        .map(|e| format!("{}: {}", e.path, e.message))
+        .collect();
+    anyhow::bail!("config validation errors:\n{}", messages.join("\n"))
+}
+
 /// Start the Conduit server.
 ///
 /// - `config` — initial [`AppConfig`] to serve
@@ -103,6 +120,8 @@ pub fn run_server(
     config_path: PathBuf,
     config_updates: Option<tokio::sync::mpsc::Receiver<AppConfig>>,
 ) -> anyhow::Result<()> {
+    refuse_invalid_config(&config)?;
+
     // Install the ring crypto provider for rustls before any TLS initialization.
     // This is a no-op if another provider was already installed (e.g., in tests).
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -306,6 +325,17 @@ fn register_http_redirect_services(
 mod tests {
     use super::*;
     use crate::config::schema::GlobalConfig;
+
+    #[test]
+    fn a_config_with_hard_validation_errors_is_refused_and_a_valid_one_is_not() {
+        let duplicate = crate::config::from_str(r#"[{ "port": 8080 }, { "port": 8080 }]"#).unwrap();
+        let err = refuse_invalid_config(&duplicate).unwrap_err().to_string();
+        assert!(err.starts_with("config validation errors:"), "{err}");
+        assert!(err.contains("Duplicate"), "{err}");
+
+        let fine = crate::config::from_str(r#"[{ "port": 8080 }, { "port": 8081 }]"#).unwrap();
+        assert!(refuse_invalid_config(&fine).is_ok());
+    }
 
     /// Regression test for #226: `global.workers` must actually reach
     /// `ServerConf.threads`, not just round-trip through parsing/validation.

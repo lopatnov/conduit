@@ -214,18 +214,29 @@ impl LoadBalancingStrategy for P2cChoice {
             0 => return None,
             // Trivial case: only one choice.
             1 => &urls[0],
-            len => {
-                // Sample two distinct random indices and pick the lower-cost one.
-                let (a, b) = gen_pair(len);
-                let cost_a = p2c_cost(health, weighted, a, &urls[a]);
-                let cost_b = p2c_cost(health, weighted, b, &urls[b]);
-                // Pick the lower cost; break ties in favour of `a`.
-                if cost_a <= cost_b {
-                    &urls[a]
-                } else {
-                    &urls[b]
+            len => match sample_pair(urls, weighted) {
+                // Two distinct random indices, both with weight: pick the lower-cost one.
+                Some((a, b)) => {
+                    let cost_a = p2c_cost(health, weighted, a, &urls[a]);
+                    let cost_b = p2c_cost(health, weighted, b, &urls[b]);
+                    // Pick the lower cost; break ties in favour of `a`.
+                    if cost_a <= cost_b {
+                        &urls[a]
+                    } else {
+                        &urls[b]
+                    }
                 }
-            }
+                // Most of the peers have weight 0 (or there are only two and one of them has): look at
+                // all of them. A weight-0 peer costs infinity, so one that has weight wins; with none,
+                // the first does.
+                None => {
+                    let cost = |i: usize| p2c_cost(health, weighted, i, &urls[i]);
+                    let best = (0..len)
+                        .min_by(|&i, &j| cost(i).total_cmp(&cost(j)))
+                        .unwrap_or(0);
+                    &urls[best]
+                }
+            },
         };
         // The request is now in flight on `chosen`; the caller releases the slot after the response.
         health.conn_inc(chosen);
@@ -280,15 +291,35 @@ impl LoadBalancingStrategy for LeastBandwidth {
             0 => return None,
             // With two peers a pair is both of them.
             1 | 2 => targets::pick_lowest_cost(urls, weighted, 0..urls.len(), cost)?,
-            len => {
-                let (a, b) = gen_pair(len);
-                targets::pick_lowest_cost(urls, weighted, [a, b].into_iter(), cost)?
-            }
+            len => match sample_pair(urls, weighted) {
+                Some((a, b)) => {
+                    targets::pick_lowest_cost(urls, weighted, [a, b].into_iter(), cost)?
+                }
+                // Most of the peers have weight 0: every peer is a candidate, the zero-weight ones are
+                // skipped inside.
+                None => targets::pick_lowest_cost(urls, weighted, 0..len, cost)?,
+            },
         };
         // The request is now in flight on the chosen peer; the caller releases the slot.
         health.conn_inc(&urls[index]);
         Some((urls[index].clone(), true))
     }
+}
+
+/// Two distinct random indices of `urls` whose peers both have a non-zero weight, for `p2c` and
+/// `least-bandwidth` to compare. A few draws are enough when most peers have weight (the usual case costs
+/// two weight lookups); `None` when they are not, and the caller then looks at every peer, so that a
+/// weight-0 peer is never chosen over a peer that has weight. Needs `urls.len() >= 2`.
+fn sample_pair(urls: &[String], weighted: &[(String, u32)]) -> Option<(usize, usize)> {
+    for _ in 0..4 {
+        let (a, b) = gen_pair(urls.len());
+        if targets::weight_for(weighted, a, &urls[a]) != 0
+            && targets::weight_for(weighted, b, &urls[b]) != 0
+        {
+            return Some((a, b));
+        }
+    }
+    None
 }
 
 /// Generate two distinct random indices in `[0, len)` using a fast XorShift.
@@ -803,6 +834,36 @@ mod tests {
         let (heavy, light) = (reg.conn_load(&u[0]), reg.conn_load(&u[1]));
         assert_eq!(heavy + light, 100);
         assert!(heavy > light * 3, "heavy {heavy}, light {light}");
+    }
+
+    /// Review finding on PR #631: with weights 0, 0, 1 a pair of two sampled peers can be the two
+    /// zero-weight ones, and the strategy used to pick one of them.
+    #[test]
+    fn p2c_and_least_bandwidth_never_pick_a_zero_weight_peer_among_many() {
+        let u = urls(3);
+        let w = vec![(u[0].clone(), 0), (u[1].clone(), 0), (u[2].clone(), 1)];
+        let reg = registry();
+        let c = counters();
+        for strategy in [&P2C as &dyn LoadBalancingStrategy, &LEAST_BANDWIDTH] {
+            for _ in 0..300 {
+                let (url, slot) = strategy.pick(&u, &w, "r", 0, &c, &reg).unwrap();
+                assert_eq!(url, u[2]);
+                if slot {
+                    reg.conn_dec(&url);
+                }
+            }
+        }
+        // And with two peers of three weighted, every pick is one of those two.
+        let w = vec![(u[0].clone(), 0), (u[1].clone(), 2), (u[2].clone(), 1)];
+        for strategy in [&P2C as &dyn LoadBalancingStrategy, &LEAST_BANDWIDTH] {
+            for _ in 0..300 {
+                let (url, slot) = strategy.pick(&u, &w, "r", 0, &c, &reg).unwrap();
+                assert_ne!(url, u[0]);
+                if slot {
+                    reg.conn_dec(&url);
+                }
+            }
+        }
     }
 
     #[test]

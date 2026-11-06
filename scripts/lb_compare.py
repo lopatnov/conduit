@@ -13,7 +13,7 @@ Scenarios (all with 4 upstreams unless said otherwise):
             the light requests (do they queue behind heavy ones?) and the tail of everything.
   slow-one  Like mixed, but upstream 0 takes 8x as long for every request. What matters: how much traffic the
             slow one still gets, and the tail.
-  weights   3 upstreams with weights 3:1:1 (light requests only). What matters: the share of upstream 0 (60%
+  weights   3 upstreams with weights 3:1:1 (the same 90/10 mix of requests as mixed). What matters: the share of upstream 0 (60%
             would be proportional). Strategies that ignore weights are shown for contrast.
   outage    Like mixed; upstream 0 dies for the middle third of the run (its connections are dropped) and comes
             back. What matters: errors seen by clients, and upstream 0's share before, during and after.
@@ -262,6 +262,7 @@ def run_cell(binary: str, strategy: str, scenario: str, duration: float, seed: i
             killer.start()
         t0 = time.time()
         samples = drive(conduit.port, duration, seed)
+        deadline = t0 + duration
         if killer:
             killer.join()
     finally:
@@ -276,7 +277,9 @@ def run_cell(binary: str, strategy: str, scenario: str, duration: float, seed: i
     share = [sum(1 for s in ok if s.upstream == i) / max(1, len(ok)) * 100 for i in range(count)]
     cell = {
         "requests": len(samples),
-        "rps": len(samples) / duration,
+        # Only requests that finished inside the window count: one that began before the deadline and
+        # ended after it (an 800 ms one on a slow upstream) would otherwise inflate the rate.
+        "rps": sum(1 for s in samples if s.t + s.ms / 1000.0 <= deadline) / duration,
         "errors": len(samples) - len(ok),
         "p50": percentile([s.ms for s in ok], 0.50),
         "p99": percentile([s.ms for s in ok], 0.99),

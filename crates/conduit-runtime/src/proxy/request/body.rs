@@ -43,7 +43,6 @@ pub(crate) async fn request_body_filter(
 
     let chunk_len = body.as_ref().map(|c| c.len()).unwrap_or(0);
     req_ctx.limits.actual_body_bytes += chunk_len as u64;
-    meter_traffic(proxy, req_ctx, chunk_len);
 
     // Enforce maxBodyBytes on the ACTUAL received bytes.
     // The LimitsGuard only checks the Content-Length header; chunked clients bypass it.
@@ -112,6 +111,11 @@ pub(crate) async fn request_body_filter(
             req_ctx.limits.upload_last_chunk = Some(now);
         }
     }
+
+    // Count the chunk for `least-bandwidth` only now that both upload guards above let it through: a
+    // chunk over `maxBodyBytes` or from a client below the minimum rate is discarded, and counting it
+    // would inflate the upstream's rate and divert later requests from it.
+    meter_traffic(proxy, req_ctx, chunk_len);
 
     // Retry body buffering (separate from size enforcement).
     // Only buffer when retry is configured (otherwise wasteful).

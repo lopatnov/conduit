@@ -49,9 +49,15 @@ fn engine_config() -> wasmtime::Config {
     config
 }
 
+/// Turn the outcome of `Engine::new` into the engine or the reason there is none. Never a default
+/// engine in place of an error (issue #626).
+fn engine_from<E: std::fmt::Display>(created: Result<Engine, E>) -> Result<Engine, String> {
+    created.map_err(|e| format!("the WebAssembly engine could not be created: {e}"))
+}
+
 /// Build an engine from `config`, or say why that is impossible.
 fn build_engine(config: &wasmtime::Config) -> Result<Engine, String> {
-    Engine::new(config).map_err(|e| format!("the WebAssembly engine could not be created: {e}"))
+    engine_from(Engine::new(config))
 }
 
 fn shared_engine() -> &'static Result<Engine, String> {
@@ -742,22 +748,18 @@ mod tests {
 
     /// Issue #626: `Engine::new(..).unwrap_or_default()` used to turn a failure into an engine without
     /// fuel, on which every `set_fuel` fails and every plugin passes the request through. A failure must
-    /// come back as an error instead. A target the compiled-in code generator does not support is a
-    /// configuration `Engine::new` rejects ("Support for this target is disabled").
+    /// come back as an error instead. The seam is `engine_from`, which both `build_engine` and the shared
+    /// engine go through; a failing `Engine::new` itself cannot be provoked in a way that does not depend
+    /// on which Wasmtime back ends are compiled in (a foreign target, say, works until `all-arch` is on).
     #[test]
     fn an_engine_that_cannot_be_built_is_reported_not_swallowed() {
-        let foreign = if cfg!(target_arch = "aarch64") {
-            "x86_64-unknown-linux-gnu"
-        } else {
-            "aarch64-unknown-linux-gnu"
-        };
-        let mut config = engine_config();
-        config.target(foreign).unwrap();
-        let err = build_engine(&config).unwrap_err();
-        assert!(
-            err.starts_with("the WebAssembly engine could not be created"),
-            "{err}"
+        let err = engine_from(Err("no code generator for this host")).unwrap_err();
+        assert_eq!(
+            err,
+            "the WebAssembly engine could not be created: no code generator for this host"
         );
+        // And a good one comes through as an engine.
+        assert!(engine_from(Engine::new(&engine_config())).is_ok());
     }
 
     use super::*;

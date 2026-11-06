@@ -52,16 +52,13 @@ impl TrafficMeter {
     fn refresh(&self, now_ms: u64) {
         let last = self.last_ms.load(Ordering::Relaxed);
         if last == 0 {
-            // First reader: open the first window at the bytes recorded so far.
-            let now = now_ms.max(1);
-            if self
-                .last_ms
-                .compare_exchange(0, now, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
-                self.last_total
-                    .store(self.total.load(Ordering::Relaxed), Ordering::Relaxed);
-            }
+            // First reader: open the first window now. `last_total` stays 0, so the bytes recorded
+            // before this first read (the meter is created by the first byte, the first read comes
+            // with a later pick) are part of the first window instead of being thrown away: an upstream
+            // that has just served a large response must not look idle.
+            self.last_ms
+                .compare_exchange(0, now_ms.max(1), Ordering::Relaxed, Ordering::Relaxed)
+                .ok();
             return;
         }
         let elapsed_ms = now_ms.saturating_sub(last);
@@ -105,6 +102,19 @@ mod tests {
         let m = TrafficMeter::default();
         assert_eq!(m.rate(1_000), 0.0);
         assert_eq!(m.rate(5_000), 0.0);
+    }
+
+    /// Review finding on PR #631: the first read used to open its window at the bytes recorded so far,
+    /// so what an upstream had already served was forgotten and it looked idle.
+    #[test]
+    fn bytes_recorded_before_the_first_read_count() {
+        let m = TrafficMeter::default();
+        m.add(5_000_000); // a large response served before anyone looked at the rate
+        assert_eq!(m.rate(1_000), 0.0, "the first read only opens the window");
+        assert!(
+            m.rate(1_000 + WINDOW_MS) > 0.0,
+            "the early bytes must show up"
+        );
     }
 
     #[test]
