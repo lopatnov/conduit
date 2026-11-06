@@ -88,46 +88,57 @@ class Check(unittest.TestCase):
     """The comparison of the docs with Cargo.toml."""
 
     def test_the_consistent_docs_pass(self):
+        """The consistent docs pass."""
         self.assertEqual(problems(), [])
 
     def test_a_feature_missing_from_the_configuration_guide_is_reported(self):
+        """A feature missing from the configuration guide is reported."""
         out = problems(config=CONFIG.replace("| `redis` | shared |\n", ""))
         self.assertTrue(any("`redis` has no row" in p for p in out), out)
 
     def test_a_feature_missing_from_the_cli_guide_is_reported(self):
+        """A feature missing from the cli guide is reported."""
         out = problems(cli=CLI.replace("| `jwt` | x |\n", ""))
         self.assertTrue(any("docs/cli.md" in p and "`jwt`" in p for p in out), out)
 
     def test_a_new_cargo_feature_without_documentation_is_reported_in_both_files(self):
+        """A new cargo feature without documentation is reported in both files."""
         out = problems(cargo=CARGO + 'newthing = ["crate-f/x"]\n')
         self.assertEqual(sum("`newthing`" in p for p in out), 2, out)
 
     def test_a_documented_feature_that_cargo_does_not_have_is_reported(self):
+        """A documented feature that cargo does not have is reported."""
         out = problems(config=CONFIG.replace("| `redis` | shared |", "| `redis` | shared |\n| `ghost` | nothing |"))
         self.assertTrue(any("`ghost`" in p and "not in Cargo.toml" in p for p in out), out)
 
     def test_a_bundle_cell_that_is_missing_is_reported(self):
+        """A bundle cell that is missing is reported."""
         out = problems(config=CONFIG.replace("| `jwt`, `cache` | ✓ | ✓ |", "| `jwt`, `cache` | ✓ | |"))
         self.assertTrue(any("`gateway`" in p and "missing `cache`, `jwt`" in p for p in out), out)
 
     def test_a_bundle_cell_that_is_extra_is_reported(self):
+        """A bundle cell that is extra is reported."""
         out = problems(config=CONFIG.replace("| `redis` | | | | ✓ |", "| `redis` | ✓ | | | ✓ |"))
         self.assertTrue(any("`standard`" in p and "not in the bundle: `redis`" in p for p in out), out)
 
     def test_a_feature_that_names_another_feature_brings_it_into_the_bundle(self):
         # `gateway` lists `cache`, which implies `proxy`: the table must show `proxy` for it, and a table without does fail.
+        """A feature that names another feature brings it into the bundle."""
         out = problems(config=CONFIG.replace("| `proxy` | ✓ | ✓ | | ✓ |", "| `proxy` | ✓ | | | ✓ |"))
         self.assertTrue(any("`gateway`" in p and "missing `proxy`" in p for p in out), out)
 
     def test_a_bundle_that_includes_another_bundle_includes_its_features(self):
+        """A bundle that includes another bundle includes its features."""
         out = problems(config=CONFIG.replace("| `static` | ✓ | | ✓ | ✓ |", "| `static` | ✓ | | ✓ | |"))
         self.assertTrue(any("`full`" in p and "missing `static`" in p for p in out), out)
 
     def test_a_missing_bundle_table_is_reported(self):
+        """A missing bundle table is reported."""
         out = problems(config=CONFIG.replace("| Feature | `standard` | `gateway` | `static-server` | `full` |", "| Feature | A | B |"))
         self.assertTrue(any("no bundle table" in p for p in out), out)
 
     def test_a_bundle_without_a_column_is_reported(self):
+        """A bundle without a column is reported."""
         head, tail = CONFIG.split("#### Bundles\n")
         table, rest = tail.split("\nProse")
         kept = []
@@ -141,6 +152,7 @@ class Check(unittest.TestCase):
         self.assertTrue(any("no column for `gateway`" in p for p in out), out)
 
     def test_a_missing_section_is_an_error_not_a_pass(self):
+        """A missing section is an error not a pass."""
         with self.assertRaises(cdf.DocError):
             problems(config="# no section here\n")
         with self.assertRaises(cdf.DocError):
@@ -151,6 +163,7 @@ class Closure(unittest.TestCase):
     """What a feature turns on."""
 
     def test_the_closure_follows_features_and_skips_dependencies(self):
+        """The closure follows features and skips dependencies."""
         table = cdf.features(CARGO)
         self.assertEqual(cdf.closure(table, "cache"), {"cache", "proxy"})
         self.assertEqual(cdf.closure(table, "full"), {"full", "standard", "jwt", "cache", "proxy", "static", "redis"})
@@ -167,6 +180,7 @@ class Main(unittest.TestCase):
         return path
 
     def test_exit_codes(self):
+        """Exit codes."""
         with tempfile.TemporaryDirectory() as tmp:
             cargo = self.write(tmp, "Cargo.toml", CARGO)
             config = self.write(tmp, "configuration.md", CONFIG)
@@ -182,6 +196,7 @@ class Repository(unittest.TestCase):
     """The real documentation of this repository."""
 
     def test_the_repository_docs_pass(self):
+        """The repository docs pass."""
         self.assertEqual(cdf.main([]), 0)
 
 
