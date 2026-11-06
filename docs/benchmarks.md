@@ -40,19 +40,18 @@ second (from 13.7k to 17.5k), and the two copies differed by 0.0% on average. So
 of each mean from the scatter of its runs, and the report calls a difference *within noise* when
 it is smaller than 2.5 times the standard error of the difference. Only an adverse difference beyond
 the noise (and at least 3%) is flagged ⚠️. A drop of 6% that is within noise is not a finding;
-re-run the job or measure with `scripts/bench/ab.sh` before acting on it. A report holds eight
-comparisons (four metrics at two worker settings), so one lone ⚠️ among them can still be chance:
-look for the same direction in the other rows and in a second run. The load-balancing
-tables below hold single 5-second runs, so they are flagged only for drops above 25%.
+re-run the job or measure with `scripts/bench/ab.sh` before acting on it. A report holds four
+comparisons (throughput and p99 latency at two worker settings), so one lone ⚠️ among them can still be chance:
+look for the same direction in the other rows and in a second run.
 
 | | |
 | --- | --- |
 | Runner | GitHub-hosted `ubuntu-latest`: 4 vCPU, 16 GB RAM. GitHub assigns the host CPU generation; the report prints it (for example `4 vCPU, 16 GB RAM allocated to this job (host CPU model: …), ubuntu24 (X64)`). |
 | Build | `cargo build --release` on the stable toolchain: `default` features, `lto = true`, `codegen-units = 1`, `strip = true` |
 | Conduit workers | two settings: `global.workers` unset, which is **one worker thread**, and `global.workers: 4` |
-| Upstream | the Go server below, port 4000, fixed 22-byte JSON body, keep-alive (it also counts its requests, for the load-balancing scenarios) |
+| Upstream | the Go server below, port 4000, fixed 22-byte JSON body, keep-alive |
 | Load generator | [oha](https://github.com/hatoo/oha) 1.16.0 (pinned and checked against a SHA-256), 50 connections, 10 seconds |
-| Reported | requests per second, p50 and p99 latency and success rate, for base and head and their difference with a verdict against the run-to-run noise, for each worker setting |
+| Reported | requests per second and p99 latency, for base and head and their difference with a verdict against the run-to-run noise, for each worker setting; the success rate only when a request failed (the median latency is measured but not shown: at a fixed concurrency it only restates the throughput) |
 
 **Server configuration** — CI writes it as JSON; the YAML is the same configuration:
 
@@ -77,32 +76,19 @@ The four-worker run uses the same site with `global.workers` set:
 package main
 
 import (
-    "fmt"
     "net/http"
     "os"
-    "strconv"
-    "sync/atomic"
     "time"
 )
 
-// PORT (default 4000) and DELAY_MS (default 0) come from the environment; the load-balancing
-// scenarios start four of these and read each one's request count from /__count.
+// PORT (default 4000) comes from the environment.
 func main() {
     port := os.Getenv("PORT")
     if port == "" {
         port = "4000"
     }
-    delay, _ := strconv.Atoi(os.Getenv("DELAY_MS"))
-    var count atomic.Int64
     body := []byte(`{"status":"ok","ts":0}`)
-    http.HandleFunc("/__count", func(w http.ResponseWriter, r *http.Request) {
-        fmt.Fprint(w, count.Load())
-    })
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        if delay > 0 {
-            time.Sleep(time.Duration(delay) * time.Millisecond)
-        }
-        count.Add(1)
         w.Header().Set("Content-Type", "application/json")
         w.Write(body)
     })
@@ -111,30 +97,15 @@ func main() {
 }
 ```
 
-### Load-balancing scenarios
+### Why the report has no load-balancing tables
 
-Below the passthrough tables the report has two sections **Load balancing across four upstreams**, for the
-same pair of builds: one with **one worker thread** (the default) and, in addition to it, one with
-**four** (`global.workers: 4`, the balancer using all the vCPUs of the runner; the four upstreams and the
-load generator run on the same vCPUs). `scripts/ci/bench_lb.sh` (`BENCH_LB_WORKERS` is the worker count)
-starts four copies of the upstream above (ports 4001-4004),
-puts Conduit in front of them with one strategy at a time (`round-robin`, `least-conn`, `p2c`,
-`least-bandwidth`), and drives it with `oha -z 5s -c 50`. Two scenarios:
-
-- **even**: all four upstreams answer at once. It shows what a strategy costs when there is nothing to be
-  clever about: the selection work, and the in-flight bookkeeping the load-aware ones do per request.
-- **slow**: upstream 0 sleeps 8 ms per request. It shows what a strategy does about a slow upstream: the
-  share of requests it still gets (the last column), and what that does to throughput and p99.
-
-Each row gives requests per second and p99 for base and head with the difference, and the head build's
-share of the requests per upstream, read from the upstreams' own counters. A strategy the base commit does
-not have (a new one) shows `n/a` on the base side. The runs are short and the runner is shared, so a
-difference of a few per cent is noise; a strategy whose share moves, or a regression flagged with ⚠️ in
-both scenarios, is worth a look. The section is also written to the job summary of the run, which is where
-a change to the report shows first: the PR comment is formatted by the script on the default branch.
-
-For a longer, local comparison with failures and weights see
-[Comparing the load-balancing strategies](#comparing-the-load-balancing-strategies).
+An earlier version of the report also ran each balancing strategy through four upstreams. It was removed:
+the four upstreams, the load generator and Conduit's workers all share the runner's four vCPUs, so the
+numbers cannot separate what a strategy costs from how the machine was divided (the same build reached 10 to
+20% fewer requests per second through four upstreams than through one, for every strategy including
+round-robin; the cause is open, see #647). To compare strategies use
+[`scripts/lb_compare.py`](#comparing-the-load-balancing-strategies) on a machine of your own, ideally with the
+upstreams on other cores than Conduit.
 
 ## Reproduce it on your machine
 
@@ -153,32 +124,19 @@ cat > "$WORK/main.go" <<'GOEOF'
 package main
 
 import (
-    "fmt"
     "net/http"
     "os"
-    "strconv"
-    "sync/atomic"
     "time"
 )
 
-// PORT (default 4000) and DELAY_MS (default 0) come from the environment; the load-balancing
-// scenarios start four of these and read each one's request count from /__count.
+// PORT (default 4000) comes from the environment.
 func main() {
     port := os.Getenv("PORT")
     if port == "" {
         port = "4000"
     }
-    delay, _ := strconv.Atoi(os.Getenv("DELAY_MS"))
-    var count atomic.Int64
     body := []byte(`{"status":"ok","ts":0}`)
-    http.HandleFunc("/__count", func(w http.ResponseWriter, r *http.Request) {
-        fmt.Fprint(w, count.Load())
-    })
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        if delay > 0 {
-            time.Sleep(time.Duration(delay) * time.Millisecond)
-        }
-        count.Add(1)
         w.Header().Set("Content-Type", "application/json")
         w.Write(body)
     })
