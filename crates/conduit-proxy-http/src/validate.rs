@@ -110,6 +110,7 @@ pub fn validate_route_config(
         }
     }
     warn_slow_start_ignored(cfg, prefix);
+    warn_group_strategy_cannot_see_load(cfg, prefix);
     if let Some(cache) = &cfg.cache {
         validate_cache_config(cache, &format!("{prefix}.cache"), errors);
     }
@@ -184,6 +185,36 @@ fn warn_slow_start_ignored(cfg: &ProxyRouteConfig, prefix: &str) {
                 group.name
             );
         }
+    }
+}
+
+/// The strategies that choose by the load, latency or traffic of the thing they pick, which for the outer
+/// pick of a route with `groups` is a group *name*: nothing is ever in flight on a name, no latency is
+/// ever measured for it and no bytes move through it.
+fn group_strategy_cannot_see_load(strategy: Option<&LoadBalanceStrategy>) -> bool {
+    matches!(
+        strategy,
+        Some(
+            LoadBalanceStrategy::LeastConn
+                | LoadBalanceStrategy::P2c
+                | LoadBalanceStrategy::LeastBandwidth
+                | LoadBalanceStrategy::LeastResponseTime
+        )
+    )
+}
+
+/// Warn that a load-aware `groupStrategy` does not balance by load (issue #632). It only logs, so a
+/// config that worked keeps working: the strategy still picks a group, just not the least loaded one.
+fn warn_group_strategy_cannot_see_load(cfg: &ProxyRouteConfig, prefix: &str) {
+    let has_groups = cfg.groups.as_ref().is_some_and(|g| !g.is_empty());
+    if has_groups && group_strategy_cannot_see_load(cfg.group_strategy.as_ref()) {
+        tracing::warn!(
+            "{prefix}.groupStrategy is load-aware but a group has no load of its own, so it does \
+             not choose the least loaded group (least-conn, p2c and least-bandwidth choose at \
+             random, least-response-time in turn). Use round-robin, random, ip-hash or \
+             consistent-hash for the outer pick and put the load-aware strategy on each group's \
+             own `strategy` (see docs/configuration.md, 'Upstream groups')"
+        );
     }
 }
 
@@ -311,6 +342,66 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    fn grouped_route(group_strategy: Option<LoadBalanceStrategy>) -> ProxyRouteConfig {
+        let group = |name: &str, url: &str| conduit_upstream::config::UpstreamGroup {
+            name: name.to_owned(),
+            targets: vec![ProxyTarget::Simple(url.to_owned())],
+            strategy: Some(LoadBalanceStrategy::LeastConn),
+        };
+        ProxyRouteConfig {
+            groups: Some(vec![group("g1", "http://a:1"), group("g2", "http://b:1")]),
+            group_strategy,
+            ..Default::default()
+        }
+    }
+
+    /// Issue #632: the outer pick of a route with `groups` runs over group names, which have no load.
+    #[test]
+    fn a_load_aware_group_strategy_is_warned_about() {
+        for strategy in [
+            LoadBalanceStrategy::LeastConn,
+            LoadBalanceStrategy::P2c,
+            LoadBalanceStrategy::LeastBandwidth,
+            LoadBalanceStrategy::LeastResponseTime,
+        ] {
+            let lines = warnings_for(&grouped_route(Some(strategy.clone())));
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.contains("sites[0].proxy.groupStrategy is load-aware")),
+                "{strategy:?}: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_group_strategy_that_needs_no_load_is_not_warned_about() {
+        for strategy in [
+            None,
+            Some(LoadBalanceStrategy::RoundRobin),
+            Some(LoadBalanceStrategy::Random),
+            Some(LoadBalanceStrategy::IpHash),
+            Some(LoadBalanceStrategy::ConsistentHash),
+        ] {
+            let lines = warnings_for(&grouped_route(strategy.clone()));
+            assert!(
+                !lines
+                    .iter()
+                    .any(|l| l.contains("groupStrategy is load-aware")),
+                "{strategy:?}: {lines:?}"
+            );
+        }
+        // A flat route has no outer pick, whatever its `groupStrategy` field says.
+        let flat = ProxyRouteConfig {
+            targets: vec![ProxyTarget::Simple("http://a:1".to_owned())],
+            group_strategy: Some(LoadBalanceStrategy::P2c),
+            ..Default::default()
+        };
+        assert!(!warnings_for(&flat)
+            .iter()
+            .any(|l| l.contains("groupStrategy is load-aware")));
     }
 
     fn route_dry_run_errors(dry_run: Option<bool>) -> Vec<String> {

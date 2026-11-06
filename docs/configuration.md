@@ -1266,6 +1266,14 @@ a hash key, and routing goes through `consistent-hash` as usual.
 An outer strategy picks the group; an inner strategy balances within it.
 `groups` is an array — each entry has `name`, `targets`, and optional `strategy`.
 
+The outer strategy chooses among the group *names*, and a name has no load of
+its own: nothing is in flight on it, no latency is measured for it and no bytes
+move through it. So `round-robin`, `random`, `ip-hash` and `consistent-hash`
+work as described, while `least-conn`, `p2c`, `least-bandwidth` and
+`least-response-time` cannot tell the groups apart by load (the first three
+choose at random, the last one in turn) and Conduit logs a warning for them.
+Put the load-aware strategy on each group's own `strategy` instead, as below.
+
 ```yaml
 proxy:
   /api:
