@@ -109,6 +109,11 @@ pub struct UpstreamEntry {
     /// - Probe fails (5xx): `half_open` is cleared, upstream is re-ejected with
     ///   the next exponential-backoff duration.
     pub half_open: bool,
+    /// Unix timestamp (secs) until which the half-open promotion waits for its probe request's result
+    /// (`HALF_OPEN_PROBE_TIMEOUT_SECS` after the promotion). Past it, a promotion that nobody answered
+    /// lapses and the upstream is offered again (issue #650). Kept apart from `ejected_until_secs` so that
+    /// the admin view, the health endpoint and the ejection cap keep seeing an expired ejection as expired.
+    pub half_open_until_secs: Option<u64>,
     /// Cumulative count of 2xx responses received from this upstream.
     pub responses_2xx: u64,
     /// Cumulative count of 4xx responses received from this upstream.
@@ -136,6 +141,7 @@ impl Default for UpstreamEntry {
             ejected_until_secs: None,
             ejection_count: 0,
             half_open: false,
+            half_open_until_secs: None,
             responses_2xx: 0,
             responses_4xx: 0,
             responses_5xx: 0,
@@ -202,6 +208,7 @@ pub fn record_request_latency(
     // Half-open circuit breaker resolution.
     if entry.half_open {
         entry.half_open = false;
+        entry.half_open_until_secs = None;
         if status < 500 && status != 0 {
             // Probe succeeded: lift the ejection and reset the counter so the
             // next ejection cycle starts fresh.
@@ -432,29 +439,60 @@ impl UpstreamRegistry {
             return false; // still within ejection period
         }
 
-        // Ejection period expired (or a half-open promotion timed out: `half_open` with `until`
-        // in the past means the probe request was never sent or never answered).
-        // Offer the upstream as the probe: promote to half-open. The promotion holds the
-        // upstream closed to everyone else until `until` is moved forward below.
+        // Ejection period expired.
+        if entry.half_open && entry.half_open_until_secs.is_some_and(|h| now < h) {
+            // A probe is already awaited: block this request.
+            return false;
+        }
+
+        // Offer the upstream as the probe: promote to half-open. This is also the path of a
+        // promotion that nobody answered (`half_open` with its deadline passed: the strategy
+        // picked another upstream, or the request never completed): it is offered again.
         // Drop the shared ref and acquire exclusive access.
         drop(entry);
         let mut e = self.statuses.entry(url.to_owned()).or_default();
-        // Re-check after acquiring write lock (another thread may have raced us, and
-        // its promotion has moved `ejected_until_secs` into the future).
+        // Re-check after acquiring write lock (another thread may have raced us).
         let now2 = now_secs();
         if let Some(until2) = e.ejected_until_secs {
             if now2 < until2 {
-                return false; // re-ejected, or promoted, by a racing call
+                return false; // re-ejected by racing call
             }
         }
-        // We are the probe request: closed to others for the probe timeout.
+        if e.half_open && e.half_open_until_secs.is_some_and(|h| now2 < h) {
+            return false; // another thread beat us to the probe
+        }
+        // We are the probe request: the upstream is closed to others until the deadline.
         e.half_open = true;
-        e.ejected_until_secs = Some(now2 + HALF_OPEN_PROBE_TIMEOUT_SECS);
+        e.half_open_until_secs = Some(now2.saturating_add(HALF_OPEN_PROBE_TIMEOUT_SECS));
         tracing::info!(
             url,
             "ejection period expired — half-open probe request dispatched"
         );
         true
+    }
+
+    /// The same answer as [`Self::is_healthy`], without its side effect: an upstream whose ejection
+    /// has expired counts as a candidate and is **not** promoted to half-open. Use it to *ask*
+    /// ("is every upstream down?", "is the pinned one up?"); [`Self::is_healthy`] (through
+    /// [`Self::filter_healthy`]) is for building the list a pick chooses from, because it hands out
+    /// the single probe offer. Asking with `is_healthy` before the pick is built used up the offer on
+    /// a query nobody acts on (issue #650).
+    pub fn is_healthy_peek(&self, url: &str) -> bool {
+        let Some(entry) = self.statuses.get(url) else {
+            return true;
+        };
+        if !entry.healthy {
+            return false;
+        }
+        let Some(until) = entry.ejected_until_secs else {
+            return true;
+        };
+        let now = now_secs();
+        if now < until {
+            return false; // still within the ejection period
+        }
+        // Expired: a candidate, unless the probe offer is out and awaited.
+        !(entry.half_open && entry.half_open_until_secs.is_some_and(|h| now < h))
     }
 
     /// Filter `urls` to only healthy ones.
@@ -1047,14 +1085,25 @@ mod tests {
         // The query that promotes it; no request follows.
         assert!(reg.is_healthy(url), "offered as the probe");
         assert!(!reg.is_healthy(url), "closed while the probe is awaited");
-        let until = reg.statuses.get(url).unwrap().ejected_until_secs.unwrap();
+        let (ejected, until) = {
+            let e = reg.statuses.get(url).unwrap();
+            (
+                e.ejected_until_secs.unwrap(),
+                e.half_open_until_secs.unwrap(),
+            )
+        };
         assert!(
             until >= now_secs() + HALF_OPEN_PROBE_TIMEOUT_SECS - 1
                 && until <= now_secs() + HALF_OPEN_PROBE_TIMEOUT_SECS,
             "the promotion holds the upstream for the probe timeout"
         );
+        assert!(
+            ejected <= now_secs(),
+            "the ejection itself stays expired: the admin view, the health endpoint and the ejection cap must not see a probe as an ejection"
+        );
         // The timeout passes with no result.
-        reg.statuses.get_mut(url).unwrap().ejected_until_secs = Some(now_secs().saturating_sub(1));
+        reg.statuses.get_mut(url).unwrap().half_open_until_secs =
+            Some(now_secs().saturating_sub(1));
         assert!(
             reg.is_healthy(url),
             "after the timeout the upstream is offered again (it used to stay out for good)"
@@ -1075,13 +1124,47 @@ mod tests {
             .or_default()
             .ejected_until_secs = Some(now_secs().saturating_sub(1));
         assert!(reg.is_healthy(url));
-        reg.statuses.get_mut(url).unwrap().ejected_until_secs = Some(now_secs().saturating_sub(1));
+        reg.statuses.get_mut(url).unwrap().half_open_until_secs =
+            Some(now_secs().saturating_sub(1));
         assert!(reg.is_healthy(url), "re-offered");
         record_request_latency(&reg, url, 10_000, 200);
         let e = reg.statuses.get(url).unwrap();
-        assert!(!e.half_open && e.ejected_until_secs.is_none());
+        assert!(!e.half_open && e.half_open_until_secs.is_none() && e.ejected_until_secs.is_none());
         drop(e);
         assert!(reg.is_healthy(url), "fully recovered");
+    }
+
+    /// `is_healthy_peek` answers like `is_healthy` but never promotes: asking before the pool is built
+    /// must leave the probe offer for the pick that builds the candidate list (issue #650).
+    #[test]
+    fn peek_does_not_promote_and_agrees_with_is_healthy_otherwise() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://u:4000";
+        assert!(reg.is_healthy_peek(url), "unknown upstream: optimistic");
+        reg.statuses
+            .entry(url.to_owned())
+            .or_default()
+            .ejected_until_secs = Some(now_secs() + 300);
+        assert!(!reg.is_healthy_peek(url), "within the ejection period");
+        reg.statuses.get_mut(url).unwrap().ejected_until_secs = Some(now_secs().saturating_sub(1));
+        assert!(reg.is_healthy_peek(url), "expired ejection: a candidate");
+        assert!(reg.is_healthy_peek(url), "and asking again changes nothing");
+        assert!(
+            !reg.statuses.get(url).unwrap().half_open,
+            "peek never promotes"
+        );
+        // The offer is still there for the query that builds the pool.
+        assert!(
+            reg.is_healthy(url),
+            "the promoting query still gets the offer"
+        );
+        assert!(
+            !reg.is_healthy_peek(url),
+            "an awaited probe closes the upstream to peek as well"
+        );
+        reg.statuses.get_mut(url).unwrap().healthy = false;
+        reg.statuses.get_mut(url).unwrap().half_open = false;
+        assert!(!reg.is_healthy_peek(url), "a failed active probe series");
     }
 
     #[test]
