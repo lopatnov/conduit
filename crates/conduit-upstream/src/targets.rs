@@ -253,8 +253,10 @@ pub fn pick_lowest_cost(
         }
     }
     let Some((first, lowest)) = best else {
-        // Every candidate has weight 0 (or the list is empty): ignore the weights.
-        return if urls.is_empty() {
+        // Every candidate has weight 0, or there is nothing to look at: ignore the weights. Once the
+        // weights are already ignored (`weighted` empty) and still nothing was found, `candidates` is
+        // empty: stop instead of asking again.
+        return if urls.is_empty() || weighted.is_empty() {
             None
         } else {
             pick_lowest_cost(urls, &[], candidates, cost)
@@ -568,6 +570,18 @@ mod tests {
             Some(0)
         );
         assert_eq!(pick_lowest_cost(&[], &[], 0..0, cost), None);
+        // No candidate to look at, with and without weights: nothing, and no endless retry.
+        assert_eq!(pick_lowest_cost(&urls, &[], std::iter::empty(), cost), None);
+        let weights: Vec<(String, u32)> = urls.iter().map(|u| (u.clone(), 0)).collect();
+        assert_eq!(
+            pick_lowest_cost(&urls, &weights, std::iter::empty(), cost),
+            None
+        );
+        // Every weight 0 over real candidates: the weights are ignored and the cheapest wins.
+        assert_eq!(
+            pick_lowest_cost(&urls, &weights, 0..urls.len(), cost),
+            Some(1)
+        );
     }
 
     #[test]

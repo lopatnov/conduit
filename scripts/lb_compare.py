@@ -18,6 +18,10 @@ Scenarios (all with 4 upstreams unless said otherwise):
   outage    Like mixed; upstream 0 dies for the middle third of the run (its connections are dropped) and comes
             back. What matters: errors seen by clients, and upstream 0's share before, during and after.
 
+Conduit's site listener binds every interface (the site port has no bind address; only the admin API
+does), so for the minutes a run takes the proxy under test is reachable from the network; the mock
+upstreams and the admin API listen on 127.0.0.1 only. Run it on a machine you are happy to expose that way.
+
 Absolute numbers depend on the machine and the build (a debug build adds CPU cost per request); compare
 strategies against each other within one run. Each cell is one run of --duration seconds after a 2 s warm-up;
 a single run is a sample, not a distribution: repeat before drawing a conclusion from a small difference.
@@ -156,7 +160,11 @@ class Conduit:
         self.proc = subprocess.Popen(
             [binary, "--config", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-        self._wait_ready()
+        try:
+            self._wait_ready()
+        except BaseException:
+            self.stop()  # do not leave the child running when it never became ready
+            raise
 
     def _wait_ready(self) -> None:
         deadline = time.time() + 30
@@ -233,8 +241,9 @@ def run_cell(binary: str, strategy: str, scenario: str, duration: float, seed: i
     upstreams = [Upstream(i) for i in range(count)]
     if scenario == "slow-one":
         upstreams[0].speed = 8.0
-    conduit = Conduit(binary, [u.url() for u in upstreams], weights, strategy)
+    conduit = None
     try:
+        conduit = Conduit(binary, [u.url() for u in upstreams], weights, strategy)
         # warm-up (not recorded), so that connections exist and the first latency samples are in
         drive(conduit.port, WARMUP_SECONDS, seed + 1)
         for u in upstreams:
@@ -256,7 +265,8 @@ def run_cell(binary: str, strategy: str, scenario: str, duration: float, seed: i
         if killer:
             killer.join()
     finally:
-        conduit.stop()
+        if conduit:
+            conduit.stop()
         for u in upstreams:
             u.stop()
 

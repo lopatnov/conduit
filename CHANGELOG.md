@@ -60,7 +60,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   upstream with the fewest active connections *per unit of weight* (as nginx `least_conn` does), so a
   weight-3 upstream carries three times the in-flight requests of a weight-1 one; `p2c` divides its
   cost by the weight (see the next entry). With every weight 1, which is every config without `weight`, nothing
-  changes. `conduit upstreams weight` and `POST /upstreams/weight` now apply to these two as well. The
+  changes, with one exception: a target with `weight: 0` (the schema asks for 1 or more, but nothing rejected 0) was
+  treated like any other by these two strategies and now receives nothing while another target has weight, as
+  with `weighted-round-robin`. `conduit upstreams weight` and `POST /upstreams/weight` now apply to these two as well. The
   `docs/configuration.md` text for `p2c` said it compares connection counts; it compares latency, and
   now says so.
 
@@ -75,6 +77,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A route with `groups` and a load-aware `groupStrategy` no longer leaves a counter on every group name** (found by
+  the review of PR #631). The outer pick runs the strategy over the group names and threw away the in-flight slot
+  that `least-conn` takes (and, since this release, `p2c` and `least-bandwidth`), so the counter of each group name
+  grew by one per request and nothing released it. The slot is handed back at once; the real one is taken by the
+  inner pick. The load-aware strategies still compare the *names'* own counters (all 0), that is, they choose
+  among groups at random: #632 is about choosing by the group's real load.
 - **WASM: an engine that cannot be built no longer makes every plugin fail open** (issue #626). A failed
   `Engine::new` used to fall back to a default engine without fuel, on which every call failed and every
   request passed through, so a plugin that was supposed to reject requests (authentication, say) rejected

@@ -443,6 +443,12 @@ impl UpstreamRegistry {
 
     /// Increment the inflight count for `url` and return the new value.
     pub fn conn_inc(&self, url: &str) {
+        // The key exists after the first request for a URL: look it up without building a `String`
+        // (`entry` needs an owned key, which cost an allocation per request).
+        if let Some(count) = self.conn_count.get(url) {
+            count.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         self.conn_count
             .entry(url.to_owned())
             .or_insert_with(|| AtomicUsize::new(0))
@@ -1718,6 +1724,16 @@ mod tests {
             let ns = start.elapsed().as_nanos() as f64 / (CALLS * threads) as f64;
             eprintln!("record_traffic: {threads} thread(s) on one URL: {ns:.1} ns per call");
         }
+        // The in-flight pair every request of `least-conn`, `p2c` and `least-bandwidth` makes.
+        let start = Instant::now();
+        for _ in 0..CALLS {
+            reg.conn_inc(url);
+            reg.conn_dec(url);
+        }
+        eprintln!(
+            "conn_inc + conn_dec (key exists): {:.1} ns per pair",
+            start.elapsed().as_nanos() as f64 / CALLS as f64
+        );
         let now = crate::traffic::monotonic_ms();
         let start = Instant::now();
         let mut rate = 0.0;

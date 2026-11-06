@@ -979,6 +979,52 @@ mod tests {
         let _ = Ordering::Relaxed;
     }
 
+    /// The outer pick of a route with `groups` runs the strategy over the group *names*. A group name
+    /// is never an upstream with a request in flight, so a load-aware `groupStrategy` that takes an
+    /// in-flight slot (`least-conn`, `p2c`, `least-bandwidth`) must hand it back at once: the counter
+    /// of "g1" used to grow by one per request and nothing ever released it (found by the review of
+    /// PR #631; `least-conn` already did this).
+    #[test]
+    fn a_load_aware_group_strategy_leaves_no_slot_on_the_group_name() {
+        use conduit_upstream::UpstreamGroup;
+        for strategy in [
+            LoadBalanceStrategy::LeastConn,
+            LoadBalanceStrategy::P2c,
+            LoadBalanceStrategy::LeastBandwidth,
+        ] {
+            let group = |name: &str, url: &str| UpstreamGroup {
+                name: name.to_owned(),
+                targets: vec![ProxyTarget::Simple(url.to_owned())],
+                strategy: None,
+            };
+            let target = ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                groups: Some(vec![
+                    group("g1", "http://a:4000"),
+                    group("g2", "http://b:4000"),
+                ]),
+                group_strategy: Some(strategy.clone()),
+                ..Default::default()
+            }));
+            let counters: DashMap<String, AtomicUsize> = DashMap::new();
+            let registry = UpstreamRegistry::new();
+            for _ in 0..20 {
+                let resolution = resolve_route_target(&target, "/api", &counters, &registry);
+                assert!(matches!(resolution.outcome, ProxyOutcome::Upstream(_)));
+                // What logging() does when the request completes.
+                if resolution.state.upstream_conn_slot {
+                    registry.conn_dec(resolution.state.proxy_upstream_url.as_deref().unwrap());
+                }
+            }
+            for name in ["g1", "g2"] {
+                assert_eq!(
+                    registry.conn_load(name),
+                    0,
+                    "{strategy:?}: the group name {name} must not keep an in-flight slot"
+                );
+            }
+        }
+    }
+
     #[test]
     fn literal_prefix_cuts_the_glob_back_to_a_whole_segment() {
         assert_eq!(literal_prefix("/api/**"), "/api/");

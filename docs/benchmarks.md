@@ -147,7 +147,7 @@ python scripts/lb_compare.py --strategies least-conn,p2c --scenarios slow-one
 ```
 
 It uses a debug build when there is no release one, and each cell is a single run: throughput varies by
-by 10–20% from run to run on a desktop (round-robin on the mixed scenario gave 1504 to 1867 requests per second over five runs), so only compare differences well beyond that, and repeat a
+10–20% from run to run on a desktop (round-robin on the mixed scenario gave 1504 to 1867 requests per second over five runs), so only compare differences well beyond that, and repeat a
 run before drawing a conclusion from a small one. The docstring of the script describes the scenarios.
 
 ## Comparing Conduit with another proxy
