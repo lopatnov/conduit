@@ -9,7 +9,7 @@ version    = "2.1.0"
 edition    = "2021"
 # MSRV for default/standard/kubernetes builds — the lowest floor set by a
 # mandatory dependency (kube 4.2 needs 1.89). `--features wasm` (and so
-# `full`) needs more: wasmtime 49 requires 1.96, overridden directly on
+# `full`) needs more: wasmtime 50 requires 1.97, overridden directly on
 # crates/conduit-plugin-wasm's own [package] (issue #114/#148).
 rust-version = "1.89"
 license    = "Apache-2.0"
@@ -212,7 +212,7 @@ futures     = { version = "0.3" }
 # and `Config` only): the compile cache (which carried `zstd` 0.13 and `zstd-safe` 7.3, 13 advisories that a 0.13
 # release fixed only on 2026-11-01), the component model, async, profiling and debugging, parallel compilation,
 # `wat` text input.
-wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "anyhow", "gc", "gc-drc", "threads"] }
+wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "std", "anyhow", "gc", "gc-drc", "threads"] }
 
 # --- OpenTelemetry OTLP tracing (optional feature) ---
 # Enable with: cargo build --features otlp
