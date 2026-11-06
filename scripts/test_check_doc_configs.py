@@ -101,6 +101,16 @@ class Extract(unittest.TestCase):
         blocks, _ = self.blocks(md("```markdown", "```yaml", "a: 1", "```", "```"))
         self.assertEqual(blocks, [])
 
+    def test_a_config_fence_opening_inside_an_open_fence_is_a_problem(self):
+        _, problems = self.blocks(md("```bash", "echo hi", "```yaml", "a: 1", "```", "", "```yaml", "b: 2", "```"))
+        self.assertTrue(any("opens inside the fence opened at line 1" in p for p in problems), problems)
+
+    def test_an_inner_fence_of_a_markdown_example_is_not_a_problem(self):
+        _, problems = self.blocks(md("````markdown", "```yaml", "a: 1", "```", "````"))
+        self.assertEqual(problems, [])
+        _, problems = self.blocks(md("~~~markdown", "```yaml", "a: 1", "```", "~~~"))
+        self.assertEqual(problems, [])
+
     def test_a_marker_inside_a_fence_is_just_text(self):
         blocks, problems = self.blocks(md("```yaml", "<!-- docs-check: skip -->", "a: 1", "```"))
         self.assertFalse(blocks[0].skipped)
@@ -180,6 +190,7 @@ class Main(unittest.TestCase):
             self.assertEqual(cdc.main(["--conduit", cmd, good]), 0)
             self.assertEqual(cdc.main(["--conduit", cmd, bad]), 1)
             self.assertEqual(cdc.main(["--conduit", os.path.join(tmp, "nonexistent"), good]), 2)
+            self.assertEqual(cdc.main(["--conduit", cmd, os.path.join(tmp, "missing.md")]), 2)
 
 
 if __name__ == "__main__":

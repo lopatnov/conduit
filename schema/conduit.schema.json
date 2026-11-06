@@ -450,7 +450,7 @@
           "type": "object",
           "properties": {
             "verify":     { "type": "boolean", "description": "Verify upstream TLS certificate (default true)." },
-            "serverName": { "type": "string", "description": "Accepted but has no effect with the rustls backend (issue #583): the upstream certificate is checked against the host in the target URL, so write the name the certificate carries there." }
+            "serverName": { "type": "string", "description": "TLS server name: sent as SNI and used to verify the upstream certificate, instead of the host in the target URL (like nginx proxy_ssl_name)." }
           }
         },
         "rateLimit": {

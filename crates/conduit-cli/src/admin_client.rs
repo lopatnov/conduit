@@ -75,15 +75,28 @@ const TOKEN_ENV: &str = "CONDUIT_ADMIN_TOKEN";
 /// stream and return the response body. `json_body` of `None` sends no
 /// body (`Content-Length: 0` for `POST`, no body headers at all for `GET`,
 /// matching prior per-method behavior); `Some` sends it as
-/// `application/json`. The token of `CONDUIT_ADMIN_TOKEN` is sent when set.
+/// `application/json`. The token of `CONDUIT_ADMIN_TOKEN` is sent when set. The request is HTTP/1.0 with
+/// `Connection: close`, so the reply is neither chunked nor preceded by interim `1xx` responses and the body is
+/// everything after the headers.
 fn http_request(
     method: &str,
     path: &str,
     addr: &str,
     json_body: Option<&str>,
 ) -> anyhow::Result<String> {
-    let token = std::env::var(TOKEN_ENV).ok().filter(|t| !t.is_empty());
+    let token = token_from_env(std::env::var(TOKEN_ENV))?;
     http_request_with(method, path, addr, json_body, token.as_deref())
+}
+
+/// The token from the environment: `None` when the variable is unset or empty, an error when it is not valid
+/// Unicode (leaving the header out would turn a wrong setup into a bare 401 with no hint of the cause).
+fn token_from_env(value: Result<String, std::env::VarError>) -> anyhow::Result<Option<String>> {
+    match value {
+        Ok(token) if token.is_empty() => Ok(None),
+        Ok(token) => Ok(Some(token)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => anyhow::bail!("{TOKEN_ENV} is not valid Unicode"),
+    }
 }
 
 /// A token is written into a header line: a carriage return or line feed in it would let it add headers.
@@ -146,7 +159,7 @@ fn http_request_with(
     let mut stream = TcpStream::connect_timeout(&sock, Duration::from_secs(5))?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
 
-    let mut request = format!("{method} /{path} HTTP/1.1\r\nHost: {addr}\r\n");
+    let mut request = format!("{method} /{path} HTTP/1.0\r\nHost: {addr}\r\n");
     match json_body {
         Some(body) => {
             request.push_str("Content-Type: application/json\r\n");
@@ -316,6 +329,29 @@ Location: /elsewhere
             !err.contains('\u{1b}') && err.contains("?[2Jboom"),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn the_request_is_http_1_0_so_the_reply_cannot_be_chunked() {
+        let (addr, server) = serve_once(OK);
+        http_request_with("POST", "reload", &addr, None, None).unwrap();
+        let sent = server.join().unwrap();
+        assert!(sent.starts_with("POST /reload HTTP/1.0\r\n"), "{sent}");
+        assert!(sent.contains("Connection: close\r\n"), "{sent}");
+    }
+
+    #[test]
+    fn the_token_from_the_environment_is_none_when_unset_or_empty_and_an_error_when_not_unicode() {
+        use std::env::VarError;
+        assert_eq!(token_from_env(Err(VarError::NotPresent)).unwrap(), None);
+        assert_eq!(token_from_env(Ok(String::new())).unwrap(), None);
+        assert_eq!(
+            token_from_env(Ok("s3cret".into())).unwrap().as_deref(),
+            Some("s3cret")
+        );
+        let err =
+            token_from_env(Err(VarError::NotUnicode(std::ffi::OsString::from("x")))).unwrap_err();
+        assert!(err.to_string().contains("not valid Unicode"), "{err}");
     }
 
     #[test]

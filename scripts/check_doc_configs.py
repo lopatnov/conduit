@@ -90,6 +90,17 @@ def extract(path, text):
                     pending_marker = None
             continue
         char, length, start, lang, body, reason = open_fence
+        # A fence of the same kind that opens a config block inside an open fence is almost surely a missing
+        # closer: the block would be swallowed and never validated. (An inner fence of a markdown example is
+        # shorter than its outer one, or uses the other fence character, so it does not trip this.)
+        inner = FENCE.match(line)
+        if inner and inner.group("fence")[0] == char and len(inner.group("fence")) >= length:
+            inner_lang = inner.group("info").strip().split()[0].lower() if inner.group("info").strip() else ""
+            if inner_lang in LANGS:
+                problems.append(
+                    f"{os.path.relpath(path, REPO)}:{number}: a {inner_lang} fence opens inside the fence opened at line "
+                    f"{start}; is that one missing its closing fence?"
+                )
         close = FENCE.match(line)
         if close and close.group("fence")[0] == char and len(close.group("fence")) >= length and not close.group("info").strip():
             if lang in LANGS:
@@ -189,6 +200,13 @@ def main(argv=None):
         print(f"cannot run {args.conduit!r}: {e}", file=sys.stderr)
         return 2
     files = [os.path.abspath(f) for f in args.files] or default_files()
+    for path in files:
+        try:
+            with open(path, encoding="utf-8") as f:
+                f.read(1)
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"cannot read {path}: {e}", file=sys.stderr)
+            return 2
     checked, skipped, failures, problems = run(conduit, files, max(1, args.jobs), with_examples=not args.files)
     for line in problems:
         print(f"PROBLEM  {line}")

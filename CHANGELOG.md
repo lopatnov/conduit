@@ -89,8 +89,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   #568, #567). The docs promised that the CLI sends `CONDUIT_ADMIN_TOKEN`, but the CLI never read it, so with
   `global.admin.token` set every admin command (including the `systemctl reload` of the shipped unit) got a `401`; and the CLI
   ignored the reply's status, printed the error body and **exited 0**, also for a reload the server rejected (a
-  restart-only field changed). It now sends `Authorization: Bearer $CONDUIT_ADMIN_TOKEN` when the variable is set (a token
-  with a line break is refused) and exits 1, printing the server's message, for any reply that is not `2xx`. The help
+  restart-only field changed). It now sends `Authorization: Bearer $CONDUIT_ADMIN_TOKEN` when the variable is set and not empty (a token
+  that is not valid Unicode or has a line break is refused) and exits 1, printing the server's message, for any reply that is not `2xx`. The help
   texts of `upstreams add` and `upstreams weight` no longer say that only weighted-round-robin reads weights.
 - **Documentation examples are now checked** (issue #567): `scripts/check_doc_configs.py` runs `conduit validate` on every
   config block of the README and `docs/` and on every file of `examples/` in CI (job `docs-configs`). First run: eight

@@ -185,6 +185,8 @@ GOEOF
 (cd "$WORK" && go mod init bench-upstream && go build -o bench-upstream .)
 "$WORK"/bench-upstream &
 UP=$!
+sleep 1; kill -0 "$UP" || echo "the upstream did not start (is port 4000 in use?)"
+trap 'kill $UP $CP 2>/dev/null; rm -r "$WORK"' EXIT   # stops both and removes the scratch directory when this shell exits
 
 # 2. Conduit, built and configured exactly as in CI
 cd /path/to/conduit && cargo build --release
@@ -199,8 +201,9 @@ oha -z 10s -c 50 --no-tui --output-format json http://127.0.0.1:8080/ \
 ```
 
 Record `nproc`, the CPU model (`grep -m1 'model name' /proc/cpuinfo`), the RAM, the Conduit
-commit and `global.workers` next to any number you publish. Stop the background processes and
-remove the scratch directory afterwards: `kill $UP $CP; rm -r "$WORK"`.
+commit and `global.workers` next to any number you publish. The `trap` stops the two background processes and
+removes the scratch directory when the shell exits; to do it sooner run `kill $UP $CP; rm -r "$WORK"`, and only while both
+are still running (the number of a process that has exited can be given to an unrelated one).
 
 ## Why the CI report measures one worker thread and four
 
@@ -261,8 +264,8 @@ A comparison is only fair when everything but the proxy is the same:
 
 ## Binary size and dependencies
 
-Pull requests get a **Footprint report** comment (`.github/workflows/ci.yml`; on a pull request from a fork or
-from Dependabot the comment cannot be posted and the report stays in the job log): the stripped
+Pull requests get a **Footprint report** comment (`.github/workflows/ci.yml`; on a pull request from a fork the
+comment cannot be posted and the report stays in the job log): the stripped
 release binary size and the number of normal dependencies (`cargo tree -e normal | wc -l`, a rough measure) for `--no-default-features`,
 `--no-default-features --features static`, `default`, `standard` and `full`. Sizes depend on the
 target (musl, glibc, Windows), so compare like with like. To measure one locally:

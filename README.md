@@ -165,8 +165,8 @@ proxy:
 The mirror receives a copy of the request headers, `Authorization` and cookies included, so mirror
 only to a service you trust. While verification is on (the default; `upstreamTls.verify: false` turns it
 off, and then nothing is checked), upstream certificates are checked against the host in the target
-URL, so write the name the certificate carries; `upstreamTls.serverName` does not change that yet
-([#583](https://github.com/lopatnov/conduit/issues/583)).
+URL, or set `upstreamTls.serverName`, which is then sent as SNI and used for the check instead
+(like nginx `proxy_ssl_name`).
 **→ Details:** [Backup targets](docs/configuration.md#proxy-route-field-reference) ·
 [Upstream TLS](docs/configuration.md#upstream-tls-verification) ·
 [Mirroring](docs/configuration.md#traffic-mirroring) ·
@@ -470,9 +470,10 @@ the glibc builds link the system C library dynamically. Verify the download befo
 ```bash
 # Linux x86-64, standard: download, verify, then run
 BASE=https://github.com/lopatnov/conduit/releases/latest/download
-curl -LO $BASE/conduit-x86_64-unknown-linux-gnu.tar.gz -O $BASE/SHA256SUMS.txt
-sha256sum --ignore-missing -c SHA256SUMS.txt
-tar xzf conduit-x86_64-unknown-linux-gnu.tar.gz && ./conduit-x86_64-unknown-linux-gnu --version
+curl -LO $BASE/conduit-x86_64-unknown-linux-gnu.tar.gz -O $BASE/SHA256SUMS.txt \
+  && sha256sum --ignore-missing -c SHA256SUMS.txt \
+  && tar xzf conduit-x86_64-unknown-linux-gnu.tar.gz \
+  && ./conduit-x86_64-unknown-linux-gnu --version
 ```
 
 ### cargo install

@@ -316,7 +316,8 @@ The server re-reads the config file from disk and applies all hot-reloadable
 changes immediately. If the new config changes a field that needs a restart, **the whole reload is
 rejected and nothing is applied**: the Admin API answers `400` with
 `cold fields changed — restart required: <fields>`, and `conduit reload` prints that and exits 1. Restart the
-server, or put those fields back. A config that does not validate is rejected the same way.
+server, or put those fields back. A config that does not parse or validate is rejected too, with HTTP `500` and
+`failed to parse config: ...` or `config validation failed: ...`; nothing is applied then either, and the CLI exits 1.
 
 **Hot-reloadable:** proxy routes, static paths, auth config, rate limits,
 middleware, logging, cache, CORS, security headers, transforms, fault injection.
@@ -562,6 +563,7 @@ are expanded at startup; hot-reload re-expands them from the current environment
 | ---- | ------------------------------------------------------------------------------------------------------------------- |
 | `0`  | Success                                                                                                             |
 | `1`  | Error — config parse failure, validation error, upstream probe failure, Admin API unreachable or answering with a status that is not `2xx` (rejected reload, wrong token), or other fatal error |
+| `2`  | Invalid command line — an unknown flag or subcommand, a missing required argument (printed by the argument parser) |
 
 The server process itself only exits with `1` on startup errors. Once running,
 it exits cleanly (`0`) after a graceful shutdown triggered by `conduit shutdown`
