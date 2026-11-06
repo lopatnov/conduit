@@ -1823,6 +1823,52 @@ order they're defined, first match wins:
 
 ## Health Checks
 
+"Health check" means three different things in Conduit. Only the first two decide where a
+request goes:
+
+| | What it is | Configured with | Does the balancer use it? |
+| --- | --- | --- | --- |
+| **Active probes** | Conduit sends a request to every upstream of a route on a timer and marks it healthy or unhealthy | `healthCheck` on the route (below) | **Yes.** Every strategy skips an unhealthy upstream |
+| **Passive ejection** | Conduit watches the real responses and ejects an upstream that returns too many 5xx | [`outlierDetection`](#outlier-detection) | **Yes**, the same way |
+| **Site health endpoint** | A URL Conduit itself serves (`/__health__`) so that something in front of it (a cloud load balancer, Kubernetes) can ask whether Conduit is alive | `healthCheck` on the site (see [below](#site-health-endpoint-for-load-balancer-probes)) | No: it is for others to call |
+
+### What the balancer does with the health state
+
+An upstream that is unhealthy (a failed probe series or an ejection) is **left out of every
+pick**: round-robin, least-conn, the hash strategies, sticky pins, the inside of an upstream
+group and the retry list all choose among the healthy ones only. When it recovers it comes
+back (with `slowStartSecs` it is brought back gradually). If *every* upstream of a route is
+unhealthy the balancer does not give up: it tries them all anyway, so a wrongly failing probe
+cannot take a route down by itself.
+
+**Without active probes and without `outlierDetection` the balancer knows nothing**: a dead
+upstream keeps receiving its share of the requests until you fix it. Both are off by default.
+Measured with the real server (two upstreams, `round-robin`, one of them stopped, 20 requests
+right after and 20 six seconds later):
+
+| Configuration | Right after the stop | Six seconds later |
+| --- | --- | --- |
+| nothing configured | 10 ok, 10 `502` | 10 ok, 10 `502`: it never stops |
+| `healthCheck` every 1 s, `unhealthyThreshold: 2` | 10 ok, 10 `502` | 20 ok |
+| `outlierDetection`, `consecutive5xx: 2`, `maxEjectionPercent: 50` | 18 ok, 2 `502` | 20 ok |
+
+So there is always a window, up to `intervalSecs` × `unhealthyThreshold` for probes, in which
+some requests still go to the dead upstream; passive ejection closes it after
+`consecutive5xx` failed requests, but it reacts only to real requests (an upstream that
+gets none is never examined). To lose fewer requests during that window add
+[`retry`](#retry), which repeats a failed request on another upstream. A real deployment
+usually wants active probes (they find a dead upstream before a user does and also bring it
+back), plus `outlierDetection` for upstreams that answer probes but fail real requests.
+
+`maxEjectionPercent` limits how many upstreams passive ejection may remove at once (default
+10% of the upstreams Conduit tracks, and at least one), so in a small pool only one upstream
+can be ejected at a time however low the percentage is.
+
+Also: `least-response-time` takes its latencies from the active probes, so it needs
+`healthCheck` or it behaves like `round-robin`; and a route with `groups` skips unhealthy
+upstreams only *inside* the chosen group, it does not move traffic to another group (see
+[Upstream groups](#upstream-groups-two-level-balancing)).
+
 ### Active upstream probes
 
 ```yaml
