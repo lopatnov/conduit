@@ -216,7 +216,7 @@ futures     = { version = "0.3" }
 # and `Config` only): the compile cache (which carried `zstd` 0.13 and `zstd-safe` 7.3, 13 advisories that a 0.13
 # release fixed only on 2026-11-01), the component model, async, profiling and debugging, parallel compilation,
 # `wat` text input.
-wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "anyhow", "gc", "gc-drc", "threads"] }
+wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "std", "anyhow", "gc", "gc-drc", "threads"] }
 
 # --- OpenTelemetry OTLP tracing (optional feature) ---
 # Enable with: cargo build --features otlp
