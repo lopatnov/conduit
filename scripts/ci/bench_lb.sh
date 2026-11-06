@@ -33,7 +33,8 @@ SECS="${BENCH_LB_SECS:-5}"
 SLOW_MS="${BENCH_LB_SLOW_MS:-8}"
 CONNS="${BENCH_LB_CONNS:-50}"
 WORKERS="${BENCH_LB_WORKERS:-1}"
-case "$WORKERS" in ''|*[!0-9]*|0*) echo "BENCH_LB_WORKERS must be a positive integer, got '$WORKERS'" >&2; exit 2 ;; esac
+# 1 to 999: digits only (an empty value was replaced by the default above), no leading zero, at most three digits.
+case "$WORKERS" in *[!0-9]*|0*|????*) echo "BENCH_LB_WORKERS must be an integer from 1 to 999, got '$WORKERS'" >&2; exit 2 ;; esac
 CONDUIT_BIN="${CONDUIT_BIN:-./target/release/conduit}"
 UPSTREAM_BIN="${UPSTREAM_BIN:-/tmp/bench-upstream-bin}"
 OHA="${OHA:-oha}"
