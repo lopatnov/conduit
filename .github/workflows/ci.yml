@@ -738,8 +738,13 @@ jobs:
           key: docs-configs
         continue-on-error: true
 
-      - name: Tests of the checker
-        run: python3 scripts/test_check_doc_configs.py
+      - name: Tests of the checkers
+        run: |
+          python3 scripts/test_check_doc_configs.py
+          python3 scripts/test_check_doc_features.py
+
+      - name: Every Cargo feature is documented, and the bundle table matches Cargo.toml
+        run: python3 scripts/check_doc_features.py
 
       - name: Build conduit (all features)
         run: cargo build --features full
