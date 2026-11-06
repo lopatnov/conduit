@@ -184,22 +184,32 @@ mod tests {
     #[test]
     fn a_2xx_reply_returns_its_body() {
         let (addr, server) = serve_once(OK);
-        assert_eq!(http_request_with("POST", "reload", &addr, None, None).unwrap(), "{}");
+        assert_eq!(
+            http_request_with("POST", "reload", &addr, None, None).unwrap(),
+            "{}"
+        );
         server.join().unwrap();
     }
 
     #[test]
     fn a_rejected_reload_is_an_error_that_carries_the_message() {
         let (addr, server) = serve_once(REJECTED);
-        let err = http_request_with("POST", "reload", &addr, None, None).unwrap_err().to_string();
+        let err = http_request_with("POST", "reload", &addr, None, None)
+            .unwrap_err()
+            .to_string();
         server.join().unwrap();
-        assert!(err.contains("HTTP 400") && err.contains("cold fields changed"), "{err}");
+        assert!(
+            err.contains("HTTP 400") && err.contains("cold fields changed"),
+            "{err}"
+        );
     }
 
     #[test]
     fn a_401_is_an_error() {
         let (addr, server) = serve_once(UNAUTHORIZED);
-        let err = http_request_with("GET", "status", &addr, None, None).unwrap_err().to_string();
+        let err = http_request_with("GET", "status", &addr, None, None)
+            .unwrap_err()
+            .to_string();
         server.join().unwrap();
         assert!(err.contains("HTTP 401"), "{err}");
     }
@@ -214,25 +224,34 @@ mod tests {
         let (addr, server) = serve_once(OK);
         http_request_with("GET", "status", &addr, None, None).unwrap();
         let sent = server.join().unwrap();
-        assert!(!sent.to_ascii_lowercase().contains("authorization"), "{sent}");
+        assert!(
+            !sent.to_ascii_lowercase().contains("authorization"),
+            "{sent}"
+        );
     }
 
     #[test]
     fn a_token_with_a_line_break_is_refused_before_anything_is_sent() {
         for bad in ["a\r\nX-Evil: 1", "a\nb", "a\rb"] {
             // port 9 (discard) is never reached: the token is checked first
-            let err = http_request_with("GET", "status", "127.0.0.1:9", None, Some(bad)).unwrap_err().to_string();
+            let err = http_request_with("GET", "status", "127.0.0.1:9", None, Some(bad))
+                .unwrap_err()
+                .to_string();
             assert!(err.contains("line break"), "{bad:?}: {err}");
         }
     }
 
     #[test]
     fn a_redirect_is_an_error_not_a_success() {
-        let (addr, server) = serve_once("HTTP/1.1 302 Found
+        let (addr, server) = serve_once(
+            "HTTP/1.1 302 Found
 Location: /elsewhere
 
-");
-        let err = http_request_with("GET", "status", &addr, None, None).unwrap_err().to_string();
+",
+        );
+        let err = http_request_with("GET", "status", &addr, None, None)
+            .unwrap_err()
+            .to_string();
         server.join().unwrap();
         assert!(err.contains("HTTP 302"), "{err}");
     }
@@ -240,7 +259,9 @@ Location: /elsewhere
     #[test]
     fn a_reply_that_is_not_http_is_an_error() {
         let (addr, server) = serve_once("garbage without a status line");
-        let err = http_request_with("GET", "status", &addr, None, None).unwrap_err().to_string();
+        let err = http_request_with("GET", "status", &addr, None, None)
+            .unwrap_err()
+            .to_string();
         server.join().unwrap();
         assert!(err.contains("not HTTP"), "{err}");
     }
@@ -248,7 +269,10 @@ Location: /elsewhere
     #[test]
     fn status_code_reads_the_first_line_only() {
         assert_eq!(status_code("HTTP/1.1 204 No Content\r\n\r\n"), Some(204));
-        assert_eq!(status_code("HTTP/1.0 503 x\r\n\r\nHTTP/1.1 200 OK"), Some(503));
+        assert_eq!(
+            status_code("HTTP/1.0 503 x\r\n\r\nHTTP/1.1 200 OK"),
+            Some(503)
+        );
         assert_eq!(status_code("200 OK"), None);
         assert_eq!(status_code(""), None);
     }
